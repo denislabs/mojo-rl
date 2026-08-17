@@ -10,6 +10,7 @@ at the fields sunset.
 """
 
 from .dims import DimsLike, Dims, DynDims, AsStatic
+from .scratch import Scratch, cap
 from .data import Data
 from .model import Model
 from .spec_fields import (

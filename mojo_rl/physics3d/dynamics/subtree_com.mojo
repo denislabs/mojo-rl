@@ -9,7 +9,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -46,8 +46,8 @@ def _subtree_com_env[
     """Bottom-up mass*xipos accumulation, then normalize (verbatim from
     compute_subtree_com_gpu)."""
     var nbody = dims.get_nbody()
-    comptime MASS_SIZE = _max_one[D.CAP_NBODY]()
-    var stmass = InlineArray[Scalar[DTYPE], MASS_SIZE](uninitialized=True)
+    comptime MASS_SIZE = cap[D.NBODY]()
+    var stmass = Scratch[Scalar[DTYPE], MASS_SIZE](nbody, uninitialized=0)
     for b in range(nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         stmass[b] = mass

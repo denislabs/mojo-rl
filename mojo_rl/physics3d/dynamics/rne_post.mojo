@@ -51,7 +51,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
@@ -309,8 +309,12 @@ def _rne_post_env[
     var gy = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_GRAVITY_Y])
     var gz = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_GRAVITY_Z])
 
-    comptime B6 = _max_one[D.CAP_NBODY * 6]()
-    for i in range(B6):
+    comptime B6 = cap[D.NBODY]() * 6
+    # ⚠ `nbody * 6`, NOT `B6`. `B6` is a CAP — 0 on a dynamic provider — so
+    # bounding this loop with it would leave `cacc` holding the previous
+    # step's values on that leg, silently. A cap belongs in a `Scratch[...]`
+    # size and nowhere else; `scratchpad/p2b2/audit_caps.py` checks that.
+    for i in range(nbody * 6):
         cacc[env, i] = Scalar[DTYPE](0)
     # World acceleration = -gravity. `_rne_fwd_body` writes this into every
     # body whose parent is 0 rather than reading it from here, so body 0's own
@@ -323,12 +327,12 @@ def _rne_post_env[
     for i in range(nbody * 6):
         crb[env, i] = Scalar[DTYPE](0)
 
-    comptime CIN = _max_one[D.CAP_NBODY * 10]()
-    var cinert_g = InlineArray[Scalar[DTYPE], CIN](uninitialized=True)
-    for i in range(CIN):
+    comptime CIN = cap[D.NBODY]() * 10
+    var cinert_g = Scratch[Scalar[DTYPE], CIN](nbody * 10, uninitialized=0)
+    for i in range(nbody * 10):
         cinert_g[i] = Scalar[DTYPE](0)
     for b in range(nbody):
-        _rne_cinert_body[DTYPE, D.CAP_NBODY](
+        _rne_cinert_body[DTYPE](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -339,8 +343,8 @@ def _rne_post_env[
         )
 
     # 2. The cdof*qacc term, as its own forward sweep (see docstring).
-    var extra = InlineArray[Scalar[DTYPE], B6](uninitialized=True)
-    for i in range(B6):
+    var extra = Scratch[Scalar[DTYPE], B6](nbody * 6, uninitialized=0)
+    for i in range(nbody * 6):
         extra[i] = Scalar[DTYPE](0)
     for b in range(1, nbody):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
@@ -375,7 +379,7 @@ def _rne_post_env[
 
     # 4. cfrc_int = cfrc_body - cfrc_ext, then accumulate leaves -> root.
     for b in range(nbody):
-        _rne_cfrc_body[DTYPE, D.CAP_NBODY](
+        _rne_cfrc_body[DTYPE](
             env, b, cinert_g, crb, cacc, cfrc_int
         )
     for i in range(nbody * 6):

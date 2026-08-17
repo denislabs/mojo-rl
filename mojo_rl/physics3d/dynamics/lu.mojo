@@ -20,14 +20,9 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 
 comptime LU_TPB: Int = 64
-
-
-@always_inline
-def _ensure_positive[N: Int]() -> Int:
-    return N if N > 0 else 1
 
 
 @always_inline
@@ -109,10 +104,10 @@ def _lu_solve_env[
     """Solve A*x = b using the LU factors + pivots for one env (verbatim from
     `lu_solve_workspace_gpu`). L holds the in-place LU, D holds the pivots."""
     var nv = dims.get_nv()
-    comptime V_SIZE = _ensure_positive[DIMS.CAP_NV]()
+    comptime V_CAP = cap[DIMS.NV]()
 
     # Copy b, then apply the row permutation from the pivots
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         y[i] = b[env, i]
     for i in range(nv):
@@ -156,9 +151,9 @@ def _lu_m_inv_col_env[
     """One column of M^-1 from LU factors (solve A*col = e_j). Verbatim from
     `compute_M_inv_from_lu_gpu`'s column body."""
     var nv = dims.get_nv()
-    comptime V_SIZE = _ensure_positive[DIMS.CAP_NV]()
-    var e = InlineArray[L.element_type, V_SIZE](uninitialized=True)
-    var col = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    comptime V_CAP = cap[DIMS.NV]()
+    var e = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var col = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
 
     for i in range(nv):
         e[i] = 0
@@ -173,7 +168,7 @@ def _lu_m_inv_col_env[
             e[piv_i] = tmp
 
     # Forward substitution: L * y = Pe (L has unit diagonal)
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         var s = e[i]
         for k in range(i):

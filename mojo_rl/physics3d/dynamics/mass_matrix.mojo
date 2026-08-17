@@ -3,7 +3,7 @@
 Per-field port of `compute_mass_matrix_full_gpu` (dynamics/mass_matrix.mojo)
 — arithmetic verbatim. Reads `scratch.cdof`, writes `scratch.M` (owned
 tensors, replacing the ws_cdof/ws_M regions). Per-thread scratch (dof_body,
-world-frame inertia, subtree mask) stays in InlineArrays.
+world-frame inertia, subtree mask) stays in `Scratch` (2b.2).
 
 Operands: xquat, xipos, subtree_com + body/joint records + cdof -> M
 (7 operands). `num_joints` is the comptime NJOINT (no metadata read)."""
@@ -15,7 +15,16 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -38,16 +47,12 @@ comptime MM_TPB: Int = 64
 
 
 @always_inline
-def _ensure_positive[N: Int]() -> Int:
-    return N if N > 0 else 1
-
-
-@always_inline
 def _mm_setup_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
     D: DimsLike,
+    V_CAP: Int,
+    B6_CAP: Int,
+    MASK_CAP: Int,
     L_XQUAT: Layout,
     L_BODIES: Layout,
     L_JOINTS: Layout,
@@ -63,16 +68,18 @@ def _mm_setup_env[
     joints: LayoutTensor[
         DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    mut dof_body: InlineArray[Int, _ensure_positive[NV]()],
-    mut I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
-    mut subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
+    mut dof_body: Scratch[Int, V_CAP],
+    mut I_world: Scratch[Scalar[DTYPE], B6_CAP],
+    mut subtree_mask: Scratch[Bool, MASK_CAP],
 ):
     """CRBA setup (dof->body map, per-body world inertia, subtree mask).
     Extracted verbatim from `_mass_matrix_env` so the serial and _mt
     schedules share identical arithmetic (model + FK-state reads only ->
     every thread computes the same values)."""
     var njoint = dims.get_njoint()
-    for i in range(NV):
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    for i in range(nv):
         dof_body[i] = 0
 
     for j in range(njoint):
@@ -93,7 +100,7 @@ def _mm_setup_env[
             dof_body[dof_adr + d] = body_id
 
     # Per-body world-frame inertia tensor
-    for b in range(NBODY):
+    for b in range(nbody):
         var Ixx_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
         var Iyy_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IYY])
         var Izz_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IZZ])
@@ -142,22 +149,24 @@ def _mm_setup_env[
         )
 
     # Subtree membership mask (O(1) lookups in the inner loop)
-    for k in range(NBODY):
-        subtree_mask[k * NBODY + k] = True
+    for k in range(nbody):
+        subtree_mask[k * nbody + k] = True
         var current = k
         while current > 0:
             var parent = Int(
                 rebind[Scalar[DTYPE]](bodies[current, BODY_IDX_PARENT])
             )
-            subtree_mask[k * NBODY + parent] = True
+            subtree_mask[k * nbody + parent] = True
             current = parent
 
 
 @always_inline
 def _mm_row_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
+    V_CAP: Int,
+    B6_CAP: Int,
+    MASK_CAP: Int,
     L_XIPOS: Layout,
     L_BODIES: Layout,
     L_CDOF: Layout,
@@ -165,6 +174,7 @@ def _mm_row_env[
 ](
     env: Int,
     i: Int,
+    dims: D,
     xipos: LayoutTensor[
         DTYPE, L_XIPOS, MutAnyOrigin
     ],
@@ -176,13 +186,15 @@ def _mm_row_env[
     ],
     cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
-    dof_body: InlineArray[Int, _ensure_positive[NV]()],
-    I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
-    subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
+    dof_body: Scratch[Int, V_CAP],
+    I_world: Scratch[Scalar[DTYPE], B6_CAP],
+    subtree_mask: Scratch[Bool, MASK_CAP],
 ):
     """One CRBA row i (M[i,j] for j>=i + symmetric writes). Extracted
     verbatim from the `_mass_matrix_env` row loop so serial and _mt
     share identical arithmetic."""
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
     var body_i = dof_body[i]
     var ai0 = cdof[env, i * 6 + 0]
     var ai1 = cdof[env, i * 6 + 1]
@@ -191,7 +203,7 @@ def _mm_row_env[
     var li1 = cdof[env, i * 6 + 4]
     var li2 = cdof[env, i * 6 + 5]
 
-    for j in range(i, NV):
+    for j in range(i, nv):
             var body_j = dof_body[j]
             var aj0 = cdof[env, j * 6 + 0]
             var aj1 = cdof[env, j * 6 + 1]
@@ -202,10 +214,10 @@ def _mm_row_env[
 
             var mij: M.element_type = 0
 
-            for k in range(NBODY):
-                if not subtree_mask[k * NBODY + body_i]:
+            for k in range(nbody):
+                if not subtree_mask[k * nbody + body_i]:
                     continue
-                if not subtree_mask[k * NBODY + body_j]:
+                if not subtree_mask[k * nbody + body_j]:
                     continue
 
                 var mk = rebind[Scalar[DTYPE]](bodies[k, BODY_IDX_MASS])
@@ -266,9 +278,9 @@ def _mm_row_env[
 
                 mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
 
-            M[env, i * NV + j] = mij
+            M[env, i * nv + j] = mij
             if i != j:
-                M[env, j * NV + i] = mij
+                M[env, j * nv + i] = mij
 
 
 @always_inline
@@ -311,20 +323,24 @@ def _mass_matrix_env[
     for i in range(nv * nv):
         M[env, i] = 0
 
-    comptime NV_SAFE = _ensure_positive[D.CAP_NV]()
-    comptime I_WORLD_SIZE = _ensure_positive[D.CAP_NBODY * 6]()
-    comptime MASK_SIZE = _ensure_positive[D.CAP_NBODY * D.CAP_NBODY]()
-    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
-    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
-    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env[DTYPE, D.CAP_NV, D.CAP_NBODY](
+    # ⚠ `cap[]`, NOT the dimension: on a dynamic provider `D.NBODY` is
+    # DIM_POISON (-1) and `NBODY * NBODY` would come out POSITIVE 1, which
+    # silently selects the stack leg with a one-element mask. `cap[]` maps
+    # poison to 0 so every product containing it is 0. See fields/scratch.mojo.
+    comptime V_CAP = cap[D.NV]()
+    comptime B6_CAP = cap[D.NBODY]() * 6
+    comptime MASK_CAP = cap[D.NBODY]() * cap[D.NBODY]()
+    var dof_body = Scratch[Int, V_CAP](nv, uninitialized=0)
+    var I_world = Scratch[Scalar[DTYPE], B6_CAP](nbody * 6, uninitialized=0)
+    var subtree_mask = Scratch[Bool, MASK_CAP](nbody * nbody, False)
+    _mm_setup_env[DTYPE](
         env, dims, xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # M[i,j] via direct body summation with subtree mask lookup
     for i in range(nv):
-        _mm_row_env[DTYPE, D.CAP_NV, D.CAP_NBODY](
-            env, i, xipos, subtree_com, bodies, cdof, M,
+        _mm_row_env[DTYPE](
+            env, i, dims, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
 
@@ -380,20 +396,24 @@ def _mass_matrix_fields_mt_kernel[
     barrier()
 
     # Setup redundantly per thread (identical values in every thread).
-    comptime NV_SAFE = _ensure_positive[NV]()
-    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
-    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
-    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
-    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
-    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env[DTYPE, NV, NBODY](
-        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), xquat, bodies, joints, dof_body, I_world, subtree_mask
+    # ⚠ CONSTRUCTED IN THE KERNEL, never captured from the host — a `Dims`
+    # is not `DevicePassable`, and a captured one reads 0 on device (every
+    # loop bound collapses and the output comes back zeroed, which compiles).
+    var kdims = Dims[nv=NV, nbody=NBODY, njoint=NJOINT]()
+    comptime V_CAP = cap[NV]()
+    comptime B6_CAP = cap[NBODY]() * 6
+    comptime MASK_CAP = cap[NBODY]() * cap[NBODY]()
+    var dof_body = Scratch[Int, V_CAP](NV, uninitialized=0)
+    var I_world = Scratch[Scalar[DTYPE], B6_CAP](NBODY * 6, uninitialized=0)
+    var subtree_mask = Scratch[Bool, MASK_CAP](NBODY * NBODY, False)
+    _mm_setup_env[DTYPE](
+        env, kdims, xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # Each thread handles rows i where i % N_THREADS == tid.
     for i in range(tid, NV, N_THREADS):
-        _mm_row_env[DTYPE, NV, NBODY](
-            env, i, xipos, subtree_com, bodies, cdof, M,
+        _mm_row_env[DTYPE](
+            env, i, kdims, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
 
@@ -462,14 +482,14 @@ def _mm_treewalk_env[
     var nv = dims.get_nv()
     var nbody = dims.get_nbody()
     var njoint = dims.get_njoint()
-    comptime NV_S = _ensure_positive[D.CAP_NV]()
-    comptime NB_S = _ensure_positive[D.CAP_NBODY]()
-    comptime CMP_S = _ensure_positive[D.CAP_NBODY * 10]()
-    var dof_body = InlineArray[Int, NV_S](fill=0)
-    var dof_parent = InlineArray[Int, NV_S](fill=-1)
-    var body_first = InlineArray[Int, NB_S](fill=-1)
-    var body_last = InlineArray[Int, NB_S](fill=-1)
-    var comp = InlineArray[Scalar[DTYPE], CMP_S](fill=0)
+    comptime NV_S = cap[D.NV]()
+    comptime NB_S = cap[D.NBODY]()
+    comptime CMP_S = cap[D.NBODY]() * 10
+    var dof_body = Scratch[Int, NV_S](nv, 0)
+    var dof_parent = Scratch[Int, NV_S](nv, -1)
+    var body_first = Scratch[Int, NB_S](nbody, -1)
+    var body_last = Scratch[Int, NB_S](nbody, -1)
+    var comp = Scratch[Scalar[DTYPE], CMP_S](nbody * 10, 0)
 
     # --- dof_body + per-body dof range ---
     for j in range(njoint):

@@ -1,0 +1,145 @@
+"""`Scratch` — function-local scratch that serves BOTH legs from one spelling.
+
+This is phase 2b.2. Every dimension-sized `InlineArray` in the engine is a
+stack buffer whose size is a compile-time dimension; on the dynamic leg there
+is no such constant, so the buffer has to come from somewhere else.
+
+## Why this is a container and not a cap
+
+§4.2 proposed keeping the stack allocation with a *fixed cap*
+(`InlineArray[T, MAX_NV]`, bound at runtime) and predicted the dynamic CPU leg
+at ~1.09x. §10.7 BUILT that (variant G) and refuted it:
+
+| vs shipped | walker2d | ant | humanoid |
+|---|---|---|---|
+| runtime dims + heap `List` (B)          | 1.30 | 1.24 | 1.12 |
+| runtime dims + fixed-cap `InlineArray` (G) | 1.47 | 1.47 | 1.41 |
+
+**The fixed cap is 1.13-1.18x WORSE than the heap it was meant to beat**, and
+variant G2 localised the cause: the cap SIZE is free (0.87-0.99), the entire
+cost is *indexing a fixed-size stack array with a RUNTIME bound* (1.31-1.54).
+A comptime bound buys unrolling and register promotion with constant offsets;
+without it the array is forced to memory anyway, and a stack slot is then
+strictly worse than a heap pointer the optimiser already models as memory.
+
+⇒ **`InlineArray` is only fast while its bound is COMPTIME. Capping it does
+not preserve that.** So the two legs genuinely want different containers, and
+`Scratch` is the one spelling that picks the right one:
+
+    CAP > 0   ->  InlineArray[T, CAP]   comptime bound   (the static leg)
+    CAP == 0  ->  List[T]               runtime bound    (the dynamic leg)
+
+## Why CAP == 0 is the dynamic marker, and not DIM_POISON
+
+`DIM_POISON` (-1) is the right sentinel for a *dimension*, because a negative
+dimension cannot be allocated or looped over and so dies AT the unconverted
+site. It is the wrong sentinel for a *cap*, because caps are multiplied:
+`ME * V_CAP`, `NV * NV`, `3 * NBODY`. With -1 those products come out
+POSITIVE and small (`-1 * -1 == 1`), which selects the STATIC leg with a
+one-element array — a silent out-of-bounds. With 0 every product containing a
+dynamic dimension is 0, and 0 selects the heap. Poison propagates correctly
+through multiplication only if it is 0.
+
+Convert a dimension to a cap with `cap[]`, never by reading `D.NV` directly.
+
+## What this deletes
+
+The comptime `CAP_*` family on `DimsLike` existed for exactly one purpose —
+to size stack scratch on the dynamic leg — and §10.7 removed that purpose.
+Once every site here is converted, `DynDims` needs no `cap_*` parameters and
+no `_check_cap`, so **there is no bound on model size at all** and the studio
+can load an arbitrary MJCF. That was §10.5's open decision 2 and it resolves
+in the same commit as the last converted site.
+"""
+
+from .dims import DIM_POISON
+
+
+@always_inline
+def cap[n: Int]() -> Int:
+    """A dimension as a scratch CAP: the dimension itself, or 0 if dynamic.
+
+    ⚠ Use this at every site. `D.NV` is `DIM_POISON` on a dynamic provider,
+    and -1 does not propagate through the products the sizes are built from
+    (see the module docstring).
+    """
+    return n if n > 0 else 0
+
+
+@always_inline
+def _slot[n: Int]() -> Int:
+    """Element count of the inline slot. 1 on the heap leg — `InlineArray`
+    has no zero-size form, and one element of padding is not worth a
+    conditional field type (which nightly does not resolve anyway)."""
+    return n if n > 0 else 1
+
+
+struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
+    """One scratch array. `CAP > 0` -> stack, `CAP == 0` -> heap.
+
+    Both fields exist on both legs; the unused one is degenerate — a
+    one-element array, or an empty `List` that never allocates — and the
+    `comptime if` in every accessor means only one is ever addressed.
+
+    Indexing is FLAT, matching the `InlineArray` sites it replaces
+    (`L[i * nv + k]`). There is deliberately no `len()`: the length lives in
+    the dims provider, and a container that answered it would let a body read
+    a bound that disagrees with `dims.get_nv()`.
+
+    ⚠ THE `n` PASSED TO THE CONSTRUCTOR IS LOAD-BEARING ON THE HEAP LEG and
+    inert on the stack leg, so a site that gets it wrong is invisible to every
+    static-leg gate. It fails LOUDLY when the dynamic leg runs, though —
+    `List` bounds-checks, so a short length is `Assert Error: index 9 is out
+    of bounds, valid range is 0 to 3` naming this file and the line. That is
+    the good direction, and it is why the sweep can be mechanical: pass the
+    live length (`nv`, `nbody * 6`, `me * nv`), never the cap.
+    """
+
+    comptime STATIC = Self.CAP > 0
+    var _fixed: InlineArray[Self.T, _slot[Self.CAP]()]
+    var _heap: List[Self.T]
+
+    @always_inline
+    def __init__(out self, n: Int, fill: Self.T):
+        """`n` is the LIVE length — `dims.get_nv()`, not the cap."""
+        comptime if Self.STATIC:
+            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](fill=fill)
+            self._heap = List[Self.T]()
+        else:
+            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](fill=fill)
+            self._heap = List[Self.T](length=n, fill=fill)
+
+    @always_inline
+    def __init__(out self, n: Int, *, uninitialized: Self.T):
+        """The `InlineArray[..., N](uninitialized=True)` sites.
+
+        The static leg skips the fill, which is the point — those sites are
+        hot and the array can be `NV * NV`. The heap leg CANNOT skip it (a
+        `List` must have a length before it can be indexed), so it fills with
+        `uninitialized`, whose value the static leg never reads. Pass the
+        type's zero.
+        """
+        comptime if Self.STATIC:
+            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
+                uninitialized=True
+            )
+            self._heap = List[Self.T]()
+        else:
+            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
+                fill=uninitialized
+            )
+            self._heap = List[Self.T](length=n, fill=uninitialized)
+
+    @always_inline
+    def __getitem__(self, i: Int) -> Self.T:
+        comptime if Self.STATIC:
+            return self._fixed[i]
+        else:
+            return self._heap[i]
+
+    @always_inline
+    def __setitem__(mut self, i: Int, v: Self.T):
+        comptime if Self.STATIC:
+            self._fixed[i] = v
+        else:
+            self._heap[i] = v

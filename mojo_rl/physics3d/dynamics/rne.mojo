@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -295,7 +295,7 @@ def _rne_fwd_body[
 @always_inline
 def _rne_cinert_body[
     DTYPE: DType,
-    NBODY: Int,
+    CIN_CAP: Int,
     L_XQUAT: Layout,
     L_XIPOS: Layout,
     L_BODIES: Layout,
@@ -314,7 +314,7 @@ def _rne_cinert_body[
     bodies: LayoutTensor[
         DTYPE, L_BODIES, MutAnyOrigin
     ],
-    mut cinert_g: InlineArray[Scalar[DTYPE], _max_one[NBODY * 10]()],
+    mut cinert_g: Scratch[Scalar[DTYPE], CIN_CAP],
 ):
     """One body's cinert (spatial inertia at subtree_com, mj_inertCom).
     Extracted verbatim from the `_rne_env` step-0 loop body so
@@ -397,13 +397,13 @@ def _rne_cinert_body[
 @always_inline
 def _rne_cfrc_body[
     DTYPE: DType,
-    NBODY: Int,
+    CIN_CAP: Int,
     L_CRB: Layout,
     L_RNE_CACC: Layout,
 ](
     env: Int,
     b: Int,
-    cinert_g: InlineArray[Scalar[DTYPE], _max_one[NBODY * 10]()],
+    cinert_g: Scratch[Scalar[DTYPE], CIN_CAP],
     crb: LayoutTensor[
         DTYPE, L_CRB, MutAnyOrigin
     ],
@@ -604,16 +604,16 @@ def _rne_env[
         rne_cacc[env, i] = Scalar[DTYPE](0)
     for i in range(BODY6_SIZE):
         rne_cfrc[env, i] = Scalar[DTYPE](0)
-    comptime CINERT_GPU_SIZE = _max_one[D.CAP_NBODY * 10]()
-    var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](
-        uninitialized=True
+    comptime CINERT_GPU_SIZE = cap[D.NBODY]() * 10
+    var cinert_g = Scratch[Scalar[DTYPE], CINERT_GPU_SIZE](
+        nbody * 10, uninitialized=0
     )
-    for i in range(CINERT_GPU_SIZE):
+    for i in range(nbody * 10):
         cinert_g[i] = Scalar[DTYPE](0)
 
     # Step 0: cinert — spatial inertia at subtree_com (mj_inertCom)
     for b in range(nbody):
-        _rne_cinert_body[DTYPE, D.CAP_NBODY](
+        _rne_cinert_body[DTYPE](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -629,7 +629,7 @@ def _rne_env[
 
     # Step 2: Spatial forces per body: cfrc = I*cacc + cvel x* (I*cvel)
     for b in range(nbody):
-        _rne_cfrc_body[DTYPE, D.CAP_NBODY](
+        _rne_cfrc_body[DTYPE](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
 
@@ -761,12 +761,12 @@ def _rne_fields_mt_kernel[
     barrier()
 
     # Step 0: cinert (flat, my bodies -> per-thread cinert_g slots).
-    comptime CINERT_GPU_SIZE = _max_one[NBODY * 10]()
-    var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](
-        uninitialized=True
+    comptime CINERT_GPU_SIZE = cap[NBODY]() * 10
+    var cinert_g = Scratch[Scalar[DTYPE], CINERT_GPU_SIZE](
+        NBODY * 10, uninitialized=0
     )
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cinert_body[DTYPE, NBODY](
+        _rne_cinert_body[DTYPE](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -782,7 +782,7 @@ def _rne_fields_mt_kernel[
 
     # Step 2: cfrc (flat, SAME mapping as cinert so cinert_g[b] is local).
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cfrc_body[DTYPE, NBODY](
+        _rne_cfrc_body[DTYPE](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
     barrier()

@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -392,7 +392,7 @@ def _rne_vel_derivative_env[
         cinert[env, b * 10 + 9] = mass
 
     # dof_bodyid lookup
-    var dof_bodyid = InlineArray[Int, D.CAP_NV if D.CAP_NV > 0 else 1](uninitialized=True)
+    var dof_bodyid = Scratch[Int, cap[D.NV]()](nv, uninitialized=0)
     for i in range(nv):
         dof_bodyid[i] = 0
     for j in range(njoint):
@@ -430,8 +430,8 @@ def _rne_vel_derivative_env[
         )
 
     # body_dofadr / body_dofnum lookup
-    var body_dofadr = InlineArray[Int, D.CAP_NBODY](uninitialized=True)
-    var body_dofnum = InlineArray[Int, D.CAP_NBODY](uninitialized=True)
+    var body_dofadr = Scratch[Int, cap[D.NBODY]()](nbody, uninitialized=0)
+    var body_dofnum = Scratch[Int, cap[D.NBODY]()](nbody, uninitialized=0)
     for b in range(nbody):
         body_dofadr[b] = -1
         body_dofnum[b] = 0

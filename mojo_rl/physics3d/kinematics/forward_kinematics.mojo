@@ -30,7 +30,7 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -676,13 +676,12 @@ def _fk_env_mt[
     var njoint = dims.get_njoint()
     # Body tree depth (level): model-only reads, identical in every thread
     # -> identical max_level -> identical barrier count.
-    # ⚠ THE CAP, NOT THE RUNTIME DIM. `InlineArray`'s length is a comptime
-    # parameter — `nbody` here is a `var` and the compiler rejects it outright
-    # ("cannot use a dynamic value in a parameter list"). This is the case
-    # §5.1 introduced `CAP_*` for: the stack buffer is sized by the bound and
-    # only `nbody` of it is ever touched. On a static provider CAP == exact,
-    # so the allocation is byte-identical to what shipped.
-    var level = InlineArray[Int, D.CAP_NBODY](fill=0)
+    # ⚠ `Scratch`, NOT `InlineArray` — the length is a comptime parameter and
+    # `nbody` is a `var`. On a static provider `cap[D.NBODY]()` IS `NBODY`, so
+    # this is the same stack array that shipped; on a dynamic one it is 0 and
+    # the container is a heap `List` of `nbody`. See fields/scratch.mojo for
+    # why a fixed CAP indexed by a runtime bound is the one option that loses.
+    var level = Scratch[Int, cap[D.NBODY]()](nbody, 0)
     var max_level = 0
     for b in range(1, nbody):
         var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))

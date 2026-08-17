@@ -10,14 +10,9 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 
 comptime LDL_TPB: Int = 64
-
-
-@always_inline
-def _ensure_positive[N: Int]() -> Int:
-    return N if N > 0 else 1
 
 
 @always_inline
@@ -84,21 +79,22 @@ def _ldl_solve_env[
     """LDL solve x = M^-1 b for one env (verbatim from
     ldl_solve_workspace_gpu).
 
-    ⚠ THE STACK SCRATCH IS SIZED BY THE **CAP**, THE LOOPS BY THE RUNTIME
-    DIM. `CAP_NV == NV` on a static provider, so this is the allocation that
-    ships today to the byte; on a dynamic one it is the bound the model was
-    promised to fit (checked in `DynDims.__init__`, not here — a per-call
-    check in a leaf this hot would be the wrong place to pay for it)."""
+    ⚠ THE SCRATCH CONTAINER IS CHOSEN BY THE LEG, THE LOOPS ARE ALWAYS THE
+    RUNTIME DIM. `cap[DIMS.NV]()` is `NV` on a static provider — so `Scratch`
+    is the `InlineArray[.., NV]` that ships today, to the byte — and 0 on a
+    dynamic one, which selects the heap `List`. §10.7 measured that a
+    fixed-cap stack array indexed by a runtime bound is 1.13-1.18x WORSE than
+    the heap, so there is deliberately no third option here."""
     var nv = dims.get_nv()
-    comptime V_SIZE = _ensure_positive[DIMS.CAP_NV]()
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    comptime V_CAP = cap[DIMS.NV]()
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         var s = b[env, i]
         for j in range(i):
             s = s - L[env, i * nv + j] * y[j]
         y[i] = s
 
-    var z = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var z = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         var d_i = D[env, i]
         if d_i > 1e-14 or d_i < -1e-14:
@@ -288,22 +284,22 @@ def _m_inv_col_env[
     from the `_m_inv_env` column loop so serial and _mt schedules
     share identical arithmetic."""
     var nv = dims.get_nv()
-    comptime V_SIZE = _ensure_positive[DIMS.CAP_NV]()
-    var e = InlineArray[L.element_type, V_SIZE](uninitialized=True)
-    var col = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    comptime V_CAP = cap[DIMS.NV]()
+    var e = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var col = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
 
     for i in range(nv):
         e[i] = 0
     e[j] = 1
 
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         var s = e[i]
         for k in range(i):
             s = s - L[env, i * nv + k] * y[k]
         y[i] = s
 
-    var z = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var z = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         var d_i = D[env, i]
         if d_i > 1e-14 or d_i < -1e-14:
