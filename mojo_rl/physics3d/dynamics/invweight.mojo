@@ -37,7 +37,7 @@ CPU-only (build-time); no GPU kernels needed.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -471,7 +471,7 @@ def compute_invweight0[
         var xquat_v = d.xquat.lt["cpu", L_B4_V]()
         var cdof_v = sc.cdof.lt["cpu", L_CDOF_V]()
 
-        var tJ = InlineArray[Scalar[DTYPE], D.NV](fill=Scalar[DTYPE](0))
+        var tJ = Scratch[Scalar[DTYPE], D.NV](D.NV, fill=Scalar[DTYPE](0))
         for t in range(D.NTENDON):
             var kind = Int(mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_KIND])
             var len0 = Scalar[DTYPE](0)

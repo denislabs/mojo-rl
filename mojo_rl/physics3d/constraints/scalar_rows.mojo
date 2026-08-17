@@ -103,6 +103,7 @@ from .constraint_data import (
     refsafe_timeconst,
 )
 from ..fields import DimsLike
+from ..fields.scratch import Scratch, cap
 
 comptime SROW_LIMIT: Int = 0
 comptime SROW_FRICTION: Int = 1
@@ -133,10 +134,30 @@ comptime MJ_MAXIMP: Float64 = 0.9999
 
 
 @always_inline
-def max_scalar_rows[NV: Int, NJOINT: Int]() -> Int:
-    """One row per frictional dof plus up to two limit rows per joint."""
-    var n = 2 * NJOINT + NV
+def max_scalar_rows(nv: Int, njoint: Int) -> Int:
+    """One row per frictional dof plus up to two limit rows per joint.
+
+    ⚠ THIS IS THE CAPACITY GUARD'S BOUND, and it must be the LIVE one. It is
+    what `n >= max_rows` compares against in the builder below, i.e. the point
+    at which rows start being DROPPED. Feed it a cap and on the dynamic leg it
+    reads 0, every row is dropped, and the solver runs on an empty constraint
+    set — a silent physics change, not a crash.
+    """
+    var n = 2 * njoint + nv
     return n if n > 0 else 1
+
+
+@always_inline
+def max_scalar_rows_cap[NV: Int, NJOINT: Int]() -> Int:
+    """The same count as a scratch CAP: 0 when either dimension is dynamic.
+
+    Deliberately UNCLAMPED, unlike the runtime form above. `Scratch` reads 0
+    as "use the heap"; the old `n if n > 0 else 1` clamp existed to keep
+    `InlineArray` legal at size zero, and `_slot[]` now does that job inside
+    the container. Clamping here would hand the dynamic leg a ONE-element
+    stack array instead — see `fields/scratch.mojo` on why caps poison to 0.
+    """
+    return cap[2 * NJOINT + NV]()
 
 
 @always_inline
@@ -213,7 +234,7 @@ def _clamp_imp[DTYPE: DType](v: Scalar[DTYPE]) -> Scalar[DTYPE]:
 @always_inline
 def build_scalar_rows[
     DTYPE: DType,
-    MAXS: Int,
+    S_CAP: Int,
     D: DimsLike,
     L_QPOS: Layout,
     L_QVEL: Layout,
@@ -234,13 +255,13 @@ def build_scalar_rows[
     ],
     dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    mut sr_dof: InlineArray[Int, MAXS],
-    mut sr_kind: InlineArray[Int, MAXS],
-    mut sr_sign: InlineArray[Scalar[DTYPE], MAXS],
-    mut sr_D: InlineArray[Scalar[DTYPE], MAXS],
-    mut sr_R: InlineArray[Scalar[DTYPE], MAXS],
-    mut sr_bias: InlineArray[Scalar[DTYPE], MAXS],
-    mut sr_floss: InlineArray[Scalar[DTYPE], MAXS],
+    mut sr_dof: Scratch[Int, S_CAP],
+    mut sr_kind: Scratch[Int, S_CAP],
+    mut sr_sign: Scratch[Scalar[DTYPE], S_CAP],
+    mut sr_D: Scratch[Scalar[DTYPE], S_CAP],
+    mut sr_R: Scratch[Scalar[DTYPE], S_CAP],
+    mut sr_bias: Scratch[Scalar[DTYPE], S_CAP],
+    mut sr_floss: Scratch[Scalar[DTYPE], S_CAP],
 ) -> Int:
     """Build the active limit + friction rows for one env. Returns the count.
 
@@ -252,6 +273,10 @@ def build_scalar_rows[
     """
     var nv = dims.get_nv()
     var njoint = dims.get_njoint()
+    # ⚠ THE LIVE BOUND, not `S_CAP`. S_CAP is 0 on a dynamic provider, so
+    # guarding with it would drop every row and hand the solver an empty
+    # constraint set — the failure this whole phase exists to prevent.
+    var max_rows = max_scalar_rows(nv, njoint)
     var n = 0
 
     # ---- joint limits -----------------------------------------------------
@@ -318,7 +343,7 @@ def build_scalar_rows[
         for side in range(2):
             var sign = Scalar[DTYPE](1) if side == 0 else Scalar[DTYPE](-1)
             var dist = (pos - rmin) if side == 0 else (rmax - pos)
-            if dist >= Scalar[DTYPE](0) or n >= MAXS:
+            if dist >= Scalar[DTYPE](0) or n >= max_rows:
                 continue
             var pen = -dist
 
@@ -402,7 +427,7 @@ def build_scalar_rows[
         elif jtype == JNT_BALL:
             nd = 3
         for k in range(nd):
-            if n >= MAXS:
+            if n >= max_rows:
                 break
             var dof = dof_adr + k
             var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])

@@ -143,3 +143,31 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
             self._fixed[i] = v
         else:
             self._heap[i] = v
+
+    @always_inline
+    def unsafe_ptr[SO: MutOrigin](ref [SO] self) -> Pointer[Self.T, SO]:
+        """The contiguous storage, for the few callees that take a POINTER.
+
+        `noslip_pyramidal` takes its row storage as address-space-parameterized
+        pointers so ONE routine serves both the per-thread arrays here and the
+        blocked kernel's threadgroup memory. Both legs are contiguous, so this
+        is well-defined on either.
+
+        ⚠ THE ORIGIN IS `self`'s, NOT the field's. A plain return hands back
+        `Pointer[T, origin_of(self._fixed)]` on one leg and
+        `origin_of(self._heap)` on the other -- two different types for what
+        callers must treat as one, and neither converts to a named origin
+        like `MutAnyOrigin`. So `SO` is bound from `ref [SO] self` and the
+        field pointer is `rebind`-ed to it: a WIDENING from a field to the
+        struct that contains it, which is sound because the field cannot
+        outlive `self`. (`Pointer` has no `origin_cast`, and casting to an
+        unrelated origin would sever the borrow rather than preserve it.)
+
+        The origin parameter also states the real constraint: on the heap leg
+        the buffer dies with the `Scratch`, so the pointer must not outlive
+        it. Every current caller passes it straight down and drops it.
+        """
+        comptime if Self.STATIC:
+            return rebind[Pointer[Self.T, SO]](self._fixed.unsafe_ptr())
+        else:
+            return rebind[Pointer[Self.T, SO]](self._heap.unsafe_ptr())

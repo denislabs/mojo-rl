@@ -73,6 +73,19 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
+from ..constraints.solver_ws import (
+    ws_c_dist as sw_c_dist,
+    ws_pos_bias as sw_pos_bias,
+    ws_j_n as sw_j_n,
+    ws_ell_jt as sw_ell_jt,
+    ws_ell_mu as sw_ell_mu,
+    ws_ell_dn as sw_ell_dn,
+    ws_ell_dt as sw_ell_dt,
+    ws_ell_fr as sw_ell_fr,
+    ws_ell_bt as sw_ell_bt,
+    ws_ell_ntc as sw_ell_ntc,
+    ws_end_elliptic,
+)
 from .noslip import noslip_pyramidal, noslip_elliptic
 from ..constraints.elliptic_layout import (
     ell_nt,
@@ -125,6 +138,7 @@ from ..constraints.tendon_limit import (
 from ..constraints.scalar_rows import (
     build_scalar_rows,
     max_scalar_rows,
+    max_scalar_rows_cap,
     scalar_row_state,
     scalar_row_force,
     scalar_row_cost,
@@ -534,37 +548,48 @@ def _newton_solve_env[
     var nequality = dims.get_nequality()
     var ntendon = dims.get_ntendon()
     var nsite = dims.get_nsite()
-    comptime MC = _max_one[D.CAP_MAX_CONTACTS]()
-    comptime V_SIZE = _max_one[D.CAP_NV]()
-    comptime M_SIZE = _max_one[D.CAP_NV * D.CAP_NV]()
+    # ⚠ CAPS SIZE CONTAINERS ONLY. Strides, loop bounds and capacity guards
+    # all read the live `nv` / `max_contacts` above. On the static leg the cap
+    # and the live value are the same integer, so nothing in the 124-file
+    # suite can tell a mix-up from correct code.
+    comptime MC_CAP = cap[D.CAP_MAX_CONTACTS]()
+    comptime V_CAP = cap[D.CAP_NV]()
+    comptime M_CAP = cap[D.CAP_NV * D.CAP_NV]()
 
     # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
     # base is gone)
-    comptime ws_c_dist_idx = 2 * MC
-    comptime ws_pos_bias_idx = 11 * MC
-    comptime ws_J_n_idx = 15 * MC
+    var ws_c_dist_idx = sw_c_dist(max_contacts)
+    var ws_pos_bias_idx = sw_pos_bias(max_contacts)
+    var ws_J_n_idx = sw_j_n(max_contacts)
 
     # Primal-specific offsets (after common normal block). ⚠ ONE SOURCE OF
     # TRUTH — `solver/elliptic_layout` — because the region is now
     # `MAX_CONDIM`-dependent and the producer indexes the same slots. `NT` is
     # the tangential rows per contact: 2 at condim 3, 3 at 4, 5 at 6.
     comptime NT = ell_nt[MAX_CONDIM]()
-    comptime ws_Jt_idx = ell_jt[MC, D.CAP_NV]()
-    comptime ws_mu_idx = ell_mu[MC, D.CAP_NV, MAX_CONDIM]()
-    comptime ws_D_n_idx = ell_dn[MC, D.CAP_NV, MAX_CONDIM]()
-    comptime ws_Dt_idx = ell_dt[MC, D.CAP_NV, MAX_CONDIM]()
-    comptime ws_fr_idx = ell_fr[MC, D.CAP_NV, MAX_CONDIM]()
-    comptime ws_bt_idx = ell_bt[MC, D.CAP_NV, MAX_CONDIM]()
-    comptime ws_ntc_idx = ell_ntc[MC, D.CAP_NV, MAX_CONDIM]()
+    var ws_Jt_idx = sw_ell_jt(max_contacts, nv)
+    var ws_mu_idx = sw_ell_mu(max_contacts, nv, MAX_CONDIM)
+    var ws_D_n_idx = sw_ell_dn(max_contacts, nv, MAX_CONDIM)
+    var ws_Dt_idx = sw_ell_dt(max_contacts, nv, MAX_CONDIM)
+    var ws_fr_idx = sw_ell_fr(max_contacts, nv, MAX_CONDIM)
+    var ws_bt_idx = sw_ell_bt(max_contacts, nv, MAX_CONDIM)
+    var ws_ntc_idx = sw_ell_ntc(max_contacts, nv, MAX_CONDIM)
     # ⚠ THE ONE FAILURE MODE THIS LAYOUT HAS IS OVERRUNNING `SOLVER_WS`, and
     # it would not crash: `solver` is `[BATCH, SOLVER_WS]`, so writing past the
     # row lands in the NEXT ENV's workspace. Caught at compile time rather than
     # as a lane-dependent wrong answer.
-    comptime assert ell_end[MC, D.CAP_NV, MAX_CONDIM]() <= SOLVER_WS, (
-        "the ELLIPTIC contact region does not fit ContactScratch.solver —"
-        " raise SOLVER_WS in fields/contact_scratch.mojo (and in the four"
-        " other files that recompute the literal) before raising MAX_CONDIM"
-    )
+    # ⚠ WAS A `comptime assert`. Over caps it degrades to `0 <= SOLVER_WS`
+    # on the dynamic leg -- it asserts nothing exactly where the bound stops
+    # being a compile-time fact. Overrunning does not fault: `solver` is
+    # `[BATCH, SOLVER_WS]`, so the write lands in the NEXT env's row.
+    if ws_end_elliptic(max_contacts, nv, MAX_CONDIM) > SOLVER_WS:
+        print(
+            "FATAL: the ELLIPTIC contact region does not fit"
+            " ContactScratch.solver — raise SOLVER_WS in"
+            " fields/contact_scratch.mojo (and in the four other files that"
+            " recompute the literal) before raising MAX_CONDIM"
+        )
+        return
 
     # === Initialize workspace (legacy: parallel, one thread per slot; the
     # legacy `contact_tid < MC` guard is vacuous with block_dim.y = MC) ===
@@ -581,18 +606,18 @@ def _newton_solve_env[
     # fixed FOUR blocks and got away with it only because the pyramidal
     # producer re-zeros every edge itself.
     comptime NZ = 2 * NT if CONE_TYPE == ConeType.PYRAMIDAL else NT
-    for contact_tid in range(MC):
+    for contact_tid in range(max_contacts):
         _init_common_normal_ws[
             DTYPE](env, contact_tid, dims, solver)
         # Zero primal workspace for this contact slot
         for t in range(NZ):
             for d in range(nv):
-                solver[env, ws_Jt_idx + t * MC * nv + contact_tid * nv + d] = 0
+                solver[env, ws_Jt_idx + t * max_contacts * nv + contact_tid * nv + d] = 0
         comptime if CONE_TYPE == ConeType.ELLIPTIC:
             for t in range(NT):
-                solver[env, ws_Dt_idx + t * MC + contact_tid] = 0
-                solver[env, ws_fr_idx + t * MC + contact_tid] = 0
-                solver[env, ws_bt_idx + t * MC + contact_tid] = 0
+                solver[env, ws_Dt_idx + t * max_contacts + contact_tid] = 0
+                solver[env, ws_fr_idx + t * max_contacts + contact_tid] = 0
+                solver[env, ws_bt_idx + t * max_contacts + contact_tid] = 0
             solver[env, ws_mu_idx + contact_tid] = 0
             solver[env, ws_D_n_idx + contact_tid] = 0
             solver[env, ws_ntc_idx + contact_tid] = 0
@@ -658,9 +683,9 @@ def _newton_solve_env[
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
-    for contact_tid in range(MC):
+    for contact_tid in range(max_contacts):
         _precompute_contact_normal[
-            DTYPE, V_SIZE](
+            DTYPE, V_CAP](
             env,
             contact_tid,
             nc,
@@ -690,7 +715,7 @@ def _newton_solve_env[
     for contact_tid in range(nc):
         _precompute_contact_friction[
             DTYPE,
-            V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
+            V_CAP, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
             env,
             contact_tid,
             nc,
@@ -748,30 +773,36 @@ def _newton_solve_env[
         # Slots are sized for the model's worst condim; the builder zeros the
         # tail per contact, so a condim-3 contact here still spans 4 edges.
         comptime NE = 2 * (MAX_CONDIM - 1)
-        comptime MAX_LIM = _max_one[2 * D.CAP_NJOINT]()
-        comptime MAX_FRIC = V_SIZE  # one friction row per dof
-        comptime MAX_TLIM = 2 * D.CAP_NTENDON  # lo + hi per tendon
-        comptime MAX_TEQ = D.CAP_NTENDON  # one bilateral row per equality tendon
-        # connect is 3 rows, weld is 6; sized for the worst case per equality.
-        comptime MAX_WELD = 6 * D.CAP_NEQUALITY
-        # contact + limit + dry-friction + tendon-limit + tendon-equality
-        # + connect/weld rows
-        comptime ME = (
-            NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ + MAX_WELD
+        # ⚠ TWO SPELLINGS OF THE ROW BUDGET, AND THEY ARE NOT INTERCHANGEABLE.
+        # `E_CAP` sizes the arrays and is 0 on a dynamic provider; `me` is the
+        # live budget the CAPACITY GUARDS below compare against
+        # (`num_edges < me`). Guarding with the cap would admit zero rows on
+        # the dynamic leg and silently solve an unconstrained system.
+        comptime E_CAP = cap[
+            NE * D.CAP_MAX_CONTACTS
+            + 2 * D.CAP_NJOINT
+            + D.CAP_NV
+            + 2 * D.CAP_NTENDON
+            + D.CAP_NTENDON
+            + 6 * D.CAP_NEQUALITY
+        ]()
+        var me = (
+            NE * max_contacts + 2 * njoint + nv + 2 * ntendon + ntendon
+            + 6 * nequality
         )
 
         # Cache edge data from PYRAMIDAL workspace layout
-        var pyr_sc = ws_Jt_idx + NE * MC * nv
-        var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
-        var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-        var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var pyr_sc = ws_Jt_idx + NE * max_contacts * nv
+        var Je = Scratch[Scalar[DTYPE], E_CAP * V_CAP](me * nv, uninitialized=Scalar[DTYPE](0))
+        var De = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
+        var bias_e = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
         # Row kind + box data. Contact edges and joint limits are ONE-SIDED;
         # only dry-friction dof rows are box-clamped, and R/floss are read
         # solely on that branch, so the one-sided rows leave them at 0.
-        var kind_e = InlineArray[Int, ME](fill=SROW_LIMIT)
-        var R_e = InlineArray[Scalar[DTYPE], ME](fill=Scalar[DTYPE](0))
-        var floss_e = InlineArray[Scalar[DTYPE], ME](fill=Scalar[DTYPE](0))
-        var state_e = InlineArray[Int, ME](fill=0)
+        var kind_e = Scratch[Int, E_CAP](me, fill=SROW_LIMIT)
+        var R_e = Scratch[Scalar[DTYPE], E_CAP](me, fill=Scalar[DTYPE](0))
+        var floss_e = Scratch[Scalar[DTYPE], E_CAP](me, fill=Scalar[DTYPE](0))
+        var state_e = Scratch[Int, E_CAP](me, fill=0)
         var num_edges = nc * NE
 
         # Load contact edges
@@ -780,13 +811,13 @@ def _newton_solve_env[
                 var idx = c * NE + e
                 for i in range(nv):
                     Je[idx * nv + i] = rebind[Scalar[DTYPE]](
-                        solver[env, ws_Jt_idx + e * MC * nv + c * nv + i]
+                        solver[env, ws_Jt_idx + e * max_contacts * nv + c * nv + i]
                     )
                 De[idx] = rebind[Scalar[DTYPE]](
-                    solver[env, pyr_sc + e * MC + c]
+                    solver[env, pyr_sc + e * max_contacts + c]
                 )
                 bias_e[idx] = rebind[Scalar[DTYPE]](
-                    solver[env, pyr_sc + NE * MC + e * MC + c]
+                    solver[env, pyr_sc + NE * max_contacts + e * max_contacts + c]
                 )
 
         # Detect and add joint limit edges (unified with contacts)
@@ -895,7 +926,7 @@ def _newton_solve_env[
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
             # Lower limit: dist_lo = pos - rmin < 0 → violated
             var dist_lo = pos - rmin
-            if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
+            if dist_lo < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](1)
                 var K_lim = rebind[Scalar[DTYPE]](
                     m_inv[env, dof * nv + dof]
@@ -958,7 +989,7 @@ def _newton_solve_env[
 
             # Upper limit: dist_hi = rmax - pos < 0 → violated
             var dist_hi = rmax - pos
-            if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
+            if dist_hi < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](-1)
                 var K_lim = rebind[Scalar[DTYPE]](
                     m_inv[env, dof * nv + dof]
@@ -1022,7 +1053,7 @@ def _newton_solve_env[
         # is a row here rather than a post-pass.
         comptime if D.CAP_NTENDON > 0:
             build_tendon_limit_rows[
-                DTYPE, V_SIZE, ME, BATCH
+                DTYPE, V_CAP, E_CAP, BATCH
             ](
                 env, dims, qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
@@ -1036,7 +1067,7 @@ def _newton_solve_env[
         # constraints/tendon_limit.build_tendon_equality_rows.
         comptime if D.CAP_NTENDON > 0:
             build_tendon_equality_rows[
-                DTYPE, V_SIZE, ME,
+                DTYPE, V_CAP, E_CAP,
                 BATCH](
                 env, dims, qpos, qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
@@ -1069,13 +1100,13 @@ def _newton_solve_env[
             var w_MinvJ = Scratch[Scalar[DTYPE], WJ](
                 w_rows * nv, Scalar[DTYPE](0)
             )
-            var n_w = build_weld_equality_rows[DTYPE, V_SIZE](
+            var n_w = build_weld_equality_rows[DTYPE, V_CAP](
                 env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
                 mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
             )
             for r in range(n_w):
-                if num_edges >= ME:
+                if num_edges >= me:
                     break
                 for i in range(nv):
                     Je[num_edges * nv + i] = w_J[r * nv + i]
@@ -1117,7 +1148,7 @@ def _newton_solve_env[
             elif jt == JNT_BALL:
                 nd = 3
             for k in range(nd):
-                if num_edges >= ME:
+                if num_edges >= me:
                     break
                 var dof = dof_adr + k
                 var K_d = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
@@ -1142,16 +1173,14 @@ def _newton_solve_env[
                 num_edges += 1
 
         # Initialize qacc from workspace (qacc_smooth set by stage kernel)
-        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
-        var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        var qacc_smooth = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        var Ma = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
 
         # Cache M locally once — M is loop-invariant during Newton iterations.
         # Avoids ~2*NV² workspace (global) reads per iteration (Hessian build
         # + Mv = M*search). Mirrors the ELLIPTIC path's M_local optimization.
-        var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var M_local = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
         for k in range(nv * nv):
             M_local[k] = rebind[Scalar[DTYPE]](M[env, k])
 
@@ -1165,9 +1194,7 @@ def _newton_solve_env[
                 Ma[i] += M_local[i * nv + j] * qacc[j]
         # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
         # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
-        var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
+        var f_smooth = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         for i in range(nv):
             f_smooth[i] = Ma[i]
 
@@ -1207,19 +1234,19 @@ def _newton_solve_env[
         )
 
         # Working arrays
-        var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-        var force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-        var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var jar = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
+        var force = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
+        var H = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
+        var L_chol = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
+        var grad = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        var search = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        var Mv = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
 
         # Initial jar + force + qfrc
-        var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        pyramidal_edge_forces[DTYPE, D.CAP_NV, ME, V_SIZE](
+        var qfrc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
             num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
-            qacc, jar, force, state_e, qfrc
+            qacc, jar, force, state_e, qfrc, nv,
         )
 
         # Newton iterations
@@ -1248,13 +1275,13 @@ def _newton_solve_env[
                             )
 
             # Cholesky solve
-            var chol_ok = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](H, L_chol)
+            var chol_ok = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
             if not chol_ok:
                 for i in range(nv):
                     H[i * nv + i] += Scalar[DTYPE](1e-6)
-                _ = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](H, L_chol)
-            chol_solve_inline[DTYPE, D.CAP_NV, M_SIZE, V_SIZE](
-                L_chol, grad, search
+                _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
+            chol_solve_inline[DTYPE, M_CAP, V_CAP](
+                L_chol, grad, search, nv
             )
             for i in range(nv):
                 search[i] = -search[i]
@@ -1267,30 +1294,23 @@ def _newton_solve_env[
 
             # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
             var alpha = pyramidal_linesearch[
-                DTYPE, D.CAP_NV, ME, V_SIZE, LINESEARCH_ITER,
+                DTYPE, E_CAP, V_CAP, LINESEARCH_ITER,
                 PRIMAL_MINVAL_GPU
             ](
                 num_edges, Je, De, kind_e, R_e, floss_e, search, Mv, Ma,
                 f_smooth, qacc, qacc_smooth, jar,
+                nv,
             )
 
             if alpha < Scalar[DTYPE](1e-10):
                 break
 
             # Save old state for cost revert (matching CPU solver)
-            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
-                uninitialized=True
-            )
-            var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](
-                uninitialized=True
-            )
-            var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-            var old_force = InlineArray[Scalar[DTYPE], ME](
-                uninitialized=True
-            )
-            var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](
-                uninitialized=True
-            )
+            var old_qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+            var old_Ma = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+            var old_jar = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
+            var old_force = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
+            var old_qfrc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
             for i in range(nv):
                 old_qacc[i] = qacc[i]
                 old_Ma[i] = Ma[i]
@@ -1319,9 +1339,9 @@ def _newton_solve_env[
                 Ma[i] += alpha * Mv[i]
 
             # Recompute jar, force, qfrc
-            pyramidal_edge_forces[DTYPE, D.CAP_NV, ME, V_SIZE](
+            pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
                 num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
-                qacc, jar, force, state_e, qfrc
+                qacc, jar, force, state_e, qfrc, nv,
             )
 
             # Compute new cost and check improvement
@@ -1377,13 +1397,11 @@ def _newton_solve_env[
             # authoritative array and never written after, so it cannot go
             # stale; and it is inside the `comptime if NOSLIP_ITER > 0` above,
             # so a model without the pass reserves nothing for it.
-            var kind_dt = InlineArray[Scalar[DTYPE], ME](
-                fill=Scalar[DTYPE](0)
-            )
+            var kind_dt = Scratch[Scalar[DTYPE], E_CAP](me, fill=Scalar[DTYPE](0))
             for e_k in range(num_edges):
                 kind_dt[e_k] = Scalar[DTYPE](kind_e[e_k])
             noslip_pyramidal[
-                DTYPE, D.CAP_NV, ME, V_SIZE, MC, D.CAP_MAX_CONTACTS,
+                DTYPE, E_CAP, V_CAP, MC_CAP, D.CAP_MAX_CONTACTS,
                 MAX_CONDIM, NOSLIP_ITER,
             ](
                 env,
@@ -1427,6 +1445,7 @@ def _newton_solve_env[
                 jar,
                 force.unsafe_ptr(),
                 qfrc,
+                nv,
             )
 
         # Write qacc back
@@ -1439,7 +1458,7 @@ def _newton_solve_env[
             var ft1_c: Scalar[DTYPE] = 0
             var ft2_c: Scalar[DTYPE] = 0
             var mu_c = rebind[Scalar[DTYPE]](
-                solver[env, pyr_sc + 2 * NE * MC + c]
+                solver[env, pyr_sc + 2 * NE * max_contacts + c]
             )
             var safe_mu = mu_c
             if safe_mu < Scalar[DTYPE](1e-8):
@@ -1515,22 +1534,26 @@ def _newton_solve_env[
     # CONTACT-major, unlike the workspace's block-major `t*MC + c`; the solve
     # touches all of one contact's rows together and none of the arrays outlive
     # this function.
-    var Jn_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
-    var Jt_c = InlineArray[Scalar[DTYPE], MC * NT * V_SIZE](
-        uninitialized=True
-    )
-    var mu_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var D_n_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var D_t_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
-    var fr_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
-    var dist_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var pb_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var bt_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
+    var Jn_c = Scratch[Scalar[DTYPE], MC_CAP * V_CAP](max_contacts * nv, uninitialized=Scalar[DTYPE](0))
+    # ⚠ DECLARED HERE, NOT AT FIRST NEED. `T_CAP` is part of the TYPE of the
+    # caches below and of `elliptic_cone`'s parameters, so both must be the
+    # SAME expression -- `cap[D.CAP_MAX_CONTACTS * NT]` and
+    # `cap[D.CAP_MAX_CONTACTS] * NT` are numerically equal and distinct types.
+    comptime T_CAP = cap[D.CAP_MAX_CONTACTS * NT]()
+    var tn = max_contacts * NT
+    var Jt_c = Scratch[Scalar[DTYPE], T_CAP * V_CAP](max_contacts * NT * nv, uninitialized=Scalar[DTYPE](0))
+    var mu_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var D_n_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var D_t_cache = Scratch[Scalar[DTYPE], T_CAP](max_contacts * NT, uninitialized=Scalar[DTYPE](0))
+    var fr_cache = Scratch[Scalar[DTYPE], T_CAP](max_contacts * NT, uninitialized=Scalar[DTYPE](0))
+    var dist_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var pb_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var bt_cache = Scratch[Scalar[DTYPE], T_CAP](max_contacts * NT, uninitialized=Scalar[DTYPE](0))
     # How many of the NT rows this contact actually has (`dim-1`). 0 for a
     # frictionless (`condim="1"`) contact, which is one normal row and nothing
     # else — the cone then degenerates to `T == 0` and the zone logic reduces
     # to the one-sided normal constraint.
-    var nt_cache = InlineArray[Int, MC](fill=0)
+    var nt_cache = Scratch[Int, MC_CAP](max_contacts, fill=0)
     for c in range(nc):
         dist_cache[c] = rebind[Scalar[DTYPE]](
             solver[env, ws_c_dist_idx + c]
@@ -1545,13 +1568,13 @@ def _newton_solve_env[
         )
         for t in range(NT):
             D_t_cache[c * NT + t] = rebind[Scalar[DTYPE]](
-                solver[env, ws_Dt_idx + t * MC + c]
+                solver[env, ws_Dt_idx + t * max_contacts + c]
             )
             fr_cache[c * NT + t] = rebind[Scalar[DTYPE]](
-                solver[env, ws_fr_idx + t * MC + c]
+                solver[env, ws_fr_idx + t * max_contacts + c]
             )
             bt_cache[c * NT + t] = rebind[Scalar[DTYPE]](
-                solver[env, ws_bt_idx + t * MC + c]
+                solver[env, ws_bt_idx + t * max_contacts + c]
             )
         for i in range(nv):
             Jn_c[c * nv + i] = rebind[Scalar[DTYPE]](
@@ -1559,7 +1582,7 @@ def _newton_solve_env[
             )
             for t in range(NT):
                 Jt_c[(c * NT + t) * nv + i] = rebind[Scalar[DTYPE]](
-                    solver[env, ws_Jt_idx + t * MC * nv + c * nv + i]
+                    solver[env, ws_Jt_idx + t * max_contacts * nv + c * nv + i]
                 )
 
     # === Scalar rows: joint limits + dry-friction dofs ===
@@ -1567,22 +1590,23 @@ def _newton_solve_env[
     # contact rows were solved as if they did not exist. They are rows of the
     # same system — see constraints/scalar_rows.mojo for the measurement that
     # established this. J = sign * e_dof, so only (dof, sign) is stored.
-    comptime MAXS = max_scalar_rows[D.CAP_NV, D.CAP_NJOINT]()
-    var sr_dof = InlineArray[Int, MAXS](fill=0)
-    var sr_kind = InlineArray[Int, MAXS](fill=0)
-    var sr_sign = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_D = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_R = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var ns = build_scalar_rows[DTYPE, MAXS](
+    comptime S_CAP = max_scalar_rows_cap[D.CAP_NV, D.CAP_NJOINT]()
+    var max_srows = max_scalar_rows(nv, njoint)
+    var sr_dof = Scratch[Int, S_CAP](max_srows, fill=0)
+    var sr_kind = Scratch[Int, S_CAP](max_srows, fill=0)
+    var sr_sign = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_D = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_R = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_bias = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_floss = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var ns = build_scalar_rows[DTYPE, S_CAP](
         env, dims, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
     )
-    var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_f = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var sr_st = InlineArray[Int, MAXS](fill=0)
-    var sr_Js = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_jar = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_f = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
+    var sr_st = Scratch[Int, S_CAP](max_srows, fill=0)
+    var sr_Js = Scratch[Scalar[DTYPE], S_CAP](max_srows, fill=Scalar[DTYPE](0))
 
     # === Fixed-tendon EQUALITY rows (dense J) ===
     # These ran as a post-pass on this path until 2026-08-01, which is the same
@@ -1605,20 +1629,20 @@ def _newton_solve_env[
     # both cones get bit-identical (J, D, bias).
     # Capacity covers BOTH dense-J equality kinds: fixed tendons, and the
     # connect/weld rows added for defect 29a (3 and 6 rows each).
-    comptime MAXEQ = _max_one[D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]()
-    var eq_J = InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_D = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
-    var eq_bias = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
-    var eq_kind = InlineArray[Int, MAXEQ](fill=0)
-    var eq_jar = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
-    var eq_f = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
-    var eq_Js = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    comptime EQ_CAP = cap[D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]()
+    # the LIVE budget for the capacity guard below -- never the cap
+    var max_eq_rows = ntendon + 6 * nequality
+    var eq_J = Scratch[Scalar[DTYPE], EQ_CAP * V_CAP](max_eq_rows * nv, fill=Scalar[DTYPE](0))
+    var eq_D = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
+    var eq_bias = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
+    var eq_kind = Scratch[Int, EQ_CAP](max_eq_rows, fill=0)
+    var eq_jar = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
+    var eq_f = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
+    var eq_Js = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var neq_rows = 0
     comptime if D.CAP_NTENDON > 0:
         build_tendon_equality_rows[
-            DTYPE, V_SIZE, MAXEQ, BATCH
+            DTYPE, V_CAP, EQ_CAP, BATCH
         ](
             env, dims, qpos, qvel, tendons, sites, bodies, joints, mmeta,
             subtree_com, cdof, xpos, xquat, m_inv,
@@ -1635,13 +1659,13 @@ def _newton_solve_env[
         var we_D = Scratch[Scalar[DTYPE], EQR](we_rows, Scalar[DTYPE](0))
         var we_J = Scratch[Scalar[DTYPE], EQJ](we_rows * nv, Scalar[DTYPE](0))
         var we_MinvJ = Scratch[Scalar[DTYPE], EQJ](we_rows * nv, Scalar[DTYPE](0))
-        var nwe = build_weld_equality_rows[DTYPE, V_SIZE](
+        var nwe = build_weld_equality_rows[DTYPE, V_CAP](
             env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof, m_inv,
             we_K, we_bias, we_D, we_J, we_MinvJ,
         )
         for r in range(nwe):
-            if neq_rows >= MAXEQ:
+            if neq_rows >= max_eq_rows:
                 break
             for d in range(nv):
                 eq_J[neq_rows * nv + d] = we_J[r * nv + d]
@@ -1662,22 +1686,22 @@ def _newton_solve_env[
             neq_rows += 1
 
     # === Step 2: Initialize local InlineArrays from workspace ===
-    var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var qacc_sm = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var qfrc_sm = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var H = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
+    var L_chol = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
+    var qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var qacc_sm = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var qfrc_sm = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var Ma = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var grad = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var search = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var Mv = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
 
     # Load M into H (primal Hessian starts as M_hat)
     for k in range(nv * nv):
         H[k] = rebind[Scalar[DTYPE]](M[env, k])
 
     # Cache M locally — saves NV² workspace reads per Newton iteration (for Mv = M*search)
-    var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var M_local = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
     for k in range(nv * nv):
         M_local[k] = H[k]
 
@@ -1714,12 +1738,11 @@ def _newton_solve_env[
 
     # === Mutable per-contact state: kept in InlineArrays, written to state buffer at end ===
     # Tangential quantities are flat `[MC, NT]`, indexed `c*NT + t`.
-    comptime TN = MC * NT
-    var fn_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var ft_arr = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
-    var jar_n_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var jar_t_arr = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
-    var cs_arr = InlineArray[Int, MC](uninitialized=True)
+    var fn_arr = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var ft_arr = Scratch[Scalar[DTYPE], T_CAP](tn, fill=Scalar[DTYPE](0))
+    var jar_n_arr = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+    var jar_t_arr = Scratch[Scalar[DTYPE], T_CAP](tn, fill=Scalar[DTYPE](0))
+    var cs_arr = Scratch[Int, MC_CAP](max_contacts, uninitialized=0)
 
     # === Step 3: Compute initial jar and forces via 3-zone cone logic ===
     for c in range(nc):
@@ -1744,7 +1767,7 @@ def _newton_solve_env[
         jar_n_arr[c] = jar_n
 
         var f_n_c = Scalar[DTYPE](0)
-        cs_arr[c] = ell_state_force[DTYPE, NT, TN](
+        cs_arr[c] = ell_state_force[DTYPE, NT, T_CAP](
             nt_c, c * NT, jar_n, jar_t_arr,
             mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
             f_n_c, ft_arr,
@@ -1788,22 +1811,22 @@ def _newton_solve_env[
                 H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
     comptime HN = (NT + 1) * (NT + 1)
     ell_add_contact_hessian[
-        DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, M_SIZE, HN
+        DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN
     ](
         nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
-        mu_cache, D_n_cache, D_t_cache, fr_cache, H,
+        mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv,
     )
 
     # Cholesky factorize H (with regularization on rank deficiency)
-    var chol_ok_gpu = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](H, L_chol)
+    var chol_ok_gpu = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
     if not chol_ok_gpu:
         for i in range(nv):
             H[i * nv + i] = H[i * nv + i] + Scalar[DTYPE](1e-6)
-        _ = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](H, L_chol)
+        _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
 
     # === Precompute qfrc_c = J^T * force (replaces per-iteration gradient workspace reads) ===
     # Updated after each force update instead of recomputing from workspace each gradient step.
-    var qfrc_c = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qfrc_c = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
     for i in range(nv):
         qfrc_c[i] = Scalar[DTYPE](0)
     for c in range(nc):
@@ -1833,7 +1856,7 @@ def _newton_solve_env[
             break
 
         # Newton direction: search = -H^{-1} * grad
-        chol_solve_inline[DTYPE, D.CAP_NV, M_SIZE, V_SIZE](L_chol, grad, search)
+        chol_solve_inline[DTYPE, M_CAP, V_CAP](L_chol, grad, search, nv)
         var search_ok_gpu = True
         for i in range(nv):
             search[i] = -search[i]
@@ -1850,8 +1873,8 @@ def _newton_solve_env[
             Mv[i] = s
 
         # Precompute J * search per contact (using cached Jacobians — no workspace access)
-        var Js_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var Js_t = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
+        var Js_n = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
+        var Js_t = Scratch[Scalar[DTYPE], T_CAP](tn, fill=Scalar[DTYPE](0))
         for c in range(nc):
             var nt_c = nt_cache[c]
             if dist_cache[c] >= Scalar[DTYPE](0):
@@ -1890,7 +1913,7 @@ def _newton_solve_env[
         for c in range(nc):
             if dist_cache[c] >= Scalar[DTYPE](0):
                 continue
-            ell_line_deriv[DTYPE, NT, TN](
+            ell_line_deriv[DTYPE, NT, T_CAP](
                 nt_cache[c], c * NT, Scalar[DTYPE](0),
                 jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
                 mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
@@ -1927,7 +1950,7 @@ def _newton_solve_env[
             for c in range(nc):
                 if dist_cache[c] >= Scalar[DTYPE](0):
                     continue
-                ell_line_deriv[DTYPE, NT, TN](
+                ell_line_deriv[DTYPE, NT, T_CAP](
                     nt_cache[c], c * NT, p1_alpha,
                     jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
                     mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
@@ -1973,7 +1996,7 @@ def _newton_solve_env[
                     for c in range(nc):
                         if dist_cache[c] >= Scalar[DTYPE](0):
                             continue
-                        ell_line_deriv[DTYPE, NT, TN](
+                        ell_line_deriv[DTYPE, NT, T_CAP](
                             nt_cache[c], c * NT, p1_alpha,
                             jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
                             mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
@@ -2019,7 +2042,7 @@ def _newton_solve_env[
                         for c in range(nc):
                             if dist_cache[c] >= Scalar[DTYPE](0):
                                 continue
-                            ell_line_deriv[DTYPE, NT, TN](
+                            ell_line_deriv[DTYPE, NT, T_CAP](
                                 nt_cache[c], c * NT, mid,
                                 jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
                                 mu_cache[c], D_n_cache[c], D_t_cache,
@@ -2087,7 +2110,7 @@ def _newton_solve_env[
             jar_n_arr[c] = jar_n
 
             var f_n_c = Scalar[DTYPE](0)
-            cs_arr[c] = ell_state_force[DTYPE, NT, TN](
+            cs_arr[c] = ell_state_force[DTYPE, NT, T_CAP](
                 nt_c, c * NT, jar_n, jar_t_arr,
                 mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
                 f_n_c, ft_arr,
@@ -2150,18 +2173,18 @@ def _newton_solve_env[
                     for b in range(nv):
                         H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
             ell_add_contact_hessian[
-                DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, M_SIZE, HN
+                DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN
             ](
                 nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
-                mu_cache, D_n_cache, D_t_cache, fr_cache, H,
+                mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv,
             )
-            var chol_ok_gpu2 = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](
-                H, L_chol
+            var chol_ok_gpu2 = chol_factor_inline[DTYPE, M_CAP](
+                H, L_chol, nv
             )
             if not chol_ok_gpu2:
                 for i in range(nv):
                     H[i * nv + i] = H[i * nv + i] + Scalar[DTYPE](1e-6)
-                _ = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](H, L_chol)
+                _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
 
     # ── mj_solNoSlip (ELLIPTIC branch) ─────────────────────────────────────
     # The friction-only Gauss-Seidel sweep, with the normal forces frozen, run
@@ -2179,7 +2202,7 @@ def _newton_solve_env[
     # so there is no runtime test to get wrong.
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
-            DTYPE, MC, NT, TN, V_SIZE, MAXS, MAXEQ, NOSLIP_ITER
+            DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP, NOSLIP_ITER
         ](
             env,
             nc,
@@ -2933,21 +2956,51 @@ def _newton_blocked_fields_kernel[
     barrier()
 
     # === THREAD 0: joint-limit edge detection + initial setup ===
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-    var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-    var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-    var old_force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-    var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var qacc_smooth = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var Ma = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var f_smooth = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var jar = Scratch[Scalar[DTYPE], ME](
+        ME, uninitialized=Scalar[DTYPE](0)
+    )
+    var grad = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var search = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var Mv = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var Jv_e = Scratch[Scalar[DTYPE], ME](
+        ME, uninitialized=Scalar[DTYPE](0)
+    )
+    var qfrc = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var old_qacc = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var old_Ma = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
+    var old_jar = Scratch[Scalar[DTYPE], ME](
+        ME, uninitialized=Scalar[DTYPE](0)
+    )
+    var old_force = Scratch[Scalar[DTYPE], ME](
+        ME, uninitialized=Scalar[DTYPE](0)
+    )
+    var old_qfrc = Scratch[Scalar[DTYPE], V_SIZE](
+        NV, uninitialized=Scalar[DTYPE](0)
+    )
     var old_cost: Scalar[DTYPE] = 0
     var scale: Scalar[DTYPE] = 0
     var num_edges = 0
@@ -3179,14 +3232,14 @@ def _newton_blocked_fields_kernel[
             # precisely the local-memory OOM this cooperative kernel exists to
             # avoid. The builder fills from index 0, so tendon capacity is all
             # it can ever need.
-            var t_je = InlineArray[Scalar[DTYPE], MAX_TLIM * V_SIZE](
-                fill=Scalar[DTYPE](0)
+            var t_je = Scratch[Scalar[DTYPE], MAX_TLIM * V_SIZE](
+                MAX_TLIM * NV, fill=Scalar[DTYPE](0)
             )
-            var t_de = InlineArray[Scalar[DTYPE], MAX_TLIM](
-                fill=Scalar[DTYPE](0)
+            var t_de = Scratch[Scalar[DTYPE], MAX_TLIM](
+                MAX_TLIM, fill=Scalar[DTYPE](0)
             )
-            var t_bias = InlineArray[Scalar[DTYPE], MAX_TLIM](
-                fill=Scalar[DTYPE](0)
+            var t_bias = Scratch[Scalar[DTYPE], MAX_TLIM](
+                MAX_TLIM, fill=Scalar[DTYPE](0)
             )
             var t_n = 0
             build_tendon_limit_rows[
@@ -3207,16 +3260,16 @@ def _newton_blocked_fields_kernel[
 
             # Tendon equality rows (fixed and spatial) — same staging, and the
             # same reason they are rows: see the CPU pyramidal path.
-            var q_je = InlineArray[Scalar[DTYPE], MAX_TEQ * V_SIZE](
-                fill=Scalar[DTYPE](0)
+            var q_je = Scratch[Scalar[DTYPE], MAX_TEQ * V_SIZE](
+                MAX_TEQ * NV, fill=Scalar[DTYPE](0)
             )
-            var q_de = InlineArray[Scalar[DTYPE], MAX_TEQ](
-                fill=Scalar[DTYPE](0)
+            var q_de = Scratch[Scalar[DTYPE], MAX_TEQ](
+                MAX_TEQ, fill=Scalar[DTYPE](0)
             )
-            var q_bias = InlineArray[Scalar[DTYPE], MAX_TEQ](
-                fill=Scalar[DTYPE](0)
+            var q_bias = Scratch[Scalar[DTYPE], MAX_TEQ](
+                MAX_TEQ, fill=Scalar[DTYPE](0)
             )
-            var q_kind = InlineArray[Int, MAX_TEQ](fill=SROW_EQ_BILATERAL)
+            var q_kind = Scratch[Int, MAX_TEQ](MAX_TEQ, fill=SROW_EQ_BILATERAL)
             var q_n = 0
             build_tendon_equality_rows[
                 DTYPE, V_SIZE, MAX_TEQ,
@@ -3424,12 +3477,12 @@ def _newton_blocked_fields_kernel[
 
         # --- Thread 0: Cholesky solve + negate search + publish ---
         if valid_env and tid == 0:
-            var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](
-                uninitialized=True
+            var L_chol = Scratch[Scalar[DTYPE], M_SIZE](
+                NV * NV, uninitialized=Scalar[DTYPE](0)
             )
             for k in range(NV * NV):
                 L_chol[k] = rebind[Scalar[DTYPE]](L_sh[k])
-            chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+            chol_solve_inline[DTYPE, M_SIZE, V_SIZE](L_chol, grad, search, NV)
             for i in range(NV):
                 search[i] = -search[i]
             # Publish search; Mv/Jv_e computed cooperatively below.
@@ -3655,7 +3708,7 @@ def _newton_blocked_fields_kernel[
     # `qacc` and `force_sh`. Same placement as the per-env path.
     comptime if NOSLIP_ITER > 0:
         noslip_pyramidal[
-            DTYPE, NV, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
+            DTYPE, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
             NOSLIP_ITER,
             # `Je` is SHARED or GLOBAL depending on whether it fit (see
             # `JE_IN_SHARED`); the other rows are always threadgroup memory.
@@ -3689,6 +3742,7 @@ def _newton_blocked_fields_kernel[
             jar,
             force_sh.ptr,
             qfrc,
+            NV,
         )
 
     for i in range(NV):

@@ -1467,11 +1467,11 @@ def _tendon_env[
             # The site polyline and its dense moment arm. `sp_J` is the one
             # per-thread buffer this branch costs; see the Metal local-memory
             # warning above before adding a second.
-            var sp_J = InlineArray[Scalar[DTYPE], _max_one[D.CAP_NV]()](
-                fill=Scalar[DTYPE](0)
+            var sp_J = Scratch[Scalar[DTYPE], cap[D.CAP_NV]()](
+                nv, fill=Scalar[DTYPE](0)
             )
             ten_length = spatial_tendon_length_jac[
-                DTYPE, _max_one[D.CAP_NV](), BATCH
+                DTYPE, cap[D.CAP_NV](), BATCH
             ](
                 env, t_i, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,

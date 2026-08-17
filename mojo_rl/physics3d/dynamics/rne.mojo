@@ -599,10 +599,16 @@ def _rne_env[
     var gy = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Y])
     var gz = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Z])
 
-    comptime BODY6_SIZE = _max_one[D.CAP_NBODY * 6]()
-    for i in range(BODY6_SIZE):
+    # ⚠ `nbody * 6`, NOT a cap. These bound writes into TENSORS, so the cap
+    # never sized anything here -- and `_max_one` collapses to 1 on a dynamic
+    # provider, which would leave `rne_cacc`/`rne_cfrc` holding the PREVIOUS
+    # step's values from index 1 on. Silent: the static leg has cap == exact,
+    # so no gate in the tree can see it. Same defect as `rne_post`; found by
+    # `audit_caps.py`, and the `range(nbody * 10)` three lines below is what
+    # the correct form looks like.
+    for i in range(nbody * 6):
         rne_cacc[env, i] = Scalar[DTYPE](0)
-    for i in range(BODY6_SIZE):
+    for i in range(nbody * 6):
         rne_cfrc[env, i] = Scalar[DTYPE](0)
     comptime CINERT_GPU_SIZE = cap[D.NBODY]() * 10
     var cinert_g = Scratch[Scalar[DTYPE], CINERT_GPU_SIZE](

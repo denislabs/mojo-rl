@@ -41,6 +41,7 @@ paths that omit the joint-limit/friction rows for the same structural reason
 from std.collections import InlineArray
 from std.math import pow
 from layout import Layout, LayoutTensor
+from ..fields.scratch import Scratch
 
 
 from ..gpu.constants import (
@@ -144,8 +145,8 @@ def _solimp[
 
 def build_tendon_limit_rows[
     DTYPE: DType,
-    V_SIZE: Int,
-    ME: Int,
+    V_CAP: Int,
+    E_CAP: Int,
     BATCH: Int,
     D: DimsLike,
     L_QVEL: Layout,
@@ -184,9 +185,9 @@ def build_tendon_limit_rows[
         DTYPE, L_XQUAT, MutAnyOrigin
     ],
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    mut Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    mut De: InlineArray[Scalar[DTYPE], ME],
-    mut bias_e: InlineArray[Scalar[DTYPE], ME],
+    mut Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
+    mut De: Scratch[Scalar[DTYPE], E_CAP],
+    mut bias_e: Scratch[Scalar[DTYPE], E_CAP],
     mut num_edges: Int,
 ):
     """Append a row per violated tendon limit side to the pyramidal edge list.
@@ -208,7 +209,7 @@ def build_tendon_limit_rows[
     if nten > ntendon:
         nten = ntendon
 
-    var tJ = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var tJ = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
 
     for t in range(nten):
         if Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_LIMITED])) == 0:
@@ -219,7 +220,7 @@ def build_tendon_limit_rows[
         var kind = Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_KIND]))
         if kind == TENDON_KIND_SPATIAL:
             ten_len = spatial_tendon_length_jac[
-                DTYPE, V_SIZE, BATCH
+                DTYPE, V_CAP, BATCH
             ](
                 env, t, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,
@@ -270,7 +271,7 @@ def build_tendon_limit_rows[
         # side = -1 (lower), +1 (upper); `sign` below is MuJoCo's -side, so
         # the row's Jacobian is `sign * ten_J`.
         for s in range(2):
-            if num_edges >= ME:
+            if num_edges >= E_CAP:
                 break
             var side = Scalar[DTYPE](-1) if s == 0 else Scalar[DTYPE](1)
             var bound = rmin if s == 0 else rmax
@@ -303,8 +304,8 @@ def build_tendon_limit_rows[
 
 def build_tendon_equality_rows[
     DTYPE: DType,
-    V_SIZE: Int,
-    ME: Int,
+    V_CAP: Int,
+    E_CAP: Int,
     BATCH: Int,
     D: DimsLike,
     L_QPOS: Layout,
@@ -345,10 +346,10 @@ def build_tendon_equality_rows[
         DTYPE, L_XQUAT, MutAnyOrigin
     ],
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    mut Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    mut De: InlineArray[Scalar[DTYPE], ME],
-    mut bias_e: InlineArray[Scalar[DTYPE], ME],
-    mut kind_e: InlineArray[Int, ME],
+    mut Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
+    mut De: Scratch[Scalar[DTYPE], E_CAP],
+    mut bias_e: Scratch[Scalar[DTYPE], E_CAP],
+    mut kind_e: Scratch[Int, E_CAP],
     mut num_edges: Int,
 ):
     """Append one BILATERAL row per `<equality><tendon>` to the pyramidal edge
@@ -405,12 +406,12 @@ def build_tendon_equality_rows[
     if nten > ntendon:
         nten = ntendon
 
-    var eqJ = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var eqJ = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
 
     for t in range(nten):
         if Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_IS_EQUALITY])) == 0:
             continue
-        if num_edges >= ME:
+        if num_edges >= E_CAP:
             break
 
         # --- length, rate and moment arm, per kind -------------------------
@@ -426,7 +427,7 @@ def build_tendon_equality_rows[
             # limit builder above makes, and the piece whose absence made this
             # constraint a no-op.
             ten_len = spatial_tendon_length_jac[
-                DTYPE, V_SIZE, BATCH
+                DTYPE, V_CAP, BATCH
             ](
                 env, t, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,

@@ -1,8 +1,8 @@
-"""Shared primal-solver fragments over InlineArray working sets (Stage-S
+"""Shared primal-solver fragments over `Scratch` working sets (Stage-S
 refactor). These are the reusable leaf computations extracted VERBATIM from
 the inlined fields-Newton kernel (`solver/newton_solve.mojo`).
 
-All helpers are `@always_inline` and operate on the per-env InlineArray
+All helpers are `@always_inline` and operate on the per-env `Scratch`
 working set the primal solvers already build (Je/De/bias_e/qacc/...), so
 inlining them at the Newton call sites is codegen- (and thus bit-) identical
 to the previous inline code — the Newton golden gates re-validate this after
@@ -20,6 +20,7 @@ every row was one-sided — silently mis-handles a box row: a saturated negative
 row has force > 0 and would wrongly add curvature. Callers therefore read the
 per-row `state_e` that `pyramidal_edge_forces` now writes."""
 
+from ..fields.scratch import Scratch
 from ..constraints.scalar_rows import (
     scalar_row_state,
     scalar_row_force,
@@ -30,20 +31,21 @@ from ..constraints.scalar_rows import (
 
 @always_inline
 def pyramidal_edge_forces[
-    DTYPE: DType, NV: Int, ME: Int, V_SIZE: Int
+    DTYPE: DType, E_CAP: Int, V_CAP: Int
 ](
     num_edges: Int,
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    De: InlineArray[Scalar[DTYPE], ME],
-    bias_e: InlineArray[Scalar[DTYPE], ME],
-    kind_e: InlineArray[Int, ME],
-    R_e: InlineArray[Scalar[DTYPE], ME],
-    floss_e: InlineArray[Scalar[DTYPE], ME],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut jar: InlineArray[Scalar[DTYPE], ME],
-    mut force: InlineArray[Scalar[DTYPE], ME],
-    mut state_e: InlineArray[Int, ME],
-    mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
+    Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
+    De: Scratch[Scalar[DTYPE], E_CAP],
+    bias_e: Scratch[Scalar[DTYPE], E_CAP],
+    kind_e: Scratch[Int, E_CAP],
+    R_e: Scratch[Scalar[DTYPE], E_CAP],
+    floss_e: Scratch[Scalar[DTYPE], E_CAP],
+    qacc: Scratch[Scalar[DTYPE], V_CAP],
+    mut jar: Scratch[Scalar[DTYPE], E_CAP],
+    mut force: Scratch[Scalar[DTYPE], E_CAP],
+    mut state_e: Scratch[Int, E_CAP],
+    mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
 ):
     """Primal row forces given the current qacc.
 
@@ -54,15 +56,17 @@ def pyramidal_edge_forces[
             force[e] = f(state[e])       one-sided or box, see scalar_rows
             qfrc    += Je[e] * force[e]
 
-    Je is row-major [ME, NV] (stride NV; array sized ME*V_SIZE with
-    V_SIZE = max(NV,1)). Writes jar/force/state_e (per-row) and qfrc
-    (per-dof)."""
-    for i in range(NV):
+    Je is row-major [num_edges, nv], STRIDE `nv` — the live dof count, not
+    `V_CAP`. The array is sized `E_CAP * V_CAP`, and on the static leg the cap
+    and the stride are the same integer, which is why a mix-up here survives
+    every gate in the tree; see `tests/physics3d/test_cholesky_both_legs.mojo`.
+    Writes jar/force/state_e (per-row) and qfrc (per-dof)."""
+    for i in range(nv):
         qfrc[i] = Scalar[DTYPE](0)
     for e_idx in range(num_edges):
         jar[e_idx] = bias_e[e_idx]
-        for i in range(NV):
-            jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
+        for i in range(nv):
+            jar[e_idx] += Je[e_idx * nv + i] * qacc[i]
         var st = scalar_row_state[DTYPE](
             kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
         )
@@ -70,32 +74,32 @@ def pyramidal_edge_forces[
         force[e_idx] = scalar_row_force[DTYPE](
             st, jar[e_idx], De[e_idx], floss_e[e_idx]
         )
-        for i in range(NV):
-            qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+        for i in range(nv):
+            qfrc[i] += Je[e_idx * nv + i] * force[e_idx]
 
 
 @always_inline
 def pyramidal_linesearch[
     DTYPE: DType,
-    NV: Int,
-    ME: Int,
-    V_SIZE: Int,
+    E_CAP: Int,
+    V_CAP: Int,
     LINESEARCH_ITER: Int,
     PRIMAL_MINVAL: Float64,
 ](
     num_edges: Int,
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    De: InlineArray[Scalar[DTYPE], ME],
-    kind_e: InlineArray[Int, ME],
-    R_e: InlineArray[Scalar[DTYPE], ME],
-    floss_e: InlineArray[Scalar[DTYPE], ME],
-    search: InlineArray[Scalar[DTYPE], V_SIZE],
-    Mv: InlineArray[Scalar[DTYPE], V_SIZE],
-    Ma: InlineArray[Scalar[DTYPE], V_SIZE],
-    f_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    jar: InlineArray[Scalar[DTYPE], ME],
+    Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
+    De: Scratch[Scalar[DTYPE], E_CAP],
+    kind_e: Scratch[Int, E_CAP],
+    R_e: Scratch[Scalar[DTYPE], E_CAP],
+    floss_e: Scratch[Scalar[DTYPE], E_CAP],
+    search: Scratch[Scalar[DTYPE], V_CAP],
+    Mv: Scratch[Scalar[DTYPE], V_CAP],
+    Ma: Scratch[Scalar[DTYPE], V_CAP],
+    f_smooth: Scratch[Scalar[DTYPE], V_CAP],
+    qacc: Scratch[Scalar[DTYPE], V_CAP],
+    qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
+    jar: Scratch[Scalar[DTYPE], E_CAP],
+    nv: Int,
 ) -> Scalar[DTYPE]:
     """Analytical Newton/CG line-search for the pyramidal primal cost (matching
     CPU `primal_linesearch_with_D`).
@@ -111,15 +115,17 @@ def pyramidal_linesearch[
     and the direction images. Returns 0 when the direction is not a descent
     direction (p0_d1 >= 0)."""
     # Precompute Jv_e = Je · search for each row.
-    var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+    var Jv_e = Scratch[Scalar[DTYPE], E_CAP](
+        num_edges, uninitialized=Scalar[DTYPE](0)
+    )
     for e_idx in range(num_edges):
         Jv_e[e_idx] = Scalar[DTYPE](0)
-        for i in range(NV):
-            Jv_e[e_idx] += Je[e_idx * NV + i] * search[i]
+        for i in range(nv):
+            Jv_e[e_idx] += Je[e_idx * nv + i] * search[i]
 
     var gauss_a: Scalar[DTYPE] = 0
     var gauss_b: Scalar[DTYPE] = 0
-    for i in range(NV):
+    for i in range(nv):
         gauss_a += Mv[i] * search[i]
         gauss_b += (Ma[i] - f_smooth[i]) * search[i]
 
@@ -148,7 +154,7 @@ def pyramidal_linesearch[
         # Compute old cost for acceptance check
         # Gauss cost = 0.5*(Ma-f_smooth)·(qacc-qacc_smooth)
         var old_cost: Scalar[DTYPE] = 0
-        for i in range(NV):
+        for i in range(nv):
             old_cost += (
                 Scalar[DTYPE](0.5)
                 * (Ma[i] - f_smooth[i])
@@ -165,7 +171,7 @@ def pyramidal_linesearch[
         # Try alpha, halve if cost doesn't decrease
         for _ in range(LINESEARCH_ITER):
             var trial_cost: Scalar[DTYPE] = 0
-            for i in range(NV):
+            for i in range(nv):
                 var qa_t = qacc[i] + alpha * search[i]
                 var Ma_t = Ma[i] + alpha * Mv[i]
                 trial_cost += (

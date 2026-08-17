@@ -39,6 +39,7 @@ with a trivial Jacobian, and live in `constraints/equality_tendon.mojo`.
 from std.collections import InlineArray
 from std.math import sqrt
 from layout import Layout, LayoutTensor
+from ..fields.scratch import Scratch
 
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
@@ -123,7 +124,7 @@ def _sqrt_pos[DTYPE: DType](v: Scalar[DTYPE]) -> Scalar[DTYPE]:
 
 def spatial_tendon_length_jac[
     DTYPE: DType,
-    V_SIZE: Int,
+    V_CAP: Int,
     BATCH: Int,
     # ⚠ A PROVIDER ITS OWN BODY DOES NOT NEED. Nothing here reads a dimension
     # directly, so the sweep gave this declaration no `D` — and then `_site_
@@ -163,13 +164,14 @@ def spatial_tendon_length_jac[
     xquat: LayoutTensor[
         DTYPE, L_XQUAT, MutAnyOrigin
     ],
-    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut J_row: Scratch[Scalar[DTYPE], V_CAP],
 ) -> Scalar[DTYPE]:
     """Length of spatial tendon `t_i`, with its dense moment arm in `J_row`.
 
     `J_row` is zeroed here, then accumulated over segments.
     """
-    for i in range(V_SIZE):
+    var nv = dims.get_nv()
+    for i in range(nv):
         J_row[i] = Scalar[DTYPE](0)
 
     var length = Scalar[DTYPE](0)
@@ -180,7 +182,7 @@ def spatial_tendon_length_jac[
     if nsites < 2:
         return length
 
-    var seg_J = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var seg_J = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
 
     for k in range(nsites - 1):
         var s0 = Int(
@@ -227,19 +229,19 @@ def spatial_tendon_length_jac[
         var uz = dz * inv
 
         # + dif . jacp(p1, b1)
-        _contact_jacobian_row[DTYPE, V_SIZE](
+        _contact_jacobian_row[DTYPE, V_CAP](
             env, subtree_com, joints, bodies, mmeta, cdof,
-            b1, 0, p1x, p1y, p1z, ux, uy, uz, seg_J,
+            b1, 0, p1x, p1y, p1z, ux, uy, uz, seg_J, nv,
         )
-        for i in range(V_SIZE):
+        for i in range(nv):
             J_row[i] += seg_J[i]
 
         # - dif . jacp(p0, b0)
-        _contact_jacobian_row[DTYPE, V_SIZE](
+        _contact_jacobian_row[DTYPE, V_CAP](
             env, subtree_com, joints, bodies, mmeta, cdof,
-            b0, 0, p0x, p0y, p0z, ux, uy, uz, seg_J,
+            b0, 0, p0x, p0y, p0z, ux, uy, uz, seg_J, nv,
         )
-        for i in range(V_SIZE):
+        for i in range(nv):
             J_row[i] -= seg_J[i]
 
     return length

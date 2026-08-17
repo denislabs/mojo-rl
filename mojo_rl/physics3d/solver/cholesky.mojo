@@ -1,31 +1,43 @@
 """Dense Cholesky utilities for small NV×NV matrices.
 
 Used by primal Newton solver for Hessian factorization and solve.
-These operate on InlineArrays for register-friendly small matrices
+These operate on `Scratch` for register-friendly small matrices
 (NV is typically 6-30 for robotics models).
 
 Functions:
 - chol_factor: In-place Cholesky L*L^T = H (lower triangular) [CPU, uses List]
 - chol_solve: Solve H*x = b given Cholesky factor L [CPU, uses List]
-- chol_factor_inline: Same as chol_factor but uses InlineArray [GPU-compatible]
-- chol_solve_inline: Same as chol_solve but uses InlineArray [GPU-compatible]
+- chol_factor_inline: Same as chol_factor but uses Scratch [GPU-compatible]
+- chol_solve_inline: Same as chol_solve but uses Scratch [GPU-compatible]
 - chol_rank1_update: Rank-1 update H ← H ± v*v^T with Cholesky factor update
+
+## 2b.2: `nv` is a RUNTIME argument here, and that is the whole point
+
+Every `NV` below was a comptime parameter, and every call site bound it to
+`D.CAP_NV`. Inside this file NV is used only two ways — as a loop bound and as
+the row stride of `L[i * NV + j]` — and it is a *cap* at the call site. On the
+static leg `CAP_NV == NV`, so the two agree and no gate that runs today can
+tell them apart; on a dynamic provider the cap is not the model's NV and every
+one of these routines would factor the wrong matrix, silently, because every
+offset it produces still lands inside the array.
+
+So NV became the runtime `nv` and the comptime parameters that remain
+(`M_CAP`, `V_CAP`) size containers and nothing else. See
+`fields/scratch.mojo` for why a cap is 0 rather than -1 on the dynamic leg.
 """
 
 from std.math import sqrt
-from ..types import _max_one
+from ..fields.scratch import Scratch
 
 
 @always_inline
 def chol_factor[
     DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
-](H: List[Scalar[DTYPE]], mut L: List[Scalar[DTYPE]],) -> Bool:
+](H: List[Scalar[DTYPE]], mut L: List[Scalar[DTYPE]], nv: Int) -> Bool:
     """In-place Cholesky factorization: L*L^T = H (lower triangular).
 
     H must be symmetric positive definite. L is output lower triangular.
-    Both are NV×NV row-major in M_SIZE arrays.
+    Both are nv×nv row-major.
 
     Returns True if successful, False if rank-deficient (diagonal < threshold).
     When False, L still contains a usable factorization (with clamped diagonals),
@@ -34,22 +46,22 @@ def chol_factor[
     var rank_ok = True
 
     # Zero L
-    for i in range(NV * NV):
+    for i in range(nv * nv):
         L[i] = Scalar[DTYPE](0)
 
-    for i in range(NV):
+    for i in range(nv):
         for j in range(i + 1):
             var s: Scalar[DTYPE] = 0
             for k in range(j):
-                s += L[i * NV + k] * L[j * NV + k]
+                s += L[i * nv + k] * L[j * nv + k]
             if i == j:
-                var diag = H[i * NV + i] - s
+                var diag = H[i * nv + i] - s
                 if diag < Scalar[DTYPE](1e-10):
                     rank_ok = False
                     diag = Scalar[DTYPE](1e-10)
-                L[i * NV + j] = sqrt(diag)
+                L[i * nv + j] = sqrt(diag)
             else:
-                L[i * NV + j] = (H[i * NV + j] - s) / L[j * NV + j]
+                L[i * nv + j] = (H[i * nv + j] - s) / L[j * nv + j]
 
     return rank_ok
 
@@ -57,39 +69,42 @@ def chol_factor[
 @always_inline
 def chol_solve[
     DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
-](L: List[Scalar[DTYPE]], b: List[Scalar[DTYPE]], mut x: List[Scalar[DTYPE]],):
+    V_CAP: Int,
+](
+    L: List[Scalar[DTYPE]],
+    b: List[Scalar[DTYPE]],
+    mut x: List[Scalar[DTYPE]],
+    nv: Int,
+):
     """Solve H*x = b given Cholesky factor L (where H = L*L^T).
 
     Two-phase: forward substitution L*y = b, then back substitution L^T*x = y.
     """
     # Forward substitution: L*y = b
-    var y = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
+    var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    for i in range(nv):
         var s: Scalar[DTYPE] = 0
         for j in range(i):
-            s += L[i * NV + j] * y[j]
-        y[i] = (b[i] - s) / L[i * NV + i]
+            s += L[i * nv + j] * y[j]
+        y[i] = (b[i] - s) / L[i * nv + i]
 
     # Back substitution: L^T*x = y
-    for i_rev in range(NV):
-        var i = NV - 1 - i_rev
+    for i_rev in range(nv):
+        var i = nv - 1 - i_rev
         var s: Scalar[DTYPE] = 0
-        for j in range(i + 1, NV):
-            s += L[j * NV + i] * x[j]
-        x[i] = (y[i] - s) / L[i * NV + i]
+        for j in range(i + 1, nv):
+            s += L[j * nv + i] * x[j]
+        x[i] = (y[i] - s) / L[i * nv + i]
 
 
 @always_inline
 def chol_factor_inline[
     DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
+    M_CAP: Int,
 ](
-    H: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
+    H: Scratch[Scalar[DTYPE], M_CAP],
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    nv: Int,
 ) -> Bool:
     """In-place Cholesky factorization: L*L^T = H (lower triangular), GPU-compatible.
 
@@ -97,22 +112,22 @@ def chol_factor_inline[
     """
     var rank_ok = True
 
-    for i in range(NV * NV):
+    for i in range(nv * nv):
         L[i] = Scalar[DTYPE](0)
 
-    for i in range(NV):
+    for i in range(nv):
         for j in range(i + 1):
             var s: Scalar[DTYPE] = 0
             for k in range(j):
-                s += L[i * NV + k] * L[j * NV + k]
+                s += L[i * nv + k] * L[j * nv + k]
             if i == j:
-                var diag = H[i * NV + i] - s
+                var diag = H[i * nv + i] - s
                 if diag < Scalar[DTYPE](1e-10):
                     rank_ok = False
                     diag = Scalar[DTYPE](1e-10)
-                L[i * NV + j] = sqrt(diag)
+                L[i * nv + j] = sqrt(diag)
             else:
-                L[i * NV + j] = (H[i * NV + j] - s) / L[j * NV + j]
+                L[i * nv + j] = (H[i * nv + j] - s) / L[j * nv + j]
 
     return rank_ok
 
@@ -120,48 +135,48 @@ def chol_factor_inline[
 @always_inline
 def chol_solve_inline[
     DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
+    M_CAP: Int,
+    V_CAP: Int,
 ](
-    L: InlineArray[Scalar[DTYPE], M_SIZE],
-    b: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
+    L: Scratch[Scalar[DTYPE], M_CAP],
+    b: Scratch[Scalar[DTYPE], V_CAP],
+    mut x: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
 ):
     """Solve H*x = b given Cholesky factor L (where H = L*L^T), GPU-compatible.
 
-    Same algorithm as chol_solve but operates on InlineArrays so it can be
+    Same algorithm as chol_solve but operates on `Scratch` so it can be
     used inside @always_inline GPU kernels without heap allocation.
-    L is NV×NV in M_SIZE array, b/x are NV in V_SIZE arrays.
+    L is nv×nv in an M_CAP array, b/x are nv in V_CAP arrays.
     Two-phase: forward substitution L*y = b, then back substitution L^T*x = y.
     """
     # Forward substitution: L*y = b
-    var y = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
+    var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    for i in range(nv):
         var s: Scalar[DTYPE] = 0
         for j in range(i):
-            s += L[i * NV + j] * y[j]
-        y[i] = (b[i] - s) / L[i * NV + i]
+            s += L[i * nv + j] * y[j]
+        y[i] = (b[i] - s) / L[i * nv + i]
 
     # Back substitution: L^T*x = y
-    for i_rev in range(NV):
-        var i = NV - 1 - i_rev
+    for i_rev in range(nv):
+        var i = nv - 1 - i_rev
         var s: Scalar[DTYPE] = 0
-        for j in range(i + 1, NV):
-            s += L[j * NV + i] * x[j]
-        x[i] = (y[i] - s) / L[i * NV + i]
+        for j in range(i + 1, nv):
+            s += L[j * nv + i] * x[j]
+        x[i] = (y[i] - s) / L[i * nv + i]
 
 
 @always_inline
 def chol_rank1_update[
     DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
+    M_CAP: Int,
+    V_CAP: Int,
 ](
-    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
-    v: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    v: Scratch[Scalar[DTYPE], V_CAP],
     sign: Scalar[DTYPE],
+    nv: Int,
 ):
     """Rank-1 Cholesky update: H ← H + sign * v * v^T.
 
@@ -172,12 +187,12 @@ def chol_rank1_update[
     In that case, diagonal elements are clamped to a small positive value.
     """
     # Work on a copy of v that gets modified
-    var w = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
+    var w = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    for i in range(nv):
         w[i] = v[i]
 
-    for i in range(NV):
-        var L_ii = L[i * NV + i]
+    for i in range(nv):
+        var L_ii = L[i * nv + i]
         var w_i = w[i]
 
         var r_sq = L_ii * L_ii + sign * w_i * w_i
@@ -188,9 +203,9 @@ def chol_rank1_update[
         var c = r / L_ii
         var s_val = w_i / L_ii
 
-        L[i * NV + i] = r
+        L[i * nv + i] = r
 
         # Update remaining elements in column i
-        for j in range(i + 1, NV):
-            L[j * NV + i] = (L[j * NV + i] + sign * s_val * w[j]) / c
-            w[j] = c * w[j] - s_val * L[j * NV + i]
+        for j in range(i + 1, nv):
+            L[j * nv + i] = (L[j * nv + i] + sign * s_val * w[j]) / c
+            w[j] = c * w[j] - s_val * L[j * nv + i]

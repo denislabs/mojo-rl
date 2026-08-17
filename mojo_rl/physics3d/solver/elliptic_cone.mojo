@@ -39,6 +39,8 @@ one-sided normal constraint MuJoCo emits as `mjCNSTR_CONTACT_FRICTIONLESS`.
 
 from std.math import sqrt
 
+from ..fields.scratch import Scratch
+
 
 # Constraint states, matching `mjCNSTRSTATE_*` for the values this cone can
 # produce. The solver stores these per contact in `cs_arr`.
@@ -53,18 +55,18 @@ comptime ELL_MINVAL: Float64 = 1e-12
 
 @always_inline
 def ell_state_force[
-    DTYPE: DType, NT: Int, TN: Int
+    DTYPE: DType, NT: Int, T_CAP: Int
 ](
     nt: Int,
     base: Int,
     jar_n: Scalar[DTYPE],
-    jar_t: InlineArray[Scalar[DTYPE], TN],
+    jar_t: Scratch[Scalar[DTYPE], T_CAP],
     mu: Scalar[DTYPE],
     D_n: Scalar[DTYPE],
-    D_t: InlineArray[Scalar[DTYPE], TN],
-    fr: InlineArray[Scalar[DTYPE], TN],
+    D_t: Scratch[Scalar[DTYPE], T_CAP],
+    fr: Scratch[Scalar[DTYPE], T_CAP],
     mut f_n: Scalar[DTYPE],
-    mut f_t: InlineArray[Scalar[DTYPE], TN],
+    mut f_t: Scratch[Scalar[DTYPE], T_CAP],
 ) -> Int:
     """Zone, normal force and tangential forces for one contact.
 
@@ -113,23 +115,23 @@ def ell_state_force[
 
 @always_inline
 def ell_hessian_block[
-    DTYPE: DType, NT: Int, TN: Int, HN: Int
+    DTYPE: DType, NT: Int, T_CAP: Int, HN: Int
 ](
     state: Int,
     nt: Int,
     base: Int,
     jar_n: Scalar[DTYPE],
-    jar_t: InlineArray[Scalar[DTYPE], TN],
+    jar_t: Scratch[Scalar[DTYPE], T_CAP],
     mu: Scalar[DTYPE],
     D_n: Scalar[DTYPE],
-    D_t: InlineArray[Scalar[DTYPE], TN],
-    fr: InlineArray[Scalar[DTYPE], TN],
+    D_t: Scratch[Scalar[DTYPE], T_CAP],
+    fr: Scratch[Scalar[DTYPE], T_CAP],
     mut Hb: InlineArray[Scalar[DTYPE], HN],
 ):
     """The contact's `dim x dim` Hessian block in ROW space, row-major over
     `(n, t_0, ..., t_{nt-1})` with stride `NT+1`.
 
-    The caller turns this into the `NV x NV` contribution as
+    The caller turns this into the `nv x nv` contribution as
     `sum_{k,j} Hb[k,j] * J_k J_j^T`. Splitting it out is what lets QUADRATIC
     and CONE share one accumulation loop — they used to be two hand-fused
     copies of the same six outer products, written out twice more inside the
@@ -202,90 +204,94 @@ def ell_hessian_block[
 @always_inline
 def ell_add_contact_hessian[
     DTYPE: DType,
-    NV: Int,
-    MC: Int,
+    MC_CAP: Int,
     NT: Int,
-    TN: Int,
-    V_SIZE: Int,
-    M_SIZE: Int,
+    T_CAP: Int,
+    V_CAP: Int,
+    M_CAP: Int,
     HN: Int,
 ](
     nc: Int,
-    cs_arr: InlineArray[Int, MC],
-    nt_cache: InlineArray[Int, MC],
-    Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt_c: InlineArray[Scalar[DTYPE], TN * V_SIZE],
-    jar_n_arr: InlineArray[Scalar[DTYPE], MC],
-    jar_t_arr: InlineArray[Scalar[DTYPE], TN],
-    mu_cache: InlineArray[Scalar[DTYPE], MC],
-    D_n_cache: InlineArray[Scalar[DTYPE], MC],
-    D_t_cache: InlineArray[Scalar[DTYPE], TN],
-    fr_cache: InlineArray[Scalar[DTYPE], TN],
-    mut H: InlineArray[Scalar[DTYPE], M_SIZE],
+    cs_arr: Scratch[Int, MC_CAP],
+    nt_cache: Scratch[Int, MC_CAP],
+    Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
+    Jt_c: Scratch[Scalar[DTYPE], T_CAP * V_CAP],
+    jar_n_arr: Scratch[Scalar[DTYPE], MC_CAP],
+    jar_t_arr: Scratch[Scalar[DTYPE], T_CAP],
+    mu_cache: Scratch[Scalar[DTYPE], MC_CAP],
+    D_n_cache: Scratch[Scalar[DTYPE], MC_CAP],
+    D_t_cache: Scratch[Scalar[DTYPE], T_CAP],
+    fr_cache: Scratch[Scalar[DTYPE], T_CAP],
+    mut H: Scratch[Scalar[DTYPE], M_CAP],
+    nv: Int,
 ):
-    """Add every contact's `J^T Hb J` to the `NV x NV` Newton Hessian.
+    """Add every contact's `J^T Hb J` to the `nv x nv` Newton Hessian.
 
     Two-stage — `JH[k] = sum_j Hb[k,j] J_j`, then `H += sum_k J_k JH[k]^T` —
-    which is `O(dim^2 NV + dim NV^2)` rather than the `O(dim^2 NV^2)` a naive
+    which is `O(dim^2 nv + dim nv^2)` rather than the `O(dim^2 nv^2)` a naive
     double loop would cost. At condim 3 that is THREE rank-1 outer products
     where the hand-fused two-tangent version it replaces did six, so the
     generalization is not a slowdown even before the extra rows.
     """
     comptime ZERO = Scalar[DTYPE](0)
     comptime DIM = NT + 1
+    # `Hb` is (NT+1)^2 -- CONDIM-derived, so it stays a real InlineArray and
+    # keeps its comptime bound. `JH` is DIM rows of `nv`: the row COUNT is
+    # condim, the row LENGTH is the dof count, and only the latter goes
+    # dynamic. Not every comptime size in this file is a model dimension.
     var Hb = InlineArray[Scalar[DTYPE], HN](fill=ZERO)
-    var JH = InlineArray[Scalar[DTYPE], DIM * V_SIZE](fill=ZERO)
+    var JH = Scratch[Scalar[DTYPE], DIM * V_CAP](DIM * nv, fill=ZERO)
 
     for c in range(nc):
         var cs = cs_arr[c]
         if cs == ELL_SATISFIED:
             continue
         var nt_c = nt_cache[c]
-        ell_hessian_block[DTYPE, NT, TN, HN](
+        ell_hessian_block[DTYPE, NT, T_CAP, HN](
             cs, nt_c, c * NT, jar_n_arr[c], jar_t_arr,
             mu_cache[c], D_n_cache[c], D_t_cache, fr_cache, Hb,
         )
 
         for k in range(nt_c + 1):
-            for i in range(NV):
-                JH[k * NV + i] = ZERO
+            for i in range(nv):
+                JH[k * nv + i] = ZERO
             for j in range(nt_c + 1):
                 var h = Hb[k * DIM + j]
                 if h == ZERO:
                     continue
                 if j == 0:
-                    for i in range(NV):
-                        JH[k * NV + i] += h * Jn_c[c * NV + i]
+                    for i in range(nv):
+                        JH[k * nv + i] += h * Jn_c[c * nv + i]
                 else:
-                    var jb = (c * NT + j - 1) * NV
-                    for i in range(NV):
-                        JH[k * NV + i] += h * Jt_c[jb + i]
+                    var jb = (c * NT + j - 1) * nv
+                    for i in range(nv):
+                        JH[k * nv + i] += h * Jt_c[jb + i]
 
         for k in range(nt_c + 1):
-            var kb = c * NV if k == 0 else (c * NT + k - 1) * NV
-            for i in range(NV):
+            var kb = c * nv if k == 0 else (c * NT + k - 1) * nv
+            for i in range(nv):
                 var jki = Jn_c[kb + i] if k == 0 else Jt_c[kb + i]
                 if jki == ZERO:
                     continue
-                for j in range(NV):
-                    H[i * NV + j] += jki * JH[k * NV + j]
+                for j in range(nv):
+                    H[i * nv + j] += jki * JH[k * nv + j]
 
 
 @always_inline
 def ell_line_deriv[
-    DTYPE: DType, NT: Int, TN: Int
+    DTYPE: DType, NT: Int, T_CAP: Int
 ](
     nt: Int,
     base: Int,
     alpha: Scalar[DTYPE],
     jar_n: Scalar[DTYPE],
-    jar_t: InlineArray[Scalar[DTYPE], TN],
+    jar_t: Scratch[Scalar[DTYPE], T_CAP],
     Js_n: Scalar[DTYPE],
-    Js_t: InlineArray[Scalar[DTYPE], TN],
+    Js_t: Scratch[Scalar[DTYPE], T_CAP],
     mu: Scalar[DTYPE],
     D_n: Scalar[DTYPE],
-    D_t: InlineArray[Scalar[DTYPE], TN],
-    fr: InlineArray[Scalar[DTYPE], TN],
+    D_t: Scratch[Scalar[DTYPE], T_CAP],
+    fr: Scratch[Scalar[DTYPE], T_CAP],
     mut d1: Scalar[DTYPE],
     mut d2: Scalar[DTYPE],
 ):
@@ -328,7 +334,7 @@ def ell_line_deriv[
     # No tangential force anywhere along the ray: top or bottom by sign of N.
     if T_sq <= ZERO:
         if N < ZERO:
-            _ell_quad_deriv[DTYPE, NT, TN](
+            _ell_quad_deriv[DTYPE, NT, T_CAP](
                 nt, base, alpha, jar_n, jar_t, Js_n, Js_t, D_n, D_t, d1, d2
             )
         return
@@ -337,7 +343,7 @@ def ell_line_deriv[
     if N >= mu * T:
         return  # top zone: no cost
     if mu * N + T <= ZERO:
-        _ell_quad_deriv[DTYPE, NT, TN](
+        _ell_quad_deriv[DTYPE, NT, T_CAP](
             nt, base, alpha, jar_n, jar_t, Js_n, Js_t, D_n, D_t, d1, d2
         )
         return
@@ -356,17 +362,17 @@ def ell_line_deriv[
 
 @always_inline
 def _ell_quad_deriv[
-    DTYPE: DType, NT: Int, TN: Int
+    DTYPE: DType, NT: Int, T_CAP: Int
 ](
     nt: Int,
     base: Int,
     alpha: Scalar[DTYPE],
     jar_n: Scalar[DTYPE],
-    jar_t: InlineArray[Scalar[DTYPE], TN],
+    jar_t: Scratch[Scalar[DTYPE], T_CAP],
     Js_n: Scalar[DTYPE],
-    Js_t: InlineArray[Scalar[DTYPE], TN],
+    Js_t: Scratch[Scalar[DTYPE], T_CAP],
     D_n: Scalar[DTYPE],
-    D_t: InlineArray[Scalar[DTYPE], TN],
+    D_t: Scratch[Scalar[DTYPE], T_CAP],
     mut d1: Scalar[DTYPE],
     mut d2: Scalar[DTYPE],
 ):

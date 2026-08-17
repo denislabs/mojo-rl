@@ -187,6 +187,7 @@ from std.math import sqrt
 from std.collections import InlineArray
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
+from ..fields.scratch import Scratch
 
 from ..constraints.scalar_rows import SROW_FRICTION
 from ..gpu.constants import (
@@ -218,7 +219,7 @@ comptime _COST_REJECT: Float64 = 1e-10
 # (`Je_sh`, `bias_e_sh`, ... — and `Je` itself spills to GLOBAL on models where
 # it does not fit, so its address space is not even fixed across builds). A
 # signature naming either storage excludes the other caller, and the blocked
-# kernel cannot copy them into locals: `Je` is `ME * V_SIZE` scalars — ~38 kB
+# kernel cannot copy them into locals: `Je` is `E_CAP * V_CAP` scalars — ~38 kB
 # on dog — and this kernel exists precisely to keep per-thread local memory
 # small (see the `je_spills` note in `newton_solve`).
 #
@@ -236,17 +237,16 @@ comptime _COST_REJECT: Float64 = 1e-10
 @always_inline
 def _minv_jt[
     DTYPE: DType,
-    V_SIZE: Int,
-    D: DimsLike,
+    V_CAP: Int,
     L_M_INV: Layout,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     env: Int,
-    dims: D,
+    nv: Int,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
-    mut out_v: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut out_v: Scratch[Scalar[DTYPE], V_CAP],
 ):
     """`out_v = M^-1 J_row^T`.
 
@@ -256,12 +256,11 @@ def _minv_jt[
     serve both. If the CPU path ever needs the speed, hoist it: `J` and `M` do
     not change during the sweep, so the result is loop-invariant.
     """
-    var nv = dims.get_nv()
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
         for k in range(nv):
             acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * Je[
-                row * V_SIZE + k
+                row * nv + k
             ]
         out_v[i] = acc
 
@@ -269,44 +268,44 @@ def _minv_jt[
 @always_inline
 def _dot_row[
     DTYPE: DType,
-    NV: Int,
-    V_SIZE: Int,
+    V_CAP: Int,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
-    v: InlineArray[Scalar[DTYPE], V_SIZE],
+    v: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
 ) -> Scalar[DTYPE]:
     """`J_row . v`."""
     var acc = Scalar[DTYPE](0)
-    for i in range(NV):
-        acc += Je[row * V_SIZE + i] * v[i]
+    for i in range(nv):
+        acc += Je[row * nv + i] * v[i]
     return acc
 
 
 @always_inline
 def _refresh_jar[
     DTYPE: DType,
-    NV: Int,
-    ME: Int,
-    V_SIZE: Int,
+    E_CAP: Int,
+    V_CAP: Int,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
     ROW_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     num_edges: Int,
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     bias_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut jar: InlineArray[Scalar[DTYPE], ME],
+    qacc: Scratch[Scalar[DTYPE], V_CAP],
+    mut jar: Scratch[Scalar[DTYPE], E_CAP],
+    nv: Int,
 ):
     """`jar[e] = J_e . qacc + bias_e` for every row.
 
     Recomputed in full after each block rather than updated incrementally.
-    Both cost `ME * NV`; the full recompute cannot drift, and this pass runs
+    Both cost `E_CAP * NV`; the full recompute cannot drift, and this pass runs
     at most `noslip_iterations` times per step.
     """
     for e in range(num_edges):
-        jar[e] = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, e, qacc) + bias_e[e]
+        jar[e] = _dot_row[DTYPE, V_CAP, JE_AS](Je, e, qacc, nv) + bias_e[e]
 
 
 @always_inline
@@ -340,10 +339,9 @@ def _cost_change[
 def noslip_pyramidal[
     FO: MutOrigin, //,
     DTYPE: DType,
-    NV: Int,
-    ME: Int,
-    V_SIZE: Int,
-    MC: Int,
+    E_CAP: Int,
+    V_CAP: Int,
+    MC_CAP: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
     MAX_ITER: Int,
@@ -358,7 +356,7 @@ def noslip_pyramidal[
     env: Int,
     nc: Int,
     num_edges: Int,
-    # ⚠ Keyed on MAX_CONTACTS, not MC. `MC = _max_one[MAX_CONTACTS]()` and the
+    # ⚠ Keyed on MAX_CONTACTS, not MC_CAP. `MC_CAP = _max_one[MAX_CONTACTS]()` and the
     # two agree everywhere except MAX_CONTACTS == 0, but a LayoutTensor
     # parameter is part of the TYPE — passing the caller's tensor with the
     # wrong one is a compile error, not a coercion.
@@ -367,37 +365,38 @@ def noslip_pyramidal[
         MutAnyOrigin,
     ],
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    # ⚠ `Je` is indexed with stride `V_SIZE`, and both callers lay it out with
-    # stride `NV`. Those agree because `V_SIZE = _max_one[NV]()`, i.e. they
+    # ⚠ `Je` is indexed with stride `V_CAP`, and both callers lay it out with
+    # stride `NV`. Those agree because `V_CAP = _max_one[NV]()`, i.e. they
     # differ only at NV == 0, where there are no rows to sweep.
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     bias_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
     # ⚠ DTYPE, NOT `Int`, and the row kind is an enum — so this reads
     # `Int(kind_e[i])`. The two callers store it differently: the blocked
     # kernel's shared-memory slab is single-dtype (`kind_e_sh` is DTYPE), while
-    # `_newton_solve_env` holds an `InlineArray[Int, ME]`. DTYPE is the side to
+    # `_newton_solve_env` holds an `Scratch[Int, E_CAP]`. DTYPE is the side to
     # unify on because it makes the BLOCKED caller free — it passes
     # `kind_e_sh.ptr` straight through — and that kernel is the one whose
     # reason for existing is small per-thread local memory. The per-env caller
-    # pays an ME-scalar mirror instead, built at the call site under the same
+    # pays an E_CAP-scalar mirror instead, built at the call site under the same
     # `comptime if NOSLIP_ITER > 0` guard, so a model without the pass pays
     # nothing on either path.
     kind_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
     R_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
     floss_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
+    qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
     # ⚠ `Scalar[DTYPE]`, not `Float64` — the caller must build these in DTYPE
     # too, or the conversion reappears at the CALL SITE and Metal rejects it
     # there instead. `newton_solve` computes `1/(meaninertia*max(1,nv))` from
     # a DTYPE tensor read, with `max(1,nv)` folded to a comptime constant.
     scale: Scalar[DTYPE],
     tolerance: Scalar[DTYPE],
-    mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut jar: InlineArray[Scalar[DTYPE], ME],
+    mut qacc: Scratch[Scalar[DTYPE], V_CAP],
+    mut jar: Scratch[Scalar[DTYPE], E_CAP],
     # The one array this routine WRITES through — hence a real `MutOrigin`
     # rather than the unbound `_` its read-only siblings use.
     force: Pointer[Scalar[DTYPE], FO, address_space=ROW_AS],
-    mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
 ):
     """One `mj_solNoSlip` call: up to `MAX_ITER` friction-only sweeps.
 
@@ -409,8 +408,8 @@ def noslip_pyramidal[
     """
     comptime NE_PYR = 2 * (MAX_CONDIM - 1)
 
-    var mj_a = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-    var mj_b = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var mj_a = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
+    var mj_b = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
 
     comptime ZERO = Scalar[DTYPE](0)
     comptime HALF = Scalar[DTYPE](0.5)
@@ -434,8 +433,8 @@ def noslip_pyramidal[
         for i in range(num_edges):
             if Int(kind_e[i]) != SROW_FRICTION:
                 continue
-            _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, i, mj_a)
-            var a_ii = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, i, mj_a)
+            _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](env, nv, m_inv, Je, i, mj_a)
+            var a_ii = _dot_row[DTYPE, V_CAP, JE_AS](Je, i, mj_a, nv)
             var arinv = Scalar[DTYPE](1.0) / (
                 a_ii if a_ii > MINVAL else MINVAL
             )
@@ -452,10 +451,10 @@ def noslip_pyramidal[
             var d = f - old
             if d != ZERO:
                 force[i] = f
-                for k in range(NV):
+                for k in range(nv):
                     qacc[k] += d * mj_a[k]
-                _refresh_jar[DTYPE, NV, ME, V_SIZE, JE_AS, ROW_AS](
-                    num_edges, Je, bias_e, qacc, jar
+                _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS](
+                    num_edges, Je, bias_e, qacc, jar, nv
                 )
             # `0.5*d^2/ARinv` — and `1/ARinv` is `a_ii`, so no division here.
             improvement -= HALF * d * d * a_ii + d * res
@@ -472,19 +471,19 @@ def noslip_pyramidal[
                 if j1 >= num_edges:
                     break
 
-                _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](
-                    env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, j0, mj_a
+                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](
+                    env, nv, m_inv, Je, j0, mj_a
                 )
-                _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](
-                    env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, j1, mj_b
+                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](
+                    env, nv, m_inv, Je, j1, mj_b
                 )
 
                 # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
                 # R is NOT part of it).
-                var a00 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j0, mj_a)
-                var a01 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j0, mj_b)
-                var a10 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j1, mj_a)
-                var a11 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j1, mj_b)
+                var a00 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j0, mj_a, nv)
+                var a01 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j0, mj_b, nv)
+                var a10 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j1, mj_a, nv)
+                var a11 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j1, mj_b, nv)
                 if a00 < DIAG_FLOOR:
                     a00 = DIAG_FLOOR
                 if a11 < DIAG_FLOOR:
@@ -535,10 +534,10 @@ def noslip_pyramidal[
                 if d0 != ZERO or d1 != ZERO:
                     force[j0] = f0
                     force[j1] = f1
-                    for q in range(NV):
+                    for q in range(nv):
                         qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
-                    _refresh_jar[DTYPE, NV, ME, V_SIZE](
-                        num_edges, Je, bias_e, qacc, jar
+                    _refresh_jar[DTYPE, E_CAP, V_CAP](
+                        num_edges, Je, bias_e, qacc, jar, nv
                     )
                 improvement -= change
 
@@ -553,18 +552,18 @@ def noslip_pyramidal[
     # `qacc +=` updates. Those exist only to keep `jar` current between blocks;
     # MuJoCo recomputes here and so does this, so any drift they accumulated is
     # discarded rather than integrated.
-    for i in range(NV):
+    for i in range(nv):
         qfrc[i] = Scalar[DTYPE](0)
     for e in range(num_edges):
         var f = force[e]
         if f == Scalar[DTYPE](0):
             continue
-        for i in range(NV):
-            qfrc[i] += Je[e * V_SIZE + i] * f
-    for i in range(NV):
+        for i in range(nv):
+            qfrc[i] += Je[e * nv + i] * f
+    for i in range(nv):
         var acc = Scalar[DTYPE](0)
-        for k in range(NV):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * qfrc[k]
+        for k in range(nv):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * qfrc[k]
         qacc[i] = acc + qacc_smooth[i]
 
 
@@ -576,23 +575,23 @@ def noslip_pyramidal[
 @always_inline
 def _minv_dense[
     DTYPE: DType,
-    ROWS: Int,
-    V_SIZE: Int,
+    R_CAP: Int,
+    V_CAP: Int,
     NT: Int,
     D: DimsLike,
     L_M_INV: Layout](
     env: Int,
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
+    J: Scratch[Scalar[DTYPE], R_CAP * V_CAP],
     row: Int,
-    mut out_v: InlineArray[Scalar[DTYPE], NT * V_SIZE],
+    mut out_v: Scratch[Scalar[DTYPE], NT * V_CAP],
     slot: Int,
 ):
-    """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[ROWS, nv]` Jacobian.
+    """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[R_CAP, nv]` Jacobian.
 
-    The elliptic path stores its contact Jacobians as a flat `[MC*NT, nv]`
-    tangential block plus a separate `[MC, nv]` normal one, rather than one
+    The elliptic path stores its contact Jacobians as a flat `[MC_CAP*NT, nv]`
+    tangential block plus a separate `[MC_CAP, nv]` normal one, rather than one
     interleaved edge list — hence a helper keyed on the array and a row index
     within it. `out_v` holds one column per tangential row of the contact
     being swept, so the whole `nt x nt` AR block can be built from it without
@@ -605,34 +604,35 @@ def _minv_dense[
             acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * J[
                 row * nv + k
             ]
-        out_v[slot * V_SIZE + i] = acc
+        out_v[slot * nv + i] = acc
 
 
 @always_inline
 def _dot_dense[
-    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, NT: Int
+    DTYPE: DType, R_CAP: Int, V_CAP: Int, NT: Int
 ](
-    J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
+    J: Scratch[Scalar[DTYPE], R_CAP * V_CAP],
     row: Int,
-    v: InlineArray[Scalar[DTYPE], NT * V_SIZE],
+    v: Scratch[Scalar[DTYPE], NT * V_CAP],
     slot: Int,
+    nv: Int,
 ) -> Scalar[DTYPE]:
     """`J_row . v[slot]`."""
     var acc = Scalar[DTYPE](0)
-    for i in range(NV):
-        acc += J[row * NV + i] * v[slot * V_SIZE + i]
+    for i in range(nv):
+        acc += J[row * nv + i] * v[slot * nv + i]
     return acc
 
 
 @always_inline
 def _solve_contact_qcqp[
-    DTYPE: DType, NT: Int, TN: Int
+    DTYPE: DType, NT: Int, T_CAP: Int
 ](
     nt: Int,
     cb: Int,
     Ac: InlineArray[Scalar[DTYPE], NT * NT],
     bc: InlineArray[Scalar[DTYPE], NT],
-    fr_c: InlineArray[Scalar[DTYPE], TN],
+    fr_c: Scratch[Scalar[DTYPE], T_CAP],
     fn_v: Scalar[DTYPE],
     mut vf: InlineArray[Scalar[DTYPE], NT],
 ) -> Bool:
@@ -718,32 +718,32 @@ def _solve_contact_qcqp[
 @always_inline
 def _refresh_jar_elliptic[
     DTYPE: DType,
-    NV: Int,
-    MC: Int,
+    MC_CAP: Int,
     NT: Int,
-    TN: Int,
-    V_SIZE: Int,
-    MAXS: Int,
-    MAXEQ: Int,
+    T_CAP: Int,
+    V_CAP: Int,
+    S_CAP: Int,
+    EQ_CAP: Int,
 ](
     nc: Int,
     ns: Int,
     neq_rows: Int,
-    nt_c: InlineArray[Int, MC],
-    Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt_c: InlineArray[Scalar[DTYPE], TN * V_SIZE],
-    pb_c: InlineArray[Scalar[DTYPE], MC],
-    bt_c: InlineArray[Scalar[DTYPE], TN],
-    sr_dof: InlineArray[Int, MAXS],
-    sr_sign: InlineArray[Scalar[DTYPE], MAXS],
-    sr_bias: InlineArray[Scalar[DTYPE], MAXS],
-    eq_J: InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE],
-    eq_bias: InlineArray[Scalar[DTYPE], MAXEQ],
-    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut jar_n: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t: InlineArray[Scalar[DTYPE], TN],
-    mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
-    mut eq_jar: InlineArray[Scalar[DTYPE], MAXEQ],
+    nt_c: Scratch[Int, MC_CAP],
+    Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
+    Jt_c: Scratch[Scalar[DTYPE], T_CAP * V_CAP],
+    pb_c: Scratch[Scalar[DTYPE], MC_CAP],
+    bt_c: Scratch[Scalar[DTYPE], T_CAP],
+    sr_dof: Scratch[Int, S_CAP],
+    sr_sign: Scratch[Scalar[DTYPE], S_CAP],
+    sr_bias: Scratch[Scalar[DTYPE], S_CAP],
+    eq_J: Scratch[Scalar[DTYPE], EQ_CAP * V_CAP],
+    eq_bias: Scratch[Scalar[DTYPE], EQ_CAP],
+    qacc: Scratch[Scalar[DTYPE], V_CAP],
+    mut jar_n: Scratch[Scalar[DTYPE], MC_CAP],
+    mut jar_t: Scratch[Scalar[DTYPE], T_CAP],
+    mut sr_jar: Scratch[Scalar[DTYPE], S_CAP],
+    mut eq_jar: Scratch[Scalar[DTYPE], EQ_CAP],
+    nv: Int,
 ):
     """`jar = J qacc + bias` for EVERY row of the elliptic system.
 
@@ -758,29 +758,29 @@ def _refresh_jar_elliptic[
         var nt = nt_c[c]
         for t in range(nt):
             jar_t[c * NT + t] = bt_c[c * NT + t]
-        for i in range(NV):
+        for i in range(nv):
             var qa = qacc[i]
-            jn += Jn_c[c * NV + i] * qa
+            jn += Jn_c[c * nv + i] * qa
             for t in range(nt):
-                jar_t[c * NT + t] += Jt_c[(c * NT + t) * NV + i] * qa
+                jar_t[c * NT + t] += Jt_c[(c * NT + t) * nv + i] * qa
         jar_n[c] = jn
     for s in range(ns):
         sr_jar[s] = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
     for e in range(neq_rows):
         var je = eq_bias[e]
-        for d in range(NV):
-            je += eq_J[e * NV + d] * qacc[d]
+        for d in range(nv):
+            je += eq_J[e * nv + d] * qacc[d]
         eq_jar[e] = je
 
 
 def noslip_elliptic[
     DTYPE: DType,
-    MC: Int,
+    MC_CAP: Int,
     NT: Int,
-    TN: Int,
-    V_SIZE: Int,
-    MAXS: Int,
-    MAXEQ: Int,
+    T_CAP: Int,
+    V_CAP: Int,
+    S_CAP: Int,
+    EQ_CAP: Int,
     MAX_ITER: Int,
     D: DimsLike,
     L_M_INV: Layout,
@@ -792,38 +792,38 @@ def noslip_elliptic[
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
-    nt_c: InlineArray[Int, MC],
-    Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt_c: InlineArray[Scalar[DTYPE], TN * V_SIZE],
-    fr_c: InlineArray[Scalar[DTYPE], TN],
-    D_n_c: InlineArray[Scalar[DTYPE], MC],
-    D_t_c: InlineArray[Scalar[DTYPE], TN],
-    pb_c: InlineArray[Scalar[DTYPE], MC],
-    bt_c: InlineArray[Scalar[DTYPE], TN],
+    nt_c: Scratch[Int, MC_CAP],
+    Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
+    Jt_c: Scratch[Scalar[DTYPE], T_CAP * V_CAP],
+    fr_c: Scratch[Scalar[DTYPE], T_CAP],
+    D_n_c: Scratch[Scalar[DTYPE], MC_CAP],
+    D_t_c: Scratch[Scalar[DTYPE], T_CAP],
+    pb_c: Scratch[Scalar[DTYPE], MC_CAP],
+    bt_c: Scratch[Scalar[DTYPE], T_CAP],
     # ── scalar rows: joint limits + dry-friction dofs (J = sign * e_dof) ──
-    sr_dof: InlineArray[Int, MAXS],
-    sr_kind: InlineArray[Int, MAXS],
-    sr_sign: InlineArray[Scalar[DTYPE], MAXS],
-    sr_R: InlineArray[Scalar[DTYPE], MAXS],
-    sr_bias: InlineArray[Scalar[DTYPE], MAXS],
-    sr_floss: InlineArray[Scalar[DTYPE], MAXS],
+    sr_dof: Scratch[Int, S_CAP],
+    sr_kind: Scratch[Int, S_CAP],
+    sr_sign: Scratch[Scalar[DTYPE], S_CAP],
+    sr_R: Scratch[Scalar[DTYPE], S_CAP],
+    sr_bias: Scratch[Scalar[DTYPE], S_CAP],
+    sr_floss: Scratch[Scalar[DTYPE], S_CAP],
     # ── equality rows: tendon + connect/weld (dense J) ──
-    eq_J: InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE],
-    eq_D: InlineArray[Scalar[DTYPE], MAXEQ],
-    eq_bias: InlineArray[Scalar[DTYPE], MAXEQ],
-    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
+    eq_J: Scratch[Scalar[DTYPE], EQ_CAP * V_CAP],
+    eq_D: Scratch[Scalar[DTYPE], EQ_CAP],
+    eq_bias: Scratch[Scalar[DTYPE], EQ_CAP],
+    qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
     scale: Scalar[DTYPE],
     tolerance: Scalar[DTYPE],
-    mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut fn_a: InlineArray[Scalar[DTYPE], MC],
-    mut ft_a: InlineArray[Scalar[DTYPE], TN],
-    mut jar_n_a: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t_a: InlineArray[Scalar[DTYPE], TN],
-    mut sr_f: InlineArray[Scalar[DTYPE], MAXS],
-    mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
-    mut eq_f: InlineArray[Scalar[DTYPE], MAXEQ],
-    mut eq_jar: InlineArray[Scalar[DTYPE], MAXEQ],
-    mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut qacc: Scratch[Scalar[DTYPE], V_CAP],
+    mut fn_a: Scratch[Scalar[DTYPE], MC_CAP],
+    mut ft_a: Scratch[Scalar[DTYPE], T_CAP],
+    mut jar_n_a: Scratch[Scalar[DTYPE], MC_CAP],
+    mut jar_t_a: Scratch[Scalar[DTYPE], T_CAP],
+    mut sr_f: Scratch[Scalar[DTYPE], S_CAP],
+    mut sr_jar: Scratch[Scalar[DTYPE], S_CAP],
+    mut eq_f: Scratch[Scalar[DTYPE], EQ_CAP],
+    mut eq_jar: Scratch[Scalar[DTYPE], EQ_CAP],
+    mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
 ):
     """One `mj_solNoSlip` call on the ELLIPTIC cone: up to `MAX_ITER` sweeps.
 
@@ -889,7 +889,7 @@ def noslip_elliptic[
     comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
 
     # `M^-1 J_t^T`, one column per tangential row of the contact being swept.
-    var MinvJ = InlineArray[Scalar[DTYPE], NT * V_SIZE](fill=ZERO)
+    var MinvJ = Scratch[Scalar[DTYPE], NT * V_CAP](NT * nv, fill=ZERO)
     # The `nt x nt` AR block, its rhs, the solved force and the old one.
     var Ac = InlineArray[Scalar[DTYPE], NT * NT](fill=ZERO)
     var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
@@ -947,11 +947,12 @@ def noslip_elliptic[
                         m_inv[env, k * nv + dof]
                     )
                 _refresh_jar_elliptic[
-                    DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                    DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
                 ](
                     nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
                     jar_n_a, jar_t_a, sr_jar, eq_jar,
+                    nv,
                 )
             # ⚠ `/ arinv`, matching MuJoCo literally. That is `a_ii` clamped
             # from below, and the reciprocal round-trip is a 1-ulp difference
@@ -975,7 +976,7 @@ def noslip_elliptic[
             # force that has to be zeroed AND accounted for.
             for t in range(nt):
                 oldf[t] = ft_a[cb + t]
-                _minv_dense[DTYPE, TN, V_SIZE, NT](
+                _minv_dense[DTYPE, T_CAP, V_CAP, NT](
                     env, dims, m_inv, Jt_c, cb + t, MinvJ, t
                 )
 
@@ -985,8 +986,8 @@ def noslip_elliptic[
             for t in range(nt):
                 for u in range(nt):
                     Ac[t * NT + u] = _dot_dense[
-                        DTYPE, D.CAP_NV, TN, V_SIZE, NT
-                    ](Jt_c, cb + t, MinvJ, u)
+                        DTYPE, T_CAP, V_CAP, NT
+                    ](Jt_c, cb + t, MinvJ, u, nv)
                 if Ac[t * NT + t] < DIAG_FLOOR:
                     Ac[t * NT + t] = DIAG_FLOOR
 
@@ -1001,7 +1002,7 @@ def noslip_elliptic[
                 vf[t] = ZERO
             var fn_v = fn_a[c]
             if fn_v >= MINVAL:
-                var active = _solve_contact_qcqp[DTYPE, NT, TN](
+                var active = _solve_contact_qcqp[DTYPE, NT, T_CAP](
                     nt, cb, Ac, bc, fr_c, fn_v, vf
                 )
                 if active:
@@ -1043,13 +1044,14 @@ def noslip_elliptic[
                     var dt = vf[t] - oldf[t]
                     ft_a[cb + t] = vf[t]
                     for q in range(nv):
-                        qacc[q] += dt * MinvJ[t * V_SIZE + q]
+                        qacc[q] += dt * MinvJ[t * nv + q]
                 _refresh_jar_elliptic[
-                    DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                    DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
                 ](
                     nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
                     jar_n_a, jar_t_a, sr_jar, eq_jar,
+                    nv,
                 )
             improvement -= change
 

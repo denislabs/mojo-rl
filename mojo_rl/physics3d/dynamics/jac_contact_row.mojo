@@ -20,6 +20,7 @@ the way would widen this step past what its gate covers.
 """
 
 from layout import Layout, LayoutTensor
+from ..fields.scratch import Scratch
 
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..gpu.constants import (
@@ -38,7 +39,7 @@ from ..gpu.constants import (
 @always_inline
 def _contact_jacobian_row[
     DTYPE: DType,
-    V_SIZE: Int,
+    V_CAP: Int,
     L_SUBTREE_COM: Layout,
     L_JOINTS: Layout,
     L_BODIES: Layout,
@@ -67,7 +68,8 @@ def _contact_jacobian_row[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
-    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut J_row: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
 ):
     """One row of the contact Jacobian (verbatim from
     compute_contact_jacobian_row_gpu; the legacy body computed an unused
@@ -76,7 +78,7 @@ def _contact_jacobian_row[
     Bilateral: J_row[i] = J_a[i] - J_b[i] for body-body contacts.
     For ground contacts (body_b = 0, worldbody), only body_a contributes.
     """
-    for i in range(V_SIZE):
+    for i in range(nv):
         J_row[i] = 0
 
     var num_joints = Int(
