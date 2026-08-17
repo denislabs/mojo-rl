@@ -156,28 +156,28 @@ def site_frame_velocity[
 @always_inline
 def site_frame_velocity_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
-    NSITE_F: Int,
-    SITE_DIM: Int,
+    L_XVEL: Layout,
+    L_XQUAT: Layout,
+    L_SITE_XPOS: Layout,
+    L_SITES: Layout,
 ](
     xvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     env: Int,
     body: Int,

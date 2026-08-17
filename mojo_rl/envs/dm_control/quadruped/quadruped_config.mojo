@@ -310,8 +310,7 @@ def _common_obs_gpu[
 
     # --- torso_velocity: the velocimeter at the torso site -----------------
     var fv = site_frame_velocity_gpu[
-        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-    ](
+        DTYPE](
         xvel, xangvel, xipos, xquat, site_xpos, sites,
         env, TORSO_BODY_IDX, TORSO_SITE,
     )
@@ -328,8 +327,7 @@ def _common_obs_gpu[
     # --- imu: accelerometer THEN gyro (sensor-id order) --------------------
     # ⚠ `site_xpos_acc` / `xquat_acc`, NOT the live products — defect 19.
     var acc = site_accelerometer_gpu[
-        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-    ](
+        DTYPE](
         cvel, cacc, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
         env, TORSO_BODY_IDX, TORSO_SITE,
     )
@@ -346,8 +344,7 @@ def _common_obs_gpu[
     var tx = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
     for t in range(4):
         var ftt = site_force_torque_gpu[
-            DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-        ](
+            DTYPE](
             cfrc_int, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
             env, TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0_P + t,
         )
@@ -781,8 +778,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         # after `mj_step1` has refreshed position and velocity at the new
         # state. Only the acceleration stage is frozen (defect 19).
         var fv = site_frame_velocity_gpu[
-            DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-        ](
+            DTYPE](
             xvel, xangvel, xipos, xquat, site_xpos, sites,
             env, TORSO_BODY_IDX, TORSO_SITE_IDX,
         )

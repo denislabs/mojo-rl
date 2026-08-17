@@ -44,7 +44,7 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike, AsStatic
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -1394,8 +1394,9 @@ struct Phyics3dBatchedEnv[
 
         # 4) Derived quantities the reward hooks may read (cfrc_ext / cvel),
         #    straight on the field tensors.
-        compute_cfrc_ext[DT, Self.N_ENVS, Self.NBODY, Self.MC](
+        compute_cfrc_ext[DT, Self.N_ENVS](
             c,
+            AsStatic[Self.MD](),
             self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
             self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
@@ -1433,8 +1434,9 @@ struct Phyics3dBatchedEnv[
         # ran, so leaving it in place for them keeps this change a provable
         # no-op there.
         comptime if not Self.CONFIG.RNE_POST:
-            compute_cvel[DT, Self.N_ENVS, Self.NBODY](
+            compute_cvel[DT, Self.N_ENVS](
                 c,
+                AsStatic[Self.MD](),
                 self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
                 self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
                 self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),

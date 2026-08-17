@@ -47,6 +47,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.fields import (
     AsStatic,
+    AsStatic,
     Model,
     Data,
     DynamicsScratch,
@@ -394,14 +395,15 @@ def _prep(
     comptime L_QPOS = Layout.row_major(1, M.NQ)
 
     var joints_v = mf.joints.lt["cpu", L_JOINT]()
-    _armature_env[DTYPE, M.NV, M.NJOINT, 1](
-        0, joints_v, sc.M.lt["cpu", L_M]()
+    _armature_env[DTYPE](
+        0, AsStatic[MD](), joints_v, sc.M.lt["cpu", L_M]()
     )
     ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
     compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
     compute_bias_forces_rne["cpu"](d, mf, sc, None)
-    _fnet_passive_env[DTYPE, M.NQ, M.NV, M.NJOINT, 1](
+    _fnet_passive_env[DTYPE](
         0,
+        AsStatic[MD](),
         d.qpos.lt["cpu", L_QPOS](),
         d.qvel.lt["cpu", L_NV](),
         d.qfrc.lt["cpu", L_NV](),
@@ -410,8 +412,9 @@ def _prep(
         sc.fnet.lt["cpu", L_NV](),
     )
     ldl_solve["cpu", DTYPE, BATCH=1](sc, None)
-    _qacc_writeback_env[DTYPE, M.NV, 1](
+    _qacc_writeback_env[DTYPE](
         0,
+        AsStatic[MD](),
         sc.qacc_ws.lt["cpu", L_NV](),
         d.qacc.lt["cpu", L_NV](),
         sc.qacc_constrained.lt["cpu", L_NV](),

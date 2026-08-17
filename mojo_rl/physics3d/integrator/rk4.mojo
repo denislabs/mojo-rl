@@ -71,6 +71,12 @@ from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import (
+    AsStatic,
+    Dims,
+    Dims,
+    DimsLike,
+    DimsLike,
+    DimsLike,
     Data,
     Model,
     DynamicsScratch,
@@ -103,18 +109,23 @@ from .euler import (
 #  ws rk4 regions -> per-field q0/vel tensors, state qpos -> qpos tensor)
 @always_inline
 def _rk4_integrate_pos_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_Q0: Layout,
+    L_VEL: Layout](
     env: Int,
     dt: Scalar[DTYPE],
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    q0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    vel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    q0: LayoutTensor[DTYPE, L_Q0, MutAnyOrigin],
+    vel: LayoutTensor[DTYPE, L_VEL, MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_Q0, MutAnyOrigin],
 ):
-    for j in range(NJOINT):
+    var njoint = dims.get_njoint()
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var qpos_adr = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
@@ -156,80 +167,87 @@ def _rk4_integrate_pos_env[
 # ── per-stage setup (verbatim rk4_stage_kernel pre-stage block :1316) ─────
 @always_inline
 def _rk4_stage_setup_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int, STAGE: Int
-](
+    DTYPE: DType,
+    STAGE: Int,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_QPOS: Layout,
+    L_QVEL: Layout](
     env: Int,
     dt: Scalar[DTYPE],
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
-    q0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    v0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A1: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A2: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    C1: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    C2: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    q0: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    v0: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A0: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A1: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A2: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    C1: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    C2: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
     var half_dt = dt * Scalar[DTYPE](0.5)
 
     comptime if STAGE == 0:
         # Save initial state to scratch
-        for i in range(NQ):
+        for i in range(nq):
             q0[env, i] = qpos[env, i]
-        for i in range(NV):
+        for i in range(nv):
             v0[env, i] = qvel[env, i]
     elif STAGE == 1:
         # Save A[0] from qacc_constrained
-        for i in range(NV):
+        for i in range(nv):
             A0[env, i] = qacc_constrained[env, i]
         # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
         # qvel = v0 + dt/2 * A[0]
-        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
-            env, half_dt, joints, q0, v0, qpos
+        _rk4_integrate_pos_env[DTYPE](
+            env, half_dt, dims, joints, q0, v0, qpos
         )
-        for i in range(NV):
+        for i in range(nv):
             var v0_i = rebind[Scalar[DTYPE]](v0[env, i])
             var a0_i = rebind[Scalar[DTYPE]](A0[env, i])
             qvel[env, i] = v0_i + half_dt * a0_i
     elif STAGE == 2:
         # Save A[1] from qacc_constrained
-        for i in range(NV):
+        for i in range(nv):
             A1[env, i] = qacc_constrained[env, i]
         # C[1] = v0 + dt/2 * A[0] — save for combine
-        for i in range(NV):
+        for i in range(nv):
             var v0_i = rebind[Scalar[DTYPE]](v0[env, i])
             var a0_i = rebind[Scalar[DTYPE]](A0[env, i])
             C1[env, i] = v0_i + half_dt * a0_i
         # Set intermediate state: qpos = q0 + dt/2 * C[1]
         # qvel = v0 + dt/2 * A[1]
-        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
-            env, half_dt, joints, q0, C1, qpos
+        _rk4_integrate_pos_env[DTYPE](
+            env, half_dt, dims, joints, q0, C1, qpos
         )
-        for i in range(NV):
+        for i in range(nv):
             var v0_i = rebind[Scalar[DTYPE]](v0[env, i])
             var a1_i = rebind[Scalar[DTYPE]](A1[env, i])
             qvel[env, i] = v0_i + half_dt * a1_i
     elif STAGE == 3:
         # Save A[2] from qacc_constrained
-        for i in range(NV):
+        for i in range(nv):
             A2[env, i] = qacc_constrained[env, i]
         # C[2] = v0 + dt/2 * A[1] — save for combine
-        for i in range(NV):
+        for i in range(nv):
             var v0_i = rebind[Scalar[DTYPE]](v0[env, i])
             var a1_i = rebind[Scalar[DTYPE]](A1[env, i])
             C2[env, i] = v0_i + half_dt * a1_i
         # Set intermediate state: qpos = q0 + dt * C[2]
         # qvel = v0 + dt * A[2]
-        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
-            env, dt, joints, q0, C2, qpos
+        _rk4_integrate_pos_env[DTYPE](
+            env, dt, dims, joints, q0, C2, qpos
         )
-        for i in range(NV):
+        for i in range(nv):
             var v0_i = rebind[Scalar[DTYPE]](v0[env, i])
             var a2_i = rebind[Scalar[DTYPE]](A2[env, i])
             qvel[env, i] = v0_i + dt * a2_i
@@ -238,27 +256,32 @@ def _rk4_stage_setup_env[
 # ── combine: RK4 weights + integrate (verbatim rk4_combine_kernel :2140) ──
 @always_inline
 def _rk4_combine_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_QPOS: Layout,
+    L_QVEL: Layout](
     env: Int,
     dt: Scalar[DTYPE],
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
-    q0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    v0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A0: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A1: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    A2: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    C1: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    C2: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    q0: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    v0: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A0: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A1: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    A2: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    C1: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    C2: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
+    var nv = dims.get_nv()
     comptime ONE_SIXTH = Scalar[DTYPE](1.0 / 6.0)
     comptime ONE_THIRD = Scalar[DTYPE](1.0 / 3.0)
 
@@ -270,7 +293,7 @@ def _rk4_combine_env[
     # First pass: compute qacc_combined, v_combined, update qvel/qacc.
     # Store v_combined in the A0 slot (no longer needed after this) —
     # exactly like the legacy combine kernel.
-    for i in range(NV):
+    for i in range(nv):
         var a0_i = rebind[Scalar[DTYPE]](A0[env, i])
         var a1_i = rebind[Scalar[DTYPE]](A1[env, i])
         var a2_i = rebind[Scalar[DTYPE]](A2[env, i])
@@ -322,8 +345,8 @@ def _rk4_combine_env[
 
     # Second pass: integrate position using v_combined (quaternion-aware);
     # v_combined lives in the A0 slot.
-    _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, dt, joints, q0, A0, qpos
+    _rk4_integrate_pos_env[DTYPE](
+        env, dt, dims, joints, q0, A0, qpos
     )
 
 
@@ -351,8 +374,8 @@ def _rk4_stage_setup_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rk4_stage_setup_env[DTYPE, NQ, NV, NJOINT, BATCH, STAGE](
-        env, dt, joints, qpos, qvel, qacc_constrained,
+    _rk4_stage_setup_env[DTYPE, STAGE](
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), joints, qpos, qvel, qacc_constrained,
         q0, v0, A0, A1, A2, C1, C2,
     )
 
@@ -381,8 +404,8 @@ def _rk4_combine_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rk4_combine_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, dt, joints, qpos, qvel, qacc, qacc_constrained,
+    _rk4_combine_env[DTYPE](
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), joints, qpos, qvel, qacc, qacc_constrained,
         q0, v0, A0, A1, A2, C1, C2,
     )
 
@@ -472,8 +495,7 @@ struct RK4Integrator[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, joints_v, M_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -500,8 +522,7 @@ struct RK4Integrator[
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -529,8 +550,8 @@ struct RK4Integrator[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE, Self.D.NV, Self.BATCH](
-                    e, qacc_ws_v, qacc_v, qacc_c_v
+                _qacc_writeback_env[Self.DTYPE](
+                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -571,10 +592,9 @@ struct RK4Integrator[
             var C2_v = self.rk4.C2.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _rk4_stage_setup_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH,
-                    STAGE,
-                ](
-                    e, dt, joints_v, qpos_v, qvel_v, qacc_c_v,
+                    Self.DTYPE,
+                    STAGE](
+                    e, dt, AsStatic[Self.D](), joints_v, qpos_v, qvel_v, qacc_c_v,
                     q0_v, v0_v, A0_v, A1_v, A2_v, C1_v, C2_v,
                 )
         else:
@@ -664,9 +684,8 @@ struct RK4Integrator[
             var C2_v = self.rk4.C2.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _rk4_combine_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](
-                    e, dt, joints_v, qpos_v, qvel_v, qacc_v, qacc_c_v,
+                    Self.DTYPE](
+                    e, dt, AsStatic[Self.D](), joints_v, qpos_v, qvel_v, qacc_v, qacc_c_v,
                     q0_v, v0_v, A0_v, A1_v, A2_v, C1_v, C2_v,
                 )
         else:

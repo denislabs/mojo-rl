@@ -540,8 +540,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
         # that link's own site. Site i is on body i + HEAD_BODY_IDX.
         for i in range(N_LINKS):
             var v = site_frame_velocity_gpu[
-                DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-            ](
+                DTYPE](
                 xvel, xangvel, xipos, xquat, site_xpos, sites,
                 env, HEAD_BODY_IDX + i, i,
             )

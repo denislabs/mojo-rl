@@ -58,6 +58,7 @@ is an exact bound.
 from layout import Layout, LayoutTensor
 
 from ..gpu.constants import MODEL_BODY_SIZE, BODY_IDX_MASS, BODY_IDX_PARENT
+from ..fields import DimsLike
 
 
 def walk_to_root[
@@ -139,10 +140,12 @@ def subtree_linvel[
 
 @always_inline
 def walk_to_root_gpu[
-    DTYPE: DType, NBODY: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_BODIES: Layout](
+    dims: D,
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     body: Int,
     root: Int,
@@ -152,8 +155,9 @@ def walk_to_root_gpu[
     `bodies` is the SHARED (unbatched) `Model.bodies` tensor — the kinematic
     tree is model state, identical across lanes.
     """
+    var nbody = dims.get_nbody()
     var b = body
-    for _ in range(NBODY):
+    for _ in range(nbody):
         if b < 0:
             break
         if b == root:
@@ -164,13 +168,16 @@ def walk_to_root_gpu[
 
 @always_inline
 def subtree_linvel_gpu[
-    DTYPE: DType, BATCH_SIZE: Int, NBODY: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_XVEL: Layout,
+    L_BODIES: Layout](
+    dims: D,
     xvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     env: Int,
     root: Int,
@@ -184,14 +191,15 @@ def subtree_linvel_gpu[
     version. This is what feeds every `torso_subtreelinvel` reward in the
     suite's locomotion tasks (cheetah, walker, hopper, humanoid, humanoid_cmu).
     """
+    var nbody = dims.get_nbody()
     comptime ZERO = Scalar[DTYPE](0)
     var total_mass = ZERO
     var px = ZERO
     var py = ZERO
     var pz = ZERO
 
-    for b in range(NBODY):
-        if not walk_to_root_gpu[DTYPE, NBODY](bodies, b, root):
+    for b in range(nbody):
+        if not walk_to_root_gpu[DTYPE](dims,bodies, b, root):
             continue
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         if mass == ZERO:

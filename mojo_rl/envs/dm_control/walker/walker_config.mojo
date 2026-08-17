@@ -417,7 +417,8 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
             var vx = Scalar[DTYPE](0)
             var vy = Scalar[DTYPE](0)
             var vz = Scalar[DTYPE](0)
-            subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            subtree_linvel_gpu[DTYPE](
+                Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
                 xvel, bodies, env, TORSO_BODY_IDX, vx, vy, vz
             )
             var move_reward = tolerance[SIGMOID_LINEAR, 0.5, DTYPE](

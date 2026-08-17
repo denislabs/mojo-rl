@@ -52,7 +52,7 @@ from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.rne_post import compute_rne_post
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -74,53 +74,64 @@ comptime EU_TPB: Int = 64
 # ── armature: M diagonal += armature (verbatim step_kernel 6b) ────────────
 @always_inline
 def _armature_env[
-    DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_M: Layout](
     env: Int,
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
 ):
-    for j in range(NJOINT):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    for j in range(njoint):
         var jnt_type = Int(joints[j, JOINT_IDX_TYPE])
         var dof_adr = Int(joints[j, JOINT_IDX_DOF_ADR])
         var arm = joints[j, JOINT_IDX_ARMATURE]
         var diag_add = arm
         if jnt_type == JNT_FREE:
             for d in range(6):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += diag_add
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += diag_add
         elif jnt_type == JNT_BALL:
             for d in range(3):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += diag_add
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += diag_add
         else:
-            M[env, dof_adr * NV + dof_adr] += diag_add
+            M[env, dof_adr * nv + dof_adr] += diag_add
 
 
 # ── fnet assembly: qfrc - bias - damping - stiffness - friction ───────────
 # (verbatim step_kernel 9 + 8b; fluid 8c NOT ported — guarded at step())
 @always_inline
 def _fnet_passive_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qfrc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qfrc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    bias: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    bias: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
     # f_net = qfrc - bias
-    for i in range(NV):
+    for i in range(nv):
         var qfrc_v = rebind[Scalar[DTYPE]](qfrc[env, i])
         var bias_val = rebind[Scalar[DTYPE]](bias[env, i])
         fnet[env, i] = qfrc_v - bias_val
 
     # Damping: f -= damping * qvel (explicit part)
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type_d = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr_d = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
@@ -138,7 +149,7 @@ def _fnet_passive_env[
                 fnet[env, dof_adr_d + d] = cur - damp_d * v
 
     # Stiffness + frictionloss
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var qpos_adr = Int(
@@ -172,16 +183,19 @@ def _fnet_passive_env[
 # ── qacc writeback: state qacc + qacc_constrained = qacc_ws ───────────────
 @always_inline
 def _qacc_writeback_env[
-    DTYPE: DType, NV: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_QACC_WS: Layout](
     env: Int,
-    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qacc_ws: LayoutTensor[DTYPE, L_QACC_WS, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QACC_WS, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QACC_WS, MutAnyOrigin
     ],
 ):
-    for i in range(NV):
+    var nv = dims.get_nv()
+    for i in range(nv):
         var qacc_val = rebind[Scalar[DTYPE]](qacc_ws[env, i])
         qacc[env, i] = qacc_val
         qacc_constrained[env, i] = qacc_val
@@ -190,36 +204,43 @@ def _qacc_writeback_env[
 # ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
 @always_inline
 def _finalize_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_M: Layout](
     env: Int,
     dt: Scalar[DTYPE],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: DIMS,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
     # Step 1: rhs = M * qacc_constrained (into fnet)
-    for i in range(NV):
+    for i in range(nv):
         var sum = Scalar[DTYPE](0)
-        for j in range(NV):
-            var M_ij = rebind[Scalar[DTYPE]](M[env, i * NV + j])
+        for j in range(nv):
+            var M_ij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
             var qacc_j = rebind[Scalar[DTYPE]](qacc_constrained[env, j])
             sum += M_ij * qacc_j
         fnet[env, i] = sum
 
     # Step 2: M_hat = M + dt*D (damping to diagonal)
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
@@ -230,14 +251,14 @@ def _finalize_env[
             elif jnt_type == JNT_BALL:
                 nd = 3
             for d in range(nd):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env(env, Dims[nv=NV](), M, L, D)
-    _ldl_solve_env(env, Dims[nv=NV](), L, D, fnet, qacc_ws)
+    _ldl_factor_env(env, dims, M, L, D)
+    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
 
     # Step 5: v_new = v_old + dt * qacc_final (NaN guard + clamp)
-    for i in range(NV):
+    for i in range(nv):
         var old_qvel = rebind[Scalar[DTYPE]](qvel[env, i])
         var qacc_final = rebind[Scalar[DTYPE]](qacc_ws[env, i])
         qacc[env, i] = qacc_final
@@ -253,7 +274,7 @@ def _finalize_env[
 
     # Integrate position (quaternion-aware for FREE; BALL not handled, as
     # in the legacy finalize)
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var jnt_qpos_adr = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
@@ -302,7 +323,7 @@ def _armature_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _armature_env[DTYPE, NV, NJOINT, BATCH](env, joints, M)
+    _armature_env[DTYPE](env, Dims[nv=NV, njoint=NJOINT](), joints, M)
 
 
 def _fnet_passive_kernel[
@@ -320,8 +341,8 @@ def _fnet_passive_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, qpos, qvel, qfrc, joints, bias, fnet
+    _fnet_passive_env[DTYPE](
+        env, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qfrc, joints, bias, fnet
     )
 
 
@@ -337,8 +358,8 @@ def _qacc_writeback_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _qacc_writeback_env[DTYPE, NV, BATCH](
-        env, qacc_ws, qacc, qacc_constrained
+    _qacc_writeback_env[DTYPE](
+        env, Dims[nv=NV](), qacc_ws, qacc, qacc_constrained
     )
 
 
@@ -364,8 +385,8 @@ def _finalize_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _finalize_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, dt, qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
+    _finalize_env[DTYPE](
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
         qacc_constrained,
     )
 
@@ -443,8 +464,7 @@ struct EulerIntegrator[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, joints_v, M_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -468,8 +488,7 @@ struct EulerIntegrator[
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -496,8 +515,8 @@ struct EulerIntegrator[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE, Self.D.NV, Self.BATCH](
-                    e, qacc_ws_v, qacc_v, qacc_c_v
+                _qacc_writeback_env[Self.DTYPE](
+                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -622,9 +641,8 @@ struct EulerIntegrator[
             var qacc_c_v3 = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _finalize_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](
-                    e, dt, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
+                    Self.DTYPE](
+                    e, dt, AsStatic[Self.D](), qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
                     D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3,
                 )
         else:

@@ -526,7 +526,8 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         var cx = Scalar[DTYPE](0)
         var cy = Scalar[DTYPE](0)
         var cz = Scalar[DTYPE](0)
-        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        subtree_linvel_gpu[DTYPE](
+            Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
             xvel, bodies, env, THORAX_BODY_IDX, cx, cy, cz
         )
         obs[env, k] = cx
@@ -674,7 +675,8 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         var cx = ZERO
         var cy = ZERO
         var cz = ZERO
-        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        subtree_linvel_gpu[DTYPE](
+            Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
             xvel, bodies, env, THORAX_BODY_IDX, cx, cy, cz
         )
 

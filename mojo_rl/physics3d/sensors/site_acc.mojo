@@ -247,16 +247,18 @@ def _site_transport_gpu[
 
 @always_inline
 def _site_com_offset_gpu[
-    DTYPE: DType, BATCH_SIZE: Int, NBODY: Int, SITE_DIM: Int
-](
+    DTYPE: DType,
+    L_SITE_XPOS: Layout,
+    L_SUBTREE_COM: Layout,
+    L_BODIES: Layout](
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     env: Int,
     body: Int,
@@ -276,31 +278,33 @@ def _site_com_offset_gpu[
 @always_inline
 def site_accelerometer_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
-    NSITE_F: Int,
-    SITE_DIM: Int,
+    L_CVEL: Layout,
+    L_SUBTREE_COM: Layout,
+    L_SITE_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_SITES: Layout,
 ](
     cvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     cacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     env: Int,
     body: Int,
@@ -315,7 +319,7 @@ def site_accelerometer_gpu[
     wrong. `Phyics3dBatchedEnv.__init__` asserts the Euler pairing that
     `RNE_POST` needs, but nothing can assert that a config asked for it.
     """
-    var d = _site_com_offset_gpu[DTYPE, BATCH_SIZE, NBODY, SITE_DIM](
+    var d = _site_com_offset_gpu[DTYPE](
         site_xpos, subtree_com, bodies, env, body, site
     )
 
@@ -363,28 +367,30 @@ def site_accelerometer_gpu[
 @always_inline
 def site_force_torque_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
-    NSITE_F: Int,
-    SITE_DIM: Int,
+    L_CFRC_INT: Layout,
+    L_SUBTREE_COM: Layout,
+    L_SITE_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_SITES: Layout,
 ](
     cfrc_int: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CFRC_INT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     env: Int,
     body: Int,
@@ -395,7 +401,7 @@ def site_force_torque_gpu[
     Returns `[force(3), torque(3)]` — force first, matching the CPU twin
     rather than MuJoCo's packed order. Pass `site_xpos_acc` / `xquat_acc`.
     """
-    var d = _site_com_offset_gpu[DTYPE, BATCH_SIZE, NBODY, SITE_DIM](
+    var d = _site_com_offset_gpu[DTYPE](
         site_xpos, subtree_com, bodies, env, body, site
     )
 

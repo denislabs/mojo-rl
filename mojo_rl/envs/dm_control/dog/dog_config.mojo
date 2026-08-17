@@ -463,8 +463,8 @@ def _stand_factors_gpu[
     var tsum = Scalar[DTYPE](0)
     for t in range(4):
         tsum += touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY
-        ](
+            DTYPE](
+            Dims[nbody=NBODY, nsite=NSITE_F](),
             contacts, site_xpos, sites, meta, xquat, env, t_sites[t],
             Scalar[DTYPE](1.0),
         )
@@ -600,7 +600,8 @@ def _dog_obs_gpu[
     var vx = Scalar[DTYPE](0)
     var vy = Scalar[DTYPE](0)
     var vz = Scalar[DTYPE](0)
-    subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY](
+    subtree_linvel_gpu[DTYPE](
+        Dims[nq=NQ, nv=NV, nbody=NBODY, nsite=NSITE_F](),
         xvel, bodies, env, DOG_TORSO_BODY_IDX, vx, vy, vz
     )
     var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
@@ -623,14 +624,12 @@ def _dog_obs_gpu[
     # velocity-stage blocks above require. Mixing them read 1.484 on CPU where
     # dm_control reads -6.386.
     var acc = site_accelerometer_gpu[
-        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-    ](
+        DTYPE](
         cvel, cacc, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
         env, DOG_SKULL_BODY_IDX, DOG_SITE_HEAD,
     )
     var fv = site_frame_velocity_gpu[
-        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-    ](
+        DTYPE](
         xvel, xangvel, xipos, xquat, site_xpos, sites,
         env, DOG_SKULL_BODY_IDX, DOG_SITE_HEAD,
     )
@@ -658,8 +657,7 @@ def _dog_obs_gpu[
     for t in range(4):
         # Acceleration stage, same snapshot rule as the accelerometer above.
         var ft = site_force_torque_gpu[
-            DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
-        ](
+            DTYPE](
             cfrc_int, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
             env, f_bodies[t], f_sites[t],
         )
@@ -675,8 +673,8 @@ def _dog_obs_gpu[
     t_sites[3] = DOG_SITE_SOLE_R
     for t in range(4):
         obs[env, k] = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY
-        ](
+            DTYPE](
+            Dims[nq=NQ, nv=NV, nbody=NBODY, nsite=NSITE_F](),
             contacts, site_xpos, sites, meta, xquat, env, t_sites[t],
             Scalar[DTYPE](1.0),
         )
@@ -1345,7 +1343,8 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         var vx = Scalar[DTYPE](0)
         var vy = Scalar[DTYPE](0)
         var vz = Scalar[DTYPE](0)
-        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY](
+        subtree_linvel_gpu[DTYPE](
+            Dims[nq=NQ, nv=NV, nbody=NBODY, nsite=NSITE_F, ngeom=NGEOM_F](),
             xvel, bodies, env, DOG_TORSO_BODY_IDX, vx, vy, vz
         )
         # ⚠ DTYPE throughout, not Float64 — Metal rejects `double` in a

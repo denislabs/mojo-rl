@@ -20,60 +20,71 @@ from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 from .constants import TPB
+from ..fields import DimsLike
 
 
 def compute_cvel[
     DTYPE: DType,
     BATCH_SIZE: Int,
-    NBODY: Int,
+    D: DimsLike,
+    L_XPOS: Layout,
+    L_CVEL: Layout,
 ](
     ctx: DeviceContext,
+    dims: D,
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     cvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
 ) raises:
     """Compute cvel (body CoM spatial velocities) for all environments on GPU.
 
     One thread per environment; reads xvel/xangvel/xpos/xipos, writes cvel.
     """
+    var nbody = dims.get_nbody()
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
     @parameter
     @always_inline
+    # ⚠⚠ COMPTIME INSIDE THE KERNEL. `dims` is a host value and
+    # `Dims` is not `DevicePassable` — reading it here yields 0,
+    # every loop bound collapses and the output comes back zeroed
+    # (gated by `test_cfrc_ext_batched_vs_cpu`, which caught
+    # exactly that as rel = 1.0). Decision 3 keeps this leg
+    # comptime, so the caps are the right and only source here.
     def cvel_kernel(
         xpos: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 3), MutAnyOrigin
         ],
         xvel: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 3), MutAnyOrigin
         ],
         xangvel: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 3), MutAnyOrigin
         ],
         xipos: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 3), MutAnyOrigin
         ],
         cvel: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 6), MutAnyOrigin
         ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH_SIZE:
             return
 
-        for b in range(NBODY):
+        for b in range(D.CAP_NBODY):
             # Angular velocity at body origin (world frame)
             var ox = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 0])
             var oy = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 1])

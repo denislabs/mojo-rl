@@ -446,25 +446,27 @@ comptime TOUCH_UNSUPPORTED_ZONE: Float64 = -1.0
 @always_inline
 def touch_sphere_site_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    MAX_CONTACTS: Int,
-    NSITE_F: Int,
-    SITE_DIM: Int,
-    NBODY: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
+    L_SITE_XPOS: Layout,
+    L_SITES: Layout,
+    L_META: Layout,
+    L_XQUAT: Layout,
 ](
+    dims: D,
     contacts: LayoutTensor[
         DTYPE,
-        Layout.row_major(BATCH_SIZE, MAX_CONTACTS * CONTACT_SIZE),
+        L_CONTACTS,
         MutAnyOrigin,
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     meta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_META, MutAnyOrigin
     ],
     # ⚠ ADDED 2026-08-10 FOR THE BOX BRANCH. `site_xmat` is not stored — it is
     # composed as `xquat[body] * site_localquat`, so the box path needs the
@@ -472,7 +474,7 @@ def touch_sphere_site_gpu[
     # a box zone used to bail out; the model table already carried the local
     # quat (`SITE_IDX_QUAT_*`), so this parameter was the only missing piece.
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     env: Int,
     site: Int,
@@ -503,6 +505,7 @@ def touch_sphere_site_gpu[
     why it survived four domains on the CPU side before stacker caught it.
     Do not "simplify" this to `bb`.
     """
+    var max_contacts = dims.get_max_contacts()
     comptime ZERO = Scalar[DTYPE](0)
     var sbase = site * MODEL_SITE_SIZE
     var stype = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_TYPE]))
@@ -536,8 +539,8 @@ def touch_sphere_site_gpu[
     )
 
     var ncon = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS]))
-    if ncon > MAX_CONTACTS:
-        ncon = MAX_CONTACTS
+    if ncon > max_contacts:
+        ncon = max_contacts
 
     var total = ZERO
     for c in range(ncon):

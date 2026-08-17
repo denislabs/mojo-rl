@@ -333,14 +333,14 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
         # That is deliberate: the CPU hook's `except` writes 0.0, which reads
         # as "nothing is touching" and would be silent.
         var toe = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY_F
-        ](
+            DTYPE](
+            Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
             contacts, site_xpos, sites, meta, xquat, env, TOUCH_TOE_SITE_IDX,
             Scalar[DTYPE](TOUCH_FORCE_SCALE),
         )
         var heel = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY_F
-        ](
+            DTYPE](
+            Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
             contacts, site_xpos, sites, meta, xquat, env, TOUCH_HEEL_SITE_IDX,
             Scalar[DTYPE](TOUCH_FORCE_SCALE),
         )
@@ -456,7 +456,8 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
             var vx = ZERO
             var vy = ZERO
             var vz = ZERO
-            subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            subtree_linvel_gpu[DTYPE](
+                Dims[nq=NQ_F, nv=NV_F, nbody=NBODY_F, nsite=NSITE_F, ngeom=NGEOM_F](),
                 xvel, bodies, env, TORSO_BODY_IDX, vx, vy, vz
             )
             var hopping = tolerance[SIGMOID_LINEAR, 0.5, DTYPE](

@@ -31,7 +31,7 @@ from std.math import abs
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, AsStatic
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu import compute_cfrc_ext
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -132,8 +132,9 @@ def test_batched_cfrc_ext_matches_cpu() raises:
         d.cfrc_ext.data[i] = Scalar[DTYPE](0)
     d.upload_all(ctx)
     mf.upload_all(ctx)
-    compute_cfrc_ext[DTYPE, 1, NBODY, MC](
+    compute_cfrc_ext[DTYPE, 1](
         ctx,
+        AsStatic[MD](),
         d.xipos.lt["gpu", type_of(d).L_B3](),
         d.contacts.lt["gpu", type_of(d).L_CONTACTS](),
         d.meta.lt["gpu", type_of(d).L_META](),

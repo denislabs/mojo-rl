@@ -74,6 +74,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import (
+    AsStatic,
     Data, Model, DynamicsScratch, ContactScratch, Dims,
 )
 from mojo_rl.physics3d.types import ConeType
@@ -248,7 +249,7 @@ def _prep[
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
+            _armature_env[DTYPE](e, AsStatic[MD_2](), joints_v, M_v)
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
@@ -258,16 +259,16 @@ def _prep[
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
-                e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
+            _fnet_passive_env[DTYPE](
+                e, AsStatic[MD_2](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
         ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env[DTYPE, NV, BATCH](
-                e, qacc_ws_v, qacc_v, qacc_c_v
+            _qacc_writeback_env[DTYPE](
+                e, AsStatic[MD_2](), qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
         ctx.value().enqueue_function[

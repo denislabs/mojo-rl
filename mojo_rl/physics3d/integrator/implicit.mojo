@@ -60,6 +60,13 @@ from ..collision.broadphase_sap import detect_contacts_auto
 from ..types import ConeType
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import (
+    AsStatic,
+    Dims,
+    Dims,
+    Dims,
+    DimsLike,
+    DimsLike,
+    DimsLike,
     Data,
     Model,
     DynamicsScratch,
@@ -93,16 +100,20 @@ comptime IM_TPB: Int = 64
 # ── qDeriv damping diagonal init: zero, then qDeriv[i,i] = -damping[i] ─────
 @always_inline
 def _qderiv_damping_env[
-    DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_QDERIV: Layout](
     env: Int,
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     njoint: Int,
-    qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    qderiv: LayoutTensor[DTYPE, L_QDERIV, MutAnyOrigin],
 ):
-    for i in range(NV * NV):
+    var nv = dims.get_nv()
+    for i in range(nv * nv):
         qderiv[env, i] = 0
     for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
@@ -115,20 +126,23 @@ def _qderiv_damping_env[
             nd = 3
         for d in range(nd):
             var dof = dof_adr + d
-            qderiv[env, dof * NV + dof] = -damp
+            qderiv[env, dof * nv + dof] = -damp
 
 
 # ── M_hat: M -= dt * qDeriv (full, non-symmetric) ─────────────────────────
 @always_inline
 def _msub_qderiv_env[
-    DTYPE: DType, NV: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_M: Layout](
     env: Int,
     dt: Scalar[DTYPE],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: D,
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    qderiv: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
 ):
-    for i in range(NV * NV):
+    var nv = dims.get_nv()
+    for i in range(nv * nv):
         var cur = rebind[Scalar[DTYPE]](M[env, i])
         var qd = rebind[Scalar[DTYPE]](qderiv[env, i])
         M[env, i] = cur - dt * qd
@@ -137,23 +151,29 @@ def _msub_qderiv_env[
 # ── implicit finalize: v += dt*qacc ; integrate qpos (quat-aware) ─────────
 @always_inline
 def _implicit_finalize_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout](
     env: Int,
     dt: Scalar[DTYPE],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
     # Velocity update straight from the (constrained) implicit qacc — NO
     # dt*D re-solve (M_hat already carries the implicit terms).
-    for i in range(NV):
+    for i in range(nv):
         var qacc_final = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
         qacc[env, i] = qacc_final
         var qvel_new = rebind[Scalar[DTYPE]](qvel[env, i]) + qacc_final * dt
@@ -167,7 +187,7 @@ def _implicit_finalize_env[
         qvel[env, i] = qvel_new
 
     # Position integration (verbatim from euler finalize).
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var jnt_qpos_adr = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
@@ -216,8 +236,8 @@ def _qderiv_damping_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _qderiv_damping_env[DTYPE, NV, NJOINT, BATCH](
-        env, joints, njoint, qderiv
+    _qderiv_damping_env[DTYPE](
+        env, Dims[nv=NV, njoint=NJOINT](), joints, njoint, qderiv
     )
 
 
@@ -231,7 +251,7 @@ def _msub_qderiv_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _msub_qderiv_env[DTYPE, NV, BATCH](env, dt, M, qderiv)
+    _msub_qderiv_env[DTYPE](env, dt, Dims[nv=NV](), M, qderiv)
 
 
 def _implicit_finalize_kernel[
@@ -251,8 +271,8 @@ def _implicit_finalize_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _implicit_finalize_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, dt, qpos, qvel, qacc, joints, qacc_constrained
+    _implicit_finalize_env[DTYPE](
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, qacc_constrained
     )
 
 
@@ -327,8 +347,7 @@ struct ImplicitIntegrator[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, joints_v, M_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -345,8 +364,7 @@ struct ImplicitIntegrator[
             var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
             for e in range(Self.BATCH):
                 _qderiv_damping_env[
-                    Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, joints_v, njoint, qd_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, njoint, qd_v)
         else:
             ctx.value().enqueue_function[
                 _qderiv_damping_kernel[
@@ -366,8 +384,8 @@ struct ImplicitIntegrator[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _msub_qderiv_env[Self.DTYPE, Self.D.NV, Self.BATCH](
-                    e, dt, M_v, qd_v
+                _msub_qderiv_env[Self.DTYPE](
+                    e, dt, AsStatic[Self.D](), M_v, qd_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -397,8 +415,7 @@ struct ImplicitIntegrator[
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
+                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -427,8 +444,8 @@ struct ImplicitIntegrator[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE, Self.D.NV, Self.BATCH](
-                    e, qacc_ws_v, qacc_v, qacc_c_v
+                _qacc_writeback_env[Self.DTYPE](
+                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -475,8 +492,7 @@ struct ImplicitIntegrator[
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _implicit_finalize_env[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ](e, dt, qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
+                    Self.DTYPE](e, dt, AsStatic[Self.D](), qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
         else:
             ctx.value().enqueue_function[
                 _implicit_finalize_kernel[

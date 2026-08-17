@@ -46,31 +46,37 @@ from .constants import (
     MODEL_BODY_SIZE,
 )
 from ..collision.contact_frame import contact_tangent_frame
+from ..fields import DimsLike
 
 
 def compute_cfrc_ext[
     DTYPE: DType,
     BATCH_SIZE: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
+    D: DimsLike,
+    L_XIPOS: Layout,
+    L_CONTACTS: Layout,
+    L_META: Layout,
+    L_CFRC_EXT: Layout,
+    L_BODIES: Layout,
 ](
     ctx: DeviceContext,
+    dims: D,
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE,
-        Layout.row_major(BATCH_SIZE, MAX_CONTACTS * CONTACT_SIZE),
+        L_CONTACTS,
         MutAnyOrigin,
     ],
     meta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_META, MutAnyOrigin
     ],
     cfrc_ext: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CFRC_EXT, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
 ) raises:
     """Per-field cfrc_ext (G5 — no state slab): contact forces accumulated
@@ -79,29 +85,37 @@ def compute_cfrc_ext[
     `Model.bodies` records; xipos/contacts/meta/cfrc_ext are the
     Data tensors.
     """
+    var nbody = dims.get_nbody()
+    var max_contacts = dims.get_max_contacts()
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
     comptime EPS = Scalar[DTYPE](1e-10)
 
     @parameter
     @always_inline
+    # ⚠⚠ COMPTIME INSIDE THE KERNEL. `dims` is a host value and
+    # `Dims` is not `DevicePassable` — reading it here yields 0,
+    # every loop bound collapses and the output comes back zeroed
+    # (gated by `test_cfrc_ext_batched_vs_cpu`, which caught
+    # exactly that as rel = 1.0). Decision 3 keeps this leg
+    # comptime, so the caps are the right and only source here.
     def cfrc_ext_fields_kernel(
         xipos: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 3), MutAnyOrigin
         ],
         contacts: LayoutTensor[
             DTYPE,
-            Layout.row_major(BATCH_SIZE, MAX_CONTACTS * CONTACT_SIZE),
+            Layout.row_major(BATCH_SIZE, D.CAP_MAX_CONTACTS * CONTACT_SIZE),
             MutAnyOrigin,
         ],
         meta: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+            DTYPE, Layout.row_major(BATCH_SIZE, D.CAP_NBODY * 6), MutAnyOrigin
         ],
         bodies: LayoutTensor[
-            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+            DTYPE, Layout.row_major(D.CAP_NBODY, MODEL_BODY_SIZE), MutAnyOrigin
         ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -109,14 +123,14 @@ def compute_cfrc_ext[
             return
 
         # --- 1. Zero cfrc_ext ---
-        for i in range(NBODY * 6):
+        for i in range(D.CAP_NBODY * 6):
             cfrc_ext[env, i] = Scalar[DTYPE](0)
 
         # --- 2. Compute subtree_com for each body ---
-        var stmass = InlineArray[Scalar[DTYPE], NBODY](uninitialized=True)
-        var stcom = InlineArray[Scalar[DTYPE], NBODY * 3](uninitialized=True)
+        var stmass = InlineArray[Scalar[DTYPE], D.CAP_NBODY](uninitialized=True)
+        var stcom = InlineArray[Scalar[DTYPE], D.CAP_NBODY * 3](uninitialized=True)
 
-        for i in range(NBODY):
+        for i in range(D.CAP_NBODY):
             var m = rebind[Scalar[DTYPE]](bodies[i, BODY_IDX_MASS])
             stmass[i] = m
             stcom[i * 3 + 0] = m * rebind[Scalar[DTYPE]](
@@ -130,7 +144,7 @@ def compute_cfrc_ext[
             )
 
         # Backward sweep: add child contribution to parent
-        for i in range(NBODY - 1, 0, -1):
+        for i in range(D.CAP_NBODY - 1, 0, -1):
             var p = Int(rebind[Scalar[DTYPE]](bodies[i, BODY_IDX_PARENT]))
             stmass[p] += stmass[i]
             stcom[p * 3 + 0] += stcom[i * 3 + 0]
@@ -138,7 +152,7 @@ def compute_cfrc_ext[
             stcom[p * 3 + 2] += stcom[i * 3 + 2]
 
         # Normalize to get CoM position
-        for i in range(NBODY):
+        for i in range(D.CAP_NBODY):
             var sm = stmass[i]
             if sm > EPS:
                 stcom[i * 3 + 0] = stcom[i * 3 + 0] / sm
@@ -156,9 +170,9 @@ def compute_cfrc_ext[
                 )
 
         # --- 3. Compute body_rootid ---
-        var rootid = InlineArray[Int, NBODY](uninitialized=True)
+        var rootid = InlineArray[Int, D.CAP_NBODY](uninitialized=True)
         rootid[0] = 0
-        for i in range(1, NBODY):
+        for i in range(1, D.CAP_NBODY):
             var p = Int(rebind[Scalar[DTYPE]](bodies[i, BODY_IDX_PARENT]))
             if p == 0:
                 rootid[i] = i
@@ -170,7 +184,7 @@ def compute_cfrc_ext[
             rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS])
         )
 
-        for ci in range(MAX_CONTACTS):
+        for ci in range(D.CAP_MAX_CONTACTS):
             if ci >= num_contacts:
                 break
 
