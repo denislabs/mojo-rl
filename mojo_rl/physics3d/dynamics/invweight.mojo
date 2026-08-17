@@ -37,7 +37,7 @@ CPU-only (build-time); no GPU kernels needed.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -477,9 +477,9 @@ def compute_invweight0[
             var len0 = Scalar[DTYPE](0)
             if kind == TENDON_KIND_SPATIAL:
                 len0 = spatial_tendon_length_jac[
-                    DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, D.NTENDON, D.NV, 1
+                    DTYPE, D.NV, 1
                 ](
-                    0, t, ten_v, site_v, bodies_v, joints_v, meta_v,
+                    0, t, AsStatic[D](), ten_v, site_v, bodies_v, joints_v, meta_v,
                     stcom_v, cdof_v, xpos_v, xquat_v, tJ,
                 )
             else:

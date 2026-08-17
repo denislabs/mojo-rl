@@ -60,7 +60,7 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
     TARGET_HALF_Z,
     BALL_RADIUS,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
@@ -298,9 +298,9 @@ def test_ball_in_cup_model_matches_mujoco() raises:
 
     var tJ = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
     var L = spatial_tendon_length_jac[
-        DTYPE, NV, NBODY, NJOINT, NSITE, NTEN, NV, 1
+        DTYPE, NV, 1
     ](
-        0, 0,
+        0, 0, AsStatic[MD](),
         mf.tendons.lt["cpu", Layout.row_major(NTEN, MODEL_TENDON_SIZE)](),
         mf.sites.lt["cpu", Layout.row_major(NSITE, MODEL_SITE_SIZE)](),
         mf.bodies.lt["cpu", Layout.row_major(NBODY, MODEL_BODY_SIZE)](),

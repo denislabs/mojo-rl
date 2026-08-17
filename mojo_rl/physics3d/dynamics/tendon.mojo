@@ -53,23 +53,29 @@ from ..gpu.constants import (
     TENDON_IDX_NUM_SITES,
     TENDON_IDX_SITE_0,
 )
+from ..fields import DimsLike
 from .jac_contact_row import _contact_jacobian_row
 from ..kinematics.quat_math import gpu_quat_rotate
 
 
 @always_inline
 def _site_world[
-    DTYPE: DType, NBODY: Int, NSITE: Int, BATCH: Int
-](
+    DTYPE: DType,
+    BATCH: Int,
+    D: DimsLike,
+    L_SITES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout](
     env: Int,
     site_idx: Int,
     s_body: Int,
+    dims: D,
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """A site's world position, recomputed from `xpos`/`xquat`.
@@ -78,11 +84,12 @@ def _site_world[
     already written this into `Data.site_xpos`. It is recomputed rather than
     read because threading `site_xpos` into the solvers means binding a tensor
     that is EMPTY on every site-less model (walker, cheetah, ant, ...), and
-    `Data` sizes it `BATCH * NSITE * 3`. Passing that operand crashed three
+    `Data` sizes it `BATCH * nsite * 3`. Passing that operand crashed three
     solver tests at bind. `xpos`/`xquat` are always non-empty and the solver
     already receives both, so this costs one quaternion rotation per waypoint
     and removes an entire class of empty-operand failure.
     """
+    var nsite = dims.get_nsite()
     var sp_x = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_X])
     var sp_y = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Y])
     var sp_z = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Z])
@@ -116,36 +123,45 @@ def _sqrt_pos[DTYPE: DType](v: Scalar[DTYPE]) -> Scalar[DTYPE]:
 
 def spatial_tendon_length_jac[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NSITE: Int,
-    NTENDON: Int,
     V_SIZE: Int,
     BATCH: Int,
+    # ⚠ A PROVIDER ITS OWN BODY DOES NOT NEED. Nothing here reads a dimension
+    # directly, so the sweep gave this declaration no `D` — and then `_site_
+    # world`, which it calls, needed one. A caller's provider requirement is
+    # the TRANSITIVE closure of its callees', not what its own lines mention.
+    D: DimsLike,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_SUBTREE_COM: Layout,
+    L_CDOF: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
     t_i: Int,
+    dims: D,
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    mmeta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_SUBTREE_COM, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
 ) -> Scalar[DTYPE]:
@@ -178,11 +194,11 @@ def spatial_tendon_length_jac[
 
         var b0 = Int(rebind[Scalar[DTYPE]](sites[s0, SITE_IDX_BODY]))
         var b1 = Int(rebind[Scalar[DTYPE]](sites[s1, SITE_IDX_BODY]))
-        var p0 = _site_world[DTYPE, NBODY, NSITE, BATCH](
-            env, s0, b0, sites, xpos, xquat
+        var p0 = _site_world[DTYPE, BATCH](
+            env, s0, b0, dims, sites, xpos, xquat
         )
-        var p1 = _site_world[DTYPE, NBODY, NSITE, BATCH](
-            env, s1, b1, sites, xpos, xquat
+        var p1 = _site_world[DTYPE, BATCH](
+            env, s1, b1, dims, sites, xpos, xquat
         )
         var p0x = p0[0]
         var p0y = p0[1]
@@ -211,7 +227,7 @@ def spatial_tendon_length_jac[
         var uz = dz * inv
 
         # + dif . jacp(p1, b1)
-        _contact_jacobian_row[DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH](
+        _contact_jacobian_row[DTYPE, V_SIZE](
             env, subtree_com, joints, bodies, mmeta, cdof,
             b1, 0, p1x, p1y, p1z, ux, uy, uz, seg_J,
         )
@@ -219,7 +235,7 @@ def spatial_tendon_length_jac[
             J_row[i] += seg_J[i]
 
         # - dif . jacp(p0, b0)
-        _contact_jacobian_row[DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH](
+        _contact_jacobian_row[DTYPE, V_SIZE](
             env, subtree_com, joints, bodies, mmeta, cdof,
             b0, 0, p0x, p0y, p0z, ux, uy, uz, seg_J,
         )

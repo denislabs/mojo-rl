@@ -118,6 +118,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 
 
 # =============================================================================
+from ..fields import Dims
 # Weld / angular Jacobian rows (ports of dynamics/jacobian.mojo GPU rows)
 # =============================================================================
 
@@ -1451,9 +1452,10 @@ def _tendon_env[
                 fill=Scalar[DTYPE](0)
             )
             ten_length = spatial_tendon_length_jac[
-                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, _max_one[NV](), BATCH
+                DTYPE, _max_one[NV](), BATCH
             ](
-                env, t_i, tendons, sites, bodies, joints, mmeta, subtree_com,
+                env, t_i, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, ntendon=NTENDON, nsite=NSITE](), tendons, sites, bodies, joints, mmeta,
+                subtree_com,
                 cdof, xpos, xquat, sp_J,
             )
             for i in range(NV):

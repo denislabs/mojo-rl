@@ -9,7 +9,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, Dims, DimsLike
+from ..fields import Data, Model, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -27,25 +27,28 @@ def _max_one[N: Int]() -> Int:
 @always_inline
 def _subtree_com_env[
     DTYPE: DType,
-    NBODY: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_BODIES: Layout,
+    L_XIPOS: Layout,
 ](
     env: Int,
+    dims: D,
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
 ):
     """Bottom-up mass*xipos accumulation, then normalize (verbatim from
     compute_subtree_com_gpu)."""
-    comptime MASS_SIZE = _max_one[NBODY]()
+    var nbody = dims.get_nbody()
+    comptime MASS_SIZE = _max_one[D.CAP_NBODY]()
     var stmass = InlineArray[Scalar[DTYPE], MASS_SIZE](uninitialized=True)
-    for b in range(NBODY):
+    for b in range(nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         stmass[b] = mass
         subtree_com[env, b * 3 + 0] = mass * rebind[Scalar[DTYPE]](
@@ -58,7 +61,7 @@ def _subtree_com_env[
             xipos[env, b * 3 + 2]
         )
 
-    for b in range(NBODY - 1, 0, -1):
+    for b in range(nbody - 1, 0, -1):
         var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         stmass[p] = stmass[p] + stmass[b]
         subtree_com[env, p * 3 + 0] = rebind[Scalar[DTYPE]](
@@ -71,7 +74,7 @@ def _subtree_com_env[
             subtree_com[env, p * 3 + 2]
         ) + rebind[Scalar[DTYPE]](subtree_com[env, b * 3 + 2])
 
-    for b in range(NBODY):
+    for b in range(nbody):
         if stmass[b] > Scalar[DTYPE](1e-10):
             subtree_com[env, b * 3 + 0] = (
                 rebind[Scalar[DTYPE]](subtree_com[env, b * 3 + 0]) / stmass[b]
@@ -112,8 +115,8 @@ def _subtree_com_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _subtree_com_env[DTYPE, NBODY, BATCH](
-        env, bodies, xipos, subtree_com
+    _subtree_com_env[DTYPE](
+        env, Dims[nbody=NBODY](), bodies, xipos, subtree_com
     )
 
 
@@ -138,8 +141,8 @@ def compute_subtree_com[
         var xipos_v = d.xipos.lt["cpu", L_B3]()
         var stcom_v = d.subtree_com.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _subtree_com_env[DTYPE, D.NBODY, BATCH](
-                e, bodies_v, xipos_v, stcom_v
+            _subtree_com_env[DTYPE](
+                e, AsStatic[D](), bodies_v, xipos_v, stcom_v
             )
     else:
         var c = ctx.value()

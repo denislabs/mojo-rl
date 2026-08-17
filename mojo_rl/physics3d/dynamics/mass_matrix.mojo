@@ -15,7 +15,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -47,18 +47,21 @@ def _mm_setup_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
 ](
     env: Int,
+    dims: D,
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mut dof_body: InlineArray[Int, _ensure_positive[NV]()],
     mut I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
@@ -68,10 +71,11 @@ def _mm_setup_env[
     Extracted verbatim from `_mass_matrix_env` so the serial and _mt
     schedules share identical arithmetic (model + FK-state reads only ->
     every thread computes the same values)."""
+    var njoint = dims.get_njoint()
     for i in range(NV):
         dof_body[i] = 0
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var body_id = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
@@ -154,21 +158,24 @@ def _mm_row_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
-    BATCH: Int,
+    L_XIPOS: Layout,
+    L_BODIES: Layout,
+    L_CDOF: Layout,
+    L_M: Layout,
 ](
     env: Int,
     i: Int,
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
     dof_body: InlineArray[Int, _ensure_positive[NV]()],
     I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
     subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
@@ -267,50 +274,56 @@ def _mm_row_env[
 @always_inline
 def _mass_matrix_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_XQUAT: Layout,
+    L_XIPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
+    L_M: Layout,
 ](
     env: Int,
+    dims: D,
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
 ):
-    """Full NV x NV mass matrix for one env (arithmetic verbatim from
+    """Full nv x nv mass matrix for one env (arithmetic verbatim from
     compute_mass_matrix_full_gpu; setup/row bodies now live in the shared
     `_mm_setup_env` / `_mm_row_env` helpers — pure refactor,
     gated bit-exact by tests/physics3d/test_fk_fields.mojo)."""
-    for i in range(NV * NV):
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    for i in range(nv * nv):
         M[env, i] = 0
 
-    comptime NV_SAFE = _ensure_positive[NV]()
-    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
-    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
+    comptime NV_SAFE = _ensure_positive[D.CAP_NV]()
+    comptime I_WORLD_SIZE = _ensure_positive[D.CAP_NBODY * 6]()
+    comptime MASK_SIZE = _ensure_positive[D.CAP_NBODY * D.CAP_NBODY]()
     var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
     var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, xquat, bodies, joints, dof_body, I_world, subtree_mask
+    _mm_setup_env[DTYPE, D.CAP_NV, D.CAP_NBODY](
+        env, dims, xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # M[i,j] via direct body summation with subtree mask lookup
-    for i in range(NV):
-        _mm_row_env[DTYPE, NV, NBODY, BATCH](
+    for i in range(nv):
+        _mm_row_env[DTYPE, D.CAP_NV, D.CAP_NBODY](
             env, i, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
@@ -373,13 +386,13 @@ def _mass_matrix_fields_mt_kernel[
     var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
     var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, xquat, bodies, joints, dof_body, I_world, subtree_mask
+    _mm_setup_env[DTYPE, NV, NBODY](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # Each thread handles rows i where i % N_THREADS == tid.
     for i in range(tid, NV, N_THREADS):
-        _mm_row_env[DTYPE, NV, NBODY, BATCH](
+        _mm_row_env[DTYPE, NV, NBODY](
             env, i, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
@@ -406,34 +419,38 @@ def _mass_matrix_fields_mt_kernel[
 @always_inline
 def _mm_treewalk_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
     N_THREADS: Int,
     GPU: Bool,
+    D: DimsLike,
+    L_XQUAT: Layout,
+    L_XIPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
+    L_M: Layout,
 ](
     env: Int,
     tid: Int,
+    dims: D,
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
 ):
-    """Tree-walk CRBA for ONE env — O(NV*depth), shared by CPU and GPU.
+    """Tree-walk CRBA for ONE env — O(nv*depth), shared by CPU and GPU.
 
     ⚠ THE ONLY DIFFERENCE BETWEEN THE TWO TARGETS IS `GPU`, WHICH GATES THE
     BARRIERS. Everything arithmetic is one copy, so the CPU result is
@@ -442,9 +459,12 @@ def _mm_treewalk_env[
     against the DENSE kernels, which sum the same terms in a different order.
     """
 
-    comptime NV_S = _ensure_positive[NV]()
-    comptime NB_S = _ensure_positive[NBODY]()
-    comptime CMP_S = _ensure_positive[NBODY * 10]()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    comptime NV_S = _ensure_positive[D.CAP_NV]()
+    comptime NB_S = _ensure_positive[D.CAP_NBODY]()
+    comptime CMP_S = _ensure_positive[D.CAP_NBODY * 10]()
     var dof_body = InlineArray[Int, NV_S](fill=0)
     var dof_parent = InlineArray[Int, NV_S](fill=-1)
     var body_first = InlineArray[Int, NB_S](fill=-1)
@@ -452,7 +472,7 @@ def _mm_treewalk_env[
     var comp = InlineArray[Scalar[DTYPE], CMP_S](fill=0)
 
     # --- dof_body + per-body dof range ---
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jb = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
         var dadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
@@ -470,7 +490,7 @@ def _mm_treewalk_env[
 
     # --- dof_parent: within body = d-1; at body's first dof = last dof of the
     #     nearest ancestor body that has DOFs (else -1) ---
-    for d in range(NV):
+    for d in range(nv):
         var b = dof_body[d]
         if d > body_first[b]:
             dof_parent[d] = d - 1
@@ -483,7 +503,7 @@ def _mm_treewalk_env[
                 p = Int(rebind[Scalar[DTYPE]](bodies[p, BODY_IDX_PARENT]))
 
     # --- per-body composite contribution about P = stcom[rootid] ---
-    for b in range(NBODY):
+    for b in range(nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         # rotated body inertia (world-aligned, about body COM)
         var Ixx_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
@@ -541,20 +561,20 @@ def _mm_treewalk_env[
         comp[b * 10 + 9] = Iw_yz - mass * dy * dz
 
     # leaf→root accumulate (common P within a tree → additive; stop at roots)
-    for b in range(NBODY - 1, 0, -1):
+    for b in range(nbody - 1, 0, -1):
         var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if p > 0:
             for e in range(10):
                 comp[p * 10 + e] = comp[p * 10 + e] + comp[b * 10 + e]
 
     # zero M (distributed)
-    for idx in range(tid, NV * NV, N_THREADS):
+    for idx in range(tid, nv * nv, N_THREADS):
         M[env, idx] = Scalar[DTYPE](0)
     comptime if GPU:
         barrier()
 
     # per-DOF row, distributed: f_i = comp[body_i]·cdof_i, walk ancestor DOFs
-    for i in range(tid, NV, N_THREADS):
+    for i in range(tid, nv, N_THREADS):
         var bi = dof_body[i]
         var ai0 = cdof[env, i * 6 + 0]
         var ai1 = cdof[env, i * 6 + 1]
@@ -592,9 +612,9 @@ def _mm_treewalk_env[
                 aj0 * fa0 + aj1 * fa1 + aj2 * fa2
                 + lj0 * fl0 + lj1 * fl1 + lj2 * fl2
             )
-            M[env, i * NV + j] = mij
+            M[env, i * nv + j] = mij
             if i != j:
-                M[env, j * NV + i] = mij
+                M[env, j * nv + i] = mij
             j = dof_parent[j]
     comptime if GPU:
         barrier()
@@ -626,8 +646,9 @@ def _mass_matrix_treewalk_fields_mt_kernel[
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
-    _mm_treewalk_env[DTYPE, NV, NBODY, NJOINT, BATCH, N_THREADS, True](
+    _mm_treewalk_env[DTYPE, N_THREADS, True](
         Int(block_idx.x), Int(thread_idx.x),
+        Dims[nv=NV, nbody=NBODY, njoint=NJOINT](),
         xquat, xipos, subtree_com, bodies, joints, cdof, M,
     )
 
@@ -660,8 +681,8 @@ def _mass_matrix_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, xquat, xipos, subtree_com, bodies, joints, cdof, M
+    _mass_matrix_env[DTYPE](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), xquat, xipos, subtree_com, bodies, joints, cdof, M
     )
 
 
@@ -715,14 +736,15 @@ def compute_mass_matrix[
         var M_v = scratch.M.lt["cpu", L_M]()
         comptime if TREEWALK:
             for e in range(BATCH):
-                _mm_treewalk_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH, 1, False](
+                _mm_treewalk_env[DTYPE, 1, False](
                     e, 0,
+                    AsStatic[D](),
                     xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
                 )
         else:
             for e in range(BATCH):
-                _mass_matrix_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH](
-                    e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
+                _mass_matrix_env[DTYPE](
+                    e, AsStatic[D](), xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
                     M_v,
                 )
     elif PARALLEL and TREEWALK:

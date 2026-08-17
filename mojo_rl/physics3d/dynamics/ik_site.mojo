@@ -283,7 +283,7 @@ def qpos_from_site_pose[
         var subtree_v = d.subtree_com.lt["cpu", L_NB3]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var sxpos_v = d.site_xpos.lt["cpu", L_SX]()
-        jac_site[DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, 1](
+        jac_site[DTYPE, D.NV](
             0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
             sites_v, sxpos_v, site, jp, jr,
         )

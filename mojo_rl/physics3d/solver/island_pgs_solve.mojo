@@ -597,8 +597,7 @@ def _island_pgs_solve_env[
 
                     if d < 2:
                         _contact_jacobian_row[
-                            DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-                        ](
+                            DTYPE, V_SIZE](
                             env,
                             subtree_com,
                             joints,

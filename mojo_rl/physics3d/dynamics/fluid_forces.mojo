@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -53,39 +53,46 @@ comptime FLUID_TPB: Int = 64
 
 def _fluid_forces_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_XVEL: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_FNET: Layout,
 ](
     env: Int,
-    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    xvel: LayoutTensor[DTYPE, L_XVEL, MutAnyOrigin],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_FNET, MutAnyOrigin],
 ):
     """Inertia-box fluid drag for one env (verbatim from compute_fluid_forces,
     serialized per env)."""
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
     var rho = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_DENSITY])
     var mu = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_VISCOSITY])
 
@@ -95,7 +102,7 @@ def _fluid_forces_env[
 
     comptime PI: Scalar[DTYPE] = 3.14159265358979323846
 
-    for b in range(1, NBODY):
+    for b in range(1, nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         if mass <= Scalar[DTYPE](1e-10):
             continue
@@ -213,7 +220,7 @@ def _fluid_forces_env[
         # Walk the kinematic tree from body b to root, accumulating via cdof
         var body = b
         while body > 0:
-            for j in range(NJOINT):
+            for j in range(njoint):
                 if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])) != (
                     body
                 ):
@@ -287,8 +294,8 @@ def _fluid_forces_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, xvel, xangvel, xquat, xipos, subtree_com, bodies, joints, mmeta,
+    _fluid_forces_env[DTYPE](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), xvel, xangvel, xquat, xipos, subtree_com, bodies, joints, mmeta,
         cdof, fnet,
     )
 
@@ -330,8 +337,8 @@ def compute_fluid_forces[
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fluid_forces_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH](
-                e, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
+            _fluid_forces_env[DTYPE](
+                e, AsStatic[D](), xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
                 joints_v, meta_v, cdof_v, fnet_v,
             )
     else:

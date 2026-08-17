@@ -84,6 +84,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 from .scalar_rows import SROW_EQ_BILATERAL
 
 # How many (joint, coef) pairs a fixed tendon stores.
+from ..fields import Dims
 #
 # ⚠ WAS A LOCAL `4`, ON THE REASONING THAT REUSING `TENDON_MAX_SITES` WOULD BE
 # COINCIDENTAL. The reasoning was sound and the outcome was not: the cap ended
@@ -206,9 +207,10 @@ def build_tendon_limit_rows[
         var kind = Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_KIND]))
         if kind == TENDON_KIND_SPATIAL:
             ten_len = spatial_tendon_length_jac[
-                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, BATCH
+                DTYPE, V_SIZE, BATCH
             ](
-                env, t, tendons, sites, bodies, joints, mmeta, subtree_com,
+                env, t, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, nsite=NSITE, ntendon=NTENDON](), tendons, sites, bodies, joints, mmeta,
+                subtree_com,
                 cdof, xpos, xquat, tJ,
             )
         else:
@@ -399,9 +401,10 @@ def build_tendon_equality_rows[
             # limit builder above makes, and the piece whose absence made this
             # constraint a no-op.
             ten_len = spatial_tendon_length_jac[
-                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, BATCH
+                DTYPE, V_SIZE, BATCH
             ](
-                env, t, tendons, sites, bodies, joints, mmeta, subtree_com,
+                env, t, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, nsite=NSITE, ntendon=NTENDON](), tendons, sites, bodies, joints, mmeta,
+                subtree_com,
                 cdof, xpos, xquat, eqJ,
             )
             for i in range(NV):

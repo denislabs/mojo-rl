@@ -183,7 +183,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
 
         # Ours, built by the same helper the solver uses.
         var jn_ours = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
-        _contact_jacobian_row[DTYPE, NV, M.NBODY, M.NJOINT, NV, 1](
+        _contact_jacobian_row[DTYPE, NV](
             0,
             subtree_v,
             joints_v,

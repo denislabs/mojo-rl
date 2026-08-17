@@ -66,10 +66,10 @@ from ..gpu.constants import (
 
 @always_inline
 def _is_self_or_ancestor[
-    DTYPE: DType, NBODY: Int
-](
+    DTYPE: DType,
+    L_BODIES: Layout](
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     body: Int,
     candidate: Int,
@@ -99,24 +99,26 @@ def _is_self_or_ancestor[
 def jac_point[
     DTYPE: DType,
     NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    L_SUBTREE_COM: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
 ](
     env: Int,
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     body: Int,
     point_x: Scalar[DTYPE],
     point_y: Scalar[DTYPE],
@@ -154,7 +156,7 @@ def jac_point[
         var joint_body = Int(
             rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_BODY_ID])
         )
-        if not _is_self_or_ancestor[DTYPE, NBODY](bodies, wbody, joint_body):
+        if not _is_self_or_ancestor[DTYPE](bodies, wbody, joint_body):
             continue
 
         var jnt_type = Int(
@@ -204,37 +206,40 @@ def jac_point[
 def jac_site[
     DTYPE: DType,
     NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NSITE: Int,
-    BATCH: Int,
+    L_SUBTREE_COM: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_SITES: Layout,
+    L_SITE_XPOS: Layout,
 ](
     env: Int,
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NSITE * 3), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     site: Int,
     mut jacp: InlineArray[Scalar[DTYPE], 3 * NV],
     mut jacr: InlineArray[Scalar[DTYPE], 3 * NV],
 ):
     """`mj_jacSite` — `jac_point` at the site's world position and body."""
-    jac_point[DTYPE, NV, NBODY, NJOINT, BATCH](
+    jac_point[DTYPE, NV](
         env,
         subtree_com,
         joints,

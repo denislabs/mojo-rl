@@ -20,7 +20,7 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -52,32 +52,36 @@ comptime CDOF_TPB: Int = 64
 @always_inline
 def _cdof_body[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
 ](
     env: Int,
     body: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
 ):
     """One body's cdof for its DOFs (arithmetic verbatim from
     cdof_body_gpu)."""
+    var njoint = dims.get_njoint()
     var parent = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_PARENT]))
 
     # Parent world orientation (worldbody=0 has identity)
@@ -127,7 +131,7 @@ def _cdof_body[
     var cy = rebind[Scalar[DTYPE]](xpos[env, parent * 3 + 1]) + bpos_w[1]
     var cz = rebind[Scalar[DTYPE]](xpos[env, parent * 3 + 2]) + bpos_w[2]
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var joint_body = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
         )
@@ -308,36 +312,41 @@ def _cdof_body[
 @always_inline
 def _cdof_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
 ):
     """Full cdof for one env: zero + per-body walk."""
-    for i in range(NV * 6):
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    for i in range(nv * 6):
         cdof[env, i] = 0
 
-    for body in range(1, NBODY):
-        _cdof_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-            env, body, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
+    for body in range(1, nbody):
+        _cdof_body[DTYPE](
+            env, body, dims, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
         )
 
 
@@ -368,8 +377,8 @@ def _cdof_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _cdof_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-        env, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
+    _cdof_env[DTYPE](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT](), qpos, xpos, xquat, subtree_com, bodies, joints, cdof
     )
 
 
@@ -416,8 +425,8 @@ def _cdof_fields_mt_kernel[
 
     # Per-body, independent -> stripe across threads, no per-body barrier.
     for body in range(1 + tid, NBODY, N_THREADS):
-        _cdof_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-            env, body, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
+        _cdof_body[DTYPE](
+            env, body, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT](), qpos, xpos, xquat, subtree_com, bodies, joints, cdof
         )
 
 
@@ -454,8 +463,8 @@ def compute_cdof[
         var joints_v = m.joints.lt["cpu", L_JOINT]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         for e in range(BATCH):
-            _cdof_env[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH](
-                e, qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
+            _cdof_env[DTYPE](
+                e, AsStatic[D](), qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
             )
     elif PARALLEL:
         var c = ctx.value()

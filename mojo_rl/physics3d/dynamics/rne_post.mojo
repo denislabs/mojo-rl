@@ -51,7 +51,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
@@ -101,26 +101,30 @@ comptime RNE_POST_TPB: Int = 64
 @always_inline
 def _cfrc_ext_env[
     DTYPE: DType,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
+    L_DMETA: Layout,
+    L_SUBTREE_COM: Layout,
+    L_BODIES: Layout,
+    L_CFRC_EXT: Layout,
 ](
     env: Int,
+    dims: D,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     dmeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_DMETA, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     cfrc_ext: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CFRC_EXT, MutAnyOrigin
     ],
 ):
     """Contact forces accumulated per body at the root's subtree CoM.
@@ -135,12 +139,14 @@ def _cfrc_ext_env[
     consumer, Ant's contact_cost, takes a norm and could not have caught a
     flipped sign; the quadruped force-sensor gate can.)
     """
-    for i in range(NBODY * 6):
+    var nbody = dims.get_nbody()
+    var max_contacts = dims.get_max_contacts()
+    for i in range(nbody * 6):
         cfrc_ext[env, i] = Scalar[DTYPE](0)
 
     var ncon = Int(rebind[Scalar[DTYPE]](dmeta[env, META_IDX_NUM_CONTACTS]))
 
-    for ci in range(MAX_CONTACTS):
+    for ci in range(max_contacts):
         if ci >= ncon:
             break
         var cb = ci * CONTACT_SIZE
@@ -237,63 +243,73 @@ def _cfrc_ext_env[
 @always_inline
 def _rne_post_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QVEL: Layout,
+    L_XQUAT: Layout,
+    L_XIPOS: Layout,
+    L_CONTACTS: Layout,
+    L_DMETA: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_CRB: Layout,
+    L_CVEL: Layout,
 ](
     env: Int,
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     dmeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_DMETA, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     crb: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 10), MutAnyOrigin
+        DTYPE, L_CRB, MutAnyOrigin
     ],
     cvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     cacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     cfrc_ext: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     cfrc_int: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
 ):
     """One env's `mj_rnePostConstraint`. See the module docstring."""
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
     var gx = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_GRAVITY_X])
     var gy = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_GRAVITY_Y])
     var gz = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_GRAVITY_Z])
 
-    comptime B6 = _max_one[NBODY * 6]()
+    comptime B6 = _max_one[D.CAP_NBODY * 6]()
     for i in range(B6):
         cacc[env, i] = Scalar[DTYPE](0)
     # World acceleration = -gravity. `_rne_fwd_body` writes this into every
@@ -304,33 +320,33 @@ def _rne_post_env[
     cacc[env, 3] = -gx
     cacc[env, 4] = -gy
     cacc[env, 5] = -gz
-    for i in range(NBODY * 6):
+    for i in range(nbody * 6):
         crb[env, i] = Scalar[DTYPE](0)
 
-    comptime CIN = _max_one[NBODY * 10]()
+    comptime CIN = _max_one[D.CAP_NBODY * 10]()
     var cinert_g = InlineArray[Scalar[DTYPE], CIN](uninitialized=True)
     for i in range(CIN):
         cinert_g[i] = Scalar[DTYPE](0)
-    for b in range(NBODY):
-        _rne_cinert_body[DTYPE, NBODY, BATCH](
+    for b in range(nbody):
+        _rne_cinert_body[DTYPE, D.CAP_NBODY](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
     # 1. cvel (into crb) + the qacc-free part of cacc, verbatim from RNE.
-    for b in range(1, NBODY):
-        _rne_fwd_body[DTYPE, NV, NBODY, NJOINT, BATCH](
-            env, b, gx, gy, gz, qvel, bodies, joints, cdof, crb, cacc
+    for b in range(1, nbody):
+        _rne_fwd_body[DTYPE](
+            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, cacc
         )
 
     # 2. The cdof*qacc term, as its own forward sweep (see docstring).
     var extra = InlineArray[Scalar[DTYPE], B6](uninitialized=True)
     for i in range(B6):
         extra[i] = Scalar[DTYPE](0)
-    for b in range(1, NBODY):
+    for b in range(1, nbody):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         for k in range(6):
             extra[b * 6 + k] = extra[parent * 6 + k]
-        for j in range(NJOINT):
+        for j in range(njoint):
             if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])) != b:
                 continue
             var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
@@ -353,16 +369,16 @@ def _rne_post_env[
             )
 
     # 3. External (contact) forces per body.
-    _cfrc_ext_env[DTYPE, NBODY, MAX_CONTACTS, BATCH](
-        env, contacts, dmeta, subtree_com, bodies, cfrc_ext
+    _cfrc_ext_env[DTYPE](
+        env, dims, contacts, dmeta, subtree_com, bodies, cfrc_ext
     )
 
     # 4. cfrc_int = cfrc_body - cfrc_ext, then accumulate leaves -> root.
-    for b in range(NBODY):
-        _rne_cfrc_body[DTYPE, NBODY, BATCH](
+    for b in range(nbody):
+        _rne_cfrc_body[DTYPE, D.CAP_NBODY](
             env, b, cinert_g, crb, cacc, cfrc_int
         )
-    for i in range(NBODY * 6):
+    for i in range(nbody * 6):
         cfrc_int[env, i] = rebind[Scalar[DTYPE]](
             cfrc_int[env, i]
         ) - rebind[Scalar[DTYPE]](cfrc_ext[env, i])
@@ -370,10 +386,10 @@ def _rne_post_env[
     # body 0 as well. `cfrc_int[0]` is therefore ours-only; no sensor reads it
     # (`site_bodyid` is never 0), and for a system with no external wrench the
     # two agree anyway, because the sum it would hold is the net wrench.
-    _rne_backward_env[DTYPE, NBODY, BATCH](env, bodies, cfrc_int)
+    _rne_backward_env[DTYPE](env, dims, bodies, cfrc_int)
 
     # 5. Publish cvel out of the crb scratch (the accelerometer needs it).
-    for b in range(NBODY):
+    for b in range(nbody):
         for k in range(6):
             cvel[env, b * 6 + k] = rebind[Scalar[DTYPE]](
                 crb[env, b * 6 + k]
@@ -435,8 +451,8 @@ def _rne_post_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rne_post_env[DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH](
-        env, qvel, qacc, xquat, xipos, subtree_com, contacts, dmeta, bodies,
+    _rne_post_env[DTYPE](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS](), qvel, qacc, xquat, xipos, subtree_com, contacts, dmeta, bodies,
         joints, mmeta, cdof, crb, cvel, cacc, cfrc_ext, cfrc_int,
     )
 
@@ -488,8 +504,8 @@ def compute_rne_post[
         var cfrc_ext_v = d.cfrc_ext.lt["cpu", L_B6]()
         var cfrc_int_v = d.cfrc_int.lt["cpu", L_B6]()
         for e in range(BATCH):
-            _rne_post_env[DTYPE, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, BATCH](
-                e, qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
+            _rne_post_env[DTYPE](
+                e, AsStatic[D](), qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
                 bodies_v, joints_v, mmeta_v, cdof_v, crb_v, cvel_v, cacc_v,
                 cfrc_ext_v, cfrc_int_v,
             )

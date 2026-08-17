@@ -226,7 +226,7 @@ def _sweep[D: DimsLike](
 
             var jp = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
             var jr = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
-            jac_site[DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, 1](
+            jac_site[DTYPE, D.NV](
                 0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
                 sites_v, sxpos_v, s, jp, jr,
             )

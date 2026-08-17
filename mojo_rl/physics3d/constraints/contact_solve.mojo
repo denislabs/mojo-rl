@@ -471,8 +471,7 @@ def _precompute_contact_normal[
 
             # Compute normal Jacobian
             _contact_jacobian_row[
-                DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-            ](
+                DTYPE, V_SIZE](
                 env,
                 subtree_com,
                 joints,
@@ -746,11 +745,11 @@ def _precompute_contact_friction[
     # --- Compute J_t1, J_t2 (needed by both ELLIPTIC and PYRAMIDAL) ---
     var J_t1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     var J_t2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    _contact_jacobian_row[DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH](
+    _contact_jacobian_row[DTYPE, V_SIZE](
         env, subtree_com, joints, bodies, mmeta, cdof,
         body_a, body_b, px, py, pz, t1x, t1y, t1z, J_t1,
     )
-    _contact_jacobian_row[DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH](
+    _contact_jacobian_row[DTYPE, V_SIZE](
         env, subtree_com, joints, bodies, mmeta, cdof,
         body_a, body_b, px, py, pz, t2x, t2y, t2z, J_t2,
     )
@@ -1610,8 +1609,7 @@ def _contact_solve_env[
 
                     if d < 2:
                         _contact_jacobian_row[
-                            DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-                        ](
+                            DTYPE, V_SIZE](
                             env,
                             subtree_com,
                             joints,
