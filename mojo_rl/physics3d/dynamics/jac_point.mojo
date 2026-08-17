@@ -39,13 +39,14 @@ number; the first is recorded so nobody "fixes" it back:
    removal a test would catch.
 
 LAYOUT. MuJoCo writes `jacp[i + k*nv]` — row-major 3 x nv, row `k` is the world
-axis and column `i` the DOF. `jacp[k * NV + i]` here, same thing. ⚠ Reading it
+axis and column `i` the DOF. `jacp[k * nv + i]` here, same thing. ⚠ Reading it
 as nv x 3 transposes silently and still has the right norm, so a gate that only
 checks magnitudes will not see it.
 """
 
 from std.collections import InlineArray
 from layout import Layout, LayoutTensor
+from ..fields.scratch import Scratch
 
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..gpu.constants import (
@@ -98,7 +99,7 @@ def _is_self_or_ancestor[
 @always_inline
 def jac_point[
     DTYPE: DType,
-    NV: Int,
+    V_CAP: Int,
     L_SUBTREE_COM: Layout,
     L_JOINTS: Layout,
     L_BODIES: Layout,
@@ -123,8 +124,9 @@ def jac_point[
     point_x: Scalar[DTYPE],
     point_y: Scalar[DTYPE],
     point_z: Scalar[DTYPE],
-    mut jacp: InlineArray[Scalar[DTYPE], 3 * NV],
-    mut jacr: InlineArray[Scalar[DTYPE], 3 * NV],
+    mut jacp: Scratch[Scalar[DTYPE], 3 * V_CAP],
+    mut jacr: Scratch[Scalar[DTYPE], 3 * V_CAP],
+    nv: Int,
 ):
     """`mj_jac(m, d, jacp, jacr, point, body)` — both blocks, always.
 
@@ -132,7 +134,7 @@ def jac_point[
     because every caller here (IK) wants both and the saving is a handful of
     multiply-adds per DOF.
     """
-    for i in range(3 * NV):
+    for i in range(3 * nv):
         jacp[i] = 0
         jacr[i] = 0
 
@@ -180,22 +182,22 @@ def jac_point[
             var ang_y = rebind[Scalar[DTYPE]](cdof[env, i * 6 + 1])
             var ang_z = rebind[Scalar[DTYPE]](cdof[env, i * 6 + 2])
 
-            jacr[0 * NV + i] = ang_x
-            jacr[1 * NV + i] = ang_y
-            jacr[2 * NV + i] = ang_z
+            jacr[0 * nv + i] = ang_x
+            jacr[1 * nv + i] = ang_y
+            jacr[2 * nv + i] = ang_z
 
             # jacp = cdof_linear + cdof_angular x offset
-            jacp[0 * NV + i] = (
+            jacp[0 * nv + i] = (
                 rebind[Scalar[DTYPE]](cdof[env, i * 6 + 3])
                 + ang_y * off_z
                 - ang_z * off_y
             )
-            jacp[1 * NV + i] = (
+            jacp[1 * nv + i] = (
                 rebind[Scalar[DTYPE]](cdof[env, i * 6 + 4])
                 + ang_z * off_x
                 - ang_x * off_z
             )
-            jacp[2 * NV + i] = (
+            jacp[2 * nv + i] = (
                 rebind[Scalar[DTYPE]](cdof[env, i * 6 + 5])
                 + ang_x * off_y
                 - ang_y * off_x
@@ -205,7 +207,7 @@ def jac_point[
 @always_inline
 def jac_site[
     DTYPE: DType,
-    NV: Int,
+    V_CAP: Int,
     L_SUBTREE_COM: Layout,
     L_JOINTS: Layout,
     L_BODIES: Layout,
@@ -235,11 +237,12 @@ def jac_site[
         DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
     site: Int,
-    mut jacp: InlineArray[Scalar[DTYPE], 3 * NV],
-    mut jacr: InlineArray[Scalar[DTYPE], 3 * NV],
+    mut jacp: Scratch[Scalar[DTYPE], 3 * V_CAP],
+    mut jacr: Scratch[Scalar[DTYPE], 3 * V_CAP],
+    nv: Int,
 ):
     """`mj_jacSite` — `jac_point` at the site's world position and body."""
-    jac_point[DTYPE, NV](
+    jac_point[DTYPE, V_CAP](
         env,
         subtree_com,
         joints,
@@ -252,4 +255,5 @@ def jac_site[
         rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2]),
         jacp,
         jacr,
+        nv,
     )

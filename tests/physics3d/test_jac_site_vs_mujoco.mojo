@@ -68,6 +68,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
 from mojo_rl.physics3d.dynamics.jac_point import jac_site
+from mojo_rl.physics3d.fields.scratch import Scratch, cap
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -224,11 +225,15 @@ def _sweep[D: DimsLike](
                 " Jacobians below would be of two different points",
             )
 
-            var jp = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
-            var jr = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
-            jac_site[DTYPE, D.NV](
+            var jp = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
+                3 * D.NV, fill=Scalar[DTYPE](0)
+            )
+            var jr = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
+                3 * D.NV, fill=Scalar[DTYPE](0)
+            )
+            jac_site[DTYPE, cap[D.NV]()](
                 0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
-                sites_v, sxpos_v, s, jp, jr,
+                sites_v, sxpos_v, s, jp, jr, D.NV,
             )
 
             var mjp = np.zeros(3 * D.NV).reshape(3, D.NV)

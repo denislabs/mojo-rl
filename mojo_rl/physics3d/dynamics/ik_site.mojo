@@ -66,6 +66,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
 
 from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields.scratch import Scratch, cap
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..kinematics.integrate_pos import integrate_pos
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat2vel
@@ -211,8 +212,20 @@ def qpos_from_site_pose[
     var site_body = Int(rebind[Scalar[DTYPE]](sites_v[site, SITE_IDX_BODY]))
 
     var err = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-    var jp = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
-    var jr = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
+    # ⚠ STATIC-LEG ONLY, AND DELIBERATELY SO. `qpos_from_site_pose` has `D`
+    # as a TYPE parameter with no `dims` VALUE, and `DimsLike` cannot require a
+    # default constructor (`DynDims` has nothing to default), so there is no
+    # runtime dimension to read here. That is consistent today because every
+    # caller is static anyway: `Data`/`Model` still size themselves from
+    # `comptime NQ = Self.D.NQ`, which is `DIM_POISON` on a dynamic provider.
+    # When the CONTAINERS move to runtime dims, this needs a `dims: D`
+    # argument threaded from its callers — it is not done by the sweep.
+    var jp = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
+        3 * D.NV, fill=Scalar[DTYPE](0)
+    )
+    var jr = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
+        3 * D.NV, fill=Scalar[DTYPE](0)
+    )
     var hess = InlineArray[Scalar[DTYPE], NDOF * NDOF](fill=Scalar[DTYPE](0))
     var grad = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
     var upd = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
@@ -283,9 +296,9 @@ def qpos_from_site_pose[
         var subtree_v = d.subtree_com.lt["cpu", L_NB3]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var sxpos_v = d.site_xpos.lt["cpu", L_SX]()
-        jac_site[DTYPE, D.NV](
+        jac_site[DTYPE, cap[D.NV]()](
             0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
-            sites_v, sxpos_v, site, jp, jr,
+            sites_v, sxpos_v, site, jp, jr, D.NV,
         )
 
         # `jac_joints` — the 6 x NDOF slice. Rows 0-2 translational, 3-5
