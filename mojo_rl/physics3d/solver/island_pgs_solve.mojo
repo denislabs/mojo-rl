@@ -55,7 +55,7 @@ from ..constraints.constraint_data import solref_spring_damper
 
 comptime MAX_ISLANDS: Int = 64
 comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -121,77 +121,95 @@ comptime FRICTION_K_MIN: Float64 = 1e-6
 @always_inline
 def _island_pgs_solve_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEQUALITY: Int,
-    NTENDON: Int,
-    NSITE: Int,
     CONE_TYPE: Int,
     BATCH: Int,
-    SOLVER_WS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_CONTACTS: Layout,
+    L_SMETA: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EQUALITY: Layout,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODY_INVWEIGHT0: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_CDOF: Layout,
+    L_M_INV: Layout,
+    L_SOLVER: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE,
-        Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        L_CONTACTS,
         MutAnyOrigin,
     ],
     smeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_SMETA, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     equality: LayoutTensor[
-        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+        DTYPE, L_EQUALITY, MutAnyOrigin
     ],
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+        DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
     ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     m_inv: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+        DTYPE, L_M_INV, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
     solver: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+        DTYPE, L_SOLVER, MutAnyOrigin
     ],
 ):
     """Full PGS contact solve for one env (verbatim from PGSSolver.solve_gpu,
     serialized per env — see module docstring; limits/equality/tendon run at
     the legacy position via their per-env fields ports)."""
-    comptime MC = _max_one[MAX_CONTACTS]()
-    comptime V_SIZE = _max_one[NV]()
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var max_contacts = dims.get_max_contacts()
+    var ngeom = dims.get_ngeom()
+    var nequality = dims.get_nequality()
+    var ntendon = dims.get_ntendon()
+    var nsite = dims.get_nsite()
+    comptime MC = _max_one[D.CAP_MAX_CONTACTS]()
+    comptime V_SIZE = _max_one[D.CAP_NV]()
 
     # Common normal block offsets (for PGS normal iterations)
     comptime ws_lambda_n = 0 * MC
@@ -208,10 +226,10 @@ def _island_pgs_solve_env[
     comptime ws_pos_bias = 11 * MC
     comptime ws_inv_K_imp = 12 * MC
     comptime ws_J_n = 15 * MC
-    comptime ws_MinvJn = 15 * MC + MC * NV
+    comptime ws_MinvJn = 15 * MC + MC * D.CAP_NV
 
-    # Friction workspace offsets (66*MC + 10*MC*NV, same layout as friction_solver.mojo)
-    comptime fws = 15 * MC + 2 * MC * NV
+    # Friction workspace offsets (66*MC + 10*MC*nv, same layout as friction_solver.mojo)
+    comptime fws = 15 * MC + 2 * MC * D.CAP_NV
     comptime ws_lf = fws + 0 * MC  # lambda_f[5*MC]
     comptime ws_kf = fws + 5 * MC  # K_f[5*MC]
     comptime ws_df = fws + 10 * MC  # dir_f[15*MC]
@@ -219,10 +237,10 @@ def _island_pgs_solve_env[
     comptime ws_cd = fws + 30 * MC  # condim[MC]
     comptime ws_rf = fws + 31 * MC  # R_f[5*MC] (friction regularizer)
     comptime ws_bf = fws + 36 * MC  # bias_f[5*MC] (velocity damping bias)
-    comptime ws_jf = fws + 41 * MC  # J_f[5*MC*NV]
-    comptime ws_mj = fws + 41 * MC + 5 * MC * NV  # MinvJ_f[5*MC*NV]
+    comptime ws_jf = fws + 41 * MC  # J_f[5*MC*D.CAP_NV]
+    comptime ws_mj = fws + 41 * MC + 5 * MC * D.CAP_NV  # MinvJ_f[5*MC*D.CAP_NV]
     # Pyramidal-only workspace offsets
-    comptime ws_le_neg = fws + 41 * MC + 10 * MC * NV  # lambda_edge_neg[5*MC]
+    comptime ws_le_neg = fws + 41 * MC + 10 * MC * D.CAP_NV  # lambda_edge_neg[5*MC]
     comptime ws_cnt = ws_le_neg + 5 * MC  # C_nt[5*MC]
     comptime ws_kep = ws_cnt + 5 * MC  # K_edge_pos[5*MC]
     comptime ws_ken = ws_kep + 5 * MC  # K_edge_neg[5*MC]
@@ -231,7 +249,7 @@ def _island_pgs_solve_env[
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
         _init_common_normal_ws[
-            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
+            DTYPE](env, contact_tid, dims, solver)
         # Init friction workspace for this contact slot
         for d in range(5):
             solver[env, ws_lf + d * MC + contact_tid] = 0
@@ -261,8 +279,8 @@ def _island_pgs_solve_env[
     var si_power: Scalar[DTYPE] = Scalar[DTYPE](2.0)
 
     nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
-    if nc > MAX_CONTACTS:
-        nc = MAX_CONTACTS
+    if nc > max_contacts:
+        nc = max_contacts
     var sr_tc = rebind[Scalar[DTYPE]](
         mmeta[MODEL_META_IDX_SOLREF_CONTACT_0]
     )
@@ -316,7 +334,7 @@ def _island_pgs_solve_env[
             env,
             contact_tid,
             nc,
-            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
+            dims,
             qvel,
             subtree_com,
             contacts,
@@ -346,8 +364,8 @@ def _island_pgs_solve_env[
     # === SEQUENTIAL: island detection + Warm start + PGS normal (thread 0) ===
     # ---- Body union-find: assign each contact to an island (INSERTION B;
     # legacy island_pgs_solver:397-446) ----
-    var uf_parent = InlineArray[Int, _max_one[NBODY]()](uninitialized=True)
-    for b in range(NBODY):
+    var uf_parent = InlineArray[Int, _max_one[D.CAP_NBODY]()](uninitialized=True)
+    for b in range(nbody):
         uf_parent[b] = b
 
     for c in range(nc):
@@ -372,7 +390,7 @@ def _island_pgs_solve_env[
         if ra != rb:
             uf_parent[rb] = ra
 
-    var root_island = InlineArray[Int, _max_one[NBODY]()](fill=-1)
+    var root_island = InlineArray[Int, _max_one[D.CAP_NBODY]()](fill=-1)
     for c in range(nc):
         if solver[env, ws_c_dist + c] >= Scalar[DTYPE](0):
             continue
@@ -395,7 +413,7 @@ def _island_pgs_solve_env[
         num_islands = MAX_ISLANDS
 
     _warmstart_normals[DTYPE](
-        env, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qacc_constrained, solver
+        env, nc, dims, qacc_constrained, solver
     )
 
     # PGS normal iterations (acceleration-level) with per-island early
@@ -414,9 +432,9 @@ def _island_pgs_solve_env[
             if iid >= 0 and island_converged[iid] == 1:
                 continue
             var a_n: solver.element_type = 0
-            for i in range(NV):
+            for i in range(nv):
                 a_n += (
-                    solver[env, ws_J_n + c * NV + i]
+                    solver[env, ws_J_n + c * nv + i]
                     * qacc_constrained[env, i]
                 )
             var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
@@ -438,9 +456,9 @@ def _island_pgs_solve_env[
             var abs_delta = abs(rebind[Scalar[DTYPE]](actual_delta))
             if iid >= 0 and abs_delta > island_max_delta_n[iid]:
                 island_max_delta_n[iid] = abs_delta
-            for i in range(NV):
+            for i in range(nv):
                 qacc_constrained[env, i] += (
-                    solver[env, ws_MinvJn + c * NV + i] * actual_delta
+                    solver[env, ws_MinvJn + c * nv + i] * actual_delta
                 )
         for iid in range(num_islands):
             if island_converged[iid] == 0:
@@ -457,35 +475,35 @@ def _island_pgs_solve_env[
     # friction phase), legacy iteration count (PGS_ITERATIONS, not the
     # Newton path's 50).
     _limits_env[DTYPE, PGS_ITERATIONS](
-        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+        env, dims, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
     )
     # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
     # beside the limit rows. No-op for a model with no frictionloss.
     _friction_env[DTYPE, PGS_ITERATIONS](
-        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, joints,
+        env, dims, qvel, joints,
         rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         dof_invweight0, m_inv, qacc_constrained
     )
 
     # Equality constraints — legacy position (right after limits; the legacy
     # call is unconditional with a comptime gate inside the builder, which
-    # this call-site gate matches bit-identically for NEQUALITY == 0).
-    comptime if NEQUALITY > 0:
+    # this call-site gate matches bit-identically for nequality == 0).
+    comptime if D.CAP_NEQUALITY > 0:
         _equality_env[
             DTYPE, V_SIZE, PGS_ITERATIONS](
-            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 
     # Tendon equality constraints — legacy call-site gate
     # (`comptime if MAX_TENDON > 0` in PGSSolver.solve_gpu).
-    comptime if NTENDON > 0:
+    comptime if D.CAP_NTENDON > 0:
         _tendon_env[
             DTYPE, BATCH,
             PGS_ITERATIONS](
-            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            env, dims, qpos, qvel, joints, mmeta, tendons, sites, bodies,
             subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
@@ -627,17 +645,17 @@ def _island_pgs_solve_env[
                         )
 
                     var k_d: solver.element_type = 0
-                    for i in range(NV):
-                        solver[env, ws_jf + d * MC * NV + c * NV + i] = J_row[
+                    for i in range(nv):
+                        solver[env, ws_jf + d * MC * nv + c * nv + i] = J_row[
                             i
                         ]
                         var mi_j_sum: solver.element_type = 0
-                        for j_idx in range(NV):
+                        for j_idx in range(nv):
                             mi_j_sum += (
-                                m_inv[env, i * NV + j_idx] * J_row[j_idx]
+                                m_inv[env, i * nv + j_idx] * J_row[j_idx]
                             )
                         solver[
-                            env, ws_mj + d * MC * NV + c * NV + i
+                            env, ws_mj + d * MC * nv + c * nv + i
                         ] = mi_j_sum
                         k_d += J_row[i] * mi_j_sum
                     if k_d < Scalar[DTYPE](1e-10):
@@ -677,9 +695,9 @@ def _island_pgs_solve_env[
                 # Compute velocity damping bias for friction rows
                 for d in range(num_fric):
                     var v_t: solver.element_type = 0
-                    for i in range(NV):
+                    for i in range(nv):
                         v_t += rebind[Scalar[DTYPE]](
-                            solver[env, ws_jf + d * MC * NV + c * NV + i]
+                            solver[env, ws_jf + d * MC * nv + c * nv + i]
                         ) * rebind[Scalar[DTYPE]](qvel[env, i])
                     solver[env, ws_bf + d * MC + c] = B_damp * rebind[
                         Scalar[DTYPE]
@@ -696,13 +714,13 @@ def _island_pgs_solve_env[
                         var mu_d_p = rebind[Scalar[DTYPE]](
                             solver[env, ws_fc + d * MC + c]
                         )
-                        # Cross-term: C_nt[d][c] = Σ_i J_n[c*NV+i] * MinvJ_f[d*MC*NV+c*NV+i]
+                        # Cross-term: C_nt[d][c] = Σ_i J_n[c*nv+i] * MinvJ_f[d*MC*nv+c*nv+i]
                         var c_nt_val: solver.element_type = 0
-                        for i in range(NV):
+                        for i in range(nv):
                             c_nt_val += rebind[Scalar[DTYPE]](
-                                solver[env, ws_J_n + c * NV + i]
+                                solver[env, ws_J_n + c * nv + i]
                             ) * rebind[Scalar[DTYPE]](
-                                solver[env, ws_mj + d * MC * NV + c * NV + i]
+                                solver[env, ws_mj + d * MC * nv + c * nv + i]
                             )
                         solver[env, ws_cnt + d * MC + c] = c_nt_val
                         var K_n_c = rebind[Scalar[DTYPE]](
@@ -761,9 +779,9 @@ def _island_pgs_solve_env[
             if iid >= 0 and island_converged[iid] == 1:
                 continue
             var a_n: solver.element_type = 0
-            for i in range(NV):
+            for i in range(nv):
                 a_n += (
-                    solver[env, ws_J_n + c * NV + i]
+                    solver[env, ws_J_n + c * nv + i]
                     * qacc_constrained[env, i]
                 )
             var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
@@ -785,9 +803,9 @@ def _island_pgs_solve_env[
             var abs_n = abs(rebind[Scalar[DTYPE]](actual_n))
             if iid >= 0 and abs_n > island_max_delta_c[iid]:
                 island_max_delta_c[iid] = abs_n
-            for i in range(NV):
+            for i in range(nv):
                 qacc_constrained[env, i] += (
-                    solver[env, ws_MinvJn + c * NV + i] * actual_n
+                    solver[env, ws_MinvJn + c * nv + i] * actual_n
                 )
 
         # --- Friction constraints PGS update ---
@@ -821,13 +839,13 @@ def _island_pgs_solve_env[
                             solver[env, ws_le_neg + d * MC + c] = Scalar[
                                 DTYPE
                             ](0)
-                            for i in range(NV):
+                            for i in range(nv):
                                 var minvjn_i = rebind[Scalar[DTYPE]](
-                                    solver[env, ws_MinvJn + c * NV + i]
+                                    solver[env, ws_MinvJn + c * nv + i]
                                 )
                                 var minvjf_i = rebind[Scalar[DTYPE]](
                                     solver[
-                                        env, ws_mj + d * MC * NV + c * NV + i
+                                        env, ws_mj + d * MC * nv + c * nv + i
                                     ]
                                 )
                                 qacc_constrained[env, i] -= (
@@ -842,10 +860,10 @@ def _island_pgs_solve_env[
                         )
                         if old_f != Scalar[DTYPE](0):
                             solver[env, ws_lf + d * MC + c] = Scalar[DTYPE](0)
-                            for i in range(NV):
+                            for i in range(nv):
                                 qacc_constrained[env, i] -= (
                                     solver[
-                                        env, ws_mj + d * MC * NV + c * NV + i
+                                        env, ws_mj + d * MC * nv + c * nv + i
                                     ]
                                     * old_f
                                 )
@@ -879,19 +897,19 @@ def _island_pgs_solve_env[
 
                     var a_n_val: solver.element_type = 0
                     var a_f_val: solver.element_type = 0
-                    for i in range(NV):
+                    for i in range(nv):
                         var qi = rebind[Scalar[DTYPE]](
                             qacc_constrained[env, i]
                         )
                         a_n_val += (
                             rebind[Scalar[DTYPE]](
-                                solver[env, ws_J_n + c * NV + i]
+                                solver[env, ws_J_n + c * nv + i]
                             )
                             * qi
                         )
                         a_f_val += (
                             rebind[Scalar[DTYPE]](
-                                solver[env, ws_jf + d * MC * NV + c * NV + i]
+                                solver[env, ws_jf + d * MC * nv + c * nv + i]
                             )
                             * qi
                         )
@@ -927,16 +945,16 @@ def _island_pgs_solve_env[
                     )
                     solver[env, ws_lf + d * MC + c] = new_lp
                     if actual_pos != Scalar[DTYPE](0):
-                        for i in range(NV):
+                        for i in range(nv):
                             qacc_constrained[env, i] += (
                                 rebind[Scalar[DTYPE]](
-                                    solver[env, ws_MinvJn + c * NV + i]
+                                    solver[env, ws_MinvJn + c * nv + i]
                                 )
                                 + mu_d
                                 * rebind[Scalar[DTYPE]](
                                     solver[
                                         env,
-                                        ws_mj + d * MC * NV + c * NV + i,
+                                        ws_mj + d * MC * nv + c * nv + i,
                                     ]
                                 )
                             ) * actual_pos
@@ -944,19 +962,19 @@ def _island_pgs_solve_env[
                     # Recompute after positive edge
                     a_n_val = 0
                     a_f_val = 0
-                    for i in range(NV):
+                    for i in range(nv):
                         var qi = rebind[Scalar[DTYPE]](
                             qacc_constrained[env, i]
                         )
                         a_n_val += (
                             rebind[Scalar[DTYPE]](
-                                solver[env, ws_J_n + c * NV + i]
+                                solver[env, ws_J_n + c * nv + i]
                             )
                             * qi
                         )
                         a_f_val += (
                             rebind[Scalar[DTYPE]](
-                                solver[env, ws_jf + d * MC * NV + c * NV + i]
+                                solver[env, ws_jf + d * MC * nv + c * nv + i]
                             )
                             * qi
                         )
@@ -988,16 +1006,16 @@ def _island_pgs_solve_env[
                     )
                     solver[env, ws_le_neg + d * MC + c] = new_ln
                     if actual_neg != Scalar[DTYPE](0):
-                        for i in range(NV):
+                        for i in range(nv):
                             qacc_constrained[env, i] += (
                                 rebind[Scalar[DTYPE]](
-                                    solver[env, ws_MinvJn + c * NV + i]
+                                    solver[env, ws_MinvJn + c * nv + i]
                                 )
                                 - mu_d
                                 * rebind[Scalar[DTYPE]](
                                     solver[
                                         env,
-                                        ws_mj + d * MC * NV + c * NV + i,
+                                        ws_mj + d * MC * nv + c * nv + i,
                                     ]
                                 )
                             ) * actual_neg
@@ -1030,25 +1048,25 @@ def _island_pgs_solve_env[
                 for d1 in range(num_fric):
                     # Normal-friction cross: J_n @ MinvJ_f[d1]
                     var cross: Scalar[DTYPE] = 0
-                    for i in range(NV):
+                    for i in range(nv):
                         cross += rebind[Scalar[DTYPE]](
-                            solver[env, ws_J_n + c * NV + i]
+                            solver[env, ws_J_n + c * nv + i]
                         ) * rebind[Scalar[DTYPE]](
-                            solver[env, ws_mj + d1 * MC * NV + c * NV + i]
+                            solver[env, ws_mj + d1 * MC * nv + c * nv + i]
                         )
                     AR[(d1 + 1)] = cross
                     AR[(d1 + 1) * dim] = cross
 
                     for d2 in range(num_fric):
                         var ff: Scalar[DTYPE] = 0
-                        for i in range(NV):
+                        for i in range(nv):
                             ff += rebind[Scalar[DTYPE]](
                                 solver[
-                                    env, ws_jf + d1 * MC * NV + c * NV + i
+                                    env, ws_jf + d1 * MC * nv + c * nv + i
                                 ]
                             ) * rebind[Scalar[DTYPE]](
                                 solver[
-                                    env, ws_mj + d2 * MC * NV + c * NV + i
+                                    env, ws_mj + d2 * MC * nv + c * nv + i
                                 ]
                             )
                         if d1 == d2:
@@ -1062,9 +1080,9 @@ def _island_pgs_solve_env[
                     fill=Scalar[DTYPE](0)
                 )
                 var a_n_res: Scalar[DTYPE] = 0
-                for i in range(NV):
+                for i in range(nv):
                     a_n_res += rebind[Scalar[DTYPE]](
-                        solver[env, ws_J_n + c * NV + i]
+                        solver[env, ws_J_n + c * nv + i]
                     ) * rebind[Scalar[DTYPE]](qacc_constrained[env, i])
                 block_res[0] = (
                     a_n_res
@@ -1074,9 +1092,9 @@ def _island_pgs_solve_env[
                 )
                 for d in range(num_fric):
                     var a_f_res: Scalar[DTYPE] = 0
-                    for i in range(NV):
+                    for i in range(nv):
                         a_f_res += rebind[Scalar[DTYPE]](
-                            solver[env, ws_jf + d * MC * NV + c * NV + i]
+                            solver[env, ws_jf + d * MC * nv + c * nv + i]
                         ) * rebind[Scalar[DTYPE]](qacc_constrained[env, i])
                     var R_f_d = rebind[Scalar[DTYPE]](
                         solver[env, ws_rf + d * MC + c]
@@ -1335,9 +1353,9 @@ def _island_pgs_solve_env[
                     - oldforce[0]
                 )
                 if actual_n != Scalar[DTYPE](0):
-                    for i in range(NV):
+                    for i in range(nv):
                         qacc_constrained[env, i] += (
-                            solver[env, ws_MinvJn + c * NV + i] * actual_n
+                            solver[env, ws_MinvJn + c * nv + i] * actual_n
                         )
                 for d in range(num_fric):
                     var actual_f = (
@@ -1347,9 +1365,9 @@ def _island_pgs_solve_env[
                         - oldforce[1 + d]
                     )
                     if actual_f != Scalar[DTYPE](0):
-                        for i in range(NV):
+                        for i in range(nv):
                             qacc_constrained[env, i] += (
-                                solver[env, ws_mj + d * MC * NV + c * NV + i]
+                                solver[env, ws_mj + d * MC * nv + c * nv + i]
                                 * actual_f
                             )
                 _ = lambda_n
@@ -1525,20 +1543,9 @@ def _island_pgs_solve_fields_kernel[
         return
     _island_pgs_solve_env[
         DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
         CONE_TYPE,
-        BATCH,
-        SOLVER_WS,
-    ](
-        env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
+        BATCH](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, body_invweight0,
         dof_invweight0, cdof, m_inv, qacc_constrained, solver,
     )
@@ -1608,20 +1615,9 @@ def solve_island_pgs[
         for e in range(BATCH):
             _island_pgs_solve_env[
                 DTYPE,
-                D.NQ,
-                D.NV,
-                D.NBODY,
-                D.NJOINT,
-                D.MAX_CONTACTS,
-                D.NGEOM,
-                D.NEQUALITY,
-                D.NTENDON,
-                D.NSITE,
                 CONE_TYPE,
-                BATCH,
-                SOLVER_WS,
-            ](
-                e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                BATCH](
+                e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
                 cdof_v, mi_v, qc_v, sol_v,
             )

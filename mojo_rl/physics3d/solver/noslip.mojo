@@ -197,6 +197,7 @@ from ..constraints.qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 
 
 # ⚠ These stay `Float64` DELIBERATELY: they are `comptime`, so they never
+from ..fields import DimsLike, Dims
 # reach the emitted IR — `Scalar[DTYPE](_MINVAL)` folds at compile time. What
 # Metal rejects is a `double` VALUE or CONVERSION in the kernel body, not a
 # compile-time constant that happens to be spelled in double precision.
@@ -235,13 +236,14 @@ comptime _COST_REJECT: Float64 = 1e-10
 @always_inline
 def _minv_jt[
     DTYPE: DType,
-    NV: Int,
     V_SIZE: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_M_INV: Layout,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     env: Int,
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: D,
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
     mut out_v: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -249,15 +251,16 @@ def _minv_jt[
     """`out_v = M^-1 J_row^T`.
 
     Recomputed per use rather than cached for every row. The cache would be
-    `num_edges * NV` doubles — ~95 kB on dog — which is fine on the CPU path
+    `num_edges * nv` doubles — ~95 kB on dog — which is fine on the CPU path
     and far too much for per-env GPU local memory, and this module is meant to
     serve both. If the CPU path ever needs the speed, hoist it: `J` and `M` do
     not change during the sweep, so the result is loop-invariant.
     """
-    for i in range(NV):
+    var nv = dims.get_nv()
+    for i in range(nv):
         var acc = Scalar[DTYPE](0)
-        for k in range(NV):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * Je[
+        for k in range(nv):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * Je[
                 row * V_SIZE + k
             ]
         out_v[i] = acc
@@ -343,8 +346,9 @@ def noslip_pyramidal[
     MC: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
-    BATCH: Int,
     MAX_ITER: Int,
+    L_CONTACTS: Layout,
+    L_M_INV: Layout,
     # GENERIC/GENERIC is the per-env caller (per-thread `InlineArray`s); the
     # blocked kernel passes SHARED rows and a `Je` that is SHARED or GLOBAL
     # depending on whether it fit. See the note above `_minv_jt`.
@@ -359,10 +363,10 @@ def noslip_pyramidal[
     # parameter is part of the TYPE — passing the caller's tensor with the
     # wrong one is a compile error, not a coercion.
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     # ⚠ `Je` is indexed with stride `V_SIZE`, and both callers lay it out with
     # stride `NV`. Those agree because `V_SIZE = _max_one[NV]()`, i.e. they
     # differ only at NV == 0, where there are no rows to sweep.
@@ -430,7 +434,7 @@ def noslip_pyramidal[
         for i in range(num_edges):
             if Int(kind_e[i]) != SROW_FRICTION:
                 continue
-            _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](env, m_inv, Je, i, mj_a)
+            _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, i, mj_a)
             var a_ii = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, i, mj_a)
             var arinv = Scalar[DTYPE](1.0) / (
                 a_ii if a_ii > MINVAL else MINVAL
@@ -468,11 +472,11 @@ def noslip_pyramidal[
                 if j1 >= num_edges:
                     break
 
-                _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](
-                    env, m_inv, Je, j0, mj_a
+                _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](
+                    env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, j0, mj_a
                 )
-                _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](
-                    env, m_inv, Je, j1, mj_b
+                _minv_jt[DTYPE, V_SIZE, JE_AS=JE_AS](
+                    env, Dims[nv=NV, max_contacts=MAX_CONTACTS](), m_inv, Je, j1, mj_b
                 )
 
                 # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
@@ -571,29 +575,35 @@ def noslip_pyramidal[
 
 @always_inline
 def _minv_dense[
-    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, NT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    ROWS: Int,
+    V_SIZE: Int,
+    NT: Int,
+    D: DimsLike,
+    L_M_INV: Layout](
     env: Int,
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: D,
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
     row: Int,
     mut out_v: InlineArray[Scalar[DTYPE], NT * V_SIZE],
     slot: Int,
 ):
-    """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[ROWS, NV]` Jacobian.
+    """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[ROWS, nv]` Jacobian.
 
-    The elliptic path stores its contact Jacobians as a flat `[MC*NT, NV]`
-    tangential block plus a separate `[MC, NV]` normal one, rather than one
+    The elliptic path stores its contact Jacobians as a flat `[MC*NT, nv]`
+    tangential block plus a separate `[MC, nv]` normal one, rather than one
     interleaved edge list — hence a helper keyed on the array and a row index
     within it. `out_v` holds one column per tangential row of the contact
     being swept, so the whole `nt x nt` AR block can be built from it without
     recomputing the matvecs.
     """
-    for i in range(NV):
+    var nv = dims.get_nv()
+    for i in range(nv):
         var acc = Scalar[DTYPE](0)
-        for k in range(NV):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * J[
-                row * NV + k
+        for k in range(nv):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * J[
+                row * nv + k
             ]
         out_v[slot * V_SIZE + i] = acc
 
@@ -765,21 +775,22 @@ def _refresh_jar_elliptic[
 
 def noslip_elliptic[
     DTYPE: DType,
-    NV: Int,
     MC: Int,
     NT: Int,
     TN: Int,
     V_SIZE: Int,
     MAXS: Int,
     MAXEQ: Int,
-    BATCH: Int,
     MAX_ITER: Int,
+    D: DimsLike,
+    L_M_INV: Layout,
 ](
     env: Int,
     nc: Int,
     ns: Int,
     neq_rows: Int,
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: D,
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
     nt_c: InlineArray[Int, MC],
     Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
@@ -869,6 +880,7 @@ def noslip_elliptic[
     re-solved with the normal ones frozen, and `qacc` / `qfrc` are recomputed
     from the final forces exactly as `dualFinish` does.
     """
+    var nv = dims.get_nv()
     comptime ZERO = Scalar[DTYPE](0)
     comptime HALF = Scalar[DTYPE](0.5)
     comptime ONE = Scalar[DTYPE](1)
@@ -915,7 +927,7 @@ def noslip_elliptic[
                 continue
             var dof = sr_dof[s]
             var sgn = sr_sign[s]
-            var a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+            var a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             var arinv = ONE / (a_ii if a_ii > MINVAL else MINVAL)
 
             var res = sr_jar[s]
@@ -930,12 +942,12 @@ def noslip_elliptic[
             var d = f - old
             if d != ZERO:
                 sr_f[s] = f
-                for k in range(NV):
+                for k in range(nv):
                     qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
-                        m_inv[env, k * NV + dof]
+                        m_inv[env, k * nv + dof]
                     )
                 _refresh_jar_elliptic[
-                    DTYPE, NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                    DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
                 ](
                     nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
@@ -963,8 +975,8 @@ def noslip_elliptic[
             # force that has to be zeroed AND accounted for.
             for t in range(nt):
                 oldf[t] = ft_a[cb + t]
-                _minv_dense[DTYPE, NV, TN, V_SIZE, NT, BATCH](
-                    env, m_inv, Jt_c, cb + t, MinvJ, t
+                _minv_dense[DTYPE, TN, V_SIZE, NT](
+                    env, dims, m_inv, Jt_c, cb + t, MinvJ, t
                 )
 
             # `Ac` = the AR submatrix with R subtracted off the diagonal and
@@ -973,7 +985,7 @@ def noslip_elliptic[
             for t in range(nt):
                 for u in range(nt):
                     Ac[t * NT + u] = _dot_dense[
-                        DTYPE, NV, TN, V_SIZE, NT
+                        DTYPE, D.CAP_NV, TN, V_SIZE, NT
                     ](Jt_c, cb + t, MinvJ, u)
                 if Ac[t * NT + t] < DIAG_FLOOR:
                     Ac[t * NT + t] = DIAG_FLOOR
@@ -1030,10 +1042,10 @@ def noslip_elliptic[
                 for t in range(nt):
                     var dt = vf[t] - oldf[t]
                     ft_a[cb + t] = vf[t]
-                    for q in range(NV):
+                    for q in range(nv):
                         qacc[q] += dt * MinvJ[t * V_SIZE + q]
                 _refresh_jar_elliptic[
-                    DTYPE, NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                    DTYPE, D.CAP_NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
                 ](
                     nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
@@ -1053,14 +1065,14 @@ def noslip_elliptic[
     # The normal, limit and equality forces are unchanged by the sweep but they
     # are still part of `qfrc_constraint`; dropping them would silently release
     # every contact this pass just refined.
-    for i in range(NV):
+    for i in range(nv):
         qfrc[i] = ZERO
     for c in range(nc):
         var f_n = fn_a[c]
-        for i in range(NV):
-            var acc = Jn_c[c * NV + i] * f_n
+        for i in range(nv):
+            var acc = Jn_c[c * nv + i] * f_n
             for t in range(nt_c[c]):
-                acc += Jt_c[(c * NT + t) * NV + i] * ft_a[c * NT + t]
+                acc += Jt_c[(c * NT + t) * nv + i] * ft_a[c * NT + t]
             qfrc[i] += acc
     for s in range(ns):
         qfrc[sr_dof[s]] += sr_sign[s] * sr_f[s]
@@ -1068,10 +1080,10 @@ def noslip_elliptic[
         var fe = eq_f[e]
         if fe == ZERO:
             continue
-        for d in range(NV):
-            qfrc[d] += eq_J[e * NV + d] * fe
-    for i in range(NV):
+        for d in range(nv):
+            qfrc[d] += eq_J[e * nv + d] * fe
+    for i in range(nv):
         var acc = ZERO
-        for k in range(NV):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * qfrc[k]
+        for k in range(nv):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * qfrc[k]
         qacc[i] = acc + qacc_smooth[i]

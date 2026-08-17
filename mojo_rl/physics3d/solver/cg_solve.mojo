@@ -78,7 +78,7 @@ from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
 )
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -113,78 +113,97 @@ comptime CG_TPB: Int = 1
 
 def _cg_solve_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEQUALITY: Int,
-    NTENDON: Int,
-    NSITE: Int,
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_CONTACTS: Layout,
+    L_SMETA: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EQUALITY: Layout,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODY_INVWEIGHT0: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_CDOF: Layout,
+    L_M: Layout,
+    L_SOLVER: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE,
-        Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        L_CONTACTS,
         MutAnyOrigin,
     ],
     smeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_SMETA, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     equality: LayoutTensor[
-        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+        DTYPE, L_EQUALITY, MutAnyOrigin
     ],
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+        DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
     ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
     m_inv: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+        DTYPE, L_M, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
     solver: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+        DTYPE, L_SOLVER, MutAnyOrigin
     ],
 ):
     """Full primal CG contact solve for one env (verbatim from
     CGSolver.solve_gpu, serialized per env — see module docstring)."""
-    comptime MC = _max_one[MAX_CONTACTS]()
-    comptime V_SIZE = _max_one[NV]()
-    comptime M_SIZE = _max_one[NV * NV]()
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var max_contacts = dims.get_max_contacts()
+    var ngeom = dims.get_ngeom()
+    var nequality = dims.get_nequality()
+    var ntendon = dims.get_ntendon()
+    var nsite = dims.get_nsite()
+    comptime MC = _max_one[D.CAP_MAX_CONTACTS]()
+    comptime V_SIZE = _max_one[D.CAP_NV]()
+    comptime M_SIZE = _max_one[D.CAP_NV * D.CAP_NV]()
 
     # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
     # base is gone — same layout as newton_solve.mojo)
@@ -204,23 +223,23 @@ def _cg_solve_env[
     # the two solvers on the same model; Newton is the default, and the CG path
     # is a legacy alternate selected only by `<option solver="CG">`.
     comptime CG_MAX_CONDIM = 3
-    comptime ws_Jt1_idx = ell_jt[MC, NV]() + 0 * MC * NV
-    comptime ws_Jt2_idx = ell_jt[MC, NV]() + 1 * MC * NV
-    comptime ws_mu_idx = ell_mu[MC, NV, CG_MAX_CONDIM]()
-    comptime ws_D_n_idx = ell_dn[MC, NV, CG_MAX_CONDIM]()
+    comptime ws_Jt1_idx = ell_jt[MC, D.CAP_NV]() + 0 * MC * D.CAP_NV
+    comptime ws_Jt2_idx = ell_jt[MC, D.CAP_NV]() + 1 * MC * D.CAP_NV
+    comptime ws_mu_idx = ell_mu[MC, D.CAP_NV, CG_MAX_CONDIM]()
+    comptime ws_D_n_idx = ell_dn[MC, D.CAP_NV, CG_MAX_CONDIM]()
     # Tangent row 0's `D`. Row 1 has its own slot now (the two differ once
     # slide friction is anisotropic), but this path's cone math carries a
     # single `D_f`, so it reads row 0's and applies it to both — which is
     # exact for the isotropic slide the contact record can express.
-    comptime ws_D_f_idx = ell_dt[MC, NV, CG_MAX_CONDIM]() + 0 * MC
-    comptime ws_bt1_idx = ell_bt[MC, NV, CG_MAX_CONDIM]() + 0 * MC
-    comptime ws_bt2_idx = ell_bt[MC, NV, CG_MAX_CONDIM]() + 1 * MC
-    comptime ws_ntc_idx = ell_ntc[MC, NV, CG_MAX_CONDIM]()
+    comptime ws_D_f_idx = ell_dt[MC, D.CAP_NV, CG_MAX_CONDIM]() + 0 * MC
+    comptime ws_bt1_idx = ell_bt[MC, D.CAP_NV, CG_MAX_CONDIM]() + 0 * MC
+    comptime ws_bt2_idx = ell_bt[MC, D.CAP_NV, CG_MAX_CONDIM]() + 1 * MC
+    comptime ws_ntc_idx = ell_ntc[MC, D.CAP_NV, CG_MAX_CONDIM]()
     # Per-contact solve state. ⚠ THESE ARE LIVE HERE, unlike on the Newton
     # path, which keeps the same quantities in InlineArrays and left these
     # slots write-only; that is why they hang off `ell_end` rather than being
     # part of the shared layout.
-    comptime CVS = ell_end[MC, NV, CG_MAX_CONDIM]()
+    comptime CVS = ell_end[MC, D.CAP_NV, CG_MAX_CONDIM]()
     comptime ws_jar_n_idx = CVS + 0 * MC
     comptime ws_jar_t1_idx = CVS + 1 * MC
     comptime ws_jar_t2_idx = CVS + 2 * MC
@@ -240,10 +259,10 @@ def _cg_solve_env[
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
         _init_common_normal_ws[
-            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
-        for d in range(NV):
-            solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
-            solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
+            DTYPE](env, contact_tid, dims, solver)
+        for d in range(nv):
+            solver[env, ws_Jt1_idx + contact_tid * nv + d] = 0
+            solver[env, ws_Jt2_idx + contact_tid * nv + d] = 0
         solver[env, ws_mu_idx + contact_tid] = 0
         solver[env, ws_D_n_idx + contact_tid] = 0
         solver[env, ws_D_f_idx + contact_tid] = 0
@@ -271,8 +290,8 @@ def _cg_solve_env[
     var impratio: Scalar[DTYPE] = Scalar[DTYPE](1.0)
 
     nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
-    if nc > MAX_CONTACTS:
-        nc = MAX_CONTACTS
+    if nc > max_contacts:
+        nc = max_contacts
     var sr_tc = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLREF_CONTACT_0])
     var sr_dr = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLREF_CONTACT_1])
     si_dmin = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_0])
@@ -318,7 +337,7 @@ def _cg_solve_env[
             env,
             contact_tid,
             nc,
-            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
+            dims,
             qvel,
             subtree_com,
             contacts,
@@ -347,7 +366,7 @@ def _cg_solve_env[
             env,
             contact_tid,
             nc,
-            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
+            dims,
             qvel,
             subtree_com,
             contacts,
@@ -371,9 +390,9 @@ def _cg_solve_env[
     # === Step 2: Cholesky factorize M (preconditioner) ===
     var M_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
     var L_M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for k in range(NV * NV):
+    for k in range(nv * nv):
         M_chol[k] = rebind[Scalar[DTYPE]](M[env, k])
-    _ = chol_factor_inline[DTYPE, NV, M_SIZE](M_chol, L_M)
+    _ = chol_factor_inline[DTYPE, D.CAP_NV, M_SIZE](M_chol, L_M)
 
     # === Step 3: Initialize qacc, qacc_sm, qfrc_sm (= Ma), Ma, scale ===
     var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -387,26 +406,26 @@ def _cg_solve_env[
     var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
 
-    for i in range(NV):
+    for i in range(nv):
         var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
         qacc[i] = q_i
         qacc_sm[i] = q_i
 
     # Ma = M * qacc
-    for i in range(NV):
+    for i in range(nv):
         var s: Scalar[DTYPE] = 0
-        for j in range(NV):
-            s += rebind[Scalar[DTYPE]](M[env, i * NV + j]) * qacc[j]
+        for j in range(nv):
+            s += rebind[Scalar[DTYPE]](M[env, i * nv + j]) * qacc[j]
         Ma[i] = s
 
     # qfrc_sm = M * qacc_sm = Ma at entry (matches fields-Newton convention)
-    for i in range(NV):
+    for i in range(nv):
         qfrc_sm[i] = Ma[i]
 
     # Scale = 1/trace(M) for convergence check
     var scale: Scalar[DTYPE] = 0
-    for i in range(NV):
-        scale += rebind[Scalar[DTYPE]](M[env, i * NV + i])
+    for i in range(nv):
+        scale += rebind[Scalar[DTYPE]](M[env, i * nv + i])
     if scale > Scalar[DTYPE](1e-10):
         scale = Scalar[DTYPE](1.0) / scale
     else:
@@ -414,7 +433,7 @@ def _cg_solve_env[
 
     # === Scalar rows: joint limits + dry-friction dofs ===
     # Rows of THIS system, not post-passes — see constraints/scalar_rows.mojo.
-    comptime MAXS = max_scalar_rows[NV, NJOINT]()
+    comptime MAXS = max_scalar_rows[D.CAP_NV, D.CAP_NJOINT]()
     var sr_dof = InlineArray[Int, MAXS](fill=0)
     var sr_kind = InlineArray[Int, MAXS](fill=0)
     var sr_sign = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
@@ -423,7 +442,7 @@ def _cg_solve_env[
     var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var ns = build_scalar_rows[DTYPE, MAXS](
-        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+        env, dims, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
     )
     var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
@@ -451,18 +470,18 @@ def _cg_solve_env[
         var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
             solver[env, ws_bt2_idx + c]
         )
-        for i in range(NV):
+        for i in range(nv):
             var qa_i = qacc[i]
             jar_n_c += (
-                rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * NV + i])
+                rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * nv + i])
                 * qa_i
             )
             jar_t1_c += (
-                rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * NV + i])
+                rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * nv + i])
                 * qa_i
             )
             jar_t2_c += (
-                rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * NV + i])
+                rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * nv + i])
                 * qa_i
             )
         solver[env, ws_jar_n_idx + c] = jar_n_c
@@ -506,18 +525,18 @@ def _cg_solve_env[
 
     # === Step 5: Compute initial gradient and preconditioned gradient ===
     var grad_norm_sq: Scalar[DTYPE] = 0
-    for i in range(NV):
+    for i in range(nv):
         var g: Scalar[DTYPE] = Ma[i] - qfrc_sm[i]
         for c in range(nc):
             var cs = Int(rebind[Scalar[DTYPE]](solver[env, ws_cstate_idx + c]))
             if cs == 0:
                 continue
             g -= (
-                rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * NV + i])
+                rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * nv + i])
                 * rebind[Scalar[DTYPE]](solver[env, ws_fn_idx + c])
-                + rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * NV + i])
+                + rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * nv + i])
                 * rebind[Scalar[DTYPE]](solver[env, ws_ft1_idx + c])
-                + rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * NV + i])
+                + rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * nv + i])
                 * rebind[Scalar[DTYPE]](solver[env, ws_ft2_idx + c])
             )
         for s_i in range(ns):
@@ -527,10 +546,10 @@ def _cg_solve_env[
         grad_norm_sq += g * g
 
     # Initial preconditioned gradient: Mgrad = M⁻¹ · grad (Cholesky solve)
-    chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_M, grad, Mgrad)
+    chol_solve_inline[DTYPE, D.CAP_NV, M_SIZE, V_SIZE](L_M, grad, Mgrad)
 
     # Initial search direction: search = -Mgrad
-    for i in range(NV):
+    for i in range(nv):
         search[i] = -Mgrad[i]
 
     # === Step 6: CG iteration loop ===
@@ -540,10 +559,10 @@ def _cg_solve_env[
             break
 
         # Mv = M * search (for linesearch Gauss cost)
-        for i in range(NV):
+        for i in range(nv):
             var s: Scalar[DTYPE] = 0
-            for j in range(NV):
-                s += rebind[Scalar[DTYPE]](M[env, i * NV + j]) * search[j]
+            for j in range(nv):
+                s += rebind[Scalar[DTYPE]](M[env, i * nv + j]) * search[j]
             Mv[i] = s
 
         # Precompute J · search per contact direction (for linesearch)
@@ -557,23 +576,23 @@ def _cg_solve_env[
             if rebind[Scalar[DTYPE]](solver[env, ws_c_dist_idx + c]) < Scalar[
                 DTYPE
             ](0):
-                for i in range(NV):
+                for i in range(nv):
                     var s_i = search[i]
                     js_n_c += (
                         rebind[Scalar[DTYPE]](
-                            solver[env, ws_J_n_idx + c * NV + i]
+                            solver[env, ws_J_n_idx + c * nv + i]
                         )
                         * s_i
                     )
                     js_t1_c += (
                         rebind[Scalar[DTYPE]](
-                            solver[env, ws_Jt1_idx + c * NV + i]
+                            solver[env, ws_Jt1_idx + c * nv + i]
                         )
                         * s_i
                     )
                     js_t2_c += (
                         rebind[Scalar[DTYPE]](
-                            solver[env, ws_Jt2_idx + c * NV + i]
+                            solver[env, ws_Jt2_idx + c * nv + i]
                         )
                         * s_i
                     )
@@ -588,7 +607,7 @@ def _cg_solve_env[
         var g1: Scalar[DTYPE] = 0
         var g2: Scalar[DTYPE] = 0
         var gtd: Scalar[DTYPE] = 0
-        for i in range(NV):
+        for i in range(nv):
             var Ma_diff_i = Ma[i] - qfrc_sm[i]
             var qa_diff_i = qacc[i] - qacc_sm[i]
             gauss_0 += Ma_diff_i * qa_diff_i
@@ -690,7 +709,7 @@ def _cg_solve_env[
             break
 
         # Update qacc and Ma
-        for i in range(NV):
+        for i in range(nv):
             qacc[i] = qacc[i] + alpha * search[i]
             Ma[i] = Ma[i] + alpha * Mv[i]
 
@@ -709,18 +728,18 @@ def _cg_solve_env[
             var jar_t2_c: Scalar[DTYPE] = rebind[Scalar[DTYPE]](
                 solver[env, ws_bt2_idx + c]
             )
-            for i in range(NV):
+            for i in range(nv):
                 var qa_i = qacc[i]
                 jar_n_c += (
-                    rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * NV + i])
+                    rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * nv + i])
                     * qa_i
                 )
                 jar_t1_c += (
-                    rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * NV + i])
+                    rebind[Scalar[DTYPE]](solver[env, ws_Jt1_idx + c * nv + i])
                     * qa_i
                 )
                 jar_t2_c += (
-                    rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * NV + i])
+                    rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * nv + i])
                     * qa_i
                 )
             solver[env, ws_jar_n_idx + c] = jar_n_c
@@ -764,13 +783,13 @@ def _cg_solve_env[
             )
 
         # Save old gradient for Polak-Ribiere
-        for i in range(NV):
+        for i in range(nv):
             gradold[i] = grad[i]
             Mgradold[i] = Mgrad[i]
 
         # Compute new gradient
         grad_norm_sq = 0
-        for i in range(NV):
+        for i in range(nv):
             var g: Scalar[DTYPE] = Ma[i] - qfrc_sm[i]
             for c in range(nc):
                 var cs = Int(
@@ -779,14 +798,14 @@ def _cg_solve_env[
                 if cs == 0:
                     continue
                 g -= (
-                    rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * NV + i])
+                    rebind[Scalar[DTYPE]](solver[env, ws_J_n_idx + c * nv + i])
                     * rebind[Scalar[DTYPE]](solver[env, ws_fn_idx + c])
                     + rebind[Scalar[DTYPE]](
-                        solver[env, ws_Jt1_idx + c * NV + i]
+                        solver[env, ws_Jt1_idx + c * nv + i]
                     )
                     * rebind[Scalar[DTYPE]](solver[env, ws_ft1_idx + c])
                     + rebind[Scalar[DTYPE]](
-                        solver[env, ws_Jt2_idx + c * NV + i]
+                        solver[env, ws_Jt2_idx + c * nv + i]
                     )
                     * rebind[Scalar[DTYPE]](solver[env, ws_ft2_idx + c])
                 )
@@ -797,12 +816,12 @@ def _cg_solve_env[
             grad_norm_sq += g * g
 
         # Compute new preconditioned gradient: Mgrad = M⁻¹ · grad
-        chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_M, grad, Mgrad)
+        chol_solve_inline[DTYPE, D.CAP_NV, M_SIZE, V_SIZE](L_M, grad, Mgrad)
 
         # Polak-Ribiere beta
         var num: Scalar[DTYPE] = 0
         var den: Scalar[DTYPE] = 0
-        for i in range(NV):
+        for i in range(nv):
             num += grad[i] * (Mgrad[i] - Mgradold[i])
             den += gradold[i] * Mgradold[i]
         if den < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
@@ -812,11 +831,11 @@ def _cg_solve_env[
             beta = Scalar[DTYPE](0)
 
         # Update search direction: search = -Mgrad + beta * search
-        for i in range(NV):
+        for i in range(nv):
             search[i] = -Mgrad[i] + beta * search[i]
 
     # Write solved qacc back
-    for i in range(NV):
+    for i in range(nv):
         qacc_constrained[env, i] = qacc[i]
 
     # Write forces to state buffer for display/warmstart
@@ -836,19 +855,19 @@ def _cg_solve_env[
     # rows need a dense Jacobian and remain post-passes for now.
     comptime SOLVER_ITER_GPU: Int = 50
 
-    comptime if NEQUALITY > 0:
+    comptime if D.CAP_NEQUALITY > 0:
         _equality_env[
             DTYPE, V_SIZE, SOLVER_ITER_GPU](
-            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 
-    comptime if NTENDON > 0:
+    comptime if D.CAP_NTENDON > 0:
         _tendon_env[
             DTYPE, BATCH,
             SOLVER_ITER_GPU](
-            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            env, dims, qpos, qvel, joints, mmeta, tendons, sites, bodies,
             subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
@@ -926,20 +945,10 @@ def _cg_solve_fields_kernel[
         return
     _cg_solve_env[
         DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
         CONE_TYPE,
         BATCH,
-        SOLVER_WS,
-    ](
-        env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
+        SOLVER_WS](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, body_invweight0,
         dof_invweight0, cdof, M, m_inv, qacc_constrained, solver,
     )
@@ -1017,20 +1026,10 @@ def solve_cg[
         for e in range(BATCH):
             _cg_solve_env[
                 DTYPE,
-                D.NQ,
-                D.NV,
-                D.NBODY,
-                D.NJOINT,
-                D.MAX_CONTACTS,
-                D.NGEOM,
-                D.NEQUALITY,
-                D.NTENDON,
-                D.NSITE,
                 CONE_TYPE,
                 BATCH,
-                SOLVER_WS,
-            ](
-                e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                SOLVER_WS](
+                e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, sol_v,
             )
