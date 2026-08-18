@@ -102,6 +102,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields.spec_fields import SpecFields
 from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
@@ -373,8 +374,9 @@ def _rollout[
         nten=MD.NTEN_F,
         nkey=MD.NKEY,
     ]
-    var sf = MD.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
+    var sf = SpecFields[DTYPE, ModelDims[MD]]()
+    MD.init_spec_fields[DTYPE](ctx, sf)
     var mf = Model[DTYPE, MD_3]()
     MD.init_fields[DTYPE](ctx, mf)
     var d = Data[DTYPE, MD_3, 1]()
