@@ -94,6 +94,50 @@ from .cdof import compute_cdof
 from .jac_point import jac_site
 
 
+@always_inline
+def default_ik_tol[DTYPE: DType]() -> Float64:
+    """`qpos_from_site_pose`'s convergence tolerance, in the SOLVE's precision.
+
+    ⚠⚠ dm_control's `tol=1e-14` IS A float64 NUMBER, AND IT IS UNREACHABLE IN
+    float32. `err_norm` is a length in metres (plus `rot_weight` x an angle),
+    built from `site_xpos` through the FK chain, so its resolution is a few
+    ULPs of the coordinates involved — ~1e-7 for float32 positions of order
+    0.1-1 m. Asking for 1e-14 asks for a residual float32 cannot represent, so
+    the loop runs its full 100 steps and reports failure NO MATTER HOW WELL IT
+    SOLVED.
+
+    MEASURED on `reach_site_features` at float32, per IK attempt:
+
+        converged attempts      err_norm 1.0e-07 .. 2.1e-06, steps 99, ok=False
+        genuinely stuck ones    err_norm 0.20 .. 0.95,       steps 7-78
+
+    Five orders of magnitude separate the two populations, and EVERY member of
+    the first was thrown away. The visible consequence was that the manipulation
+    reset never once succeeded at float32 — 10/10 IK failures on every sample of
+    every rejection round, on every task — so `Phyics3dEnv.reset()` fell through
+    to qpos0, an illegal pose in which Jaco's joint_2 and joint_3 sit outside
+    their own ranges and MuJoCo reports 55 contacts. See
+    `tests/dm_control/test_manipulation_reset_dtype.mojo`.
+
+    The float64 value is dm_control's, UNCHANGED, because the parity gate
+    (`test_ik_site_vs_dm_control`) drives both implementations to it and agrees
+    to 2.2e-15. Only the float32 arm is this port's own choice: ~100x the
+    float32 epsilon (1.19e-07), which is above the noise floor by an order of
+    magnitude and below the stuck population by four.
+
+    ⚠ THIS IS THE ONLY CONSTANT IN THE SOLVER THAT SCALES WITH PRECISION.
+    `regularization_threshold`, `progress_thresh` and `max_update_norm` are all
+    tests on RATIOS or on magnitudes of order 1, so they mean the same thing in
+    either precision and are deliberately left alone.
+    """
+    comptime if DTYPE == DType.float64:
+        return 1e-14
+    # ⚠ ANY DTYPE NARROWER THAN float64 LANDS HERE, and this value is chosen
+    # for float32. A float16 build would need its own arm; physics3d has no
+    # such path today, so one is not invented here.
+    return 1e-5
+
+
 @fieldwise_init
 struct IKResult(Copyable, Movable):
     """`inverse_kinematics.IKResult`, minus the qpos (which is written into
@@ -179,7 +223,7 @@ def qpos_from_site_pose[
     dof_idx: InlineArray[Int, NDOF],
     use_pos: Bool = True,
     use_quat: Bool = True,
-    tol: Float64 = 1e-14,
+    tol: Float64 = default_ik_tol[DTYPE](),
     rot_weight: Float64 = 2.0,
     regularization_threshold: Float64 = 0.1,
     regularization_strength: Float64 = 3e-2,

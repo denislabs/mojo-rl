@@ -71,6 +71,10 @@ from mojo_rl.envs.dm_control.humanoid import DMHumanoidModel
 from mojo_rl.envs.dm_control.manipulator import DMManipulatorBringBallModel
 from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalkModel
 from mojo_rl.envs.dm_control.walker import DMWalkerModel
+from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from mojo_rl.envs.dm_control.manipulation_reassemble5_def import (
+    Reassemble5Model,
+)
 
 # Both sides parse the same text, so anything above rounding is real. The
 # quaternion path is the one place arithmetic happens (xyaxes/euler/zaxis →
@@ -654,6 +658,22 @@ def test_render_fields_match_mujoco() raises:
     # nothing but -1 == -1.
     _check("so_arm100  ", "mojo_rl/envs/robots/assets/so_arm100.xml",
            _read("mojo_rl/envs/robots/assets/so_arm100.xml"),
+           geom, light, cam, mat, site, tex, sten, vis)
+    # ⚠⚠ THE MANIPULATION FAMILY HAD NO ROW HERE AT ALL, and it is the only
+    # family the VIEWER is used on. Every model above is a single `<worldbody>`
+    # authored by hand; these two are `composer` bakes, where each attached
+    # entity contributes a prefixed subtree (`jaco_arm/`, `jaco_arm/jaco_hand/`,
+    # `duplo2x4_2/`) and a pure-frame body carrying no joint and no geom. That
+    # is a numbering the other rows never exercise, and `geom_body_id` is what
+    # the renderer indexes `positions` with — get it wrong and a limb is drawn
+    # on the wrong body's transform, or on a body that never moves.
+    #
+    # They are also the only dm_control rows with MESH geoms: the Jaco's 9 mesh
+    # assets sit behind the same `geom_dataid` → asset-table mapping that the
+    # so_arm100 row covers, but reached through a composer prefix.
+    _check("stack_2    ", Stack2BricksModel.xml_path, Stack2BricksModel.xml_text(),
+           geom, light, cam, mat, site, tex, sten, vis)
+    _check("reassemble5", Reassemble5Model.xml_path, Reassemble5Model.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
 
     print("  TOTALS (rows differing / rows compared, then WHICH field):")
