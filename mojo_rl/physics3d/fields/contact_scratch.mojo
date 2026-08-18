@@ -8,6 +8,8 @@ consumers (constraints/contact_solve.mojo) are relative to the row
 start — the legacy `solver_idx` base is gone.
 """
 
+from ..constraints.solver_ws import ws_budget, _max_one_rt
+
 from max.gpu.host import DeviceContext
 from layout import Layout
 
@@ -102,8 +104,19 @@ struct ContactScratch[
         `DIM_POISON` on a dynamic provider, so an `alloc` that read one
         would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
+        # ⚠⚠ THE RUNTIME BUDGET, NOT `Self.SOLVER_WS`. This line read the
+        # comptime member until 2026-08-18 — in direct contradiction of the
+        # docstring three lines above it, which is the reason it survived 3b's
+        # sweep unnoticed. On a dynamic provider `D.NV` is DIM_POISON and
+        # `MC` floors to 1, so `SOLVER_WS` is `81 - 12 = 69` scalars for EVERY
+        # model, while `contact_solve` indexes the tensor at offsets derived
+        # from the RUNTIME nv/mc (walker2d at mc=64 needs 12096). The result is
+        # a heap overflow on the first solve of any runtime-loaded model —
+        # which crashed at free, not at the write, and so read as an allocator
+        # bug. `ws_budget` is the same formula the five solver views use.
         self.solver = TensorImpl[Self.DTYPE].alloc(
-            Self.BATCH * Self.SOLVER_WS
+            Self.BATCH
+            * ws_budget(_max_one_rt(dims.get_max_contacts()), dims.get_nv())
         )
         # ⚠ FLOORED AT 1: a zero-extent tensor operand SEGFAULTS rather than
         # behaving as an empty allocation, so the non-spilling case pays one

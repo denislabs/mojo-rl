@@ -322,8 +322,25 @@ def ws_end_elliptic(mc: Int, nv: Int, max_condim: Int) -> Int:
 
 
 @always_inline
+def _max_one_rt(n: Int) -> Int:
+    """Runtime `max(n, 1)` — the twin of `_max_one[N]()`.
+
+    ⚠ `mc` IS FLOORED AT 1 EVERYWHERE THE BUDGET IS COMPUTED, and it has to be
+    floored the same way on both legs or the allocation and the view disagree.
+    """
+    return n if n > 0 else 1
+
+
+@always_inline
 def ws_budget(mc: Int, nv: Int) -> Int:
-    """`SOLVER_WS` — must match `fields/contact_scratch.mojo`."""
+    """`SOLVER_WS` — must match `fields/contact_scratch.mojo`.
+
+    ⚠⚠ THIS IS THE RUNTIME SPELLING AND IT IS THE ONE THAT MUST BE USED ON THE
+    CPU LEG. The comptime `SOLVER_WS = 81*MC + 12*MC*D.NV` reads `D.NV`, which
+    is `DIM_POISON` on a dynamic provider, giving 69 scalars for every model
+    while the ws_* offsets are computed from the runtime nv/mc. That is a heap
+    overflow on the FIRST solve of any runtime-loaded model.
+    """
     return 81 * mc + 12 * mc * nv
 
 

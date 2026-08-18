@@ -438,8 +438,24 @@ struct EulerIntegrator[
     var cscratch: ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
-        self.scratch = DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH]()
-        self.cscratch = ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]()
+        """Dimensions from the comptime provider; raises on a dynamic one.
+
+        ⚠ THE DIMS OVERLOAD BELOW IS WHAT A RUNTIME-LOADED MODEL NEEDS. The
+        `step` body has been dimension-agnostic since 3a — it reads `d.dims`
+        and builds `RuntimeLayout`s — so the ONLY thing that stood between
+        this integrator and a `DynDims` model was this constructor, which
+        allocates its scratch through the nullary path and therefore through
+        `comptime_value()`. Same dual-constructor shape as `Model`, `Data`,
+        `SpecFields` and both scratches (3a/3b).
+        """
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in, and ALLOCATED FROM — the runtime path."""
+        self.scratch = DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH](dims)
+        self.cscratch = ContactScratch[
+            Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS
+        ](dims)
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""

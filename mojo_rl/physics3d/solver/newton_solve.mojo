@@ -74,6 +74,8 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
 from ..constraints.solver_ws import (
+    ws_budget,
+    _max_one_rt,
     ws_c_dist as sw_c_dist,
     ws_pos_bias as sw_pos_bias,
     ws_j_n as sw_j_n,
@@ -2443,7 +2445,14 @@ def solve_newton[
         var rl_DW = rl1(dm.get_nv())
         var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
-        var rl_SOLVER = rl2(BATCH, SOLVER_WS)
+        # ⚠⚠ RUNTIME BUDGET, NOT THE COMPTIME `SOLVER_WS`. On a dynamic
+        # provider `D.NV` is DIM_POISON and `D.MAX_CONTACTS` floors to 1,
+        # so the comptime literal is 81 - 12 = 69 scalars for EVERY model
+        # while the ws_* offsets below are computed from the RUNTIME nv/mc.
+        # The spelling was swept to `rl2`/`lt_dyn` in 3a; the VALUE was not.
+        var rl_SOLVER = rl2(
+            BATCH, ws_budget(_max_one_rt(dm.get_max_contacts()), dm.get_nv())
+        )
         var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
         var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
         var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
@@ -3897,7 +3906,14 @@ def solve_newton_blocked[
         var rl_DW = rl1(dm.get_nv())
         var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
-        var rl_SOLVER = rl2(BATCH, SOLVER_WS)
+        # ⚠⚠ RUNTIME BUDGET, NOT THE COMPTIME `SOLVER_WS`. On a dynamic
+        # provider `D.NV` is DIM_POISON and `D.MAX_CONTACTS` floors to 1,
+        # so the comptime literal is 81 - 12 = 69 scalars for EVERY model
+        # while the ws_* offsets below are computed from the RUNTIME nv/mc.
+        # The spelling was swept to `rl2`/`lt_dyn` in 3a; the VALUE was not.
+        var rl_SOLVER = rl2(
+            BATCH, ws_budget(_max_one_rt(dm.get_max_contacts()), dm.get_nv())
+        )
         var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
         var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
         var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)

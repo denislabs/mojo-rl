@@ -3284,6 +3284,8 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var rl_MESH_VERT = rl2(dm.get_nmesh_verts(), 3)
         var rl_MESH_POLY = rl2(mesh_max_poly(dm.get_nmesh_verts()), MODEL_MESH_POLY_SIZE)
         var rl_MESH_POLYVERT = rl1(mesh_max_polyvert(dm.get_nmesh_verts()))
+        var rl_MESH_VPMAP = rl2(dm.get_nmesh_verts(), 2)
+        var rl_MESH_VEADR = rl1(dm.get_nmesh_verts())
         var rl_MESH_EDGE = rl1(mesh_max_edge(dm.get_nmesh_verts()))
         var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
         var rl_SMETA = rl2(BATCH, METADATA_SIZE)
@@ -3299,12 +3301,12 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var mesh_polys_v = m.mesh_polys.lt_dyn["cpu", DYN2](rl_MESH_POLY)
         var mesh_polyvert_v = m.mesh_polyvert.lt_dyn["cpu", DYN1](rl_MESH_POLYVERT)
         var mesh_polymap_v = m.mesh_polymap.lt_dyn["cpu", DYN1](rl_MESH_POLYVERT)
-        var mesh_vert_polymap_v = m.mesh_vert_polymap.lt[
-            "cpu", L_MESH_VPMAP
-        ]()
-        var mesh_vert_edgeadr_v = m.mesh_vert_edgeadr.lt[
-            "cpu", L_MESH_VEADR
-        ]()
+        var mesh_vert_polymap_v = m.mesh_vert_polymap.lt_dyn[
+            "cpu", DYN2
+        ](rl_MESH_VPMAP)
+        var mesh_vert_edgeadr_v = m.mesh_vert_edgeadr.lt_dyn[
+            "cpu", DYN1
+        ](rl_MESH_VEADR)
         var mesh_edges_v = m.mesh_edges.lt_dyn["cpu", DYN1](rl_MESH_EDGE)
         var contacts_v = d.contacts.lt_dyn["cpu", DYN2](rl_CONTACTS)
         var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
