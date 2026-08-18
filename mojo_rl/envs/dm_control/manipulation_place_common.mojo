@@ -446,4 +446,4 @@ def place_reset_full[
         )
 
     # ── 4. settle it, with the robot held static ────────────────────────
-    _ = settle_free_prop[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, timestep)
+    _ = settle_free_prop[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, timestep, String("place"))

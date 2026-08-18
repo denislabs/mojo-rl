@@ -385,7 +385,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         # ── 3. settle. ⚠ Only brick 1 can move: brick 0 has no joint at all,
         # so the isolator's "hold everything but the props" reduces to holding
         # the robot's nine.
-        _ = settle_free_prop[DTYPE, Stack2BricksModel.CONE_TYPE, Stack2BricksModel.MAX_CONDIM, Stack2BricksModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, BRICK1_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, Stack2BricksModel.CONE_TYPE, Stack2BricksModel.MAX_CONDIM, Stack2BricksModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, BRICK1_DOF_ADR, Self.get_timestep(), String("stack_2_bricks"))
 
         # ── 4. the TCP initializer ──────────────────────────────────────
         var dof_idx = InlineArray[Int, N_ARM](fill=0)

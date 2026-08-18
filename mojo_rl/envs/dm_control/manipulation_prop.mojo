@@ -406,6 +406,7 @@ def settle_free_props[
     mut mf: Model[DTYPE, D],
     dof_adrs: List[Int],
     timestep: Float64,
+    label: String = String(""),
 ) raises -> SettleResult:
     """`PropPlacer`'s `place_and_settle` inner loop, for N free props.
 
@@ -477,6 +478,70 @@ def settle_free_props[
             forward_kinematics["cpu"](d, mf)
             return SettleResult(True, steps, mv, ma)
     forward_kinematics["cpu"](d, mf)
+    # ⚠ THE WARNING LIVES HERE, NOT AT THE CALL SITES. All seven of them
+    # discarded this result with `_ =`, so a scene that never settled was
+    # indistinguishable from one that settled on step 1 — and that is exactly
+    # the state the PGS/Newton mix-up (see `SOLVER` above) left behind for
+    # months. Reporting from inside the function is the only version a new
+    # call site cannot forget.
+    #
+    # ⚠ IT WARNS RATHER THAN RAISES, and that is the REFERENCE's choice, not a
+    # softened one: `PropPlacer.__init__` defaults
+    # `raise_exception_on_settle_failure=False` and every manipulation task
+    # takes the default, so `place_and_settle` logs `_SETTLING_PHYSICS_FAILED`
+    # and returns False (`prop_initializer.py:262-280`). Raising here would
+    # abort episodes dm_control completes.
+    #
+    # ⚠⚠ IT FIRES ON A REAL DIVERGENCE, NOT ON NOISE, AND THAT IS WHY IT IS
+    # UNCONDITIONAL. Measured over 12 resets each of lift_brick, reach_duplo and
+    # stack_2 at float32: OURS failed 3/36, dm_control's own settle failed
+    # **0/36** on the same three tasks with the same tolerances (1e-3 / 1e-2 /
+    # 2 s, asserted identical). So this is not a tolerance we inherited badly —
+    # our settle leaves a residual |qacc| of 0.015..0.046 where the reference
+    # gets under 0.01. See the task filed for that; the warning exists so the
+    # next person does not have to rediscover it from a frozen-looking scene.
+    #
+    # ⚠ AND THE REFERENCE'S RETRY IS ALREADY MATCHED. `place_and_settle` loops
+    # `max_settle_physics_attempts` times, RE-PLACING the props each round —
+    # but that parameter defaults to 1 and all five manipulation `PropPlacer`
+    # call sites take the default (reach, place, lift, bricks; verified in
+    # `dm_control/manipulation/*.py`), so one settle with no re-place IS the
+    # reference behaviour here. Same for `min_settle_physics_time`, which
+    # defaults to 0 and would otherwise forbid returning on the first step.
+    # ⚠ NAME THE TOLERANCE THAT MISSED, because the two fail for different
+    # reasons and the qacc one does NOT mean "the props are still moving".
+    # Measured across 36 resets (lift_brick / reach_duplo / stack_2, float32),
+    # every failure had |qvel| 1.5e-05 .. 5.5e-05 — twenty to seventy times
+    # BELOW its own tolerance — and missed on |qacc| alone, 0.015 .. 0.046
+    # against 0.01. The prop is at rest and carrying a residual contact
+    # acceleration; a message saying it is moving would send the reader after
+    # the wrong quantity.
+    var why = String("")
+    if mv >= SETTLE_QVEL_TOL and ma >= SETTLE_QACC_TOL:
+        why = "|qvel| AND |qacc|"
+    elif mv >= SETTLE_QVEL_TOL:
+        why = "|qvel|"
+    else:
+        why = "|qacc|"
+    print(
+        "settle_free_props: FAILED TO SETTLE"
+        + ((" [" + label + "]") if label.byte_length() > 0 else "")
+        + " on "
+        + why
+        + " after "
+        + String(steps)
+        + " steps ("
+        + String(SETTLE_MAX_TIME)
+        + " s): |qvel| "
+        + String(mv)
+        + " (tol "
+        + String(SETTLE_QVEL_TOL)
+        + "), |qacc| "
+        + String(ma)
+        + " (tol "
+        + String(SETTLE_QACC_TOL)
+        + ")"
+    )
     return SettleResult(False, steps, mv, ma)
 
 
@@ -493,6 +558,7 @@ def settle_free_prop[
     mut mf: Model[DTYPE, D],
     dof_adr: Int,
     timestep: Float64,
+    label: String = String(""),
 ) raises -> SettleResult:
     """`settle_free_props` for the single-prop case — the seven tasks with one
     free prop read better this way, and it keeps their call sites unchanged."""
@@ -500,4 +566,4 @@ def settle_free_prop[
     adrs.append(dof_adr)
     return settle_free_props[
         DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD, SOLVER
-    ](d, mf, adrs, timestep)
+    ](d, mf, adrs, timestep, label)

@@ -273,7 +273,7 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
         )
 
         # ── 2. settle it, with the robot held static ────────────────────
-        _ = settle_free_prop[DTYPE, LiftLargeBoxModel.CONE_TYPE, LiftLargeBoxModel.MAX_CONDIM, LiftLargeBoxModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, LiftLargeBoxModel.CONE_TYPE, LiftLargeBoxModel.MAX_CONDIM, LiftLargeBoxModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep(), String("lift_large_box"))
 
         # ── 3. the TCP initializer ──────────────────────────────────────
         var dof_idx = InlineArray[Int, N_ARM](fill=0)

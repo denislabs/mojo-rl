@@ -388,4 +388,4 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
             )
 
         # ── 3. settle it, with the robot held static ────────────────────
-        _ = settle_free_prop[DTYPE, ReachDuploModel.CONE_TYPE, ReachDuploModel.MAX_CONDIM, ReachDuploModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, ReachDuploModel.CONE_TYPE, ReachDuploModel.MAX_CONDIM, ReachDuploModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep(), String("reach_duplo"))

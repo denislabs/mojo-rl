@@ -130,4 +130,4 @@ struct Stack2MoveableConfig(Phyics3dEnvConfig):
         mut d: Data[DTYPE, D, 1],
         mut mf: Model[DTYPE, D],
     ) raises:
-        stack_fixed_reset_full[DTYPE, Stack2MoveableModel.CONE_TYPE, Stack2MoveableModel.MAX_CONDIM, Stack2MoveableModel.NOSLIP_ITER](d, mf, N_BRICKS, FIXED_BRICK, Self.get_timestep())
+        stack_fixed_reset_full[DTYPE, Stack2MoveableModel.CONE_TYPE, Stack2MoveableModel.MAX_CONDIM, Stack2MoveableModel.NOSLIP_ITER](d, mf, N_BRICKS, FIXED_BRICK, Self.get_timestep(), String("stack_2_bricks_moveable_base"))

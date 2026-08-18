@@ -472,7 +472,7 @@ def stack_random_reset_full[
         dofs.append(brick_dof_adr_of(p))
     _ = settle_free_props[
         DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER
-    ](d, mf, dofs, timestep)
+    ](d, mf, dofs, timestep, String("stack_random"))
 
     var dof_idx = InlineArray[Int, N_ARM](fill=0)
     var qpos_adr = InlineArray[Int, N_ARM](fill=0)

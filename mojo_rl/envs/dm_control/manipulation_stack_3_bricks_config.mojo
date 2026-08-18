@@ -122,4 +122,4 @@ struct Stack3BricksConfig(Phyics3dEnvConfig):
         mut d: Data[DTYPE, D, 1],
         mut mf: Model[DTYPE, D],
     ) raises:
-        stack_fixed_reset_full[DTYPE, Stack3BricksModel.CONE_TYPE, Stack3BricksModel.MAX_CONDIM, Stack3BricksModel.NOSLIP_ITER](d, mf, N_BRICKS, FIXED_BRICK, Self.get_timestep())
+        stack_fixed_reset_full[DTYPE, Stack3BricksModel.CONE_TYPE, Stack3BricksModel.MAX_CONDIM, Stack3BricksModel.NOSLIP_ITER](d, mf, N_BRICKS, FIXED_BRICK, Self.get_timestep(), String("stack_3_bricks"))

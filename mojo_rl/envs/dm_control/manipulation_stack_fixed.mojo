@@ -378,6 +378,7 @@ def stack_fixed_reset_full[
     n_bricks: Int,
     fixed_brick: Int,
     timestep: Float64,
+    caller: String = String("stack_fixed"),
 ) raises:
     """`Stack.initialize_episode` — bricks, grasp (already done), arm.
 
@@ -450,7 +451,7 @@ def stack_fixed_reset_full[
         dofs.append(stack_dof_adr_of(s))
     _ = settle_free_props[
         DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER
-    ](d, mf, dofs, timestep)
+    ](d, mf, dofs, timestep, caller)
 
     # ── the TCP initializer ─────────────────────────────────────────────
     brick_tcp_initializer[DTYPE](d, mf, n_bricks, fixed_brick, "stack")
