@@ -40,3 +40,8 @@ from .flat_model import (
 )
 from .full_parser import parse_xml_full
 from .model_def_from_xml import ModelDefFromXML
+from .runtime_load import (
+    parse_model_runtime,
+    dims_from_flat,
+    build_model_runtime,
+)

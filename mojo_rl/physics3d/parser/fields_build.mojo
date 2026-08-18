@@ -681,6 +681,79 @@ def _inertia_from_geoms_staging[
             body_iquat[body_id * 4 + 3] = eig[6]
 
 
+
+def apply_auto_spring_damper[
+    DTYPE: DType,
+    D: DimsLike,
+](fmd: FlatModelDef, mut mf: Model[DTYPE, D]) raises:
+    """`<joint springdamper>` -> stiffness/damping, from `dof_invweight0`.
+
+    ⚠ EXTRACTED FROM `ModelDefFromXML.init_fields` (3c-c), NOT COPIED.
+    The runtime loader has to run this too — it OVERWRITES the joint
+    records that the XML supplied — and a second spelling of the same
+    formula is precisely how this tree has lost days before. One body,
+    two callers.
+
+    ⚠ ORDER IS LOAD-BEARING and unchanged: this READS `dof_invweight0`,
+    so it must run AFTER `compute_invweight0` and before any upload —
+    the same order MuJoCo uses (`mj_setConst` then `AutoSpringDamper`).
+    """
+    # ── AutoSpringDamper (mjCModel::AutoSpringDamper, user_model.cc:2369)
+    #
+    # ⚠ ORDER IS LOAD-BEARING: this READS `dof_invweight0`, so it must run
+    # AFTER `compute_invweight0` and before the upload. MuJoCo does exactly
+    # the same thing — `mj_setConst(m, d)` then `AutoSpringDamper(m)`
+    # (user_model.cc:5242-5245).
+    #
+    # `<joint springdamper="timeconst dampratio">` asks MuJoCo to DERIVE
+    # the spring from the body's own inertia rather than take a number:
+    #
+    #     inertia   = ndim / sum(dof_invweight0[adr .. adr+ndim])
+    #     stiffness = inertia / (timeconst^2 * dampratio^2)
+    #     damping   = 2 * inertia / timeconst
+    #
+    # and it OVERWRITES whatever `stiffness`/`damping` the XML or class
+    # supplied. dm_control's dog declares `springdamper="0.001 50"` once,
+    # in a default class, which is why ~20 of its `jnt_stiffness` values
+    # (0.0400187, 0.0401469, ...) appear NOWHERE in the XML and why our
+    # stiffness was wrong before this. It is not a cosmetic mismatch: the
+    # same formula sets `dof_damping`, so getting it wrong is a passive-
+    # force error, i.e. a dynamics defect.
+    #
+    # Both parameters must be strictly positive for MuJoCo to act, which
+    # is why (0, 0) is a sufficient "absent" encoding.
+    comptime _MJMINVAL = 1e-15
+    for j in range(mf.dims.get_njoint()):
+        # `mjCJoint::nv` — dofs per joint type. Free is 6 (not 7: qpos and
+        # dof sizes differ for a free joint, and this formula wants DOFS).
+
+        var jd = fmd.joints[j]
+        var tc = jd.springdamper_0
+        var dr = jd.springdamper_1
+        if tc <= 0.0 or dr <= 0.0:
+            continue
+        var jo = j * MODEL_JOINT_SIZE
+        var dof_adr = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
+        var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
+        var ndim = 6 if jt == JNT_FREE else (3 if jt == JNT_BALL else 1)
+        var acc = Float64(0)
+        for i in range(ndim):
+            acc += Float64(mf.dof_invweight0.data[dof_adr + i])
+        if acc < _MJMINVAL:
+            acc = _MJMINVAL
+        var inertia = Float64(ndim) / acc
+        var denom = tc * tc * dr * dr
+        if denom < _MJMINVAL:
+            denom = _MJMINVAL
+        var tc_d = tc if tc > _MJMINVAL else _MJMINVAL
+        mf.joints.data[jo + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](
+            inertia / denom
+        )
+        mf.joints.data[jo + JOINT_IDX_DAMPING] = Scalar[DTYPE](
+            2.0 * inertia / tc_d
+        )
+
+
 def build_model_fields_from_flat[
 
     DTYPE: DType,
