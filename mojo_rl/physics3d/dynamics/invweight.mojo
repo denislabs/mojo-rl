@@ -463,7 +463,13 @@ def compute_invweight0[
     # default was accidentally right on the only models that read it. The
     # first tendon with a nonzero rest length would have been welded to zero.
     # This is the same pose the invweights use, which is what qpos0 means.
-    comptime if D.NTENDON > 0:
+    # ⚠ A RUNTIME `if`, AND STILL A GUARD (3c-b). Unlike the equality passes
+    # below, this block BINDS TENSOR VIEWS before it loops, and a model with
+    # no tendons allocates those record tensors at length 0 — the zero-extent
+    # operand this tree has crashed on. So the gate survives; only the
+    # dimension it reads changes from comptime (`DIM_POISON` on a dynamic
+    # provider, hence silently skipped) to live.
+    if d.dims.get_ntendon() > 0:
         var dm = d.dims
         var rl_META = rl1(MODEL_META_SIZE)
         var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
@@ -583,97 +589,104 @@ def compute_invweight0[
     # connect and reads `site_xpos` instead; we store the site offsets in the
     # anchor slots (see `_fill_equality`), so deriving would overwrite site2's
     # offset with a value MuJoCo never computes.
-    comptime if D.NEQUALITY > 0:
-        for e in range(D.NEQUALITY):
-            var eo = e * MODEL_EQ_SIZE
-            if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_CONNECT:
-                continue
-            if Int(mf.equality.data[eo + EQ_IDX_OBJTYPE]) == EQ_OBJ_SITE:
-                continue
+    # The live equality count, read once for both passes below.
+    var eq_n = mf.dims.get_nequality()
+    var nbody_n = mf.dims.get_nbody()
+    # ⚠ THE `comptime if D.NEQUALITY > 0:` HERE IS GONE, NOT CONVERTED (3c-b).
+    # It wrapped nothing but `for e in range(D.NEQUALITY)`, which already runs
+    # zero times at zero equalities — the gate only ever removed dead code.
+    # On a dynamic provider it read `-1 > 0` and skipped the block outright,
+    # which is a silent behaviour change rather than an optimisation.
+    for e in range(eq_n):
+        var eo = e * MODEL_EQ_SIZE
+        if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_CONNECT:
+            continue
+        if Int(mf.equality.data[eo + EQ_IDX_OBJTYPE]) == EQ_OBJ_SITE:
+            continue
 
-            var cba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
-            var cbb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
-            if cba < 0 or cba >= D.NBODY or cbb < 0 or cbb >= D.NBODY:
-                continue
+        var cba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
+        var cbb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
+        if cba < 0 or cba >= nbody_n or cbb < 0 or cbb >= nbody_n:
+            continue
 
-            # world anchor = xpos[b1] + R(xquat[b1]) * anchor_a
-            var wrot = quat_rotate[DTYPE](
-                d.xquat.data[cba * 4 + 0],
-                d.xquat.data[cba * 4 + 1],
-                d.xquat.data[cba * 4 + 2],
-                d.xquat.data[cba * 4 + 3],
-                mf.equality.data[eo + EQ_IDX_ANCHOR_AX],
-                mf.equality.data[eo + EQ_IDX_ANCHOR_AY],
-                mf.equality.data[eo + EQ_IDX_ANCHOR_AZ],
-            )
-            var wax = d.xpos.data[cba * 3 + 0] + wrot[0]
-            var way = d.xpos.data[cba * 3 + 1] + wrot[1]
-            var waz = d.xpos.data[cba * 3 + 2] + wrot[2]
+        # world anchor = xpos[b1] + R(xquat[b1]) * anchor_a
+        var wrot = quat_rotate[DTYPE](
+            d.xquat.data[cba * 4 + 0],
+            d.xquat.data[cba * 4 + 1],
+            d.xquat.data[cba * 4 + 2],
+            d.xquat.data[cba * 4 + 3],
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AX],
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AY],
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AZ],
+        )
+        var wax = d.xpos.data[cba * 3 + 0] + wrot[0]
+        var way = d.xpos.data[cba * 3 + 1] + wrot[1]
+        var waz = d.xpos.data[cba * 3 + 2] + wrot[2]
 
-            # anchor_b = R(xquat[b2])^T * (world anchor - xpos[b2])
-            var qb = quat_conjugate[DTYPE](
-                d.xquat.data[cbb * 4 + 0],
-                d.xquat.data[cbb * 4 + 1],
-                d.xquat.data[cbb * 4 + 2],
-                d.xquat.data[cbb * 4 + 3],
-            )
-            var ab = quat_rotate[DTYPE](
-                qb[0], qb[1], qb[2], qb[3],
-                wax - d.xpos.data[cbb * 3 + 0],
-                way - d.xpos.data[cbb * 3 + 1],
-                waz - d.xpos.data[cbb * 3 + 2],
-            )
-            mf.equality.data[eo + EQ_IDX_ANCHOR_BX] = ab[0]
-            mf.equality.data[eo + EQ_IDX_ANCHOR_BY] = ab[1]
-            mf.equality.data[eo + EQ_IDX_ANCHOR_BZ] = ab[2]
+        # anchor_b = R(xquat[b2])^T * (world anchor - xpos[b2])
+        var qb = quat_conjugate[DTYPE](
+            d.xquat.data[cbb * 4 + 0],
+            d.xquat.data[cbb * 4 + 1],
+            d.xquat.data[cbb * 4 + 2],
+            d.xquat.data[cbb * 4 + 3],
+        )
+        var ab = quat_rotate[DTYPE](
+            qb[0], qb[1], qb[2], qb[3],
+            wax - d.xpos.data[cbb * 3 + 0],
+            way - d.xpos.data[cbb * 3 + 1],
+            waz - d.xpos.data[cbb * 3 + 2],
+        )
+        mf.equality.data[eo + EQ_IDX_ANCHOR_BX] = ab[0]
+        mf.equality.data[eo + EQ_IDX_ANCHOR_BY] = ab[1]
+        mf.equality.data[eo + EQ_IDX_ANCHOR_BZ] = ab[2]
 
-    comptime if D.NEQUALITY > 0:
-        for e in range(D.NEQUALITY):
-            var eo = e * MODEL_EQ_SIZE
-            if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_WELD:
-                continue
+    # Same as the CONNECT pass above: the gate was the loop bound.
+    for e in range(eq_n):
+        var eo = e * MODEL_EQ_SIZE
+        if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_WELD:
+            continue
 
-            var rq_x = mf.equality.data[eo + EQ_IDX_RELPOSE_X]
-            var rq_y = mf.equality.data[eo + EQ_IDX_RELPOSE_Y]
-            var rq_z = mf.equality.data[eo + EQ_IDX_RELPOSE_Z]
-            var rq_w = mf.equality.data[eo + EQ_IDX_RELPOSE_W]
-            if (
-                rq_x * rq_x + rq_y * rq_y + rq_z * rq_z + rq_w * rq_w
-                > Scalar[DTYPE](1e-12)
-            ):
-                continue  # written explicitly — leave it alone
+        var rq_x = mf.equality.data[eo + EQ_IDX_RELPOSE_X]
+        var rq_y = mf.equality.data[eo + EQ_IDX_RELPOSE_Y]
+        var rq_z = mf.equality.data[eo + EQ_IDX_RELPOSE_Z]
+        var rq_w = mf.equality.data[eo + EQ_IDX_RELPOSE_W]
+        if (
+            rq_x * rq_x + rq_y * rq_y + rq_z * rq_z + rq_w * rq_w
+            > Scalar[DTYPE](1e-12)
+        ):
+            continue  # written explicitly — leave it alone
 
-            var ba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
-            var bb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
-            if ba < 0 or ba >= D.NBODY or bb < 0 or bb >= D.NBODY:
-                continue
+        var ba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
+        var bb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
+        if ba < 0 or ba >= nbody_n or bb < 0 or bb >= nbody_n:
+            continue
 
-            var qa = quat_conjugate[DTYPE](
-                d.xquat.data[ba * 4 + 0],
-                d.xquat.data[ba * 4 + 1],
-                d.xquat.data[ba * 4 + 2],
-                d.xquat.data[ba * 4 + 3],
-            )
-            # Pose of body B expressed in body A's frame — the direction
-            # `mj_equalityAnchors` then reads back as body A's anchor.
-            var rel = quat_rotate[DTYPE](
-                qa[0], qa[1], qa[2], qa[3],
-                d.xpos.data[bb * 3 + 0] - d.xpos.data[ba * 3 + 0],
-                d.xpos.data[bb * 3 + 1] - d.xpos.data[ba * 3 + 1],
-                d.xpos.data[bb * 3 + 2] - d.xpos.data[ba * 3 + 2],
-            )
-            var relq = quat_mul[DTYPE](
-                qa[0], qa[1], qa[2], qa[3],
-                d.xquat.data[bb * 4 + 0],
-                d.xquat.data[bb * 4 + 1],
-                d.xquat.data[bb * 4 + 2],
-                d.xquat.data[bb * 4 + 3],
-            )
+        var qa = quat_conjugate[DTYPE](
+            d.xquat.data[ba * 4 + 0],
+            d.xquat.data[ba * 4 + 1],
+            d.xquat.data[ba * 4 + 2],
+            d.xquat.data[ba * 4 + 3],
+        )
+        # Pose of body B expressed in body A's frame — the direction
+        # `mj_equalityAnchors` then reads back as body A's anchor.
+        var rel = quat_rotate[DTYPE](
+            qa[0], qa[1], qa[2], qa[3],
+            d.xpos.data[bb * 3 + 0] - d.xpos.data[ba * 3 + 0],
+            d.xpos.data[bb * 3 + 1] - d.xpos.data[ba * 3 + 1],
+            d.xpos.data[bb * 3 + 2] - d.xpos.data[ba * 3 + 2],
+        )
+        var relq = quat_mul[DTYPE](
+            qa[0], qa[1], qa[2], qa[3],
+            d.xquat.data[bb * 4 + 0],
+            d.xquat.data[bb * 4 + 1],
+            d.xquat.data[bb * 4 + 2],
+            d.xquat.data[bb * 4 + 3],
+        )
 
-            mf.equality.data[eo + EQ_IDX_ANCHOR_AX] = rel[0]
-            mf.equality.data[eo + EQ_IDX_ANCHOR_AY] = rel[1]
-            mf.equality.data[eo + EQ_IDX_ANCHOR_AZ] = rel[2]
-            mf.equality.data[eo + EQ_IDX_RELPOSE_X] = relq[0]
-            mf.equality.data[eo + EQ_IDX_RELPOSE_Y] = relq[1]
-            mf.equality.data[eo + EQ_IDX_RELPOSE_Z] = relq[2]
-            mf.equality.data[eo + EQ_IDX_RELPOSE_W] = relq[3]
+        mf.equality.data[eo + EQ_IDX_ANCHOR_AX] = rel[0]
+        mf.equality.data[eo + EQ_IDX_ANCHOR_AY] = rel[1]
+        mf.equality.data[eo + EQ_IDX_ANCHOR_AZ] = rel[2]
+        mf.equality.data[eo + EQ_IDX_RELPOSE_X] = relq[0]
+        mf.equality.data[eo + EQ_IDX_RELPOSE_Y] = relq[1]
+        mf.equality.data[eo + EQ_IDX_RELPOSE_Z] = relq[2]
+        mf.equality.data[eo + EQ_IDX_RELPOSE_W] = relq[3]

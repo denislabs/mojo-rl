@@ -59,6 +59,7 @@ from mojo_rl.physics3d.fields import (
 )
 from mojo_rl.physics3d.fields.dims import DIM_POISON
 from mojo_rl.physics3d.model.model_dims import ModelDims
+from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -69,11 +70,12 @@ from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
 from mojo_rl.physics3d.dynamics.ldl import ldl_factor
 from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
+    InvertedDoublePendulumModel,
+)
 
 comptime DT = DType.float64
 comptime BATCH = 2
-comptime MODEL = Walker2dModel
-comptime MD = ModelDims[MODEL]
 
 # ⚠ SET FROM THE FLOOR, NOT FROM A ROUND NUMBER. Both arms run the same
 # source lines over the same inputs in f64; the observed agreement is exactly
@@ -102,7 +104,7 @@ struct Tally(Movable):
             print("  ok:", what)
 
 
-def dyn_dims() -> DynDims:
+def dyn_dims[MD: DimsLike]() -> DynDims:
     """The same model, spelled as runtime state."""
     return DynDims(
         nq=MD.NQ,
@@ -196,18 +198,24 @@ def copy_model[
         dst.pairs.data[i] = src.pairs.data[i]
 
 
-def seed_state[A: DimsLike](mut d: Data[DT, A, BATCH]) raises:
+
+
+def seed_state[A: DimsLike](mut d: Data[DT, A, BATCH], nq: Int, nv: Int) raises:
+    """⚠ `nq`/`nv` ARE ARGUMENTS, not `A.NQ`. This is called on the dynamic
+    arm too, where the comptime members are `DIM_POISON` and the loops would
+    run zero times — seeding nothing, and then both arms would "agree" on
+    two states neither of them set."""
     for e in range(BATCH):
-        for i in range(MD.NQ):
+        for i in range(nq):
             # ⚠ `e * 5 % 5 == 0`, so an earlier `(e * 5 + i * 3) % 5`
             # gave EVERY env the same qpos — and section D's stride
             # check was then failing on the STATIC arm, correctly.
             var q = Scalar[DT]((e * 7 + i * 3) % 5 - 2) / 40.0
             if i == 1:
                 q = 1.10
-            d.qpos.data[e * MD.NQ + i] = q
-        for i in range(MD.NV):
-            d.qvel.data[e * MD.NV + i] = Scalar[DT]((e + i) % 3 - 1) / 10.0
+            d.qpos.data[e * nq + i] = q
+        for i in range(nv):
+            d.qvel.data[e * nv + i] = Scalar[DT]((e + i) % 3 - 1) / 10.0
 
 
 def run_chain[
@@ -256,17 +264,28 @@ def nonzero(a: List[Float64]) -> Int:
     return n
 
 
-def main() raises:
-    var t = Tally()
+def rows_differ(a: List[Float64], width: Int) -> Bool:
+    """A collapsed row stride folds env 1 onto env 0. See section D."""
+    for i in range(width):
+        if a[i] != a[width + i]:
+            return True
+    return False
+
+
+def check_model[NAME: StaticString, MODEL: ModelDefLike](mut t: Tally) raises:
+    """The whole comparison, for one model. See the module docstring."""
+    comptime MD = ModelDims[MODEL]
     var ctx = DeviceContext()
-    print("=== dispatchers: static provider vs DynDims (walker2d, BATCH=", BATCH, ") ===")
+    print()
+    print("=== ", NAME, ": static provider vs DynDims, BATCH=", BATCH,
+          " (nsite=", MD.NSITE, ") ===")
 
     # ── A. the static arm, which also builds the model records ──────────────
     var ms = Model[DT, MD]()
     MODEL.init_fields[DT](ctx, ms)
     var ds = Data[DT, MD, BATCH]()
     var ss = DynamicsScratch[DT, MD, BATCH]()
-    seed_state(ds)
+    seed_state(ds, MD.NQ, MD.NV)
     run_chain(ds, ms, ss)
 
     var xpos_s = grab(ds.xpos.data, BATCH * MD.NBODY * 3)
@@ -276,6 +295,7 @@ def main() raises:
     var M_s = grab(ss.M.data, BATCH * MD.NV * MD.NV)
     var L_s = grab(ss.L.data, BATCH * MD.NV * MD.NV)
     var bias_s = grab(ss.bias.data, BATCH * MD.NV)
+    var sitex_s = grab(ds.site_xpos.data, BATCH * MD.NSITE * 3)
 
     print("--- A. the static arm actually computed something ---")
     t.truth(nonzero(xpos_s) > 0, "xpos is not all zeros")
@@ -285,10 +305,17 @@ def main() raises:
     t.truth(nonzero(M_s) > 0, "M is not all zeros")
     t.truth(nonzero(L_s) > 0, "L is not all zeros")
     t.truth(nonzero(bias_s) > 0, "bias is not all zeros")
+    comptime if MD.NSITE > 0:
+        # ⚠ THIS IS THE CHECK THE SITED MODEL WAS ADDED FOR. `_fk_sites` runs
+        # under a `comptime if D.NSITE > 0:` in the dispatcher's CPU branch,
+        # and on a dynamic provider that reads `-1 > 0` — false. The block is
+        # not skipped for a reason; it is skipped because the dimension is
+        # poison, and the result is silently absent physics.
+        t.truth(nonzero(sitex_s) > 0, "site_xpos is not all zeros")
 
     # ── B. the dynamic arm ─────────────────────────────────────────────────
     print("--- B. the dynamic provider constructs and allocates ---")
-    var dd = dyn_dims()
+    var dd = dyn_dims[MD]()
     var md = Model[DT, DynDims](dd)
     var dv = Data[DT, DynDims, BATCH](dd)
     var sd = DynamicsScratch[DT, DynDims, BATCH](dd)
@@ -307,7 +334,7 @@ def main() raises:
     )
 
     copy_model(ms, md)
-    seed_state(dv)
+    seed_state(dv, MD.NQ, MD.NV)
     run_chain(dv, md, sd)
 
     print("--- C. the two legs agree ---")
@@ -340,6 +367,12 @@ def main() raises:
         worst(bias_s, grab(sd.bias.data, BATCH * MD.NV)) <= AGREE_TOL,
         "compute_bias_forces_rne: bias",
     )
+    comptime if MD.NSITE > 0:
+        t.truth(
+            worst(sitex_s, grab(dv.site_xpos.data, BATCH * MD.NSITE * 3))
+            <= AGREE_TOL,
+            "forward_kinematics: site_xpos (the NSITE gate)",
+        )
 
     # ── D. the row STRIDE is real ──────────────────────────────────────────
     # ⚠ WITHOUT THIS, SECTION C PASSES ON TWO ARMS THAT BOTH DID NOTHING —
@@ -360,35 +393,39 @@ def main() raises:
     # The wrong-extent case is covered where it can be planted safely —
     # `scratchpad/audit3a.py`, which goes red on an injected `* 3 -> * 4`.
     print("--- D. the per-env row stride is real on BOTH legs ---")
-
-    def env_rows_differ(a: List[Float64], width: Int) -> Bool:
-        for i in range(width):
-            if a[i] != a[width + i]:
-                return True
-        return False
-
     t.truth(
-        env_rows_differ(xpos_s, MD.NBODY * 3),
+        rows_differ(xpos_s, MD.NBODY * 3),
         "static: env 0 and env 1 xpos differ (the seeds really do)",
     )
     var xpos_d = grab(dv.xpos.data, BATCH * MD.NBODY * 3)
     var M_d = grab(sd.M.data, BATCH * MD.NV * MD.NV)
     var bias_d = grab(sd.bias.data, BATCH * MD.NV)
     t.truth(
-        env_rows_differ(xpos_d, MD.NBODY * 3),
+        rows_differ(xpos_d, MD.NBODY * 3),
         "dynamic: env rows of xpos differ (no collapsed stride)",
     )
     t.truth(
-        env_rows_differ(M_d, MD.NV * MD.NV),
+        rows_differ(M_d, MD.NV * MD.NV),
         "dynamic: env rows of M differ (no collapsed stride)",
     )
     t.truth(
-        env_rows_differ(bias_d, MD.NV),
+        rows_differ(bias_d, MD.NV),
         "dynamic: env rows of bias differ (no collapsed stride)",
     )
     t.truth(nonzero(xpos_d) > 0, "dynamic: xpos is not all zeros")
     t.truth(nonzero(M_d) > 0, "dynamic: M is not all zeros")
     t.truth(nonzero(bias_d) > 0, "dynamic: bias is not all zeros")
+
+
+def main() raises:
+    var t = Tally()
+    # ⚠ TWO MODELS, AND THE SECOND ONE IS THE POINT. walker2d has NSITE == 0,
+    # NTENDON == 0 and NEQUALITY == 0, so every `comptime if D.NX > 0:` block
+    # in the pipeline is skipped on BOTH legs and the agreement is real but
+    # narrow. InvertedDoublePendulum has NSITE == 1, so it is the first model
+    # here whose dynamic arm has to ENTER one of those blocks.
+    check_model["walker2d", Walker2dModel](t)
+    check_model["inverted_double_pendulum", InvertedDoublePendulumModel](t)
 
     print()
     print("checks:", t.checks, " failures:", t.fails)

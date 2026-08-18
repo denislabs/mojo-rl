@@ -840,7 +840,20 @@ def forward_kinematics[
             _fk_env[DTYPE](
                 e, dm, qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
-        comptime if D.NSITE > 0:
+        # ⚠⚠ A RUNTIME `if`, NOT A `comptime if` — 3c-b. This gate used to
+        # read `D.NSITE`, which is `DIM_POISON` on a dynamic provider, so
+        # `-1 > 0` was false and site FK was SILENTLY SKIPPED: no error, no
+        # crash, `site_xpos` simply all zeros. `test_dispatchers_both_legs`
+        # was extended to InvertedDoublePendulum (NSITE=1) to make that
+        # visible, and it went red here before this line changed.
+        #
+        # ⚠ THE GUARD ITSELF IS STILL LOAD-BEARING. A model with no sites
+        # allocates `site_xpos` at length 0, and binding a `LayoutTensor` over
+        # an empty buffer is the zero-extent operand this tree has crashed on
+        # before. Keeping the block behind `> 0` means a zero-site model
+        # never constructs those views — the same protection the comptime
+        # form gave, now on the live dimension.
+        if dm.get_nsite() > 0:
             var rl_SITE_REC = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
             var rl_SITE_X = rl2(BATCH, dm.get_nsite() * 3)
             var sites_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE_REC)

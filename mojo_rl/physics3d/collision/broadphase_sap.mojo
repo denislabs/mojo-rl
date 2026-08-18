@@ -1960,6 +1960,20 @@ def detect_contacts_auto[
     the O(N^2) path — do not swap this into a bit-exact-gated pipeline
     without re-baselining."""
 
+    # ⚠⚠ THIS ONE STAYS COMPTIME, AND IT IS NOT AN OVERSIGHT (3c-b). Phase 3c
+    # converted the `comptime if D.NX > 0:` gates because those were CAPACITY
+    # tests that silently skipped work on a dynamic provider. This is not one:
+    # it SELECTS AN ALGORITHM, both branches compute the same contacts, and a
+    # runtime `if` would compile both bodies into every binary for no
+    # behavioural gain.
+    #
+    # ⚠ THE CONSEQUENCE FOR A DYNAMIC PROVIDER IS REAL BUT BENIGN: `D.NGEOM`
+    # is `DIM_POISON`, so `-1 >= 16` is false and a runtime-loaded model
+    # ALWAYS takes the O(N^2) path. Correct, and slower on a large model —
+    # which is the authoring leg, where §15.5 says not to optimise. A dynamic
+    # dispatcher that wants SAP needs a runtime `if` here AND `detect_contacts`
+    # to stop being selected at the type level; that is a separate change with
+    # its own measurement, not a line edit.
     comptime if D.NGEOM >= SAP_THRESHOLD:
         detect_contacts_sap[target, DTYPE, BATCH=BATCH](d, m, ctx)
     else:
