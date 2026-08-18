@@ -130,6 +130,61 @@ def _dims_with_meshes(fmd: FlatModelDef, want: Int) raises -> DynDims:
     return dims_from_flat(fmd, max_contacts=MAX_CONTACTS, nmesh_verts=want)
 
 
+def _outline(fmd: FlatModelDef) raises:
+    """The kinematic tree, BY NAME — the read-only half of S1's outliner.
+
+    ⚠ THIS IS WHAT THE NAME TABLES BOUGHT. Before them the parser resolved
+    names into indices and dropped the strings, so the best this could print
+    was "body 7 (parent 3)". `FlatModelDef.body_names` & co. are indexed in
+    MuJoCo element order and gated against `mj_id2name`
+    (`test_model_names_vs_mujoco`), so what prints here is what MuJoCo would
+    call the same element.
+
+    On stdout rather than in the window because S0 has no sidebar: reusing
+    `viewer_core`'s means lifting it out of `run_view`, which is parameterised
+    on `MODEL: ModelDefLike` + `CONFIG` and builds a comptime env. That is S1's
+    work, and this is the data it will show.
+
+    ⚠ AN EMPTY NAME IS PRINTED AS `<geom 4>`, and the angle brackets are the
+    tell: MJCF does not require `name=` and most geoms here have none. The
+    table stores "" rather than a synthesised name so that an export cannot
+    claim a name the source never had — so the invention happens HERE, where
+    it is visibly a display choice.
+    """
+    print("  ── outline ───────────────────────────────────────────────")
+    var nb = len(fmd.body_names)
+    for b in range(nb):
+        var indent = String("    ")
+        # Depth by walking parents; the tree is shallow and this runs once.
+        var d = 0
+        var cur = b
+        while cur > 0 and d < 24:
+            cur = fmd.bodies[cur - 1].parent
+            d += 1
+        for _ in range(d):
+            indent += "  "
+        print(indent, _label(fmd.body_names, b, "body"))
+        for j in range(len(fmd.joints)):
+            if fmd.joints[j].body_id == b:
+                print(indent, "   joint ",
+                      _label(fmd.joint_names, j, "joint"))
+        for g in range(len(fmd.geoms)):
+            if fmd.geoms[g].body_id == b:
+                print(indent, "   geom  ",
+                      _label(fmd.geom_names, g, "geom"))
+    if len(fmd.actuator_names) > 0:
+        print("    actuators:")
+        for a in range(len(fmd.actuator_names)):
+            print("      ", a, _label(fmd.actuator_names, a, "actuator"))
+    print("  ──────────────────────────────────────────────────────────")
+
+
+def _label(names: List[String], i: Int, kind: String) -> String:
+    if i < len(names) and names[i].byte_length() > 0:
+        return names[i].copy()
+    return String("<", kind, " ", i, ">")
+
+
 def run_studio(
     path: String, drive: Int, scale: Float64, max_frames: Int = 0
 ) raises:
@@ -184,6 +239,7 @@ def run_studio(
     print("  mesh verts", dims.get_nmesh_verts(),
           " contact budget", MAX_CONTACTS)
     print("  drive:", _drive_name(drive), " scale", _fmt2(scale))
+    _outline(fmd)
 
     # ── the reference pose ────────────────────────────────────────────────
     for i in range(nq):
