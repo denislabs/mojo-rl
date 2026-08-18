@@ -85,7 +85,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 from .scalar_rows import SROW_EQ_BILATERAL
 
 # How many (joint, coef) pairs a fixed tendon stores.
-from ..fields import Dims, DimsLike
+from ..fields import Dims, DimsLike, may_exist
 #
 # ⚠ WAS A LOCAL `4`, ON THE REASONING THAT REUSING `TENDON_MAX_SITES` WOULD BE
 # COINCIDENTAL. The reasoning was sound and the outcome was not: the cap ended
@@ -200,7 +200,7 @@ def build_tendon_limit_rows[
     var njoint = dims.get_njoint()
     var nsite = dims.get_nsite()
     var ntendon = dims.get_ntendon()
-    comptime if D.CAP_NTENDON == 0:
+    comptime if not may_exist[D.NTENDON]():
         return
 
     var nten = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTENDON]))
@@ -397,7 +397,7 @@ def build_tendon_equality_rows[
     var njoint = dims.get_njoint()
     var nsite = dims.get_nsite()
     var ntendon = dims.get_ntendon()
-    comptime if D.CAP_NTENDON == 0:
+    comptime if not may_exist[D.NTENDON]():
         return
 
     var nten = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTENDON]))

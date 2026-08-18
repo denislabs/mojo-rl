@@ -42,6 +42,8 @@ from ..fields import (
     Dims,
     DimsLike,
     AsStatic,
+    may_exist,
+    DIM_POISON,
     Scratch,
     cap,
     DYN1,
@@ -876,7 +878,7 @@ def _detect_contacts_sap_env[
                 # has no INCLUDEMARGIN slot (see the module docstring). Those
                 # are gated bit-exactly elsewhere, so they are passed as
                 # parameters rather than quietly aligned with the other path.
-                comptime if D.CAP_NMESH_VERTS > 0:
+                comptime if may_exist[D.NMESH_VERTS]():
                     _plane_mesh_contacts[
                         DTYPE,
                         -1, True, False](
@@ -1512,7 +1514,7 @@ def _detect_contacts_sap_env[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                comptime if D.CAP_NMESH_VERTS > 0:
+                comptime if may_exist[D.NMESH_VERTS]():
                     # Read mesh IDs from geom data
                     var mi_id = Int(
                         rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
@@ -1976,21 +1978,35 @@ def detect_contacts_auto[
     the O(N^2) path — do not swap this into a bit-exact-gated pipeline
     without re-baselining."""
 
-    # ⚠⚠ THIS ONE STAYS COMPTIME, AND IT IS NOT AN OVERSIGHT (3c-b). Phase 3c
-    # converted the `comptime if D.NX > 0:` gates because those were CAPACITY
-    # tests that silently skipped work on a dynamic provider. This is not one:
-    # it SELECTS AN ALGORITHM, both branches compute the same contacts, and a
-    # runtime `if` would compile both bodies into every binary for no
-    # behavioural gain.
+    # ⚠⚠ THE SELECTION IS COMPTIME ON A STATIC PROVIDER AND RUNTIME ON A
+    # DYNAMIC ONE, and the split is deliberate. Unlike the `CAP_*` gates this
+    # is not a capacity test — it SELECTS AN ALGORITHM, and both branches
+    # compute the same contacts. A blanket runtime `if` would therefore
+    # compile both bodies into every binary for no behavioural gain, which is
+    # why it was left alone in 3c-b.
     #
-    # ⚠ THE CONSEQUENCE FOR A DYNAMIC PROVIDER IS REAL BUT BENIGN: `D.NGEOM`
-    # is `DIM_POISON`, so `-1 >= 16` is false and a runtime-loaded model
-    # ALWAYS takes the O(N^2) path. Correct, and slower on a large model —
-    # which is the authoring leg, where §15.5 says not to optimise. A dynamic
-    # dispatcher that wants SAP needs a runtime `if` here AND `detect_contacts`
-    # to stop being selected at the type level; that is a separate change with
-    # its own measurement, not a line edit.
-    comptime if D.NGEOM >= SAP_THRESHOLD:
+    # ⚠⚠ WHAT 3c-b GOT WRONG WAS CALLING THE CONSEQUENCE BENIGN. `D.NGEOM` is
+    # `DIM_POISON`, so `-1 >= 16` was false and a runtime-loaded model ALWAYS
+    # took the O(N^2) path — and the two paths DO NOT AGREE TO THE BIT. Their
+    # contact ORDER differs (the docstring above says so), and SAP's record
+    # conventions differ too: BODY_B = -1, `dist - margin` in DIST, no
+    # INCLUDEMARGIN slot. So for any model at or above the threshold the two
+    # legs were solving DIFFERENT contact sets in a different order, which is
+    # most of what `test_runtime_step_both_legs` was measuring as "the caps
+    # disable constraint families" on the humanoid (ngeom 18 >= 16). It is a
+    # correctness split, not a performance note.
+    #
+    # ⚠ THE COMPTIME LEG'S INSTANTIATION SET IS UNCHANGED. Only the dynamic
+    # provider — the one whose `NGEOM` is poison, i.e. exactly the one that
+    # could not answer at compile time — pays for both bodies. The studio is
+    # also where it matters: a composed scene is precisely the NGEOM regime
+    # SAP exists for, and SO-ARM100 alone is 33 geoms.
+    comptime if D.NGEOM == DIM_POISON:
+        if d.dims.get_ngeom() >= SAP_THRESHOLD:
+            detect_contacts_sap[target, DTYPE, BATCH=BATCH](d, m, ctx)
+        else:
+            detect_contacts[target, DTYPE, BATCH=BATCH](d, m, ctx)
+    elif D.NGEOM >= SAP_THRESHOLD:
         detect_contacts_sap[target, DTYPE, BATCH=BATCH](d, m, ctx)
     else:
         detect_contacts[target, DTYPE, BATCH=BATCH](d, m, ctx)

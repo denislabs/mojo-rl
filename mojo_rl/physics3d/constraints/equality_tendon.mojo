@@ -118,7 +118,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 
 
 # =============================================================================
-from ..fields import Dims, DimsLike, Scratch, cap
+from ..fields import Dims, DimsLike, Scratch, cap, may_exist
 # Weld / angular Jacobian rows (ports of dynamics/jacobian.mojo GPU rows)
 # =============================================================================
 
@@ -1377,7 +1377,7 @@ def _tendon_env[
     var njoint = dims.get_njoint()
     var ntendon = dims.get_ntendon()
     var nsite = dims.get_nsite()
-    comptime if D.CAP_NTENDON == 0:
+    comptime if not may_exist[D.NTENDON]():
         return
 
     # Read number of tendons from model metadata

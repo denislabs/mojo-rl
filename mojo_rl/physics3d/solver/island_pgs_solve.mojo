@@ -85,6 +85,7 @@ from ..fields import (
     rl2,
 )
 from ..fields.scratch import Scratch, cap
+from ..fields.dims import may_exist
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -519,7 +520,7 @@ def _island_pgs_solve_env[
     # Equality constraints — legacy position (right after limits; the legacy
     # call is unconditional with a comptime gate inside the builder, which
     # this call-site gate matches bit-identically for nequality == 0).
-    comptime if D.CAP_NEQUALITY > 0:
+    comptime if may_exist[D.NEQUALITY]():
         _equality_env[
             DTYPE, V_CAP, PGS_ITERATIONS](
             env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
@@ -529,7 +530,7 @@ def _island_pgs_solve_env[
 
     # Tendon equality constraints — legacy call-site gate
     # (`comptime if MAX_TENDON > 0` in PGSSolver.solve_gpu).
-    comptime if D.CAP_NTENDON > 0:
+    comptime if may_exist[D.NTENDON]():
         _tendon_env[
             DTYPE, BATCH,
             PGS_ITERATIONS](

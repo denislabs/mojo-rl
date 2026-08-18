@@ -405,6 +405,45 @@ i.e. a site the sweep has not converted yet — dies AT the unconverted site.
 """
 
 
+@always_inline
+def may_exist[n: Int]() -> Bool:
+    """Can a model behind this provider have this feature AT ALL?
+
+    ⚠⚠ THIS IS NOT `cap[]`, AND CONFUSING THE TWO SILENTLY DELETED FOUR
+    CONSTRAINT FAMILIES FROM THE RUNTIME LEG. `cap[]` answers *which
+    container* — exact on a static provider, 0 on a dynamic one, because a
+    dynamic leg cannot size a stack array. Twelve sites then read that 0 as
+    "this model has no tendons/equalities/meshes" and compiled the whole
+    family OUT:
+
+        comptime if D.CAP_NTENDON > 0:      # false on EVERY dynamic provider
+            build_tendon_equality_rows[...](...)
+
+    The model still BUILT byte-identically — 3c's gate compares the model, and
+    cannot see a caller that never runs — so a runtime-loaded humanoid stepped
+    happily with its hip-coupling tendons unconstrained.
+
+    Pass the DIMENSION (`D.NTENDON`), never the cap. The three answers are:
+
+    | provider | `D.NTENDON` | `may_exist` | meaning |
+    |---|---|---|---|
+    | static, no tendons | 0 | **False** | compile the family out, as before |
+    | static, 2 tendons | 2 | True | compile it in |
+    | dynamic | `DIM_POISON` (-1) | **True** | compile it in, decide at RUNTIME |
+
+    The negative poison is what makes the dynamic row fall out for free, and
+    it is the second thing `DIM_POISON`'s sign buys (the first is dying at an
+    unconverted site).
+
+    ⚠ IT IS ONLY HALF THE GATE. `True` means *compile the branch*, not *run
+    it*: every site behind this must still test the live dimension, exactly as
+    it would test `nten == 0` today. On the static leg that test folds away —
+    `get_ntendon()` returns a comptime constant there — so this conversion is
+    a no-op on the shipped path, and `test_runtime_step_both_legs` gates that.
+    """
+    return n != 0
+
+
 struct DynDims(DimsLike):
     """Dimensions carried as RUNTIME state. NO BOUND ON MODEL SIZE.
 

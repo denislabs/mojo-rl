@@ -161,6 +161,7 @@ from ..fields import (
     Dims,
     DimsLike,
     AsStatic,
+    may_exist,
     Scratch,
     cap,
     DYN1,
@@ -1086,7 +1087,7 @@ def _newton_solve_env[
         # Tendon limit rows (MuJoCo mjCNSTR_LIMIT_TENDON). Dense J, one row
         # per violated side — see constraints/tendon_limit.mojo for why this
         # is a row here rather than a post-pass.
-        comptime if D.CAP_NTENDON > 0:
+        comptime if may_exist[D.NTENDON]():
             build_tendon_limit_rows[
                 DTYPE, V_CAP, E_CAP, BATCH
             ](
@@ -1100,7 +1101,7 @@ def _newton_solve_env[
         # post-solve Gauss-Seidel pass; with contacts live that split cost a
         # standing quadruped two thirds of its ground reaction force. See
         # constraints/tendon_limit.build_tendon_equality_rows.
-        comptime if D.CAP_NTENDON > 0:
+        comptime if may_exist[D.NTENDON]():
             build_tendon_equality_rows[
                 DTYPE, V_CAP, E_CAP,
                 BATCH](
@@ -1124,7 +1125,7 @@ def _newton_solve_env[
         # 7.86 mm on the first attempt at the elliptic conversion, and it looks
         # exactly like an iteration-budget problem while being nothing of the
         # kind.
-        comptime if D.CAP_NEQUALITY > 0:
+        comptime if may_exist[D.NEQUALITY]():
             comptime WR = 6 * cap[D.NEQUALITY]()
             comptime WJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
             var w_rows = 6 * nequality
@@ -1675,7 +1676,7 @@ def _newton_solve_env[
     var eq_f = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var eq_Js = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var neq_rows = 0
-    comptime if D.CAP_NTENDON > 0:
+    comptime if may_exist[D.NTENDON]():
         build_tendon_equality_rows[
             DTYPE, V_CAP, EQ_CAP, BATCH
         ](
@@ -1685,7 +1686,7 @@ def _newton_solve_env[
         )
 
     # === connect/weld EQUALITY rows (dense J) — defect 29a ===
-    comptime if D.CAP_NEQUALITY > 0:
+    comptime if may_exist[D.NEQUALITY]():
         comptime EQR = 6 * cap[D.NEQUALITY]()
         comptime EQJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
         var we_rows = 6 * nequality

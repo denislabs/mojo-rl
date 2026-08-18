@@ -38,6 +38,7 @@ from ..fields import (
     Dims,
     DimsLike,
     AsStatic,
+    may_exist,
     DYN1,
     DYN2,
     rl1,
@@ -2145,7 +2146,7 @@ def _detect_contacts_env[
                     )
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
-                    comptime if D.CAP_NMESH_VERTS > 0:
+                    comptime if may_exist[D.NMESH_VERTS]():
                         _plane_mesh_contacts[
                             DTYPE,
                             0, False, True](
@@ -2477,7 +2478,7 @@ def _detect_contacts_env[
                         num_contacts,
                     )
                 elif gi_type == GEOM_MESH:
-                    comptime if D.CAP_NMESH_VERTS > 0:
+                    comptime if may_exist[D.NMESH_VERTS]():
                         _plane_mesh_contacts[
                             DTYPE,
                             0, False, True](
@@ -2888,7 +2889,7 @@ def _detect_contacts_env[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                comptime if D.CAP_NMESH_VERTS > 0:
+                comptime if may_exist[D.NMESH_VERTS]():
                     # Read mesh IDs from geom data
                     var mi_id = Int(
                         rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])

@@ -98,6 +98,7 @@ from ..fields import (
     rl2,
 )
 from ..fields.scratch import Scratch, cap
+from ..fields.dims import may_exist
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -916,7 +917,7 @@ def _cg_solve_env[
     # rows need a dense Jacobian and remain post-passes for now.
     comptime SOLVER_ITER_GPU: Int = 50
 
-    comptime if D.CAP_NEQUALITY > 0:
+    comptime if may_exist[D.NEQUALITY]():
         _equality_env[
             DTYPE, V_CAP, SOLVER_ITER_GPU](
             env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
@@ -924,7 +925,7 @@ def _cg_solve_env[
             m_inv, qacc_constrained,
         )
 
-    comptime if D.CAP_NTENDON > 0:
+    comptime if may_exist[D.NTENDON]():
         _tendon_env[
             DTYPE, BATCH,
             SOLVER_ITER_GPU](
