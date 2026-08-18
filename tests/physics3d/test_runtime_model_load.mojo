@@ -50,7 +50,11 @@ from mojo_rl.physics3d.parser import (
     parse_model_runtime,
     dims_from_flat,
     build_model_runtime,
+    spec_fields_runtime,
 )
+from mojo_rl.physics3d.fields.spec_fields import SpecFields
+from mojo_rl.physics3d.parser.fields_build import build_spec_fields
+from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
 
@@ -162,6 +166,81 @@ def check_records[NAME: StaticString, MODEL: ModelDefLike](
     t.same(
         ms.dof_invweight0.data, mr.dof_invweight0.data, "dof_invweight0"
     )
+
+    # ── the SPEC bundle: what makes the model DRIVEABLE ────────────────────
+    # ⚠ A MODEL THAT LOADS AND CANNOT BE DRIVEN IS NOT A LOADED MODEL. Until
+    # `SpecFields` carried a provider, every one of these came out at the
+    # floored length 1 with `DIM_POISON` dimensions — actuators absent,
+    # reference pose absent, joint limits absent — and NOTHING above would
+    # have noticed, because `Model`'s records are complete without them.
+    # ⚠ NOT `MODEL.make_spec_fields[DT]()` — `make_spec_fields` is on
+    # `ModelDefFromXML`, not on the `ModelDefLike` TRAIT, so it is unreachable
+    # through a trait-generic parameter. Building it the way the trait allows
+    # is also the more honest comparison: the same two calls the comptime
+    # path makes, against the same parse.
+    var ss = SpecFields[DT, MD]()
+    build_spec_fields[DT](fmd, ss)
+    var sr = spec_fields_runtime[DT](fmd, dims)
+    t.same(ss.actuators.data, sr.actuators.data, "spec: actuators")
+    t.same(ss.act_tendons.data, sr.act_tendons.data, "spec: act_tendons")
+    t.same(ss.qpos0.data, sr.qpos0.data, "spec: qpos0")
+    t.same(ss.pose_meta.data, sr.pose_meta.data, "spec: pose_meta")
+    t.same(ss.key_meta.data, sr.key_meta.data, "spec: key_meta")
+    t.same(ss.key_qpos.data, sr.key_qpos.data, "spec: key_qpos")
+    t.same(ss.key_qvel.data, sr.key_qvel.data, "spec: key_qvel")
+    t.same(ss.key_ctrl.data, sr.key_ctrl.data, "spec: key_ctrl")
+    t.same(ss.joint_limits.data, sr.joint_limits.data, "spec: joint_limits")
+    var anz = 0
+    for i in range(len(sr.actuators.data)):
+        if sr.actuators.data[i] != 0:
+            anz += 1
+    t.truth(
+        anz > 0,
+        String("the runtime actuator records are non-trivial (", anz, ")"),
+    )
+
+    # ── the model is DRIVEABLE, not merely loaded ──────────────────────────
+    # ⚠ MATCHING RECORDS IS NOT THE SAME CLAIM. Every tensor above could be
+    # identical and the model still be undriveable, because until 3d the CPU
+    # force path lived on `ModelDefFromXML` as a @staticmethod reading
+    # `Self.NV`/`Self.nact` — reachable only from a comptime model def. So
+    # push the SAME action through both and compare `qfrc`.
+    var acts = List[Float64]()
+    for i in range(MD.NACT):
+        acts.append(0.37 - 0.11 * Float64(i))
+    var ds = Data[DT, MD, 1]()
+    var dr = Data[DT, DynDims, 1](dims)
+    for i in range(MD.NQ):
+        ds.qpos.data[i] = Scalar[DT](0.05 * Float64(i) - 0.1)
+        dr.qpos.data[i] = ds.qpos.data[i]
+    for i in range(MD.NV):
+        ds.qvel.data[i] = Scalar[DT](0.02 * Float64(i))
+        dr.qvel.data[i] = ds.qvel.data[i]
+    var act_s = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+    var act_r = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+    var dt_s = Float64(ms.meta.data[5])
+    apply_actions_fields[DT](ss, ds, acts, act_s, dt_s)
+    apply_actions_fields[DT](sr, dr, acts, act_r, dt_s)
+    var qs = List[Float64]()
+    var qr = List[Float64]()
+    var qnz = 0
+    for i in range(MD.NV):
+        qs.append(Float64(ds.qfrc.data[i]))
+        qr.append(Float64(dr.qfrc.data[i]))
+        if ds.qfrc.data[i] != 0:
+            qnz += 1
+    t.truth(qnz > 0, String("the applied action produced force (", qnz, " dofs)"))
+    var qdiff = 0
+    for i in range(MD.NV):
+        if qs[i] != qr[i]:
+            qdiff += 1
+    t.checks += 1
+    if qdiff != 0:
+        t.fails += 1
+        print("  FAIL driving: qfrc differs on", qdiff, "of", MD.NV, "dofs")
+    else:
+        t.compared += MD.NV
+        print("  ok: driving — qfrc identical on all", MD.NV, "dofs")
 
     # ── D. non-vacuity ──────────────────────────────────────────────────────
     # ⚠ WITHOUT THIS, EVERY `same` ABOVE PASSES ON TWO EMPTY TENSORS.

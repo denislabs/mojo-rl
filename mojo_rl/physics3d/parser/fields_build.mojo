@@ -1854,12 +1854,22 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
 
     Does NOT upload — the caller does, alongside `Model.upload_all`.
     """
+    # ⚠ READ ONCE, FROM THE PROVIDER `SpecFields` NOW CARRIES (3d).
+    # These were `D.NACT`/`D.NQ`/… — comptime, hence `DIM_POISON` on a
+    # runtime-loaded model, hence a spurious raise from the nact check
+    # and an empty reference pose from every loop below.
+    var n_act = sf.dims.get_nact()
+    var n_ten = sf.dims.get_nten()
+    var n_q = sf.dims.get_nq()
+    var n_v = sf.dims.get_nv()
+    var n_key = sf.dims.get_nkey()
+    var n_joint = sf.dims.get_njoint()
     var nact = len(fmd.actuators)
-    if nact != D.NACT:
+    if nact != n_act:
         raise Error(
             String(
                 "physics3d: parser/dimension mismatch on ACTUATORS — declared",
-                " nact=", D.NACT, ", full_parser found ", nact,
+                " nact=", n_act, ", full_parser found ", nact,
                 ". Actuation is addressed BY ACTUATOR INDEX, so a mismatch",
                 " here drives the wrong dof.",
             )
@@ -1869,11 +1879,11 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
     # for a model with no tendons at all). Under-declaring is the failure that
     # matters and `init_fields` already raises on it via
     # `tendon_count_overflow`; this is the storage-side backstop.
-    if len(fmd.tendons) > D.NTEN:
+    if len(fmd.tendons) > n_ten:
         raise Error(
             String(
                 "physics3d: this model declares ", len(fmd.tendons),
-                " tendons but max_tendon=", D.NTEN,
+                " tendons but max_tendon=", n_ten,
                 ". Pass `max_tendon = <parse>.NTENDON`.",
             )
         )
@@ -1974,15 +1984,15 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         fmd.free_joint_qpos_adr
     )
     for i in range(fmd.qpos0_nq):
-        if i < D.NQ and i < len(fmd.qpos0):
+        if i < n_q and i < len(fmd.qpos0):
             sf.qpos0.data[i] = Scalar[DTYPE](fmd.qpos0[i])
 
     # ── keyframes (`mj_resetDataKeyframe`) ───────────────────────────────
-    if fmd.nkey > D.NKEY:
+    if fmd.nkey > n_key:
         raise Error(
             String(
                 "physics3d: this model declares ", fmd.nkey,
-                " <keyframe><key> entries but nkey=", D.NKEY,
+                " <keyframe><key> entries but nkey=", n_key,
                 " was passed to the model def. Truncating is not safe: a",
                 " caller asking for the dropped key would silently reset to",
                 " qpos0 instead.",
@@ -1997,26 +2007,26 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         sf.key_meta.data[o + KEY_IDX_NQPOS] = Scalar[DTYPE](fmd.key_nqpos[k])
         sf.key_meta.data[o + KEY_IDX_NQVEL] = Scalar[DTYPE](fmd.key_nqvel[k])
         sf.key_meta.data[o + KEY_IDX_NCTRL] = Scalar[DTYPE](fmd.key_nctrl[k])
-        for i in range(D.NQ):
-            if k * D.NQ + i < len(fmd.key_qpos):
-                sf.key_qpos.data[k * D.NQ + i] = Scalar[DTYPE](
-                    fmd.key_qpos[k * D.NQ + i]
+        for i in range(n_q):
+            if k * n_q + i < len(fmd.key_qpos):
+                sf.key_qpos.data[k * n_q + i] = Scalar[DTYPE](
+                    fmd.key_qpos[k * n_q + i]
                 )
-        for i in range(D.NV):
-            if k * D.NQ + i < len(fmd.key_qvel):
+        for i in range(n_v):
+            if k * n_q + i < len(fmd.key_qvel):
                 # ⚠ STRIDE `NQ`, NOT `NV`. `FlatModelDef.key_qvel` mirrors the
                 # comptime twin, whose row stride is `NQ0` for BOTH qpos and
                 # qvel (`key_qvel[k * NQ0 + i]`) — one allocation shape for
                 # two arrays. The tensor is honestly `[NKEY, NV]`, so the two
                 # strides differ and reading them the same way walks into the
                 # next key on any model with nq != nv.
-                sf.key_qvel.data[k * D.NV + i] = Scalar[DTYPE](
-                    fmd.key_qvel[k * D.NQ + i]
+                sf.key_qvel.data[k * n_v + i] = Scalar[DTYPE](
+                    fmd.key_qvel[k * n_q + i]
                 )
-        for i in range(D.NACT):
-            if k * D.NACT + i < len(fmd.key_ctrl):
-                sf.key_ctrl.data[k * D.NACT + i] = Scalar[DTYPE](
-                    fmd.key_ctrl[k * D.NACT + i]
+        for i in range(n_act):
+            if k * n_act + i < len(fmd.key_ctrl):
+                sf.key_ctrl.data[k * n_act + i] = Scalar[DTYPE](
+                    fmd.key_ctrl[k * n_act + i]
                 )
 
     # ── joint limits (the `enforce_limits` clamp) ────────────────────────
@@ -2025,7 +2035,7 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
     # `JointData` — the record carries per-joint `nq`/`nv`, never an absolute
     # address.
     for j in range(nj):
-        if j >= D.NJOINT:
+        if j >= n_joint:
             break
         var o = j * JLIM_SIZE
         sf.joint_limits.data[o + JLIM_IDX_LIMITED] = Scalar[DTYPE](

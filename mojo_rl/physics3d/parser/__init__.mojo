@@ -44,4 +44,5 @@ from .runtime_load import (
     parse_model_runtime,
     dims_from_flat,
     build_model_runtime,
+    spec_fields_runtime,
 )

@@ -43,6 +43,18 @@ from mojo_rl.nn.core.tensor import TensorImpl
 
 from .dims import DimsLike
 
+
+@always_inline
+def _f(n: Int) -> Int:
+    """The runtime twin of the comptime `*_F` members: floor a dimension at 1.
+
+    ⚠ NOT COSMETIC. A zero-extent tensor ABORTS AT BIND, which is why every
+    `SpecFields` tensor is sized `max(n, 1)` — see the struct docstring and
+    `fields.Model._at_least_one`. The two spellings must agree, so this
+    computes what `NACT_F` and friends compute.
+    """
+    return n if n > 0 else 1
+
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -115,14 +127,39 @@ struct SpecFields[
     # `Model.joints`' limit columns because that record has no LIMITED flag.
     var joint_limits: TensorImpl[Self.DTYPE]  # [NJOINT, JLIM_SIZE]
 
+    # The provider as a VALUE (3d). See the same field on `Data`. Until this
+    # existed, `build_spec_fields_from_flat` read `D.NACT`/`D.NQ` as comptime
+    # — `DIM_POISON` on a runtime-loaded model — so a model that LOADED could
+    # not be DRIVEN: no actuators, no keyframes, no reference pose.
+    var dims: Self.D
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in, and ALLOCATED FROM.
+
+        ⚠ EVERY SIZE HERE GOES THROUGH `_f()`, exactly as the comptime `*_F`
+        members do. A zero-extent tensor aborts at bind, which is why the
+        floor exists at all; dropping it on the runtime path would move that
+        abort to the first model with no actuators.
+        """
+        self.dims = dims
+        var nact_f = _f(dims.get_nact())
+        var nten_f = _f(dims.get_nten())
+        var nq_f = _f(dims.get_nq())
+        var nv_f = _f(dims.get_nv())
+        var nkey_f = _f(dims.get_nkey())
+        var njoint_f = _f(dims.get_njoint())
         self.actuators = TensorImpl[Self.DTYPE].alloc(
-            Self.NACT_F * MODEL_ACTUATOR_SIZE
+            nact_f * MODEL_ACTUATOR_SIZE
         )
         self.act_tendons = TensorImpl[Self.DTYPE].alloc(
-            Self.NTEN_F * MODEL_ACT_TENDON_SIZE
+            nten_f * MODEL_ACT_TENDON_SIZE
         )
-        self.qpos0 = TensorImpl[Self.DTYPE].alloc(Self.NQ_F)
+        self.qpos0 = TensorImpl[Self.DTYPE].alloc(nq_f)
         self.pose_meta = TensorImpl[Self.DTYPE].alloc(POSE_META_SIZE)
         # -1 = no free joint. Zero is a VALID qpos address (quadruped's free
         # joint IS at 0), so an unwritten slot would put an identity
@@ -131,15 +168,15 @@ struct SpecFields[
             Self.DTYPE
         ](-1)
         self.key_meta = TensorImpl[Self.DTYPE].alloc(
-            Self.NKEY_F * KEY_META_SIZE
+            nkey_f * KEY_META_SIZE
         )
-        self.key_qpos = TensorImpl[Self.DTYPE].alloc(Self.NKEY_F * Self.NQ_F)
-        self.key_qvel = TensorImpl[Self.DTYPE].alloc(Self.NKEY_F * Self.NV_F)
+        self.key_qpos = TensorImpl[Self.DTYPE].alloc(nkey_f * nq_f)
+        self.key_qvel = TensorImpl[Self.DTYPE].alloc(nkey_f * nv_f)
         self.key_ctrl = TensorImpl[Self.DTYPE].alloc(
-            Self.NKEY_F * Self.NACT_F
+            nkey_f * nact_f
         )
         self.joint_limits = TensorImpl[Self.DTYPE].alloc(
-            Self.NJOINT_F * JLIM_SIZE
+            njoint_f * JLIM_SIZE
         )
         # ⚠⚠ THE SENTINELS ARE -1 AND THE GAIN IS 1, AND THE ZERO `alloc`
         # LEAVES IS WRONG FOR BOTH. `TensorImpl.alloc` DOES zero-fill, so
@@ -156,7 +193,7 @@ struct SpecFields[
         # which is what makes iterating the padded `NTEN_F` rows safe.
         # Only the slots the fill does not always write are seeded; the rest
         # are overwritten unconditionally by `build_spec_fields`.
-        for i in range(Self.NACT_F):
+        for i in range(nact_f):
             var o = i * MODEL_ACTUATOR_SIZE
             self.actuators.data[o + ACT_IDX_KP] = Scalar[Self.DTYPE](1)
             self.actuators.data[o + ACT_IDX_ACT_ADR] = Scalar[Self.DTYPE](-1)
@@ -169,7 +206,7 @@ struct SpecFields[
                 self.actuators.data[o + ACT_IDX_TRN_DADR_0 + k] = Scalar[
                     Self.DTYPE
                 ](-1)
-        for t in range(Self.NTEN_F):
+        for t in range(nten_f):
             var o = t * MODEL_ACT_TENDON_SIZE
             for k in range(TENDON_MAX_WRAPS):
                 self.act_tendons.data[o + ACTTEN_IDX_TRN_QADR_0 + k] = Scalar[

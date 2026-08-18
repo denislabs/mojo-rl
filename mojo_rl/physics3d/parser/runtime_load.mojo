@@ -34,10 +34,10 @@ lifetimes together for no benefit.
 * **The GPU path.** Kernels stay comptime by decision 3, and a runtime
   provider captured by one reads 0 — the output is silently zeroed. A
   runtime-loaded model is CPU-only until its kernels are rebuilt.
-* **Actuators and keyframes.** `SpecFields` carries no dims provider, so
-  `build_spec_fields_from_flat` still reads comptime dimensions. A model with
-  actuators loads its BODIES, JOINTS, GEOMS and SITES here, and cannot yet be
-  *driven*. That is the next step, not this one.
+* ~~Actuators and keyframes~~ — DONE. `SpecFields` carries a provider and
+  `build_spec_fields` reads it, so `spec_fields_runtime` below produces the
+  actuation records, reference pose, keyframes and joint-limit table too. A
+  runtime-loaded model can now be DRIVEN.
 * **SAP broadphase.** `detect_contacts_auto` selects the algorithm on a
   comptime `D.NGEOM >= SAP_THRESHOLD`, which is false for `DIM_POISON`, so a
   runtime model always takes the O(N^2) path. Correct, slower on a big model,
@@ -50,8 +50,9 @@ from .full_parser import parse_xml_full
 from .fields_build import (
     build_model_fields_from_flat,
     apply_auto_spring_damper,
+    build_spec_fields,
 )
-from ..fields import Data, Model, DynamicsScratch, DynDims
+from ..fields import Data, Model, DynamicsScratch, SpecFields, DynDims
 from ..dynamics.invweight import compute_invweight0
 
 
@@ -164,3 +165,25 @@ def build_model_runtime[
     var sc = DynamicsScratch[DTYPE, DynDims, 1](dims)
     compute_invweight0[DTYPE](d, m, sc)
     apply_auto_spring_damper[DTYPE](fmd, m)
+
+
+def spec_fields_runtime[
+    DTYPE: DType
+](fmd: FlatModelDef, dims: DynDims) raises -> SpecFields[DTYPE, DynDims]:
+    """The actuation records, reference pose, keyframes and joint limits.
+
+    ⚠ SEPARATE FROM `build_model_runtime` BECAUSE THE TWO BUNDLES ARE
+    SEPARATE, and `SpecFields`' own docstring says why: `Model` is what the
+    integrator, solver and collision kernels bind; actuation is read by
+    exactly one function per target. A caller that only wants to look at a
+    model's geometry should not have to build its actuators.
+
+    ⚠ `build_spec_fields` RAISES IF `nact` DISAGREES with the parse. On the
+    comptime path that catches a hand-supplied `nact` parameter going stale;
+    here `dims_from_flat` derives it from `len(fmd.actuators)`, so the check
+    is a tautology — which is the right outcome, not a reason to remove it.
+    The same guard still fires for `nten` and `nkey`.
+    """
+    var sf = SpecFields[DTYPE, DynDims](dims)
+    build_spec_fields[DTYPE](fmd, sf)
+    return sf^
