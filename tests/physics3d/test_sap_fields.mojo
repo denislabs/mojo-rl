@@ -151,7 +151,46 @@ comptime GOLD_CON_H = 28658.222165894345
 # our EPA's witness point. See the long note in
 # `test_mesh_detection_fields.mojo`, which gates the manifold's SPAN; this file
 # gates that the SAP path agrees with the O(N^2) path on the same records.
-comptime GOLD_NCON_S = 5  # Part B sawyer SAP: total contacts
+# --- 2026-08-18: STALE SINCE 08-13 — the twin was refreshed and this was not.
+# 5 -> 4 contacts; GOLD_CON_S 5042.802909596139 -> 3361.6499817769654 and
+# GOLD_SOL_S 4523.220017328858 -> 3015.4800115525723.
+#
+# ⚠⚠ THIS GOLDEN WAS NEVER ACHIEVABLE BY THE ENGINE THAT SHIPPED. `353696b4`
+# ("<option ccd_tolerance ccd_iterations> — and MuJoCo applies them ONLY to
+# smooth pairs") moved this fixture back from 5 to 4 and refreshed
+# `test_mesh_detection_fields`'s GOLD_NCON/GOLD_CON/GOLD_SOL to exactly the
+# three values above — but not this file's. Part B has been RED AT HEAD for
+# five days for that reason alone. Same shape as the 08-03 stale-golden entry
+# on GOLD_CON_H above: a twin gate refreshed on one side only.
+#
+# THE COUNT DID NOT GO DOWN BECAUSE WE LOST A CONTACT. `353696b4` restored
+# EXACTNESS on this pair: `ccd_tolerance` applies only where `discreteGeoms`
+# is false, and sawyer's obj/gripper is mesh-vs-mesh, so EPA lands on the exact
+# face instead of stopping inside 1e-6. The 08-13 rbound row that took the
+# count to 5 was an artefact of the loose stopping rule.
+#
+# 4 IS THE MuJoCo-VALIDATED STATE, and by LIVE comparison rather than by any
+# frozen number. `test_mesh_detection_fields` gates the same scene with real
+# MuJoCo values and passes at HEAD:
+#     mesh depth    ours -0.02769497  MuJoCo -0.02769469   0.28 um
+#     mesh normal   dot(MuJoCo) = 0.9999996520973681
+#     manifold span ours 0.038894064  MuJoCo 0.03867       0.22 mm
+# and `test_sawyer_settle_vs_mujoco` is green.
+#
+# AND THE CROSS-CHECK THIS LEG EXISTS FOR STILL HOLDS. SAP's two fingerprints
+# are BIT-IDENTICAL to the O(N^2) path's (3361.6499817769654 /
+# 3015.4800115525723 to every digit), so the two detection paths agree
+# record-for-record on this fixture. They never diverged; only the golden did.
+#
+# ⚠ REFUTED ON THE WAY: that the SAP AABB sweep drops the fifth pair because
+# it omits the geoms' own `margin` (the divergence the note at the head of the
+# AABB loop in `broadphase_sap.mojo` records, which names sawyer). Folding each
+# geom's margin into its AABB leaves Part B at 4 contacts with both
+# fingerprints unchanged to every digit. It is not the cause, and the note's
+# "would move sawyer" is wrong for this fixture. It DOES move Part A
+# (8088.218297153362 -> 8090.978297284455, inside GOLD_RTOL) — so that
+# experiment is not free, and was reverted.
+comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -243,8 +282,8 @@ comptime GOLD_NCON_S = 5  # Part B sawyer SAP: total contacts
 # `maxplanemesh` cap landed in the same commit but moves counts DOWN, not up,
 # and does not touch this fixture. Justification and the MuJoCo comparisons
 # that back the new value are in `test_mesh_detection_fields.mojo`.
-comptime GOLD_CON_S = 5042.802909596139  # geometry columns (k < 23)
-comptime GOLD_SOL_S = 4523.220017328858  # solparam columns (k >= 23)
+comptime GOLD_CON_S = 3361.6499817769654  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 3015.4800115525723  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
