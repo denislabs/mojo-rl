@@ -449,11 +449,26 @@ struct FBTrainer[
         seed: UInt64 = UInt64(0x5EED),
         max_grad_norm: Float64 = 0.0,
         bc_weight: Float64 = 0.0,
+        lr_b: Float64 = -1.0,
     ) raises -> Self:
-        """Defaults are the published FB / Meta Motivo settings: EMA 0.99
-        (`tau = 0.01`), `gamma = 0.98`, Adam 3e-4.
+        """`tau = 0.01` (EMA 0.99), `gamma = 0.98`, Adam 3e-4 — the published
+        FB / Meta Motivo settings.
 
         `ctx` is required when `TARGET == "gpu"` and ignored on CPU.
+
+        ⚠ **`ortho_weight` defaults to 1.0 and BFM-Zero ships 100.**
+        `docs/BFM_ZERO_SHOT_RL.md` §16.3: both arXiv 2511.04131's Table 1 and
+        the released `fb_cpr/configs.py` carry `ortho_coef = 100`, a factor of
+        100 above this default. The default is left at 1.0 because every
+        measurement in §13 was taken at 1.0 and silently moving it would
+        invalidate them; the sweep (`examples/fb/fb_sweep.sh`) is what decides.
+
+        ⚠ **`lr_b` is SEPARATE, and `-1.0` means "inherit `lr`".** The
+        reference trains B at **1e-5** against F's 3e-4 — B is the shared
+        representation and F chases it, so a B moving at F's rate is a target
+        that will not sit still. One shared `lr` was never a considered choice
+        here, it was this function having one argument. A negative sentinel
+        rather than 0.0 because 0.0 is a legal (frozen-B) setting.
         """
         comptime assert Self.TARGET == "cpu" or Self.TARGET == "gpu", (
             "FBTrainer: TARGET must be 'cpu' or 'gpu'"
@@ -466,9 +481,10 @@ struct FBTrainer[
         t.f2 = OnlineTargetPair[Self.FNET].make[Self.TARGET, INIT](ctx)
         t.bnet = OnlineTargetPair[Self.BNET].make[Self.TARGET, INIT](ctx)
         t.actor = OnlineTargetPair[Self.ANET].make[Self.TARGET, INIT](ctx)
+        var lrb = lr if lr_b < 0.0 else lr_b
         t.opt_f1 = Adam(lr=Scalar[DT](lr))
         t.opt_f2 = Adam(lr=Scalar[DT](lr))
-        t.opt_b = Adam(lr=Scalar[DT](lr))
+        t.opt_b = Adam(lr=Scalar[DT](lrb))
         t.opt_actor = Adam(lr=Scalar[DT](lr))
         # ⚠ Arena adoption is NOT an optimisation here, it is a PRECONDITION:
         # `adam.mojo` states "Don't capture a non-adopted GPU optimizer" — the

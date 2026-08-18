@@ -62,6 +62,7 @@ from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
 from mojo_rl.deep_agents.fb.trainer import FBTrainer
 from mojo_rl.deep_agents.fb import z_from_reward
+from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
 
 
 comptime NQ: Int = 9
@@ -262,6 +263,7 @@ def _rollout[
 ](
     mut t: Trainer, ref z: Tensor, use_policy: Bool, ep_seed: Int,
     mut act_mean_abs: Float64, mut act_sat_frac: Float64,
+    ref onorm: ObsNorm[OBS], has_norm: Bool,
 ) raises -> Float64:
     comptime Env = Phyics3dEnv[DMWalkerModel, CONFIG, DType.float64, False]
     seed(ep_seed)
@@ -288,6 +290,12 @@ def _rollout[
                 obs.data[k] = Scalar[DT](Float64(env.d.qpos.data[k]))
             for k in range(NV):
                 obs.data[NQ + k] = Scalar[DT](Float64(env.d.qvel.data[k]))
+            # ⚠⚠ The SAME standardisation the actor was trained under, taken
+            # from `<ckpt>.norm`. Skipping it here would feed the policy a
+            # distribution it never saw; it would still emit actions in
+            # [-1, 1] and the run would still produce a number.
+            if has_norm:
+                onorm.apply_row(obs)
             t.act[1](obs, z1, act_out)
             for k in range(NACT):
                 var av = Float64(act_out.data[k])
@@ -309,7 +317,10 @@ def _rollout[
 
 def _eval_task[
     CONFIG: Phyics3dEnvConfig
-](mut t: Trainer, ref z: Tensor, name: String) raises:
+](
+    mut t: Trainer, ref z: Tensor, name: String,
+    ref onorm: ObsNorm[OBS], has_norm: Bool,
+) raises:
     # ⚠ PAIRED per episode. Both policies see the SAME reset seed, so the
     # difference is taken within an episode and the (large) spread across start
     # states cancels. Comparing two independent means would need far more
@@ -322,11 +333,13 @@ def _eval_task[
     for ep in range(EVAL_EPISODES):
         var ama = Float64(0)
         var asf = Float64(0)
-        var a = _rollout[CONFIG](t, z, True, SEED + 1000 + ep, ama, asf)
+        var a = _rollout[CONFIG](
+            t, z, True, SEED + 1000 + ep, ama, asf, onorm, has_norm
+        )
         var dummy_a = Float64(0)
         var dummy_b = Float64(0)
         var b = _rollout[CONFIG](
-            t, z, False, SEED + 1000 + ep, dummy_a, dummy_b
+            t, z, False, SEED + 1000 + ep, dummy_a, dummy_b, onorm, has_norm
         )
         mean_abs += ama
         sat_frac += asf
@@ -378,6 +391,21 @@ def main() raises:
     var t = Trainer.make(lr=3e-4, ctx=None)
     t.load_state(ck)
 
+    # ⚠⚠ Whether this run standardised its observations is read off the
+    # CHECKPOINT, never off a flag in this file. `fb_train_gpu.mojo` writes
+    # `<ckpt>.norm` beside every rung it saves; a run trained on raw inputs
+    # writes none and this finds none. See `fb/obs_norm.mojo` for why a flag
+    # here would be the wrong shape: train-normalised/eval-raw raises nothing,
+    # scores plausibly, and reads as "that arm did not help".
+    var maybe_norm = ObsNorm[OBS].try_load(ck + ".norm")
+    var has_norm = Bool(maybe_norm)
+    var onorm = ObsNorm[OBS]()
+    if has_norm:
+        onorm = maybe_norm.take()
+        print("      obs standardisation: ON (from", ck + ".norm)")
+    else:
+        print("      obs standardisation: off (no", ck + ".norm)")
+
     print("[2] loading", STORE, "for relabelling ...")
     var store = TrajectoryStore(String(STORE))
     var n_rows = store.n_rows()
@@ -398,6 +426,8 @@ def main() raises:
             b_in.data[i * OBS + NQ + k] = Scalar[DT](
                 Float64(qvel.host[r * NV + k])
             )
+    if has_norm:
+        onorm.apply_rows(b_in, RELABEL_ROWS)
     var b_out = Tensor()
     t.backward_embed[RELABEL_ROWS](b_in, b_out)
     var b_flat = List[Scalar[DT]](
@@ -434,9 +464,9 @@ def main() raises:
         )
 
     print("[4] rolling out", EVAL_EPISODES, "x", EVAL_LEN, "steps per task ...")
-    _eval_task[DMWalkerConfig[0.0]](t, z_stand, String("stand"))
-    _eval_task[DMWalkerConfig[1.0]](t, z_walk, String("walk "))
-    _eval_task[DMWalkerConfig[8.0]](t, z_run, String("run  "))
+    _eval_task[DMWalkerConfig[0.0]](t, z_stand, String("stand"), onorm, has_norm)
+    _eval_task[DMWalkerConfig[1.0]](t, z_walk, String("walk "), onorm, has_norm)
+    _eval_task[DMWalkerConfig[8.0]](t, z_run, String("run  "), onorm, has_norm)
     print("")
     print("  A ratio > 1 means one set of weights, given only that task's")
     print("  reward AFTER training, beat a uniform-random policy. That is the")

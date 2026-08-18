@@ -11,6 +11,21 @@ store it writes.
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_train_gpu.mojo
 
+## Sweep interface
+
+Every comptime constant below that a sweep needs to vary is ALSO a runtime flag,
+so an arm costs a process launch rather than a rebuild (~90 s each, which is
+most of a 17-minute arm):
+
+    --steps N      --ortho X     --lr-b X     --bc X
+    --obs-norm 0|1 --tag NAME
+
+`--tag` is the one that matters for bookkeeping: it renames the checkpoint, the
+CSV and the remote run together, so two arms cannot overwrite each other's
+output. Absent flags keep the comptime defaults, so the no-argument invocation
+above is byte-identical to what it was before the flags existed.
+`examples/fb/fb_sweep.sh` drives the arms; §16.3 has the target values.
+
 ⚠⚠ **`want_loss` is on a stride, and that is not cosmetic.** Reading a loss back
 from the GPU is a full pipeline stall. At 2 M steps, logging every step is the
 difference between a few hours and most of a day, and the GRADIENTS are
@@ -32,6 +47,7 @@ ever be evaluated on pairs one step apart.
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64, seed
+from std.sys import argv
 from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import DT, TPB
@@ -51,6 +67,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
+from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
 from mojo_rl.deep_agents.fb.kernels import (
     gather_rows_kernel,
     gather_idx_kernel,
@@ -103,6 +120,26 @@ comptime MAX_GRAD_NORM: Float64 = 1.0
 # point; the eval prints `mean|a|` and `saturated`, so tune against those
 # rather than against the loss.
 comptime BC_WEIGHT: Float64 = 1.0
+
+# ⚠⚠ **BFM-Zero ships `ortho_coef = 100`; this has always run 1.0.**
+# `docs/BFM_ZERO_SHOT_RL.md` §16.3 — arXiv 2511.04131 Table 1 AND the released
+# `fb_cpr/configs.py` both carry 100, a factor of 100 above `FBTrainer.make`'s
+# default, which is what every §13 measurement was taken at. It is left at 1.0
+# here so the existing numbers stay comparable; `--ortho 100` is the arm.
+comptime ORTHO_WEIGHT: Float64 = 1.0
+
+# ⚠ **B's learning rate, SEPARATE from F's.** The reference trains B at 1e-5
+# against F's 3e-4 — B is the shared representation and F chases it, so a B
+# moving at F's rate is a target that will not sit still. -1 inherits `lr`,
+# which is what this script did implicitly before the flag existed.
+comptime LR_B: Float64 = -1.0
+
+# ⚠⚠ **Observation standardisation.** BFM-Zero normalises every observation
+# entering F, B and the actor (`BatchNorm1d(affine=False)`); we fed raw
+# `qpos | qvel`, and on walker `qvel` spans about an order of magnitude more
+# than `qpos`. See `fb/obs_norm.mojo` — in particular why the statistics are
+# written NEXT TO THE CHECKPOINT rather than recomputed at eval time.
+comptime OBS_NORM: Bool = False
 # ⚠⚠ CUDA-graph capture of the train step. NVIDIA only — `CUDAGraph` is a
 # compile-time no-op elsewhere, so this is bit-identical to eager on Apple and
 # the Apple gates cannot prove the capture works. Measured motivation: an FB
@@ -188,7 +225,44 @@ comptime ANet = Sequential[
 comptime Trainer = FBTrainer[FNet, BNet, ANet, OBS, NACT, D, BATCH, "gpu"]
 
 
+def _flag(name: String, dflt: String) raises -> String:
+    """Value of `--name X`, or `dflt` when the flag is absent.
+
+    ⚠ A flag given WITHOUT a value raises rather than falling back to the
+    default. `--ortho` with a missing argument would otherwise run a full arm
+    at 1.0 and label it 100 in the CSV — a sweep whose rows lie about what
+    produced them is worse than one that refuses to start.
+    """
+    var av = argv()
+    for i in range(1, len(av)):
+        if String(av[i]) == name:
+            if i + 1 >= len(av):
+                raise Error("flag " + name + " needs a value")
+            return String(av[i + 1])
+    return dflt
+
+
 def main() raises:
+    # ── sweep flags (see the header) ─────────────────────────────────────
+    var train_steps = atol(_flag(String("--steps"), String(TRAIN_STEPS)))
+    var ortho_w = atof(_flag(String("--ortho"), String(ORTHO_WEIGHT)))
+    var lr_b = atof(_flag(String("--lr-b"), String(LR_B)))
+    var bc_w = atof(_flag(String("--bc"), String(BC_WEIGHT)))
+    var obs_norm_on = atol(_flag(String("--obs-norm"),
+                                 String(Int(OBS_NORM)))) != 0
+    var tag = _flag(String("--tag"), String(""))
+    var ckpt_path = String(CKPT_PATH)
+    var csv_path = String(CSV_PATH)
+    var run_name = String(RUN_NAME)
+    if tag.byte_length() > 0:
+        ckpt_path = "fb_walker_" + tag + ".ckpt"
+        csv_path = "fb_walker_" + tag + "_metrics.csv"
+        run_name = String(RUN_NAME) + " [" + tag + "]"
+    print(
+        "[0] arm: steps", train_steps, " ortho", ortho_w, " lr_b", lr_b,
+        " bc", bc_w, " obs_norm", obs_norm_on, " tag '", tag, "'",
+    )
+
     var ctx = DeviceContext()
     print("[1] loading", STORE_PATH, "...")
     var store = TrajectoryStore(String(STORE_PATH))
@@ -215,14 +289,14 @@ def main() raises:
     # None of that looks like a code bug and none of it is one. Offline RL on
     # dm_control normally runs 1 M - 10 M transitions; a few hundred epochs is
     # ordinary, a few hundred THOUSAND is not.
-    var epochs = Float64(TRAIN_STEPS) * Float64(BATCH) / Float64(n_rows)
+    var epochs = Float64(train_steps) * Float64(BATCH) / Float64(n_rows)
     print("       each transition will be seen ~", epochs, "times")
     if epochs > 5000.0:
         raise Error(
             "dataset far too small: "
             + String(n_rows)
             + " rows against "
-            + String(TRAIN_STEPS)
+            + String(train_steps)
             + " steps at batch "
             + String(BATCH)
             + " is ~"
@@ -248,6 +322,16 @@ def main() raises:
             obs_host.data[r * OBS + NQ + k] = Scalar[DT](
                 Float64(qvel.host[r * NV + k])
             )
+    # ⚠⚠ Standardise BEFORE the upload, so every consumer on device — the
+    # gather kernels, B, F, the actor — sees one representation. Normalising
+    # after upload, or in only some of the three gathers, is the kind of split
+    # that trains fine and evaluates to noise.
+    var onorm = ObsNorm[OBS]()
+    if obs_norm_on:
+        onorm = ObsNorm[OBS].fit(obs_host, n_rows)
+        onorm.apply_rows(obs_host, n_rows)
+        print("       obs standardised; dim 0 mu/sd", onorm.mu[0], onorm.sd[0],
+              " dim", NQ, "mu/sd", onorm.mu[NQ], onorm.sd[NQ])
     obs_host.upload(ctx)
 
     var act_host = Tensor()
@@ -311,10 +395,12 @@ def main() raises:
         lr=3e-4,
         gamma=0.98,
         tau=0.01,
+        ortho_weight=ortho_w,
         ctx=ctx,
         seed=UInt64(SEED) + 13,
         max_grad_norm=MAX_GRAD_NORM,
-        bc_weight=BC_WEIGHT,
+        bc_weight=bc_w,
+        lr_b=lr_b,
     )
     # Size the owned batch buffers before gathering straight into them.
     t.ensure_sized()
@@ -328,10 +414,10 @@ def main() raises:
     # ─── logging ─────────────────────────────────────────────────────────
     var env_vars = load_dotenv()
     var logger = CompositeLogger(
-        CsvLogger(String(CSV_PATH), buffer_size=64),
+        CsvLogger(csv_path, buffer_size=64),
         RemoteLogger(
             server_url=env_vars.get("RL_MONITOR_URL", ""),
-            run_name=String(RUN_NAME),
+            run_name=run_name,
             buffer_size=64,
             api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         ),
@@ -343,9 +429,16 @@ def main() raises:
     logger.set_config("d", String(D))
     logger.set_config("batch", String(BATCH))
     logger.set_config("hidden", String(HID))
-    logger.set_config("train_steps", String(TRAIN_STEPS))
+    logger.set_config("train_steps", String(train_steps))
     logger.set_config("max_grad_norm", String(MAX_GRAD_NORM))
-    logger.set_config("bc_weight", String(BC_WEIGHT))
+    # ⚠ The swept values are logged as CONFIG, not left implicit in the file
+    # name. A CSV that records only its own name cannot be re-read six weeks
+    # later without the shell history that produced it.
+    logger.set_config("bc_weight", String(bc_w))
+    logger.set_config("ortho_weight", String(ortho_w))
+    logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
+    logger.set_config("obs_norm", String(obs_norm_on))
+    logger.set_config("tag", tag)
     logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
     logger.set_config("epochs_over_dataset", String(epochs))
 
@@ -359,10 +452,10 @@ def main() raises:
     var gn_b = Float64(0)
 
     print(
-        "[2] training", TRAIN_STEPS, "steps  (d =", D, ", batch =", BATCH, ")"
+        "[2] training", train_steps, "steps  (d =", D, ", batch =", BATCH, ")"
     )
     print("      USE_TRAIN_CUDA_GRAPH =", USE_TRAIN_CUDA_GRAPH)
-    for step in range(TRAIN_STEPS):
+    for step in range(train_steps):
         # Two INDEPENDENT draws.
         samp_a.draw_into_device(ctx, idx_s, BATCH)
         samp_b.draw_into_device(ctx, idx_sp, BATCH)
@@ -436,7 +529,7 @@ def main() raises:
         # back, and a D2H inside a capture is illegal. Both paths advance the
         # same device counters (RNG offset, Adam beta^t), so interleaving them
         # is consistent — the graph is simply not replayed on those steps.
-        var want = (step % LOG_EVERY) == 0 or step == TRAIN_STEPS - 1
+        var want = (step % LOG_EVERY) == 0 or step == train_steps - 1
         var l = FBLosses(0.0, 0.0, 0.0, 0.0, 0.0)
         comptime if USE_TRAIN_CUDA_GRAPH:
             if want:
@@ -536,14 +629,22 @@ def main() raises:
             # ends holding its WORST state and the good early one is gone. That
             # happened: a stable 50 k checkpoint was replaced by a 100 k one
             # from the oscillating phase before it could be evaluated.
-            var p = String(CKPT_PATH) + "." + String(step)
+            var p = ckpt_path + "." + String(step)
             t.save_state(p)
+            # ⚠⚠ The normalisation statistics travel WITH the checkpoint, one
+            # sidecar per rung. `fb_eval_walker` loads `<ckpt>.norm` and applies
+            # it or not on that basis alone — there is no eval-side flag that
+            # could disagree with this run. See `fb/obs_norm.mojo`.
+            if obs_norm_on:
+                onorm.save(p + ".norm")
             print("      checkpoint ->", p)
-    var pf = String(CKPT_PATH) + ".final"
+    var pf = ckpt_path + ".final"
     t.save_state(pf)
+    if obs_norm_on:
+        onorm.save(pf + ".norm")
     # ⚠ Without this the tail of the buffer is lost — CsvLogger flushes at
     # `buffer_size`, so up to 63 entries (the most recent ones) would never
     # reach disk on a clean exit.
     logger.close()
     print("[3] done. final checkpoint ->", pf)
-    print("      metrics CSV ->", CSV_PATH)
+    print("      metrics CSV ->", csv_path)
