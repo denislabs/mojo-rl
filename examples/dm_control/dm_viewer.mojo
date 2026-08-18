@@ -69,6 +69,7 @@ the fields facade still wants a `DeviceContext` for host staging.
 
 from std.random import seed, random_float64
 from std.math import sin, pi, min, max
+from std.time import perf_counter_ns
 from std.sys import argv
 from max.gpu.host import DeviceContext
 
@@ -179,7 +180,7 @@ comptime HOLD_STEPS: Int = 25       # RANDOM: steps between resamples
 comptime N_TASKS: Int = 39
 comptime SWEEP_PERIOD: Float64 = 120.0  # SWEEP: steps per full cycle
 comptime EPISODE_STEPS: Int = 1000  # auto-reset cadence
-comptime FRAME_DELAY_MS: Int = 16   # ~60 FPS
+comptime FRAME_TARGET_MS: Int = 16  # ~60 FPS, as a LIMITER not a flat sleep
 comptime SEED: Int = 0
 
 
@@ -439,6 +440,7 @@ def _view[
     var live_drive = st.drive
     var live_scale = st.scale
     var switching = False
+    var frame_t0 = perf_counter_ns()
 
     while env.is_renderer_open():
         # ── live keys ────────────────────────────────────────────────────
@@ -640,7 +642,13 @@ def _view[
         var out = env.step(action)
         ep_return += Float64(out[1])
         env.render_frame()
-        env.renderer_delay(FRAME_DELAY_MS)
+        # LIMITER, not a flat sleep — see `FRAME_TARGET_MS`. A 16 ms
+        # `SDL_Delay` on top of a frame that already missed the period is
+        # dead time, and on the heavy models it was most of the wall clock.
+        var spent_ms = Int((perf_counter_ns() - frame_t0) // 1_000_000)
+        if spent_ms < FRAME_TARGET_MS:
+            env.renderer_delay(FRAME_TARGET_MS - spent_ms)
+        frame_t0 = perf_counter_ns()
         if env.check_renderer_quit():
             break
         step_i += 1

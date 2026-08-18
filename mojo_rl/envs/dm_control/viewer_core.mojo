@@ -27,6 +27,7 @@ tool can and cannot tell you.
 
 from std.random import random_float64
 from std.math import sin, pi, min, max
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -67,7 +68,17 @@ comptime DRIVE_POLICY: Int = 3
 comptime HOLD_STEPS: Int = 25
 comptime SWEEP_PERIOD: Float64 = 120.0
 comptime EPISODE_STEPS: Int = 1000
-comptime FRAME_DELAY_MS: Int = 16
+comptime FRAME_TARGET_MS: Int = 16
+"""Target frame PERIOD, honoured as a LIMITER — not a flat sleep.
+
+⚠ THIS WAS `renderer_delay(16)`, i.e. an unconditional `SDL_Delay`, and on a
+model whose step is expensive that is pure waste: `reassemble_5`'s frame spent
+**39.6% of its wall clock** in `SDL_SYS_DelayNS` (measured 2026-08-18, `sample`
+over 25 s, 8109/20494 samples) while the physics it was pacing already took
+~30 ms. Sixteen milliseconds added to a 30 ms frame is not a 60 Hz cap, it is a
+21 Hz one. The loop now sleeps only the REMAINDER of the period, so a cheap
+task (`reach_site`, 0.66 ms of physics) is capped at 60 Hz exactly as before
+and an expensive one runs as fast as it can."""
 comptime SIDEBAR_W: Float32 = 320.0
 comptime PLOT_N: Int = 120
 """Samples in the reward sparkline. A ring buffer, so `ig_plot_lines` gets the
@@ -781,6 +792,8 @@ def run_view[
         history.append(0.0)
     var cursor = 0
 
+    var frame_t0 = perf_counter_ns()
+
     while env.is_renderer_open():
         # Pump events FIRST: ImGui drains the queue in its NewFrame, so events
         # polled here are the ones this frame's widgets react to.
@@ -918,7 +931,15 @@ def run_view[
         env.render_frame()
         if switching:
             break
-        env.renderer_delay(FRAME_DELAY_MS)
+
+        # Sleep only what is LEFT of the target period. `frame_t0` is taken
+        # after the sleep, so the next frame's budget starts when this one's
+        # work does — measuring from before the sleep would charge each frame
+        # for the previous frame's idle.
+        var spent_ms = Int((perf_counter_ns() - frame_t0) // 1_000_000)
+        if spent_ms < FRAME_TARGET_MS:
+            env.renderer_delay(FRAME_TARGET_MS - spent_ms)
+        frame_t0 = perf_counter_ns()
 
     st.quit = not switching
     if switching:
