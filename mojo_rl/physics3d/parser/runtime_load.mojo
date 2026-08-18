@@ -34,14 +34,20 @@ lifetimes together for no benefit.
 * **The GPU path.** Kernels stay comptime by decision 3, and a runtime
   provider captured by one reads 0 — the output is silently zeroed. A
   runtime-loaded model is CPU-only until its kernels are rebuilt.
+* ~~Whole constraint families~~ — DONE. Nineteen gates read `D.CAP_NTENDON >
+  0` etc. as "does this model have tendons", when `CAP_*` answers "can I
+  stack-allocate for them" and is 0 on EVERY dynamic provider. Tendon rows,
+  tendon limits, equality rows and all mesh collision were compiled out; see
+  `may_exist` in `fields/dims.mojo` and `test_runtime_step_both_legs`.
 * ~~Actuators and keyframes~~ — DONE. `SpecFields` carries a provider and
   `build_spec_fields` reads it, so `spec_fields_runtime` below produces the
   actuation records, reference pose, keyframes and joint-limit table too. A
   runtime-loaded model can now be DRIVEN.
-* **SAP broadphase.** `detect_contacts_auto` selects the algorithm on a
-  comptime `D.NGEOM >= SAP_THRESHOLD`, which is false for `DIM_POISON`, so a
-  runtime model always takes the O(N^2) path. Correct, slower on a big model,
-  and deliberate — see the comment there.
+* ~~SAP broadphase~~ — DONE. `detect_contacts_auto` now selects at RUNTIME
+  when the provider is dynamic (comptime otherwise, so the shipped
+  instantiation set is unchanged). It was not merely slower: the two paths
+  disagree on contact ORDER and record conventions, so a runtime model at or
+  above the threshold was solving a different problem from its comptime twin.
 * **A mesh vertex budget it can compute for you.** See `dims_from_flat`.
 """
 
@@ -56,14 +62,23 @@ from ..fields import Data, Model, DynamicsScratch, SpecFields, DynDims
 from ..dynamics.invweight import compute_invweight0
 
 
-def parse_model_runtime(
+def read_model_source(
     xml_path: String, asset_base_dir: String = ""
-) raises -> FlatModelDef:
-    """Read and parse an MJCF file whose path is known only at run time.
+) raises -> Tuple[String, String]:
+    """(the MJCF text, the directory its `file=` attributes resolve against).
 
     `asset_base_dir` is what relative asset paths resolve against; MuJoCo's
     rule is "the directory of the model file", so the default derives it from
     `xml_path`. Pass "" explicitly to resolve against the process CWD.
+
+    ⚠ EXPOSED SEPARATELY BECAUSE THE RENDERER NEEDS THE SAME TWO STRINGS.
+    `build_render_fields(fmd, xml_text, base)` stores them on `RenderFields`
+    so the render hooks stop being methods on a comptime type — `render_skin`
+    walks the raw `<skin>` chain and `body_names_of` recovers names the
+    physics parse discards. A caller that reads the file itself would be a
+    SECOND implementation of the base-dir rule, and this tree has been bitten
+    by two spellings of one quantity drifting apart often enough to make that
+    worth a function.
     """
     var f = open(xml_path, "r")
     var text = f.read()
@@ -76,7 +91,15 @@ def parse_model_runtime(
         # what a path separator search wants. The slice is also a
         # `StringSpan` borrowing `xml_path`, hence the copy.
         base = String(xml_path[byte=0:cut]) if cut > 0 else String("")
-    return parse_xml_full(text, base)
+    return (text^, base^)
+
+
+def parse_model_runtime(
+    xml_path: String, asset_base_dir: String = ""
+) raises -> FlatModelDef:
+    """Read and parse an MJCF file whose path is known only at run time."""
+    var src = read_model_source(xml_path, asset_base_dir)
+    return parse_xml_full(src[0], src[1])
 
 
 def dims_from_flat(

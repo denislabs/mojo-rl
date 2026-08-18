@@ -155,6 +155,91 @@ def _attr_between(src: String, lo: Int, hi: Int, attr: String) -> String:
     return String("")
 
 
+
+# ⚠ MODULE LEVEL, NOT A MEMBER, AND THAT IS THE POINT. It is pure quaternion
+# math — nothing about it depends on the model — and `setup_cameras` was the
+# last thing keeping the render hooks reachable only through a comptime type.
+# See `scripts/audit_render_hooks_are_rf_pure.py`.
+def _rcd_rotate_by_quat(
+    qx: Float64, qy: Float64, qz: Float64, qw: Float64,
+    vx: Float64, vy: Float64, vz: Float64,
+) -> List[Float64]:
+    """Rotate (vx,vy,vz) by the quaternion, returned as [x, y, z]."""
+    var tx = 2.0 * (qy * vz - qz * vy)
+    var ty = 2.0 * (qz * vx - qx * vz)
+    var tz = 2.0 * (qx * vy - qy * vx)
+    var out = List[Float64]()
+    out.append(vx + qw * tx + qy * tz - qz * ty)
+    out.append(vy + qw * ty + qz * tx - qx * tz)
+    out.append(vz + qw * tz + qx * ty - qy * tx)
+    return out^
+
+
+def _resolve_asset(base: String, path: String) -> String:
+    """Join a relative asset path onto `base`. Absolute paths escape.
+
+    ⚠ MODULE LEVEL because `render_skin` needs it and `render_skin` must be a
+    pure function of `rf` — see `ModelDefFromXML.resolve_asset`, which is now
+    this with `base` bound to `Self.asset_base_dir()`. The reason the skin
+    chain needs resolution at all is that it is walked by string search over
+    the raw MJCF, so it bypasses what `parse_xml_full` does for
+    `mesh_asset_files` and `TextureData.file`.
+    """
+    if path.byte_length() == 0 or path.startswith("/"):
+        return path
+    if base.byte_length() == 0:
+        return path
+    return base + "/" + path
+
+
+
+def body_names_of(src: String) raises -> List[String]:
+    """Body names by index (0 = worldbody), parsed from the model XML AT
+    RUNTIME.
+
+    ⚠ RUNTIME ON PURPOSE, and it is not a style choice. A `<skin>`'s bones
+    name the bodies they follow and those names live inside the BINARY
+    `.skn`, so the match cannot happen at compile time — which leaves the
+    names needing to survive into runtime somehow. Writing them into the
+    comptime render data does not compile, in every spelling tried (see
+    `xml_parser.mojo`, above `MAX_COMPTIME_RENDER_GEOMS`). The XML is
+    already a comptime parameter of this struct, so materializing it once
+    and scanning it with ORDINARY runtime string code costs nothing extra
+    and is subject to none of those restrictions.
+
+    Document order, which is the order the parser assigns body ids: both
+    walk `<body` opening tags left to right.
+
+    ⚠ CALL IT ONCE. It rescans the whole model XML;
+    `render_skin` does so only on the frame that loads the skin.
+    """
+    
+    var out = List[String]()
+    out.append(String(""))  # index 0 = worldbody, which has no <body> tag
+
+    var wb = src.find("<worldbody")
+    if wb == -1:
+        return out^
+    var stop = src.find("</worldbody>", wb)
+    if stop == -1:
+        stop = src.byte_length()
+
+    var pos = src.find(">", wb)
+    if pos == -1:
+        return out^
+    pos += 1
+    while True:
+        var bt = src.find("<body", pos)
+        if bt == -1 or bt >= stop:
+            break
+        var bte = src.find(">", bt)
+        if bte == -1:
+            break
+        out.append(_attr_between(src, bt, bte, "name"))
+        pos = bte + 1
+    return out^
+
+
 @fieldwise_init
 struct ModelDefFromXML[
     # ⚠ THE MJCF USED TO BE HERE, as `xml: String` — ~1.1 MB of it across 48
@@ -1572,7 +1657,7 @@ struct ModelDefFromXML[
         ref _m_light_specular_r = rf.light_specular_r
 
         var lights = List[Light]()
-        for i in range(Self.nlight):
+        for i in range(len(rf.light_dir_x)):
             var mode = Int(1) if _m_light_directional[i] else Int(0)
             var amb = (_m_light_ambient_r[i] + _m_light_ambient_g[i] + _m_light_ambient_b[i]) / 3.0
             var spec_int = (_m_light_specular_r[i] + _m_light_specular_g[i] + _m_light_specular_b[i]) / 3.0
@@ -1592,21 +1677,6 @@ struct ModelDefFromXML[
                 )
             )
         return lights^
-
-    @staticmethod
-    def _rcd_rotate_by_quat(
-        qx: Float64, qy: Float64, qz: Float64, qw: Float64,
-        vx: Float64, vy: Float64, vz: Float64,
-    ) -> List[Float64]:
-        """Rotate (vx,vy,vz) by the quaternion, returned as [x, y, z]."""
-        var tx = 2.0 * (qy * vz - qz * vy)
-        var ty = 2.0 * (qz * vx - qx * vz)
-        var tz = 2.0 * (qx * vy - qy * vx)
-        var out = List[Float64]()
-        out.append(vx + qw * tx + qy * tz - qz * ty)
-        out.append(vy + qw * ty + qz * tx - qx * tz)
-        out.append(vz + qw * tz + qx * ty - qy * tx)
-        return out^
 
     @staticmethod
     def setup_cameras(rf: RenderFields, width: Int, height: Int) raises -> List[Camera3D]:
@@ -1644,14 +1714,14 @@ struct ModelDefFromXML[
         ref _m_cam_quat_z = rf.cam_quat_z
 
         var cameras = List[Camera3D]()
-        for i in range(Self.ncam):
+        for i in range(len(rf.cam_fovy)):
             var eye = _RVec3(_m_cam_pos_x[i], _m_cam_pos_y[i], _m_cam_pos_z[i])
             var qx = _m_cam_quat_x[i]
             var qy = _m_cam_quat_y[i]
             var qz = _m_cam_quat_z[i]
             var qw = _m_cam_quat_w[i]
-            var look = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 0.0, -1.0)
-            var up_v = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 1.0, 0.0)
+            var look = _rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 0.0, -1.0)
+            var up_v = _rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 1.0, 0.0)
             var target = _RVec3(
                 eye.x + look[0], eye.y + look[1], eye.z + look[2]
             )
@@ -1689,7 +1759,7 @@ struct ModelDefFromXML[
         ref _m_cam_mode = rf.cam_mode
 
         var modes = List[Int]()
-        for i in range(Self.ncam):
+        for i in range(len(rf.cam_fovy)):
             var xml_mode = _m_cam_mode[i]
             if xml_mode == 0:
                 modes.append(1)  # fixed
@@ -1708,7 +1778,7 @@ struct ModelDefFromXML[
         ref _m_cam_target_body = rf.cam_target_body
 
         var out = List[Int]()
-        for i in range(Self.ncam):
+        for i in range(len(rf.cam_fovy)):
             out.append(_m_cam_target_body[i])
         return out^
 
@@ -1729,7 +1799,7 @@ struct ModelDefFromXML[
         ref _m_tex_type = rf.tex_type
 
         # TEX_SKYBOX=1, TEX_BUILTIN_GRADIENT=1
-        for i in range(Self.ntex):
+        for i in range(rf.ntex):
             # ⚠⚠ `== 1` MEANT SKYBOX HERE AND MEANS 2D IN THE RUNTIME
             # RECORD. The two parsers numbered `tex_type` differently and
             # NEITHER matched MuJoCo's mjtTexture (2d=0/cube=1/skybox=2):
@@ -1774,7 +1844,7 @@ struct ModelDefFromXML[
         ref _m_tex_random = rf.tex_random
         ref _m_tex_type = rf.tex_type
 
-        for i in range(Self.ntex):
+        for i in range(rf.ntex):
             # ⚠⚠ `== 1` MEANT SKYBOX HERE AND MEANS 2D IN THE RUNTIME
             # RECORD. The two parsers numbered `tex_type` differently and
             # NEITHER matched MuJoCo's mjtTexture (2d=0/cube=1/skybox=2):
@@ -1808,7 +1878,7 @@ struct ModelDefFromXML[
         ref _m_tex_rgb2_r = rf.tex_rgb2_r
 
         # TEX_BUILTIN_CHECKER=2
-        for i in range(Self.ntex):
+        for i in range(rf.ntex):
             if _m_tex_builtin[i] == TEX_BUILTIN_CHECKER:
                 var result = List[Float64]()
                 result.append(_m_tex_rgb2_r[i])
@@ -1829,7 +1899,7 @@ struct ModelDefFromXML[
         ref _m_geom_rgba_r = rf.geom_rgba_r
         ref _m_geom_type = rf.geom_type
 
-        for i in range(Self.NGEOM):
+        for i in range(len(rf.geom_type)):
             if _m_geom_type[i] == 0:  # GEOM_PLANE
                 var result = List[Float64]()
                 result.append(_m_geom_rgba_r[i])
@@ -2007,12 +2077,7 @@ struct ModelDefFromXML[
 
         ⚠ Absolute paths escape, as everywhere else.
         """
-        if path.byte_length() == 0 or path.startswith("/"):
-            return path
-        var base = Self.asset_base_dir()
-        if base.byte_length() == 0:
-            return path
-        return base + "/" + path
+        return _resolve_asset(Self.asset_base_dir(), path)
 
     @staticmethod
     def default_ctrl_range() raises -> Tuple[Float64, Float64]:
@@ -2044,7 +2109,9 @@ struct ModelDefFromXML[
         this runs when a window opens and costs a parse.
         """
         return build_render_fields(
-            parse_xml_full(Self.xml_text(), Self.asset_base_dir())
+            parse_xml_full(Self.xml_text(), Self.asset_base_dir()),
+            Self.xml_text(),
+            Self.asset_base_dir(),
         )
 
     @staticmethod
@@ -2119,10 +2186,10 @@ struct ModelDefFromXML[
         # GEOM_PLANE=0
         var has_plane = False
         var max_body_radius = Float64(0.0)
-        for j in range(Self.NGEOM):
+        for j in range(len(rf.geom_type)):
             if _m_geom_body_id[j] > 0 and _m_geom_radius[j] > max_body_radius:
                 max_body_radius = _m_geom_radius[j]
-        for i in range(Self.NGEOM):
+        for i in range(len(rf.geom_type)):
             if _m_geom_type[i] == 0:  # PLANE
                 var pqx = _m_geom_quat_x[i]
                 var pqy = _m_geom_quat_y[i]
@@ -2143,7 +2210,7 @@ struct ModelDefFromXML[
                     var wall_b = Float32(_m_geom_rgba_b[i])
                     var wall_a = Float32(_m_geom_rgba_a[i])
                     var wmid = _m_geom_material_id[i]
-                    if wmid >= 0 and wmid < Self.nmat:
+                    if wmid >= 0 and wmid < len(rf.mat_rgba_r):
                         wall_r = Float32(_m_mat_rgba_r[wmid])
                         wall_g = Float32(_m_mat_rgba_g[wmid])
                         wall_b = Float32(_m_mat_rgba_b[wmid])
@@ -2172,7 +2239,7 @@ struct ModelDefFromXML[
                 var texrep_u = Float64(1.0)
                 var texrep_v = Float64(1.0)
                 var mid = _m_geom_material_id[i]
-                if mid >= 0 and mid < Self.nmat:
+                if mid >= 0 and mid < len(rf.mat_rgba_r):
                     var tex_id = _m_mat_tex_id[mid]
                     # ⚠ THIS WAS A `comptime for` OVER EVERY TEXTURE.
                     # Pulling a String out of `_rcd` needed
@@ -2239,7 +2306,7 @@ struct ModelDefFromXML[
         ref _m_mat_tex_id = rf.mat_tex_id
 
         # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5
-        for i in range(Self.NGEOM):
+        for i in range(len(rf.geom_type)):
             var bid = _m_geom_body_id[i]
             if bid < 0:
                 continue
@@ -2284,7 +2351,7 @@ struct ModelDefFromXML[
             var b = Float32(_m_geom_rgba_b[i])
             var a = Float32(_m_geom_rgba_a[i])
             var mid = _m_geom_material_id[i]
-            if mid >= 0 and mid < Self.nmat:
+            if mid >= 0 and mid < len(rf.mat_rgba_r):
                 r = Float32(_m_mat_rgba_r[mid])
                 g = Float32(_m_mat_rgba_g[mid])
                 b = Float32(_m_mat_rgba_b[mid])
@@ -2293,14 +2360,14 @@ struct ModelDefFromXML[
             var shininess = Float32(0.5)
             var specular = Float32(0.5)
             var reflectance = Float32(0.0)
-            if mid >= 0 and mid < Self.nmat:
+            if mid >= 0 and mid < len(rf.mat_rgba_r):
                 shininess = Float32(_m_mat_shininess[mid])
                 specular = Float32(_m_mat_specular[mid])
                 reflectance = Float32(_m_mat_reflectance[mid])
             # Resolve material → texture chain for this geom
             var tex_name_str = String("")
             var tex_file_str = String("")
-            if mid >= 0 and mid < Self.nmat:
+            if mid >= 0 and mid < len(rf.mat_rgba_r):
                 var tex_id = _m_mat_tex_id[mid]
                 # Same collapse as in `render_ground_geoms` — one index
                 # where a `comptime for` over every texture used to be.
@@ -2366,7 +2433,7 @@ struct ModelDefFromXML[
                     )
 
     @staticmethod
-    def has_skin() raises -> Bool:
+    def has_skin(rf: RenderFields) raises -> Bool:
         """Whether the model declares a `<skin>`.
 
         ⚠ A `find` ON THE XML, NOT A PARSED FLAG. Recording anything about the
@@ -2376,7 +2443,7 @@ struct ModelDefFromXML[
         is not. Comptime-resolvable, so a model without a skin still compiles
         `render_skin` away to nothing.
         """
-        return Self.xml_text().find("<skin") != -1
+        return rf.xml_text.find("<skin") != -1
 
     @staticmethod
     def geom_group_at(rf: RenderFields, i: Int) -> Int:
@@ -2395,53 +2462,6 @@ struct ModelDefFromXML[
         — an uncalled generic is uncompiled code.
         """
         return rf.geom_group[i]
-
-    @staticmethod
-    def body_names() raises -> List[String]:
-        """Body names by index (0 = worldbody), parsed from the model XML AT
-        RUNTIME.
-
-        ⚠ RUNTIME ON PURPOSE, and it is not a style choice. A `<skin>`'s bones
-        name the bodies they follow and those names live inside the BINARY
-        `.skn`, so the match cannot happen at compile time — which leaves the
-        names needing to survive into runtime somehow. Writing them into the
-        comptime render data does not compile, in every spelling tried (see
-        `xml_parser.mojo`, above `MAX_COMPTIME_RENDER_GEOMS`). The XML is
-        already a comptime parameter of this struct, so materializing it once
-        and scanning it with ORDINARY runtime string code costs nothing extra
-        and is subject to none of those restrictions.
-
-        Document order, which is the order the parser assigns body ids: both
-        walk `<body` opening tags left to right.
-
-        ⚠ CALL IT ONCE. It materializes the whole model XML and rescans it;
-        `render_skin` does so only on the frame that loads the skin.
-        """
-        var src = Self.xml_text()
-        var out = List[String]()
-        out.append(String(""))  # index 0 = worldbody, which has no <body> tag
-
-        var wb = src.find("<worldbody")
-        if wb == -1:
-            return out^
-        var stop = src.find("</worldbody>", wb)
-        if stop == -1:
-            stop = src.byte_length()
-
-        var pos = src.find(">", wb)
-        if pos == -1:
-            return out^
-        pos += 1
-        while True:
-            var bt = src.find("<body", pos)
-            if bt == -1 or bt >= stop:
-                break
-            var bte = src.find(">", bt)
-            if bte == -1:
-                break
-            out.append(_attr_between(src, bt, bte, "name"))
-            pos = bte + 1
-        return out^
 
     @staticmethod
     def render_skin(
@@ -2464,11 +2484,11 @@ struct ModelDefFromXML[
         # do was read the MJCF at compile time, and phase 1b's whole point is
         # that nothing may.
         # ⚠ THE WHOLE ASSET CHAIN IS WALKED AT RUNTIME, from the XML this
-        # struct already carries. `<skin file= material=>` ->
+        # `rf` now carries (`RenderFields.xml_text`). `<skin file= material=>` ->
         # `<material texture=>` -> `<texture file=>` is three attribute
         # reads, and doing any of them in the comptime interpreter is a
         # compile failure the moment it hits. See `body_names`.
-        var src = Self.xml_text()
+        var src = rf.xml_text
         var st = src.find("<skin")
         if st == -1:
             return
@@ -2476,7 +2496,7 @@ struct ModelDefFromXML[
         if se == -1:
             return
 
-        var skin_file = Self.resolve_asset(
+        var skin_file = _resolve_asset(rf.asset_base_dir,
             _attr_between(src, st, se, "file")
         )
         if skin_file.byte_length() == 0:
@@ -2510,7 +2530,7 @@ struct ModelDefFromXML[
                         break
                     if _attr_between(src, tt, te, "name") == want_tex:
                         tex_name = want_tex
-                        tex_file = Self.resolve_asset(
+                        tex_file = _resolve_asset(rf.asset_base_dir,
                             _attr_between(src, tt, te, "file")
                         )
                         break
@@ -2532,7 +2552,7 @@ struct ModelDefFromXML[
         renderer.draw_skin(
             name=skin_file,
             skn_path=skin_file,
-            body_names=Self.body_names(),
+            body_names=body_names_of(rf.xml_text),
             xpos=xpos,
             xquat=xquat,
             texture_name=tex_name,
@@ -2556,7 +2576,7 @@ struct ModelDefFromXML[
         ref _m_site_pos_z = rf.site_pos_z
         ref _m_site_size_0 = rf.site_size_0
 
-        for i in range(Self.NSITE):
+        for i in range(len(rf.site_pos_x)):
             var sbid = _m_site_body_id[i]
             if sbid <= 0 or sbid >= len(positions):
                 continue
@@ -2579,3 +2599,32 @@ struct ModelDefFromXML[
                 specular=Float32(0.9),
                 reflectance=Float32(0.0),
             )
+
+
+comptime RfOnlyModelDef = ModelDefFromXML[
+    xml_path="", nbody=1, njoint=0, nq=0, nv=0, ngeom=0, nact=0,
+]
+"""THE RENDER HOOKS, ADDRESSABLE WITHOUT A MODEL — how one renderer draws any file.
+
+All seventeen render hooks above are pure functions of `rf: RenderFields`:
+none of them reads a `Self.` member any more (the counts became
+`len(rf.…)`, the source text became `rf.xml_text`/`rf.asset_base_dir`, and
+the two helpers that were members are now module-level). So which
+instantiation you call them ON does not matter, and this one — a model with
+no bodies, no geoms and no XML — exists so the studio can call them with no
+model type at all.
+
+⚠⚠ THE PURITY IS A PROPERTY, NOT A GUARANTEE, AND IT IS LINTED. Reintroduce
+one `Self.NGEOM` into a hook and this alias silently draws ZERO geoms for
+every runtime-loaded model — the exact "two model paths" failure §10 of
+`docs/PHYSICS3D_STUDIO_PLAN.md` names as the top risk, and one that no
+compile catches. `scripts/audit_render_hooks_are_rf_pure.py` fails the moment
+a hook body mentions `Self.`; run it in CI, not by hand.
+
+⚠ WHY AN ALIAS AND NOT A SEPARATE `RuntimeModelDef` STRUCT. A second struct
+would be a second copy of ~900 lines of hook, which is the same risk with
+worse odds. There is exactly one implementation, and this names it.
+
+The physics side needs nothing equivalent: `Model[DTYPE, DynDims]` and the
+integrators already take their dimensions as a runtime value.
+"""

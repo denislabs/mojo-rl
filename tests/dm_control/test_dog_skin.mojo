@@ -23,6 +23,7 @@ from std.testing import assert_true, assert_equal, TestSuite
 from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
 from mojo_rl.render.skn_loader import load_skn
 from mojo_rl.render.skinning import resolve_skin_bones
+from mojo_rl.physics3d.parser.model_def_from_xml import body_names_of
 
 
 comptime SKN_PATH = String(
@@ -31,9 +32,16 @@ comptime SKN_PATH = String(
 
 
 def test_parser_saw_the_skin() raises:
-    """`<skin>` reached the render data, texture and all."""
+    """`<skin>` reached the render data, texture and all.
+
+    ⚠ `has_skin` / `body_names` NOW TAKE `rf`. They read the model's MJCF, and
+    that moved from `Self.xml_text()` onto `RenderFields.xml_text` so the
+    render hooks could stop being methods on a comptime type — see
+    `RfOnlyModelDef`. The XML they read is the same string.
+    """
+    var rf = DMDogStandWalkModel.make_render_fields()
     assert_true(
-        DMDogStandWalkModel.has_skin(),
+        DMDogStandWalkModel.has_skin(rf),
         "dog's <skin> did not survive merge_mjcf / parse_xml",
     )
 
@@ -41,7 +49,8 @@ def test_parser_saw_the_skin() raises:
 def test_every_skin_bone_binds_to_a_body() raises:
     """The seam. A bone that matches nothing collapses its region silently."""
     var skin = load_skn(SKN_PATH)
-    var names = DMDogStandWalkModel.body_names()
+    var rf = DMDogStandWalkModel.make_render_fields()
+    var names = body_names_of(rf.xml_text)
 
     print("  model named bodies:", len(names))
     print("  skin bones:", len(skin.bones))

@@ -145,9 +145,32 @@ struct RenderFields(Copyable, Movable):
     var vis_headlight_ambient_b: Float64
     var vis_has_headlight: Bool
 
+    # ── the model's SOURCE ────────────────────────────────────────────────
+    var xml_text: String
+    """The model's MJCF, verbatim. Empty when the caller did not supply it.
+
+    ⚠ THIS IS NOT REDUNDANT WITH THE LISTS ABOVE, and it is here so the render
+    hooks can stop being methods on a comptime type. Two of them read the raw
+    document rather than the parse — `render_skin` walks
+    `<skin file= material=>` -> `<material texture=>` -> `<texture file=>`,
+    and `body_names` recovers body names the physics parse discards
+    (`FlatModelDef` carries names for textures, meshes and materials, and for
+    nothing else). Both used to reach `Self.xml_text()`, which only a
+    `ModelDefFromXML` has, and which is exactly what a RUNTIME-loaded model
+    cannot offer.
+
+    ⚠ EMPTY IS A LEGAL VALUE and means "no skin, no body names", never a
+    parse failure — a caller that has no source text still gets a complete
+    renderer for everything the lists describe."""
+
+    var asset_base_dir: String
+    """Directory that `file=` attributes resolve against. Empty = cwd."""
+
     def __init__(out self):
         """Empty — `build_render_fields` fills it."""
 
+        self.xml_text = String("")
+        self.asset_base_dir = String("")
         self.ntex = 0
         self.geom_body_id = List[Int]()
         self.geom_type = List[Int]()
@@ -245,7 +268,11 @@ struct RenderFields(Copyable, Movable):
         self.vis_has_headlight = False
 
 
-def build_render_fields(fmd: FlatModelDef) raises -> RenderFields:
+def build_render_fields(
+    fmd: FlatModelDef,
+    xml_text: String = String(""),
+    asset_base_dir: String = String(""),
+) raises -> RenderFields:
     """`FlatModelDef` → `RenderFields`. The runtime replacement for
     `parse_xml_render_data`.
 
@@ -259,6 +286,8 @@ def build_render_fields(fmd: FlatModelDef) raises -> RenderFields:
     spatial-tendon site chain, and the texture numbering.
     """
     var rf = RenderFields()
+    rf.xml_text = xml_text
+    rf.asset_base_dir = asset_base_dir
 
     # ── geoms ─────────────────────────────────────────────────────────────
     for i in range(len(fmd.geoms)):

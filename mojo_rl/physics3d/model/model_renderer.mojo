@@ -106,9 +106,28 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_sites: Bool = False,
         show_fog: Bool = False,
         title: String = String("Model Environment"),
+        adopt_rf: Optional[RenderFields] = None,
     ) raises:
         # ⚠ BEFORE ANY HOOK — every one of them reads it.
-        var rf = Self.MODEL_DEF.make_render_fields()
+        #
+        # ⚠⚠ `adopt_rf` IS WHAT LETS ONE RENDERER DRAW A FILE CHOSEN AT
+        # RUNTIME, and it is the whole renderer half of the physics3d studio.
+        # `make_render_fields()` is the ONE hook that names a model — it reads
+        # `Self.xml_text()`, which only a comptime `ModelDefFromXML` has. Every
+        # OTHER hook is a pure function of `rf` (linted:
+        # `scripts/audit_render_hooks_are_rf_pure.py`), so handing the records
+        # in here is the entire difference between "this renderer draws
+        # walker2d" and "this renderer draws whatever you opened".
+        #
+        # A runtime caller builds them with
+        # `build_render_fields(fmd, xml_text, base_dir)` from the same
+        # `FlatModelDef` its `Model` was built from, instantiates
+        # `ModelRenderer[RfOnlyModelDef]`, and passes them here.
+        var rf = RenderFields()
+        if adopt_rf:
+            rf = adopt_rf.value().copy()
+        else:
+            rf = Self.MODEL_DEF.make_render_fields()
 
         # Setup all cameras from spec (fallback to default if none defined)
         var cam_list = Self.MODEL_DEF.setup_cameras(rf, width, height)
