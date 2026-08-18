@@ -45,6 +45,19 @@ WHAT IS CHECKED, for BOTH dtypes:
 reference column here; `test_reach_site_reset_vs_dm_control` owns parity and
 this owns precision-independence. Keep both.
 
+⚠⚠ WHY THE MANIPULATION FAMILY IS THE ONE THAT NEEDED THIS. A survey of the
+gate tree (task #72) found `tests/physics3d` already well covered at float32 —
+51 of its ~120 files exercise it, because every GPU `*_fields` test does — and
+`tests/dm_control` covered at float32 ONLY through its ten `*_gpu_vs_cpu`
+files, which compare a float32 GPU batch against a float64 CPU run. Those ten
+span ball_in_cup, cartpole, dog, fish, humanoid, locomotion, pendulum,
+point_mass, quadruped and tranche2.
+
+There is no `*_gpu_vs_cpu` for manipulation. Its eighteen gates were float64 to
+a file, which is the whole reason a reset that failed 100% of the time at
+float32 could sit behind a green suite. This file is that family's float32
+coverage; extend it rather than adding a fourteenth float64-only gate.
+
 Run with:
     pixi run mojo run -I . tests/dm_control/test_manipulation_reset_dtype.mojo
 """
@@ -54,8 +67,20 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
+from mojo_rl.physics3d.model import ModelDefLike
 from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
+)
+from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from mojo_rl.envs.dm_control.manipulation_stack2_config import (
+    Stack2BricksConfig,
+    SITE_PINCH as STACK2_PINCH,
+    TCP_BBOX_LOWER_X as S2_LO_X,
+    TCP_BBOX_LOWER_Y as S2_LO_Y,
+    TCP_BBOX_LOWER_Z as S2_LO_Z,
+    TCP_BBOX_UPPER_X as S2_HI_X,
+    TCP_BBOX_UPPER_Y as S2_HI_Y,
+    TCP_BBOX_UPPER_Z as S2_HI_Z,
 )
 from mojo_rl.envs.dm_control.manipulation_reach_config import (
     N_ARM,
@@ -83,10 +108,22 @@ comptime BOX_SLACK: Float64 = 1e-3
 comptime QPOS0_EPS: Float64 = 1e-9
 
 
-def _check[DTYPE: DType](label: String, ctx: DeviceContext) raises:
-    comptime E = Phyics3dEnv[
-        ReachSiteFeaturesModel, ReachSiteFeaturesConfig, DTYPE, False
-    ]
+def _check[
+    MODEL: ModelDefLike,
+    CONFIG: Phyics3dEnvConfig,
+    DTYPE: DType,
+    PINCH: Int,
+    LO_X: Float64, LO_Y: Float64, LO_Z: Float64,
+    HI_X: Float64, HI_Y: Float64, HI_Z: Float64,
+](label: String, ctx: DeviceContext) raises:
+    comptime E = Phyics3dEnv[MODEL, CONFIG, DTYPE, False]
+    comptime SITE_PINCH = PINCH
+    comptime TARGET_BBOX_LOWER_X = LO_X
+    comptime TARGET_BBOX_LOWER_Y = LO_Y
+    comptime TARGET_BBOX_LOWER_Z = LO_Z
+    comptime TARGET_BBOX_UPPER_X = HI_X
+    comptime TARGET_BBOX_UPPER_Y = HI_Y
+    comptime TARGET_BBOX_UPPER_Z = HI_Z
     var env = E(ctx)
 
     var at_qpos0 = 0
@@ -177,13 +214,43 @@ def _check[DTYPE: DType](label: String, ctx: DeviceContext) raises:
 def test_manipulation_reset_survives_float64() raises:
     print("=== reach_site_features reset @ float64 ===")
     var ctx = DeviceContext()
-    _check[DType.float64]("float64", ctx)
+    _check[
+        ReachSiteFeaturesModel, ReachSiteFeaturesConfig, DType.float64,
+        SITE_PINCH,
+        TARGET_BBOX_LOWER_X, TARGET_BBOX_LOWER_Y, TARGET_BBOX_LOWER_Z,
+        TARGET_BBOX_UPPER_X, TARGET_BBOX_UPPER_Y, TARGET_BBOX_UPPER_Z,
+    ]("reach_site f64", ctx)
 
 
 def test_manipulation_reset_survives_float32() raises:
     print("=== reach_site_features reset @ float32 (the viewer's dtype) ===")
     var ctx = DeviceContext()
-    _check[DType.float32]("float32", ctx)
+    _check[
+        ReachSiteFeaturesModel, ReachSiteFeaturesConfig, DType.float32,
+        SITE_PINCH,
+        TARGET_BBOX_LOWER_X, TARGET_BBOX_LOWER_Y, TARGET_BBOX_LOWER_Z,
+        TARGET_BBOX_UPPER_X, TARGET_BBOX_UPPER_Y, TARGET_BBOX_UPPER_Z,
+    ]("reach_site f32", ctx)
+
+
+def test_prop_task_reset_survives_both_dtypes() raises:
+    """A PROP task, not just the propless one.
+
+    ⚠ `reach_site_features` is the only one of the thirteen with NO prop, so
+    covering it alone leaves the prop placer, the settle and the free-body
+    contact rows — i.e. most of what the reset actually does — untested at the
+    dtype the product runs. `stack_2_bricks` exercises all three.
+    """
+    print("=== stack_2_bricks reset @ both dtypes ===")
+    var ctx = DeviceContext()
+    _check[
+        Stack2BricksModel, Stack2BricksConfig, DType.float64, STACK2_PINCH,
+        S2_LO_X, S2_LO_Y, S2_LO_Z, S2_HI_X, S2_HI_Y, S2_HI_Z,
+    ]("stack_2 f64", ctx)
+    _check[
+        Stack2BricksModel, Stack2BricksConfig, DType.float32, STACK2_PINCH,
+        S2_LO_X, S2_LO_Y, S2_LO_Z, S2_HI_X, S2_HI_Y, S2_HI_Z,
+    ]("stack_2 f32", ctx)
 
 
 def test_qpos0_detector_is_not_vacuous() raises:
