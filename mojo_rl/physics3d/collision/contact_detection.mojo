@@ -52,6 +52,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_NPAIR,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_MULTICCD_DISABLED,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
     MODEL_PAIR_SIZE,
@@ -1617,6 +1618,13 @@ def _detect_contacts_env[
     )
     if ccd_iter < 1:
         ccd_iter = MJ_CCD_ITERATIONS
+    # `<option><flag multiccd="disable"/></option>` — `mjDSBL_MULTICCD`. When
+    # set, `mjc_Convex` never reaches its perturbation loop and every convex
+    # pair that is not BOX x BOX keeps the single point `mjc_penetration`
+    # found. 0 means the flag is absent, i.e. MuJoCo's default of ON.
+    var multiccd_off = (
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MULTICCD_DISABLED]) != 0
+    )
     var num_contacts = 0
 
     for gi in range(ngeom):
@@ -3126,7 +3134,16 @@ def _detect_contacts_env[
                 # it rejects — spheres, ellipsoids, meshes, the plane pairs
                 # (which never reach this emit) — keeps the single point it
                 # had, deliberately. See collision/multi_ccd.mojo.
-                if multi_ccd_pair_supported(gi_type, gj_type):
+                #
+                # ⚠ `multiccd_off` IS THE MODEL'S OWN SWITCH, not a tuning
+                # knob: `<flag multiccd="disable"/>` is `mjDSBL_MULTICCD`, and
+                # a model that sets it gets single-point convex contacts from
+                # MuJoCo. Ignoring it cost `reassemble5` 437 contacts against
+                # the reference's 111. The SAP narrow phase carries the same
+                # guard — see the note at its copy of this hook.
+                if not multiccd_off and multi_ccd_pair_supported(
+                    gi_type, gj_type
+                ):
                     _ = multi_ccd_extra_contacts[
                         DTYPE](
                         env, body_a, body_b, mccd_first,

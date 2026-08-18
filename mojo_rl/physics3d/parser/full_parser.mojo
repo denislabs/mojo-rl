@@ -4380,6 +4380,21 @@ def parse_xml_full(
     result.ccd_tolerance = opt[7]
     result.ccd_iterations = opt[8]
 
+    # <flag multiccd="disable" nativeccd="disable"/> — `mjDSBL_MULTICCD` and
+    # `mjDSBL_NATIVECCD`.
+    #
+    # ⚠⚠ THESE WERE THE FLAGS THIS FUNCTION DID NOT READ, and the omission was
+    # not visible as one: `_option_flag_disabled` has existed all along and was
+    # simply never called for them, so every model asking for single-point
+    # convex contacts got `multi_ccd`'s 4-point manifold instead. All 11 baked
+    # dm_control manipulation models set `nativeccd`, 9 of them set `multiccd`,
+    # and on `reassemble5` that is 437 contacts against MuJoCo's 111 and 3701
+    # ms per control step against 13-49 ms.
+    #
+    # ⚠ ONLY `multiccd` HAS A CONSUMER — see `FlatModelDef.nativeccd_disabled`.
+    result.multiccd_disabled = _option_flag_disabled(xml, "multiccd")
+    result.nativeccd_disabled = _option_flag_disabled(xml, "nativeccd")
+
     # <flag gravity="disable"/> — zero the gravity vector.
     if _option_flag_disabled(xml, "gravity"):
         result.gravity_x = Float64(0)

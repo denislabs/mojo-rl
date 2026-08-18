@@ -172,6 +172,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_CCD_ITERATIONS,
     MODEL_META_IDX_CTRL_MIN,
     MODEL_META_IDX_CTRL_MAX,
+    MODEL_META_IDX_MULTICCD_DISABLED,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -830,6 +831,13 @@ def build_model_fields_from_flat[
     )
     mf.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[DTYPE](
         fmd.ccd_iterations
+    )
+    # `<flag multiccd="disable"/>`. Written unconditionally for the same reason
+    # the two above are: the slot has to differ between a model that sets the
+    # flag and one that does not, and 0 (the MuJoCo default, feature ON) is
+    # what an unwritten slot already means.
+    mf.meta.data[MODEL_META_IDX_MULTICCD_DISABLED] = Scalar[DTYPE](
+        1.0 if fmd.multiccd_disabled else 0.0
     )
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed

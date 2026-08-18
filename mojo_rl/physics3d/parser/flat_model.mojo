@@ -1617,6 +1617,19 @@ struct FlatModelDef(Movable):
     # why tighter is not safer.
     var ccd_tolerance: Float64
     var ccd_iterations: Int
+    # `<option><flag multiccd="disable" nativeccd="disable"/></option>` —
+    # `mjDSBL_MULTICCD` / `mjDSBL_NATIVECCD`, both DISABLE bits that are off by
+    # default on the 3.10.0 runtime.
+    #
+    # ⚠⚠ `multiccd_disabled` IS LOAD-BEARING AND `nativeccd_disabled` IS NOT.
+    # The first switches off `multi_ccd`'s perturbation loop, which is what
+    # took `manipulation/reassemble5` from 437 contacts to MuJoCo's 111. The
+    # second is parsed and stored so the value is INSPECTABLE rather than
+    # silently absent, but nothing reads it: see the note beside
+    # `MODEL_META_IDX_MULTICCD_DISABLED` for what honouring it would change and
+    # why that is a separate, smaller job.
+    var multiccd_disabled: Bool
+    var nativeccd_disabled: Bool
     # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
     # after its inertial frame is set: `mass = max(mass, boundmass)` and the
     # same per principal moment. Default 0, i.e. no bound. Load-bearing on
@@ -1784,6 +1797,10 @@ struct FlatModelDef(Movable):
         self.noslip_tolerance = Float64(1e-6)
         self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
         self.ccd_iterations = MJ_CCD_ITERATIONS
+        # Both default OFF, matching MuJoCo: the features are ON unless a model
+        # disables them.
+        self.multiccd_disabled = False
+        self.nativeccd_disabled = False
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
         self.vis_znear = 0.01

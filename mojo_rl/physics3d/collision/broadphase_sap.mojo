@@ -58,6 +58,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_NPAIR,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_MULTICCD_DISABLED,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
     MODEL_PAIR_SIZE,
@@ -408,6 +409,11 @@ def _detect_contacts_sap_env[
     )
     if ccd_iter < 1:
         ccd_iter = MJ_CCD_ITERATIONS
+    # `mjDSBL_MULTICCD` — read here for the same reason `ccd_tol` is, and it
+    # must stay in lockstep with `_detect_contacts_env`'s copy.
+    var multiccd_off = (
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MULTICCD_DISABLED]) != 0
+    )
     if n_pair_aabb > npair:
         n_pair_aabb = npair
     for p in range(n_pair_aabb):
@@ -1723,7 +1729,16 @@ def _detect_contacts_sap_env[
                 # shape of `feedback_sap_path_missing_a_whole_geom_type`, and
                 # it is why this hook is duplicated rather than "left for
                 # later". The two must move together.
-                if multi_ccd_pair_supported(gi_type, gj_type):
+                #
+                # ⚠ AND THEY DID, for `mjDSBL_MULTICCD`. `<flag
+                # multiccd="disable"/>` is the model asking for single-point
+                # convex contacts; honouring it in only one narrow phase would
+                # have left every model at or above `SAP_THRESHOLD` — which is
+                # every dm_control manipulation model, at 185-431 geoms — with
+                # the 4-point manifold the flag exists to switch off.
+                if not multiccd_off and multi_ccd_pair_supported(
+                    gi_type, gj_type
+                ):
                     _ = multi_ccd_extra_contacts[
                         DTYPE](
                         env, body_a, body_b, mccd_first,

@@ -17,9 +17,10 @@ Model buffer (static, same for all environments):
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
-  Metadata (MODEL_META_SIZE=31): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+  Metadata (MODEL_META_SIZE): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality,
-    ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations]
+    ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations,
+    ctrl_min, ctrl_max, multiccd_disabled]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
@@ -282,7 +283,7 @@ comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 33
+comptime MODEL_META_SIZE: Int = 34
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -380,6 +381,34 @@ comptime MODEL_META_IDX_CCD_ITERATIONS: Int = 30
 # is exactly what pins a model to a `String` in Mojo source.
 comptime MODEL_META_IDX_CTRL_MIN: Int = 31
 comptime MODEL_META_IDX_CTRL_MAX: Int = 32
+
+# `mjDSBL_MULTICCD` (1<<19) — non-zero when the model carries
+# `<option><flag multiccd="disable"/></option>`.
+#
+# ⚠⚠ THE SENSE IS "DISABLED", NOT "ENABLED", AND THAT IS DELIBERATE. MuJoCo's
+# multi-point convex manifold is ON by default on the 3.10.0 runtime, so 0 —
+# what an unseeded slot and every pre-existing builder gives — is the correct
+# default and leaves every model that does not set the flag untouched. Storing
+# "enabled" here would have made a zeroed slot silently switch the feature off
+# for every hand-made fixture and GPU env spec.
+#
+# ⚠ WHY IT NEEDS A SLOT AT ALL. `collision/multi_ccd.mojo` implemented the
+# default-on behaviour UNCONDITIONALLY, so a model asking for single-point
+# convex contacts got a 4-point manifold anyway. Measured on
+# `manipulation/reassemble5`: ours 437 contacts against MuJoCo's 111, and 3701
+# ms per control step against 13-49 ms. Every dm_control manipulation model
+# sets this flag; 9 of the 11 baked ones carry it.
+#
+# ⚠ `nativeccd` IS PARSED TOO BUT HAS NO SLOT, because it has no consumer.
+# `mjDSBL_NATIVECCD` only decides whether `mjc_Convex` takes its early return
+# before the perturbation loop, and the native `multicontact()` polygon-clipping
+# path that early return protects is NOT PORTED (see `multi_ccd.mojo`'s header).
+# With multiccd disabled the loop does not run either way, so on every model in
+# this tree the two flags agree. A model setting `nativeccd` ALONE — the baked
+# `reach_site_features` and `lift_large_box` do — would route BOX/MESH and
+# MESH/MESH pairs into the perturbation loop in MuJoCo while we still exclude
+# them, a SMALLER divergence in the opposite direction. Recorded, not fixed.
+comptime MODEL_META_IDX_MULTICCD_DISABLED: Int = 33
 
 # MuJoCo's defaults, used wherever a Model is built without a parser (hand-made
 # fixtures, the GPU env specs) so that those paths behave like the reference
