@@ -3310,7 +3310,7 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
         for e in range(BATCH):
             _detect_contacts_env[DTYPE, BATCH](
-                e, AsStatic[D](), xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
+                e, dm, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 mesh_vert_edgeadr_v, mesh_edges_v,

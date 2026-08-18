@@ -353,7 +353,7 @@ struct ImplicitIntegrator[
             var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
+                    Self.DTYPE](e, dm, joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -373,7 +373,7 @@ struct ImplicitIntegrator[
             var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _qderiv_damping_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, njoint, qd_v)
+                    Self.DTYPE](e, dm, joints_v, njoint, qd_v)
         else:
             ctx.value().enqueue_function[
                 _qderiv_damping_kernel[
@@ -396,7 +396,7 @@ struct ImplicitIntegrator[
             var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _msub_qderiv_env[Self.DTYPE](
-                    e, dt, AsStatic[Self.D](), M_v, qd_v
+                    e, dt, dm, M_v, qd_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -430,7 +430,7 @@ struct ImplicitIntegrator[
             var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
+                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -462,7 +462,7 @@ struct ImplicitIntegrator[
             var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _qacc_writeback_env[Self.DTYPE](
-                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
+                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -513,7 +513,7 @@ struct ImplicitIntegrator[
             var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _implicit_finalize_env[
-                    Self.DTYPE](e, dt, AsStatic[Self.D](), qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
+                    Self.DTYPE](e, dt, dm, qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
         else:
             ctx.value().enqueue_function[
                 _implicit_finalize_kernel[

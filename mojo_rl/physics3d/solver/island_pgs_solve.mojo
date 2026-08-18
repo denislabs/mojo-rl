@@ -1672,7 +1672,7 @@ def solve_island_pgs[
                 DTYPE,
                 CONE_TYPE,
                 BATCH](
-                e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
                 cdof_v, mi_v, qc_v, sol_v,
             )

@@ -74,17 +74,21 @@ struct Rk4Scratch[
         self = Self(Self.D.comptime_value())
 
     def __init__(out self, dims: Self.D) raises:
-        """Dimensions passed in. ⚠ The allocations below still read the
-        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
         comptime B = Self.BATCH
-        self.q0 = TensorImpl[Self.DTYPE].alloc(B * Self.NQ)
-        self.v0 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.A0 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.A1 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.A2 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.C1 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.C2 = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
+        self.q0 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nq())
+        self.v0 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.A0 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.A1 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.A2 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.C1 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.C2 = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —

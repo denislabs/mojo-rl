@@ -95,8 +95,12 @@ struct ContactScratch[
         self = Self(Self.D.comptime_value())
 
     def __init__(out self, dims: Self.D) raises:
-        """Dimensions passed in. ⚠ The allocations below still read the
-        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
         self.solver = TensorImpl[Self.DTYPE].alloc(
             Self.BATCH * Self.SOLVER_WS

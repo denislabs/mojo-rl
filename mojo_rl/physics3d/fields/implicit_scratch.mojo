@@ -71,27 +71,31 @@ struct ImplicitScratch[
         self = Self(Self.D.comptime_value())
 
     def __init__(out self, dims: Self.D) raises:
-        """Dimensions passed in. ⚠ The allocations below still read the
-        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
         comptime B = Self.BATCH
-        self.cinert = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NBODY * 10))
-        self.cdof_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * 6))
-        self.cvel_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NBODY * 6))
-        self.cdof_dot = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * 6))
+        self.cinert = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nbody() * 10))
+        self.cdof_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * 6))
+        self.cvel_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nbody() * 6))
+        self.cdof_dot = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * 6))
         self.dcvel = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
         self.dcdofdot = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NV * 6 * Self.NV)
+            _pos(B * dims.get_nv() * 6 * dims.get_nv())
         )
         self.dcacc = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
         self.dcfrcbody = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
-        self.qderiv = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * Self.NV))
+        self.qderiv = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * dims.get_nv()))
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —

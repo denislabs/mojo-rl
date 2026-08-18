@@ -72,22 +72,26 @@ struct DynamicsScratch[
         self = Self(Self.DIMS.comptime_value())
 
     def __init__(out self, dims: Self.DIMS) raises:
-        """Dimensions passed in. ⚠ The allocations below still read the
-        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
         comptime B = Self.BATCH
-        self.cdof = TensorImpl[Self.DTYPE].alloc(B * Self.NV * 6)
-        self.crb = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
-        self.M = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
-        self.L = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
-        self.D = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.bias = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.fnet = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qacc_ws = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qacc_constrained = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.rne_cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.rne_cfrc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.m_inv = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
+        self.cdof = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * 6)
+        self.crb = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 10)
+        self.M = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
+        self.L = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
+        self.D = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.bias = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.fnet = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qacc_ws = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qacc_constrained = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.rne_cacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.rne_cfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.m_inv = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —

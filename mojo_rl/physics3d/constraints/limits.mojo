@@ -360,7 +360,7 @@ def solve_limits[
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _limits_env[DTYPE, NUM_ITERATIONS](
-                e, AsStatic[D](), qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
+                e, dm, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()

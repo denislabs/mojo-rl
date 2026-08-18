@@ -871,7 +871,7 @@ def compute_bias_forces_rne[
         var bias_v = scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _rne_env[DTYPE](
-                e, AsStatic[D](), qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
+                e, dm, qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
                 meta_v, cdof_v, crb_v, cacc_v, cfrc_v, bias_v,
             )
     elif PARALLEL:

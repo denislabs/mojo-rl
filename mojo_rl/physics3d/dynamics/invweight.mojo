@@ -492,7 +492,7 @@ def compute_invweight0[
                 len0 = spatial_tendon_length_jac[
                     DTYPE, D.NV, 1
                 ](
-                    0, t, AsStatic[D](), ten_v, site_v, bodies_v, joints_v, meta_v,
+                    0, t, dm, ten_v, site_v, bodies_v, joints_v, meta_v,
                     stcom_v, cdof_v, xpos_v, xquat_v, tJ,
                 )
             else:

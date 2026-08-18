@@ -224,7 +224,7 @@ def ldl_factor[
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _ldl_factor_env(e, AsStatic[D](), M_v, L_v, D_v)
+            _ldl_factor_env(e, dm, M_v, L_v, D_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV
@@ -266,7 +266,7 @@ def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
         var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _ldl_solve_env(e, AsStatic[D](), L_v, D_v, b_v, x_v)
+            _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
@@ -413,7 +413,7 @@ def compute_m_inv[
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         for e in range(BATCH):
-            _m_inv_env(e, AsStatic[D](), L_v, D_v, mi_v)
+            _m_inv_env(e, dm, L_v, D_v, mi_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV

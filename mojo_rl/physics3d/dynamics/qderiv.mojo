@@ -893,7 +893,7 @@ def compute_rne_vel_derivative[
         var qderiv_v = iscratch.qderiv.lt_dyn["cpu", DYN2](rl_QD)
         for e in range(BATCH):
             _rne_vel_derivative_env[DTYPE](
-                e, njoint, AsStatic[D](), bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
+                e, njoint, dm, bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
                 cdof_v, cinert_v, cdof_sc_v, cvel_sc_v, cdof_dot_v, dcvel_v,
                 dcdofdot_v, dcacc_v, dcfrcbody_v, qderiv_v,
             )

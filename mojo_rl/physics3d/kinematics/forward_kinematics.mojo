@@ -838,7 +838,7 @@ def forward_kinematics[
         var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_XPOS)
         for e in range(BATCH):
             _fk_env[DTYPE](
-                e, AsStatic[D](), qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
+                e, dm, qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
         comptime if D.NSITE > 0:
             var rl_SITE_REC = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
@@ -847,7 +847,7 @@ def forward_kinematics[
             var sitex_v = d.site_xpos.lt_dyn["cpu", DYN2](rl_SITE_X)
             for e in range(BATCH):
                 _fk_sites[DTYPE](
-                    e, AsStatic[D](), sites_v, xpos_v, xquat_v, sitex_v
+                    e, dm, sites_v, xpos_v, xquat_v, sitex_v
                 )
     elif PARALLEL:
         # Cooperative within-env schedule (legacy STEP_THREADS = NV).
@@ -1480,7 +1480,7 @@ def compute_body_velocities[
         var xangvel_v = d.xangvel.lt_dyn["cpu", DYN2](rl_B3)
         for e in range(BATCH):
             _body_velocities_env[DTYPE](
-                e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
+                e, dm, qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
                 joints_v, xvel_v, xangvel_v,
             )
     elif PARALLEL:

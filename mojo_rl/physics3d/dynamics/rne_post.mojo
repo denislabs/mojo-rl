@@ -534,7 +534,7 @@ def compute_rne_post[
         var cfrc_int_v = d.cfrc_int.lt_dyn["cpu", DYN2](rl_B6)
         for e in range(BATCH):
             _rne_post_env[DTYPE](
-                e, AsStatic[D](), qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
+                e, dm, qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
                 bodies_v, joints_v, mmeta_v, cdof_v, crb_v, cvel_v, cacc_v,
                 cfrc_ext_v, cfrc_int_v,
             )

@@ -156,15 +156,18 @@ struct Model[
         self = Self(Self.D.comptime_value())
 
     def __init__(out self, dims: Self.D) raises:
-        """Dimensions passed in. ⚠ The allocations below still read the
-        comptime `Self.NBODY`/`Self.NV`/… — that is 3b, not 3a; see the twin
-        constructor on `Data`."""
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
         self.dims = dims
         self.bodies = TensorImpl[Self.DTYPE].alloc(
-            Self.NBODY * MODEL_BODY_SIZE
+            dims.get_nbody() * MODEL_BODY_SIZE
         )
         self.joints = TensorImpl[Self.DTYPE].alloc(
-            Self.NJOINT * MODEL_JOINT_SIZE
+            dims.get_njoint() * MODEL_JOINT_SIZE
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(MODEL_META_SIZE)
         # ⚠ MUJOCO'S CCD DEFAULTS, SEEDED HERE BECAUSE A ZERO IS A LEGAL-LOOKING
@@ -181,38 +184,38 @@ struct Model[
             MJ_CCD_ITERATIONS
         )
         self.curriculum = TensorImpl[Self.DTYPE].alloc(MODEL_CURRICULUM_SIZE)
-        self.geoms = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NGEOM * MODEL_GEOM_SIZE))
+        self.geoms = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_ngeom() * MODEL_GEOM_SIZE))
         self.equality = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NEQUALITY * MODEL_EQ_SIZE)
+            _at_least_one(dims.get_nequality() * MODEL_EQ_SIZE)
         )
         self.tendons = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NTENDON * MODEL_TENDON_SIZE)
+            _at_least_one(dims.get_ntendon() * MODEL_TENDON_SIZE)
         )
-        self.sites = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NSITE * MODEL_SITE_SIZE))
-        self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NBODY * 2)
-        self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NV)
-        self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NEXCLUDE * 2))
+        self.sites = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nsite() * MODEL_SITE_SIZE))
+        self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nbody() * 2)
+        self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
+        self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nexclude() * 2))
         self.pairs = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NPAIR * MODEL_PAIR_SIZE)
+            _at_least_one(dims.get_npair() * MODEL_PAIR_SIZE)
         )
         self.mesh_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_MESHES * MODEL_MESH_META_SIZE
         )
-        self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NMESH_VERTS * 3))
+        self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
         self.mesh_polys = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NMESH_POLY * MODEL_MESH_POLY_SIZE)
+            _at_least_one(mesh_max_poly(dims.get_nmesh_verts()) * MODEL_MESH_POLY_SIZE)
         )
         self.mesh_polyvert = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NMESH_POLYVERT)
+            _at_least_one(mesh_max_polyvert(dims.get_nmesh_verts()))
         )
         self.mesh_polymap = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NMESH_POLYVERT)
+            _at_least_one(mesh_max_polyvert(dims.get_nmesh_verts()))
         )
         self.mesh_vert_polymap = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NMESH_VERTS * 2)
+            _at_least_one(dims.get_nmesh_verts() * 2)
         )
         self.mesh_vert_edgeadr = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(Self.NMESH_VERTS)
+            _at_least_one(dims.get_nmesh_verts())
         )
         # ⚠⚠ -1 MEANS "NO GRAPH", AND ZERO WOULD NOT. Zero is a valid offset
         # into `mesh_edges`, so a vertex whose adjacency was never built would
@@ -223,14 +226,14 @@ struct Model[
         # wrote — and it turned 1 contact into 3. `_plane_mesh_contacts` reads
         # -1 as MuJoCo reads `mesh_graphadr < 0` and takes the exhaustive
         # branch instead.
-        for v in range(_at_least_one(Self.NMESH_VERTS)):
+        for v in range(_at_least_one(dims.get_nmesh_verts())):
             self.mesh_vert_edgeadr.data[v] = Scalar[Self.DTYPE](-1)
-        self.mesh_edges = TensorImpl[Self.DTYPE].alloc(Self.NMESH_EDGE)
+        self.mesh_edges = TensorImpl[Self.DTYPE].alloc(mesh_max_edge(dims.get_nmesh_verts()))
         # Pre-filled with the terminator, not zero: a neighbour walk reads
         # until it sees -1, and zero is a VALID vertex index. The real guard
         # against an unbuilt graph is the -1 in `mesh_vert_edgeadr` above; this
         # is belt and braces for a run that is entered anyway.
-        for k in range(Self.NMESH_EDGE):
+        for k in range(mesh_max_edge(dims.get_nmesh_verts())):
             self.mesh_edges.data[k] = Scalar[Self.DTYPE](-1)
 
     def upload_all(mut self, ctx: DeviceContext) raises:

@@ -501,7 +501,7 @@ struct RK4Integrator[
             var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
+                    Self.DTYPE](e, dm, joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -532,7 +532,7 @@ struct RK4Integrator[
             var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
+                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -563,7 +563,7 @@ struct RK4Integrator[
             var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _qacc_writeback_env[Self.DTYPE](
-                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
+                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -610,7 +610,7 @@ struct RK4Integrator[
                 _rk4_stage_setup_env[
                     Self.DTYPE,
                     STAGE](
-                    e, dt, AsStatic[Self.D](), joints_v, qpos_v, qvel_v, qacc_c_v,
+                    e, dt, dm, joints_v, qpos_v, qvel_v, qacc_c_v,
                     q0_v, v0_v, A0_v, A1_v, A2_v, C1_v, C2_v,
                 )
         else:
@@ -705,7 +705,7 @@ struct RK4Integrator[
             for e in range(Self.BATCH):
                 _rk4_combine_env[
                     Self.DTYPE](
-                    e, dt, AsStatic[Self.D](), joints_v, qpos_v, qvel_v, qacc_v, qacc_c_v,
+                    e, dt, dm, joints_v, qpos_v, qvel_v, qacc_v, qacc_c_v,
                     q0_v, v0_v, A0_v, A1_v, A2_v, C1_v, C2_v,
                 )
         else:

@@ -767,13 +767,13 @@ def compute_mass_matrix[
             for e in range(BATCH):
                 _mm_treewalk_env[DTYPE, 1, False](
                     e, 0,
-                    AsStatic[D](),
+                    dm,
                     xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
                 )
         else:
             for e in range(BATCH):
                 _mass_matrix_env[DTYPE](
-                    e, AsStatic[D](), xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
+                    e, dm, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
                     M_v,
                 )
     elif PARALLEL and TREEWALK:

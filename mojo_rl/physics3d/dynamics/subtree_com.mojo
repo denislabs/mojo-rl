@@ -155,7 +155,7 @@ def compute_subtree_com[
         var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
         for e in range(BATCH):
             _subtree_com_env[DTYPE](
-                e, AsStatic[D](), bodies_v, xipos_v, stcom_v
+                e, dm, bodies_v, xipos_v, stcom_v
             )
     else:
         var c = ctx.value()

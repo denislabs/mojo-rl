@@ -282,7 +282,7 @@ def lu_factor[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _lu_factor_env[DTYPE](e, AsStatic[D](), M_v, L_v, D_v)
+            _lu_factor_env[DTYPE](e, dm, M_v, L_v, D_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
@@ -312,7 +312,7 @@ def lu_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
         var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _lu_solve_env[DTYPE](e, AsStatic[D](), L_v, D_v, b_v, x_v)
+            _lu_solve_env[DTYPE](e, dm, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
@@ -347,7 +347,7 @@ def compute_m_inv_from_lu[
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         for e in range(BATCH):
-            _lu_m_inv_env[DTYPE](e, AsStatic[D](), L_v, D_v, mi_v)
+            _lu_m_inv_env[DTYPE](e, dm, L_v, D_v, mi_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB

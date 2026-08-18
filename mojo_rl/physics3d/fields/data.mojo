@@ -143,46 +143,47 @@ struct Data[
         self = Self(Self.D.comptime_value())
 
     def __init__(out self, dims: Self.D) raises:
-        """Dimensions passed in — the dynamic leg's constructor.
+        """Dimensions passed in, and ALLOCATED FROM (3b).
 
-        ⚠ ALLOCATION STILL READS THE COMPTIME `Self.NQ`/`Self.NV`/… below.
-        That is 3b's half of item 3 and is NOT done here: on a dynamic
-        provider those are `DIM_POISON` and the allocation is negative. This
-        constructor exists so 3a can put the provider in place — and be
-        gated — without also rewriting every `alloc`. Until 3b lands, the
-        only thing a dynamic `Data` can serve is a caller that supplies its
-        own buffers.
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one would
+        ask for a NEGATIVE length.
+
+        The nullary constructor delegates here with
+        `Self.D.comptime_value()`, whose dimensions are the same integers, so
+        the static leg allocates exactly what it always did.
         """
         self.dims = dims
         comptime B = Self.BATCH
-        self.qpos = TensorImpl[Self.DTYPE].alloc(B * Self.NQ)
-        self.qvel = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qacc = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qfrc = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.xpos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
-        self.xquat = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 4)
-        self.xipos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
-        self.xvel = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
-        self.xangvel = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
+        self.qpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nq())
+        self.qvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        self.xquat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
+        self.xipos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        self.xvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        self.xangvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.contacts = TensorImpl[Self.DTYPE].alloc(
-            B * Self.MAX_CONTACTS * CONTACT_SIZE
+            B * dims.get_max_contacts() * CONTACT_SIZE
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(B * METADATA_SIZE)
-        self.site_xpos = TensorImpl[Self.DTYPE].alloc(B * Self.NSITE * 3)
-        self.cfrc_ext = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.cvel = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.cinert = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
-        self.cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.cfrc_int = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
+        self.site_xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nsite() * 3)
+        self.cfrc_ext = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.cvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.cinert = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 10)
+        self.cacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.cfrc_int = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
         # Sized exactly like `site_xpos` above, including its lack of a
         # zero-extent guard: a model with NSITE == 0 never reaches a site
         # sensor, and diverging from the field it shadows would be its own bug.
-        self.site_xpos_acc = TensorImpl[Self.DTYPE].alloc(B * Self.NSITE * 3)
-        self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 4)
-        self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
-        self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
-        self.mocap_quat = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 4)
+        self.site_xpos_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nsite() * 3)
+        self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
+        self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        self.mocap_quat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every field (creates/replaces device buffers;

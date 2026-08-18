@@ -316,7 +316,7 @@ def solve_friction[
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _friction_env[DTYPE, NUM_ITERATIONS](
-                e, AsStatic[D](), qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
+                e, dm, qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()

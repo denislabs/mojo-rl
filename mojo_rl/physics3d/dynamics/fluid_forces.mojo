@@ -357,7 +357,7 @@ def compute_fluid_forces[
         var fnet_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _fluid_forces_env[DTYPE](
-                e, AsStatic[D](), xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
+                e, dm, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
                 joints_v, meta_v, cdof_v, fnet_v,
             )
     else:

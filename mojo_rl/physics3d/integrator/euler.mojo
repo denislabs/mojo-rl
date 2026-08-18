@@ -477,7 +477,7 @@ struct EulerIntegrator[
             var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
+                    Self.DTYPE](e, dm, joints_v, M_v)
         else:
             ctx.value().enqueue_function[
                 _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
@@ -505,7 +505,7 @@ struct EulerIntegrator[
             var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
+                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
@@ -535,7 +535,7 @@ struct EulerIntegrator[
             var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _qacc_writeback_env[Self.DTYPE](
-                    e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
+                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
@@ -666,7 +666,7 @@ struct EulerIntegrator[
             for e in range(Self.BATCH):
                 _finalize_env[
                     Self.DTYPE](
-                    e, dt, AsStatic[Self.D](), qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
+                    e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
                     D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3,
                 )
         else:

@@ -480,7 +480,7 @@ def compute_cdof[
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
         for e in range(BATCH):
             _cdof_env[DTYPE](
-                e, AsStatic[D](), qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
+                e, dm, qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
             )
     elif PARALLEL:
         var c = ctx.value()
