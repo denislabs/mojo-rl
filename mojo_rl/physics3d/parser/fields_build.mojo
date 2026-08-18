@@ -394,9 +394,15 @@ def _geom_mass_and_inertia[
 
 def _inertia_from_geoms_staging[
     DTYPE: DType,
-    NBODY: Int,
-    NGEOM: Int,
 ](
+    # ⚠ `NBODY`/`NGEOM` WERE COMPTIME PARAMETERS (3c-a). They are used for
+    # nothing but five loop bounds, and being comptime is what forced every
+    # caller to have a comptime provider — the last thing standing between
+    # `build_model_fields_from_flat` and a runtime one. Making them runtime
+    # also collapses one instantiation per model shape, which the comment
+    # below already celebrates for `auto_mode`.
+    nbody: Int,
+    ngeom: Int,
     # ⚠ RUNTIME, NOT COMPTIME, since phase 1b. These three came off the raw
     # MJCF in the comptime interpreter, which is what pinned every model to a
     # `String` in Mojo source; they ride on `FlatModelDef` now. Making the auto
@@ -426,7 +432,7 @@ def _inertia_from_geoms_staging[
     """`compute_inertia_from_geoms` (MuJoCo inertiafromgeom) ported onto the
     build staging arrays + packed geom records — arithmetic verbatim from the
     legacy Model-typed routine (deleted at G4)."""
-    for body_id in range(1, NBODY):
+    for body_id in range(1, nbody):
         if auto_mode:
             if body_has_explicit_inertia[body_id]:
                 continue
@@ -435,7 +441,7 @@ def _inertia_from_geoms_staging[
         var total_mass = Scalar[DTYPE](0)
         var num_contributing = 0
 
-        for g in range(NGEOM):
+        for g in range(ngeom):
             var go = g * MODEL_GEOM_SIZE
             var ggrp = geom_group[g]
             if ggrp < inertia_group_min or ggrp > inertia_group_max:
@@ -514,7 +520,7 @@ def _inertia_from_geoms_staging[
             continue
 
         if num_contributing == 1:
-            for g in range(NGEOM):
+            for g in range(ngeom):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp1 = geom_group[g]
                 if ggrp1 < inertia_group_min or ggrp1 > inertia_group_max:
@@ -574,7 +580,7 @@ def _inertia_from_geoms_staging[
             var com_x = Scalar[DTYPE](0)
             var com_y = Scalar[DTYPE](0)
             var com_z = Scalar[DTYPE](0)
-            for g in range(NGEOM):
+            for g in range(ngeom):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp2 = geom_group[g]
                 if ggrp2 < inertia_group_min or ggrp2 > inertia_group_max:
@@ -610,7 +616,7 @@ def _inertia_from_geoms_staging[
 
             var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
 
-            for g in range(NGEOM):
+            for g in range(ngeom):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp3 = geom_group[g]
                 if ggrp3 < inertia_group_min or ggrp3 > inertia_group_max:
@@ -703,8 +709,8 @@ def build_model_fields_from_flat[
     docstring. Does NOT compute invweight0 and does NOT upload."""
 
     # ── meta ─────────────────────────────────────────────────────────────
-    mf.meta.data[MODEL_META_IDX_NBODY] = Scalar[DTYPE](D.NBODY)
-    mf.meta.data[MODEL_META_IDX_NJOINT] = Scalar[DTYPE](D.NJOINT)
+    mf.meta.data[MODEL_META_IDX_NBODY] = Scalar[DTYPE](mf.dims.get_nbody())
+    mf.meta.data[MODEL_META_IDX_NJOINT] = Scalar[DTYPE](mf.dims.get_njoint())
     mf.meta.data[MODEL_META_IDX_GRAVITY_X] = Scalar[DTYPE](fmd.gravity_x)
     mf.meta.data[MODEL_META_IDX_GRAVITY_Y] = Scalar[DTYPE](fmd.gravity_y)
     mf.meta.data[MODEL_META_IDX_GRAVITY_Z] = Scalar[DTYPE](fmd.gravity_z)
@@ -720,8 +726,8 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](fmd.opt_viscosity)
     mf.meta.data[MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](1.0)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
-        len(fmd.equalities) if len(fmd.equalities) < D.NEQUALITY
-        else D.NEQUALITY
+        len(fmd.equalities) if len(fmd.equalities) < mf.dims.get_nequality()
+        else mf.dims.get_nequality()
     )
     # Honest tendon count. This used to be hardcoded 0, which made every
     # tendon record dead. `_tendon_env` treats a record as a BILATERAL
@@ -729,8 +735,8 @@ def build_model_fields_from_flat[
     # requires TENDON_IDX_IS_EQUALITY — humanoid declares two <fixed> tendons
     # that MuJoCo constrains in no way.
     mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](
-        len(fmd.tendons) if len(fmd.tendons) < D.NTENDON
-        else D.NTENDON
+        len(fmd.tendons) if len(fmd.tendons) < mf.dims.get_ntendon()
+        else mf.dims.get_ntendon()
     )
     mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](len(fmd.excludes))
     mf.meta.data[MODEL_META_IDX_NPAIR] = Scalar[DTYPE](len(fmd.pairs))
@@ -762,7 +768,12 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_SOLIMP_CONTACT_2] = Scalar[DTYPE](0.001)
     mf.meta.data[MODEL_META_IDX_SOLIMP_CONTACT_3] = Scalar[DTYPE](0.5)
     mf.meta.data[MODEL_META_IDX_SOLIMP_CONTACT_4] = Scalar[DTYPE](2.0)
-    comptime if D.NGEOM > 0:
+    # ⚠ RUNTIME, AND GUARDING `fmd.geoms`, NOT `mf.dims.get_ngeom()` (3c-a). The thing
+    # being indexed on the next line is the PARSED list, so its own length is
+    # the honest guard — and `mf.dims.get_ngeom()` is `DIM_POISON` on a dynamic provider,
+    # which skipped this block and left the contact solref/solimp meta at the
+    # defaults seeded above.
+    if len(fmd.geoms) > 0:
         var g0 = fmd.geoms[0]
         mf.meta.data[MODEL_META_IDX_SOLREF_CONTACT_0] = Scalar[DTYPE](
             g0.solref_0
@@ -805,24 +816,24 @@ def build_model_fields_from_flat[
 
     # ── body staging (mass/inertia block; inertiafromgeom + settotalmass
     #    mutate it before the record write) ─────────────────────────────────
-    var body_mass = List[Scalar[DTYPE]](length=D.NBODY, fill=Scalar[DTYPE](0))
+    var body_mass = List[Scalar[DTYPE]](length=mf.dims.get_nbody(), fill=Scalar[DTYPE](0))
     var body_inv_mass = List[Scalar[DTYPE]](
-        length=D.NBODY, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_nbody(), fill=Scalar[DTYPE](0)
     )
     var body_inertia = List[Scalar[DTYPE]](
-        length=D.NBODY * 3, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_nbody() * 3, fill=Scalar[DTYPE](0)
     )
     var body_inv_inertia = List[Scalar[DTYPE]](
-        length=D.NBODY * 3, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_nbody() * 3, fill=Scalar[DTYPE](0)
     )
     var body_ipos = List[Scalar[DTYPE]](
-        length=D.NBODY * 3, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_nbody() * 3, fill=Scalar[DTYPE](0)
     )
     var body_iquat = List[Scalar[DTYPE]](
-        length=D.NBODY * 4, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_nbody() * 4, fill=Scalar[DTYPE](0)
     )
-    var body_has_explicit_inertia = List[Bool](length=D.NBODY, fill=False)
-    var body_parent = List[Int](length=D.NBODY, fill=0)
+    var body_has_explicit_inertia = List[Bool](length=mf.dims.get_nbody(), fill=False)
+    var body_parent = List[Int](length=mf.dims.get_nbody(), fill=0)
 
     # Worldbody (index 0): mass/inertia zero, identity iquat.
     body_iquat[3] = Scalar[DTYPE](1)
@@ -873,8 +884,8 @@ def build_model_fields_from_flat[
     mf.bodies.data[BODY_IDX_QUAT_W] = Scalar[DTYPE](1)
 
     # body_rootid (root = child of worldbody).
-    var body_rootid = List[Int](length=D.NBODY, fill=0)
-    for bi in range(1, D.NBODY):
+    var body_rootid = List[Int](length=mf.dims.get_nbody(), fill=0)
+    for bi in range(1, mf.dims.get_nbody()):
         var p = body_parent[bi]
         if p == 0:
             body_rootid[bi] = bi
@@ -1002,7 +1013,8 @@ def build_model_fields_from_flat[
 
     # Model-level limit meta sync from joint 0 (legacy CPU/GPU consistency
     # sync — uniform joint solimp across all current models).
-    comptime if D.NJOINT > 0:
+    # Same as the geom gate above; guards an index into `mf.joints`.
+    if mf.dims.get_njoint() > 0:
         mf.meta.data[MODEL_META_IDX_SOLREF_LIMIT_0] = mf.joints.data[
             JOINT_IDX_SOLREF_LIMIT_0
         ]
@@ -1027,11 +1039,11 @@ def build_model_fields_from_flat[
 
     # body_weldid: bodies with joints weld to themselves, jointless bodies
     # inherit the parent's weldid (MuJoCo convention).
-    var body_has_joint = List[Bool](length=D.NBODY, fill=False)
+    var body_has_joint = List[Bool](length=mf.dims.get_nbody(), fill=False)
     for j in range(len(fmd.joints)):
         body_has_joint[fmd.joints[j].body_id] = True
-    var body_weldid = List[Int](length=D.NBODY, fill=0)
-    for bi in range(1, D.NBODY):
+    var body_weldid = List[Int](length=mf.dims.get_nbody(), fill=0)
+    for bi in range(1, mf.dims.get_nbody()):
         if body_has_joint[bi]:
             body_weldid[bi] = bi
         else:
@@ -1084,17 +1096,17 @@ def build_model_fields_from_flat[
             )
 
     # ── geoms (+ build-only mass/group staging for inertiafromgeom) ───────
-    var geom_mass = List[Scalar[DTYPE]](length=D.NGEOM, fill=Scalar[DTYPE](0))
-    var geom_group = List[Int](length=D.NGEOM, fill=0)
+    var geom_mass = List[Scalar[DTYPE]](length=mf.dims.get_ngeom(), fill=Scalar[DTYPE](0))
+    var geom_group = List[Int](length=mf.dims.get_ngeom(), fill=0)
     # Per-geom mesh volume + UNITLESS principal moments, staged for the inertia
     # assembly. `geom_inertia` cannot compute these — it takes scalar dims and
     # has no way to reach a vertex list — so the mesh case is resolved here and
     # read back as a table.
     var geom_mesh_vol = List[Scalar[DTYPE]](
-        length=D.NGEOM, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_ngeom(), fill=Scalar[DTYPE](0)
     )
     var geom_mesh_eig = List[Scalar[DTYPE]](
-        length=D.NGEOM * 3, fill=Scalar[DTYPE](0)
+        length=mf.dims.get_ngeom() * 3, fill=Scalar[DTYPE](0)
     )
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
@@ -1366,17 +1378,17 @@ def build_model_fields_from_flat[
     # Only safe because the loop above now skips non-collidable meshes: dog
     # carries 162 VISUAL meshes and would otherwise fail here for a feature it
     # does not use.
-    if len(mesh_vert) > D.NMESH_VERTS * 3:
+    if len(mesh_vert) > mf.dims.get_nmesh_verts() * 3:
         raise Error(
-            String("mesh vertex capacity exceeded — D.NMESH_VERTS = ")
-            + String(D.NMESH_VERTS) + " holds " + String(D.NMESH_VERTS * 3)
+            String("mesh vertex capacity exceeded — mf.dims.get_nmesh_verts() = ")
+            + String(mf.dims.get_nmesh_verts()) + " holds " + String(mf.dims.get_nmesh_verts() * 3)
             + " scalars but the COLLIDABLE hulls need " + String(len(mesh_vert))
             + ". Truncating would shrink those collision shapes silently, so"
-            " this is fatal. Raise the config's D.NMESH_VERTS to at least "
+            " this is fatal. Raise the config's mf.dims.get_nmesh_verts() to at least "
             + String((len(mesh_vert) + 2) // 3) + " vertices."
         )
     for i in range(len(mesh_vert)):
-        if i >= D.NMESH_VERTS * 3:
+        if i >= mf.dims.get_nmesh_verts() * 3:
             break
         mf.mesh_verts.data[i] = mesh_vert[i]
 
@@ -1388,15 +1400,15 @@ def build_model_fields_from_flat[
     # bound holds for a CONVEX hull and a builder bug is exactly what would
     # break that assumption — and a silent overrun here would corrupt the
     # tensor allocated next to it.
-    comptime NMESH_POLY = mesh_max_poly(D.NMESH_VERTS)
-    comptime NMESH_POLYVERT = mesh_max_polyvert(D.NMESH_VERTS)
+    var NMESH_POLY = mesh_max_poly(mf.dims.get_nmesh_verts())
+    var NMESH_POLYVERT = mesh_max_polyvert(mf.dims.get_nmesh_verts())
     if len(poly_vertadr) > NMESH_POLY or len(poly_vert) > NMESH_POLYVERT:
         raise Error(
             String("mesh POLYGON capacity exceeded: ")
             + String(len(poly_vertadr)) + " polygons (cap " + String(NMESH_POLY)
             + ") and " + String(len(poly_vert)) + " polygon-vertices (cap "
-            + String(NMESH_POLYVERT) + ") for D.NMESH_VERTS = "
-            + String(D.NMESH_VERTS) + ". These caps are Euler's formula for a"
+            + String(NMESH_POLYVERT) + ") for mf.dims.get_nmesh_verts() = "
+            + String(mf.dims.get_nmesh_verts()) + ". These caps are Euler's formula for a"
             " CONVEX hull, so exceeding them means the hull or the polygon"
             " merge is wrong, not that the budget is too small."
         )
@@ -1416,7 +1428,7 @@ def build_model_fields_from_flat[
     for k in range(len(polymap)):
         mf.mesh_polymap.data[k] = Scalar[DTYPE](polymap[k])
     for v in range(len(polymap_adr)):
-        if v >= D.NMESH_VERTS:
+        if v >= mf.dims.get_nmesh_verts():
             break
         mf.mesh_vert_polymap.data[v * 2 + 0] = Scalar[DTYPE](polymap_adr[v])
         mf.mesh_vert_polymap.data[v * 2 + 1] = Scalar[DTYPE](polymap_num[v])
@@ -1429,25 +1441,25 @@ def build_model_fields_from_flat[
     # wrong. Truncating would leave some vertices with a neighbour list that
     # runs off the end of the block, and `_plane_mesh_contacts` walks to a -1
     # terminator that would no longer be there.
-    comptime NMESH_EDGE = mesh_max_edge(D.NMESH_VERTS)
+    var NMESH_EDGE = mesh_max_edge(mf.dims.get_nmesh_verts())
     if len(edge_list) > NMESH_EDGE:
         raise Error(
             String("mesh hull EDGE capacity exceeded: ")
             + String(len(edge_list)) + " edge slots (cap "
-            + String(NMESH_EDGE) + ") for D.NMESH_VERTS = "
-            + String(D.NMESH_VERTS) + ". A triangulated convex hull needs"
+            + String(NMESH_EDGE) + ") for mf.dims.get_nmesh_verts() = "
+            + String(mf.dims.get_nmesh_verts()) + ". A triangulated convex hull needs"
             " 7V - 12, so exceeding 8V means the hull is not simplicial or"
             " the adjacency build is wrong, not that the budget is too small."
         )
     for v in range(len(edge_adr)):
-        if v >= D.NMESH_VERTS:
+        if v >= mf.dims.get_nmesh_verts():
             break
         mf.mesh_vert_edgeadr.data[v] = Scalar[DTYPE](edge_adr[v])
     for k in range(len(edge_list)):
         mf.mesh_edges.data[k] = Scalar[DTYPE](edge_list[k])
 
     # ── sites (INTENTIONAL FIX: legacy load_from_model left these zero) ───
-    for i in range(D.NSITE):
+    for i in range(mf.dims.get_nsite()):
         var sd = fmd.sites[i]
         var o = i * MODEL_SITE_SIZE
         mf.sites.data[o + SITE_IDX_BODY] = Scalar[DTYPE](sd.body_id)
@@ -1469,7 +1481,7 @@ def build_model_fields_from_flat[
     # `max_tendon` for both), so this is a straight copy. INVWEIGHT0 is left
     # zero here and filled by the invweight pass, which needs FK at qpos0.
     for i in range(len(fmd.tendons)):
-        if i >= D.NTENDON:
+        if i >= mf.dims.get_ntendon():
             break
         var td = fmd.tendons[i]
         var o = i * MODEL_TENDON_SIZE
@@ -1541,7 +1553,7 @@ def build_model_fields_from_flat[
     #    solimp[3]=0.5 / solimp[4]=2.0 hardcoded, parsed values dropped) ────
     var num_eq = 0
     for i in range(len(fmd.equalities)):
-        if num_eq >= D.NEQUALITY:
+        if num_eq >= mf.dims.get_nequality():
             break
         var ed = fmd.equalities[i]
         if (
@@ -1606,13 +1618,13 @@ def build_model_fields_from_flat[
     # ⚠ It is a HARD ERROR rather than a clamp because dropping exclusions
     # ADDS collisions: the excluded pairs start colliding, and the model still
     # simulates. Same argument as `<pair>` below.
-    if len(fmd.excludes) > D.NEXCLUDE:
+    if len(fmd.excludes) > mf.dims.get_nexclude():
         raise Error(
             String("physics3d: parsed ")
             + String(len(fmd.excludes))
-            + " <contact><exclude> entries but D.NEXCLUDE = "
-            + String(D.NEXCLUDE)
-            + ". Pass `nexclude=parse_xml(xml).D.NEXCLUDE` to the model def."
+            + " <contact><exclude> entries but mf.dims.get_nexclude() = "
+            + String(mf.dims.get_nexclude())
+            + ". Pass `nexclude=parse_xml(xml).mf.dims.get_nexclude()` to the model def."
             " Truncating would let the excluded geom pairs collide, which"
             " leaves a model that still runs and is quietly wrong."
         )
@@ -1628,12 +1640,12 @@ def build_model_fields_from_flat[
     # pairs, which is invisible: the model still simulates, just without some
     # of the collisions it declared. Compare the tendon count above, which
     # clamps to `MAX_TENDON`.
-    if len(fmd.pairs) > D.NPAIR:
+    if len(fmd.pairs) > mf.dims.get_npair():
         raise Error(
             "physics3d: parsed "
             + String(len(fmd.pairs))
-            + " <contact><pair> records but D.NPAIR is "
-            + String(D.NPAIR)
+            + " <contact><pair> records but mf.dims.get_npair() is "
+            + String(mf.dims.get_npair())
             + ". Pass npair=<count> to ModelDefFromXML."
         )
     for i in range(len(fmd.pairs)):
@@ -1661,7 +1673,9 @@ def build_model_fields_from_flat[
     # ── <compiler inertiafromgeom> + settotalmass (staging mutations) ─────
     var ifg_mode = fmd.inertiafromgeom
     if ifg_mode == 1 or ifg_mode == 2:
-        _inertia_from_geoms_staging[DTYPE, D.NBODY, D.NGEOM](
+        _inertia_from_geoms_staging[DTYPE](
+            mf.dims.get_nbody(),
+            mf.dims.get_ngeom(),
             fmd.inertiagrouprange_min,
             fmd.inertiagrouprange_max,
             ifg_mode == 2,
@@ -1695,7 +1709,7 @@ def build_model_fields_from_flat[
     if fmd.boundmass > 0.0 or fmd.boundinertia > 0.0:
         var bm = Scalar[DTYPE](fmd.boundmass)
         var bi = Scalar[DTYPE](fmd.boundinertia)
-        for i in range(1, D.NBODY):
+        for i in range(1, mf.dims.get_nbody()):
             if body_mass[i] < bm:
                 body_mass[i] = bm
                 body_inv_mass[i] = Scalar[DTYPE](1.0) / bm
@@ -1710,11 +1724,11 @@ def build_model_fields_from_flat[
     # and the rescale runs — 21.18 kg -> 14.0, confirmed against the runtime.
     if ifg_mode > 0 and fmd.settotalmass > 0.0:
         var total_mass = Scalar[DTYPE](0)
-        for i in range(1, D.NBODY):
+        for i in range(1, mf.dims.get_nbody()):
             total_mass += body_mass[i]
         if total_mass > Scalar[DTYPE](0):
             var scale = Scalar[DTYPE](fmd.settotalmass) / total_mass
-            for i in range(1, D.NBODY):
+            for i in range(1, mf.dims.get_nbody()):
                 body_mass[i] *= scale
                 body_inv_mass[i] = Scalar[DTYPE](1.0) / body_mass[i]
                 for k in range(3):
