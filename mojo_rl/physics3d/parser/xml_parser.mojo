@@ -2782,31 +2782,46 @@ def _xml_joint_adr_grouped(xml: String, jname: String, want_qpos: Bool) -> Int:
     return adr
 
 
-def _index_by_name_grouped(worldbody: String, marker: String, name: String) -> Int:
-    """Ordinal of the named element in MuJoCo's ELEMENT order, or -1.
+def names_in_element_order(worldbody: String, marker: String) -> List[String]:
+    """Every `marker` element's `name=`, INDEXED BY ITS MuJoCo ELEMENT ID.
 
-    The index twin of `_xml_joint_adr_grouped`: same body-grouping rule, but it
-    returns a position in the element array rather than a qpos/dof address.
-    MuJoCo emits `<joint>`s and `<site>`s grouped by body — all of body 0's,
-    then body 1's, declaration order preserved inside each — so counting tags
-    in raw text order is only right when every body declares its own elements
-    BEFORE its nested `<body>` children.
+    ⚠ THIS IS THE WALK; `_index_by_name_grouped` is now a lookup into it. It
+    used to be the other way round, and the studio is why it flipped: an
+    outliner, a selection that survives an edit, and a state remap across a
+    rebuild all need the whole table, and rebuilding it by calling the
+    resolver once per element would have been a second implementation of the
+    ordering rule below. This tree loses more to two spellings of one quantity
+    than to anything else.
+
+    THE ORDERING RULE. MuJoCo emits `<joint>`s, `<site>`s and `<geom>`s
+    GROUPED BY BODY — all of body 0's, then body 1's, declaration order
+    preserved inside each — so counting tags in raw text order is only right
+    when every body declares its own elements BEFORE its nested `<body>`
+    children. `_fill_model` ends by applying exactly this grouping
+    (`_stable_group_by_body_*`), and this mirrors it.
 
     ⚠ `<worldbody>`'s OWN sites belong to body 0 and therefore come FIRST,
-    ahead of every site declared inside a body, however early in the text those
-    world-level sites appear. That is the whole of the finger / manipulator /
-    stacker divergence: their `target` and `palm_touch` sites move.
+    ahead of every site declared inside a body, however early in the text
+    those world-level sites appear. That is the whole of the finger /
+    manipulator / stacker divergence: their `target` and `palm_touch` sites
+    move.
 
-    ⚠ SCANS `marker` ONLY, mirroring what the array builder scans. `_fill_model`
-    looks for `"<joint"` and nothing else, so this must too — `<freejoint>` is
-    already rewritten to `<joint type="free">` by `merge_mjcf` before either is
-    reached, and adding a second marker here would number joints DIFFERENTLY
-    from the array being indexed. A resolver has to mirror its builder, not
-    MuJoCo.
+    ⚠ SCANS `marker` ONLY, mirroring what the array builder scans.
+    `_fill_model` looks for `"<joint"` and nothing else, so this must too —
+    `<freejoint>` is already rewritten to `<joint type="free">` by
+    `merge_mjcf` before either is reached, and adding a second marker here
+    would number joints DIFFERENTLY from the array being indexed. A resolver
+    has to mirror its builder, not MuJoCo.
+
+    ⚠ AN UNNAMED ELEMENT GETS "", NOT A SYNTHESISED NAME. MJCF does not
+    require `name=`, most geoms in this tree have none, and inventing `geom7`
+    here would make an export claim a name the source never had. The studio
+    synthesises where it must (§1.3), at the point of export, where the
+    invention is visible.
     """
     var n = worldbody.byte_length()
     var ebody = List[Int]()
-    var target = -1
+    var enames = List[String]()
     var pos = 0
     var next_body = 0
     var cur = 0  # the world body
@@ -2839,20 +2854,64 @@ def _index_by_name_grouped(worldbody: String, marker: String, name: String) -> I
                 cur = next_body
         else:
             var tag = String(worldbody[byte = t : tag_end + 1])
-            if target < 0 and _trim(_extract_attr(tag, "name")) == name:
-                target = len(ebody)
+            enames.append(_trim(_extract_attr(tag, "name")))
             ebody.append(cur)
         pos = tag_end + 1
 
-    if target < 0:
-        return -1
+    # Stable sort by body: element `i` lands at the count of elements that
+    # precede it — a lower body, or the same body earlier in the text.
+    var out = List[String](length=len(ebody), fill=String(""))
+    for target in range(len(ebody)):
+        var idx = 0
+        var tbody = ebody[target]
+        for i in range(len(ebody)):
+            if ebody[i] < tbody or (ebody[i] == tbody and i < target):
+                idx += 1
+        out[idx] = enames[target]
+    return out^
 
-    var idx = 0
-    var tbody = ebody[target]
-    for i in range(len(ebody)):
-        if ebody[i] < tbody or (ebody[i] == tbody and i < target):
-            idx += 1
-    return idx
+
+def body_names_in_order(worldbody: String) -> List[String]:
+    """Body names by MuJoCo body id. Index 0 is the worldbody.
+
+    ⚠ NOT `names_in_element_order(wb, "<body")`. Bodies are NOT regrouped —
+    they are numbered in document order, which is what
+    `_find_body_index_by_name` counts — and they are 1-BASED, because index 0
+    is the worldbody, which has no `<body>` tag. Sending them through the
+    grouped walk would renumber them by their own parent and shift everything
+    by one.
+    """
+    var out = List[String]()
+    out.append(String("world"))
+    var scan_pos = 0
+    while True:
+        var body_pos = worldbody.find("<body", scan_pos)
+        if body_pos == -1:
+            return out^
+        var tag_end = worldbody.find(">", body_pos)
+        if tag_end == -1:
+            return out^
+        var tag = String(worldbody[byte = body_pos : tag_end + 1])
+        out.append(_trim(_extract_attr(tag, "name")))
+        scan_pos = tag_end + 1
+
+
+def _index_by_name_grouped(worldbody: String, marker: String, name: String) -> Int:
+    """Ordinal of the named element in MuJoCo's ELEMENT order, or -1.
+
+    A lookup into `names_in_element_order`, which carries the ordering rule
+    and the four warnings that go with it.
+
+    ⚠ FIRST INDEX WINS, where this used to take the first DOCUMENT occurrence.
+    The two differ only for a duplicated name, which MJCF forbids and MuJoCo
+    rejects at compile time, so no model can tell them apart — but the
+    difference is real and is written down rather than discovered later.
+    """
+    var names = names_in_element_order(worldbody, marker)
+    for i in range(len(names)):
+        if names[i] == name:
+            return i
+    return -1
 
 
 def _min_valid_pos(a: Int, b: Int) -> Int:

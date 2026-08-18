@@ -45,6 +45,8 @@ from .xml_parser import (
     _find_body_index_by_name,
     _find_site_index_by_name,
     _find_geom_index_by_name,
+    names_in_element_order,
+    body_names_in_order,
     _sqrt_f64,
 )
 from .flat_model import (
@@ -2631,6 +2633,17 @@ def _fill_model(
     _stable_group_by_body_geoms(result.geoms)
     _stable_group_by_body_sites(result.sites)
 
+    # ⚠ THE NAME TABLES ARE BUILT HERE, AFTER THE GROUPING, BY THE SAME RULE.
+    # `names_in_element_order` IS the walk `_index_by_name_grouped` now looks
+    # up — one implementation of "which element is index i" for both the
+    # resolver and the table, so a name and the record it labels cannot drift
+    # apart. Building them before the sort, or by counting tags, is exactly
+    # the bug the sort exists to fix (see the note above it).
+    result.body_names = body_names_in_order(worldbody)
+    result.joint_names = names_in_element_order(worldbody, "<joint")
+    result.geom_names = names_in_element_order(worldbody, "<geom")
+    result.site_names = names_in_element_order(worldbody, "<site")
+
 
 # =============================================================================
 # Phase 4b: element ordering
@@ -2954,6 +2967,12 @@ def _fill_actuators(
             # existing guard stay the single place that refuses the model.
 
         result.actuators.append(ad)
+        # ⚠ CAPTURED HERE, NOT BY A SECOND WALK. Actuators are the one family
+        # that is NOT regrouped afterwards, so "the order they are appended"
+        # IS their index order and a name taken at the append cannot drift
+        # from the record it belongs to. The worldbody families need
+        # `names_in_element_order` precisely because they ARE regrouped.
+        result.actuator_names.append(_trim(_extract_attr(tag, "name")))
         act_count += 1
 
         var tag_end = actuator_sec.find(">", earliest)

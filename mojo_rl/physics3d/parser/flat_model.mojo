@@ -1600,6 +1600,47 @@ struct FlatModelDef(Movable):
     var excludes: List[ExcludeData]
     var pairs: List[PairData]
     var tendons: List[TendonData]
+
+    # ── NAMES ─────────────────────────────────────────────────────────────
+    # ⚠⚠ THE PARSER RESOLVES NAMES INTO INDICES AND USED TO DROP THE STRINGS,
+    # and that breaks four things at once for anything that EDITS a model
+    # rather than simulating one (`docs/PHYSICS3D_STUDIO_PLAN.md` §1.3):
+    #
+    #   * an outliner can only say "body 7";
+    #   * selection cannot survive an insert or delete, because identity IS
+    #     the index;
+    #   * a state remap across a rebuild has no key;
+    #   * an MJCF writer would have to synthesise `body0`/`geom3`, and a
+    #     flattened export is acceptable while a NAMELESS one is not —
+    #     keyframes, sensors, `<contact>` pairs and user code all key on names.
+    #
+    # ⚠ PARALLEL LISTS, NOT A `name` FIELD ON EACH RECORD, and the reason is
+    # mechanical: `BodyData` & co. are `ImplicitlyCopyable` trivial structs
+    # held in `List`s and copied freely through the parser's hot path. Adding
+    # a `String` makes them non-trivial — implicit deep copies everywhere, and
+    # this tree has a measured compile cliff for non-trivial structs in
+    # `InlineArray` (282 s -> 5 s for removing ONE such field). `RenderFields`
+    # already stores `mesh_names` / `tex_names` this way, so this is the local
+    # convention as well as the cheap option.
+    #
+    # ⚠ INDEXED IN MuJoCo ELEMENT ORDER, WHICH IS NOT DOCUMENT ORDER for
+    # joints, sites and geoms — they are grouped by body. The tables come from
+    # `names_in_element_order`, which IS the walk `_index_by_name_grouped`
+    # now looks up, so an index read out of a record and an index into these
+    # tables cannot drift apart.
+    #
+    # ⚠ AN UNNAMED ELEMENT IS "", not a synthesised name. Most geoms in this
+    # tree have no `name=`; inventing one here would make an export claim a
+    # name the source never had.
+    var body_names: List[String]
+    """Body names by `Model` body id. **Index 0 is the worldbody, "world"** —
+    unlike `bodies`, which omits it, so `body_names[i]` names `bodies[i - 1]`."""
+
+    var joint_names: List[String]
+    var geom_names: List[String]
+    var site_names: List[String]
+    var actuator_names: List[String]
+
     var gravity_x: Float64
     var gravity_y: Float64
     var gravity_z: Float64
@@ -1788,6 +1829,11 @@ struct FlatModelDef(Movable):
         self.excludes = List[ExcludeData]()
         self.pairs = List[PairData]()
         self.tendons = List[TendonData]()
+        self.body_names = List[String]()
+        self.joint_names = List[String]()
+        self.geom_names = List[String]()
+        self.site_names = List[String]()
+        self.actuator_names = List[String]()
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
