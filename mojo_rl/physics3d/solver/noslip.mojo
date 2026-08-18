@@ -895,6 +895,8 @@ def noslip_elliptic[
     var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
     var vf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
     var oldf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
+    # This contact's tangential residuals, recomputed at the point of use.
+    var jt_cur = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
 
     for it in range(MAX_ITER):
         var improvement = ZERO
@@ -930,7 +932,16 @@ def noslip_elliptic[
             var a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             var arinv = ONE / (a_ii if a_ii > MINVAL else MINVAL)
 
-            var res = sr_jar[s]
+            # ⚠ COMPUTED HERE, NOT READ FROM A REFRESHED ARRAY. This is
+            # `residual()` for this row and nothing else: MuJoCo recomputes the
+            # residual of the row it is about to touch, it does not refresh the
+            # whole system after every write. For a scalar row that is O(1) —
+            # `J = sign * e_dof`, so the dot with `qacc` is one element.
+            #
+            # Gauss-Seidel is PRESERVED, which is the property the old
+            # docstring was protecting: the value read is still built from the
+            # `qacc` that every earlier update in this sweep has already moved.
+            var res = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
             var old = sr_f[s]
             var f = old - res * arinv
             var lim = sr_floss[s]
@@ -946,14 +957,8 @@ def noslip_elliptic[
                     qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
                         m_inv[env, k * nv + dof]
                     )
-                _refresh_jar_elliptic[
-                    DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
-                ](
-                    nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
-                    sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
-                    jar_n_a, jar_t_a, sr_jar, eq_jar,
-                    nv,
-                )
+                # (the full-system refresh that used to sit here is gone —
+                # every consumer now recomputes its own row on demand)
             # ⚠ `/ arinv`, matching MuJoCo literally. That is `a_ii` clamped
             # from below, and the reciprocal round-trip is a 1-ulp difference
             # from using `a_ii` directly — kept because this feeds the
@@ -974,8 +979,16 @@ def noslip_elliptic[
             # and `bc` formed BEFORE the zero-normal guard, because a contact
             # whose normal force has collapsed may still be carrying tangential
             # force that has to be zeroed AND accounted for.
+            # `residual()` for THIS contact's tangential rows, from the
+            # current `qacc` — same expression and same accumulation order the
+            # full refresh used, so the values are identical, but O(nt * nv)
+            # for one contact instead of O(nrows * nv) for the whole system.
             for t in range(nt):
                 oldf[t] = ft_a[cb + t]
+                var jv = bt_c[cb + t]
+                for i in range(nv):
+                    jv += Jt_c[(cb + t) * nv + i] * qacc[i]
+                jt_cur[t] = jv
                 _minv_dense[DTYPE, T_CAP, V_CAP, NT](
                     env, dims, m_inv, Jt_c, cb + t, MinvJ, t
                 )
@@ -993,7 +1006,7 @@ def noslip_elliptic[
 
             # `bc = res - Ac * oldforce`
             for t in range(nt):
-                var b = jar_t_a[cb + t]
+                var b = jt_cur[t]
                 for u in range(nt):
                     b -= Ac[t * NT + u] * oldf[u]
                 bc[t] = b
@@ -1033,7 +1046,7 @@ def noslip_elliptic[
                 var quad = ZERO
                 for u in range(nt):
                     quad += Ac[t * NT + u] * (vf[u] - oldf[u])
-                change += HALF * dt * quad + dt * jar_t_a[cb + t]
+                change += HALF * dt * quad + dt * jt_cur[t]
             if change > COST_REJECT:
                 # `costChange` restores `force` and returns 0 — the update is
                 # dropped, not merely uncounted.
@@ -1045,14 +1058,7 @@ def noslip_elliptic[
                     ft_a[cb + t] = vf[t]
                     for q in range(nv):
                         qacc[q] += dt * MinvJ[t * nv + q]
-                _refresh_jar_elliptic[
-                    DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
-                ](
-                    nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
-                    sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
-                    jar_n_a, jar_t_a, sr_jar, eq_jar,
-                    nv,
-                )
+                # (full-system refresh removed — see sweep 1)
             improvement -= change
 
         improvement *= scale
