@@ -98,6 +98,7 @@ from mojo_rl.envs.dm_control.manipulation_obs import (
     N_HAND,
 )
 from mojo_rl.envs.dm_control.manipulation_prop import (
+    SETTLE_SOLVER,
     set_free_prop_pose,
     settle_free_prop,
     uniform_z_rotation,
@@ -307,7 +308,7 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
         )
 
         # ── 2. settle it, with the robot held static ────────────────────
-        _ = settle_free_prop[DTYPE, LiftBrickModel.CONE_TYPE, LiftBrickModel.MAX_CONDIM, LiftBrickModel.NOSLIP_ITER, N_ARM + N_HAND](d, mf, PROP_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, LiftBrickModel.CONE_TYPE, LiftBrickModel.MAX_CONDIM, LiftBrickModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep())
 
         # ── 3. the TCP initializer ──────────────────────────────────────
         var dof_idx = InlineArray[Int, N_ARM](fill=0)

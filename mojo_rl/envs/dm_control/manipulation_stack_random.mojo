@@ -97,6 +97,7 @@ from mojo_rl.envs.dm_control.manipulation_obs import (
     N_HAND,
 )
 from mojo_rl.envs.dm_control.manipulation_prop import (
+    SETTLE_SOLVER,
     place_free_prop,
     place_fixed_prop,
     settle_free_props,
@@ -469,7 +470,9 @@ def stack_random_reset_full[
     var dofs = List[Int]()
     for p in range(N_BRICKS - 1):
         dofs.append(brick_dof_adr_of(p))
-    _ = settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND](d, mf, dofs, timestep)
+    _ = settle_free_props[
+        DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER
+    ](d, mf, dofs, timestep)
 
     var dof_idx = InlineArray[Int, N_ARM](fill=0)
     var qpos_adr = InlineArray[Int, N_ARM](fill=0)

@@ -73,6 +73,24 @@ comptime SETTLE_QACC_TOL: Float64 = 1e-2
 comptime SETTLE_MAX_TIME: Float64 = 2.0
 
 
+comptime SETTLE_SOLVER: StaticString = "newton"
+"""The solver `PropPlacer`'s settle must run — `Phyics3dEnv.SOLVER`'s value,
+NOT `EulerIntegrator`'s default.
+
+⚠⚠ NAMED RATHER THAN DEFAULTED, AND THAT IS THE WHOLE POINT. `EulerIntegrator`
+defaults `SOLVER` to "pgs"; `Phyics3dEnv` passes "newton". `settle_free_props`
+listed CONE, MAX_CONDIM and NOSLIP_ITER explicitly — with a comment saying a
+defaulted parameter is a DIFFERENT PHYSICS from the one the episode steps — and
+omitted SOLVER, so every manipulation prop settled under PGS and was then
+stepped under Newton for the whole episode.
+
+⚠ THIS IS A CONSTANT, NOT A PARAMETER THREADED FROM THE ENV, because the reset
+hooks are `Phyics3dEnvConfig` STATICS and cannot see `Phyics3dEnv.SOLVER`. It
+is correct for every env in this tree (all take the "newton" default) and it is
+a single place to change if one ever does not. A config that overrides the env
+solver must pass its own value rather than this."""
+
+
 @always_inline
 def uniform_z_rotation[
     DTYPE: DType
@@ -354,11 +372,25 @@ struct SettleResult(Copyable, Movable):
 def settle_free_props[
 
     DTYPE: DType,
-    # ⚠ FROM THE TASK'S MODEL DEF, NOT DEFAULTED. `MAX_CONDIM` and
-    # `NOSLIP_ITER` both have a default that silently disables the feature (3
-    # and 0), so a settle run with the defaults is a DIFFERENT PHYSICS from the
-    # one the episode then steps — the prop would settle against contacts the
-    # env does not have.
+    # ⚠⚠ FROM THE TASK'S MODEL DEF / THE ENV, NEVER DEFAULTED. `MAX_CONDIM`,
+    # `NOSLIP_ITER` and `SOLVER` all have an `EulerIntegrator` default that
+    # silently changes the physics (3, 0 and **"pgs"**), so a settle run with
+    # the defaults is a DIFFERENT PHYSICS from the one the episode then steps —
+    # the prop would settle against contacts the env does not have.
+    #
+    # ⚠⚠ `SOLVER` IS IN THIS LIST BECAUSE IT IS THE ONE THAT GOT MISSED, and
+    # the note above was already written when it did. `EulerIntegrator.SOLVER`
+    # defaults to "pgs" while `Phyics3dEnv.SOLVER` is "newton", so every prop
+    # in the manipulation family settled under PGS and was then stepped under
+    # Newton. That is not merely a parity gap: on `stack_3_random` PGS DIVERGED
+    # on a single near-zero-penetration brick-on-brick row (dist -3.75e-08,
+    # |n| = 1.0, condim 3) appearing at settle step 2 — all twelve free-brick
+    # dofs saturated at ±100 m/s with qacc 1.077e11 in ONE step, ejecting two
+    # bricks at ~160 m/s, and 2 of 24 bricks over 12 resets ended outside
+    # `prop_bbox`. Under Newton: 0 of 24, every brick at |qvel| ≈ 7.9e-05.
+    #
+    # It therefore has NO DEFAULT. A caller forced to name it cannot inherit
+    # the wrong one by omission, which is exactly how this survived.
     # ⚠ `Int`, not `ConeType`: `ModelDefFromXML.CONE_TYPE` and
     # `EulerIntegrator`'s parameter are both `Int`, and `ConeType` here would
     # only force the caller to convert twice.
@@ -366,6 +398,7 @@ def settle_free_props[
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
     NHOLD: Int,
+    SOLVER: StaticString,
 
     D: DimsLike,
 ](
@@ -414,6 +447,7 @@ def settle_free_props[
         D,
         CONE,
         1,
+        SOLVER=SOLVER,
         # `RNE_POST` is off here alone — the settle takes no observation.
         RNE_POST=False,
         MAX_CONDIM=MAX_CONDIM,
@@ -452,6 +486,7 @@ def settle_free_prop[
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
     NHOLD: Int,
+    SOLVER: StaticString,
     D: DimsLike,
 ](
     mut d: Data[DTYPE, D, 1],
@@ -463,4 +498,6 @@ def settle_free_prop[
     free prop read better this way, and it keeps their call sites unchanged."""
     var adrs = List[Int]()
     adrs.append(dof_adr)
-    return settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD](d, mf, adrs, timestep)
+    return settle_free_props[
+        DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD, SOLVER
+    ](d, mf, adrs, timestep)

@@ -85,6 +85,7 @@ from mojo_rl.envs.dm_control.manipulation_obs import (
     N_HAND,
 )
 from mojo_rl.envs.dm_control.manipulation_prop import (
+    SETTLE_SOLVER,
     place_free_prop,
     place_fixed_prop,
     settle_free_props,
@@ -447,7 +448,9 @@ def stack_fixed_reset_full[
     var n_free = n_bricks if fixed_brick < 0 else n_bricks - 1
     for s in range(n_free):
         dofs.append(stack_dof_adr_of(s))
-    _ = settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND](d, mf, dofs, timestep)
+    _ = settle_free_props[
+        DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER
+    ](d, mf, dofs, timestep)
 
     # ── the TCP initializer ─────────────────────────────────────────────
     brick_tcp_initializer[DTYPE](d, mf, n_bricks, fixed_brick, "stack")
