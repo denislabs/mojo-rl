@@ -775,7 +775,26 @@ def _newton_solve_env[
     comptime NEWTON_TOL_GPU: Float64 = (
         1e-8 if DTYPE == DType.float64 else 1e-6
     )
-    comptime LINESEARCH_ITER: Int = 20
+    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`).
+    comptime LINESEARCH_ITER: Int = 50
+    # ⚠⚠ AND ITS LINESEARCH TOLERANCE IS `opt.tolerance * opt.ls_tolerance`,
+    # NOT `opt.tolerance` alone. `mj_solPrimal` calls
+    #     PrimalSearch(&ctx, m->opt.tolerance * m->opt.ls_tolerance, ...)
+    # and `PrimalSearch` forms `gtol = tolerance * snorm / scale` from THAT
+    # product. `ls_tolerance` defaults to 0.01, so the real threshold is 1e-10
+    # and ours was 1e-8 — a HUNDRED times looser, which makes the search accept
+    # its first 1-D Newton point instead of refining toward the minimum along
+    # the search direction.
+    #
+    # ⚠ THE SYMPTOM IS A SMALLER STEP, NOT A LOOSER ONE. Measured per iteration
+    # on `reassemble_3` at float64 before this: the outer Newton converges
+    # QUADRATICALLY while alpha stays ~1 (grad 1.19e-02 -> 8.49e-06 -> 4.25e-08
+    # across iterations 5-7, alpha 1.0002 then 1.0029), and then alpha
+    # collapses — 0.108, 0.086, 0.072, ... 0.0060 — and the gradient creeps
+    # ~0.6% per iteration for another 77 iterations to reach 1e-8. The Hessian
+    # is right (quadratic convergence proves it) and the active set stops
+    # flipping at iteration 4, so the accepted alpha is what is wrong.
+    comptime LS_TOLERANCE: Float64 = 0.01
     comptime ARMIJO: Float64 = 1e-4
     comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
 
@@ -1956,7 +1975,9 @@ def _newton_solve_env[
             for i in range(nv):
                 snorm_sq += search[i] * search[i]
             var gtol = (
-                Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
+                Scalar[DTYPE](NEWTON_TOL_GPU * LS_TOLERANCE)
+                * sqrt(snorm_sq)
+                / scale
             )
             var gtol_sq = gtol * gtol
 
@@ -2785,7 +2806,26 @@ def _newton_blocked_fields_kernel[
     comptime NEWTON_TOL_GPU: Float64 = (
         1e-8 if DTYPE == DType.float64 else 1e-6
     )
-    comptime LINESEARCH_ITER: Int = 20
+    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`).
+    comptime LINESEARCH_ITER: Int = 50
+    # ⚠⚠ AND ITS LINESEARCH TOLERANCE IS `opt.tolerance * opt.ls_tolerance`,
+    # NOT `opt.tolerance` alone. `mj_solPrimal` calls
+    #     PrimalSearch(&ctx, m->opt.tolerance * m->opt.ls_tolerance, ...)
+    # and `PrimalSearch` forms `gtol = tolerance * snorm / scale` from THAT
+    # product. `ls_tolerance` defaults to 0.01, so the real threshold is 1e-10
+    # and ours was 1e-8 — a HUNDRED times looser, which makes the search accept
+    # its first 1-D Newton point instead of refining toward the minimum along
+    # the search direction.
+    #
+    # ⚠ THE SYMPTOM IS A SMALLER STEP, NOT A LOOSER ONE. Measured per iteration
+    # on `reassemble_3` at float64 before this: the outer Newton converges
+    # QUADRATICALLY while alpha stays ~1 (grad 1.19e-02 -> 8.49e-06 -> 4.25e-08
+    # across iterations 5-7, alpha 1.0002 then 1.0029), and then alpha
+    # collapses — 0.108, 0.086, 0.072, ... 0.0060 — and the gradient creeps
+    # ~0.6% per iteration for another 77 iterations to reach 1e-8. The Hessian
+    # is right (quadratic convergence proves it) and the active set stops
+    # flipping at iteration 4, so the accepted alpha is what is wrong.
+    comptime LS_TOLERANCE: Float64 = 0.01
     comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
 
     # PYRAMIDAL-only blocked solver. (Non-PYRAMIDAL never routes here.)
