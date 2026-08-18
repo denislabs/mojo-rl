@@ -112,7 +112,52 @@ comptime BATCH = 2
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
-comptime GOLD_A = -499170.73185298603  # Part A final qpos/qvel/qacc/contacts checksum
+# --- 2026-08-18: the humanoid's `margin` finally REACHES the contact record.
+# -499170.73185298603 -> -518630.5688423617, a 3.90% move, and it is a
+# CORRECTNESS GAIN rather than drift. Found by splitting the fingerprint, not
+# by bisecting: the split names the mechanism, the bisect only names a commit.
+#
+#     qpos       12.279942702582048 ->    12.206922838406172   -0.59%
+#     qvel    -2578.2850333643146   -> -2675.4913359144703     +3.77%
+#     qacc  -592911.1068024635      ->  -616023.9479956627     +3.90%
+#     con_geom 95410.86642321944    ->  99162.31557208393      +3.93%
+#     con_solp   894.3479942930862  ->    894.3479942930862    BIT-EXACT
+#
+# Contact GEOMETRY is unchanged (positions and normals differ at 1e-5, float32
+# noise) and the solparam columns are bit-identical, so nothing about
+# detection or contact parameters moved. Everything the SOLVER produces moved
+# by a coherent ~3.9%. Column by column, only 8..12 carry it:
+#
+#     k=9  INCLUDEMARGIN  0.0  ->  0.002        <- THE CAUSE, and it was ZERO
+#     k=10 FORCE_N        1817.19 -> 1878.15    +3.36%
+#     k=11 FORCE_T1         25.48 ->   26.28    +3.14%
+#     k=12 FORCE_T2        109.74 ->  110.92    +1.08%
+#
+# `assets/humanoid.xml` has ALWAYS declared `margin="0.001"` — on a
+# `<default><geom>`, the single biggest defect class in this parser's history.
+# The COMPTIME parser never read geom margin AT ALL (no `GEOM_IDX_MARGIN`
+# write anywhere in `xml_parser.mojo`), so for the whole comptime era every
+# humanoid contact ran with `includemargin = 0` and activated later than
+# MuJoCo's. `53ac294b` deleted the embedded MJCF and moved all 61 models to
+# the runtime parser, which does read it.
+#
+# ⚠ 0.002 IS THE SUM OF THE TWO GEOMS' MARGINS, AND THAT IS MuJoCo'S RULE —
+# I nearly filed the sum as a bug. `engine_collision_driver.c:1600`, under
+# "set margin: dynamic or pair", dynamic branch:
+#     margin = mj_assignMargin(m, m->geom_margin[g1] + m->geom_margin[g2]);
+# It is `max` NOWHERE. 0.001 + 0.001 = 0.002 exactly.
+#
+# GOLD_NCON_A is UNCHANGED at 8: the feet are already deeply penetrating at
+# this pose, so an earlier activation threshold adds no new rows — which is
+# also why the move is purely in the forces and not in the contact set.
+#
+# ⚠ STILL A REGRESSION PIN, NOT A CORRECTNESS STATEMENT — this file has no
+# oracle (see the header: `<tendon>` parsing was REMOVED, the records are
+# injected by hand). The MuJoCo claim above is about the margin RULE, which is
+# checkable against the reference; the fingerprint itself remains self-frozen.
+# `test_within_margin_convex_contacts` and `test_humanoid_limits_fields_vs_mujoco`
+# are green at HEAD and are the live evidence such as it is.
+comptime GOLD_A = -518630.5688423617  # Part A final qpos/qvel/qacc/contacts checksum
 # Re-harvested 2026-08-03 (was -500065.48171551153, a +894.750 move), and the
 # delta is ACCOUNTED FOR RATHER THAN RE-RECORDED ON SIGHT:
 #
