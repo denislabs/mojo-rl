@@ -265,6 +265,22 @@ def validate_model(
     return out^
 
 
+def validate_all(
+    xml: String, fmd: FlatModelDef, m: Model[DT, DynDims]
+) -> List[Diagnostic]:
+    """Both halves, for a model that loaded — what the studio shows.
+
+    ⚠ `xml` MUST BE THE **EXPANDED** TEXT. A scene file's own source names none
+    of the bodies an `<attach>` brought in, so running the document checks on
+    the pre-expansion text would call every reference in the attached robot
+    dangling. `Loaded.flat` is that text; `Loaded.path`'s contents are not.
+    """
+    var out = validate_document(xml)
+    for d in validate_model(fmd, m):
+        out.append(d.copy())
+    return out^
+
+
 def _body_name(fmd: FlatModelDef, b: Int) -> String:
     """`body 'thigh'`, or `body 4` when the source named nothing.
 

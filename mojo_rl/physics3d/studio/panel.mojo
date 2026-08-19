@@ -52,6 +52,7 @@ from mojo_rl.render.imgui import (
     ig_begin_tab_bar, ig_end_tab_bar, ig_begin_tab_item, ig_end_tab_item,
     ig_columns, ig_next_column, ig_set_column_width, ig_drag_float,
 )
+from .validate import Diagnostic, SEV_INFO, SEV_WARN, SEV_ERROR
 
 comptime SIDEBAR_W: Float32 = 300.0
 comptime RIGHT_W: Float32 = 340.0
@@ -676,6 +677,61 @@ def ui_inspector(
     ig_text_disabled(String("drag a white value to edit it"))
 
 
+def ui_problems(diags: List[Diagnostic], h: Float32) raises:
+    """The diagnostics list — V2.0's half of "a marker, not an abort".
+
+    ⚠ THE TAB IS ALWAYS PRESENT, AND SAYS SO WHEN THERE IS NOTHING. A panel
+    that appears only when something is wrong cannot be used to confirm that
+    nothing is: "no Problems tab" and "I did not look" are the same picture.
+
+    ⚠ ERRORS FIRST, THEN WARNINGS, THEN INFO — and not because it is tidier.
+    An error is the reason the model will not load; a warning below it is
+    noise until that is fixed, and a list in discovery order buries the one
+    line the user needs under twelve `zero-gear`s.
+    """
+    ig_begin_child(String("problems"), 0.0, h)
+    var n_err = 0
+    var n_warn = 0
+    for d in diags:
+        if d.severity >= SEV_ERROR:
+            n_err += 1
+        elif d.severity == SEV_WARN:
+            n_warn += 1
+    if len(diags) == 0:
+        ig_text_colored(String("No problems."), 0.55, 0.85, 0.55)
+        ig_text_disabled(
+            String("Checked against what MuJoCo refuses, not against taste.")
+        )
+    else:
+        ig_text(
+            String(n_err) + " error(s), " + String(n_warn) + " warning(s)"
+        )
+    ig_separator()
+
+    # ⚠ THREE PASSES, NOT A SORT. `List` has no stable sort here and the
+    # order WITHIN a severity is the order the checks ran, which is the model
+    # order the user is reading — worth keeping.
+    for sev in [SEV_ERROR, SEV_WARN, SEV_INFO]:
+        for d in diags:
+            if d.severity != Int(sev):
+                continue
+            if Int(sev) >= SEV_ERROR:
+                ig_text_colored(String("[error] ") + d.subject, 0.95, 0.4, 0.4)
+            elif Int(sev) == SEV_WARN:
+                ig_text_colored(String("[warn]  ") + d.subject, 0.95, 0.8, 0.35)
+            else:
+                ig_text_disabled(String("[info]  ") + d.subject)
+            if ig_is_item_hovered():
+                ig_set_tooltip(d.code + "\n\n" + d.message)
+            # ⚠ THE MESSAGE IS SHOWN, NOT ONLY TOOLTIPPED. A diagnostic whose
+            # text only appears on hover is one the user has to guess is
+            # there; the tooltip carries the CODE, which is what they would
+            # search the source for.
+            ig_text_disabled(String("        ") + d.message)
+            ig_spacing()
+    ig_end_child()
+
+
 def ui_right_panel(
     mut p: StudioPanel,
     body_names: List[String],
@@ -687,6 +743,7 @@ def ui_right_panel(
     keys: List[String],
     vals: List[Float64],
     editable: List[Int],
+    diags: List[Diagnostic],
     mut out: PanelOut,
     x0: Float32,
     y0: Float32,
@@ -705,6 +762,19 @@ def ui_right_panel(
         if ig_begin_tab_item(String("Inspector")):
             ui_inspector(p, out, body_names, geom_names, body_parent,
                          geom_body, keys, vals, editable)
+            ig_end_tab_item()
+        # ⚠ THE COUNT IS IN THE TAB LABEL. The whole point of the panel is a
+        # state the user can WORK IN, so the badge has to be visible from the
+        # tab they are already on.
+        var badge = String("Problems")
+        var nerr = 0
+        for d in diags:
+            if d.severity >= SEV_ERROR:
+                nerr += 1
+        if nerr > 0:
+            badge = String("Problems (") + String(nerr) + ")"
+        if ig_begin_tab_item(badge):
+            ui_problems(diags, h - 120.0)
             ig_end_tab_item()
         ig_end_tab_bar()
     ig_end()
@@ -728,6 +798,7 @@ def build_ui(
     keys: List[String],
     vals: List[Float64],
     editable: List[Int],
+    diags: List[Diagnostic],
     can_undo: Bool = False,
     can_redo: Bool = False,
 ) raises -> PanelOut:
@@ -737,7 +808,7 @@ def build_ui(
     var h = win_h - y0
     ui_options(p, out, path, step_i, ncon, contact_budget, step_us, y0, h)
     ui_right_panel(p, body_names, geom_names, joint_names, body_parent,
-                   geom_body, joint_body, keys, vals, editable, out,
+                   geom_body, joint_body, keys, vals, editable, diags, out,
                    win_w - RIGHT_W, y0, h)
     ui_file_browser(p, out)
     return out^

@@ -83,6 +83,10 @@ from mojo_rl.physics3d.studio import (
     StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
 )
 from mojo_rl.physics3d.studio.panel import SEL_BODY, SEL_GEOM, SEL_NONE
+from mojo_rl.physics3d.studio.validate import (
+    Diagnostic, validate_all, worst_severity, count_at, format_diagnostic,
+    SEV_ERROR, SEV_WARN,
+)
 from mojo_rl.physics3d.studio.edit import (
     Edit, EditLog, apply_edit, needs_rebuild,
     TARGET_GEOM, TARGET_BODY,
@@ -165,6 +169,14 @@ struct Loaded(Movable):
     var joint_body: List[Int]
     var mesh_half: List[Float64]
     """Real half-extents per geom, 3 each — see `_measure_meshes`."""
+    var diags: List[Diagnostic]
+    """What is wrong with this model, refreshed on load and after a rebuild.
+
+    ⚠ HELD ON `Loaded`, NOT RECOMPUTED PER FRAME. `validate_model` walks every
+    body against every joint; at ms_human_700's 81 bodies that is cheap once
+    and wasteful sixty times a second. The list changes only when the model
+    does, which is exactly where it is refreshed."""
+
     var hull_verts: Int
     """Hull vertices actually LOADED, as opposed to the budget allocated.
 
@@ -262,13 +274,35 @@ struct Loaded(Movable):
             self.joint_body.append(j.body_id)
         self.mesh_half = List[Float64]()
         self.hull_verts = 0
+        # ⚠ EMPTY FIRST, FILLED BELOW. `_measure_meshes` is a METHOD, and a
+        # method call needs every field initialised — so the real list cannot
+        # be built before it.
+        self.diags = List[Diagnostic]()
         self.mesh_half = self._measure_meshes()
         for mi in range(MAX_GPU_MESHES):
             self.hull_verts += Int(Float64(
                 self.m.mesh_meta.data[mi * MODEL_MESH_META_SIZE + 1]
             ))
 
+        # ⚠ THE DOCUMENT CHECKS RUN ON THE **EXPANDED** TEXT, for the same
+        # reason `build_render_fields` does: a scene file's own text names
+        # none of the bodies an `<attach>` brought in, so `dangling_references`
+        # on the source would call every reference in the robot dangling.
+        self.diags = validate_all(self.flat, self.fmd, self.m)
+
         self.reset()
+
+
+    def revalidate(mut self) raises:
+        """Recompute the diagnostics after the model changed.
+
+        ⚠ CALLED WHERE THE MODEL IS REBUILT, NOT WHERE AN EDIT IS PUSHED. A
+        fast-path edit writes into both the record and the live model, and a
+        size or a mass edit can be the thing that makes a body massless — so
+        the marker has to follow the BUILD, which is the point where the two
+        representations agree again.
+        """
+        self.diags = validate_all(self.flat, self.fmd, self.m)
 
 
     def __init__(out self, path: String) raises:
@@ -402,6 +436,18 @@ struct Loaded(Movable):
         print("    collidable hull verts", self.hull_verts, "used /",
               self.dims.get_nmesh_verts(), "budgeted",
               " (visual meshes are drawn from STL and use neither)")
+        # ⚠ PRINTED, NOT ONLY PANELLED. The window's Problems tab is the
+        # place to WORK on these; the banner is what a headless run, a smoke
+        # frame count and a bug report all show, and a diagnostic nobody can
+        # paste into a message is one that gets described instead of quoted.
+        var nerr = count_at(self.diags, SEV_ERROR)
+        var nwarn = count_at(self.diags, SEV_WARN)
+        if len(self.diags) > 0:
+            print("    problems:", nerr, "error(s),", nwarn, "warning(s),",
+                  len(self.diags) - nerr - nwarn, "info")
+            for d in self.diags:
+                if d.severity >= SEV_WARN:
+                    print("      ", format_diagnostic(d))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -678,7 +724,7 @@ def run_studio(
                 Float32(renderer.renderer.height),
                 L.fmd.body_names, L.fmd.geom_names, L.fmd.joint_names,
                 L.body_parent, L.geom_body, L.joint_body, keys, vals,
-                editable, log.can_undo(), log.can_redo(),
+                editable, L.diags, log.can_undo(), log.can_redo(),
             )
         # ⚠ AFTER `build_ui`, WHICH RETURNS A FRESH `PanelOut` — injecting
         # before it would be overwritten and the smoke path would silently
@@ -715,6 +761,7 @@ def run_studio(
                 # record is authoritative and the live model must be rebuilt
                 # rather than patched. See `needs_rebuild`.
                 build_model_runtime[DT](L.fmd, L.dims, L.m)
+            L.revalidate()
 
         # ── save / export ─────────────────────────────────────────────────
         # ⚠ TWO DIFFERENT FILES, AND THE DIFFERENCE MATTERS. The scene

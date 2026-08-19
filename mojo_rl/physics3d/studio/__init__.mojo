@@ -14,7 +14,8 @@ from .panel import StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W
 from .scene import SceneDoc, Instance, scene_from_base
 from .writer import to_mjcf as export_mjcf, unwritable
 from .validate import (
-    Diagnostic, validate_document, validate_model, worst_severity, count_at,
+    Diagnostic, validate_document, validate_model, validate_all,
+    worst_severity, count_at,
     format_diagnostic, severity_name, SEV_INFO, SEV_WARN, SEV_ERROR,
 )
 from .edit import (
