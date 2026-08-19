@@ -232,10 +232,9 @@ def main() raises:
     # requires the same model out the far side.
     print("--- SceneDoc -> MJCF -> expand ---")
     var doc = SceneDoc()
-    doc.base_xml = String(
-        '  <compiler angle="radian"/>\n'
-        '  <worldbody><geom name="floor" type="plane" size="5 5 0.1"/>'
-        "</worldbody>"
+    doc.base_xml = String('  <compiler angle="radian"/>')
+    doc.base_world = String(
+        '    <geom name="floor" type="plane" size="5 5 0.1"/>'
     )
     doc.add_asset(String("cube"), String("cube.xml"))
     doc.add_asset(String("arm"), String("arm.xml"))

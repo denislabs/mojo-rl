@@ -71,8 +71,9 @@ from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE, MODEL_GEOM_SIZE,
-    GEOM_IDX_MESH_ID, MAX_GPU_MESHES,
+    GEOM_IDX_MESH_ID, MAX_GPU_MESHES, MODEL_BODY_SIZE, BODY_IDX_MASS,
 )
+from mojo_rl.physics3d.studio.scene import SceneDoc, scene_from_base
 from mojo_rl.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
     StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
@@ -150,25 +151,24 @@ struct Loaded(Movable):
     COLLIDABLE hulls are loaded; the 45 visual meshes go straight from STL to
     the GPU and never enter this budget at all."""
 
-    def __init__(out self, path: String) raises:
-        """Parse, size, build. Raises with a readable message on a bad file.
+    def __init__(out self, path: String, xml: String,
+                 base_dir: String) raises:
+        """Build from scene TEXT the studio generated, not from a file.
 
-        ⚠ THE PARSE IS THE EXPENSIVE HALF and it is per-ASSET, not per-edit:
-        dog is 9.0 ms of text parsing, so_arm100 is 11.2 ms of mesh loading,
-        while `dims_from_flat` and `spec_fields_runtime` are under 0.01 ms.
-        S2's composer caches this `FlatModelDef` per asset file for exactly
-        that reason; the studio loads one model at a time, so it just keeps it.
+        ⚠ THE SCENE IS NEVER WRITTEN TO DISK TO BE READ BACK. A structural
+        edit regenerates the document in memory and rebuilds from it, so an
+        edit cannot fail on a filesystem error and the user's file is not
+        touched until they ask. `path` is kept only for display and for undo's
+        re-parse.
         """
-        var src = read_model_source(path)
         self.path = path
         # ⚠ EXPANDED BEFORE PARSING. `<include>`/`<attach>`/`<frame>` become
         # flat text so the ONE existing parser reads it — the studio must not
         # become a second model path (plan §10 risk 2). A file using none of
         # the three passes through untouched.
-        var flat = expand_mjcf(src[0], src[1])
-        self.flat = flat
-        self.base_dir = src[1]
-        self.fmd = parse_xml_full(flat, src[1])
+        self.flat = expand_mjcf(xml, base_dir)
+        self.base_dir = base_dir
+        self.fmd = parse_xml_full(self.flat, base_dir)
 
         # ⚠ THE MESH VERTEX BUDGET CANNOT BE DERIVED HERE, and that is not an
         # oversight — `dims_from_flat`'s docstring explains it: the hull vertex
@@ -219,7 +219,7 @@ struct Loaded(Movable):
         # the source names none of the spliced bodies — the scene file is a
         # floor and two `<attach/>` tags. Handing it the pre-expansion text
         # would give a skin that binds no bones, silently.
-        self.rf = build_render_fields(self.fmd, flat, src[1])
+        self.rf = build_render_fields(self.fmd, self.flat, self.base_dir)
 
         # Flat index maps, so `panel.mojo` never sees a `FlatModelDef`.
         self.body_parent = List[Int]()
@@ -240,6 +240,22 @@ struct Loaded(Movable):
             ))
 
         self.reset()
+
+
+    def __init__(out self, path: String) raises:
+        """Parse, size, build. Raises with a readable message on a bad file.
+
+        ⚠ THE PARSE IS THE EXPENSIVE HALF and it is per-ASSET, not per-edit:
+        dog is 9.0 ms of text parsing, so_arm100 is 11.2 ms of mesh loading,
+        while `dims_from_flat` and `spec_fields_runtime` are under 0.01 ms.
+        S2's composer caches this `FlatModelDef` per asset file for exactly
+        that reason; the studio loads one model at a time, so it just keeps it.
+        """
+        # ⚠ DELEGATES, because Mojo forbids calling a method on `self` before
+        # every field is initialised — so the shared tail cannot be a helper
+        # method. One constructor holds the body and the other hands it text.
+        var src = read_model_source(path)
+        self = Self(path, src[0], src[1])
 
     def _measure_meshes(self) -> List[Float64]:
         """Per-geom half-extents, measured from the LOADED hull vertices.
@@ -407,7 +423,15 @@ def _record(
         # plausible on screen.
         if b > 0 and b - 1 < len(L.fmd.bodies):
             var bd = L.fmd.bodies[b - 1]
-            keys.append(String("mass")); editable.append(F_MASS); vals.append(bd.mass)
+            # ⚠⚠ THE **MODEL**'S MASS, NOT THE RECORD'S. `BodyData.mass` is
+            # what the XML said, and a body with no explicit mass keeps the
+            # default 1.0 — every dropped-in prop showed as 1 kg while the sim
+            # used the value DERIVED from its shape and density (a 5 cm box is
+            # 1.68). The derivation runs in the builder and lands here.
+            keys.append(String("mass")); editable.append(F_MASS)
+            vals.append(Float64(
+                L.m.bodies.data[b * MODEL_BODY_SIZE + BODY_IDX_MASS]
+            ))
             keys.append(String("ipos[0]")); editable.append(-1); vals.append(bd.ipos_x)
             keys.append(String("ipos[1]")); editable.append(-1); vals.append(bd.ipos_y)
             keys.append(String("ipos[2]")); editable.append(-1); vals.append(bd.ipos_z)
@@ -477,6 +501,12 @@ def _outline_of(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _label_of(names: List[String], i: Int) -> String:
+    if i >= 0 and i < len(names):
+        return names[i].copy()
+    return String("")
+
+
 def run_studio(
     first: String, drive: Int, scale: Float64, max_frames: Int = 0,
     swap_to: String = String(""),
@@ -528,6 +558,13 @@ def run_studio(
     var vals = List[Float64]()
     var editable = List[Int]()
     var log = EditLog()
+
+    # ⚠ THE SCENE DOCUMENT IS BUILT AROUND WHATEVER WAS OPENED. A plain model
+    # becomes an ASSET of a one-instance scene, so a robot and a prop are
+    # placed, moved and duplicated by the same machinery — there is no
+    # "scene mode". The opened file is never rewritten; the scene is a new
+    # document that REFERENCES it.
+    var doc = scene_from_base(first)
 
     var t = 0
     var last_ncon = 0
@@ -672,6 +709,42 @@ def run_studio(
                 quats.clear()
             except e:
                 print("  undo failed:", e)
+
+        # ── props: a STRUCTURAL edit, so the whole model is rebuilt ───────
+        if ui.add_prop >= 0 or ui.dup_prop or ui.del_prop:
+            var changed = True
+            if ui.add_prop >= 0:
+                # In front of the camera, at a size that reads on screen.
+                var cam2 = renderer.renderer.camera.copy()
+                var fwd = (cam2.target - cam2.eye).normalized()
+                var at = cam2.target + fwd * 0.0
+                _ = doc.add_prop(ui.add_prop, 0.05, 0.05, 0.05,
+                                 at.x, at.y, at.z + 0.3)
+            elif ui.dup_prop and panel.sel_kind == SEL_BODY:
+                _ = doc.duplicate_prop(
+                    _label_of(L.fmd.body_names, panel.sel_index)
+                )
+            elif ui.del_prop and panel.sel_kind == SEL_BODY:
+                doc.remove_prop(_label_of(L.fmd.body_names, panel.sel_index))
+            else:
+                changed = False
+            if changed:
+                try:
+                    var nxt = Loaded(
+                        L.path, doc.to_mjcf(String("scene")), L.base_dir
+                    )
+                    # ⚠ THE SELECTION CANNOT SURVIVE. Indices shift when a
+                    # body is added or removed, so a kept index names a
+                    # DIFFERENT part — and the outline would sit on it,
+                    # confidently.
+                    panel.clear_selection()
+                    renderer.set_render_fields(nxt.rf.copy())
+                    L = nxt^
+                    positions.clear()
+                    quats.clear()
+                    log = EditLog()
+                except e:
+                    print("  prop edit failed:", e)
 
         if ui.reset:
             L.reset()

@@ -145,6 +145,12 @@ struct PanelOut(Copyable, Movable):
     var step_once: Bool
     var reframe: Bool
     var quit: Bool
+    var add_prop: Int
+    """A prop KIND to drop into the scene, or -1. The studio owns the
+    SceneDoc and the rebuild; the panel only asks."""
+    var dup_prop: Bool
+    var del_prop: Bool
+
     var edit_field: Int
     """Which inspector field was dragged this frame, or -1. The STUDIO applies
     it — see `PanelOut`'s note on requests: the panel must not touch a `Model`
@@ -161,6 +167,9 @@ struct PanelOut(Copyable, Movable):
         self.step_once = False
         self.reframe = False
         self.quit = False
+        self.add_prop = -1
+        self.dup_prop = False
+        self.del_prop = False
         self.edit_field = -1
         self.edit_value = 0.0
         self.open_path = String("")
@@ -457,6 +466,31 @@ def ui_options(
         _ = ig_checkbox(String("built-in HUD"), p.show_hud)
         if ig_button(String("reframe camera")):
             out.reframe = True
+
+    if ig_collapsing_header(String("Props"), True):
+        # ⚠ A DROPPED PROP IS A STRUCTURAL EDIT — it changes nbody, nq and nv,
+        # so it goes down the SLOW path (regenerate the scene, rebuild
+        # everything) rather than being patched into the live model. Measured
+        # at 0.2-14 ms per asset, which is a click. The fast path is for
+        # dims-preserving edits only; see `studio/edit.mojo`.
+        if ig_button(String("box"), 62.0):
+            out.add_prop = 0
+        ig_same_line()
+        if ig_button(String("sphere"), 62.0):
+            out.add_prop = 1
+        ig_same_line()
+        if ig_button(String("capsule"), 62.0):
+            out.add_prop = 2
+        ig_same_line()
+        if ig_button(String("cylinder"), 62.0):
+            out.add_prop = 3
+        ig_spacing()
+        if ig_button(String("duplicate selected"), 140.0):
+            out.dup_prop = True
+        ig_same_line()
+        if ig_button(String("delete"), 70.0):
+            out.del_prop = True
+        ig_text_disabled(String("props drop in front of the camera"))
 
     if ig_collapsing_header(String("Model")):
         ig_text_disabled(path)
