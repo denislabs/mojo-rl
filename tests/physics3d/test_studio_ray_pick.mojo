@@ -1,4 +1,4 @@
-"""Ray-pick: the unprojection, the primitives, and the sweep — studio S1.
+"""Ray-pick and the selection outline — studio S1.
 
 WHY THIS EXISTS
 ===============
@@ -28,6 +28,9 @@ Run: pixi run mojo run -I . tests/physics3d/test_studio_ray_pick.mojo
 from std.math import sqrt, pi
 
 from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
+from mojo_rl.physics3d.studio.outline import (
+    outline_geom, outline_body, SELECT_COLOR,
+)
 from mojo_rl.physics3d.studio.pick import (
     Ray, Hit, ray_through_pixel, pick_geom,
     _hit_sphere, _hit_box, _hit_capsule,
@@ -322,12 +325,122 @@ def test_sweep(mut t: Tally) raises:
             String("nearest hit is in front of the aim point (t=", h2.t, ")"))
 
 
+def test_outline(mut t: Tally) raises:
+    """The yellow wireframe: does it exist, is it finite, is it AT the geom?
+
+    ⚠ THE THIRD QUESTION IS THE ONE THAT MATTERS. A wireframe built in the
+    geom's LOCAL frame and never transformed still draws — a neat box sitting
+    at the world origin while the robot walks away from it. That looks like a
+    rendering glitch, not like a missing transform, so it is asserted here as
+    a BOUND on the distance from the geom's own world centre.
+    """
+    print("--- selection outline ---")
+    var path = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
+    var src = read_model_source(path)
+    var fmd = parse_xml_full(src[0], src[1])
+    var dims = dims_from_flat(fmd, max_contacts=64)
+    var m = Model[DT, DynDims](dims)
+    build_model_runtime[DT](fmd, dims, m)
+    var sf = spec_fields_runtime[DT](fmd, dims)
+    var d = Data[DT, DynDims, 1](dims)
+    var integ = EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3](dims)
+    var rf = build_render_fields(fmd, src[0], src[1])
+    for i in range(dims.get_nq()):
+        d.qpos.data[i] = sf.qpos0.data[i]
+    # Step so the bodies are NOT at the origin — an untransformed outline
+    # coincides with the geom at t=0 and the whole arm would be vacuous.
+    for _ in range(40):
+        integ.step["cpu"](d, m)
+
+    var nbody = dims.get_nbody()
+    var positions = List[Vec3]()
+    var quats = List[Quat]()
+    var moved = 0.0
+    for b in range(nbody):
+        var pv = Vec3(
+            Float64(d.xpos.data[b * 3 + 0]),
+            Float64(d.xpos.data[b * 3 + 1]),
+            Float64(d.xpos.data[b * 3 + 2]),
+        )
+        moved += abs(pv.x) + abs(pv.z)
+        positions.append(pv)
+        quats.append(Quat(
+            Float64(d.xquat.data[b * 4 + 3]),
+            Float64(d.xquat.data[b * 4 + 0]),
+            Float64(d.xquat.data[b * 4 + 1]),
+            Float64(d.xquat.data[b * 4 + 2]),
+        ))
+    t.truth(moved > 1e-6,
+            String("the model is away from the origin (", moved,
+                   ") — the transform arm is live"))
+
+    var checked = 0
+    var bad_far = 0
+    var bad_nan = 0
+    for g in range(len(rf.geom_type)):
+        if rf.geom_body_id[g] < 0 or rf.geom_type[g] == 0:
+            continue
+        if rf.geom_group[g] >= 3 or rf.geom_rgba_a[g] < 1.0:
+            continue
+        var lines = outline_geom(rf, g, positions, quats)
+        if len(lines) == 0:
+            bad_far += 1
+            continue
+        checked += 1
+        # The geom's own world centre, computed the same way the picker does.
+        var bid = rf.geom_body_id[g]
+        var lp = Vec3(rf.geom_pos_x[g], rf.geom_pos_y[g], rf.geom_pos_z[g])
+        var wc = positions[bid] + quats[bid].rotate_vec(lp)
+        # A generous bound: every vertex within 4x the geom's own extent of
+        # its centre. Tight enough to catch "drawn at the origin", loose
+        # enough not to encode the wireframe's exact shape.
+        var ext = rf.geom_radius[g]
+        var hl = rf.geom_half_length[g]
+        if hl > ext:
+            ext = hl
+        if rf.geom_half_x[g] > ext:
+            ext = rf.geom_half_x[g]
+        if ext <= 0.0:
+            ext = 0.1
+        var lim = 4.0 * ext + 1e-9
+        for i in range(len(lines)):
+            var da = (lines[i].a - wc).length()
+            var db = (lines[i].b - wc).length()
+            if da != da or db != db:
+                bad_nan += 1
+            elif da > lim or db > lim:
+                bad_far += 1
+
+    t.truth(checked >= 5,
+            String("outlined ", checked, " geoms (non-vacuous)"))
+    t.truth(bad_nan == 0, String("no NaN vertices (", bad_nan, ")"))
+    t.truth(bad_far == 0,
+            String("every vertex sits ON its geom, not at the origin (",
+                   bad_far, " strays)"))
+
+    # ⚠ NEGATIVE CONTROLS. An `outline_geom` that returned a fixed box would
+    # pass every arm above.
+    t.truth(len(outline_geom(rf, -1, positions, quats)) == 0,
+            "negative control: no selection outlines nothing")
+    t.truth(len(outline_geom(rf, 99999, positions, quats)) == 0,
+            "negative control: an out-of-range index outlines nothing")
+    # The plane is skipped by `outline_body`, exactly as the picker skips it.
+    var world = outline_body(rf, 0, positions, quats)
+    t.truth(len(world) == 0,
+            String("the worldbody's plane is not outlined (", len(world), ")"))
+    # A body outline is the union of its geoms', so it is at least as big.
+    var torso = outline_body(rf, 1, positions, quats)
+    t.truth(len(torso) > 0, String("a body outlines its geoms (", len(torso),
+                                   " segments)"))
+
+
 def main() raises:
     var t = Tally()
-    print("=== studio ray-pick ===")
+    print("=== studio ray-pick + outline ===")
     test_unprojection(t)
     test_primitives(t)
     test_sweep(t)
+    test_outline(t)
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
         raise Error("test_studio_ray_pick: " + String(t.fails) + " failed")

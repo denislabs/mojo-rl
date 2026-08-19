@@ -16,6 +16,15 @@ from mojo_rl.core import EnvRenderer3D
 from . import ModelDefLike
 from ..parser.render_fields import RenderFields
 
+@fieldwise_init
+struct OverlayLine(Copyable, Movable):
+    """One world-space segment drawn over the scene. See `overlay_lines`."""
+
+    var a: Vec3Generic[DType.float64]
+    var b: Vec3Generic[DType.float64]
+    var color: Color
+
+
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 
@@ -72,6 +81,22 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     # `render_frame`'s begin/end span.
     var ui_rects: List[UIRect]
     var ui_texts: List[UIText]
+
+    var overlay_lines: List[OverlayLine]
+    """World-space line segments painted ON TOP of the scene, replaced each
+    frame by the application.
+
+    ⚠ DEFERRED FOR THE SAME REASON `ui_rects` IS: an application cannot draw
+    inside `render_frame`'s begin/end span. A studio that called
+    `draw_line_3d` from its own loop would either be outside the span (the
+    call is dropped) or, worse, inside somebody else's — so the selection
+    outline is RECORDED here and painted below, between the tendons and the
+    HUD.
+
+    ⚠ REPLACED, NOT APPENDED. `set_overlay_lines` overwrites, so a frame that
+    forgets to set them clears them — which is the behaviour a selection
+    highlight wants (deselect = pass none) and the opposite of what an
+    append-only list would do (the outline of every geom ever selected)."""
 
     var show_sites: Bool
 
@@ -213,6 +238,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.hud_extra = List[String]()
         self.ui_rects = List[UIRect]()
         self.ui_texts = List[UIText]()
+        self.overlay_lines = List[OverlayLine]()
 
         var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
@@ -283,6 +309,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.hud_extra = move.hud_extra^
         self.ui_rects = move.ui_rects^
         self.ui_texts = move.ui_texts^
+        self.overlay_lines = move.overlay_lines^
         self.visual_radius_scale = move.visual_radius_scale
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
@@ -550,6 +577,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+        # ⚠ APPLICATION OVERLAY, AFTER EVERYTHING SOLID. The selection outline
+        # is the reason this exists, and it has to be drawn last among the 3D
+        # passes or the geom it outlines occludes its own highlight — a
+        # highlight that disappears exactly when you select something is worse
+        # than none.
+        for ln in self.overlay_lines:
+            self.renderer.draw_line_3d(ln.a, ln.b, ln.color)
+
         # Render site markers (bright green spheres, optional)
         if self.show_sites:
             try:
@@ -646,9 +681,17 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Crop screenshots/recordings to the 3D viewport (default on)."""
         self.renderer.set_capture_scene_only(on)
 
+    def set_show_sites(mut self, on: Bool):
+        """Show or hide the site markers."""
+        self.show_sites = on
+
     def set_show_hud(mut self, on: Bool):
         """Show or hide the built-in text HUD."""
         self.show_hud = on
+
+    def set_overlay_lines(mut self, lines: List[OverlayLine]):
+        """Replace the world-space overlay for the next frame."""
+        self.overlay_lines = lines.copy()
 
     def set_ui(mut self, rects: List[UIRect], texts: List[UIText]):
         """Replace the deferred UI command list for the next frame."""

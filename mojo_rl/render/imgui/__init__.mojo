@@ -565,6 +565,109 @@ def ig_set_next_item_open(open: Bool) raises:
     ]()(open)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# menu bar, tabs, columns
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def ig_begin_main_menu_bar() raises -> Bool:
+    """The viewport-level strip at the top. `ig_end_main_menu_bar` ONLY if True.
+
+    ⚠ IT CONSUMES SPACE AT y=0. A panel placed at `y = 0` has its first row
+    hidden behind the bar; use `ig_frame_height_with_spacing()` as the panel's
+    `y` and subtract it from the panel's height. The symptom of getting it
+    wrong is a panel that looks CLIPPED, not one that looks offset.
+    """
+    return _get_dylib_function[
+        lib, "mrl_ig_begin_main_menu_bar", def() thin -> Bool
+    ]()()
+
+
+def ig_end_main_menu_bar() raises:
+    _get_dylib_function[
+        lib, "mrl_ig_end_main_menu_bar", def() thin -> None
+    ]()()
+
+
+def ig_begin_menu(var label: String) raises -> Bool:
+    """A drop-down. `ig_end_menu` ONLY if this returned True."""
+    return _get_dylib_function[
+        lib, "mrl_ig_begin_menu",
+        def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
+    ]()(_c(label))
+
+
+def ig_end_menu() raises:
+    _get_dylib_function[lib, "mrl_ig_end_menu", def() thin -> None]()()
+
+
+def ig_menu_item(
+    var label: String,
+    var shortcut: String = String(""),
+    selected: Bool = False,
+    enabled: Bool = True,
+) raises -> Bool:
+    """A row in a menu. True on the frame it is clicked."""
+    return _get_dylib_function[
+        lib, "mrl_ig_menu_item",
+        def(
+            Ptr[c_char, MutUntrackedOrigin], Ptr[c_char, MutUntrackedOrigin],
+            Bool, Bool,
+        ) thin -> Bool,
+    ]()(_c(label), _c(shortcut), selected, enabled)
+
+
+def ig_frame_height_with_spacing() raises -> Float32:
+    """One row's height — what the main menu bar occupies at the top."""
+    return _get_dylib_function[
+        lib, "mrl_ig_frame_height_with_spacing", def() thin -> c_float
+    ]()()
+
+
+def ig_begin_tab_bar(var id: String) raises -> Bool:
+    """`ig_end_tab_bar` ONLY if this returned True."""
+    return _get_dylib_function[
+        lib, "mrl_ig_begin_tab_bar",
+        def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
+    ]()(_c(id))
+
+
+def ig_end_tab_bar() raises:
+    _get_dylib_function[lib, "mrl_ig_end_tab_bar", def() thin -> None]()()
+
+
+def ig_begin_tab_item(var label: String) raises -> Bool:
+    """⚠ `ig_end_tab_item` ONLY WHEN THIS RETURNED TRUE — unlike the panel
+    Begin/End pairs, whose End runs unconditionally. ImGui asserts on the
+    mistake in a debug build and corrupts the id stack silently in a release
+    one, which surfaces as a DIFFERENT widget going dead."""
+    return _get_dylib_function[
+        lib, "mrl_ig_begin_tab_item",
+        def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
+    ]()(_c(label))
+
+
+def ig_end_tab_item() raises:
+    _get_dylib_function[lib, "mrl_ig_end_tab_item", def() thin -> None]()()
+
+
+def ig_columns(count: Int, border: Bool = False) raises:
+    """Split the region into `count` columns; `ig_columns(1)` ends them."""
+    _get_dylib_function[
+        lib, "mrl_ig_columns", def(c_int, Bool) thin -> None
+    ]()(c_int(count), border)
+
+
+def ig_next_column() raises:
+    _get_dylib_function[lib, "mrl_ig_next_column", def() thin -> None]()()
+
+
+def ig_set_column_width(index: Int, w: Float32) raises:
+    _get_dylib_function[
+        lib, "mrl_ig_set_column_width", def(c_int, c_float) thin -> None
+    ]()(c_int(index), w)
+
+
 def ig_collapsing_header(var label: String, default_open: Bool = False) raises -> Bool:
     """Like a tree node but styled as a full-width bar; needs NO pop."""
     return _get_dylib_function[

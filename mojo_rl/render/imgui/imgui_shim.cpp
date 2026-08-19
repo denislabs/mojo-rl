@@ -251,6 +251,46 @@ bool mrl_ig_input_text_hint(const char* label, const char* hint, char* buf,
     return ImGui::InputTextWithHint(label, hint, buf, (size_t)buf_size);
 }
 
+// ── menu bar ────────────────────────────────────────────────────────────────
+// The main menu bar is a VIEWPORT-level strip, not a window: ImGui reserves
+// space for it at the top of the frame, so panels positioned at y=0 must
+// start below `ig_main_menu_height()`. Getting that wrong hides the first row
+// of whatever panel is topmost, which reads as a clipped panel rather than as
+// a menu-bar offset.
+bool mrl_ig_begin_main_menu_bar(void) { return ImGui::BeginMainMenuBar(); }
+void mrl_ig_end_main_menu_bar(void) { ImGui::EndMainMenuBar(); }
+bool mrl_ig_begin_menu(const char* label) { return ImGui::BeginMenu(label); }
+void mrl_ig_end_menu(void) { ImGui::EndMenu(); }
+bool mrl_ig_menu_item(const char* label, const char* shortcut, bool selected,
+                      bool enabled) {
+    return ImGui::MenuItem(label, shortcut[0] ? shortcut : nullptr, selected,
+                           enabled);
+}
+float mrl_ig_frame_height_with_spacing(void) {
+    return ImGui::GetFrameHeightWithSpacing();
+}
+
+// ── tab bar ─────────────────────────────────────────────────────────────────
+// ⚠ `EndTabItem` IS CALLED ONLY WHEN `BeginTabItem` RETURNED TRUE, unlike the
+// Begin/End pairs above. ImGui's own asserts catch the mistake, but only in a
+// debug build; in a release shim it corrupts the id stack silently.
+bool mrl_ig_begin_tab_bar(const char* id) { return ImGui::BeginTabBar(id); }
+void mrl_ig_end_tab_bar(void) { ImGui::EndTabBar(); }
+bool mrl_ig_begin_tab_item(const char* label) {
+    return ImGui::BeginTabItem(label);
+}
+void mrl_ig_end_tab_item(void) { ImGui::EndTabItem(); }
+
+// ── two-column key/value ────────────────────────────────────────────────────
+// `Columns` rather than `BeginTable`: the inspector wants a label column and a
+// value column with a draggable split, which is all the legacy API does, and
+// it is four symbols instead of a table's eight.
+void mrl_ig_columns(int count, bool border) {
+    ImGui::Columns(count, nullptr, border);
+}
+void mrl_ig_next_column(void) { ImGui::NextColumn(); }
+void mrl_ig_set_column_width(int i, float w) { ImGui::SetColumnWidth(i, w); }
+
 bool mrl_ig_tree_node(const char* label) { return ImGui::TreeNode(label); }
 void mrl_ig_tree_pop(void) { ImGui::TreePop(); }
 void mrl_ig_set_next_item_open(bool open) { ImGui::SetNextItemOpen(open); }
