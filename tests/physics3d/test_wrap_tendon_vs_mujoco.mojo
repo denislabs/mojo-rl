@@ -116,7 +116,14 @@ def _tendon_lengths(
     f.close()
     var base = _dir_of(path)
     var fmd = parse_xml_full(expand_mjcf(raw, base), base)
-    var dims = dims_from_flat(fmd)
+    # ⚠ `nmesh_verts` IS A WORKSPACE BUDGET, NOT A MODEL PROPERTY, and it is
+    # non-zero here only because softfoot's meshes now RESOLVE. While the
+    # asset paths were broken they loaded as nothing, so no collidable hull
+    # asked for room and the default 0 was enough — a gate passing because a
+    # separate bug kept the work from happening. The studio discovers this by
+    # doubling; a fixed budget with headroom is right for a fixture whose
+    # meshes never change. Tendon routing does not read hulls at all.
+    var dims = dims_from_flat(fmd, nmesh_verts=8192)
     var mf = Model[DTYPE, DynDims](dims)
     build_model_runtime[DTYPE](fmd, dims, mf)
     var d = Data[DTYPE, DynDims, 1](dims)

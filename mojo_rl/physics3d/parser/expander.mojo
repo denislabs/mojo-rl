@@ -64,6 +64,7 @@ from .xml_parser import (
     _trim, _extract_attr, _extract_section_inner, _extract_section,
     _strip_xml_comments, _strip_wrapper, _normalize_freejoint,
     _parse_float, _find_tag, _file_stem, resolve_includes, merge_mjcf,
+    _rebase_files,
 )
 
 
@@ -137,40 +138,6 @@ def _prefix_all(xml: String, prefix: String) -> String:
             res += val + '"'
             scan = ve + 1
         out = res^
-    return out^
-
-
-def _rebase_files(xml: String, dir: String) -> String:
-    """Make every `file=` in a spliced fragment resolve against `dir`.
-
-    ⚠ WITHOUT THIS A SPLICED MESH SILENTLY VANISHES. `parse_xml_full` gets ONE
-    base directory — the HOST's — while a sub-model's paths are relative to
-    its own. A mesh geom whose asset fails to resolve draws nothing and
-    collides with nothing, and raises neither.
-    """
-    if dir.byte_length() == 0:
-        return xml
-    var out = String("")
-    var scan = 0
-    while True:
-        var at = xml.find('file="', scan)
-        if at == -1:
-            out += String(xml[byte=scan : xml.byte_length()])
-            break
-        var vs = at + 6
-        var ve = xml.find('"', vs)
-        if ve == -1:
-            out += String(xml[byte=scan : xml.byte_length()])
-            break
-        var val = String(xml[byte=vs:ve])
-        out += String(xml[byte=scan:vs])
-        # Absolute paths escape, as everywhere else in this parser.
-        if val.byte_length() > 0 and not val.startswith("/"):
-            out += dir + "/" + val
-        else:
-            out += val
-        out += '"'
-        scan = ve + 1
     return out^
 
 
@@ -523,8 +490,34 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         if te == -1:
             break
         var tag = String(asset_sec[byte = t : te + 1])
-        mnames.append(_trim(_extract_attr(tag, "name")))
-        mfiles.append(_trim(_extract_attr(tag, "file")))
+        var mn = _trim(_extract_attr(tag, "name"))
+        var mfile = _trim(_extract_attr(tag, "file"))
+        if mn.byte_length() == 0 and mfile.byte_length() > 0:
+            # ⚠⚠ A NAMELESS `<model file=>` IS NAMED BY THE FILE'S OWN
+            # `<mujoco model="...">`, not by the file stem — the third
+            # implicit-naming rule in MJCF and the one that reads least like
+            # the others (`<mesh file="head.stl"/>` IS the stem). MuJoCo's
+            # `humanoid100.xml` writes `<model file="humanoid.xml"/>` and then
+            # `<attach model="Humanoid">`, which only resolves through
+            # `<mujoco model="Humanoid">` inside that file.
+            var mpath = mfile
+            if not mfile.startswith("/") and base_dir.byte_length() > 0:
+                mpath = base_dir + "/" + mfile
+            try:
+                var head = _read(mpath)
+                var rt = _find_tag(head, "<mujoco", 0)
+                if rt != -1:
+                    var rte = head.find(">", rt)
+                    if rte != -1:
+                        mn = _trim(_extract_attr(
+                            String(head[byte = rt : rte + 1]), "model"
+                        ))
+            except:
+                pass
+            if mn.byte_length() == 0:
+                mn = _file_stem(mfile)
+        mnames.append(mn)
+        mfiles.append(mfile)
         scan = te + 1
 
     var out = xml
@@ -577,12 +570,22 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         # nobody reads, because the wrong outcome is a model that runs.
         for sec in ["option", "keyframe"]:
             if _find_tag(sub, "<" + String(sec), 0) != -1:
-                raise Error(
-                    "physics3d: attached model '" + mdl + "' declares <"
-                    + String(sec) + ">. Singletons and keyframes come from the"
-                    " BASE model only — an attached <option> retunes the whole"
-                    " scene's physics, and an attached keyframe is sized to"
-                    " the whole model and moves every other instance."
+                # ⚠⚠ A WARNING, AND IT USED TO BE A REFUSAL. Dropping these is
+                # right — an attached `<option>` would retune the whole
+                # scene's physics and N instances of a keyframed asset give N
+                # keyframes each sized to the whole model. But MuJoCo does the
+                # same thing and only WARNS ("Attach conflict ... policy is
+                # 'warning'", measured on 3.10.0 loading `hammock.xml`), so
+                # refusing was being stricter than the reference — and it cost
+                # four of MuJoCo's own sample models, which are attach-heavy.
+                # Being stricter than the oracle is not free: a model it
+                # accepts and we refuse reads as the MODEL being broken.
+                print(
+                    "Warning: attached model '", mdl, "' declares <",
+                    String(sec), ">, which is DROPPED — singletons and",
+                    " keyframes come from the base model only. MuJoCo warns",
+                    " here too.",
+                    sep="",
                 )
 
         # ⚠⚠ `<compiler>` IS NOT DROPPED, IT IS CHECKED. Nearly every model
@@ -607,12 +610,23 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         # splice the HOST's compiler applies, so a sub-model whose paths are
         # `meshdir`-relative would resolve against the wrong directory and its
         # meshes would silently vanish.
-        var sub_assets_dir = sub_dir
+        #
+        # ⚠⚠ THE PREFIX IS RELATIVE TO THE HOST'S BASE, NOT TO THE CWD. It
+        # used to be `sub_dir`, which already contains `base_dir` — and
+        # `full_parser` prefixes `base_dir` itself, so every attached mesh
+        # came out as `base/base/...`. Measured on `iit_softfoot`: all ten of
+        # its meshes resolved to nothing and the model drew as bare sites,
+        # exactly the shape `_rebase_files` exists to prevent. Same doubling
+        # the studio's prop writer had.
+        var sub_assets_dir = _dirname(file)
         var md = _compiler_attr(sub, "meshdir")
         if md.byte_length() == 0:
             md = _compiler_attr(sub, "assetdir")
         if md.byte_length() > 0 and not md.startswith("/"):
-            sub_assets_dir = sub_dir + "/" + md if sub_dir.byte_length() > 0 else md
+            sub_assets_dir = (
+                sub_assets_dir + "/" + md
+                if sub_assets_dir.byte_length() > 0 else md
+            )
         elif md.byte_length() > 0:
             sub_assets_dir = md
 
@@ -651,6 +665,38 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
     return merge_mjcf(host, add)
 
 
+def _refuse_generators(xml: String) raises:
+    """`<replicate>`, `<composite>` and `<flexcomp>` GENERATE bodies. Refuse them.
+
+    ⚠⚠ ALL THREE WERE SILENTLY IGNORED, and the failure has no other symptom.
+    `<replicate count="100">` wraps a body and asks for a HUNDRED of it; the
+    text walk saw an unknown element, walked its children once, and produced
+    ONE. MuJoCo's `humanoid100.xml` builds 117 bodies that way and we built 5.
+    `<composite>` and `<flexcomp>` are worse — they generate from a
+    description, so there are no child bodies to walk at all: MuJoCo's
+    `hammock.xml` is 112 bodies, 96 of them an 11x9 `<flexcomp>` grid, and we
+    built 16 and called it loaded.
+
+    A model that runs while missing 85% of itself is the exact shape this
+    parser has been bitten by all along (a dropped `<tendon>`, a capped mesh
+    table, an `<attach>` that vanished). Refusing NAMES the feature; ignoring
+    names nothing.
+
+    ⚠ NOTHING IN MENAGERIE OR IN OUR OWN ASSETS USES ANY OF THEM — measured:
+    0 files each in `references/mujoco_menagerie-main` and outside `.pixi`.
+    Every file affected is one of MuJoCo's own samples, which is why this
+    could sit here unnoticed.
+    """
+    for tag in ["replicate", "composite", "flexcomp"]:
+        if _find_tag(xml, "<" + String(tag), 0) != -1:
+            raise Error(
+                "physics3d: <" + String(tag) + "> is not supported. It"
+                " GENERATES bodies, and this parser would build only the ones"
+                " written out — a model missing most of itself, with no other"
+                " symptom."
+            )
+
+
 def expand_mjcf(xml: String, base_dir: String) raises -> String:
     """`<include>` -> `<attach>` -> `<frame>`, in that order. The entry point.
 
@@ -662,6 +708,10 @@ def expand_mjcf(xml: String, base_dir: String) raises -> String:
     var flat = expand_frames(
         expand_attach(resolve_includes(xml, base_dir), base_dir)
     )
+    # ⚠ AFTER THE EXPANSION, not before: a generator can arrive inside an
+    # included or attached sub-model, and that is exactly the case where
+    # nobody would think to look for one.
+    _refuse_generators(flat)
     # ⚠ ONLY WHEN SOMETHING WAS ACTUALLY COMPOSED. A plain single-file model
     # goes through untouched, and validating it here would turn this into a
     # second opinion on `full_parser`'s own name resolution — a different job,

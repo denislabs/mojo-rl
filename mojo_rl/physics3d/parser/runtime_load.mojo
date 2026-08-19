@@ -52,6 +52,7 @@ lifetimes together for no benefit.
 """
 
 from .flat_model import FlatModelDef
+from .expander import expand_mjcf
 from .full_parser import parse_xml_full
 from .xml_parser import resolve_includes
 from .fields_build import (
@@ -92,13 +93,32 @@ def read_model_source(
         # what a path separator search wants. The slice is also a
         # `StringSpan` borrowing `xml_path`, hence the copy.
         base = String(xml_path[byte=0:cut]) if cut > 0 else String("")
-    # ⚠ `<include>` IS RESOLVED HERE, not in the parser. Menagerie's
-    # `scene.xml` — the conventional entry point for every model there — is a
-    # floor plus a `<contact>` section plus one `<include>` of the robot, and
-    # without this the include was STRIPPED: the scene kept pairs naming geoms
-    # that never loaded and raised "`<pair>` references unknown geom2=...", a
-    # reference error pointing at a geom that exists. See `resolve_includes`.
-    return (resolve_includes(text, base)^, base^)
+    # ⚠ THE WHOLE COMPOSITION IS EXPANDED HERE, not in the parser: `<include>`,
+    # then `<attach>`, then `<frame>`. Menagerie's `scene.xml` — the
+    # conventional entry point for every model there — is a floor plus a
+    # `<contact>` section plus one of those, and without this the tag was
+    # STRIPPED: the scene kept pairs naming geoms that never loaded and raised
+    # "`<pair>` references unknown geom2=...", a reference error pointing at a
+    # geom that exists.
+    #
+    # ⚠⚠ IT USED TO BE `resolve_includes` ALONE, AND `<attach>` WENT MISSING
+    # WITHOUT A DIAGNOSTIC. An attach-composed scene loaded as whatever the
+    # host file declared on its own — measured across every XML in the tree
+    # and Menagerie's scenes:
+    #
+    #   iit_softfoot/scene.xml            1 body   -> 50   (MuJoCo: 51)
+    #   tests/.../fixtures/attach/scene   0 bodies -> 4
+    #   mujoco/model/hammock              0 bodies    (MuJoCo: 112)
+    #   mujoco/model/humanoid/100_humanoids  0        (MuJoCo: 1601)
+    #   mujoco/model/humanoid/humanoid100    5        (MuJoCo: 117)
+    #
+    # A model with ZERO BODIES is not a subtle degradation, and nothing said
+    # so. The last three now RAISE naming what they use that we do not
+    # support (a submodel with its own `<option>`; `<attach>` without an
+    # `<asset><model>` entry) — loud and wrong beats quiet and wrong. NOTHING
+    # that parsed correctly before parses differently now; the sweep found no
+    # model that went from right to refused.
+    return (expand_mjcf(text, base)^, base^)
 
 
 def parse_model_runtime(

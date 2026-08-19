@@ -2021,6 +2021,55 @@ def _file_stem(path: String) -> String:
     return String(base[byte=0:dot])
 
 
+def _rebase_files(xml: String, dir: String) -> String:
+    """Make every `file=` in a spliced fragment resolve against `dir`.
+
+    ⚠⚠ WITHOUT THIS A SPLICED MESH SILENTLY VANISHES. `parse_xml_full` gets
+    ONE base directory — the HOST's — while an included or attached file's
+    paths are relative to ITS OWN. A mesh geom whose asset fails to resolve
+    draws nothing and collides with nothing, and raises neither.
+
+    Measured on Menagerie's `ms_human_700`, whose `assets/asset/*.xml` write
+    `file="../geometry/sacrum.stl"` — right from `assets/asset/`, and
+    `ms_human_700/../geometry/` from the model root. All 189 meshes resolved
+    to nothing: the model loaded with its 81 bodies and 700 tendons and drew
+    ONLY THE TENDONS.
+
+    ⚠ `dir` MUST BE RELATIVE TO THE HOST'S BASE, not to the process CWD. The
+    parser prefixes the host base itself, so passing an already-based
+    directory doubles it — the same double-path bug the studio's prop writer
+    had.
+
+    ⚠ RUN IT AFTER `<include>` RESOLUTION, never before: `<include file=>` is
+    also a `file=`, and rebasing one that has not been followed yet points it
+    somewhere that does not exist.
+    """
+    if dir.byte_length() == 0:
+        return xml
+    var out = String("")
+    var scan = 0
+    while True:
+        var at = xml.find('file="', scan)
+        if at == -1:
+            out += String(xml[byte=scan : xml.byte_length()])
+            break
+        var vs = at + 6
+        var ve = xml.find('"', vs)
+        if ve == -1:
+            out += String(xml[byte=scan : xml.byte_length()])
+            break
+        var val = String(xml[byte=vs:ve])
+        out += String(xml[byte=scan:vs])
+        # Absolute paths escape, as everywhere else in this parser.
+        if val.byte_length() > 0 and not val.startswith("/"):
+            out += dir + "/" + val
+        else:
+            out += val
+        out += '"'
+        scan = ve + 1
+    return out^
+
+
 def _include_body(text: String, path: String) raises -> String:
     """The children of an included file's root element, comments removed.
 
@@ -2111,7 +2160,24 @@ def _splice_includes(xml: String, base_dir: String, depth: Int) raises -> String
             sub_base = String(path[byte=0:cut])
 
         out += String(xml[byte=scan:inc])
-        out += _splice_includes(_include_body(text, path), sub_base, depth + 1)
+        # ⚠⚠ ASSET PATHS ARE REBASED BY THE INCLUDE'S OWN DIRECTORY, and the
+        # prefix is the include's RELATIVE dir, not `sub_base` — the parser
+        # applies the host's base itself, so an already-based prefix doubles
+        # it. `ms_human_700` writes `file="../geometry/sacrum.stl"` inside
+        # `assets/asset/*.xml`; without this every one of its 189 meshes
+        # resolved to `ms_human_700/../geometry/` and drew nothing, leaving a
+        # model of 81 bodies and 700 tendons rendering ONLY the tendons.
+        #
+        # ⚠ AFTER the recursion, so a nested include has already prefixed its
+        # own directory and the two compose.
+        var rel_dir = String("")
+        var slash = fname.rfind("/")
+        if slash > 0:
+            rel_dir = String(fname[byte=0:slash])
+        out += _rebase_files(
+            _splice_includes(_include_body(text, path), sub_base, depth + 1),
+            rel_dir,
+        )
         scan = inc_end + 1
 
     out += String(xml[byte=scan : xml.byte_length()])
