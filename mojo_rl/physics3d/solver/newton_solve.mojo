@@ -599,20 +599,35 @@ def _newton_solve_env[
     var ws_fr_idx = sw_ell_fr(max_contacts, nv, MAX_CONDIM)
     var ws_bt_idx = sw_ell_bt(max_contacts, nv, MAX_CONDIM)
     var ws_ntc_idx = sw_ell_ntc(max_contacts, nv, MAX_CONDIM)
-    # ⚠ THE ONE FAILURE MODE THIS LAYOUT HAS IS OVERRUNNING `SOLVER_WS`, and
-    # it would not crash: `solver` is `[BATCH, SOLVER_WS]`, so writing past the
-    # row lands in the NEXT ENV's workspace. Caught at compile time rather than
-    # as a lane-dependent wrong answer.
-    # ⚠ WAS A `comptime assert`. Over caps it degrades to `0 <= SOLVER_WS`
-    # on the dynamic leg -- it asserts nothing exactly where the bound stops
-    # being a compile-time fact. Overrunning does not fault: `solver` is
-    # `[BATCH, SOLVER_WS]`, so the write lands in the NEXT env's row.
-    if ws_end_elliptic(max_contacts, nv, MAX_CONDIM) > SOLVER_WS:
+    # ⚠ THE ONE FAILURE MODE THIS LAYOUT HAS IS OVERRUNNING THE ROW, and it
+    # would not crash: `solver` is `[BATCH, row]`, so writing past the row
+    # lands in the NEXT ENV's workspace.
+    #
+    # ⚠⚠ COMPARE AGAINST THE ROW THAT WAS ACTUALLY ALLOCATED, NOT THE COMPTIME
+    # `SOLVER_WS`. This read the comptime parameter until 2026-08-19, and on a
+    # DYNAMIC provider that parameter is `81*MC + 12*MC*D.NV` with
+    # `D.NV = DIM_POISON = -1` and `MC` floored to 1 — i.e. **69 scalars for
+    # every model**, the same 69 that `ContactScratch` allocated before its own
+    # fix. The guard therefore fired on every runtime-loaded model and took the
+    # `return` below, so `_newton_solve_env` COMPUTED NO CONTACT FORCE AT ALL:
+    # a sphere dropped on a plane fell straight through to -43.87 m (exactly
+    # free fall) while the identical model under PGS matched MuJoCo to six
+    # digits, and the studio — which is the runtime-dims path — could not use
+    # MuJoCo's DEFAULT solver at all.
+    #
+    # ⚠ IT PRINTED "FATAL" ON EVERY STEP AND STILL WENT UNNOTICED, because the
+    # message names a `MAX_CONDIM` cause that had nothing to do with it and the
+    # symptom read as a physics bug. `ws_budget` is the SAME formula
+    # `ContactScratch.__init__` allocates with, so the guard now cannot
+    # disagree with the buffer on either leg.
+    var solver_row = ws_budget(_max_one_rt(max_contacts), nv)
+    if ws_end_elliptic(max_contacts, nv, MAX_CONDIM) > solver_row:
         print(
-            "FATAL: the ELLIPTIC contact region does not fit"
-            " ContactScratch.solver — raise SOLVER_WS in"
-            " fields/contact_scratch.mojo (and in the four other files that"
-            " recompute the literal) before raising MAX_CONDIM"
+            "FATAL: the ELLIPTIC contact region (",
+            ws_end_elliptic(max_contacts, nv, MAX_CONDIM),
+            ") does not fit ContactScratch.solver (", solver_row,
+            ") at max_contacts", max_contacts, "nv", nv,
+            "MAX_CONDIM", MAX_CONDIM,
         )
         return
 
