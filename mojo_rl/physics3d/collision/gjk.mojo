@@ -54,6 +54,55 @@ comptime MJ_MINVAL: Float64 = 1e-15
 
 
 @always_inline
+def _gjk_min_norm2[
+    DTYPE: DType
+](
+    type1: Int,
+    type2: Int,
+    margin: Scalar[DTYPE],
+    ccd_tol: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """MuJoCo's `min_norm2` — the floor on |v|^2 that ends the GJK loop.
+
+        mjtNum tol2 = status->tolerance * status->tolerance;
+        mjtNum min_norm2 = discreteGeoms(obj1, obj2) ? mjMINVAL2 : tol2;
+        ...
+        if ((x_norm = dot3(x_k, x_k)) < min_norm2) break;
+
+    (`engine_collision_gjk.c:212-225`.) It is the SAME `discreteGeoms` switch
+    `_epa_tolerance` already implements — that one crossed to EPA and never to
+    GJK, and this is the other half.
+
+    ⚠⚠ IT IS A THRESHOLD ON |v| SQUARED, WHICH IS WHY THE OLD CONSTANT LOOKED
+    HARMLESS. `GJK_TOLERANCE = 1e-10` reads as a tight tolerance; against a
+    SQUARED norm it is a distance floor of `sqrt(1e-10)` = **1e-5 m**. Every
+    convex pair separated by less than 10 microns was classified PENETRATING
+    and handed to EPA, which returned `-0.0`: an invented contact at a real
+    gap. MuJoCo's floor is `ccd_tolerance` = 1e-6 m for a smooth pair and
+    `mjMINVAL` = 1e-15 m for a polytope pair — 10x and 1e10x tighter.
+
+    ⚠ MEASURED, dm_control `manipulation/reassemble_5`. The Duplo stud sits
+    3.0 microns from the brick flange above it (exact: the stud axis is
+    0.00465 from the flange face and its radius is 0.004647). MuJoCo reports
+    +3.02e-06 on all 48 such pairs; we reported -6.33e-06 — penetration where
+    there is a gap — on all 48, because 3e-06 is under the 1e-5 floor.
+
+    ⚠ THE CLASSIFICATION AFTER THE LOOP MUST USE THE SAME VALUE. `dist_sq >
+    min_norm2` is what decides separated-vs-penetrating; if it disagrees with
+    the loop's break test, a run that converged to the origin is then reported
+    separated at a hair's-breadth distance (see the note at that branch).
+    """
+    var tol2 = ccd_tol * ccd_tol
+    if margin != 0:
+        return tol2
+    var d1 = type1 == GEOM_BOX or type1 == GEOM_MESH
+    var d2 = type2 == GEOM_BOX or type2 == GEOM_MESH
+    if d1 and d2:
+        return Scalar[DTYPE](MJ_MINVAL) * Scalar[DTYPE](MJ_MINVAL)
+    return tol2
+
+
+@always_inline
 def _epa_tolerance[
     DTYPE: DType
 ](
@@ -1148,9 +1197,13 @@ def gjk_epa_witness[
     var vy = s[1]
     var vz = s[2]
 
+    # MuJoCo's `min_norm2` (`engine_collision_gjk.c:218`), NOT a constant — see
+    # `_gjk_min_norm2`. The old hardcoded `GJK_TOLERANCE` was a 1e-5 m floor.
+    var min_norm2 = _gjk_min_norm2[DTYPE](type1, type2, ccd_margin, ccd_tol)
+
     for _ in range(GJK_MAX_ITERATIONS):
         var v_dot_v = vx * vx + vy * vy + vz * vz
-        if v_dot_v < Scalar[DTYPE](GJK_TOLERANCE):
+        if v_dot_v < min_norm2:
             break
 
         var inv_vlen = Scalar[DTYPE](1) / sqrt(v_dot_v)
@@ -1374,7 +1427,7 @@ def gjk_epa_witness[
     var dist_sq = vx * vx + vy * vy + vz * vz
     var dist = sqrt(dist_sq)
 
-    if dist_sq > Scalar[DTYPE](GJK_TOLERANCE):
+    if dist_sq > min_norm2:
         # Separated
         var w1x: Scalar[DTYPE] = 0
         var w1y: Scalar[DTYPE] = 0
