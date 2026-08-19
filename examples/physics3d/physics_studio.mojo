@@ -74,6 +74,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_MESH_ID, MAX_GPU_MESHES, MODEL_BODY_SIZE, BODY_IDX_MASS,
 )
 from mojo_rl.physics3d.studio.scene import SceneDoc, scene_from_base
+from mojo_rl.physics3d.studio.writer import to_mjcf as export_flat_mjcf
 from mojo_rl.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
     StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
@@ -686,6 +687,33 @@ def run_studio(
                 # record is authoritative and the live model must be rebuilt
                 # rather than patched. See `needs_rebuild`.
                 build_model_runtime[DT](L.fmd, L.dims, L.m)
+
+        # ── save / export ─────────────────────────────────────────────────
+        # ⚠ TWO DIFFERENT FILES, AND THE DIFFERENCE MATTERS. The scene
+        # DOCUMENT keeps the composition — the asset table and the instance
+        # list — so it can be reopened and re-edited. The flattened EXPORT
+        # keeps what is being SIMULATED, including the fast-path edits the
+        # document has nowhere to store. Offering only one would silently lose
+        # something either way.
+        if panel.want_save != 0:
+            var which = panel.want_save
+            panel.want_save = 0
+            var out_path = L.path + (
+                ".scene.xml" if which == 1 else ".flat.xml"
+            )
+            try:
+                var body = doc.to_mjcf(String("scene")) if which == 1 \
+                    else export_flat_mjcf(L.fmd, String("exported"))
+                var wf = open(out_path, "w")
+                wf.write(body)
+                wf.close()
+                print("  wrote", out_path)
+            except e:
+                # ⚠ A REFUSED EXPORT IS AN EXPECTED OUTCOME, not a crash: the
+                # flattened writer raises rather than emitting a file that
+                # loads and is a DIFFERENT model (a dropped <tendon>, say).
+                # The message names the sections.
+                print("  save failed:", e)
 
         if panel.want_undo != 0:
             # ⚠ UNDO IS A REPLAY FROM A FRESH PARSE, not an inverse — see

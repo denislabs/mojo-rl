@@ -87,6 +87,8 @@ struct StudioPanel(Movable):
     var group_shown: List[Bool]
     """Visibility per geom group 0-5, MuJoCo's `mjvOption.geomgroup`."""
     var filter: TextBuffer
+    var want_save: Int
+    """0 none, 1 scene document, 2 flattened export — consumed each frame."""
     var want_undo: Int
     """0 none, 1 undo, 2 redo — consumed by the studio each frame."""
     var browser_open: Bool
@@ -111,6 +113,7 @@ struct StudioPanel(Movable):
             # everything draws the collision proxy as if it were the model.
             self.group_shown.append(g < 3)
         self.filter = TextBuffer()
+        self.want_save = 0
         self.want_undo = 0
         self.browser_open = False
         self.browser_dir = start_dir
@@ -267,6 +270,12 @@ def ui_menu_bar(mut p: StudioPanel, mut out: PanelOut) raises -> Float32:
                         out.open_path = p.recent[i]
                     ig_pop_id()
                 ig_end_menu()
+            ig_separator()
+            if ig_menu_item(String("Save scene")) and p.want_save == 0:
+                p.want_save = 1
+            if ig_menu_item(String("Export flattened MJCF")) \
+                    and p.want_save == 0:
+                p.want_save = 2
             ig_separator()
             if ig_menu_item(String("Quit")):
                 out.quit = True

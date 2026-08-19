@@ -1784,7 +1784,18 @@ def _parse_one_geom(
         elif gd.geom_type == _GEOM_PLANE:
             gd.half_x = s0
             gd.half_y = s1
-            # s2 = grid spacing — not needed for collision
+            # ⚠⚠ s2 IS THE RENDER GRID SPACING, AND IT IS KEPT — in `half_z`,
+            # which a plane otherwise never uses (`build_render_fields` zeroes
+            # it for this type explicitly). It is irrelevant to collision, and
+            # it used to be dropped on exactly that reasoning.
+            #
+            # What made that wrong is EXPORT: MuJoCo REFUSES a plane whose
+            # third size is absent or zero ("plane size(3) must be positive"),
+            # so a writer working from a record that lost it has to invent a
+            # value — and walker2d's floor came back as 0.1 where the source
+            # says 40. Caught by loading our own export in MuJoCo, which is
+            # the half our parser reading our writer structurally cannot see.
+            gd.half_z = s2
         else:
             gd.radius = s0
 
