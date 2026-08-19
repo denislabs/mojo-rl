@@ -689,6 +689,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Show or hide the built-in text HUD."""
         self.show_hud = on
 
+    def set_render_fields(mut self, rf: RenderFields):
+        """Swap the model's render records — what an EDIT needs.
+
+        ⚠ THE GEOM MESH CACHE IS KEYED BY NAME AND SURVIVES, which is the
+        point: re-parsing is not needed for a colour or a size change, so an
+        edit stays interactive. A structural change (a different model) goes
+        through `detach`/`init` instead, which drops the caches."""
+        self.rf = rf.copy()
+
     def set_overlay_lines(mut self, lines: List[OverlayLine]):
         """Replace the world-space overlay for the next frame."""
         self.overlay_lines = lines.copy()

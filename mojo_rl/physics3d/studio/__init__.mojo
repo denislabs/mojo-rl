@@ -12,3 +12,7 @@ from .pick import Ray, Hit, ray_through_pixel, pick_geom
 from .outline import outline_geom, outline_body, SELECT_COLOR
 from .panel import StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W
 from .scene import SceneDoc, Instance, scene_from_base
+from .edit import (
+    Edit, EditLog, apply_edit, needs_rebuild, field_name,
+    TARGET_GEOM, TARGET_BODY,
+)

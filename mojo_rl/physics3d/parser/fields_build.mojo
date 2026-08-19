@@ -755,6 +755,49 @@ def apply_auto_spring_damper[
         )
 
 
+def rbound_of(
+    geom_type: Int, radius: Float64, half_length: Float64,
+    half_x: Float64, half_y: Float64, half_z: Float64,
+) -> Float64:
+    """The broadphase bounding-sphere radius for one geom. ONE implementation.
+
+    ⚠⚠ SHARED WITH THE STUDIO'S EDIT PATH ON PURPOSE. `rbound` is DERIVED
+    from a geom's type and size, so an interactive resize has to recompute it
+    — and a second copy of these five formulas is precisely the "two spellings
+    of one quantity" failure this tree keeps paying for. A stale or divergent
+    `rbound` is invisible: it is too small, the pair is rejected in the
+    broadphase, and the contact simply never happens.
+
+    A mesh's bound is measured from its hull and is NOT here; the builder
+    overwrites this value for mesh geoms after loading them.
+    """
+    if geom_type == GEOM_PLANE:
+        return 1e10  # planes are infinite
+    if geom_type == GEOM_CAPSULE:
+        return radius + half_length
+    if geom_type == GEOM_CYLINDER:
+        return sqrt(half_length * half_length + radius * radius)
+    if geom_type == GEOM_BOX:
+        return sqrt(half_x * half_x + half_y * half_y + half_z * half_z)
+    if geom_type == GEOM_ELLIPSOID:
+        # `max(size)` — mjCGeom::GetRBound (user_objects.cc:3345). Without
+        # this case `rbound` fell through to `radius`, which the parser sets
+        # to size[0] for an ellipsoid; any ellipsoid whose LARGEST semi-axis
+        # is not the first would get a bounding sphere smaller than itself and
+        # the broad phase would silently drop its contacts. Harmless until the
+        # ellipsoid narrow phase landed (2026-07-31), because a colliding
+        # ellipsoid was rejected at build time; a real bug from that point on.
+        # quadruped's torso (.3 .27 .2) is ordered largest-first and so would
+        # NOT have exposed it.
+        var mx = half_x
+        if half_y > mx:
+            mx = half_y
+        if half_z > mx:
+            mx = half_z
+        return mx
+    return radius
+
+
 def build_model_fields_from_flat[
 
     DTYPE: DType,
@@ -1279,42 +1322,18 @@ def build_model_fields_from_flat[
             geom_mesh_eig[i * 3 + 2] = mi_g.eig2
 
         # Bounding sphere radius for broad-phase (legacy per-type formulas).
-        var rbound = Scalar[DTYPE](gd.radius)
-        if gd.geom_type == GEOM_PLANE:
-            rbound = Scalar[DTYPE](1e10)  # planes are infinite
-        elif gd.geom_type == GEOM_SPHERE:
-            rbound = Scalar[DTYPE](gd.radius)
-        elif gd.geom_type == GEOM_CAPSULE:
-            rbound = Scalar[DTYPE](gd.radius + gd.half_length)
-        elif gd.geom_type == GEOM_CYLINDER:
-            rbound = Scalar[DTYPE](
-                sqrt(gd.half_length * gd.half_length + gd.radius * gd.radius)
+        # ⚠ THE FORMULA IS `rbound_of`, NOT INLINE, because the studio has to
+        # recompute it when a size is EDITED. A resize that left `rbound`
+        # stale gives a broadphase bound too small for the new shape, so pairs
+        # are rejected before the narrow phase ever sees them — MISSED
+        # CONTACTS, silently. Caught by `test_studio_edit_roundtrip` on its
+        # first run, which is exactly what a byte-identity gate is for.
+        var rbound = Scalar[DTYPE](
+            rbound_of(
+                gd.geom_type, gd.radius, gd.half_length,
+                gd.half_x, gd.half_y, gd.half_z,
             )
-        elif gd.geom_type == GEOM_BOX:
-            rbound = Scalar[DTYPE](
-                sqrt(
-                    gd.half_x * gd.half_x
-                    + gd.half_y * gd.half_y
-                    + gd.half_z * gd.half_z
-                )
-            )
-        elif gd.geom_type == GEOM_ELLIPSOID:
-            # `max(size)` — mjCGeom::GetRBound (user_objects.cc:3345). Without
-            # this case `rbound` fell through to `gd.radius`, which the parser
-            # sets to size[0] for an ellipsoid; any ellipsoid whose LARGEST
-            # semi-axis is not the first would get a bounding sphere smaller
-            # than itself and the broad phase would silently drop its
-            # contacts. Harmless until the ellipsoid narrow phase landed
-            # (2026-07-31), because a colliding ellipsoid was rejected at
-            # build time; a real bug from that point on. quadruped's torso
-            # (.3 .27 .2) happens to be ordered largest-first and so would
-            # NOT have exposed it.
-            var mx = gd.half_x
-            if gd.half_y > mx:
-                mx = gd.half_y
-            if gd.half_z > mx:
-                mx = gd.half_z
-            rbound = Scalar[DTYPE](mx)
+        )
         # GEOM_MESH: refined from hull vertices below.
         mf.geoms.data[o + GEOM_IDX_RBOUND] = rbound
 

@@ -78,6 +78,12 @@ from mojo_rl.physics3d.studio import (
     StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
 )
 from mojo_rl.physics3d.studio.panel import SEL_BODY, SEL_GEOM, SEL_NONE
+from mojo_rl.physics3d.studio.edit import (
+    Edit, EditLog, apply_edit, needs_rebuild,
+    TARGET_GEOM, TARGET_BODY,
+    F_POS_X, F_POS_Y, F_POS_Z, F_SIZE_0, F_SIZE_1, F_SIZE_2,
+    F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
+)
 from mojo_rl.render.imgui import ig_want_mouse
 
 comptime DT = DType.float64
@@ -125,6 +131,8 @@ struct Loaded(Movable):
     var d: Data[DT, DynDims, 1]
     var integ: EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3]
     var rf: RenderFields
+    var flat: String
+    var base_dir: String
     var body_parent: List[Int]
     var geom_body: List[Int]
     var joint_body: List[Int]
@@ -158,6 +166,8 @@ struct Loaded(Movable):
         # become a second model path (plan §10 risk 2). A file using none of
         # the three passes through untouched.
         var flat = expand_mjcf(src[0], src[1])
+        self.flat = flat
+        self.base_dir = src[1]
         self.fmd = parse_xml_full(flat, src[1])
 
         # ⚠ THE MESH VERTEX BUDGET CANNOT BE DERIVED HERE, and that is not an
@@ -361,6 +371,7 @@ def _record(
     quats: List[Quat],
     mut keys: List[String],
     mut vals: List[Float64],
+    mut editable: List[Int],
 ):
     """Flatten the selection into the (key, value) pair `ui_inspector` shows.
 
@@ -374,30 +385,35 @@ def _record(
     """
     keys.clear()
     vals.clear()
+    # ⚠ PARALLEL TO `keys`/`vals`, AND THE STUDIO OWNS IT. The panel cannot
+    # know which record slot a row maps to — that knowledge is exactly what
+    # would make `panel.mojo` generic — so it gets an edit-field id per row,
+    # or -1 for read-only, and hands back which row moved.
+    editable.clear()
     if p.sel_kind == SEL_BODY:
         var b = p.sel_index
         if b < 0 or b >= len(positions):
             return
-        keys.append(String("pos[0]")); vals.append(positions[b].x)
-        keys.append(String("pos[1]")); vals.append(positions[b].y)
-        keys.append(String("pos[2]")); vals.append(positions[b].z)
-        keys.append(String("quat[0]")); vals.append(quats[b].w)
-        keys.append(String("quat[1]")); vals.append(quats[b].x)
-        keys.append(String("quat[2]")); vals.append(quats[b].y)
-        keys.append(String("quat[3]")); vals.append(quats[b].z)
+        keys.append(String("pos[0]")); editable.append(-1); vals.append(positions[b].x)
+        keys.append(String("pos[1]")); editable.append(-1); vals.append(positions[b].y)
+        keys.append(String("pos[2]")); editable.append(-1); vals.append(positions[b].z)
+        keys.append(String("quat[0]")); editable.append(-1); vals.append(quats[b].w)
+        keys.append(String("quat[1]")); editable.append(-1); vals.append(quats[b].x)
+        keys.append(String("quat[2]")); editable.append(-1); vals.append(quats[b].y)
+        keys.append(String("quat[3]")); editable.append(-1); vals.append(quats[b].z)
         # ⚠ body 0 IS THE WORLDBODY and is absent from `fmd.bodies`, so the
         # record index is b-1. Reading `fmd.bodies[b]` instead would report
         # every body's mass as its CHILD's — off by one and entirely
         # plausible on screen.
         if b > 0 and b - 1 < len(L.fmd.bodies):
             var bd = L.fmd.bodies[b - 1]
-            keys.append(String("mass")); vals.append(bd.mass)
-            keys.append(String("ipos[0]")); vals.append(bd.ipos_x)
-            keys.append(String("ipos[1]")); vals.append(bd.ipos_y)
-            keys.append(String("ipos[2]")); vals.append(bd.ipos_z)
-            keys.append(String("inertia[0]")); vals.append(bd.ixx)
-            keys.append(String("inertia[1]")); vals.append(bd.iyy)
-            keys.append(String("inertia[2]")); vals.append(bd.izz)
+            keys.append(String("mass")); editable.append(F_MASS); vals.append(bd.mass)
+            keys.append(String("ipos[0]")); editable.append(-1); vals.append(bd.ipos_x)
+            keys.append(String("ipos[1]")); editable.append(-1); vals.append(bd.ipos_y)
+            keys.append(String("ipos[2]")); editable.append(-1); vals.append(bd.ipos_z)
+            keys.append(String("inertia[0]")); editable.append(-1); vals.append(bd.ixx)
+            keys.append(String("inertia[1]")); editable.append(-1); vals.append(bd.iyy)
+            keys.append(String("inertia[2]")); editable.append(-1); vals.append(bd.izz)
     elif p.sel_kind == SEL_GEOM:
         var g = p.sel_index
         if g < 0 or g >= len(L.fmd.geoms):
@@ -411,37 +427,37 @@ def _record(
             # is what the user just clicked on.
             wc = positions[bid] + quats[bid].rotate_vec(wc)
             wq = quats[bid] * wq
-        keys.append(String("type")); vals.append(Float64(gd.geom_type))
-        keys.append(String("pos[0]")); vals.append(wc.x)
-        keys.append(String("pos[1]")); vals.append(wc.y)
-        keys.append(String("pos[2]")); vals.append(wc.z)
-        keys.append(String("quat[0]")); vals.append(wq.w)
-        keys.append(String("quat[1]")); vals.append(wq.x)
-        keys.append(String("quat[2]")); vals.append(wq.y)
-        keys.append(String("quat[3]")); vals.append(wq.z)
+        keys.append(String("type")); editable.append(-1); vals.append(Float64(gd.geom_type))
+        keys.append(String("pos[0]")); editable.append(-1); vals.append(wc.x)
+        keys.append(String("pos[1]")); editable.append(-1); vals.append(wc.y)
+        keys.append(String("pos[2]")); editable.append(-1); vals.append(wc.z)
+        keys.append(String("quat[0]")); editable.append(-1); vals.append(wq.w)
+        keys.append(String("quat[1]")); editable.append(-1); vals.append(wq.x)
+        keys.append(String("quat[2]")); editable.append(-1); vals.append(wq.y)
+        keys.append(String("quat[3]")); editable.append(-1); vals.append(wq.z)
         # ⚠ SIZE IS PER-TYPE. Printing the raw slots would show a capsule's box
         # half-extents (0.5, `GeomData`'s default) as if they were its
         # dimensions — `build_render_fields`' mapping 4 documents the same
         # hazard from the other side.
         var gt = gd.geom_type
         if gt == 3:
-            keys.append(String("half_x")); vals.append(gd.half_x)
-            keys.append(String("half_y")); vals.append(gd.half_y)
-            keys.append(String("half_z")); vals.append(gd.half_z)
+            keys.append(String("half_x")); editable.append(F_SIZE_0); vals.append(gd.half_x)
+            keys.append(String("half_y")); editable.append(F_SIZE_1); vals.append(gd.half_y)
+            keys.append(String("half_z")); editable.append(F_SIZE_2); vals.append(gd.half_z)
         elif gt == 2 or gt == 4:
-            keys.append(String("radius")); vals.append(gd.radius)
-            keys.append(String("half_len")); vals.append(gd.half_length)
+            keys.append(String("radius")); editable.append(F_SIZE_0); vals.append(gd.radius)
+            keys.append(String("half_len")); editable.append(F_SIZE_1); vals.append(gd.half_length)
         else:
-            keys.append(String("radius")); vals.append(gd.radius)
-        keys.append(String("rgba[0]")); vals.append(gd.rgba_r)
-        keys.append(String("rgba[1]")); vals.append(gd.rgba_g)
-        keys.append(String("rgba[2]")); vals.append(gd.rgba_b)
-        keys.append(String("rgba[3]")); vals.append(gd.rgba_a)
-        keys.append(String("group")); vals.append(Float64(gd.group))
-        keys.append(String("condim")); vals.append(Float64(gd.condim))
-        keys.append(String("friction")); vals.append(gd.friction)
-        keys.append(String("margin")); vals.append(gd.margin)
-        keys.append(String("mass")); vals.append(gd.mass)
+            keys.append(String("radius")); editable.append(F_SIZE_0); vals.append(gd.radius)
+        keys.append(String("rgba[0]")); editable.append(F_RGBA_R); vals.append(gd.rgba_r)
+        keys.append(String("rgba[1]")); editable.append(F_RGBA_G); vals.append(gd.rgba_g)
+        keys.append(String("rgba[2]")); editable.append(F_RGBA_B); vals.append(gd.rgba_b)
+        keys.append(String("rgba[3]")); editable.append(F_RGBA_A); vals.append(gd.rgba_a)
+        keys.append(String("group")); editable.append(-1); vals.append(Float64(gd.group))
+        keys.append(String("condim")); editable.append(-1); vals.append(Float64(gd.condim))
+        keys.append(String("friction")); editable.append(F_FRICTION); vals.append(gd.friction)
+        keys.append(String("margin")); editable.append(-1); vals.append(gd.margin)
+        keys.append(String("mass")); editable.append(-1); vals.append(gd.mass)
 
 
 def _outline_of(
@@ -510,6 +526,8 @@ def run_studio(
     var quats = List[Quat]()
     var keys = List[String]()
     var vals = List[Float64]()
+    var editable = List[Int]()
+    var log = EditLog()
 
     var t = 0
     var last_ncon = 0
@@ -582,7 +600,7 @@ def run_studio(
                     # clicked away from, which reads as a stale panel.
                     panel.clear_selection()
 
-        _record(L, panel, positions, quats, keys, vals)
+        _record(L, panel, positions, quats, keys, vals, editable)
         renderer.set_overlay_lines(_outline_of(L, panel, positions, quats))
 
         # ── the UI ────────────────────────────────────────────────────────
@@ -594,6 +612,7 @@ def run_studio(
                 Float32(renderer.renderer.height),
                 L.fmd.body_names, L.fmd.geom_names, L.fmd.joint_names,
                 L.body_parent, L.geom_body, L.joint_body, keys, vals,
+                editable, log.can_undo(), log.can_redo(),
             )
         # ⚠ AFTER `build_ui`, WHICH RETURNS A FRESH `PanelOut` — injecting
         # before it would be overwritten and the smoke path would silently
@@ -606,6 +625,54 @@ def run_studio(
         renderer.set_show_sites(panel.show_sites)
         if ui.quit:
             break
+        # ── an inspector edit ─────────────────────────────────────────────
+        # ⚠ APPLIED HERE, AFTER `build_ui` AND BEFORE THE STEP. The panel
+        # returns a REQUEST precisely so this happens at a defined point: an
+        # edit landing between the step and the draw would render a pose that
+        # never existed, and one landing inside the panel would need the panel
+        # to hold a `Model`, which is what keeps it compiling once.
+        if ui.edit_field >= 0 and panel.sel_kind != SEL_NONE:
+            var tgt = TARGET_GEOM if panel.sel_kind == SEL_GEOM \
+                else TARGET_BODY
+            var e = Edit(tgt, panel.sel_index, ui.edit_field, ui.edit_value)
+            log.push(e)
+            apply_edit(L.fmd, L.m, e)
+            # ⚠ THE RENDERER READS `RenderFields`, NOT THE RECORD, so a
+            # colour or a size change is invisible until `rf` is rebuilt.
+            # Cheap (no re-parse, no mesh load) and it keeps "what you see" and
+            # "what you edited" the same thing.
+            L.rf = build_render_fields(L.fmd, L.flat, L.base_dir)
+            L.mesh_half = L._measure_meshes()
+            renderer.set_render_fields(L.rf.copy())
+            if needs_rebuild(e):
+                # Mass changes the DERIVED inertia and invweight0, so the
+                # record is authoritative and the live model must be rebuilt
+                # rather than patched. See `needs_rebuild`.
+                build_model_runtime[DT](L.fmd, L.dims, L.m)
+
+        if panel.want_undo != 0:
+            # ⚠ UNDO IS A REPLAY FROM A FRESH PARSE, not an inverse — see
+            # `EditLog`. It costs 0.2-14 ms, which is a click.
+            if panel.want_undo == 1:
+                log.undo()
+            else:
+                log.redo()
+            panel.want_undo = 0
+            try:
+                var fresh = Loaded(L.path)
+                log.replay(fresh.fmd, fresh.m)
+                build_model_runtime[DT](fresh.fmd, fresh.dims, fresh.m)
+                fresh.rf = build_render_fields(
+                    fresh.fmd, fresh.flat, fresh.base_dir
+                )
+                fresh.mesh_half = fresh._measure_meshes()
+                renderer.set_render_fields(fresh.rf.copy())
+                L = fresh^
+                positions.clear()
+                quats.clear()
+            except e:
+                print("  undo failed:", e)
+
         if ui.reset:
             L.reset()
             t = 0

@@ -50,7 +50,7 @@ from mojo_rl.render.imgui import (
     ig_begin_main_menu_bar, ig_end_main_menu_bar, ig_begin_menu, ig_end_menu,
     ig_menu_item, ig_frame_height_with_spacing,
     ig_begin_tab_bar, ig_end_tab_bar, ig_begin_tab_item, ig_end_tab_item,
-    ig_columns, ig_next_column, ig_set_column_width,
+    ig_columns, ig_next_column, ig_set_column_width, ig_drag_float,
 )
 
 comptime SIDEBAR_W: Float32 = 300.0
@@ -87,6 +87,8 @@ struct StudioPanel(Movable):
     var group_shown: List[Bool]
     """Visibility per geom group 0-5, MuJoCo's `mjvOption.geomgroup`."""
     var filter: TextBuffer
+    var want_undo: Int
+    """0 none, 1 undo, 2 redo — consumed by the studio each frame."""
     var browser_open: Bool
     var browser_dir: String
     var browser_path: TextBuffer
@@ -109,6 +111,7 @@ struct StudioPanel(Movable):
             # everything draws the collision proxy as if it were the model.
             self.group_shown.append(g < 3)
         self.filter = TextBuffer()
+        self.want_undo = 0
         self.browser_open = False
         self.browser_dir = start_dir
         self.browser_path = TextBuffer()
@@ -142,6 +145,13 @@ struct PanelOut(Copyable, Movable):
     var step_once: Bool
     var reframe: Bool
     var quit: Bool
+    var edit_field: Int
+    """Which inspector field was dragged this frame, or -1. The STUDIO applies
+    it — see `PanelOut`'s note on requests: the panel must not touch a `Model`
+    (it would stop compiling once), and an edit applied mid-frame between the
+    step and the draw would render a pose that never existed."""
+    var edit_value: Float64
+
     var open_path: String
     """A model to LOAD, or "" for none. The swap is the studio's to perform:
     it owns the renderer handoff and every container that has to be rebuilt."""
@@ -151,6 +161,8 @@ struct PanelOut(Copyable, Movable):
         self.step_once = False
         self.reframe = False
         self.quit = False
+        self.edit_field = -1
+        self.edit_value = 0.0
         self.open_path = String("")
 
 
@@ -249,6 +261,12 @@ def ui_menu_bar(mut p: StudioPanel, mut out: PanelOut) raises -> Float32:
             ig_separator()
             if ig_menu_item(String("Quit")):
                 out.quit = True
+            ig_end_menu()
+        if ig_begin_menu(String("Edit")):
+            if ig_menu_item(String("Undo"), String("")) and p.want_undo == 0:
+                p.want_undo = 1
+            if ig_menu_item(String("Redo"), String("")) and p.want_undo == 0:
+                p.want_undo = 2
             ig_end_menu()
         if ig_begin_menu(String("Simulation")):
             if ig_menu_item(String("Reset")):
@@ -546,12 +564,14 @@ def ui_explorer(
 
 def ui_inspector(
     p: StudioPanel,
+    mut out: PanelOut,
     body_names: List[String],
     geom_names: List[String],
     body_parent: List[Int],
     geom_body: List[Int],
     keys: List[String],
     vals: List[Float64],
+    editable: List[Int],
 ) raises:
     """The selected element's record — READ ONLY in S1.
 
@@ -591,10 +611,26 @@ def ui_inspector(
     ig_set_column_width(0, 130.0)
     var n = len(keys) if len(keys) < len(vals) else len(vals)
     for i in range(n):
-        _row(keys[i], _f(vals[i]))
+        ig_text_disabled(keys[i])
+        ig_next_column()
+        # ⚠ `editable[i]` IS THE EDIT FIELD ID OR -1, decided by the STUDIO.
+        # The panel cannot know which record slot a row maps to — that is
+        # exactly the knowledge that would make this file generic — so the
+        # caller hands it a parallel list and gets back which row moved.
+        if i < len(editable) and editable[i] >= 0:
+            ig_push_id_int(i)
+            var v = Float32(vals[i])
+            ig_set_next_item_width(-1.0)
+            if ig_drag_float(String("##e"), v, 0.005):
+                out.edit_field = editable[i]
+                out.edit_value = Float64(v)
+            ig_pop_id()
+        else:
+            ig_text(_f(vals[i]))
+        ig_next_column()
     ig_columns(1)
     ig_spacing()
-    ig_text_disabled(String("read-only in S1 — editing is S3"))
+    ig_text_disabled(String("drag a white value to edit it"))
 
 
 def ui_right_panel(
@@ -607,6 +643,8 @@ def ui_right_panel(
     joint_body: List[Int],
     keys: List[String],
     vals: List[Float64],
+    editable: List[Int],
+    mut out: PanelOut,
     x0: Float32,
     y0: Float32,
     h: Float32,
@@ -622,8 +660,8 @@ def ui_right_panel(
                         body_parent, geom_body, joint_body, h - 120.0)
             ig_end_tab_item()
         if ig_begin_tab_item(String("Inspector")):
-            ui_inspector(p, body_names, geom_names, body_parent, geom_body,
-                         keys, vals)
+            ui_inspector(p, out, body_names, geom_names, body_parent,
+                         geom_body, keys, vals, editable)
             ig_end_tab_item()
         ig_end_tab_bar()
     ig_end()
@@ -646,6 +684,9 @@ def build_ui(
     joint_body: List[Int],
     keys: List[String],
     vals: List[Float64],
+    editable: List[Int],
+    can_undo: Bool = False,
+    can_redo: Bool = False,
 ) raises -> PanelOut:
     """The whole UI for one frame. See the module header for the layout."""
     var out = PanelOut()
@@ -653,7 +694,7 @@ def build_ui(
     var h = win_h - y0
     ui_options(p, out, path, step_i, ncon, contact_budget, step_us, y0, h)
     ui_right_panel(p, body_names, geom_names, joint_names, body_parent,
-                   geom_body, joint_body, keys, vals,
+                   geom_body, joint_body, keys, vals, editable, out,
                    win_w - RIGHT_W, y0, h)
     ui_file_browser(p, out)
     return out^
