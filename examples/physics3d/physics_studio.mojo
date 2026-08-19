@@ -72,6 +72,12 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.studio import (
+    Ray, Hit, ray_through_pixel, pick_geom,
+    StudioPanel, PanelOut, build_panel,
+)
+from mojo_rl.physics3d.studio.panel import SIDEBAR_W, SEL_BODY, SEL_GEOM
+from mojo_rl.render.imgui import ig_want_mouse
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3G[DT]
@@ -185,6 +191,87 @@ def _label(names: List[String], i: Int, kind: String) -> String:
     return String("<", kind, " ", i, ">")
 
 
+def _fill_record(
+    mut rec: List[Float64],
+    p: StudioPanel,
+    fmd: FlatModelDef,
+    d: Data[DT, DynDims, 1],
+    positions: List[Vec3],
+    quats: List[Quat],
+):
+    """Flatten the selected element into the layout `ui_inspector` reads.
+
+    ⚠ THE STUDIO OWNS THIS, NOT THE PANEL, and the split is the whole reason
+    the sidebar compiles once. `Data[DT, DynDims, 1]` and `FlatModelDef` are
+    exactly the types `panel.mojo` must not name; handing it a
+    `List[Float64]` keeps every widget line generic-free. The cost is that the
+    two ends agree on an ORDER by convention — so the layout is written in
+    both docstrings, and a mismatch shows as a wrong number rather than a
+    compile error. That is the trade; it is worth it at one call site and
+    would not be at ten.
+
+    body -> [x y z  qw qx qy qz  mass]
+    geom -> [x y z  qw qx qy qz  size0 size1 size2  r g b a]
+    """
+    rec.clear()
+    if p.sel_kind == SEL_BODY:
+        var b = p.sel_index
+        if b < 0 or b >= len(positions):
+            return
+        rec.append(positions[b].x)
+        rec.append(positions[b].y)
+        rec.append(positions[b].z)
+        rec.append(quats[b].w)
+        rec.append(quats[b].x)
+        rec.append(quats[b].y)
+        rec.append(quats[b].z)
+        # ⚠ body 0 IS THE WORLDBODY and is absent from `fmd.bodies`, so the
+        # record index is b-1. Reading `fmd.bodies[b]` instead would report
+        # every body's mass as its CHILD's, off by one and entirely plausible.
+        rec.append(fmd.bodies[b - 1].mass if b > 0 else 0.0)
+    elif p.sel_kind == SEL_GEOM:
+        var g = p.sel_index
+        if g < 0 or g >= len(fmd.geoms):
+            return
+        var gd = fmd.geoms[g]
+        # WORLD pose, not the local one: the local pos is what the MJCF says
+        # and the world pose is what the user just clicked on.
+        var bid = gd.body_id
+        var wc = Vec3(gd.pos_x, gd.pos_y, gd.pos_z)
+        var wq = Quat(gd.quat_w, gd.quat_x, gd.quat_y, gd.quat_z)
+        if bid >= 0 and bid < len(positions):
+            wc = positions[bid] + quats[bid].rotate_vec(wc)
+            wq = quats[bid] * wq
+        rec.append(wc.x)
+        rec.append(wc.y)
+        rec.append(wc.z)
+        rec.append(wq.w)
+        rec.append(wq.x)
+        rec.append(wq.y)
+        rec.append(wq.z)
+        # ⚠ SIZE IS PER-TYPE, and printing the raw slots would show a
+        # capsule's box half-extents (0.5, the `GeomData` default) as if they
+        # were its dimensions. `build_render_fields`' mapping 4 documents the
+        # same hazard from the other side.
+        var gt = gd.geom_type
+        if gt == 3:  # BOX
+            rec.append(gd.half_x)
+            rec.append(gd.half_y)
+            rec.append(gd.half_z)
+        elif gt == 2 or gt == 4:  # CAPSULE / CYLINDER: radius, half-length
+            rec.append(gd.radius)
+            rec.append(gd.half_length)
+            rec.append(0.0)
+        else:  # SPHERE / PLANE / MESH / ELLIPSOID
+            rec.append(gd.radius)
+            rec.append(0.0)
+            rec.append(0.0)
+        rec.append(gd.rgba_r)
+        rec.append(gd.rgba_g)
+        rec.append(gd.rgba_b)
+        rec.append(gd.rgba_a)
+
+
 def run_studio(
     path: String, drive: Int, scale: Float64, max_frames: Int = 0
 ) raises:
@@ -249,6 +336,22 @@ def run_studio(
 
     # ── the renderer, on records rather than on a type ────────────────────
     var rf = build_render_fields(fmd, src[0], src[1])
+    # ⚠ A COPY, BECAUSE THE RENDERER TAKES OWNERSHIP OF `rf`. The picker needs
+    # the same records the renderer draws from — that identity is the whole
+    # "you pick what you see" contract — and `ModelRenderer` stores its own.
+    # Copying is a few kB once, and the alternative (reaching into the
+    # renderer's field) couples the picker to the renderer's internals.
+    var rf_for_pick = rf.copy()
+
+    # Flat index maps the panel needs, so `panel.mojo` never sees a
+    # `FlatModelDef` (it must stay non-generic and dependency-light).
+    var body_parent = List[Int]()
+    for b in fmd.bodies:
+        body_parent.append(b.parent)
+    var geom_body = List[Int]()
+    for g in fmd.geoms:
+        geom_body.append(g.body_id)
+
     var renderer = ModelRenderer[RfOnlyModelDef](
         width=1280,
         height=720,
@@ -269,48 +372,48 @@ def run_studio(
         positions.append(Vec3(0, 0, 0))
         quats.append(Quat(1, 0, 0, 0))
 
+    # ── the panel ─────────────────────────────────────────────────────────
+    # ⚠ `imgui_init` IS A RUNTIME CHECK, not a compile-time one: the shim is
+    # loaded by `dlopen`, so a tree without `pixi run build-imgui` fails HERE
+    # rather than failing to build. Degrading to the HUD keeps the studio
+    # usable in that tree instead of aborting mid-frame.
+    var have_ui = renderer.imgui_init()
+    if have_ui:
+        renderer.set_ui_sidebar_width(Int(SIDEBAR_W))
+        # The HUD and the panel report the same facts, and the HUD is drawn
+        # OVER THE SCENE — leaving both on costs a strip of the model to say
+        # something the panel already says.
+        renderer.set_show_hud(False)
+    else:
+        print("  (no ImGui shim — run `pixi run build-imgui` for the panel;")
+        print("   the built-in HUD is up instead)")
+
+    var panel = StudioPanel(drive, scale)
+    # Flattened records for the inspector. The STUDIO owns the unpacking
+    # because it is the side that knows the dims; `panel.mojo` must stay
+    # non-generic. See its module header.
+    var rec = List[Float64]()
+
     var t = 0
     var max_ncon = 0
-    # ⚠ THE STEP CLOCK EXCLUDES DRAWING. What the plan asks this slice to
-    # measure is the runtime leg's step rate against the comptime one, and a
-    # figure that folds in SDL, the GPU submit and the 60 Hz frame wait would
-    # answer a different question — one dominated by the display.
+    var last_ncon = 0
     var step_ns = 0
+    var last_us = Float64(0)
     var t0 = perf_counter_ns()
     while renderer.is_open():
         if renderer.check_quit():
             break
-        # ⚠ A FRAME CAP, NOT A TIME CAP, so the smoke run is deterministic.
-        # `max_frames > 0` is what lets this binary be run unattended — it
-        # still opens a window (there is no headless path in `Renderer3D`),
-        # but it closes itself and prints the summary a CI log can read.
         if max_frames > 0 and t >= max_frames:
             break
 
-        if not renderer.paused():
-            # ── drive ──────────────────────────────────────────────────────
-            for a in range(nact):
-                if drive == DRIVE_ZERO:
-                    actions[a] = 0.0
-                elif drive == DRIVE_RANDOM:
-                    actions[a] = (random_float64() * 2.0 - 1.0) * scale
-                else:
-                    # A slow phase-shifted sweep: enough to see every joint
-                    # move without pretending to be a controller.
-                    var ph = Float64(t) * 0.02 + Float64(a) * 0.7
-                    actions[a] = scale * sin(ph)
-            var s0 = perf_counter_ns()
-            if nact > 0:
-                apply_actions_fields[DT](sf, d, actions, act, timestep)
-            integ.step["cpu"](d, m)
-            step_ns += Int(perf_counter_ns() - s0)
-            t += 1
+        if have_ui:
+            renderer.imgui_new_frame()
 
-            var nc = Int(Float64(d.meta.data[META_IDX_NUM_CONTACTS]))
-            if nc > max_ncon:
-                max_ncon = nc
-
-        # ── draw ───────────────────────────────────────────────────────────
+        # ── draw state: body poses, read ONCE and shared ──────────────────
+        # ⚠ THE PICK AND THE DRAW MUST SEE THE SAME POSES. Rebuilding these
+        # inside the picker would let a click resolve against the pose from
+        # before this frame's step, so a fast-moving geom would be selectable
+        # only where it WAS. One array, both consumers.
         for b in range(nbody):
             positions[b] = Vec3(
                 Float64(d.xpos.data[b * 3 + 0]),
@@ -324,15 +427,90 @@ def run_studio(
                 Float64(d.xquat.data[b * 4 + 2]),
             )
 
-        # ⚠ THE CONTACT BUDGET IS ON SCREEN, NOT IN A LOG. Overflowing it
-        # drops contacts with no error and no crash — the model just gets
-        # quietly softer. §1.2 of the plan calls this out as one of the two
-        # silent-failure surfaces the composer creates, so the number that
-        # would warn you lives where you are already looking.
+        # ── ray-pick ──────────────────────────────────────────────────────
+        # ⚠⚠ `ig_want_mouse()` GATES IT, and without that every click on the
+        # panel also fires a pick THROUGH the panel into the scene behind it —
+        # so selecting a row in the outliner would instantly reselect whatever
+        # geom happens to sit under the sidebar. ImGui owns the cursor when it
+        # says it does.
+        var clicked = renderer.take_click()
+        if clicked and not (have_ui and ig_want_mouse()):
+            var vp_x0 = Float64(renderer.renderer.ui_sidebar_width)
+            var vp_w = Float64(renderer.renderer.width) - vp_x0
+            var vp_h = Float64(renderer.renderer.height)
+            if vp_w > 1.0 and vp_h > 1.0:
+                # ⚠ `.copy()`: `Camera3D` is not `ImplicitlyCopyable`, and
+                # binding a reference into the renderer here would borrow it
+                # across the pick.
+                var cam = renderer.renderer.camera.copy()
+                var ray = ray_through_pixel(
+                    Float64(renderer.mouse_x()), Float64(renderer.mouse_y()),
+                    vp_x0, vp_w, vp_h,
+                    cam.eye, cam.target, cam.up, cam.fov,
+                )
+                var hit = pick_geom(ray, rf_for_pick, positions, quats)
+                if hit.geom >= 0:
+                    panel.sel_kind = SEL_GEOM
+                    panel.sel_index = hit.geom
+                else:
+                    # ⚠ A MISS CLEARS THE SELECTION. Leaving it is the more
+                    # common editor behaviour and the wrong one here: the
+                    # inspector would keep describing something the user just
+                    # clicked away from, which reads as a stale panel.
+                    panel.sel_kind = 0
+                    panel.sel_index = -1
+
+        _fill_record(rec, panel, fmd, d, positions, quats)
+
+        # ── the panel ─────────────────────────────────────────────────────
+        var ui = PanelOut()
+        if have_ui:
+            ui = build_panel(
+                panel, path, nbody, dims.get_ngeom(), nq, nv, nact,
+                t, last_ncon, MAX_CONTACTS, last_us,
+                Float32(renderer.renderer.height),
+                fmd.body_names, fmd.geom_names,
+                body_parent, geom_body, rec,
+            )
+        if ui.reset:
+            for i in range(nq):
+                d.qpos.data[i] = sf.qpos0.data[i]
+            for i in range(nv):
+                d.qvel.data[i] = Scalar[DT](0)
+            t = 0
+            max_ncon = 0
+        if ui.reframe:
+            renderer.request_free_camera()
+
+        # ── step ──────────────────────────────────────────────────────────
+        # ⚠ THE PANEL'S PAUSE **AND** THE RENDERER'S. Two things can pause
+        # this: the panel checkbox and `Renderer3D`'s SPACE binding. Honouring
+        # only one leaves the other toggling a flag nothing reads — which is
+        # exactly the bug `viewer_core` documents having shipped.
+        var frozen = panel.paused or renderer.paused()
+        if (not frozen) or ui.step_once:
+            var s0 = perf_counter_ns()
+            for a in range(nact):
+                if panel.drive == DRIVE_ZERO:
+                    actions[a] = 0.0
+                elif panel.drive == DRIVE_RANDOM:
+                    actions[a] = (random_float64() * 2.0 - 1.0) \
+                        * Float64(panel.scale)
+                else:
+                    var ph = Float64(t) * 0.02 + Float64(a) * 0.7
+                    actions[a] = Float64(panel.scale) * sin(ph)
+            if nact > 0:
+                apply_actions_fields[DT](sf, d, actions, act, timestep)
+            integ.step["cpu"](d, m)
+            step_ns += Int(perf_counter_ns() - s0)
+            t += 1
+            last_us = Float64(step_ns) / 1000.0 / Float64(t)
+            last_ncon = Int(Float64(d.meta.data[META_IDX_NUM_CONTACTS]))
+            if last_ncon > max_ncon:
+                max_ncon = last_ncon
+
         var hud = List[String]()
         hud.append(String("file: ", path))
-        hud.append(String("drive: ", _drive_name(drive),
-                          "  scale ", _fmt2(scale)))
         hud.append(String("contacts: ", max_ncon, " peak / ",
                           MAX_CONTACTS, " budget"))
         renderer.set_hud_extra(hud)
