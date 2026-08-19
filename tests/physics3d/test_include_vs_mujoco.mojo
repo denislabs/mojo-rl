@@ -1,4 +1,4 @@
-"""`<include>` resolution — a Menagerie `scene.xml` against MuJoCo's counts.
+"""`<include>` resolution and NAMELESS mesh assets — a Menagerie scene.
 
 WHY THIS EXISTS
 ===============
@@ -124,6 +124,49 @@ def main() raises:
     t.truth(s.nkey == 1,
             "the ROBOT's <keyframe> survived the merge (it is in the"
             " included file, and the scene is what gets loaded)")
+
+    # ── nameless <mesh> assets ────────────────────────────────────────────
+    # ⚠⚠ THE ROBOT WAS INVISIBLE WITHOUT THIS, and nothing raised. MuJoCo:
+    # "If omitted, the mesh name equals the file name without the path and
+    # extension" (XMLreference, asset-mesh-name, 3.10.0 — the RUNTIME
+    # version). ToddlerBot writes the bare `<mesh file="head_visual.stl"/>`
+    # form for all 47 of its assets, and requiring `name=` skipped every one:
+    # each `mesh="head_visual"` on a geom then resolved to `mesh_id = -1`, and
+    # a mesh geom with no mesh DRAWS NOTHING and carries no collision
+    # geometry. The robot rendered as its 12 sites and nothing else.
+    #
+    # The form is common across Menagerie, so this made most of that library
+    # silently unloadable — the same shape as the 16-asset cap that once left
+    # SO-ARM100's jaw without contact surfaces.
+    print("--- <mesh> with no name= ---")
+    t.eq(len(s.mesh_asset_names), 47, "nmesh assets")
+    var named_by_stem = 0
+    for i in range(len(s.mesh_asset_names)):
+        var nm = s.mesh_asset_names[i]
+        var f = s.mesh_asset_files[i]
+        # every one of ToddlerBot's is nameless, so every name must be the
+        # file's stem — present in the path, and without the extension.
+        if f.find("/" + nm + ".stl") != -1 and nm.find(".") == -1:
+            named_by_stem += 1
+    t.eq(named_by_stem, 47, "names derived from the file STEM (no path, no ext)")
+    var have_head = False
+    for i in range(len(s.mesh_asset_names)):
+        if s.mesh_asset_names[i] == "head_visual":
+            have_head = True
+    t.truth(have_head,
+            "the name a geom actually references ('head_visual') exists")
+    # ⚠ NON-VACUITY: the whole point is that the GEOMS resolve. A mesh table
+    # that is right while every geom still holds -1 would pass the arms above.
+    var mesh_geoms = 0
+    var unresolved = 0
+    for g in s.geoms:
+        if g.geom_type == 5:
+            mesh_geoms += 1
+            if g.mesh_id < 0:
+                unresolved += 1
+    t.truth(mesh_geoms > 40,
+            String("the scene has ", mesh_geoms, " mesh geoms (non-vacuous)"))
+    t.eq(unresolved, 0, "mesh geoms left at mesh_id = -1")
 
     # ── the strictness check itself ───────────────────────────────────────
     print("--- strictness ---")

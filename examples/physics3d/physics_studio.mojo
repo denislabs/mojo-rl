@@ -69,7 +69,8 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.gpu.constants import (
-    META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE,
+    META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE, MODEL_GEOM_SIZE,
+    GEOM_IDX_MESH_ID, MAX_GPU_MESHES,
 )
 from mojo_rl.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
@@ -228,8 +229,20 @@ struct Loaded(Movable):
         var biggest = 0.0
         var unmeasured = List[Int]()
         for g in range(len(self.fmd.geoms)):
-            var mid = self.fmd.geoms[g].mesh_id
-            if mid < 0:
+            # ⚠⚠ THE MESH ID MUST COME FROM THE **MODEL**, NOT THE PARSE.
+            # `FlatModelDef.geoms[g].mesh_id` is an index into the XML's ASSET
+            # table (ToddlerBot declares 47); `mesh_meta` is keyed by the
+            # LOADED-hull index, and only collidable meshes are loaded, capped
+            # at `MAX_GPU_MESHES` (16). Using the asset index read
+            # `mesh_meta[43]` out of a 16-row table — "index 172 is out of
+            # bounds, valid range is 0 to 63". It went unnoticed on so_arm101
+            # only because its asset and hull indices happen to overlap in the
+            # low range. `fields_build` does the remap; read its result.
+            var mid = Int(Float64(
+                self.m.geoms.data[g * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]
+            ))
+            if mid < 0 or mid >= MAX_GPU_MESHES:
+                unmeasured.append(g)
                 continue
             var adr = Int(Float64(
                 self.m.mesh_meta.data[mid * MODEL_MESH_META_SIZE + 0]

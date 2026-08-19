@@ -1331,12 +1331,49 @@ def _fill_assets(
         var tag = String(asset_sec[byte = t : tag_end + 1])
         var mesh_name = _extract_attr(tag, "name")
         var mesh_file = _extract_attr(tag, "file")
+        # ⚠⚠ `name` IS OPTIONAL, AND ITS DEFAULT IS THE FILE STEM. MuJoCo:
+        # "If omitted, the mesh name equals the file name without the path and
+        # extension" (XMLreference.rst, asset-mesh-name, verified against
+        # 3.10.0 — the RUNTIME version, not an older tree).
+        #
+        # Requiring `name=` here skipped the asset entirely, so every
+        # `mesh="head_visual"` on a geom resolved to `mesh_id = -1` — and a
+        # mesh geom with no mesh IS INVISIBLE and has no collision geometry,
+        # while raising nothing. Measured on Menagerie's ToddlerBot, which
+        # writes the bare `<mesh file="head_visual.stl"/>` form for all 47 of
+        # its assets: 45 mesh geoms drew nothing and the robot rendered as its
+        # sites alone. The nameless form is common across Menagerie, so this
+        # made most of that library silently unloadable.
+        #
+        # ⚠ THE STEM, NOT THE FILENAME: path and extension both go. A model
+        # mixing `<mesh file="a/x.stl"/>` with `<mesh name="x" .../>` must
+        # produce ONE name for both, or the geom reference picks whichever
+        # happens to be first.
+        if mesh_name.byte_length() == 0:
+            mesh_name = _file_stem(mesh_file)
         if mesh_name.byte_length() > 0 and mesh_file.byte_length() > 0:
             result.mesh_asset_names.append(mesh_name)
             result.mesh_asset_files.append(mesh_file)
             mesh_count += 1
         mesh_pos = tag_end + 1
     result.num_mesh_assets = mesh_count
+
+
+def _file_stem(path: String) -> String:
+    """`a/b/head_visual.stl` -> `head_visual`. MuJoCo's default asset name.
+
+    Path AND extension are stripped, in that order — see the note at the
+    `<mesh>` loop for why getting either wrong is silent.
+    """
+    var base = path
+    var cut = path.rfind("/")
+    if cut >= 0:
+        base = String(path[byte = cut + 1 : path.byte_length()])
+    var dot = base.rfind(".")
+    if dot <= 0:
+        return base^
+    return String(base[byte=0:dot])
+
 
 
 # =============================================================================
