@@ -686,15 +686,32 @@ def _refuse_generators(xml: String) raises:
     0 files each in `references/mujoco_menagerie-main` and outside `.pixi`.
     Every file affected is one of MuJoCo's own samples, which is why this
     could sit here unnoticed.
+    ⚠ THE SCAN ITSELF IS `generator_elements`, so the studio's diagnostics
+    panel and this refusal cannot disagree about what counts as a generator.
+    A panel that said "clean" while the loader refused the model would be
+    worse than no panel.
     """
+    var found = generator_elements(xml)
+    if len(found) > 0:
+        raise Error(
+            "physics3d: " + found[0] + " is not supported. It"
+            " GENERATES bodies, and this parser would build only the ones"
+            " written out — a model missing most of itself, with no other"
+            " symptom."
+        )
+
+
+def generator_elements(xml: String) -> List[String]:
+    """Which body-GENERATING elements this text contains, as `<tag>` strings.
+
+    Split out of `_refuse_generators` so the loader (which raises) and
+    `studio.validate` (which reports) read the same document the same way.
+    """
+    var found = List[String]()
     for tag in ["replicate", "composite", "flexcomp"]:
         if _find_tag(xml, "<" + String(tag), 0) != -1:
-            raise Error(
-                "physics3d: <" + String(tag) + "> is not supported. It"
-                " GENERATES bodies, and this parser would build only the ones"
-                " written out — a model missing most of itself, with no other"
-                " symptom."
-            )
+            found.append("<" + String(tag) + ">")
+    return found^
 
 
 def expand_mjcf(xml: String, base_dir: String) raises -> String:
@@ -815,6 +832,30 @@ def _strip_default_blocks(xml: String) -> String:
 def check_references(xml: String) raises:
     """Every name REFERENCE in `xml` must name something declared in it.
 
+    ⚠ THE SCAN IS `dangling_references`; this wrapper only decides that a
+    dangling reference is FATAL for the loader. `studio.validate` calls the
+    same scan and decides it is a red marker instead, which is the whole
+    reason the two are separate functions and not two implementations.
+    """
+    var bad = dangling_references(xml)
+    if len(bad) > 0:
+        var msg = String(
+            "physics3d: expansion left "
+        ) + String(len(bad)) + " DANGLING name reference(s). A prefixer that"
+        msg += " misses an attribute produces a model that LOADS and is wrong"
+        msg += " — an actuator with an unresolved joint= applies zero force"
+        msg += " and raises nothing. Offenders:"
+        for i in range(len(bad)):
+            if i >= 8:
+                msg += " ... and " + String(len(bad) - 8) + " more"
+                break
+            msg += " " + bad[i]
+        raise Error(msg)
+
+
+def dangling_references(xml: String) -> List[String]:
+    """Every name reference in `xml` that names nothing it declares.
+
     ⚠⚠ THIS EXISTS BECAUSE `full_parser`'s BEHAVIOUR IS MIXED, and the silent
     paths are exactly the ones a prefixer breaks. Measured (§3.2 of the plan):
 
@@ -912,16 +953,5 @@ def check_references(xml: String) raises:
             if not found:
                 bad.append(attr + "='" + v + "'")
 
-    if len(bad) > 0:
-        var msg = String(
-            "physics3d: expansion left "
-        ) + String(len(bad)) + " DANGLING name reference(s). A prefixer that"
-        msg += " misses an attribute produces a model that LOADS and is wrong"
-        msg += " — an actuator with an unresolved joint= applies zero force"
-        msg += " and raises nothing. Offenders:"
-        for i in range(len(bad)):
-            if i >= 8:
-                msg += " ... and " + String(len(bad) - 8) + " more"
-                break
-            msg += " " + bad[i]
-        raise Error(msg)
+    return bad^
+
