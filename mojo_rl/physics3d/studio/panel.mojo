@@ -155,6 +155,16 @@ struct PanelOut(Copyable, Movable):
     var dup_prop: Bool
     var del_prop: Bool
 
+    var del_element: Bool
+    """Delete the SELECTED body or geom from the model itself — V2.1.
+
+    ⚠ NOT `del_prop`, AND THE DIFFERENCE IS THE WHOLE OF V1 vs V2.
+    `del_prop` removes an INSTANCE from the scene document — a `<frame>` and
+    an `<attach>` — and never touches an asset. This edits the robot's own
+    tree, so it goes through `structure.delete_element`, prunes every
+    reference to what it removed, and can leave a model MuJoCo refuses.
+    """
+
     var edit_field: Int
     """Which inspector field was dragged this frame, or -1. The STUDIO applies
     it — see `PanelOut`'s note on requests: the panel must not touch a `Model`
@@ -174,6 +184,7 @@ struct PanelOut(Copyable, Movable):
         self.add_prop = -1
         self.dup_prop = False
         self.del_prop = False
+        self.del_element = False
         self.edit_field = -1
         self.edit_value = 0.0
         self.open_path = String("")
@@ -501,6 +512,26 @@ def ui_options(
         if ig_button(String("delete"), 70.0):
             out.del_prop = True
         ig_text_disabled(String("props drop in front of the camera"))
+
+    if ig_collapsing_header(String("Structure"), True):
+        # ⚠ THIS EDITS THE MODEL, NOT THE SCENE. The Props buttons above add
+        # and remove INSTANCES; this removes a body or a geom from the robot's
+        # own tree, taking every reference to it — the actuator on its joint,
+        # the exclude that names it, the tendon routed through its sites.
+        if p.sel_kind == SEL_NONE:
+            ig_text_disabled(String("select a body or a geom first"))
+        else:
+            var what = String("geom") if p.sel_kind == SEL_GEOM \
+                else String("body")
+            if ig_button(String("delete selected ") + what, 200.0):
+                out.del_element = True
+            # ⚠ SAID OUT LOUD, BEFORE THE CLICK. Deleting the only geom of a
+            # moving body gives a model MuJoCo refuses — a legitimate step in
+            # a repair, and one the user should not discover by surprise. The
+            # Problems tab names it afterwards; this names it beforehand.
+            ig_text_disabled(String(
+                "removes it and everything that referenced it"
+            ))
 
     if ig_collapsing_header(String("Model")):
         ig_text_disabled(path)

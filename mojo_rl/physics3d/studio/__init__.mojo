@@ -18,6 +18,11 @@ from .validate import (
     worst_severity, count_at,
     format_diagnostic, severity_name, SEV_INFO, SEV_WARN, SEV_ERROR,
 )
+from .structure import (
+    EditResult, delete_body, delete_geom, delete_joint, delete_site,
+    delete_element, leftover_dangling, find_named,
+)
+from .remap import remap_state, RemapReport, joint_qpos_adr, joint_dof_adr
 from .edit import (
     Edit, EditLog, apply_edit, needs_rebuild, field_name,
     TARGET_GEOM, TARGET_BODY,

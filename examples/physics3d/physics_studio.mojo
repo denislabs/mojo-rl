@@ -87,6 +87,9 @@ from mojo_rl.physics3d.studio.validate import (
     Diagnostic, validate_all, worst_severity, count_at, format_diagnostic,
     SEV_ERROR, SEV_WARN,
 )
+from mojo_rl.physics3d.studio.structure import delete_body, delete_geom
+from mojo_rl.physics3d.studio.remap import remap_state
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.studio.edit import (
     Edit, EditLog, apply_edit, needs_rebuild,
     TARGET_GEOM, TARGET_BODY,
@@ -582,11 +585,47 @@ def _label_of(names: List[String], i: Int) -> String:
     return String("")
 
 
+def _sync_pose(
+    mut L: Loaded, mut positions: List[Vec3], mut quats: List[Quat]
+) raises:
+    """Resize and refill the draw poses after the model was REPLACED.
+
+    ⚠⚠ `positions.clear()` ALONE CRASHES THE SAME FRAME. The lists are filled
+    at the TOP of the loop and read by the draw at the BOTTOM; a replacement
+    in between leaves the draw reading an empty list, and `ModelRenderer`
+    indexes `positions[1]` for the tracking camera — "index 1 is out of
+    bounds, valid range is 0 to -1", from a frame that had already done the
+    right thing everywhere else.
+
+    ⚠ AND FK IS RUN, NOT SKIPPED. A freshly built `Data` has `xpos` all zero
+    until something integrates, so refilling without it draws every body at
+    the origin for one frame — which looks exactly like the model collapsing,
+    and would be blamed on the edit.
+    """
+    var nbody = L.dims.get_nbody()
+    forward_kinematics["cpu", DT, DynDims, 1](L.d, L.m)
+    positions.clear()
+    quats.clear()
+    for b in range(nbody):
+        positions.append(Vec3(
+            Float64(L.d.xpos.data[b * 3 + 0]),
+            Float64(L.d.xpos.data[b * 3 + 1]),
+            Float64(L.d.xpos.data[b * 3 + 2]),
+        ))
+        quats.append(Quat(
+            Float64(L.d.xquat.data[b * 4 + 3]),
+            Float64(L.d.xquat.data[b * 4 + 0]),
+            Float64(L.d.xquat.data[b * 4 + 1]),
+            Float64(L.d.xquat.data[b * 4 + 2]),
+        ))
+
+
 def run_studio(
     first: String, drive: Int, scale: Float64, max_frames: Int = 0,
-    swap_to: String = String(""),
+    swap_to: String = String(""), delete_body_named: String = String(""),
 ) raises:
-    """`swap_to` is the SMOKE PATH for File > Open.
+    """`swap_to` is the SMOKE PATH for File > Open, `delete_body_named` for
+    the structural delete.
 
     ⚠ IT EXISTS BECAUSE A MENU CANNOT BE CLICKED FROM A SCRIPT, and the swap
     is the riskiest code in this file: it detaches a live window, rebuilds
@@ -627,6 +666,8 @@ def run_studio(
 
     var actions = List[Float64]()
     var act = List[Scalar[DT]]()
+    var held_reported = False
+    var frame = 0
     var positions = List[Vec3]()
     var quats = List[Quat]()
     var keys = List[String]()
@@ -650,7 +691,12 @@ def run_studio(
     while renderer.is_open():
         if renderer.check_quit():
             break
-        if max_frames > 0 and t >= max_frames:
+        # ⚠⚠ THE BOUND IS ON FRAMES, NOT ON STEPS. `t` counts STEPS, and a
+        # sim that is paused — or HELD because the model has an error — never
+        # advances it, so a headless run with `frames` set spun forever. The
+        # hold is new; the pause has had this since S0.
+        frame += 1
+        if max_frames > 0 and (t >= max_frames or frame > max_frames * 4):
             break
 
         var nbody = L.dims.get_nbody()
@@ -731,8 +777,26 @@ def run_studio(
         # never fire, which is exactly the shape of a test that proves
         # nothing.
         if swap_to.byte_length() > 0 and max_frames > 0 \
-                and t == max_frames // 2:
+                and frame == max_frames // 2:
             ui.open_path = swap_to
+        # ⚠ THE SMOKE PATH FOR THE STRUCTURAL DELETE, and it goes through the
+        # SAME `PanelOut.del_element` a click sets — including the selection,
+        # which is what names the victim. A test that called `delete_body`
+        # directly would prove the library works and nothing about the wiring:
+        # the selection lookup, the rebuild, the pose remap and the renderer
+        # handoff are all here, not there.
+        if delete_body_named.byte_length() > 0 and max_frames > 0 \
+                and frame == max_frames // 3:
+            var vi = -1
+            for bi in range(len(L.fmd.body_names)):
+                if L.fmd.body_names[bi] == delete_body_named:
+                    vi = bi
+            if vi >= 0:
+                panel.sel_kind = SEL_BODY
+                panel.sel_index = vi
+                ui.del_element = True
+            else:
+                print("  smoke: no body named", delete_body_named)
         renderer.set_show_hud(panel.show_hud)
         renderer.set_show_sites(panel.show_sites)
         if ui.quit:
@@ -808,10 +872,45 @@ def run_studio(
                 fresh.mesh_half = fresh._measure_meshes()
                 renderer.set_render_fields(fresh.rf.copy())
                 L = fresh^
-                positions.clear()
-                quats.clear()
+                _sync_pose(L, positions, quats)
             except e:
                 print("  undo failed:", e)
+
+        # ── delete a body or a geom FROM THE MODEL — V2.1 ─────────────────
+        # ⚠⚠ THIS IS NOT `del_prop`. That removes an INSTANCE from the scene
+        # document; this edits the robot's own tree, so it goes through the
+        # text, is re-parsed, and takes every reference to what it removed.
+        if ui.del_element and panel.sel_kind != SEL_NONE:
+            var is_geom = panel.sel_kind == SEL_GEOM
+            var victim = _label_of(L.fmd.geom_names, panel.sel_index) \
+                if is_geom else _label_of(L.fmd.body_names, panel.sel_index)
+            try:
+                var r = delete_geom(L.flat, victim) if is_geom \
+                    else delete_body(L.flat, victim)
+                if not r.ok:
+                    print("  cannot delete:", r.notes[0])
+                else:
+                    # ⚠ EVERY PRUNE IS PRINTED. These are edits the user did
+                    # not make; discovering later that an actuator vanished is
+                    # how an editor loses trust.
+                    print("  deleted", victim)
+                    for note in r.notes:
+                        print("   ", note)
+                    var nxt = Loaded(L.path, r.xml, L.base_dir)
+                    # ⚠ THE POSE IS CARRIED BY NAME. A positional copy would
+                    # take the knee's angle into the ankle — every address
+                    # after a removed joint has shifted. See `studio/remap`.
+                    var rep = remap_state(L.fmd, L.d, nxt.fmd, nxt.d)
+                    print("   ", rep.summary())
+                    # ⚠ THE SELECTION CANNOT SURVIVE: indices shift, and a
+                    # kept index names a DIFFERENT part with full confidence.
+                    panel.clear_selection()
+                    renderer.set_render_fields(nxt.rf.copy())
+                    L = nxt^
+                    _sync_pose(L, positions, quats)
+                    log = EditLog()
+            except e:
+                print("  delete failed:", e)
 
         # ── props: a STRUCTURAL edit, so the whole model is rebuilt ───────
         if ui.add_prop >= 0 or ui.dup_prop or ui.del_prop:
@@ -851,8 +950,7 @@ def run_studio(
                     panel.clear_selection()
                     renderer.set_render_fields(nxt.rf.copy())
                     L = nxt^
-                    positions.clear()
-                    quats.clear()
+                    _sync_pose(L, positions, quats)
                     log = EditLog()
                 except e:
                     print("  prop edit failed:", e)
@@ -868,7 +966,21 @@ def run_studio(
         # ⚠ BOTH PAUSES ARE HONOURED — the panel's and `Renderer3D`'s SPACE
         # binding. Honouring one leaves the other toggling a flag nothing
         # reads, which is a bug `viewer_core` documents having shipped.
-        var frozen = panel.paused or renderer.paused()
+        # ⚠⚠ AN INVALID MODEL IS NOT STEPPED. A body with a joint and no mass
+        # gives a singular mass matrix, and the factorisation fills `qpos`
+        # with NaN — the window then shows a robot that has vanished, which
+        # reads as a renderer bug rather than as the model defect it is. The
+        # Problems tab already names the reason; holding the sim is what makes
+        # the state WORKABLE instead of merely visible.
+        var invalid = worst_severity(L.diags) >= SEV_ERROR
+        if invalid and not held_reported:
+            held_reported = True
+            print("  SIM HELD —", count_at(L.diags, SEV_ERROR),
+                  "error(s) in this model; see the Problems tab. Editing,"
+                  " selecting and the camera all still work.")
+        if not invalid:
+            held_reported = False
+        var frozen = panel.paused or renderer.paused() or invalid
         if (not frozen) or ui.step_once:
             var s0 = perf_counter_ns()
             for a in range(nact):
@@ -990,4 +1102,7 @@ def main() raises:
     var swap_to = String("")
     if len(args) > 5:
         swap_to = String(args[5])
-    run_studio(path, drive, scale, frames, swap_to)
+    var del_body = String("")
+    if len(args) > 6:
+        del_body = String(args[6])
+    run_studio(path, drive, scale, frames, swap_to, del_body)
