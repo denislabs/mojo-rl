@@ -1420,11 +1420,21 @@ def build_model_fields_from_flat[
     # sibling in `full_parser.mojo` describes cost SO-ARM100 two collision
     # surfaces exactly this way, and it took a per-geom `rbound` diff against
     # MuJoCo to notice. Say so rather than break quietly.
+    # ⚠⚠ A RAISE, NOT A PRINT. This used to announce the overflow and carry on,
+    # which leaves every mesh past the cap with a hull and an id but no
+    # `mesh_meta` row — so consumers read vertadr/vertnum 0 and collide against
+    # an EMPTY mesh. Wrong physics that runs, in a viewer where a printed line
+    # scrolls away. The number needed is in the message, and `MAX_GPU_MESHES`
+    # is 256 now, so reaching this at all means something unusual.
     if num_meshes > MAX_GPU_MESHES:
-        print(
-            "ERROR: model needs", num_meshes,
-            "collidable meshes but MAX_GPU_MESHES is", MAX_GPU_MESHES,
-            "- meshes", MAX_GPU_MESHES, "and up have NO collision geometry.",
+        raise Error(
+            "physics3d: model needs " + String(num_meshes)
+            + " collidable meshes but MAX_GPU_MESHES is "
+            + String(MAX_GPU_MESHES)
+            + ". Meshes past the cap would carry NO collision geometry"
+            + " (mesh_meta has no row for them), so this is fatal rather than"
+            + " a truncation. Raise MAX_GPU_MESHES in gpu/constants.mojo — it"
+            + " sizes one [N, 4] table and nothing else."
         )
     for m in range(num_meshes):
         if m >= MAX_GPU_MESHES:

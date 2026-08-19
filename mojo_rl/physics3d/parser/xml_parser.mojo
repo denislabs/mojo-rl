@@ -1960,6 +1960,11 @@ def _mjcf_sections() -> List[String]:
     s.append(String("statistic")); s.append(String("custom"))
     s.append(String("extension")); s.append(String("deformable"))
     s.append(String("size"))
+    # ⚠ `deformable` IS THE ONE MERGE_MJCF DOES NOT CARRY. It stays on this
+    # list precisely so a model that has one RAISES at the merge instead of
+    # losing it — that is what this check is for. Every other entry is
+    # accumulated, so their presence here is a regression guard rather than a
+    # known gap.
     return s^
 
 
@@ -2104,12 +2109,20 @@ def merge_mjcf(*xmls: String) -> String:
     do not let it rot as unreferenced code with a bug history.
 
 
-    Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
-    Accumulator tags — inner content concatenated from all inputs:
-    <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,
-    <visual>, <sensor>, <contact>, <keyframe>, and <option>'s <flag> children.
+    Singletons (attributes merged, last wins per attr): <option>, <compiler>,
+    <statistic>, <size>.
+    Accumulators (inner content concatenated from all inputs): <asset>,
+    <default>, <worldbody>, <tendon>, <actuator>, <equality>, <visual>,
+    <sensor>, <contact>, <keyframe>, <custom>, <extension>, and <option>'s
+    <flag> children.
 
-    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. No
+    ⚠⚠ THAT IS NOW EVERY TOP-LEVEL MJCF SECTION, which is the point: the list
+    used to be partial, and each gap was found only when a model needed it.
+    `resolve_includes` cross-checks every section present in an input against
+    the merged output and RAISES naming a missing one, so the next gap is loud
+    at the merge rather than silent until a physics number is wrong.
+
+    ⚠ ANYTHING NOT IN THAT LIST WOULD STILL BE SILENTLY DROPPED HERE. No
     section is dropped deliberately any more — <contact> was, on the stale
     grounds of "no exclude/pair support yet", until 2026-08-03; see the note
     at `all_contact` below. `<pair>` inside it was likewise unparsed until
@@ -2192,6 +2205,32 @@ def merge_mjcf(*xmls: String) -> String:
     # disabled `<flag contact="disable"/>` for every merged model — cartpole
     # then launched its cart off the rails it is meant to overlap.
     var all_option_flags = String("")
+    # ⚠⚠ THE FOUR SECTIONS ADDED 2026-08-19, AND THE REASON IS THE PATTERN
+    # ABOVE, NOT A MODEL THAT NEEDED THEM. Every previous entry in this list
+    # arrived the same way: a section was dropped, nothing raised, and it was
+    # found months later by a model that happened to need it (<tendon> by
+    # fish, <option>'s <flag> by cartpole, <contact> by humanoid_CMU,
+    # <keyframe> by ToddlerBot). Four MJCF sections were still missing, and
+    # they are not rare — MEASURED across the trees available here:
+    #
+    #     <statistic>  24 Menagerie files, 11 of ours
+    #     <size>        2 Menagerie files,  6 of ours
+    #     <custom>      4 Menagerie files,  2 of ours
+    #     <extension>   1 Menagerie file
+    #
+    # so the next dropped-section bug was already written and waiting for
+    # whoever first merged one of those. Carrying them costs nothing: our
+    # parser reads none of them, and the point (as with <sensor>) is that the
+    # merged text stays a FAITHFUL copy of what the model declares, so MuJoCo
+    # can load it as a parity reference.
+    #
+    # `<statistic>` and `<size>` are attribute-only SINGLETONS, merged like
+    # <option>/<compiler>; `<custom>` and `<extension>` have children and
+    # accumulate.
+    var statistic_tags = List[String]()
+    var size_tags = List[String]()
+    var all_custom = String("")
+    var all_extension = String("")
 
     for i in range(len(xmls)):
         # ⚠⚠ COMMENTS COME OFF FIRST, AND THAT IS A FIX, NOT HYGIENE.
@@ -2245,6 +2284,12 @@ def merge_mjcf(*xmls: String) -> String:
         var comp = _extract_singleton_tag(stripped, "compiler")
         if comp.byte_length() > 0:
             compiler_tags.append(comp)
+        var stat = _extract_singleton_tag(stripped, "statistic")
+        if stat.byte_length() > 0:
+            statistic_tags.append(stat)
+        var siz = _extract_singleton_tag(stripped, "size")
+        if siz.byte_length() > 0:
+            size_tags.append(siz)
 
         # Accumulator sections (extract inner content, handle multiple occurrences)
         all_assets = all_assets + _extract_section_inner(stripped, "asset")
@@ -2259,6 +2304,10 @@ def merge_mjcf(*xmls: String) -> String:
             stripped, "keyframe"
         )
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
+        all_custom = all_custom + _extract_section_inner(stripped, "custom")
+        all_extension = all_extension + _extract_section_inner(
+            stripped, "extension"
+        )
 
     # Build merged XML
     var result = String('<mujoco model="merged">\n')
@@ -2267,6 +2316,14 @@ def merge_mjcf(*xmls: String) -> String:
     var merged_compiler = _merge_singleton_attrs(compiler_tags, "compiler")
     if merged_compiler.byte_length() > 0:
         result = result + "  " + merged_compiler + "\n"
+
+    var merged_statistic = _merge_singleton_attrs(statistic_tags, "statistic")
+    if merged_statistic.byte_length() > 0:
+        result = result + "  " + merged_statistic + "\n"
+
+    var merged_size = _merge_singleton_attrs(size_tags, "size")
+    if merged_size.byte_length() > 0:
+        result = result + "  " + merged_size + "\n"
 
     var merged_option = _merge_singleton_attrs(option_tags, "option")
     if merged_option.byte_length() > 0:
@@ -2337,6 +2394,16 @@ def merge_mjcf(*xmls: String) -> String:
     # way after <tendon>, <option>'s <flag> children and <contact>.
     if _trim(all_keyframe).byte_length() > 0:
         result = result + "  <keyframe>\n" + all_keyframe + "  </keyframe>\n"
+
+    # ⚠ AFTER THE PHYSICS SECTIONS, because nothing reads them and MJCF is
+    # order-insensitive between top-level sections. See the note where these
+    # are declared for why they are carried at all.
+    if _trim(all_custom).byte_length() > 0:
+        result = result + "  <custom>\n" + all_custom + "  </custom>\n"
+    if _trim(all_extension).byte_length() > 0:
+        result = (
+            result + "  <extension>\n" + all_extension + "  </extension>\n"
+        )
 
     result = result + "</mujoco>"
     return result

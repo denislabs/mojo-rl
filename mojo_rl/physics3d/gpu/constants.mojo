@@ -859,7 +859,31 @@ comptime JLIM_IDX_RANGE_MAX: Int = 3
 # mesh_meta: [vertadr, vertnum] per mesh
 # mesh_verts: flattened [x0,y0,z0, x1,y1,z1, ...] in local frame
 comptime MAX_HULL_VERTS_PER_MESH: Int = 256
-comptime MAX_GPU_MESHES: Int = 16
+"""⚠⚠ DEAD, AND MISLEADING IF READ AS LIVE. Nothing references this. Hulls are
+NOT capped per mesh — so_arm100 loads one of 2094 vertices — and the total is
+bounded by `dims.get_nmesh_verts()`, a runtime budget. Kept only because
+deleting a public constant is a separate change; do not reintroduce a use."""
+
+comptime MAX_GPU_MESHES: Int = 256
+"""How many COLLIDABLE meshes one model may have. Was 16.
+
+⚠ IT SIZES ONE TABLE AND NOTHING ELSE. `mesh_meta` is `[MAX_GPU_MESHES, 4]` —
+8 KB at 256 and float64, against 512 bytes at 16 — and every other use is a
+`Layout` over that table. No `InlineArray` is keyed on it, so raising it costs
+memory and nothing else. 16 was never a hardware limit; it was a guess that
+predates mesh-heavy models.
+
+⚠⚠ AND EXCEEDING IT NOW RAISES. It used to print `ERROR:` and continue, which
+leaves meshes past the cap with a hull built and an id assigned but NO
+`mesh_meta` row — so every consumer reads vertadr/vertnum 0 and collides
+against an EMPTY mesh. That is wrong physics that runs, and this tree has paid
+for the same shape twice (the 16-asset `<mesh>` cap cost SO-ARM100 two
+collision surfaces, found only by diffing `rbound` against MuJoCo). A model
+that will not open is a better outcome than one that opens and is wrong.
+
+Headroom, measured 2026-08-19: ToddlerBot 2, so_arm100 8, sawyer 10 — the
+mesh-heaviest models in or near this tree. See
+`tests/physics3d/test_mesh_cap_is_loud.mojo`."""
 # vertadr, vertnum, polyadr, polynum per mesh — the last two added with the
 # native multi-contact path, mirroring `mesh_polyadr` / `mesh_polynum`.
 comptime MODEL_MESH_META_SIZE: Int = 4

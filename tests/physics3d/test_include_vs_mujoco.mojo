@@ -43,7 +43,9 @@ Run: pixi run mojo run -I . tests/physics3d/test_include_vs_mujoco.mojo
 from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.xml_parser import resolve_includes
+from mojo_rl.physics3d.parser.xml_parser import (
+    resolve_includes, merge_mjcf,
+)
 
 comptime SCENE = String(
     "references/mujoco_menagerie-main/toddlerbot_2xc/scene.xml"
@@ -190,6 +192,67 @@ def main() raises:
     except e:
         raised = String(e).find("nope_does_not_exist.xml") != -1
     t.truth(raised, "a missing <include> file raises, NAMING the file")
+
+    # ── every top-level section survives the merge ────────────────────────
+    # ⚠⚠ THIS IS THE REGRESSION GUARD FOR A FOUR-TIME BUG. `merge_mjcf`
+    # accumulates a HAND-MAINTAINED list, and every entry on it was added the
+    # same way: a section was dropped, nothing raised, and it surfaced months
+    # later through a model that needed it — <tendon> via fish, <option>'s
+    # <flag> via cartpole, <contact> via humanoid_CMU, <keyframe> via
+    # ToddlerBot. Four more were still missing on 2026-08-19 (<statistic> in
+    # 24 Menagerie files and 11 of ours, <size>, <custom>, <extension>), so
+    # the fifth instance was already written and waiting.
+    #
+    # One fragment carrying EVERY section, merged with a second, and every one
+    # must come out the other side.
+    print("--- every section survives a merge ---")
+    var host = String(
+        '<mujoco>'
+        '<compiler angle="radian"/><option timestep="0.001"/>'
+        '<statistic extent="2" center="0 0 0.5"/><size njmax="500"/>'
+        '<visual><global azimuth="90"/></visual>'
+        '<default><geom rgba="1 0 0 1"/></default>'
+        '<asset><material name="m1" rgba="0 1 0 1"/></asset>'
+        '<worldbody><body name="b1"><joint name="j1" type="hinge"/>'
+        '<geom name="g1" type="sphere" size="0.1"/>'
+        '<site name="s1" pos="0 0 0"/></body></worldbody>'
+        '<tendon><fixed name="t1"><joint joint="j1" coef="1"/></fixed></tendon>'
+        '<actuator><motor name="a1" joint="j1"/></actuator>'
+        '<equality><joint joint1="j1" polycoef="0 1 0 0 0"/></equality>'
+        '<sensor><jointpos name="sp1" joint="j1"/></sensor>'
+        '<contact><exclude body1="b1" body2="b1"/></contact>'
+        '<keyframe><key name="home" qpos="0"/></keyframe>'
+        '<custom><numeric name="n1" data="1 2 3"/></custom>'
+        '<extension><plugin plugin="mujoco.elasticity.cable"/></extension>'
+        '</mujoco>'
+    )
+    var other = String('<mujoco><worldbody><geom name="floor" type="plane"'
+                       ' size="1 1 1"/></worldbody></mujoco>')
+    var merged = merge_mjcf(host, other)
+    var sections = List[String]()
+    sections.append(String("compiler")); sections.append(String("option"))
+    sections.append(String("statistic")); sections.append(String("size"))
+    sections.append(String("visual")); sections.append(String("default"))
+    sections.append(String("asset")); sections.append(String("worldbody"))
+    sections.append(String("tendon")); sections.append(String("actuator"))
+    sections.append(String("equality")); sections.append(String("sensor"))
+    sections.append(String("contact")); sections.append(String("keyframe"))
+    sections.append(String("custom")); sections.append(String("extension"))
+    var lost = 0
+    for sec in sections:
+        var open_a = "<" + sec + ">"
+        var open_b = "<" + sec + " "
+        if merged.find(open_a) == -1 and merged.find(open_b) == -1:
+            lost += 1
+            print("    LOST: <", sec, ">")
+    t.eq(lost, 0, String("sections lost of ", len(sections)))
+    # ⚠ NON-VACUITY: a merge that echoed its input verbatim would pass the
+    # arm above while merging nothing. The floor comes from the OTHER
+    # fragment, so its presence proves both inputs reached the output.
+    t.truth(merged.find("floor") != -1,
+            "the second fragment's content is in the merge (not an echo)")
+    t.truth(merged.find("<numeric") != -1 and merged.find("<plugin") != -1,
+            "section CHILDREN survive, not just the wrapper tags")
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
