@@ -166,6 +166,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_CONE,
     MODEL_META_IDX_SOLVER,
     MODEL_META_IDX_INTEGRATOR,
+    MODEL_META_IDX_MAX_CONDIM,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEXCLUDE,
@@ -862,6 +863,7 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_CONE] = Scalar[DTYPE](fmd.cone)
     mf.meta.data[MODEL_META_IDX_SOLVER] = Scalar[DTYPE](fmd.solver)
     mf.meta.data[MODEL_META_IDX_INTEGRATOR] = Scalar[DTYPE](fmd.integrator)
+    mf.meta.data[MODEL_META_IDX_MAX_CONDIM] = Scalar[DTYPE](fmd.max_condim)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         len(fmd.equalities) if len(fmd.equalities) < mf.dims.get_nequality()
         else mf.dims.get_nequality()

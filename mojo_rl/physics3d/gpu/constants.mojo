@@ -283,7 +283,7 @@ comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 37
+comptime MODEL_META_SIZE: Int = 38
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -321,6 +321,14 @@ comptime MODEL_META_IDX_IMPRATIO: Int = 22  # MuJoCo impratio
 comptime MODEL_META_IDX_CONE: Int = 34  # ConeType, MuJoCo default PYRAMIDAL
 comptime MODEL_META_IDX_SOLVER: Int = 35  # SolverType, MuJoCo default NEWTON
 comptime MODEL_META_IDX_INTEGRATOR: Int = 36  # IntegratorType, default EULER
+# ⚠⚠ THE CONDIM THE **MODEL** NEEDS, versus the `MAX_CONDIM` a caller built.
+# `contact_solve` clamps `condim > MAX_CONDIM` down to it SILENTLY, in both
+# cone branches — so spot's `condim="6"` feet, which want torsional and rolling
+# friction, were solved as plain condim 3 with no indication. The comptime path
+# has `ParsedModel.MAX_CONDIM` and every def passes it; the runtime path had no
+# equivalent at all, so the studio's hardcoded 3 could not even be compared
+# against what the file asked for.
+comptime MODEL_META_IDX_MAX_CONDIM: Int = 37  # max geom condim, >= 3
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons

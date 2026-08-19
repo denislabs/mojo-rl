@@ -120,6 +120,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
 )
+from mojo_rl.physics3d.gpu.constants import JOINT_RANGE_UNLIMITED
 from mojo_rl.physics3d.joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
@@ -710,6 +711,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var kv_s = _extract_attr(mtag, "kv")
         if kv_s.byte_length() > 0:
             d.motor_kv_s = kv_s
+        var ir_s = _extract_attr(mtag, "inheritrange")
+        if ir_s.byte_length() > 0:
+            d.motor_inheritrange_s = ir_s
         var gt_s = _extract_attr(mtag, "gaintype")
         if gt_s.byte_length() > 0:
             d.motor_gaintype_s = gt_s
@@ -3022,6 +3026,63 @@ def _fill_actuators(
             if pkv.byte_length() == 0:
                 pkv = eff.motor_kv_s
             ad.kv = _parse_float(pkv) if pkv.byte_length() > 0 else 0.0
+
+            # ── `inheritrange` (`user_objects.cc:7138`) ───────────────────
+            # "Automatically set the actuator's ctrlrange to match the
+            # transmission target's range", scaled about its midpoint:
+            #
+            #     mean   = 0.5*(hi + lo)
+            #     radius = 0.5*(hi - lo) * inheritrange
+            #     ctrlrange = [mean - radius, mean + radius]
+            #
+            # ⚠⚠ WITHOUT THIS THE SERVO TARGETS A POSE THE JOINT FORBIDS.
+            # MuJoCo clamps `ctrl` to `ctrlrange`, so on spot — whose knees
+            # have range [-2.793, -0.254] while `qpos0` puts them at 0 — a
+            # commanded 0 is clamped to -0.254 and the actuator pulls the knee
+            # INTO its limit, -127 N.m at reset on each of the four. We had no
+            # ctrlrange at all (the [-1, 1] default, unlimited), so the servo
+            # held the knee at 0, a configuration the joint limit constraint
+            # is simultaneously pushing out of.
+            #
+            # ⚠ MuJoCo's guard is `gaintype == FIXED && biastype == AFFINE &&
+            # gainprm[0] == -biasprm[1]` — "the actuator's semantics are the
+            # transmission's". `<position>` satisfies it by construction
+            # (`biasprm[1]` IS `-kp`), which is why this sits in the position
+            # branch rather than being tested separately.
+            #
+            # ⚠ EXCLUSIVE WITH `ctrlrange`. MuJoCo raises when both are given;
+            # we cannot raise from a parser that must keep loading, so an
+            # explicit `ctrlrange` WINS and this is skipped — the same
+            # precedence a saved XML would have, since MuJoCo always converts
+            # `inheritrange` to an explicit `ctrlrange` on save.
+            var ir_s = _extract_attr(tag, "inheritrange")
+            if ir_s.byte_length() == 0:
+                ir_s = eff.motor_inheritrange_s
+            var inherit = _parse_float(ir_s) if ir_s.byte_length() > 0 else 0.0
+            if inherit > 0.0 and cr_s.byte_length() == 0:
+                # ⚠ HINGE/SLIDE ONLY, and the range must be DEFINED. MuJoCo
+                # raises on a free/ball target or a target with no range; here
+                # a model that would not compile in MuJoCo simply keeps the
+                # default rather than acquiring a nonsense clamp.
+                if ad.joint_id >= 0 and ad.joint_id < len(result.joints):
+                    ref jd = result.joints[ad.joint_id]
+                    var lo = jd.range_min
+                    var hi = jd.range_max
+                    var real_range = (
+                        lo != hi
+                        and lo > Float64(-JOINT_RANGE_UNLIMITED)
+                        and hi < Float64(JOINT_RANGE_UNLIMITED)
+                    )
+                    if real_range and (jd.jnt_type == JNT_HINGE
+                                       or jd.jnt_type == JNT_SLIDE):
+                        var mean = 0.5 * (hi + lo)
+                        var radius = 0.5 * (hi - lo) * inherit
+                        ad.ctrl_min = mean - radius
+                        ad.ctrl_max = mean + radius
+                        # MuJoCo's `ctrllimited` is auto and a defined range
+                        # makes it limited — measured, spot reports
+                        # `actuator_ctrllimited` true on all twelve.
+                        ad.is_ctrl_limited = True
         elif is_velocity:
             # ⚠ kv DEFAULTS TO 1 here, not 0 — it IS the actuator, and 0 would
             # be a dead motor. gainprm[0] and -biasprm[2] are both K.
@@ -4883,6 +4944,20 @@ def parse_xml_full(
         for ji in range(len(result.joints)):
             result.joints[ji].range_min = Float64(-1e10)
             result.joints[ji].range_max = Float64(1e10)
+
+    # ⚠ THE CONDIM THE MODEL NEEDS, so a caller can compare it with the
+    # `MAX_CONDIM` it built. `contact_solve` clamps a contact whose condim
+    # exceeds the built bound SILENTLY, in both cone branches, so spot's
+    # `condim="6"` feet were solved as condim 3 — torsional and rolling
+    # friction dropped with no indication. Computed from the GEOMS because a
+    # contact takes the max of its pair (priority aside), which makes the geom
+    # maximum the bound a caller has to satisfy.
+    var mcd = 3
+    for gi in range(len(result.geoms)):
+        var gc = result.geoms[gi].condim
+        if gc > mcd:
+            mcd = gc
+    result.max_condim = mcd
 
     # Actuators
     _fill_actuators(

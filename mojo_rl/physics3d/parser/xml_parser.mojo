@@ -2581,16 +2581,38 @@ def _scan_max_condim(xml: String) -> Int:
     (Getting this wrong once already cost a full debugging arc: see
     tests/physics3d/test_rolling_friction_vs_mujoco.mojo.)
     """
+    # ⚠ BOTH QUOTE STYLES. This searched only `condim="` until 2026-08-19, so
+    # `condim='6'` — which MJCF admits and which nothing in the tree happens to
+    # use — scanned as the floor of 3. That is the SILENT under-estimate this
+    # docstring calls out two paragraphs up: the model would spin and roll
+    # without resistance and nothing would say so. Found by comparing this
+    # scanner against the runtime one, which reads the PARSED attribute and is
+    # therefore quote-agnostic; they disagreed 3 vs 6 on a single-quoted
+    # fixture. No asset in the tree changes (audited: zero files), so this is
+    # robustness, not a behaviour change.
     var best = 3
-    var pos = 0
-    var needle = 'condim="'
-    var nlen = needle.byte_length()
+    for q in range(2):
+        var needle = 'condim="' if q == 0 else "condim='"
+        var quote = '"' if q == 0 else "'"
+        var nlen = needle.byte_length()
+        var pos = 0
+        best = _scan_condim_pass(xml, needle, quote, nlen, pos, best)
+    return best
+
+
+def _scan_condim_pass(
+    xml: String, needle: String, quote: String, nlen: Int, pos_in: Int,
+    best_in: Int,
+) -> Int:
+    """One quote style's pass for `_scan_max_condim`."""
+    var best = best_in
+    var pos = pos_in
     while True:
         var hit = xml.find(needle, pos)
         if hit < 0:
             break
         var vs = hit + nlen
-        var ve = xml.find('"', vs)
+        var ve = xml.find(quote, vs)
         if ve < 0:
             break
         var val = 0

@@ -1217,6 +1217,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # quadruped both declare gainprm/biasprm/biastype in a <default> block,
     # so the class path is the one that carries them.
     var motor_kp_s: String
+    # `<position inheritrange>` — see `_fill_actuators`. Carried as raw text so
+    # an absent attribute inherits the parent class rather than resetting it,
+    # exactly like `motor_kp_s`.
+    var motor_inheritrange_s: String
     var motor_kv_s: String
     var motor_gaintype_s: String
     var motor_biastype_s: String
@@ -1356,6 +1360,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_dyntype_s = ""
         self.motor_dynprm_s = ""
         self.motor_kp_s = ""
+        self.motor_inheritrange_s = ""
         self.motor_kv_s = ""
         self.motor_gaintype_s = ""
         self.motor_biastype_s = ""
@@ -1683,6 +1688,9 @@ struct FlatModelDef(Movable):
     var cone: Int
     var solver: Int
     var integrator: Int
+    # Largest `condim` any geom asks for, floored at 3 — what a caller must
+    # build `MAX_CONDIM` at to avoid `contact_solve`'s silent clamp.
+    var max_condim: Int
     # `<option><flag multiccd="disable" nativeccd="disable"/></option>` —
     # `mjDSBL_MULTICCD` / `mjDSBL_NATIVECCD`, both DISABLE bits that are off by
     # default on the 3.10.0 runtime.
@@ -1872,6 +1880,7 @@ struct FlatModelDef(Movable):
         self.cone = ConeType.PYRAMIDAL
         self.solver = SolverType.NEWTON
         self.integrator = IntegratorType.EULER
+        self.max_condim = 3
         # Both default OFF, matching MuJoCo: the features are ON unless a model
         # disables them.
         self.multiccd_disabled = False
