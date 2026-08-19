@@ -1,0 +1,20 @@
+<mujoco model="scene">
+  <compiler angle="radian"/>
+  <option timestep="0.002"/>
+  <asset>
+    <model name="cube" file="cube.xml"/>
+    <model name="arm" file="arm.xml"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <frame pos="0 0 0">
+      <attach model="arm" prefix="arm1_"/>
+    </frame>
+    <frame pos="0.3 0 0.5">
+      <attach model="cube" prefix="cube1_"/>
+    </frame>
+    <frame pos="-0.3 0.1 0.5" quat="0.7071068 0 0 0.7071068">
+      <attach model="cube" prefix="cube2_"/>
+    </frame>
+  </worldbody>
+</mujoco>

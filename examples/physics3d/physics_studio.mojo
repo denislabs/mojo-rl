@@ -60,6 +60,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
     read_model_source,
 )
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from mojo_rl.physics3d.parser.expander import expand_mjcf
 from mojo_rl.physics3d.parser.flat_model import FlatModelDef
 from mojo_rl.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
@@ -152,7 +153,12 @@ struct Loaded(Movable):
         """
         var src = read_model_source(path)
         self.path = path
-        self.fmd = parse_xml_full(src[0], src[1])
+        # ⚠ EXPANDED BEFORE PARSING. `<include>`/`<attach>`/`<frame>` become
+        # flat text so the ONE existing parser reads it — the studio must not
+        # become a second model path (plan §10 risk 2). A file using none of
+        # the three passes through untouched.
+        var flat = expand_mjcf(src[0], src[1])
+        self.fmd = parse_xml_full(flat, src[1])
 
         # ⚠ THE MESH VERTEX BUDGET CANNOT BE DERIVED HERE, and that is not an
         # oversight — `dims_from_flat`'s docstring explains it: the hull vertex
@@ -198,7 +204,12 @@ struct Loaded(Movable):
         self.integ = EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3](
             self.dims
         )
-        self.rf = build_render_fields(self.fmd, src[0], src[1])
+        # ⚠ THE **EXPANDED** TEXT, NOT THE SOURCE. `RenderFields.xml_text` is
+        # what `render_skin` and `body_names_of` scan, and after an `<attach>`
+        # the source names none of the spliced bodies — the scene file is a
+        # floor and two `<attach/>` tags. Handing it the pre-expansion text
+        # would give a skin that binds no bones, silently.
+        self.rf = build_render_fields(self.fmd, flat, src[1])
 
         # Flat index maps, so `panel.mojo` never sees a `FlatModelDef`.
         self.body_parent = List[Int]()
