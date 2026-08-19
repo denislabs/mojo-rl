@@ -46,6 +46,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
 from mojo_rl.physics3d.parser.xml_parser import (
     resolve_includes, merge_mjcf,
 )
+from mojo_rl.physics3d.parser.expander import expand_mjcf, check_references
 
 comptime SCENE = String(
     "references/mujoco_menagerie-main/toddlerbot_2xc/scene.xml"
@@ -53,6 +54,45 @@ comptime SCENE = String(
 comptime ROBOT = String(
     "references/mujoco_menagerie-main/toddlerbot_2xc/toddlerbot_2xc.xml"
 )
+
+
+comptime MENAGERIE = String("references/mujoco_menagerie-main/")
+
+
+def _read(path: String) raises -> String:
+    var f = open(path, "r")
+    var s = f.read()
+    f.close()
+    return s^
+
+
+def _count(s: String, needle: String) -> Int:
+    var n = 0
+    var scan = 0
+    while True:
+        var at = s.find(needle, scan)
+        if at == -1:
+            return n
+        n += 1
+        scan = at + needle.byte_length()
+
+
+def _body_depth_at(xml: String, marker: String) -> Int:
+    """How many `<body>` elements are still OPEN where `marker` appears.
+
+    The whole question the nesting fix turns on. `femur_r` arrives through an
+    `<include>` written INSIDE `<body name="pelvis">`, so it must land with
+    pelvis open around it — depth 1. Hoisted to `<worldbody>` (what section
+    merging did) it would read 0, and every count in the model would still be
+    right, which is why this arm and not just the totals.
+    """
+    var at = xml.find(marker)
+    if at == -1:
+        return -1
+    var opens = _count(String(xml[byte=0:at]), "<body ")
+    var closes = _count(String(xml[byte=0:at]), "</body>")
+    return opens - closes
+
 
 
 struct Tally:
@@ -253,6 +293,107 @@ def main() raises:
             "the second fragment's content is in the merge (not an echo)")
     t.truth(merged.find("<numeric") != -1 and merged.find("<plugin") != -1,
             "section CHILDREN survive, not just the wrapper tags")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # An `<include>` INSIDE a `<body>` — MuJoCo splices AT THE TAG
+    # ═════════════════════════════════════════════════════════════════════
+    # ⚠⚠ THE BUG THIS CLOSES. `resolve_includes` used to route every include
+    # through `merge_mjcf`, which merges TOP-LEVEL SECTIONS — so an include
+    # was effectively hoisted to the document root wherever it was written.
+    # `ms_human_700` puts one inside `<body name="pelvis">`, and the included
+    # file's root child is a bare `<body>` with no `<worldbody>` around it:
+    # not a section the merge knew, so it was DROPPED WITHOUT A DIAGNOSTIC.
+    # 1 body and 57 joints against MuJoCo's 81 and 700 tendons.
+    #
+    # What surfaced was 3160 dangling name references — `check_references`
+    # doing its job on a document that really was missing the declarations —
+    # and I read that as a defect in the FIXTURE. MuJoCo loads this model
+    # fine; it only refused it for me because I ran it from the repo root,
+    # where its own include resolution doubled the path prefix.
+    print("--- an <include> INSIDE a <body> (ms_human_700) ---")
+    var msh_dir = MENAGERIE + "ms_human_700"
+    var msh_raw = _read(msh_dir + "/scene.xml")
+    var msh_flat = resolve_includes(msh_raw, msh_dir)
+    t.eq(_count(msh_flat, "<body ") + 1, 81, "ms_human_700 nbody")
+    t.eq(_count(msh_flat, "<spatial "), 700, "ms_human_700 ntendon")
+
+    # ⚠ NON-VACUITY. `scene.xml` and the file it includes declare ONE body
+    # between them before flattening; 80 more can only have come from the
+    # nested includes.
+    t.truth(_count(msh_raw, "<body ") == 0,
+            "the UNflattened scene declares no body of its own")
+    t.truth(_body_depth_at(msh_flat, 'name="femur_r"') >= 1,
+            String("femur_r is NESTED (body depth ",
+                   _body_depth_at(msh_flat, 'name="femur_r"'),
+                   "), not hoisted to <worldbody>"))
+
+    # ═════════════════════════════════════════════════════════════════════
+    # A nameless `<mesh file=>` DECLARES the file stem
+    # ═════════════════════════════════════════════════════════════════════
+    # `full_parser` has known this since the ToddlerBot fix; `check_references`
+    # did not, and called 307 references dangling across 43 of the 57
+    # Menagerie scenes. aloha writes all twelve of its meshes nameless.
+    #
+    # ⚠ `expand_mjcf`, NOT `parse_model_runtime` — only the former runs
+    # `check_references`, and the studio opens models through the former. A
+    # sweep on the parser path reported these models fine while the studio
+    # refused them.
+    print("--- a nameless <mesh file=> declares its STEM (aloha) ---")
+    var al_dir = MENAGERIE + "aloha"
+    _ = expand_mjcf(_read(al_dir + "/scene.xml"), al_dir)
+    var al = parse_model_runtime(al_dir + "/scene.xml")
+    t.eq(len(al.bodies) + 1, 21, "aloha nbody")
+    t.eq(len(al.geoms), 95, "aloha ngeom")
+    t.eq(len(al.joints), 16, "aloha njnt")
+    t.eq(len(al.actuators), 14, "aloha nact")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # A `<default>`'s name references are resolved AT THE POINT OF USE
+    # ═════════════════════════════════════════════════════════════════════
+    # Measured against MuJoCo, because I guessed the wrong rule first (that a
+    # `<default class="left/...">` scoped bare names to the `left/` prefix —
+    # a fixture refused that outright). The real rule is laziness.
+    print("--- a name inside an unused <default> resolves lazily (trossen) ---")
+    var tr_dir = MENAGERIE + "trossen_wxai"
+    _ = expand_mjcf(_read(tr_dir + "/scene.xml"), tr_dir)
+    var tr = parse_model_runtime(tr_dir + "/scene.xml")
+    t.eq(len(tr.bodies) + 1, 27, "trossen_wxai nbody")
+    t.eq(len(tr.geoms), 108, "trossen_wxai ngeom")
+
+    # ⚠⚠ THE NEGATIVE CONTROL. Skipping `<default>` blocks is a hole in the
+    # check, so this proves the hole is exactly that shape: the SAME dangling
+    # name outside a default still raises. Without it, "trossen loads" would
+    # be indistinguishable from "the check stopped checking".
+    # ⚠ DOUBLE QUOTES IN THE FIXTURE. `_attr_values` matches `attr="`, so the
+    # first draft of these two — written with single quotes — matched nothing
+    # and BOTH arms passed vacuously. The control is what said so.
+    var lazy_ok = String(
+        '<mujoco><include file="none.xml"/><default><default class="v">'
+        '<geom material="nope"/></default></default>'
+        '<asset><material name="real"/></asset>'
+        '<worldbody><body name="b"><geom class="v" material="real"/></body>'
+        '</worldbody></mujoco>'
+    )
+    var raised_lazy = False
+    try:
+        check_references(lazy_ok)
+    except:
+        raised_lazy = True
+    t.truth(not raised_lazy, "a dangling name INSIDE a <default> is allowed")
+
+    var eager_bad = String(
+        '<mujoco><include file="none.xml"/>'
+        '<asset><material name="real"/></asset>'
+        '<worldbody><body name="b"><geom material="nope"/></body>'
+        '</worldbody></mujoco>'
+    )
+    var raised_eager = False
+    try:
+        check_references(eager_bad)
+    except:
+        raised_eager = True
+    t.truth(raised_eager,
+            "the SAME name outside a <default> still RAISES (control)")
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:

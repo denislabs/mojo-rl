@@ -63,7 +63,7 @@ and uncollidable, exactly the failure the nameless-`<mesh>` bug produced.
 from .xml_parser import (
     _trim, _extract_attr, _extract_section_inner, _extract_section,
     _strip_xml_comments, _strip_wrapper, _normalize_freejoint,
-    _parse_float, _find_tag, resolve_includes, merge_mjcf,
+    _parse_float, _find_tag, _file_stem, resolve_includes, merge_mjcf,
 )
 
 
@@ -703,6 +703,65 @@ def _attr_values(xml: String, attr: String) -> List[String]:
         scan = ve + 1
 
 
+def _strip_default_blocks(xml: String) -> String:
+    """`xml` with every `<default>...</default>` block removed.
+
+    ⚠⚠ MuJoCo RESOLVES A DEFAULT'S NAME REFERENCES AT THE POINT OF USE, not
+    where they are written, so an unresolvable name inside a `<default>` is
+    NOT an error when every element inheriting it overrides that attribute.
+    Measured, because I had guessed a different rule first:
+
+        <default class="vis"><geom material="does_not_exist"/></default>
+        <geom class="vis" material="real"/>          -> LOADS, material=real
+
+    Menagerie's `trossen_wxai` is exactly this: `<default class="left/visual">`
+    names `trossen_material` while the asset is `left/trossen_material`, and
+    every geom in that class passes `material=` explicitly. MuJoCo loads it;
+    `check_references` refused it.
+
+    ⚠ THE COVERAGE THIS GIVES UP is a dangling name in a default that IS
+    inherited — MuJoCo catches that one at load. Being STRICTER than the
+    reference is not free: it costs real models, and a check that refuses what
+    MuJoCo accepts gets read as the model being broken.
+    """
+    var out = String("")
+    var scan = 0
+    var n = xml.byte_length()
+    while True:
+        var d = _find_tag(xml, "<default", scan)
+        if d == -1:
+            break
+        var de = xml.find(">", d)
+        if de == -1:
+            break
+        # `<default/>` opens nothing.
+        if String(xml[byte = de - 1 : de]) == "/":
+            out += String(xml[byte=scan : de + 1])
+            scan = de + 1
+            continue
+        var depth = 1
+        var walk = de + 1
+        while depth > 0:
+            var nxt = _find_tag(xml, "<default", walk)
+            var cls = xml.find("</default>", walk)
+            if cls == -1:
+                break
+            if nxt != -1 and nxt < cls:
+                var ne = xml.find(">", nxt)
+                if ne == -1:
+                    break
+                if String(xml[byte = ne - 1 : ne]) != "/":
+                    depth += 1
+                walk = ne + 1
+            else:
+                depth -= 1
+                walk = cls + 10
+        out += String(xml[byte=scan:d])
+        scan = walk
+    out += String(xml[byte=scan:n])
+    return out^
+
+
 def check_references(xml: String) raises:
     """Every name REFERENCE in `xml` must name something declared in it.
 
@@ -751,6 +810,33 @@ def check_references(xml: String) raises:
             declared.append(c)
         scan = e + 1
 
+    # ⚠⚠ AN ASSET WITH NO `name=` STILL DECLARES ONE: MuJoCo names it after
+    # the file STEM. Without this the check called 307 references dangling
+    # across 43 of the 57 Menagerie scenes — aloha writes every one of its
+    # twelve meshes as `<mesh file="vx300s_1_base.stl"/>` and then `mesh=
+    # "vx300s_1_base"`, which is not a broken reference, it is the default.
+    #
+    # `full_parser` has implemented this since the ToddlerBot fix (a nameless
+    # mesh was SKIPPED, and the robot rendered as nothing but its sites). The
+    # bug here was that only ONE of the two knew — the shared `_file_stem`
+    # now lives in `xml_parser` so they cannot drift apart again.
+    for tag in ["<mesh", "<texture", "<hfield", "<skin"]:
+        var a_scan = 0
+        while True:
+            var t = _find_tag(xml, tag, a_scan)
+            if t == -1:
+                break
+            var te = xml.find(">", t)
+            if te == -1:
+                break
+            var el = String(xml[byte = t : te + 1])
+            a_scan = te + 1
+            if _trim(_extract_attr(el, "name")).byte_length() > 0:
+                continue
+            var fl = _trim(_extract_attr(el, "file"))
+            if fl.byte_length() > 0:
+                declared.append(_file_stem(fl))
+
     var refs = List[String]()
     for a in _ref_attrs():
         # `name` DECLARES, and `class` is handled above for the declaring
@@ -759,9 +845,14 @@ def check_references(xml: String) raises:
             continue
         refs.append(a)
 
+    # ⚠ REFERENCES ARE READ FROM THE DOCUMENT WITHOUT ITS `<default>` BLOCKS —
+    # see `_strip_default_blocks`. `declared` above still reads the FULL text,
+    # because a `<default class="X">` is the one element that declares.
+    var ref_text = _strip_default_blocks(xml)
+
     var bad = List[String]()
     for attr in refs:
-        for v in _attr_values(xml, attr):
+        for v in _attr_values(ref_text, attr):
             if v.byte_length() == 0:
                 continue
             var found = False

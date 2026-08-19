@@ -27,6 +27,7 @@ from .xml_parser import (
     _normalize_freejoint,
     _extract_section,
     _extract_section_all,
+    _file_stem,
     _extract_section_inner,
     _extract_opening_tag,
     _extract_attr,
@@ -1359,21 +1360,6 @@ def _fill_assets(
         mesh_pos = tag_end + 1
     result.num_mesh_assets = mesh_count
 
-
-def _file_stem(path: String) -> String:
-    """`a/b/head_visual.stl` -> `head_visual`. MuJoCo's default asset name.
-
-    Path AND extension are stripped, in that order — see the note at the
-    `<mesh>` loop for why getting either wrong is silent.
-    """
-    var base = path
-    var cut = path.rfind("/")
-    if cut >= 0:
-        base = String(path[byte = cut + 1 : path.byte_length()])
-    var dot = base.rfind(".")
-    if dot <= 0:
-        return base^
-    return String(base[byte=0:dot])
 
 
 

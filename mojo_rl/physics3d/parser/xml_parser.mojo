@@ -1999,43 +1999,74 @@ def _has_section(xml: String, name: String) -> Bool:
     return xml.find("<" + name + ">") != -1 or xml.find("<" + name + " ") != -1
 
 
-def resolve_includes(
-    xml: String, base_dir: String, depth: Int = 0
-) raises -> String:
-    """Splice every `<include file=...>` in, recursively. MuJoCo's semantics.
+def _file_stem(path: String) -> String:
+    """`a/b/head_visual.stl` -> `head_visual`. MuJoCo's default asset name.
 
-    ⚠⚠ WITHOUT THIS, A MENAGERIE `scene.xml` IS UNLOADABLE, and the failure
-    does not look like a missing feature. `_strip_include_tags` removed the
-    tag and nothing read the file, so the scene kept its own `<contact>` —
-    which names geoms declared in the ROBOT file — and the parser raised
-    "`<pair>` references unknown geom2='torso_collision_0'". A reference
-    error, pointing at a geom that exists, from a file that never loaded.
-    `scene.xml` is the conventional entry point for every Menagerie model, so
-    this is the first thing anyone opening one hits.
+    Path AND extension are stripped, in that order — see the note at
+    `full_parser`'s `<mesh>` loop for why getting either wrong is silent.
 
-    `merge_mjcf` has been the implementation of this all along — its own
-    docstring says so, and names ToddlerBot and Menagerie's split as the
-    reason `<contact>` and `<keyframe>` are accumulated. This is the
-    "obvious follow-up" it was kept for.
+    ⚠ IT LIVES HERE, not in `full_parser`, because THREE places need the same
+    answer: the parser that names the asset, and `expander.check_references`
+    which must know that a nameless `<mesh file=>` DECLARES that name. A
+    second copy would be the two-parser hazard in miniature — 43 of the 57
+    Menagerie scenes reference an asset by its implied stem.
+    """
+    var base = path
+    var cut = path.rfind("/")
+    if cut >= 0:
+        base = String(path[byte = cut + 1 : path.byte_length()])
+    var dot = base.rfind(".")
+    if dot <= 0:
+        return base^
+    return String(base[byte=0:dot])
 
-    ⚠ ORDER IS DOCUMENT ORDER. `merge_mjcf` concatenates accumulator content
-    in ARGUMENT order, and an `<include>` splices AT ITS POSITION, so the
-    included text has to precede whatever follows it in the host. Menagerie
-    puts the include first, which is the case that matters; a host with
-    content on BOTH sides of an include would need the host split, and that is
-    left undone deliberately rather than silently approximated — see the
-    raise below.
 
-    ⚠ THE INCLUDED FILE RESOLVES RELATIVE TO THE FILE THAT INCLUDES IT, which
-    is MuJoCo's rule and is not the same as the top-level model directory once
-    includes nest.
+def _include_body(text: String, path: String) raises -> String:
+    """The children of an included file's root element, comments removed.
 
-    ⚠⚠ STRICT. `merge_mjcf` drops any section not in its accumulator list
-    WITHOUT A DIAGNOSTIC — three sections have been lost that way historically
-    (`<tendon>`, `<option>`'s `<flag>` children, `<contact>`), each to a
-    docstring claim that outlived its limitation. So every section present in
-    any input is checked for in the output, and a missing one RAISES naming
-    itself. That check is what makes this safe to build S2's expander on.
+    MuJoCo's rule: `<include>` is REPLACED BY the children of the included
+    file's `<mujoco>` (or `<mujocoinclude>`) root, at the tag's position. The
+    root itself contributes nothing — its attributes are not merged into the
+    host's.
+
+    ⚠ COMMENTS COME OFF HERE, not after splicing, so a commented-out
+    `<include>` in an included file is not followed. `merge_mjcf` strips them
+    at the end of `resolve_includes` regardless, so this changes no output —
+    only what the splice scan can see.
+    """
+    var s = _strip_xml_comments(text)
+    if _find_tag(s, "<mujoco", 0) == -1 and _find_tag(s, "<mujocoinclude", 0) == -1:
+        raise Error(
+            "physics3d: <include file='" + path + "'> — the included file has"
+            " no <mujoco> or <mujocoinclude> root element. MuJoCo requires"
+            " one, and its children are what gets spliced."
+        )
+    return _strip_wrapper(s)
+
+
+def _splice_includes(xml: String, base_dir: String, depth: Int) raises -> String:
+    """Replace each `<include>` with the included file's root children, IN PLACE.
+
+    ⚠⚠ IN PLACE IS THE WHOLE POINT, and the previous implementation was not.
+    It routed every include through `merge_mjcf`, which merges TOP-LEVEL
+    SECTIONS — so an include was effectively hoisted to the document root no
+    matter where it appeared. Two consequences, one loud and one silent:
+
+      * ordering. Included bodies landed BEFORE any the host declared above
+        the tag, so body ids diverged from MuJoCo's. That one printed a
+        warning and was tolerated.
+
+      * ⚠⚠ NESTING. Menagerie's `ms_human_700` puts an `<include>` INSIDE a
+        `<body>`, and the included file's root child is a bare `<body>` with
+        no `<worldbody>` around it — not a section `merge_mjcf` knows, so it
+        was DROPPED WITHOUT A DIAGNOSTIC. The flattened model had 1 body and
+        57 joints where MuJoCo builds 81 bodies and 700 tendons. What surfaced
+        was 3160 dangling name references, which is `check_references` doing
+        its job on a document that really was missing the declarations — and
+        it reads like a defect in the fixture rather than in the flattener.
+
+    The included text is spliced raw and recursed into, so an include nested
+    inside an included body works the same way at any depth.
     """
     if xml.find("<include") == -1:
         return xml
@@ -2045,13 +2076,10 @@ def resolve_includes(
             " model this parser should not be asked to flatten."
         )
 
-    var parts = List[String]()
-    var inc_first = True
+    var out = String("")
     var scan = 0
-    var n = xml.byte_length()
-    var tail_after_include = False
     while True:
-        var inc = xml.find("<include", scan)
+        var inc = _find_tag(xml, "<include", scan)
         if inc == -1:
             break
         var inc_end = xml.find(">", inc)
@@ -2061,6 +2089,9 @@ def resolve_includes(
         var fname = _trim(_extract_attr(tag, "file"))
         if fname.byte_length() == 0:
             raise Error("physics3d: <include> with no file= attribute.")
+
+        # ⚠ RELATIVE TO THE FILE THAT INCLUDES IT, which is MuJoCo's rule and
+        # is not the same as the top-level model directory once includes nest.
         var path = fname
         if not fname.startswith("/") and base_dir.byte_length() > 0:
             path = base_dir + "/" + fname
@@ -2078,70 +2109,62 @@ def resolve_includes(
         var cut = path.rfind("/")
         if cut > 0:
             sub_base = String(path[byte=0:cut])
-        parts.append(resolve_includes(text, sub_base, depth + 1))
-        # ⚠⚠ ONLY `<worldbody>`, AND ONLY BEFORE THE **FIRST** INCLUDE.
-        #
-        # The first version checked every section and used `xml[scan:inc]`,
-        # where `scan` advances past each include — so for a SECOND include
-        # "before" meant "between the two", and any section written in between
-        # tripped it. Three real Menagerie models (aloha, ms_human_700,
-        # trossen_wxai) were refused by that, all with their include FIRST.
-        #
-        # And most sections do not care: `merge_mjcf` concatenates them and
-        # every element in `<asset>`, `<default>`, `<actuator>`, `<equality>`
-        # and `<contact>` is addressed BY NAME, so their order is not
-        # observable. `<worldbody>` is the exception — body order IS body id,
-        # and ids are what `<contact>` pairs, keyframes and every record refer
-        # to. Splicing all included bodies first would renumber whatever the
-        # host declared above the include.
-        if inc_first and _has_section(String(xml[byte=0:inc]), "worldbody"):
-            # ⚠⚠ A WARNING, NOT A REFUSAL, AND THE DISTINCTION IS MEASURED.
-            # `merge_mjcf` concatenates sections, so the included bodies land
-            # BEFORE any the host declared above the `<include>` — where
-            # MuJoCo splices at the tag's position. The model is otherwise
-            # identical: every MJCF reference is BY NAME and is resolved after
-            # the merge, so the ids stay self-consistent. What differs is the
-            # ORDER, and therefore the ids themselves against MuJoCo's.
-            #
-            # Refusing cost four Menagerie models (aloha, ms_human_700,
-            # trossen_wxai each put a floor above a second include) for a
-            # difference that does not affect simulating or looking at them.
-            # It DOES affect a record-for-record gate against `mjModel`, which
-            # is why this says so rather than staying quiet.
-            print(
-                "Warning: <include> appears after a <worldbody>; the included"
-                " bodies are spliced FIRST, so body IDS may differ from"
-                " MuJoCo's order for this model (names and simulation are"
-                " unaffected)."
-            )
-        inc_first = False
-        tail_after_include = True
+
+        out += String(xml[byte=scan:inc])
+        out += _splice_includes(_include_body(text, path), sub_base, depth + 1)
         scan = inc_end + 1
-    _ = tail_after_include
 
-    var host = _strip_include_tags(xml)
-    parts.append(host)
+    out += String(xml[byte=scan : xml.byte_length()])
+    return out^
 
-    # ⚠ FOLDED PAIRWISE RATHER THAN SPREAD, because `merge_mjcf` is variadic
-    # and Mojo cannot forward a runtime-length list to it. The first version
-    # enumerated arities up to four and raised beyond — Menagerie's
-    # ms_human_700 has five includes, so "no real model needs it" lasted
-    # exactly as long as the models I had tried.
-    #
-    # ⚠ THE FOLD IS LEFT-TO-RIGHT AND THAT PRESERVES ORDER: `merge_mjcf`
-    # concatenates each accumulator in argument order, so ((a,b),c) puts a
-    # before b before c, the same as a single variadic call would.
-    var merged = parts[0]
-    for i in range(1, len(parts)):
-        merged = merge_mjcf(merged, parts[i])
+
+def resolve_includes(xml: String, base_dir: String) raises -> String:
+    """Splice every `<include file=...>` in, recursively. MuJoCo's semantics.
+
+    ⚠⚠ WITHOUT THIS, A MENAGERIE `scene.xml` IS UNLOADABLE, and the failure
+    does not look like a missing feature. `_strip_include_tags` removed the
+    tag and nothing read the file, so the scene kept its own `<contact>` —
+    which names geoms declared in the ROBOT file — and the parser raised
+    "`<pair>` references unknown geom2='torso_collision_0'". A reference
+    error, pointing at a geom that exists, from a file that never loaded.
+    `scene.xml` is the conventional entry point for every Menagerie model, so
+    this is the first thing anyone opening one hits.
+
+    TWO STEPS, and they do different jobs:
+
+      1. `_splice_includes` — MuJoCo's actual semantics. The include tag is
+         replaced by the included root's children AT ITS POSITION, so an
+         include inside a `<body>` nests, and document order is preserved.
+
+      2. `merge_mjcf` over the single spliced document — COLLAPSES the
+         repeated top-level sections that step 1 necessarily produces
+         (`<worldbody>` from the host and from each included file, and so on)
+         into one of each, in document order.
+
+    ⚠ STEP 2 IS FOR OUR PARSER, NOT FOR CORRECTNESS. MuJoCo accepts repeated
+    sections; `full_parser` reads seven of them with `_extract_section_all`
+    and the rest with `_extract_section`, which takes the FIRST AND STOPS.
+    Handing it a document with two `<default>` blocks would silently lose one
+    — the exact shape of every dropped-section bug in this file's history. The
+    collapse keeps the input to the parser in the single-section form it has
+    always assumed, so the include change cannot leak into those readers.
+
+    ⚠⚠ STRICT. `merge_mjcf` drops any section not in its accumulator list
+    WITHOUT A DIAGNOSTIC — three sections have been lost that way historically
+    (`<tendon>`, `<option>`'s `<flag>` children, `<contact>`), each to a
+    docstring claim that outlived its limitation. So every section present in
+    the spliced document is checked for in the output, and a missing one
+    RAISES naming itself.
+    """
+    if xml.find("<include") == -1:
+        return xml
+
+    var spliced = _splice_includes(_strip_xml_comments(xml), base_dir, 0)
+    var merged = merge_mjcf(spliced)
 
     # ⚠⚠ THE STRICTNESS CHECK. See the docstring: `merge_mjcf` drops silently.
     for sec in _mjcf_sections():
-        var present = False
-        for i in range(len(parts)):
-            if _has_section(parts[i], sec):
-                present = True
-        if present and not _has_section(merged, sec):
+        if _has_section(spliced, sec) and not _has_section(merged, sec):
             raise Error(
                 "physics3d: <include> merge DROPPED the <" + sec + ">"
                 " section. `merge_mjcf` accumulates a fixed list and this is"
@@ -2153,13 +2176,13 @@ def resolve_includes(
 def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 
-    ⚠ NOTHING IN THE TREE CALLS THIS ANY MORE. It composed the 34 models that
-    were built from shared fragments, and phase 1b.5 replaced those with flat
-    `.xml` assets on disk. It is kept, rather than deleted, because it is the
-    natural implementation of a real `<include file=...>`: read the included
-    file and merge it, which reproduces today's composition EXACTLY and is the
-    obvious follow-up to the flat assets. If that never happens, delete it —
-    do not let it rot as unreferenced code with a bug history.
+    ⚠ THIS IS NO LONGER HOW `<include>` WORKS. `resolve_includes` splices an
+    include at its position (`_splice_includes`) and then calls this ONCE, on
+    the single spliced document, purely to COLLAPSE the repeated top-level
+    sections that splicing produces into one of each. Merging two documents is
+    still what `expand_attach` needs, so both callers are live — but "merge
+    the host with the included file" is the wrong model of an include, and
+    believing it cost `ms_human_700` its 80 bodies.
 
 
     Singletons (attributes merged, last wins per attr): <option>, <compiler>,
