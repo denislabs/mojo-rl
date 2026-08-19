@@ -31,6 +31,13 @@ equality rows and ALL mesh collision were compiled out. They are now
 `may_exist[D.NTENDON]()` etc., which is true on a dynamic provider because
 `DIM_POISON` is -1; see `fields/dims.mojo`.
 
+⚠ THE MESH ARM EXISTS BECAUSE THE FIRST DRAFT OF THIS FILE DID NOT HAVE ONE.
+`ModelDims`' SECOND PARAMETER is the mesh vertex budget, and passing 0 makes
+the static leg raise "mesh vertex capacity exceeded" — which reads exactly
+like "the comptime leg cannot do mesh collision without an env config". It
+can; `Phyics3dEnv` merely happens to read the number off its config. so_arm100
+is therefore a full both-legs arm, not a smoke test.
+
 ⚠ AND `detect_contacts_auto` PICKED A DIFFERENT ALGORITHM. `D.NGEOM` is
 poison, so `-1 >= SAP_THRESHOLD` was false and a runtime model always took
 the O(N^2) narrow phase while its comptime twin took SAP — two paths whose
@@ -102,7 +109,7 @@ struct Tally:
 
 
 def both_legs[
-    MODEL: ModelDefLike
+    MODEL: ModelDefLike, MESH_VERTS: Int = 0
 ](
     mut t: Tally, ctx: DeviceContext, path: String, name: String,
     nmesh_verts: Int = 0,
@@ -113,7 +120,14 @@ def both_legs[
     meshes load — `dims_from_flat`'s docstring says so, and the builder raises
     with the number it needs. Pass the comptime def's own budget.
     """
-    comptime MD = ModelDims[MODEL, 0]
+    # ⚠ THE SECOND PARAMETER IS THE MESH VERTEX BUDGET, and passing 0 is how
+    # this test spent its first draft believing the comptime leg could not do
+    # mesh collision at all. `NMESH_VERTS` is not on `ModelDefLike` — whether
+    # a model's meshes are COLLIDABLE is a decision, not a property of the
+    # MJCF, so `ModelDims` takes it here and `Phyics3dEnv` happens to read it
+    # off its config. A caller with no config passes it directly, exactly as
+    # the runtime leg passes it to `dims_from_flat`.
+    comptime MD = ModelDims[MODEL, MESH_VERTS]
 
     # ── static leg ────────────────────────────────────────────────────────
     var ms = Model[DT, MD]()
@@ -216,66 +230,6 @@ def both_legs[
     )
 
 
-def runtime_only_mesh(mut t: Tally) raises:
-    """so_arm100 on the runtime leg — the mesh family, with NO comptime twin.
-
-    ⚠⚠ IT CANNOT BE A `both_legs` ARM, AND THE REASON IS A REAL GAP:
-    **`ModelDefFromXML` takes no `nmesh_verts` parameter at all** (grep it —
-    the identifier does not appear in `parser/model_def_from_xml.mojo`), so
-    `ModelDims[SoArm100Model, …].NMESH_VERTS` is 0 and the STATIC leg raises
-    "mesh vertex capacity exceeded … needs 8238" before it can step. That is
-    why `so_arm_reach_config` re-declares `NMESH_VERTS` on the env config
-    instead. The comptime leg reaches mesh collision only through an env
-    config; the runtime leg takes the budget as an argument to
-    `dims_from_flat` and needs nothing else.
-
-    ⇒ For the studio this is the RIGHT WAY ROUND — dropping a mesh prop into a
-    scene is a runtime-leg operation and needs no codegen — but it does mean
-    the mesh narrow phase has no leg-vs-leg oracle here. This arm is therefore
-    a SMOKE test with an explicit vacuity report, not an agreement gate.
-    """
-    var fmd = parse_model_runtime("mojo_rl/envs/robots/assets/so_arm100.xml")
-    var dims = dims_from_flat(
-        fmd, max_contacts=64, nmesh_verts=SO_ARM100_NMESH_VERTS
-    )
-    var mr = Model[DT, DynDims](dims)
-    build_model_runtime[DT](fmd, dims, mr)
-    var sf = spec_fields_runtime[DT](fmd, dims)
-    var dr = Data[DT, DynDims, 1](dims)
-    var integ = EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3](dims)
-
-    var nq = dims.get_nq()
-    t.truth(
-        dims.get_nmesh_verts() == SO_ARM100_NMESH_VERTS,
-        String("so_arm100: the vertex budget reached the dims (",
-               dims.get_nmesh_verts(), ")"),
-    )
-    for i in range(nq):
-        dr.qpos.data[i] = Scalar[DT](sf.qpos0.data[i])
-    var start0 = Float64(dr.qpos.data[0])
-
-    var max_ncon = 0
-    for _ in range(STEPS):
-        integ.step["cpu"](dr, mr)
-        var nc = Int(Float64(dr.meta.data[0]))
-        if nc > max_ncon:
-            max_ncon = nc
-
-    var moved = Float64(0)
-    for i in range(nq):
-        moved += abs(Float64(dr.qpos.data[i]))
-    t.truth(
-        abs(Float64(dr.qpos.data[0]) - start0) > 1e-12 or moved > 1e-9,
-        String("so_arm100: ", STEPS, " steps on the runtime leg, and it moved"),
-    )
-    # ⚠ NON-VACUITY, REPORTED NOT ASSERTED. A mesh model that never touches
-    # anything exercises the BUILD but not the narrow phase, and a green arm
-    # would then mean nothing. Print the number so the reader can see which
-    # of the two this run was.
-    print("    so_arm100 : max contacts over", STEPS, "steps =", max_ncon,
-          "(0 would mean the mesh NARROW PHASE never ran — build-only)")
-
-
 def main() raises:
     var t = Tally()
     var ctx = DeviceContext()
@@ -296,8 +250,11 @@ def main() raises:
     both_legs[HumanoidModel](
         t, ctx, "mojo_rl/envs/humanoid/assets/humanoid.xml", "humanoid"
     )
-    print("--- 10 collidable meshes + ngeom 33 (SAP): RUNTIME LEG ONLY ---")
-    runtime_only_mesh(t)
+    print("--- 10 collidable meshes + ngeom 33 (SAP): the mesh arm ---")
+    both_legs[SoArm100Model, SO_ARM100_NMESH_VERTS](
+        t, ctx, "mojo_rl/envs/robots/assets/so_arm100.xml", "so_arm100",
+        nmesh_verts=SO_ARM100_NMESH_VERTS,
+    )
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
