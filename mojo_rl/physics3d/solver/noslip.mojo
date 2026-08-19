@@ -784,7 +784,6 @@ def noslip_elliptic[
     MAX_ITER: Int,
     D: DimsLike,
     L_M_INV: Layout,
-    L_LDL_D: Layout,
 ](
     env: Int,
     nc: Int,
@@ -792,11 +791,6 @@ def noslip_elliptic[
     neq_rows: Int,
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    # The LDL factors of the same `M` that `m_inv` inverts (`ldl_factor` runs
-    # immediately before `compute_m_inv`, both reading `scratch.M`). Used by
-    # `dualFinish` below to SOLVE rather than multiply by the explicit inverse.
-    ldl_l: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
-    ldl_d: LayoutTensor[DTYPE, L_LDL_D, MutAnyOrigin],
     # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
     nt_c: Scratch[Int, MC_CAP],
     Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
@@ -1071,14 +1065,11 @@ def noslip_elliptic[
         if improvement < tolerance:
             break
 
-    # ── dualFinish ─────────────────────────────────────────────────────────
-    # `qfrc_constraint = J^T f`, then `qacc = M^-1 qfrc + qacc_smooth`.
-    #
-    # ⚠ RECOMPUTED FROM THE FINAL FORCES over EVERY row, not carried over from
-    # the in-sweep `qacc +=` updates and not restricted to the friction rows.
-    # The normal, limit and equality forces are unchanged by the sweep but they
-    # are still part of `qfrc_constraint`; dropping them would silently release
-    # every contact this pass just refined.
+    # ── dualFinish: the FORCE writeback only ───────────────────────────────
+    # `qfrc_constraint = J^T f` over EVERY row, not restricted to the friction
+    # ones. The normal, limit and equality forces are unchanged by the sweep
+    # but are still part of `qfrc_constraint`; dropping them would silently
+    # release every contact this pass just refined.
     for i in range(nv):
         qfrc[i] = ZERO
     for c in range(nc):
@@ -1096,28 +1087,33 @@ def noslip_elliptic[
             continue
         for d in range(nv):
             qfrc[d] += eq_J[e * nv + d] * fe
-    # ⚠⚠ SOLVE, DO NOT MULTIPLY BY AN EXPLICIT INVERSE. This read
-    # `qacc = m_inv @ qfrc + qacc_smooth`; MuJoCo's `dualFinish` calls
-    # `mj_solveM`, a triangular solve against the LDL factor, and never forms
-    # `M^-1` at all. Forming it costs roughly the condition number in accuracy,
-    # and on `reassemble_5` `M`'s diagonal spans 3.9e-06..4.34 — ratio 1.1e6.
-    # Measured `max|M @ M^-1 - I|` on the BRICK rows: 3.4e-06 at float32
-    # against 1.5e-14 at float64. `dualFinish` writes `qacc` outright, so that
-    # error IS the returned acceleration, on exactly the light DOFs holding the
-    # tower together.
-    var ldl_y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=ZERO)
-    for i in range(nv):
-        var acc = qfrc[i]
-        for j in range(i):
-            acc -= rebind[Scalar[DTYPE]](ldl_l[env, i * nv + j]) * ldl_y[j]
-        ldl_y[i] = acc
-    for i in range(nv):
-        var d_i = rebind[Scalar[DTYPE]](ldl_d[env, i])
-        ldl_y[i] = ldl_y[i] / d_i if (d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14)) else ZERO
-    for i in range(nv - 1, -1, -1):
-        var acc = ldl_y[i]
-        for j in range(i + 1, nv):
-            acc -= rebind[Scalar[DTYPE]](ldl_l[env, j * nv + i]) * qacc[j]
-        qacc[i] = acc
-    for i in range(nv):
-        qacc[i] = qacc[i] + qacc_smooth[i]
+    # ⚠⚠ AND THAT IS WHERE IT STOPS — THE ACCELERATION IS NOT REBUILT.
+    #
+    # MuJoCo's `dualFinish` continues `qacc = M^-1 qfrc + qacc_smooth`, and so
+    # did this. At float64 that is free. At float32 it is the single largest
+    # error in the pass, because it THROWS AWAY A CONVERGED ANSWER AND REBUILDS
+    # IT: the Newton solve already produced `qacc`, and the sweeps above have
+    # already applied their own force changes to it incrementally
+    # (`qacc += dt * MinvJ`, plus the dry-friction column update). Rebuilding
+    # re-derives the WHOLE acceleration from the WHOLE force set in order to
+    # express a tiny correction — measured force changes across all sweeps peak
+    # at 2.9e-04 N — and pays the full conditioning cost of `M` to do it. On
+    # `reassemble_5` that matrix's diagonal spans 3.9e-06 to 4.34, a ratio of
+    # 1.1e6.
+    #
+    # ⚠⚠ MEASURED, one substep from a settled tower: the rebuild MOVED `qacc`
+    # by 0.0866 at float32 against 0.00037 at float64 — 3.4% of |qacc| against
+    # 0.003%, a thousandfold worse in relative terms, and it fired every
+    # substep. It also explains the otherwise baffling iteration curve, which
+    # is what led here: `noslip_iterations=1` was CATASTROPHIC (144.75 J of
+    # peak brick kinetic energy) while 0 was clean (1.42e-04) and the shipped 5
+    # partly recovered (1.58e-04). The rebuild fires at any count >= 1; only
+    # repeated sweeps drag the forces back toward something it reproduces.
+    #
+    # ⚠ THE WARNING ABOVE STILL STANDS FOR `qfrc` AND DOES NOT APPLY HERE. A
+    # from-scratch reconstruction has to re-express the normal, limit and
+    # equality forces itself, which is why `qfrc` spans every row. `qacc` does
+    # not need to: it still CARRIES them, because it was never discarded.
+    #
+    # ⚠ `qacc_smooth` IS ALREADY IN `qacc` for the same reason — it entered
+    # with the Newton solution. Adding it again here would double it.
