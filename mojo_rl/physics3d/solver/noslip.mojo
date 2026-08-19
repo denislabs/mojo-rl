@@ -784,6 +784,7 @@ def noslip_elliptic[
     MAX_ITER: Int,
     D: DimsLike,
     L_M_INV: Layout,
+    L_LDL_D: Layout,
 ](
     env: Int,
     nc: Int,
@@ -791,6 +792,11 @@ def noslip_elliptic[
     neq_rows: Int,
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    # The LDL factors of the same `M` that `m_inv` inverts (`ldl_factor` runs
+    # immediately before `compute_m_inv`, both reading `scratch.M`). Used by
+    # `dualFinish` below to SOLVE rather than multiply by the explicit inverse.
+    ldl_l: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_d: LayoutTensor[DTYPE, L_LDL_D, MutAnyOrigin],
     # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
     nt_c: Scratch[Int, MC_CAP],
     Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
@@ -1090,8 +1096,28 @@ def noslip_elliptic[
             continue
         for d in range(nv):
             qfrc[d] += eq_J[e * nv + d] * fe
+    # ⚠⚠ SOLVE, DO NOT MULTIPLY BY AN EXPLICIT INVERSE. This read
+    # `qacc = m_inv @ qfrc + qacc_smooth`; MuJoCo's `dualFinish` calls
+    # `mj_solveM`, a triangular solve against the LDL factor, and never forms
+    # `M^-1` at all. Forming it costs roughly the condition number in accuracy,
+    # and on `reassemble_5` `M`'s diagonal spans 3.9e-06..4.34 — ratio 1.1e6.
+    # Measured `max|M @ M^-1 - I|` on the BRICK rows: 3.4e-06 at float32
+    # against 1.5e-14 at float64. `dualFinish` writes `qacc` outright, so that
+    # error IS the returned acceleration, on exactly the light DOFs holding the
+    # tower together.
+    var ldl_y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=ZERO)
     for i in range(nv):
-        var acc = ZERO
-        for k in range(nv):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * qfrc[k]
-        qacc[i] = acc + qacc_smooth[i]
+        var acc = qfrc[i]
+        for j in range(i):
+            acc -= rebind[Scalar[DTYPE]](ldl_l[env, i * nv + j]) * ldl_y[j]
+        ldl_y[i] = acc
+    for i in range(nv):
+        var d_i = rebind[Scalar[DTYPE]](ldl_d[env, i])
+        ldl_y[i] = ldl_y[i] / d_i if (d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14)) else ZERO
+    for i in range(nv - 1, -1, -1):
+        var acc = ldl_y[i]
+        for j in range(i + 1, nv):
+            acc -= rebind[Scalar[DTYPE]](ldl_l[env, j * nv + i]) * qacc[j]
+        qacc[i] = acc
+    for i in range(nv):
+        qacc[i] = qacc[i] + qacc_smooth[i]

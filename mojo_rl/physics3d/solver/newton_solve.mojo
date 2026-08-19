@@ -550,12 +550,18 @@ def _newton_solve_env[
     qacc_constrained: LayoutTensor[
         DTYPE, L_QVEL, MutAnyOrigin
     ],
+    ldl_l: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    ldl_d: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     solver: LayoutTensor[
         DTYPE, L_SOLVER, MutAnyOrigin
     ],
 ):
     """Full primal Newton contact solve for one env (verbatim from
-    NewtonSolver.solve_gpu, serialized per env — see module docstring)."""
+    NewtonSolver.solve_gpu, serialized per env — see module docstring).
+
+    `ldl_l` / `ldl_d` are the LDL factors of the same `M` that `m_inv` inverts;
+    the NOSLIP pass needs them to SOLVE rather than multiply by the explicit
+    inverse — see `noslip_elliptic`'s `dualFinish`."""
     var nq = dims.get_nq()
     var nv = dims.get_nv()
     var nbody = dims.get_nbody()
@@ -2248,6 +2254,7 @@ def _newton_solve_env[
             neq_rows,
             dims,
             m_inv,
+            ldl_l, ldl_d,
             nt_cache,
             Jn_c, Jt_c,
             fr_cache, D_n_cache, D_t_cache,
@@ -2376,6 +2383,8 @@ def _newton_solve_fields_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    ldl_l: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    ldl_d: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     solver: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
     ],
@@ -2390,7 +2399,7 @@ def _newton_solve_fields_kernel[
         SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, body_invweight0,
-        dof_invweight0, cdof, M, m_inv, qacc_constrained, solver,
+        dof_invweight0, cdof, M, m_inv, qacc_constrained, ldl_l, ldl_d, solver,
     )
 
 
@@ -2494,6 +2503,8 @@ def solve_newton[
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var ldll_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var ldld_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
         for e in range(BATCH):
             _newton_solve_env[
@@ -2503,7 +2514,7 @@ def solve_newton[
                 SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, sol_v,
+                cdof_v, M_v, mi_v, qc_v, ldll_v, ldld_v, sol_v,
             )
     else:
         # GPU. PYRAMIDAL (the production default cone) on NVIDIA uses the
@@ -2559,6 +2570,8 @@ def solve_newton[
                 scratch.M.lt["gpu", L_M](),
                 scratch.m_inv.lt["gpu", L_M](),
                 scratch.qacc_constrained.lt["gpu", L_NV](),
+                scratch.L.lt["gpu", L_M](),
+                scratch.D.lt["gpu", L_NV](),
                 cscratch.solver.lt["gpu", L_SOLVER](),
                 grid_dim=(BLOCKS,),
                 block_dim=(NS_TPB,),
@@ -3974,13 +3987,15 @@ def solve_newton_blocked[
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var ldll_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var ldld_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
         for e in range(BATCH):
             _newton_solve_env[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, sol_v,
+                cdof_v, M_v, mi_v, qc_v, ldll_v, ldld_v, sol_v,
             )
     else:
         var c = ctx.value()
