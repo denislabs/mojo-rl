@@ -38,9 +38,13 @@ is the reference for what the expander should produce.
 Run: pixi run mojo run -I . tests/physics3d/test_attach_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
+from mojo_rl.physics3d.parser.expander import (
+    expand_mjcf, check_references,
+)
 from mojo_rl.physics3d.parser.runtime_load import read_model_source
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from mojo_rl.physics3d.studio.scene import SceneDoc, Instance
+from mojo_rl.physics3d.studio.panel import _f
 
 comptime SCENE = String("tests/physics3d/fixtures/attach/scene.xml")
 
@@ -175,6 +179,114 @@ def main() raises:
             "materials are per-instance, not shared")
     t.truth(flat.find('class="cube1_prop"') != -1,
             "default CLASSES are prefixed, and so are the references to them")
+
+    # ── the reference validator ───────────────────────────────────────────
+    # ⚠⚠ NEGATIVE CONTROLS ONLY, because the positive case is every arm above:
+    # the scene expands and validates. What needs proving is that the check
+    # FIRES — a validator that never raises passes every real model while
+    # protecting nothing, and this one guards the failure `full_parser` is
+    # measured to be silent about (an actuator whose joint= resolves to -1
+    # applies ZERO FORCE and says nothing).
+    print("--- the reference validator ---")
+    var dangling = String(
+        '<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/>'
+        '<geom name="g" type="sphere" size="0.1"/></body></worldbody>'
+        '<actuator><motor name="m" joint="NOPE"/></actuator></mujoco>'
+    )
+    var fired = False
+    var named = False
+    try:
+        check_references(dangling)
+    except e:
+        fired = True
+        named = String(e).find("NOPE") != -1
+    t.truth(fired, "a dangling joint= reference RAISES")
+    t.truth(named, "the message names the reference that dangles")
+
+    # ⚠ AND IT MUST NOT FIRE ON A VALID DOCUMENT, or it would simply refuse
+    # every model — the other way a validator can be useless.
+    var good = String(
+        '<mujoco><default><default class="c"><geom rgba="1 0 0 1"/></default>'
+        '</default><worldbody><body name="b"><joint name="j" type="hinge"/>'
+        '<geom name="g" class="c" type="sphere" size="0.1"/></body>'
+        '</worldbody><actuator><motor name="m" joint="j"/></actuator></mujoco>'
+    )
+    var clean = True
+    try:
+        check_references(good)
+    except e:
+        clean = False
+        print("      unexpected:", e)
+    t.truth(clean,
+            "a valid document passes, INCLUDING its <default class=> which is"
+            " the one element that declares with class= rather than name=")
+
+    # ── the scene DOCUMENT round-trips ────────────────────────────────────
+    # ⚠⚠ THE WRITER'S OUTPUT MUST BE A FILE MuJoCo LOADS, not merely one our
+    # expander reads. That is the whole reason the document is MJCF: it keeps
+    # `mjModel` available as the oracle for every later slice. A writer gated
+    # only against our own parser would drift from MuJoCo silently and take
+    # the oracle with it.
+    #
+    # This builds the SAME scene as the fixture, programmatically, and
+    # requires the same model out the far side.
+    print("--- SceneDoc -> MJCF -> expand ---")
+    var doc = SceneDoc()
+    doc.base_xml = String(
+        '  <compiler angle="radian"/>\n'
+        '  <worldbody><geom name="floor" type="plane" size="5 5 0.1"/>'
+        "</worldbody>"
+    )
+    doc.add_asset(String("cube"), String("cube.xml"))
+    doc.add_asset(String("arm"), String("arm.xml"))
+    var p_arm = doc.place(String("arm"), 0.0, 0.0, 0.0)
+    var p_c1 = doc.place(String("cube"), 0.3, 0.0, 0.5)
+    var p_c2 = doc.place(String("cube"), -0.3, 0.1, 0.5)
+    # ⚠ THE PREFIXES MUST BE UNIQUE PER INSTANCE, not per asset. Two cubes
+    # sharing one prefix is the exact collision prefixing exists to prevent,
+    # and it produces a model that LOADS with duplicate names.
+    t.truth(p_c1 != p_c2, String("two instances get distinct prefixes ('",
+                                 p_c1, "' vs '", p_c2, "')"))
+    t.truth(p_arm == "arm1_" and p_c1 == "cube1_" and p_c2 == "cube2_",
+            "prefixes are asset-numbered with the trailing underscore MuJoCo"
+            " concatenates verbatim")
+    doc.instances[2].qw = 0.7071068
+    doc.instances[2].qz = 0.7071068
+
+    var text = doc.to_mjcf(String("scene"))
+    var dir = String("tests/physics3d/fixtures/attach")
+    var flat2 = expand_mjcf(text, dir)
+    var fmd2 = parse_xml_full(flat2, dir)
+    var nq2 = 0
+    for j in fmd2.joints:
+        nq2 += j.nq
+    t.eq(len(fmd2.bodies) + 1, 5, "round-trip nbody")
+    t.eq(len(fmd2.geoms), 5, "round-trip ngeom")
+    t.eq(nq2, 15, "round-trip nq")
+    t.eq(len(fmd2.actuators), 1, "round-trip nact")
+    t.near(fmd2.bodies[2].pos_z, 0.55, "round-trip cube1 pos.z")
+    t.near(fmd2.bodies[3].quat_w, 0.7071067811865476, "round-trip cube2 quat")
+
+    # ⚠⚠ NEGATIVE COORDINATES, AND THE ARM EXISTS BECAUSE THEY WERE WRONG.
+    # cube2 is at x = -0.3 and the writer emitted **-1.7**: the display
+    # formatter split the scaled integer with `//` and `%`, which FLOOR, so
+    # -3000 // 10000 is -1 and -3000 % 10000 is 7000. Every negative
+    # coordinate in the inspector read as a different, plausible number.
+    # Found only by writing a scene to disk and comparing it with what was
+    # asked for — no in-memory test would have looked at the text.
+    t.near(fmd2.bodies[3].pos_x, -0.3, "a NEGATIVE coordinate survives the writer")
+    t.truth(_f(-0.3) == "-0.3000",
+            String("the display formatter handles negatives ('", _f(-0.3),
+                   "', not '-1.7000')"))
+    t.truth(_f(-1.25) == "-1.2500" and _f(1.25) == "1.2500"
+            and _f(0.0) == "0.0000",
+            "and still handles the cases that always worked")
+
+    # remove() is what S3's delete needs, and it must not disturb the rest.
+    doc.remove(p_c1)
+    t.eq(len(doc.instances), 2, "remove() drops exactly one instance")
+    t.truth(doc.find(p_c1) < 0 and doc.find(p_c2) >= 0,
+            "the REMAINING instance keeps its identity after a delete")
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:

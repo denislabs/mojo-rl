@@ -180,19 +180,28 @@ def _contains(hay: String, needle: String) -> Bool:
 
 
 def _f(v: Float64, places: Int = 4) -> String:
+    """Fixed-point, for DISPLAY. Never for a file — see `SceneDoc.to_mjcf`.
+
+    ⚠⚠ THE MAGNITUDE IS FORMATTED AND THE SIGN PREPENDED, because Mojo's `//`
+    and `%` FLOOR. The obvious version splits the scaled integer directly, and
+    for -0.3 that is `-3000 // 10000 == -1` with `-3000 % 10000 == 7000`:
+    **it printed "-1.7000"**. Every negative coordinate in the inspector was
+    wrong, and wrong in a way that still looks like a number — a body at
+    x = -0.3 read as -1.7. Found only by writing a scene to disk and comparing
+    the file with what was asked for.
+    """
+    var neg = v < 0
+    var mag = -v if neg else v
     var mul = 1.0
     for _ in range(places):
         mul *= 10.0
-    var scaled = Int(v * mul + (0.5 if v >= 0 else -0.5))
+    var scaled = Int(mag * mul + 0.5)
     var whole = scaled // Int(mul)
     var frac = scaled % Int(mul)
-    if frac < 0:
-        frac = -frac
     var f = String(frac)
     while f.byte_length() < places:
         f = "0" + f
-    var sign = "-" if (v < 0 and whole == 0) else ""
-    return sign + String(whole) + "." + f
+    return ("-" if neg else "") + String(whole) + "." + f
 
 
 def _row(k: String, v: String) raises:

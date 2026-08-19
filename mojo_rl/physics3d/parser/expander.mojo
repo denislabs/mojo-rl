@@ -659,4 +659,128 @@ def expand_mjcf(xml: String, base_dir: String) raises -> String:
     would fold a transform into an `<attach/>` tag, which has no pose to
     accumulate into and vanishes with it.
     """
-    return expand_frames(expand_attach(resolve_includes(xml, base_dir), base_dir))
+    var flat = expand_frames(
+        expand_attach(resolve_includes(xml, base_dir), base_dir)
+    )
+    # ⚠ ONLY WHEN SOMETHING WAS ACTUALLY COMPOSED. A plain single-file model
+    # goes through untouched, and validating it here would turn this into a
+    # second opinion on `full_parser`'s own name resolution — a different job,
+    # with its own false positives on the attributes MuJoCo lets dangle.
+    if xml.find("<attach") != -1 or xml.find("<include") != -1:
+        check_references(flat)
+    return flat^
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# post-expand validation — the other half of the prefixing contract
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _attr_values(xml: String, attr: String) -> List[String]:
+    """Every value of `attr` in the document, in order.
+
+    Same separator rule as `_prefix_all`: the character before the attribute
+    must be whitespace or the start of the text, or `body=` also matches the
+    tail of `refbody=`.
+    """
+    var out = List[String]()
+    var needle = attr + '="'
+    var scan = 0
+    while True:
+        var at = xml.find(needle, scan)
+        if at == -1:
+            return out^
+        var ok = at == 0
+        if not ok:
+            var prev = String(xml[byte = at - 1 : at])
+            ok = prev == " " or prev == "\t" or prev == "\n" or prev == "\r"
+        var vs = at + needle.byte_length()
+        var ve = xml.find('"', vs)
+        if ve == -1:
+            return out^
+        if ok:
+            out.append(String(xml[byte=vs:ve]))
+        scan = ve + 1
+
+
+def check_references(xml: String) raises:
+    """Every name REFERENCE in `xml` must name something declared in it.
+
+    ⚠⚠ THIS EXISTS BECAUSE `full_parser`'s BEHAVIOUR IS MIXED, and the silent
+    paths are exactly the ones a prefixer breaks. Measured (§3.2 of the plan):
+
+        <contact><pair> geom1/geom2   RAISES, naming the geom
+        <equality> joint names        RAISES
+        actuator joint=               **SILENT** — joint_id = -1, and
+                                      `_fill_actuator_transmission` has no
+                                      else, so trn_n = 0: an actuator that
+                                      applies ZERO FORCE, with no diagnostic
+        <equality> body1/body2        **SILENT** -1 into the record
+        <contact><exclude>            **SILENTLY SKIPPED**
+
+    and the actuator case is unfixable downstream, because `-1` is a LEGAL
+    sentinel there ("no joint transmission"), so nothing after the parser can
+    tell an unresolved name from a tendon transmission. A prefixer that misses
+    one attribute therefore produces a limp robot and no error.
+
+    ⇒ validate HERE, where the rewrite happened and the name is still in hand.
+
+    ⚠ THE DECLARED SET INCLUDES `<default class="X">`, which declares with
+    `class=` rather than `name=` — the one element in MJCF that does. Omitting
+    it would make every `class=` reference look dangling.
+
+    ⚠ `target=` ON A CAMERA IS EXEMPT. `full_parser` resolves it to -1 with a
+    documented, deliberate degradation, so a model that names a missing
+    target is one MuJoCo also accepts.
+    """
+    # ── everything the document declares ─────────────────────────────────
+    var declared = List[String]()
+    for v in _attr_values(xml, String("name")):
+        declared.append(v)
+    # `<default class="X">` DECLARES; `class=` elsewhere REFERENCES.
+    var scan = 0
+    while True:
+        var d = _find_tag(xml, "<default", scan)
+        if d == -1:
+            break
+        var e = xml.find(">", d)
+        if e == -1:
+            break
+        var c = _trim(_extract_attr(String(xml[byte = d : e + 1]), "class"))
+        if c.byte_length() > 0:
+            declared.append(c)
+        scan = e + 1
+
+    var refs = List[String]()
+    for a in _ref_attrs():
+        # `name` DECLARES, and `class` is handled above for the declaring
+        # case; `target` is the documented exemption.
+        if a == "name" or a == "target":
+            continue
+        refs.append(a)
+
+    var bad = List[String]()
+    for attr in refs:
+        for v in _attr_values(xml, attr):
+            if v.byte_length() == 0:
+                continue
+            var found = False
+            for d in declared:
+                if d == v:
+                    found = True
+            if not found:
+                bad.append(attr + "='" + v + "'")
+
+    if len(bad) > 0:
+        var msg = String(
+            "physics3d: expansion left "
+        ) + String(len(bad)) + " DANGLING name reference(s). A prefixer that"
+        msg += " misses an attribute produces a model that LOADS and is wrong"
+        msg += " — an actuator with an unresolved joint= applies zero force"
+        msg += " and raises nothing. Offenders:"
+        for i in range(len(bad)):
+            if i >= 8:
+                msg += " ... and " + String(len(bad) - 8) + " more"
+                break
+            msg += " " + bad[i]
+        raise Error(msg)
