@@ -170,13 +170,16 @@ def _option_flag_disabled(xml: String, flag: String) -> Bool:
 def _parse_option(
     xml: String,
 ) -> Tuple[
-    Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Int
+    Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,
+    Int, Float64
 ]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
-    noslip_tolerance, ccd_tolerance, ccd_iterations) from <option .../>.
+    noslip_tolerance, ccd_tolerance, ccd_iterations, impratio) from
+    <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
-    noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35.
+    noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35,
+    impratio=1.
 
     ⚠ `ccd_tolerance` / `ccd_iterations` ARE EXERCISED, unlike
     `noslip_tolerance` below. They set EPA's stopping rule, which decides which
@@ -236,10 +239,11 @@ def _parse_option(
     var nstol = Float64(1e-6)
     var ccdtol = Float64(MJ_CCD_TOLERANCE)
     var ccditer = MJ_CCD_ITERATIONS
+    var impratio = 1.0
 
     var pos = xml.find("<option")
     if pos == -1:
-        return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer)
+        return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer, impratio)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -287,7 +291,41 @@ def _parse_option(
         if vi > 0:
             ccditer = vi
 
-    return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer)
+    # ⚠⚠ `impratio` — READ BY FIVE SOLVERS AND WRITTEN BY NOBODY until now.
+    # `fields_build` hardcoded `1.0` into `MODEL_META_IDX_IMPRATIO` while
+    # `contact_solve`, `newton_solve` (x2), `cg_solve` and `island_pgs_solve`
+    # all read that slot, so a model asking for anything else was silently
+    # simulated at 1. Every model in the tree used 1, which is exactly why it
+    # survived — `contact_solve.mojo`'s own note says "no gate here can move,
+    # and none did".
+    #
+    # It is the ratio of frictional to normal constraint IMPEDANCE
+    # (`engine_core_constraint.c:1886`): `R[1] = R[0]/impratio`, so
+    # `mu = friction[0]*sqrt(R[1]/R[0]) = friction[0]/sqrt(impratio)`. With an
+    # ELLIPTIC cone the normal force is coupled to the tangential through that
+    # regularized `mu`, so getting it wrong moves the NORMAL force, not just
+    # the friction.
+    #
+    # Measured, Boston Dynamics spot (`impratio="100"`), at its first
+    # ground contact with the two engines in the same state and IDENTICAL
+    # contact geometry (position, normal, dist, condim and friction all equal
+    # to every printed digit):
+    #     MuJoCo, impratio=100 : fn = 11.070, 10.256
+    #     MuJoCo, impratio=1   : fn =  6.849,  6.342
+    #     ours  (hardcoded 1)  : fn =  6.333,  5.837
+    # i.e. 1.62x of a 1.75x normal-force deficit.
+    #
+    # ⚠ A NON-POSITIVE VALUE FALLS BACK TO 1 rather than being copied.
+    # `R[1] = R[0]/impratio` divides by it, and `mu` takes its square root, so
+    # 0 or a negative would be a division by zero or a NaN several call
+    # frames away from the XML that caused it.
+    var impr_str = _extract_attr(tag, "impratio")
+    if impr_str.byte_length() > 0:
+        var vr = _parse_float(impr_str)
+        if vr > 0.0:
+            impratio = vr
+
+    return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer, impratio)
 
 
 # =============================================================================
@@ -4578,6 +4616,7 @@ def parse_xml_full(
     result.noslip_tolerance = opt[6]
     result.ccd_tolerance = opt[7]
     result.ccd_iterations = opt[8]
+    result.impratio = opt[9]
 
     # <flag multiccd="disable" nativeccd="disable"/> — `mjDSBL_MULTICCD` and
     # `mjDSBL_NATIVECCD`.

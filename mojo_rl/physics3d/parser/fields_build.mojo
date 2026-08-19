@@ -844,7 +844,13 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_TIMESTEP] = Scalar[DTYPE](fmd.timestep)
     mf.meta.data[MODEL_META_IDX_DENSITY] = Scalar[DTYPE](fmd.opt_density)
     mf.meta.data[MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](fmd.opt_viscosity)
-    mf.meta.data[MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](1.0)
+    # ⚠⚠ WAS HARDCODED `1.0`, AND FIVE SOLVERS READ THIS SLOT. `contact_solve`,
+    # `newton_solve` (twice), `cg_solve` and `island_pgs_solve` all take
+    # `impratio` from here, so `<option impratio>` was parsed by nothing and
+    # every model ran at 1 regardless of what it asked for. Every model in the
+    # tree happened to use 1 — `contact_solve.mojo`'s note says so — which is
+    # why the write and the reads agreed for as long as they did.
+    mf.meta.data[MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](fmd.impratio)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         len(fmd.equalities) if len(fmd.equalities) < mf.dims.get_nequality()
         else mf.dims.get_nequality()

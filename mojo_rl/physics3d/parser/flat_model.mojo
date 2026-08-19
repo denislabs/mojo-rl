@@ -1669,6 +1669,12 @@ struct FlatModelDef(Movable):
     # why tighter is not safer.
     var ccd_tolerance: Float64
     var ccd_iterations: Int
+    # `<option impratio>` — the ratio of frictional to normal constraint
+    # IMPEDANCE, MuJoCo default 1. See `_parse_option` in `full_parser` for the
+    # measurement; the short version is that five solvers read
+    # `MODEL_META_IDX_IMPRATIO` and `fields_build` hardcoded 1.0 into it, so
+    # this attribute was parsed by nothing and every model was simulated at 1.
+    var impratio: Float64
     # `<option><flag multiccd="disable" nativeccd="disable"/></option>` —
     # `mjDSBL_MULTICCD` / `mjDSBL_NATIVECCD`, both DISABLE bits that are off by
     # default on the 3.10.0 runtime.
@@ -1854,6 +1860,7 @@ struct FlatModelDef(Movable):
         self.noslip_tolerance = Float64(1e-6)
         self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
         self.ccd_iterations = MJ_CCD_ITERATIONS
+        self.impratio = 1.0
         # Both default OFF, matching MuJoCo: the features are ON unless a model
         # disables them.
         self.multiccd_disabled = False
