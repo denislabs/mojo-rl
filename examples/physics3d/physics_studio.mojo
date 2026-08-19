@@ -66,7 +66,10 @@ from mojo_rl.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
 )
 from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.studio.stepping import (
+    StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
+)
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.gpu.constants import (
@@ -131,7 +134,29 @@ struct Loaded(Movable):
     var m: Model[DT, DynDims]
     var sf: SpecFields[DT, DynDims]
     var d: Data[DT, DynDims, 1]
-    var integ: EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3]
+    # ⚠⚠ TWO INTEGRATORS, AND THE MODEL PICKS. `EulerIntegrator`'s own
+    # defaults are ELLIPTIC + "pgs"; MuJoCo 3.10.0's are PYRAMIDAL + NEWTON
+    # (measured: `m.opt.cone` reads 0 and `m.opt.solver` reads 2 on a model
+    # whose `<option>` says nothing). The studio was taking the parameter
+    # defaults, so EVERY model opened here simulated with a friction cone and
+    # a solver the reference does not use — including the 33 Menagerie scenes
+    # that are pyramidal precisely because they say nothing.
+    #
+    # ⚠ CONE IS WHAT VARIES; SOLVER DOES NOT. Measured across 114 models —
+    # all 57 Menagerie scenes and all 57 loadable in-repo ones — the solver is
+    # NEWTON in 112 and PGS in 2, while the cone splits 67 pyramidal / 45
+    # elliptic. Two instantiations cover the split; a model asking for
+    # anything else gets a WARNING naming what it asked for and what it got,
+    # rather than a silent substitution.
+    #
+    # Both are constructed because `EulerIntegrator` owns its scratch and the
+    # choice is only known after the parse. The waste is one solver workspace
+    # (~440 KB at ms_human_700's nv=85), which is not worth an `Optional`
+    # dance in the step loop.
+    var integ_pyr: StudioIntegPyr
+    var integ_ell: StudioIntegEll
+    var cone_used: Int
+    """`ConeType.PYRAMIDAL` / `ELLIPTIC` — which of the two is stepping."""
     var rf: RenderFields
     var flat: String
     var base_dir: String
@@ -212,9 +237,12 @@ struct Loaded(Movable):
         self.m = m^
         self.sf = spec_fields_runtime[DT](self.fmd, self.dims)
         self.d = Data[DT, DynDims, 1](self.dims)
-        self.integ = EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3](
-            self.dims
-        )
+        self.integ_pyr = StudioIntegPyr(self.dims)
+        self.integ_ell = StudioIntegEll(self.dims)
+        self.cone_used = studio_cone_of(self.fmd)
+        var solver_note = studio_solver_warning(self.fmd)
+        if solver_note.byte_length() > 0:
+            print(solver_note)
         # ⚠ THE **EXPANDED** TEXT, NOT THE SOURCE. `RenderFields.xml_text` is
         # what `render_skin` and `body_names_of` scan, and after an `<attach>`
         # the source names none of the spliced bodies — the scene file is a
@@ -808,7 +836,10 @@ def run_studio(
             if nact > 0:
                 apply_actions_fields[DT](L.sf, L.d, actions, act,
                                          L.fmd.timestep)
-            L.integ.step["cpu"](L.d, L.m)
+            if L.cone_used == ConeType.ELLIPTIC:
+                L.integ_ell.step["cpu"](L.d, L.m)
+            else:
+                L.integ_pyr.step["cpu"](L.d, L.m)
             step_ns += Int(perf_counter_ns() - s0)
             t += 1
             last_us = Float64(step_ns) / 1000.0 / Float64(t)
