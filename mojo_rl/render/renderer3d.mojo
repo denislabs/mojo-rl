@@ -460,6 +460,16 @@ struct Renderer3D(Movable):
         CapsuleCacheEntry
     ]  # Same cache type (radius, half_height)
     var mesh_cache: List[MeshCacheEntry]
+    var mesh_failed: List[String]
+    """Meshes whose load or upload raised, so the diagnostic prints ONCE.
+
+    ⚠⚠ `draw_mesh` USED TO `return` SILENTLY ON A FAILURE, and a mesh geom
+    that draws nothing is indistinguishable from one the model never
+    declared — the viewer just shows a robot with parts missing. That is the
+    most expensive kind of bug this renderer can have, because the model, the
+    parse, the asset table and the kinematics can all be verified correct
+    while the picture stays wrong. Printing per frame would be 60 lines a
+    second, so the name is recorded here and reported once."""
     var skin_cache: List[SkinCacheEntry]
     """Deformable skins. Separate from `mesh_cache` because a skin carries CPU
     state a rigid mesh never needs; its GPU buffers still live in `mesh_cache`.
@@ -685,6 +695,7 @@ struct Renderer3D(Movable):
         self.capsule_cache = List[CapsuleCacheEntry]()
         self.cylinder_cache = List[CapsuleCacheEntry]()
         self.mesh_cache = List[MeshCacheEntry]()
+        self.mesh_failed = List[String]()
         self.skin_cache = List[SkinCacheEntry]()
 
         # Texture cache
@@ -768,6 +779,7 @@ struct Renderer3D(Movable):
         self.capsule_cache = move.capsule_cache^
         self.cylinder_cache = move.cylinder_cache^
         self.mesh_cache = move.mesh_cache^
+        self.mesh_failed = move.mesh_failed^
         self.skin_cache = move.skin_cache^
         self.texture_cache = move.texture_cache^
         self.default_texture = move.default_texture^
@@ -3295,7 +3307,17 @@ struct Renderer3D(Movable):
                 self.mesh_cache.append(MeshCacheEntry(name, handle^))
                 cache_idx = len(self.mesh_cache) - 1
             except e:
-                # File not found or parse error — skip this mesh silently
+                # ⚠ ONCE, NOT PER FRAME, and never silently. See `mesh_failed`.
+                var seen = False
+                for k in range(len(self.mesh_failed)):
+                    if self.mesh_failed[k] == name:
+                        seen = True
+                if not seen:
+                    self.mesh_failed.append(name)
+                    print(
+                        "Warning: mesh '", name, "' did not load — DRAWN AS"
+                        " NOTHING. path='", file_path, "' :", String(e),
+                    )
                 return
 
         # Load and cache texture if provided

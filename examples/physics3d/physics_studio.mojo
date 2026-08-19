@@ -129,6 +129,17 @@ struct Loaded(Movable):
     var joint_body: List[Int]
     var mesh_half: List[Float64]
     """Real half-extents per geom, 3 each — see `_measure_meshes`."""
+    var hull_verts: Int
+    """Hull vertices actually LOADED, as opposed to the budget allocated.
+
+    ⚠ THE TWO ARE NOT THE SAME NUMBER AND THE DIFFERENCE LOOKS LIKE A CAP.
+    `nmesh_verts` is a workspace budget this loader DISCOVERS by doubling
+    (0 → 4096 → 8192 …) until the builder stops raising, so it reports the
+    first rung that fit, not what the model needs. ToddlerBot showed
+    "mesh verts 4096" while loading two collision hulls of a few hundred
+    vertices — a round power of two that reads as a limit being hit. Only
+    COLLIDABLE hulls are loaded; the 45 visual meshes go straight from STL to
+    the GPU and never enter this budget at all."""
 
     def __init__(out self, path: String) raises:
         """Parse, size, build. Raises with a readable message on a bad file.
@@ -200,7 +211,12 @@ struct Loaded(Movable):
         for j in self.fmd.joints:
             self.joint_body.append(j.body_id)
         self.mesh_half = List[Float64]()
+        self.hull_verts = 0
         self.mesh_half = self._measure_meshes()
+        for mi in range(MAX_GPU_MESHES):
+            self.hull_verts += Int(Float64(
+                self.m.mesh_meta.data[mi * MODEL_MESH_META_SIZE + 1]
+            ))
 
         self.reset()
 
@@ -315,8 +331,11 @@ struct Loaded(Movable):
               " nact", self.dims.get_nact())
         print("    nsite", self.dims.get_nsite(),
               " ntendon", self.dims.get_ntendon(),
-              " nequality", self.dims.get_nequality(),
-              " mesh verts", self.dims.get_nmesh_verts())
+              " nequality", self.dims.get_nequality())
+        # ⚠ USED vs BUDGET, because a lone round number reads as a cap.
+        print("    collidable hull verts", self.hull_verts, "used /",
+              self.dims.get_nmesh_verts(), "budgeted",
+              " (visual meshes are drawn from STL and use neither)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
