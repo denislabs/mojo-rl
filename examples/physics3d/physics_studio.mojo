@@ -68,7 +68,9 @@ from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE,
+)
 from mojo_rl.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
     StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
@@ -124,6 +126,8 @@ struct Loaded(Movable):
     var body_parent: List[Int]
     var geom_body: List[Int]
     var joint_body: List[Int]
+    var mesh_half: List[Float64]
+    """Real half-extents per geom, 3 each — see `_measure_meshes`."""
 
     def __init__(out self, path: String) raises:
         """Parse, size, build. Raises with a readable message on a bad file.
@@ -194,8 +198,94 @@ struct Loaded(Movable):
         self.joint_body = List[Int]()
         for j in self.fmd.joints:
             self.joint_body.append(j.body_id)
+        self.mesh_half = List[Float64]()
+        self.mesh_half = self._measure_meshes()
 
         self.reset()
+
+    def _measure_meshes(self) -> List[Float64]:
+        """Per-geom half-extents, measured from the LOADED hull vertices.
+
+        ⚠⚠ WITHOUT THIS, A MESH GEOM OUTLINES AS A ONE-METRE CUBE. A `<geom
+        mesh="...">` normally carries no `size` attribute — the mesh defines
+        the shape — so `GeomData`'s defaults survive: `half_x/y/z` are 0 and
+        `radius` is 0.5. Drawing a box from `radius` therefore boxed every
+        part of a 30 cm arm in a 1 m cube, which reads as a broken outline
+        rather than as empty size fields.
+
+        The vertices exist only AFTER the build (`fields_build` loads the
+        STLs), which is why this runs here and not in `build_render_fields` —
+        the parser has the filename, not the geometry.
+
+        ⚠ THE HULL IS ALREADY IN THE GEOM'S OWN FRAME, so this is a plain
+        min/max over the vertex block; no pose is applied. Applying the body
+        transform here would make the box grow as the robot moves.
+        """
+        var out = List[Float64](length=len(self.fmd.geoms) * 3, fill=0.0)
+        var nverts = self.dims.get_nmesh_verts()
+        if nverts <= 0:
+            return out^
+        var biggest = 0.0
+        var unmeasured = List[Int]()
+        for g in range(len(self.fmd.geoms)):
+            var mid = self.fmd.geoms[g].mesh_id
+            if mid < 0:
+                continue
+            var adr = Int(Float64(
+                self.m.mesh_meta.data[mid * MODEL_MESH_META_SIZE + 0]
+            ))
+            var n = Int(Float64(
+                self.m.mesh_meta.data[mid * MODEL_MESH_META_SIZE + 1]
+            ))
+            if n <= 0 or adr < 0 or adr + n > nverts:
+                # ⚠ A VISUAL-ONLY MESH HAS NO VERTICES HERE, and that is by
+                # design: `fields_build` loads the COLLIDABLE hulls only —
+                # so_arm101 has 30 mesh geoms and one of them measures 0, and
+                # sawyer keeps 10 such visual geoms. The RENDERER still draws
+                # the shape (it loads the STL by filename), so the part is on
+                # screen with no measurable bound in the model. Collected and
+                # given the model's own scale below rather than the meaningless
+                # 0.5 default.
+                unmeasured.append(g)
+                continue
+            var hx = 0.0
+            var hy = 0.0
+            var hz = 0.0
+            for v in range(adr, adr + n):
+                var x = abs(Float64(self.m.mesh_verts.data[v * 3 + 0]))
+                var y = abs(Float64(self.m.mesh_verts.data[v * 3 + 1]))
+                var z = abs(Float64(self.m.mesh_verts.data[v * 3 + 2]))
+                if x > hx:
+                    hx = x
+                if y > hy:
+                    hy = y
+                if z > hz:
+                    hz = z
+            out[g * 3 + 0] = hx
+            out[g * 3 + 1] = hy
+            out[g * 3 + 2] = hz
+            if hx > biggest:
+                biggest = hx
+            if hy > biggest:
+                biggest = hy
+            if hz > biggest:
+                biggest = hz
+
+        # ⚠ THE UNMEASURABLE ONES GET THE MODEL'S OWN SCALE, AND IT IS A
+        # MARKER RATHER THAN A BOUND. The alternative is `radius`, which for a
+        # mesh geom is `GeomData`'s untouched default of **0.5** — measured on
+        # so_arm101, whose real parts are 0.012-0.050 m, so that default boxes
+        # a 3 cm part in a 1 m cube. Wrong by 20-40x reads as a broken
+        # outline; wrong by a little reads as an approximate one, which is
+        # what it is.
+        if biggest <= 0.0:
+            biggest = 0.02
+        for i in range(len(unmeasured)):
+            var g = unmeasured[i]
+            out[g * 3 + 0] = biggest
+            out[g * 3 + 1] = biggest
+            out[g * 3 + 2] = biggest
+        return out^
 
     def reset(mut self):
         """The reference pose, and zero velocity."""
@@ -315,9 +405,11 @@ def _outline_of(
     L: Loaded, p: StudioPanel, positions: List[Vec3], quats: List[Quat]
 ) -> List[OverlayLine]:
     if p.sel_kind == SEL_GEOM:
-        return outline_geom(L.rf, p.sel_index, positions, quats)
+        return outline_geom(L.rf, p.sel_index, positions, quats, 1.0,
+                            L.mesh_half)
     if p.sel_kind == SEL_BODY:
-        return outline_body(L.rf, p.sel_index, positions, quats)
+        return outline_body(L.rf, p.sel_index, positions, quats, 1.0,
+                            L.mesh_half)
     return List[OverlayLine]()
 
 

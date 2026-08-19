@@ -1941,6 +1941,157 @@ def _dedupe_last_wins(inner: String) -> String:
     return out
 
 
+def _mjcf_sections() -> List[String]:
+    """Every top-level MJCF section, for `resolve_includes`' strictness check.
+
+    ⚠ THE LIST IS LONGER THAN `merge_mjcf`'S ACCUMULATORS, ON PURPOSE. It is
+    what a merge is CHECKED against, not what it handles — a section here that
+    `merge_mjcf` does not accumulate is exactly the case that must RAISE
+    rather than vanish. `<compiler>` and `<option>` are absent because they
+    are SINGLETONS that `merge_mjcf` folds attribute-wise, so "present in an
+    input, present in the output" is the wrong test for them.
+    """
+    var s = List[String]()
+    s.append(String("asset")); s.append(String("default"))
+    s.append(String("worldbody")); s.append(String("tendon"))
+    s.append(String("actuator")); s.append(String("equality"))
+    s.append(String("visual")); s.append(String("sensor"))
+    s.append(String("contact")); s.append(String("keyframe"))
+    s.append(String("statistic")); s.append(String("custom"))
+    s.append(String("extension")); s.append(String("deformable"))
+    s.append(String("size"))
+    return s^
+
+
+def _has_section(xml: String, name: String) -> Bool:
+    return xml.find("<" + name + ">") != -1 or xml.find("<" + name + " ") != -1
+
+
+def resolve_includes(
+    xml: String, base_dir: String, depth: Int = 0
+) raises -> String:
+    """Splice every `<include file=...>` in, recursively. MuJoCo's semantics.
+
+    ⚠⚠ WITHOUT THIS, A MENAGERIE `scene.xml` IS UNLOADABLE, and the failure
+    does not look like a missing feature. `_strip_include_tags` removed the
+    tag and nothing read the file, so the scene kept its own `<contact>` —
+    which names geoms declared in the ROBOT file — and the parser raised
+    "`<pair>` references unknown geom2='torso_collision_0'". A reference
+    error, pointing at a geom that exists, from a file that never loaded.
+    `scene.xml` is the conventional entry point for every Menagerie model, so
+    this is the first thing anyone opening one hits.
+
+    `merge_mjcf` has been the implementation of this all along — its own
+    docstring says so, and names ToddlerBot and Menagerie's split as the
+    reason `<contact>` and `<keyframe>` are accumulated. This is the
+    "obvious follow-up" it was kept for.
+
+    ⚠ ORDER IS DOCUMENT ORDER. `merge_mjcf` concatenates accumulator content
+    in ARGUMENT order, and an `<include>` splices AT ITS POSITION, so the
+    included text has to precede whatever follows it in the host. Menagerie
+    puts the include first, which is the case that matters; a host with
+    content on BOTH sides of an include would need the host split, and that is
+    left undone deliberately rather than silently approximated — see the
+    raise below.
+
+    ⚠ THE INCLUDED FILE RESOLVES RELATIVE TO THE FILE THAT INCLUDES IT, which
+    is MuJoCo's rule and is not the same as the top-level model directory once
+    includes nest.
+
+    ⚠⚠ STRICT. `merge_mjcf` drops any section not in its accumulator list
+    WITHOUT A DIAGNOSTIC — three sections have been lost that way historically
+    (`<tendon>`, `<option>`'s `<flag>` children, `<contact>`), each to a
+    docstring claim that outlived its limitation. So every section present in
+    any input is checked for in the output, and a missing one RAISES naming
+    itself. That check is what makes this safe to build S2's expander on.
+    """
+    if xml.find("<include") == -1:
+        return xml
+    if depth > 8:
+        raise Error(
+            "physics3d: <include> nested more than 8 deep — a cycle, or a"
+            " model this parser should not be asked to flatten."
+        )
+
+    var parts = List[String]()
+    var scan = 0
+    var n = xml.byte_length()
+    var tail_after_include = False
+    while True:
+        var inc = xml.find("<include", scan)
+        if inc == -1:
+            break
+        var inc_end = xml.find(">", inc)
+        if inc_end == -1:
+            raise Error("physics3d: unterminated <include> tag.")
+        var tag = String(xml[byte=inc : inc_end + 1])
+        var fname = _trim(_extract_attr(tag, "file"))
+        if fname.byte_length() == 0:
+            raise Error("physics3d: <include> with no file= attribute.")
+        var path = fname
+        if not fname.startswith("/") and base_dir.byte_length() > 0:
+            path = base_dir + "/" + fname
+        var f: FileHandle
+        try:
+            f = open(path, "r")
+        except:
+            raise Error(
+                "physics3d: <include file='" + fname + "'> — cannot open '"
+                + path + "'."
+            )
+        var text = f.read()
+        f.close()
+        var sub_base = base_dir
+        var cut = path.rfind("/")
+        if cut > 0:
+            sub_base = String(path[byte=0:cut])
+        parts.append(resolve_includes(text, sub_base, depth + 1))
+        # ⚠ CONTENT AFTER THE LAST INCLUDE IS FINE (Menagerie's shape);
+        # content BEFORE one is what this cannot order correctly.
+        var before = String(xml[byte=scan:inc])
+        for sec in _mjcf_sections():
+            if _has_section(before, sec):
+                raise Error(
+                    "physics3d: <include> appears AFTER a <" + sec + ">"
+                    " section. Splicing at the tag's position is not"
+                    " implemented; move the <include> above it, or flatten the"
+                    " file. (Menagerie puts it first.)"
+                )
+        tail_after_include = True
+        scan = inc_end + 1
+    _ = tail_after_include
+
+    var host = _strip_include_tags(xml)
+    parts.append(host)
+
+    var merged: String
+    if len(parts) == 2:
+        merged = merge_mjcf(parts[0], parts[1])
+    elif len(parts) == 3:
+        merged = merge_mjcf(parts[0], parts[1], parts[2])
+    elif len(parts) == 4:
+        merged = merge_mjcf(parts[0], parts[1], parts[2], parts[3])
+    else:
+        raise Error(
+            "physics3d: more than three <include>s in one file — raise the"
+            " arity here if a real model needs it."
+        )
+
+    # ⚠⚠ THE STRICTNESS CHECK. See the docstring: `merge_mjcf` drops silently.
+    for sec in _mjcf_sections():
+        var present = False
+        for i in range(len(parts)):
+            if _has_section(parts[i], sec):
+                present = True
+        if present and not _has_section(merged, sec):
+            raise Error(
+                "physics3d: <include> merge DROPPED the <" + sec + ">"
+                " section. `merge_mjcf` accumulates a fixed list and this is"
+                " not on it — add it there rather than accepting the loss."
+            )
+    return merged
+
+
 def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 

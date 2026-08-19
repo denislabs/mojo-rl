@@ -97,11 +97,23 @@ def outline_geom(
     positions: List[Vec3],
     quats: List[Quat],
     visual_radius_scale: Float64 = 1.0,
+    mesh_half: List[Float64] = List[Float64](),
 ) -> List[OverlayLine]:
     """The selected geom's wireframe, in world space. Empty for no selection.
 
     `positions`/`quats` are the BODY poses this frame — the same arrays the
     picker and the renderer were handed, so the outline cannot lag the shape.
+
+    ⚠⚠ `mesh_half` IS WHY A MESH OUTLINE IS NOT A HUGE CUBE. A `<geom
+    mesh="...">` normally carries NO `size` attribute — the mesh defines the
+    shape — so `GeomData`'s defaults survive into `rf`: `half_x/y/z` are 0 and
+    `radius` is 0.5. An outline falling back to `radius` therefore drew a
+    ONE-METRE cube around every part of a 30 cm arm, which reads as "the
+    outline is broken" rather than "the size fields are empty for this type".
+
+    So the caller passes real half-extents, three per geom, measured from the
+    loaded hull vertices (`Model.mesh_verts` + `mesh_meta`). Empty = fall back
+    to `radius`, which is what a caller with no `Model` to hand gets.
     """
     var out = List[OverlayLine]()
     if geom < 0 or geom >= len(rf.geom_type):
@@ -147,10 +159,19 @@ def outline_geom(
         # MESH / ELLIPSOID / anything new: the bounding box. ⚠ HONEST RATHER
         # THAN PRETTY — the PICKER uses a bounding sphere for these, so an
         # outline tracing the true hull would promise a precision the
-        # selection itself does not have.
+        # selection itself does not have. But the box must at least be the
+        # RIGHT SIZE; see `mesh_half`.
         var hx = rf.geom_half_x[geom]
         var hy = rf.geom_half_y[geom]
         var hz = rf.geom_half_z[geom]
+        if geom * 3 + 2 < len(mesh_half):
+            var mx = mesh_half[geom * 3 + 0]
+            var my = mesh_half[geom * 3 + 1]
+            var mz = mesh_half[geom * 3 + 2]
+            if mx > 0.0 or my > 0.0 or mz > 0.0:
+                hx = mx
+                hy = my
+                hz = mz
         if hx <= 0.0 and hy <= 0.0 and hz <= 0.0:
             hx = r
             hy = r
@@ -165,6 +186,7 @@ def outline_body(
     positions: List[Vec3],
     quats: List[Quat],
     visual_radius_scale: Float64 = 1.0,
+    mesh_half: List[Float64] = List[Float64](),
 ) -> List[OverlayLine]:
     """Every visible geom of a body, outlined — what selecting a BODY means.
 
@@ -180,7 +202,9 @@ def outline_body(
             continue
         if rf.geom_group[g] >= 3 or rf.geom_rgba_a[g] < 1.0:
             continue
-        var part = outline_geom(rf, g, positions, quats, visual_radius_scale)
+        var part = outline_geom(
+            rf, g, positions, quats, visual_radius_scale, mesh_half
+        )
         for i in range(len(part)):
             out.append(part[i].copy())
     return out^

@@ -85,6 +85,7 @@ from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model, SO_ARM100_NMESH_VERTS
+from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
 comptime DT = DType.float64
 comptime STEPS = 200
@@ -249,6 +250,18 @@ def main() raises:
     print("--- 2 tendons + ngeom 18 (SAP): the tendon + broadphase arms ---")
     both_legs[HumanoidModel](
         t, ctx, "mojo_rl/envs/humanoid/assets/humanoid.xml", "humanoid"
+    )
+    # ⚠⚠ THE EQUALITY ARM, AND IT EXISTS BECAUSE THE RUNTIME LEG CRASHED
+    # HERE. `may_exist` opened `build_weld_equality_rows` to dynamic
+    # providers and it turned out to hold three `InlineArray[…, V_SIZE]` —
+    # length 0 on a dynamic provider — that had never been swept, because the
+    # ONLY caller sat behind `comptime if D.CAP_NEQUALITY > 0` and was
+    # unreachable. Opening a gate can expose a latent zero-size container
+    # behind it, and no audit of REACHABLE code can see one.
+    print("--- a mocap WELD + meshes: the equality arm ---")
+    both_legs[SawyerReachModel, 2048](
+        t, ctx, "mojo_rl/envs/metaworld/assets/sawyer_reach.xml", "sawyer",
+        nmesh_verts=2048,
     )
     print("--- 10 collidable meshes + ngeom 33 (SAP): the mesh arm ---")
     both_legs[SoArm100Model, SO_ARM100_NMESH_VERTS](

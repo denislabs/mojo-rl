@@ -53,6 +53,7 @@ lifetimes together for no benefit.
 
 from .flat_model import FlatModelDef
 from .full_parser import parse_xml_full
+from .xml_parser import resolve_includes
 from .fields_build import (
     build_model_fields_from_flat,
     apply_auto_spring_damper,
@@ -91,7 +92,13 @@ def read_model_source(
         # what a path separator search wants. The slice is also a
         # `StringSpan` borrowing `xml_path`, hence the copy.
         base = String(xml_path[byte=0:cut]) if cut > 0 else String("")
-    return (text^, base^)
+    # ⚠ `<include>` IS RESOLVED HERE, not in the parser. Menagerie's
+    # `scene.xml` — the conventional entry point for every model there — is a
+    # floor plus a `<contact>` section plus one `<include>` of the robot, and
+    # without this the include was STRIPPED: the scene kept pairs naming geoms
+    # that never loaded and raised "`<pair>` references unknown geom2=...", a
+    # reference error pointing at a geom that exists. See `resolve_includes`.
+    return (resolve_includes(text, base)^, base^)
 
 
 def parse_model_runtime(

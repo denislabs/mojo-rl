@@ -158,15 +158,26 @@ def _weld_jacobian_row[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
-    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+    nv: Int,
+    mut J_row: Scratch[Scalar[DTYPE], V_SIZE],
 ):
     """Weld/connect Jacobian row: J = J_a(at pos_a) - J_b(at pos_b)
     (verbatim from compute_weld_jacobian_row_gpu).
 
     Each body's Jacobian uses its OWN anchor position, unlike the contact
     Jacobian which uses a single shared contact point.
+
+    ⚠⚠ `nv`, NOT `V_SIZE`, AND `Scratch`, NOT `InlineArray`. `V_SIZE` is
+    `cap[D.NV]()`, which is **0 on a dynamic provider** — an `InlineArray` of
+    length 0 that this loop then failed to zero and the body below indexed,
+    giving "index 0 is out of bounds, valid range is 0 to -1" from a runtime
+    model with a weld. It survived the 3a/3b sweeps because the ONLY caller
+    sat behind `comptime if D.CAP_NEQUALITY > 0`, false on every dynamic
+    provider, so the path was unreachable until `may_exist` opened it. A
+    latent zero-size container behind a dead gate is invisible to every audit
+    that greps for reachable code.
     """
-    for i in range(V_SIZE):
+    for i in range(nv):
         J_row[i] = 0
 
     var num_joints = Int(
@@ -297,7 +308,8 @@ def _angular_jacobian_row_eq[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
-    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+    nv: Int,
+    mut J_row: Scratch[Scalar[DTYPE], V_SIZE],
 ):
     """Angular-only Jacobian row (verbatim from
     compute_angular_jacobian_row_gpu; duplicate of
@@ -305,8 +317,10 @@ def _angular_jacobian_row_eq[
     THIS one, so importing back would be circular).
 
     J[dof] = cdof_angular[dof] . dir (bilateral: body_a - body_b).
+
+    ⚠ `nv`, NOT `V_SIZE` — see `_weld_jacobian_row` above for the failure.
     """
-    for i in range(V_SIZE):
+    for i in range(nv):
         J_row[i] = 0
 
     var num_joints = Int(
@@ -473,7 +487,12 @@ def build_weld_equality_rows[
     if neq > nequality:
         neq = nequality
 
-    var J_row = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    # ⚠ THE LENGTH IS `nv`, THE CAP IS `V_SIZE`. `Scratch` puts this on the
+    # stack when the cap is non-zero and on the heap when it is 0 (a dynamic
+    # provider); the constructor's `nv` is load-bearing on the heap leg and
+    # inert on the stack one, which is exactly why getting it wrong is
+    # invisible to every static-leg gate.
+    var J_row = Scratch[Scalar[DTYPE], V_SIZE](nv, fill=Scalar[DTYPE](0))
     var num_eq_rows = 0
 
     for eq_i in range(neq):
@@ -912,7 +931,11 @@ def build_weld_equality_rows[
 
             # Compute Jacobian: J = J_a(at world_a) - J_b(at world_b)
             # Each body's Jacobian uses its OWN anchor point (MuJoCo convention)
-            for i in range(V_SIZE):
+            # ⚠ `nv`, NOT `V_SIZE` — the cap is 0 on a dynamic provider, so
+            # this loop zeroed nothing there. `_weld_jacobian_row` zeroes it
+            # again from `nv` anyway; the redundancy is kept because the two
+            # were written apart and a future edit could drop either.
+            for i in range(nv):
                 J_row[i] = 0
             _weld_jacobian_row[
                 DTYPE, V_SIZE](
@@ -933,6 +956,7 @@ def build_weld_equality_rows[
                 dx,
                 dy,
                 dz,
+                nv,
                 J_row,
             )
 
