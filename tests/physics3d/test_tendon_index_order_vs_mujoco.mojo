@@ -59,8 +59,10 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
-    TENDON_IDX_NUM_SITES,
-    TENDON_IDX_SITE_0,
+    TENDON_IDX_NUM_WRAPS,
+    TENDON_IDX_WOBJ_0,
+    TENDON_IDX_WTYPE_0,
+    WRAP_SITE,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.model.model_dims import ModelDims
@@ -206,7 +208,7 @@ def test_spatial_tendon_site_ids_match_mujoco() raises:
 
     var adr = Int(py=m.tendon_adr[1])
     var num = Int(py=m.tendon_num[1])
-    var ours_n = Int(mf.tendons.data[1 * MODEL_TENDON_SIZE + TENDON_IDX_NUM_SITES])
+    var ours_n = Int(mf.tendons.data[1 * MODEL_TENDON_SIZE + TENDON_IDX_NUM_WRAPS])
     print("  waypoints: ours", ours_n, " MuJoCo", num)
     assert_true(
         ours_n == num,
@@ -216,11 +218,19 @@ def test_spatial_tendon_site_ids_match_mujoco() raises:
     var worst = 0
     for k in range(num):
         var ours = Int(
-            mf.tendons.data[1 * MODEL_TENDON_SIZE + TENDON_IDX_SITE_0 + k]
+            mf.tendons.data[1 * MODEL_TENDON_SIZE + TENDON_IDX_WOBJ_0 + k]
         )
         var want = Int(py=m.wrap_objid[adr + k])
-        print("    waypoint", k, ": ours site", ours, " MuJoCo site", want)
-        if ours != want:
+        # ⚠ THE TYPE RUN TOO, since a waypoint became a (type, obj) PAIR when
+        # wrap geoms landed. Checking only the object id would let every
+        # waypoint read as `WRAP_NONE` — routing through nothing — while the
+        # ids all matched.
+        var ours_t = Int(
+            mf.tendons.data[1 * MODEL_TENDON_SIZE + TENDON_IDX_WTYPE_0 + k]
+        )
+        print("    waypoint", k, ": ours site", ours, " MuJoCo site", want,
+              " type", ours_t)
+        if ours != want or ours_t != WRAP_SITE:
             worst = 1
     assert_true(
         worst == 0,

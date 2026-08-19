@@ -65,6 +65,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
 from mojo_rl.physics3d.dynamics.tendon import spatial_tendon_length_jac
+from mojo_rl.physics3d.fields.scratch import Scratch
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_SIZE,
@@ -296,13 +297,19 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     print("  max |d(site_xpos)| =", worst_site)
     assert_true(worst_site <= 1e-14, "site_xpos differs from MuJoCo")
 
-    var tJ = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
+    # ⚠ `Scratch`, not `InlineArray` — this call site had been stale since
+    # `spatial_tendon_length_jac` took `Scratch` (the test tree is only
+    # partially swept, `project_rc2_test_tree_compile_sweep`). Unrelated to
+    # the wrap work; fixed here because it is one line and the file could not
+    # otherwise build.
+    var tJ = Scratch[Scalar[DTYPE], NV](NV, fill=Scalar[DTYPE](0))
     var L = spatial_tendon_length_jac[
         DTYPE, NV, 1
     ](
         0, 0, AsStatic[MD](),
         mf.tendons.lt["cpu", Layout.row_major(NTEN, MODEL_TENDON_SIZE)](),
         mf.sites.lt["cpu", Layout.row_major(NSITE, MODEL_SITE_SIZE)](),
+        mf.geoms.lt["cpu", Layout.row_major(NGEOM, MODEL_GEOM_SIZE)](),
         mf.bodies.lt["cpu", Layout.row_major(NBODY, MODEL_BODY_SIZE)](),
         mf.joints.lt["cpu", Layout.row_major(NJOINT, MODEL_JOINT_SIZE)](),
         mf.meta.lt["cpu", Layout.row_major(MODEL_META_SIZE)](),

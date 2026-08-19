@@ -101,6 +101,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_QPOS0,
     MODEL_META_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     MODEL_TENDON_SIZE,
     TENDON_KIND_SPATIAL,
     TENDON_IDX_KIND,
@@ -484,6 +485,11 @@ def compute_invweight0[
         var rl_META = rl1(MODEL_META_SIZE)
         var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
         var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        # ⚠ NOT CLAMPED TO 1. `rl_SITE` above is built the same way and a
+        # FIXED-tendon-only model reaches here with nsite 0, so a zero-extent
+        # model view is already exercised on this path. The tensor is indexed
+        # only where a wrap entry names a geom, which cannot happen at ngeom 0.
+        var rl_GEOM_V = rl2(dm.get_ngeom(), MODEL_GEOM_SIZE)
         var rl_BODY_V = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
         var rl_JOINT_V = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
         var rl_B3_V = rl2(1, dm.get_nbody() * 3)
@@ -493,6 +499,7 @@ def compute_invweight0[
         var meta_v = mf.meta.lt_dyn["cpu", DYN1](rl_META)
         var ten_v = mf.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = mf.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var geoms_v = mf.geoms.lt_dyn["cpu", DYN2](rl_GEOM_V)
         var bodies_v = mf.bodies.lt_dyn["cpu", DYN2](rl_BODY_V)
         var joints_v = mf.joints.lt_dyn["cpu", DYN2](rl_JOINT_V)
         var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3_V)
@@ -508,7 +515,8 @@ def compute_invweight0[
                 len0 = spatial_tendon_length_jac[
                     DTYPE, cap[D.NV](), 1
                 ](
-                    0, t, dm, ten_v, site_v, bodies_v, joints_v, meta_v,
+                    0, t, dm, ten_v, site_v, geoms_v, bodies_v, joints_v,
+                    meta_v,
                     stcom_v, cdof_v, xpos_v, xquat_v, tJ,
                 )
             else:

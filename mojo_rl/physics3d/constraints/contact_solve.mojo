@@ -77,6 +77,7 @@ from ..gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     METADATA_SIZE,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -1295,6 +1296,7 @@ def _contact_solve_env[
     L_EQUALITY: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
+    L_GEOMS_W: Layout,
     L_BODY_INVWEIGHT0: Layout,
     L_DOF_INVWEIGHT0: Layout,
     L_CDOF: Layout,
@@ -1339,6 +1341,10 @@ def _contact_solve_env[
     ],
     sites: LayoutTensor[
         DTYPE, L_SITES, MutAnyOrigin
+    ],
+    # ⚠ FOR TENDON WRAP GEOMS ONLY — see `dynamics/tendon._geom_world_frame`.
+    geoms_w: LayoutTensor[
+        DTYPE, L_GEOMS_W, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
         DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
@@ -1592,7 +1598,7 @@ def _contact_solve_env[
         _tendon_env[
             DTYPE, BATCH,
             PGS_ITERATIONS](
-            env, dims, qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            env, dims, qpos, qvel, joints, mmeta, tendons, sites, geoms_w, bodies,
             subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
@@ -2592,6 +2598,9 @@ def _contact_solve_fields_kernel[
     sites: LayoutTensor[
         DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
     ],
+    geoms_w: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
     ],
@@ -2615,7 +2624,7 @@ def _contact_solve_fields_kernel[
         CONE_TYPE,
         BATCH](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
-        bodies, mmeta, equality, tendons, sites, body_invweight0,
+        bodies, mmeta, equality, tendons, sites, geoms_w, body_invweight0,
         dof_invweight0, cdof, m_inv, qacc_constrained, solver,
     )
 
@@ -2653,6 +2662,7 @@ def solve_contacts[
     comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_GEOM_W = Layout.row_major(D.NGEOM, MODEL_GEOM_SIZE)
     comptime L_BW = Layout.row_major(D.NBODY, 2)
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
@@ -2675,6 +2685,7 @@ def solve_contacts[
         var rl_EQ = rl2(dm.get_nequality(), MODEL_EQ_SIZE)
         var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
         var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        var rl_GEOM_W = rl2(dm.get_ngeom(), MODEL_GEOM_SIZE)
         var rl_BW = rl2(dm.get_nbody(), 2)
         var rl_DW = rl1(dm.get_nv())
         var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
@@ -2700,6 +2711,7 @@ def solve_contacts[
         var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
         var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var geomw_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM_W)
         var bw_v = m.body_invweight0.lt_dyn["cpu", DYN2](rl_BW)
         var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
@@ -2712,7 +2724,7 @@ def solve_contacts[
                 CONE_TYPE,
                 BATCH](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
-                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, mi_v, qc_v, sol_v,
             )
     else:
@@ -2748,6 +2760,7 @@ def solve_contacts[
             m.equality.lt["gpu", L_EQ](),
             m.tendons.lt["gpu", L_TEN](),
             m.sites.lt["gpu", L_SITE](),
+                m.geoms.lt["gpu", L_GEOM_W](),
             m.body_invweight0.lt["gpu", L_BW](),
             m.dof_invweight0.lt["gpu", L_DW](),
             scratch.cdof.lt["gpu", L_CDOF](),

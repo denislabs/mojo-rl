@@ -17,6 +17,7 @@ from mojo_rl.physics3d.joint_types import (
 # and the packed field layout must agree, so both read it from here.
 from mojo_rl.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
+    TENDON_MAX_SPATIAL_WRAPS,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
 )
@@ -863,10 +864,11 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     through sites (`length = sum |p_{k+1} - p_k|`). `kind` selects which half
     of this record is meaningful — they are never both populated.
 
-    Only the site-to-site spatial case is supported. Wrap geoms (<geom>) and
-    pulleys (<pulley>) inside a <spatial> are rejected by the parser rather
-    than skipped, because silently dropping them would shorten the tendon and
-    the error would surface only as a physics divergence.
+    A spatial tendon routes through a SEQUENCE of waypoints, each either a
+    site or a wrap geom (sphere/cylinder) with an optional sidesite — MuJoCo's
+    `wrap_type`/`wrap_objid`/`wrap_prm` triple. `<pulley>` is still rejected
+    by the parser rather than skipped, because silently dropping a waypoint
+    would shorten the tendon and surface only as a physics divergence.
     """
 
     var kind: Int  # _TENDON_KIND_FIXED / _TENDON_KIND_SPATIAL
@@ -889,9 +891,14 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     var spring_lo: Float64
     var spring_hi: Float64
 
-    # spatial
-    var num_sites: Int
-    var site_ids: InlineArray[Int, TENDON_MAX_WRAPS]
+    # spatial — the routing sequence, MuJoCo's wrap_type/wrap_objid/wrap_prm
+    var num_wraps: Int
+    # site id when `wrap_types[k] == WRAP_SITE`, geom id for a wrap object.
+    var wrap_objs: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
+    # `wrap.WRAP_SITE` / `WRAP_SPHERE` / `WRAP_CYLINDER`.
+    var wrap_types: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
+    # sidesite id for a wrap geom, -1 when there is none.
+    var wrap_sides: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
     # `<spatial width= rgba=>` — RENDER ONLY, and here because the viewer's
     # `render_spatial_tendons` read them off the comptime `ComptimeRenderData`
     # (phase 1a.5). MuJoCo's defaults: width 0.003, rgba .5 .5 .5 1.
@@ -945,13 +952,15 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.stiffness = copy.stiffness
         self.spring_lo = copy.spring_lo
         self.spring_hi = copy.spring_hi
-        self.num_sites = copy.num_sites
+        self.num_wraps = copy.num_wraps
         self.render_width = copy.render_width
         self.rgba_r = copy.rgba_r
         self.rgba_g = copy.rgba_g
         self.rgba_b = copy.rgba_b
         self.rgba_a = copy.rgba_a
-        self.site_ids = copy.site_ids.copy()
+        self.wrap_objs = copy.wrap_objs.copy()
+        self.wrap_types = copy.wrap_types.copy()
+        self.wrap_sides = copy.wrap_sides.copy()
         self.wrap_overflow = copy.wrap_overflow
         self.limited = copy.limited
         self.range_min = copy.range_min
@@ -982,13 +991,15 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.stiffness = 0.0
         self.spring_lo = 0.0
         self.spring_hi = 0.0
-        self.num_sites = 0
+        self.num_wraps = 0
         self.render_width = 0.003
         self.rgba_r = 0.5
         self.rgba_g = 0.5
         self.rgba_b = 0.5
         self.rgba_a = 1.0
-        self.site_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
+        self.wrap_objs = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
+        self.wrap_types = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=0)
+        self.wrap_sides = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
         self.wrap_overflow = 0
         self.limited = 0
         self.range_min = 0.0

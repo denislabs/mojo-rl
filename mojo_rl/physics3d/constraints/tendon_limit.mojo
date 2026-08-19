@@ -49,6 +49,7 @@ from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_META_IDX_NTENDON,
     JOINT_IDX_DOF_ADR,
@@ -152,6 +153,7 @@ def build_tendon_limit_rows[
     L_QVEL: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
+    L_GEOMS: Layout,
     L_BODIES: Layout,
     L_JOINTS: Layout,
     L_MMETA: Layout,
@@ -168,6 +170,9 @@ def build_tendon_limit_rows[
     ],
     sites: LayoutTensor[
         DTYPE, L_SITES, MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
         DTYPE, L_BODIES, MutAnyOrigin
@@ -222,7 +227,7 @@ def build_tendon_limit_rows[
             ten_len = spatial_tendon_length_jac[
                 DTYPE, V_CAP, BATCH
             ](
-                env, t, dims, tendons, sites, bodies, joints, mmeta,
+                env, t, dims, tendons, sites, geoms, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, tJ,
             )
@@ -312,6 +317,7 @@ def build_tendon_equality_rows[
     L_QVEL: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
+    L_GEOMS: Layout,
     L_BODIES: Layout,
     L_JOINTS: Layout,
     L_MMETA: Layout,
@@ -329,6 +335,9 @@ def build_tendon_equality_rows[
     ],
     sites: LayoutTensor[
         DTYPE, L_SITES, MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
         DTYPE, L_BODIES, MutAnyOrigin
@@ -429,7 +438,7 @@ def build_tendon_equality_rows[
             ten_len = spatial_tendon_length_jac[
                 DTYPE, V_CAP, BATCH
             ](
-                env, t, dims, tendons, sites, bodies, joints, mmeta,
+                env, t, dims, tendons, sites, geoms, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, eqJ,
             )

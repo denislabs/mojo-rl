@@ -31,6 +31,7 @@ from .flat_model import (
     TEX_2D,
     TEX_CUBE,
 )
+from ..gpu.constants import WRAP_SITE
 
 # Geom-type codes, spelled here so the size dispatch below reads like the
 # comptime block it mirrors. Same numbering as `physics3d.constants`.
@@ -468,9 +469,21 @@ def build_render_fields(
         var td = fmd.tendons[ti]
         if td.kind != 1:  # spatial only
             continue
-        rf.sten_nsite.append(td.num_sites)
-        for k in range(td.num_sites):
-            rf.sten_sites.append(td.site_ids[k])
+        # ⚠ SITES ONLY, AND THE WRAP GEOMS ARE DROPPED ON PURPOSE. The
+        # renderer draws a chain of capsules between consecutive points; it
+        # has never drawn the ARC round a wrap geom (MuJoCo does). Feeding it
+        # geom ids here would index `site_xpos` with a geom id — a chain
+        # through arbitrary points. Straight chords through the sites are
+        # wrong by the arc's bulge and right everywhere else, which for
+        # softfoot's 3.5 mm pulleys is invisible. See `render_spatial_tendons`.
+        var nsite_k = 0
+        for k in range(td.num_wraps):
+            if td.wrap_types[k] == WRAP_SITE:
+                nsite_k += 1
+        rf.sten_nsite.append(nsite_k)
+        for k in range(td.num_wraps):
+            if td.wrap_types[k] == WRAP_SITE:
+                rf.sten_sites.append(td.wrap_objs[k])
         rf.sten_width.append(td.render_width)
         rf.sten_rgba_r.append(td.rgba_r)
         rf.sten_rgba_g.append(td.rgba_g)

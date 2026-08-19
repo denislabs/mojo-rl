@@ -112,6 +112,10 @@ from .flat_model import (
 # layout so the parser and the record cannot disagree.
 from mojo_rl.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
+    TENDON_MAX_SPATIAL_WRAPS,
+    WRAP_SITE,
+    WRAP_SPHERE,
+    WRAP_CYLINDER,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
 )
@@ -3862,11 +3866,16 @@ def _fill_tendons(
     its <site site=> children. Both read `limited`/`range`/`margin` and the
     limit solref/solimp pair.
 
-    RAISES rather than skips on a <spatial> containing <geom> (wrap surface)
-    or <pulley>. Neither is implemented, and dropping them would silently
-    shorten the tendon — the failure would surface only as a physics
-    divergence, which is exactly how the `<tendon>`-dropped-by-merge_mjcf bug
-    stayed hidden until 2026-07-30.
+    `<spatial>` reads its `<site site=>` AND `<geom geom= sidesite=>` children
+    in document order — that sequence is MuJoCo's `wrap_type`/`wrap_objid`/
+    `wrap_prm`, and it is the routing itself, not a set.
+
+    RAISES rather than skips on `<pulley>`, on a wrap geom that is neither a
+    sphere nor a cylinder, and on a sequence that does not alternate
+    site-geom-site. Dropping any of those would silently SHORTEN the tendon,
+    and the failure would surface only as a physics divergence — which is
+    exactly how the `<tendon>`-dropped-by-merge_mjcf bug stayed hidden until
+    2026-07-30.
     """
     var count = 0
     var scan_pos = 0
@@ -3915,44 +3924,118 @@ def _fill_tendons(
                     td.rgba_b = _parse_float(rp[2])
                 if len(rp) >= 4:
                     td.rgba_a = _parse_float(rp[3])
-            if inner.find("<geom") != -1:
-                raise Error(
-                    "physics3d: <spatial> tendon with a wrap <geom> is not"
-                    " supported (site-to-site routing only)"
-                )
             if inner.find("<pulley") != -1:
                 raise Error(
                     "physics3d: <spatial> tendon with a <pulley> is not"
-                    " supported (site-to-site routing only)"
+                    " supported"
                 )
 
-            var spos = 0
+            # ⚠⚠ THE WAYPOINTS ARE WALKED IN DOCUMENT ORDER, site and geom
+            # together. This used to scan `<site>` only and RAISE on a
+            # `<geom>`, which is why iit_softfoot and ms_human_700 would not
+            # open. Scanning the two kinds in separate passes would be worse
+            # than raising: the sequence IS the routing, and
+            # `site,geom,site,geom,site` collapsed to `site,site,site` is a
+            # tendon that runs straight through every pulley it is meant to
+            # hook around — shorter, plausible, and silent.
+            var wpos = 0
             while True:
-                var sp = inner.find("<site", spos)
-                if sp == -1:
+                var sp = _find_tag(inner, "<site", wpos)
+                var gp = _find_tag(inner, "<geom", wpos)
+                var at = _min_valid(sp, gp)
+                if at == -1:
                     break
-                var stag = _extract_opening_tag(inner, sp)
-                var sname = _extract_attr(stag, "site")
-                if sname.byte_length() > 0:
-                    # ⚠ COUNT PAST THE CAP RATHER THAN STOPPING AT IT. Breaking
-                    # out of the loop is what made this truncate in silence.
-                    if td.num_sites >= TENDON_MAX_WRAPS:
-                        td.wrap_overflow += 1
+                var is_site = at == sp
+                var wtag = _extract_opening_tag(inner, at)
+                wpos = inner.find(">", at) + 1
+
+                var wname = _extract_attr(
+                    wtag, "site" if is_site else "geom"
+                )
+                if wname.byte_length() == 0:
+                    continue
+
+                # ⚠ COUNT PAST THE CAP RATHER THAN STOPPING AT IT. Breaking
+                # out of the loop is what made this truncate in silence.
+                if td.num_wraps >= TENDON_MAX_SPATIAL_WRAPS:
+                    td.wrap_overflow += 1
+                    continue
+
+                if is_site:
+                    var sid = _find_site_index_by_name(worldbody, wname)
+                    if sid < 0:
+                        raise Error(
+                            "physics3d: <spatial> tendon references unknown"
+                            " site '" + wname + "'"
+                        )
+                    td.wrap_objs[td.num_wraps] = sid
+                    td.wrap_types[td.num_wraps] = WRAP_SITE
+                    td.wrap_sides[td.num_wraps] = -1
+                else:
+                    var gid = _find_geom_index_by_name(worldbody, wname)
+                    if gid < 0:
+                        raise Error(
+                            "physics3d: <spatial> tendon wraps unknown geom"
+                            " '" + wname + "'"
+                        )
+                    # ⚠ MuJoCo WRAPS SPHERES AND CYLINDERS ONLY (`mju_wrap`
+                    # calls `mjERROR` on anything else). Naming the geom and
+                    # its type matters: the alternative is treating it as a
+                    # site, which routes the tendon THROUGH the object.
+                    var gt = result.geoms[gid].geom_type
+                    if gt == _GEOM_SPHERE:
+                        td.wrap_types[td.num_wraps] = WRAP_SPHERE
+                    elif gt == _GEOM_CYLINDER:
+                        td.wrap_types[td.num_wraps] = WRAP_CYLINDER
                     else:
-                        var sid = _find_site_index_by_name(worldbody, sname)
-                        if sid < 0:
+                        raise Error(
+                            "physics3d: <spatial> tendon wraps geom '"
+                            + wname + "', which is neither a sphere nor a"
+                            " cylinder (MuJoCo supports no other wrap shape)"
+                        )
+                    td.wrap_objs[td.num_wraps] = gid
+                    var side_n = _trim(_extract_attr(wtag, "sidesite"))
+                    if side_n.byte_length() > 0:
+                        var side_id = _find_site_index_by_name(
+                            worldbody, side_n
+                        )
+                        if side_id < 0:
                             raise Error(
-                                "physics3d: <spatial> tendon references unknown"
-                                " site '" + sname + "'"
+                                "physics3d: <spatial> tendon wrap names"
+                                " unknown sidesite '" + side_n + "'"
                             )
-                        td.site_ids[td.num_sites] = sid
-                        td.num_sites += 1
-                spos = inner.find(">", sp) + 1
-            if td.num_sites < 2:
+                        td.wrap_sides[td.num_wraps] = side_id
+                    else:
+                        td.wrap_sides[td.num_wraps] = -1
+                td.num_wraps += 1
+
+            if td.num_wraps < 2:
                 raise Error(
-                    "physics3d: <spatial> tendon needs at least two <site>"
+                    "physics3d: <spatial> tendon needs at least two"
                     " waypoints"
                 )
+            # ⚠ MuJoCo's `mj_tendon` CONSUMES site-geom-site AS ONE STEP
+            # (`engine_core_smooth.c:1022`), reading the site two entries
+            # along. A sequence that opens or closes on a geom, or puts two
+            # geoms in a row, walks off the end of its own routing — so it is
+            # refused here rather than half-evaluated there.
+            if (
+                td.wrap_types[0] != WRAP_SITE
+                or td.wrap_types[td.num_wraps - 1] != WRAP_SITE
+            ):
+                raise Error(
+                    "physics3d: <spatial> tendon must start and end with a"
+                    " <site>"
+                )
+            for wi in range(td.num_wraps - 1):
+                if (
+                    td.wrap_types[wi] != WRAP_SITE
+                    and td.wrap_types[wi + 1] != WRAP_SITE
+                ):
+                    raise Error(
+                        "physics3d: <spatial> tendon has two wrap geoms in a"
+                        " row; MuJoCo routes site-geom-site"
+                    )
         else:
             var jpos = 0
             while True:
@@ -4037,7 +4120,7 @@ def _fill_tendons(
                 + _trim(_extract_attr(open_tag, "name"))
                 + "' declares "
                 + String(
-                    td.num_sites + td.wrap_overflow if is_spatial
+                    td.num_wraps + td.wrap_overflow if is_spatial
                     else td.num_joints + td.wrap_overflow
                 )
                 + " wraps, over the TENDON_MAX_WRAPS cap of "
@@ -4725,7 +4808,11 @@ def parse_xml_full(
     # Equality constraints
     _fill_equality(equality_sec, worldbody, result)
     # Tendons
-    _fill_tendons(_extract_section(xml, "tendon"), worldbody, result)
+    # ⚠ `_extract_section_all`: MJCF lets `<tendon>` appear more than once and
+    # MuJoCo merges the repeats. Every sibling call on line ~4495 was fixed for
+    # this; this one was missed because tendons arrived through `merge_mjcf`,
+    # which had already collapsed them.
+    _fill_tendons(_extract_section_all(xml, "tendon"), worldbody, result)
 
     # Actuator transmission: needs BOTH joints and tendons, so it runs here
     # rather than inside `_fill_actuators`.

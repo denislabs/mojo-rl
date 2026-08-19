@@ -568,9 +568,36 @@ comptime EQ_IDX_OBJTYPE: Int = 21  # EQ_OBJ_BODY=0 or EQ_OBJ_SITE=1
 # COEF_0. That is why this is a renumber rather than an append.
 comptime TENDON_MAX_WRAPS: Int = 16
 
-# 24 scalar fields + three wrap-indexed runs (joint, coef, site).
-# Checks out against the old hand-numbered layout: 24 + 3*4 == 36.
-comptime MODEL_TENDON_SIZE: Int = 24 + 3 * TENDON_MAX_WRAPS  # Per tendon
+# ⚠⚠ A SEPARATE CAP FOR SPATIAL ROUTING, AND THE SPLIT IS THE POINT.
+# `TENDON_MAX_WRAPS` was doing three jobs at once: how many joints a FIXED
+# tendon may combine, how many waypoints a SPATIAL one may route through, and
+# the stride of the ACTUATOR transmission arrays (`motor_trn_qadr` is sized
+# `na * TENDON_MAX_WRAPS`). They shared a number, not a meaning.
+#
+# iit_softfoot routes a tendon through 39 waypoints — 21 sites and 18 wrap
+# geoms — so the spatial cap has to be ~3x what it was. Raising the shared
+# constant would have tripled ms_human_700's 700 actuator transmission rows
+# for a quantity that has nothing to do with tendon routing. Measured across
+# Menagerie's 881 spatial tendons: 726 use under 8 waypoints, 150 use 8-15,
+# and 5 (softfoot's) use 32-39.
+# ── what a spatial waypoint IS ───────────────────────────────────────────
+# MuJoCo's `mjtWrap`, restricted to the kinds we route. Defined HERE rather
+# than beside `mju_wrap` because the parser writes these values and the
+# dynamics reads them: two spellings of one enum is how a wrap geom ends up
+# read as a site.
+comptime WRAP_NONE: Int = 0
+comptime WRAP_SITE: Int = 1
+comptime WRAP_SPHERE: Int = 2
+comptime WRAP_CYLINDER: Int = 3
+comptime WRAP_PULLEY: Int = 4
+
+comptime TENDON_MAX_SPATIAL_WRAPS: Int = 48
+
+# 24 scalar fields, two FIXED runs (joint, coef) and three SPATIAL runs
+# (wrap object, wrap type, wrap parameter).
+comptime MODEL_TENDON_SIZE: Int = (
+    24 + 2 * TENDON_MAX_WRAPS + 3 * TENDON_MAX_SPATIAL_WRAPS
+)
 
 comptime TENDON_IDX_NUM_JOINTS: Int = 0
 comptime TENDON_IDX_JOINT_0: Int = 1
@@ -597,12 +624,29 @@ comptime TENDON_KIND_SPATIAL: Int = 1
 
 comptime TENDON_IDX_KIND: Int = TENDON_IDX_SOLIMP_4 + 1  # TENDON_KIND_*
 comptime TENDON_IDX_IS_EQUALITY: Int = TENDON_IDX_KIND + 1  # 1 => `_tendon_env` owns this row
-comptime TENDON_IDX_NUM_SITES: Int = TENDON_IDX_KIND + 2  # spatial only
-comptime TENDON_IDX_SITE_0: Int = TENDON_IDX_KIND + 3
-comptime TENDON_IDX_SITE_1: Int = TENDON_IDX_SITE_0 + 1
-comptime TENDON_IDX_SITE_2: Int = TENDON_IDX_SITE_0 + 2
-comptime TENDON_IDX_SITE_3: Int = TENDON_IDX_SITE_0 + 3
-comptime TENDON_IDX_LIMITED: Int = TENDON_IDX_SITE_0 + TENDON_MAX_WRAPS
+comptime TENDON_IDX_NUM_WRAPS: Int = TENDON_IDX_KIND + 2  # spatial only
+
+# ── the spatial routing sequence, three parallel runs ─────────────────────
+# MuJoCo's `wrap_type` / `wrap_objid` / `wrap_prm`, flattened into the tendon
+# record. Entry `k` is a SITE (`WRAP_SITE`, obj = site id, prm unused) or a
+# WRAP GEOM (`WRAP_SPHERE`/`WRAP_CYLINDER`, obj = geom id, prm = the sidesite
+# id or -1).
+#
+# ⚠ THE TYPE RUN IS NOT REDUNDANT WITH THE OBJECT RUN. A site id and a geom
+# id are both non-negative integers indexing different tables; without the
+# type, entry `k` reads as a site whose position happens to be a geom's, and
+# the tendon quietly routes through the wrong point rather than around the
+# object. The previous layout had no type run because everything was a site.
+comptime TENDON_IDX_WOBJ_0: Int = TENDON_IDX_KIND + 3
+comptime TENDON_IDX_WTYPE_0: Int = (
+    TENDON_IDX_WOBJ_0 + TENDON_MAX_SPATIAL_WRAPS
+)
+comptime TENDON_IDX_WPRM_0: Int = (
+    TENDON_IDX_WTYPE_0 + TENDON_MAX_SPATIAL_WRAPS
+)
+comptime TENDON_IDX_LIMITED: Int = (
+    TENDON_IDX_WPRM_0 + TENDON_MAX_SPATIAL_WRAPS
+)
 comptime TENDON_IDX_RANGE_MIN: Int = TENDON_IDX_LIMITED + 1
 comptime TENDON_IDX_RANGE_MAX: Int = TENDON_IDX_LIMITED + 2
 comptime TENDON_IDX_MARGIN: Int = TENDON_IDX_LIMITED + 3
@@ -618,7 +662,9 @@ comptime TENDON_IDX_SOLIMP_LIM_2: Int = TENDON_IDX_LIMITED + 9
 comptime TENDON_IDX_SOLIMP_LIM_3: Int = TENDON_IDX_LIMITED + 10
 comptime TENDON_IDX_SOLIMP_LIM_4: Int = TENDON_IDX_LIMITED + 11
 
-comptime TENDON_MAX_SITES: Int = TENDON_MAX_WRAPS
+# ⚠ `TENDON_MAX_SITES` IS GONE, not renamed: it was an alias of
+# `TENDON_MAX_WRAPS` from when a waypoint could only be a site. The spatial
+# cap is `TENDON_MAX_SPATIAL_WRAPS` above and it is a DIFFERENT NUMBER now.
 
 
 # =============================================================================

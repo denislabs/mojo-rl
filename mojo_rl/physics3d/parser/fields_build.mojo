@@ -245,14 +245,17 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_POS_X,
     MODEL_TENDON_SIZE,
     TENDON_MAX_WRAPS,
+    TENDON_MAX_SPATIAL_WRAPS,
     TENDON_IDX_KIND,
     TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
     TENDON_IDX_COEF_0,
     TENDON_IDX_LENGTH_REF,
-    TENDON_IDX_NUM_SITES,
-    TENDON_IDX_SITE_0,
+    TENDON_IDX_NUM_WRAPS,
+    TENDON_IDX_WOBJ_0,
+    TENDON_IDX_WTYPE_0,
+    TENDON_IDX_WPRM_0,
     TENDON_IDX_LIMITED,
     TENDON_IDX_RANGE_MIN,
     TENDON_IDX_RANGE_MAX,
@@ -1617,10 +1620,20 @@ def build_model_fields_from_flat[
         mf.tendons.data[o + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](
             td.length_ref
         )
-        mf.tendons.data[o + TENDON_IDX_NUM_SITES] = Scalar[DTYPE](td.num_sites)
-        for k in range(TENDON_MAX_WRAPS):
-            mf.tendons.data[o + TENDON_IDX_SITE_0 + k] = Scalar[DTYPE](
-                td.site_ids[k]
+        mf.tendons.data[o + TENDON_IDX_NUM_WRAPS] = Scalar[DTYPE](td.num_wraps)
+        # ⚠ ALL THREE RUNS, ALWAYS. The type run is what tells the dynamics
+        # whether entry `k` is a site or a wrap geom; leaving it at the slab's
+        # default would make every waypoint read as `WRAP_NONE` and the tendon
+        # route through nothing.
+        for k in range(TENDON_MAX_SPATIAL_WRAPS):
+            mf.tendons.data[o + TENDON_IDX_WOBJ_0 + k] = Scalar[DTYPE](
+                td.wrap_objs[k]
+            )
+            mf.tendons.data[o + TENDON_IDX_WTYPE_0 + k] = Scalar[DTYPE](
+                td.wrap_types[k]
+            )
+            mf.tendons.data[o + TENDON_IDX_WPRM_0 + k] = Scalar[DTYPE](
+                td.wrap_sides[k]
             )
         mf.tendons.data[o + TENDON_IDX_LIMITED] = Scalar[DTYPE](td.limited)
         mf.tendons.data[o + TENDON_IDX_RANGE_MIN] = Scalar[DTYPE](td.range_min)

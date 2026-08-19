@@ -177,6 +177,7 @@ from ..gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     METADATA_SIZE,
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
@@ -491,6 +492,7 @@ def _newton_solve_env[
     L_EQUALITY: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
+    L_GEOMS_W: Layout,
     L_BODY_INVWEIGHT0: Layout,
     L_DOF_INVWEIGHT0: Layout,
     L_CDOF: Layout,
@@ -537,6 +539,12 @@ def _newton_solve_env[
     ],
     sites: LayoutTensor[
         DTYPE, L_SITES, MutAnyOrigin
+    ],
+    # ⚠ FOR TENDON WRAP GEOMS ONLY — see `dynamics/tendon._geom_world_frame`.
+    # Named `..._W` so it cannot be confused with the CONTACT geom tensors,
+    # which this solver does not take (contacts arrive pre-detected).
+    geoms_w: LayoutTensor[
+        DTYPE, L_GEOMS_W, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
         DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
@@ -1091,7 +1099,8 @@ def _newton_solve_env[
             build_tendon_limit_rows[
                 DTYPE, V_CAP, E_CAP, BATCH
             ](
-                env, dims, qvel, tendons, sites, bodies, joints, mmeta,
+                env, dims, qvel, tendons, sites, geoms_w, bodies, joints,
+                mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, num_edges,
             )
@@ -1105,7 +1114,8 @@ def _newton_solve_env[
             build_tendon_equality_rows[
                 DTYPE, V_CAP, E_CAP,
                 BATCH](
-                env, dims, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                env, dims, qpos, qvel, tendons, sites, geoms_w, bodies,
+                joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, kind_e, num_edges,
             )
@@ -1680,7 +1690,8 @@ def _newton_solve_env[
         build_tendon_equality_rows[
             DTYPE, V_CAP, EQ_CAP, BATCH
         ](
-            env, dims, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+            env, dims, qpos, qvel, tendons, sites, geoms_w, bodies, joints,
+            mmeta,
             subtree_com, cdof, xpos, xquat, m_inv,
             eq_J, eq_D, eq_bias, eq_kind, neq_rows,
         )
@@ -2364,6 +2375,9 @@ def _newton_solve_fields_kernel[
     sites: LayoutTensor[
         DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
     ],
+    geoms_w: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
     ],
@@ -2389,7 +2403,7 @@ def _newton_solve_fields_kernel[
         BATCH,
         SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
-        bodies, mmeta, equality, tendons, sites, body_invweight0,
+        bodies, mmeta, equality, tendons, sites, geoms_w, body_invweight0,
         dof_invweight0, cdof, M, m_inv, qacc_constrained, solver,
     )
 
@@ -2441,6 +2455,7 @@ def solve_newton[
     comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_GEOM_W = Layout.row_major(D.NGEOM, MODEL_GEOM_SIZE)
     comptime L_BW = Layout.row_major(D.NBODY, 2)
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
@@ -2463,6 +2478,7 @@ def solve_newton[
         var rl_EQ = rl2(dm.get_nequality(), MODEL_EQ_SIZE)
         var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
         var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        var rl_GEOM_W = rl2(dm.get_ngeom(), MODEL_GEOM_SIZE)
         var rl_BW = rl2(dm.get_nbody(), 2)
         var rl_DW = rl1(dm.get_nv())
         var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
@@ -2488,6 +2504,7 @@ def solve_newton[
         var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
         var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var geomw_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM_W)
         var bw_v = m.body_invweight0.lt_dyn["cpu", DYN2](rl_BW)
         var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
@@ -2502,7 +2519,7 @@ def solve_newton[
                 BATCH,
                 SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
-                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, sol_v,
             )
     else:
@@ -2553,6 +2570,7 @@ def solve_newton[
                 m.equality.lt["gpu", L_EQ](),
                 m.tendons.lt["gpu", L_TEN](),
                 m.sites.lt["gpu", L_SITE](),
+                m.geoms.lt["gpu", L_GEOM_W](),
                 m.body_invweight0.lt["gpu", L_BW](),
                 m.dof_invweight0.lt["gpu", L_DW](),
                 scratch.cdof.lt["gpu", L_CDOF](),
@@ -2636,6 +2654,9 @@ def _newton_blocked_fields_kernel[
     ],
     sites: LayoutTensor[
         DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    geoms_w: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
@@ -3327,7 +3348,7 @@ def _newton_blocked_fields_kernel[
             build_tendon_limit_rows[
                 DTYPE, V_SIZE, MAX_TLIM,
                 BATCH](
-                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, bodies, joints, mmeta,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 t_je, t_de, t_bias, t_n,
             )
@@ -3356,7 +3377,7 @@ def _newton_blocked_fields_kernel[
             build_tendon_equality_rows[
                 DTYPE, V_SIZE, MAX_TEQ,
                 BATCH](
-                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 q_je, q_de, q_bias, q_kind, q_n,
             )
@@ -3917,6 +3938,7 @@ def solve_newton_blocked[
     comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_GEOM_W = Layout.row_major(D.NGEOM, MODEL_GEOM_SIZE)
     comptime L_BW = Layout.row_major(D.NBODY, 2)
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
@@ -3943,6 +3965,7 @@ def solve_newton_blocked[
         var rl_EQ = rl2(dm.get_nequality(), MODEL_EQ_SIZE)
         var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
         var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        var rl_GEOM_W = rl2(dm.get_ngeom(), MODEL_GEOM_SIZE)
         var rl_BW = rl2(dm.get_nbody(), 2)
         var rl_DW = rl1(dm.get_nv())
         var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
@@ -3968,6 +3991,7 @@ def solve_newton_blocked[
         var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
         var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var geomw_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM_W)
         var bw_v = m.body_invweight0.lt_dyn["cpu", DYN2](rl_BW)
         var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
@@ -3979,7 +4003,7 @@ def solve_newton_blocked[
             _newton_solve_env[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
-                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, sol_v,
             )
     else:
@@ -4006,6 +4030,7 @@ def solve_newton_blocked[
             m.equality.lt["gpu", L_EQ](),
             m.tendons.lt["gpu", L_TEN](),
             m.sites.lt["gpu", L_SITE](),
+                m.geoms.lt["gpu", L_GEOM_W](),
             m.body_invweight0.lt["gpu", L_BW](),
             m.dof_invweight0.lt["gpu", L_DW](),
             scratch.cdof.lt["gpu", L_CDOF](),

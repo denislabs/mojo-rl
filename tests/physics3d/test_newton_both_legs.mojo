@@ -97,6 +97,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
@@ -243,6 +244,7 @@ def solve_static[
     comptime L_EQ = Layout.row_major(MD.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(MD.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(MD.NSITE, MODEL_SITE_SIZE)
+    comptime L_GEOM_W = Layout.row_major(MD.NGEOM, MODEL_GEOM_SIZE)
     comptime L_BW = Layout.row_major(MD.NBODY, 2)
     comptime L_DW = Layout.row_major(MD.NV)
     comptime L_CDOF = Layout.row_major(BATCH, MD.NV * 6)
@@ -276,6 +278,7 @@ def solve_static[
             mf.equality.lt["cpu", L_EQ](),
             mf.tendons.lt["cpu", L_TEN](),
             mf.sites.lt["cpu", L_SITE](),
+            mf.geoms.lt["cpu", L_GEOM_W](),
             mf.body_invweight0.lt["cpu", L_BW](),
             mf.dof_invweight0.lt["cpu", L_DW](),
             sc.cdof.lt["cpu", L_CDOF](),
@@ -343,6 +346,9 @@ def solve_dynamic[
     var rl_site = RuntimeLayout[DYN2].row_major(
         IndexList[2](nsite, MODEL_SITE_SIZE)
     )
+    var rl_geom_w = RuntimeLayout[DYN2].row_major(
+        IndexList[2](ngeom, MODEL_GEOM_SIZE)
+    )
     var rl_bw = RuntimeLayout[DYN2].row_major(IndexList[2](nbody, 2))
     var rl_dw = RuntimeLayout[DYN1].row_major(IndexList[1](nv))
     var rl_cdof = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, nv * 6))
@@ -377,6 +383,7 @@ def solve_dynamic[
             mf.equality.lt_dyn["cpu", DYN2](rl_eq),
             mf.tendons.lt_dyn["cpu", DYN2](rl_ten),
             mf.sites.lt_dyn["cpu", DYN2](rl_site),
+            mf.geoms.lt_dyn["cpu", DYN2](rl_geom_w),
             mf.body_invweight0.lt_dyn["cpu", DYN2](rl_bw),
             mf.dof_invweight0.lt_dyn["cpu", DYN1](rl_dw),
             sc.cdof.lt_dyn["cpu", DYN2](rl_cdof),

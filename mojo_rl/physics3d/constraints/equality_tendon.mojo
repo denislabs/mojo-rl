@@ -63,6 +63,7 @@ from ..gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
@@ -1332,6 +1333,7 @@ def _tendon_env[
     L_MMETA: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
+    L_GEOMS: Layout,
     L_BODIES: Layout,
     L_SUBTREE_COM: Layout,
     L_CDOF: Layout,
@@ -1353,6 +1355,9 @@ def _tendon_env[
     ],
     sites: LayoutTensor[
         DTYPE, L_SITES, MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
         DTYPE, L_BODIES, MutAnyOrigin
@@ -1497,7 +1502,7 @@ def _tendon_env[
             ten_length = spatial_tendon_length_jac[
                 DTYPE, cap[D.CAP_NV](), BATCH
             ](
-                env, t_i, dims, tendons, sites, bodies, joints, mmeta,
+                env, t_i, dims, tendons, sites, geoms, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, sp_J,
             )
