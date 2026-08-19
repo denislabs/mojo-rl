@@ -1268,6 +1268,33 @@ def _is_self_closing(xml: String, tag_start: Int, tag_end: Int) -> Bool:
     return False
 
 
+def _extract_section_all(xml: String, tag: String) -> String:
+    """Every occurrence of `<tag>...</tag>`, merged into ONE section.
+
+    ⚠⚠ MJCF ALLOWS A SECTION TO APPEAR MORE THAN ONCE and MuJoCo merges the
+    repeats. `_extract_section` returns the FIRST and stops, so a model with
+    two `<worldbody>` blocks lost everything in the second — silently, since a
+    shorter model is not an error. Found when the studio's prop writer emitted
+    two: a five-prop scene loaded as a bare floor, nbody 1.
+
+    ⚠ THE RESULT IS RE-WRAPPED IN ONE PAIR OF TAGS rather than concatenated
+    whole. `<worldbody>A</worldbody><worldbody>B</worldbody>` would make every
+    depth-counting walk downstream see a close before it expected one; a
+    single `<worldbody>AB</worldbody>` is what MuJoCo's merge produces
+    semantically and what those walks already handle.
+
+    ⚠ ATTRIBUTES ON THE OPENING TAG ARE DROPPED, so this is for ACCUMULATOR
+    sections only — never `<option>` or `<compiler>`, whose content IS their
+    attributes and which are singletons anyway.
+    """
+    var inner = _extract_section_inner(xml, tag)
+    if inner.byte_length() == 0:
+        # Preserve the old answer exactly for the absent case: "" rather than
+        # an empty pair of tags, which several callers test for.
+        return _extract_section(xml, tag)
+    return "<" + tag + ">" + inner + "</" + tag + ">"
+
+
 def _extract_section_inner(xml: String, tag: String) -> String:
     """Return the inner content of <tag ...>...</tag>, excluding the outermost tags.
 

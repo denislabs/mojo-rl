@@ -26,6 +26,7 @@ from .xml_parser import (
     _strip_xml_comments,
     _normalize_freejoint,
     _extract_section,
+    _extract_section_all,
     _extract_section_inner,
     _extract_opening_tag,
     _extract_attr,
@@ -2857,6 +2858,25 @@ def _fill_actuators(
         var jname = _extract_attr(tag, "joint")
         if jname.byte_length() > 0:
             ad.joint_id = _find_joint_index_by_name(worldbody, jname)
+            # ⚠⚠ THE WORST SILENT FAILURE IN THIS FILE, UNTIL NOW. An
+            # unresolved `joint=` left `joint_id = -1`, and
+            # `_fill_actuator_transmission` is `if joint … elif tendon …` with
+            # NO ELSE — so `trn_n` stayed 0 and the actuator applied ZERO
+            # FORCE. Nothing downstream could recover it either: -1 is a LEGAL
+            # sentinel there ("no joint transmission"), so the record cannot
+            # distinguish a typo from a tendon-driven actuator.
+            #
+            # The visible symptom is a limp robot, which reads as a control or
+            # gain problem, not as a name. `<contact><pair>` and
+            # `<equality>` joints already raised; this is the same class and
+            # was the last of the three.
+            if ad.joint_id < 0:
+                raise Error(
+                    "physics3d: actuator references unknown joint='"
+                    + _trim(jname) + "'. That would be a ZERO-FORCE actuator"
+                    " — `-1` is a legal 'no joint transmission' sentinel, so"
+                    " nothing after the parser could tell it from a tendon."
+                )
         else:
             # `tendon=` transmission. Resolved off the SECTION TEXT (which
             # exists now) rather than `result.tendons` (which does not yet) —
@@ -3317,11 +3337,28 @@ def _fill_equality(
             ed.objtype = _EQ_OBJ_BODY
 
             # body1 / body2 — resolve names to indices
+            # ⚠ 0 IS THE WORLDBODY AND IS A LEGAL TARGET, so "not found"
+            # cannot be tested with `>= 0` here the way it is for a joint.
+            # `_find_body_index_by_name` returns 0 both for the worldbody and
+            # for a name it never saw — hence the explicit name check, which
+            # is why this one was silent for so long.
             if has_b1:
                 ed.body_a = _find_body_index_by_name(worldbody, b1_name)
+                if ed.body_a == 0 and _trim(b1_name) != "world":
+                    raise Error(
+                        "physics3d: <equality> references unknown body1='"
+                        + _trim(b1_name) + "'. It would silently weld to the"
+                        " WORLDBODY instead."
+                    )
 
             if has_b2:
                 ed.body_b = _find_body_index_by_name(worldbody, b2_name)
+                if ed.body_b == 0 and _trim(b2_name) != "world":
+                    raise Error(
+                        "physics3d: <equality> references unknown body2='"
+                        + _trim(b2_name) + "'. It would silently weld to the"
+                        " WORLDBODY instead."
+                    )
 
         # `anchor` — WHICH BODY IT ANCHORS DEPENDS ON THE TYPE.
         # `mj_equalityAnchors` (engine_core_constraint.c:561) is explicit:
@@ -3565,7 +3602,7 @@ def _fill_keyframes(xml: String, mut result: FlatModelDef) raises:
     ⚠ `act` / `mpos` / `mquat` are REFUSED (code 2), not dropped. A silently
     ignored `act` would be a wrong actuator state with nothing to notice it.
     """
-    var kf_sec = _extract_section(xml, "keyframe")
+    var kf_sec = _extract_section_all(xml, "keyframe")
     if kf_sec.byte_length() == 0:
         return
 
@@ -4066,8 +4103,12 @@ def _fill_excludes(
     contact_sec: String,
     worldbody: String,
     mut result: FlatModelDef,
-):
-    """Parse <contact> section: fill result.excludes[] with body pair exclusions."""
+) raises:
+    """Parse <contact> section: fill result.excludes[] with body pair exclusions.
+
+    ⚠ `raises` SINCE 2026-08-19: an exclude naming a body that does not exist
+    used to be skipped silently, and the consequence is a pair that COLLIDES
+    where MuJoCo excludes it. See the check below."""
     var ex_count = 0
     var scan_pos = 0
     var clen = contact_sec.byte_length()
@@ -4084,6 +4125,23 @@ def _fill_excludes(
         var b1 = _find_body_index_by_name(worldbody, body1_name)
         var b2 = _find_body_index_by_name(worldbody, body2_name)
 
+        # ⚠⚠ AN UNRESOLVED EXCLUDE USED TO BE SKIPPED WITHOUT A WORD, and the
+        # consequence is a pair that COLLIDES where MuJoCo excludes it —
+        # `nexclude == 0` against MuJoCo's real count has already read as a
+        # solver divergence once in this tree. Same worldbody-is-0 problem as
+        # `<equality>` above: the name has to be checked, not the index.
+        if _trim(body1_name) != "world" and b1 == 0:
+            raise Error(
+                "physics3d: <contact><exclude> references unknown body1='"
+                + _trim(body1_name) + "'. The pair would COLLIDE where MuJoCo"
+                " excludes it, with no diagnostic."
+            )
+        if _trim(body2_name) != "world" and b2 == 0:
+            raise Error(
+                "physics3d: <contact><exclude> references unknown body2='"
+                + _trim(body2_name) + "'. The pair would COLLIDE where MuJoCo"
+                " excludes it, with no diagnostic."
+            )
         if b1 >= 0 and b2 >= 0:
             # Store with canonical ordering (smaller first) for fast lookup
             if b1 <= b2:
@@ -4429,11 +4487,16 @@ def parse_xml_full(
     var xml = _strip_xml_comments(_normalize_freejoint(xml_in))
 
     # Extract top-level sections
-    var worldbody = _extract_section(xml, "worldbody")
-    var actuator_sec = _extract_section(xml, "actuator")
-    var asset_sec = _extract_section(xml, "asset")
-    var equality_sec = _extract_section(xml, "equality")
-    var contact_sec = _extract_section(xml, "contact")
+    # ⚠⚠ `_extract_section_all`, NOT `_extract_section`. MJCF lets these
+    # sections repeat and MuJoCo merges them; taking the first silently
+    # discarded the rest. A model with two `<worldbody>` blocks loaded as
+    # whatever was in the first one — nbody 1 for a five-prop scene — and a
+    # shorter model raises nothing.
+    var worldbody = _extract_section_all(xml, "worldbody")
+    var actuator_sec = _extract_section_all(xml, "actuator")
+    var asset_sec = _extract_section_all(xml, "asset")
+    var equality_sec = _extract_section_all(xml, "equality")
+    var contact_sec = _extract_section_all(xml, "contact")
 
     # Global physics options
     var opt = _parse_option(xml)
@@ -4649,7 +4712,7 @@ def parse_xml_full(
     _fill_actuators(
         actuator_sec,
         worldbody,
-        _extract_section(xml, "tendon"),
+        _extract_section_all(xml, "tendon"),
         defaults,
         named_defaults,
         result,
