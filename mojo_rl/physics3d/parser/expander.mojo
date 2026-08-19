@@ -239,11 +239,16 @@ def _f(v: Float64) -> String:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _child_tag_end(xml: String, open_at: String, start: Int) -> Int:
+def element_end(xml: String, open_at: String, start: Int) -> Int:
     """Byte just past the matching close of the element starting at `start`.
 
     Handles self-closing tags and nesting of the SAME tag name, which
     `<body>` inside `<body>` needs.
+
+    ⚠ PUBLIC because `studio.structure` deletes and re-parents elements by
+    span and must agree with the expander about where an element ENDS. Two
+    nesting walkers is how a structural edit ends up cutting one `</body>`
+    too few.
     """
     var tag_end = xml.find(">", start)
     if tag_end == -1:
@@ -303,7 +308,7 @@ def _apply_frame(inner: String, fpos: List[Float64], fq: List[Float64]) -> Strin
                 break
             ne += 1
         var ename = String(inner[byte = lt + 1 : ne])
-        var elem_end = _child_tag_end(inner, ename, lt)
+        var elem_end = element_end(inner, ename, lt)
         var elem = String(inner[byte=lt:elem_end])
         var tag_end = elem.find(">")
         var tag = String(elem[byte = 0 : tag_end + 1]) if tag_end != -1 else elem
@@ -387,7 +392,7 @@ def expand_frames(xml: String) -> String:
             var f = _find_tag(out, "<frame", scan)
             if f == -1:
                 break
-            var e = _child_tag_end(out, String("frame"), f)
+            var e = element_end(out, String("frame"), f)
             var body = String(out[byte=f:e])
             if _find_tag(body, "<frame", 1) == -1:
                 at = f
@@ -396,7 +401,7 @@ def expand_frames(xml: String) -> String:
                 break
         if at == -1:
             return out^
-        var end = _child_tag_end(out, String("frame"), at)
+        var end = element_end(out, String("frame"), at)
         var elem = String(out[byte=at:end])
         var tag_end = elem.find(">")
         var tag = String(elem[byte = 0 : tag_end + 1]) if tag_end != -1 else elem
@@ -453,7 +458,7 @@ def _named_body(worldbody: String, name: String) raises -> String:
                 "physics3d: <attach body='" + name + "'> names no body in the"
                 " sub-model."
             )
-        var e = _child_tag_end(worldbody, String("body"), b)
+        var e = element_end(worldbody, String("body"), b)
         var tag_end = worldbody.find(">", b)
         var tag = String(worldbody[byte = b : tag_end + 1])
         if _trim(_extract_attr(tag, "name")) == name:
@@ -533,7 +538,7 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         var te = out.find(">", at)
         if te == -1:
             raise Error("physics3d: unterminated <attach> tag.")
-        var end = _child_tag_end(out, String("attach"), at)
+        var end = element_end(out, String("attach"), at)
         var tag = String(out[byte = at : te + 1])
         var mdl = _trim(_extract_attr(tag, "model"))
         var body = _trim(_extract_attr(tag, "body"))
@@ -853,6 +858,166 @@ def check_references(xml: String) raises:
         raise Error(msg)
 
 
+# =============================================================================
+# Names, WITH THE KIND THAT DECLARED THEM
+# =============================================================================
+
+
+def tag_name_at(xml: String, lt: Int) -> String:
+    """The element name at a `<`, e.g. `body` — "" if this is not an open tag.
+
+    Close tags, comments and declarations all start with `<` and none of them
+    is an element.
+    """
+    var n = xml.byte_length()
+    var i = lt + 1
+    if i >= n:
+        return String("")
+    var c = String(xml[byte = i : i + 1])
+    if c == "/" or c == "!" or c == "?":
+        return String("")
+    var j = i
+    while j < n:
+        var ch = String(xml[byte = j : j + 1])
+        if (ch == " " or ch == ">" or ch == "/" or ch == "\n" or ch == "\t"
+                or ch == "\r"):
+            break
+        j += 1
+    return String(xml[byte=i:j])
+
+
+def decl_kind(tag: String) -> String:
+    """Which NAMESPACE an element's `name=` declares into.
+
+    ⚠ THE TAG IS NOT THE KIND for two families. Every actuator element
+    (`<motor>`, `<position>`, `<general>`, …) declares an ACTUATOR name, and
+    both `<spatial>` and `<fixed>` declare a TENDON name. Mapping tag to kind
+    literally would make `joint="x"` look unsatisfied while `<motor name="x">`
+    sat right there — which is the opposite of the bug this exists to catch.
+    """
+    if tag == "freejoint":
+        return String("joint")
+    for a in ["motor", "position", "velocity", "general", "cylinder",
+              "muscle", "intvelocity", "damper", "adhesion"]:
+        if tag == String(a):
+            return String("actuator")
+    if tag == "spatial" or tag == "fixed":
+        return String("tendon")
+    return tag
+
+
+def attr_kind(attr: String) -> String:
+    """Which namespace a REFERENCE attribute reads from — "" for "any".
+
+    ⚠⚠ "" IS THE SAFE ANSWER FOR AN ATTRIBUTE NOT LISTED HERE, and it means
+    the old kind-blind behaviour: satisfied by a declaration of any kind. A
+    wrong entry would make `check_references` refuse models that load, so an
+    attribute is added here only when its namespace is known.
+    """
+    for a in ["joint", "joint1", "joint2", "jointinparent"]:
+        if attr == String(a):
+            return String("joint")
+    for a in ["body", "body1", "body2"]:
+        if attr == String(a):
+            return String("body")
+    for a in ["site", "site1", "site2", "refsite", "sidesite", "cranksite",
+              "slidersite"]:
+        if attr == String(a):
+            return String("site")
+    for a in ["geom", "geom1", "geom2"]:
+        if attr == String(a):
+            return String("geom")
+    for a in ["tendon", "tendon1", "tendon2"]:
+        if attr == String(a):
+            return String("tendon")
+    for a in ["mesh", "material", "texture", "hfield", "skin", "actuator",
+              "sensor"]:
+        if attr == String(a):
+            return String(a)
+    return String("")
+
+
+struct NameTable(Movable):
+    """Every declared name, beside the namespace it was declared in."""
+
+    var names: List[String]
+    var kinds: List[String]
+
+    def __init__(out self, var names: List[String], var kinds: List[String]):
+        self.names = names^
+        self.kinds = kinds^
+
+    def has(self, name: String, kind: String) -> Bool:
+        """Is `name` declared? In `kind`, or in ANY namespace when kind is ""."""
+        for i in range(len(self.names)):
+            if self.names[i] != name:
+                continue
+            if kind.byte_length() == 0 or self.kinds[i] == kind:
+                return True
+        return False
+
+
+def name_table(xml: String) -> NameTable:
+    """Walk every element and record `name=` against its namespace.
+
+    ⚠ `<default class="X">` DECLARES with `class=`, the one element in MJCF
+    that does, and it is recorded under the `class` namespace so a `class=`
+    reference resolves and nothing else does.
+
+    ⚠ AN ASSET WITH NO `name=` STILL DECLARES ONE — MuJoCo names it after the
+    file STEM. Omitting that called 307 references dangling across 43 of the
+    57 Menagerie scenes.
+
+    ⚠⚠ COMMENTS ARE SKIPPED, AND THAT IS NOT COSMETIC. A commented-out
+    `<body name="arm">` DECLARED `arm` here until the structural-edit gate
+    caught it: deleting the real body left `<exclude body1="arm">` looking
+    satisfied by the comment, so nothing pruned it and `full_parser` then
+    refused the document. Commenting a body out is completely ordinary in a
+    hand-written MJCF.
+    """
+    var names = List[String]()
+    var kinds = List[String]()
+    var pos = 0
+    var n = xml.byte_length()
+    while pos < n:
+        var lt = xml.find("<", pos)
+        if lt == -1:
+            break
+        if lt + 4 <= n and String(xml[byte = lt : lt + 4]) == "<!--":
+            var ce = xml.find("-->", lt)
+            pos = (ce + 3) if ce != -1 else n
+            continue
+        var tag = tag_name_at(xml, lt)
+        if tag.byte_length() == 0:
+            pos = lt + 1
+            continue
+        var e = xml.find(">", lt)
+        if e == -1:
+            break
+        var el = String(xml[byte = lt : e + 1])
+        pos = e + 1
+        if tag == "default":
+            var c = _trim(_extract_attr(el, "class"))
+            if c.byte_length() > 0:
+                names.append(c)
+                kinds.append(String("class"))
+            continue
+        var nm = _trim(_extract_attr(el, "name"))
+        if nm.byte_length() > 0:
+            names.append(nm)
+            kinds.append(decl_kind(tag))
+            continue
+        # The nameless asset takes the file stem.
+        for asset in ["mesh", "texture", "hfield", "skin"]:
+            if tag != String(asset):
+                continue
+            var fl = _trim(_extract_attr(el, "file"))
+            if fl.byte_length() > 0:
+                names.append(_file_stem(fl))
+                kinds.append(String(asset))
+    return NameTable(names^, kinds^)
+
+
 def dangling_references(xml: String) -> List[String]:
     """Every name reference in `xml` that names nothing it declares.
 
@@ -875,83 +1040,52 @@ def dangling_references(xml: String) -> List[String]:
 
     ⇒ validate HERE, where the rewrite happened and the name is still in hand.
 
-    ⚠ THE DECLARED SET INCLUDES `<default class="X">`, which declares with
-    `class=` rather than `name=` — the one element in MJCF that does. Omitting
-    it would make every `class=` reference look dangling.
+    ## ⚠⚠⚠ THE CHECK IS KIND-AWARE, AND IT HAS TO BE
+
+    It was not, and `structure.delete_body` found what that costs.
+    `half_cheetah.xml` writes
+
+        <body name="bthigh"><joint name="bthigh"/><geom name="bthigh"/></body>
+        <motor name="bthigh" joint="bthigh"/>
+
+    — one name, four namespaces, which MuJoCo allows. Delete the body and the
+    motor is orphaned; but the kind-blind scan asked only "is `bthigh`
+    declared ANYWHERE", and **the orphaned motor's own `name=` answered yes**.
+    The document reported clean and `full_parser` then refused it. An element
+    keeping its own reference alive is not a case anyone reasons about, so it
+    is checked instead.
+
+    ⚠ AN UNMAPPED ATTRIBUTE FALLS BACK TO "any kind" (`attr_kind` returns "").
+    Being stricter than MuJoCo would refuse working models; the map grows only
+    when a namespace is known.
 
     ⚠ `target=` ON A CAMERA IS EXEMPT. `full_parser` resolves it to -1 with a
     documented, deliberate degradation, so a model that names a missing
     target is one MuJoCo also accepts.
     """
-    # ── everything the document declares ─────────────────────────────────
-    var declared = List[String]()
-    for v in _attr_values(xml, String("name")):
-        declared.append(v)
-    # `<default class="X">` DECLARES; `class=` elsewhere REFERENCES.
-    var scan = 0
-    while True:
-        var d = _find_tag(xml, "<default", scan)
-        if d == -1:
-            break
-        var e = xml.find(">", d)
-        if e == -1:
-            break
-        var c = _trim(_extract_attr(String(xml[byte = d : e + 1]), "class"))
-        if c.byte_length() > 0:
-            declared.append(c)
-        scan = e + 1
-
-    # ⚠⚠ AN ASSET WITH NO `name=` STILL DECLARES ONE: MuJoCo names it after
-    # the file STEM. Without this the check called 307 references dangling
-    # across 43 of the 57 Menagerie scenes — aloha writes every one of its
-    # twelve meshes as `<mesh file="vx300s_1_base.stl"/>` and then `mesh=
-    # "vx300s_1_base"`, which is not a broken reference, it is the default.
-    #
-    # `full_parser` has implemented this since the ToddlerBot fix (a nameless
-    # mesh was SKIPPED, and the robot rendered as nothing but its sites). The
-    # bug here was that only ONE of the two knew — the shared `_file_stem`
-    # now lives in `xml_parser` so they cannot drift apart again.
-    for tag in ["<mesh", "<texture", "<hfield", "<skin"]:
-        var a_scan = 0
-        while True:
-            var t = _find_tag(xml, tag, a_scan)
-            if t == -1:
-                break
-            var te = xml.find(">", t)
-            if te == -1:
-                break
-            var el = String(xml[byte = t : te + 1])
-            a_scan = te + 1
-            if _trim(_extract_attr(el, "name")).byte_length() > 0:
-                continue
-            var fl = _trim(_extract_attr(el, "file"))
-            if fl.byte_length() > 0:
-                declared.append(_file_stem(fl))
-
-    var refs = List[String]()
-    for a in _ref_attrs():
-        # `name` DECLARES, and `class` is handled above for the declaring
-        # case; `target` is the documented exemption.
-        if a == "name" or a == "target":
-            continue
-        refs.append(a)
+    # ⚠ COMMENT-STRIPPED ON BOTH SIDES. A commented-out element neither
+    # declares nor references, and treating it as either is a silent wrong
+    # answer in opposite directions — see `name_table`.
+    var live = _strip_xml_comments(xml)
+    var table = name_table(live)
 
     # ⚠ REFERENCES ARE READ FROM THE DOCUMENT WITHOUT ITS `<default>` BLOCKS —
-    # see `_strip_default_blocks`. `declared` above still reads the FULL text,
+    # see `_strip_default_blocks`. The table above reads the FULL text,
     # because a `<default class="X">` is the one element that declares.
-    var ref_text = _strip_default_blocks(xml)
+    var ref_text = _strip_default_blocks(live)
 
     var bad = List[String]()
-    for attr in refs:
+    for attr in _ref_attrs():
+        # `name` DECLARES; `target` is the documented exemption.
+        if attr == "name" or attr == "target":
+            continue
+        var kind = attr_kind(attr)
+        if attr == "class" or attr == "childclass":
+            kind = String("class")
         for v in _attr_values(ref_text, attr):
             if v.byte_length() == 0:
                 continue
-            var found = False
-            for d in declared:
-                if d == v:
-                    found = True
-            if not found:
+            if not table.has(v, kind):
                 bad.append(attr + "='" + v + "'")
 
     return bad^
-
