@@ -3573,7 +3573,7 @@ struct Renderer3D(Movable):
                 )
             )
         for i in range(3 * skin.nface):
-            seed.indices.append(UInt16(Int(skin.face[i])))
+            seed.indices.append(UInt32(Int(skin.face[i])))
 
         var vb_bytes = seed.vertex_byte_size()
         var handle = self._upload_mesh(seed)
@@ -3940,7 +3940,7 @@ struct Renderer3D(Movable):
         bind_gpu_index_buffer(
             render_pass,
             Ptr(to=ib_binding),
-            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
         )
         draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
 
@@ -4276,7 +4276,7 @@ struct Renderer3D(Movable):
             bind_gpu_index_buffer(
                 render_pass,
                 Ptr(to=gib),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
             )
 
             draw_gpu_indexed_primitives(
@@ -4475,7 +4475,7 @@ struct Renderer3D(Movable):
             bind_gpu_index_buffer(
                 render_pass,
                 Ptr(to=text_ib_binding),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
             )
             draw_gpu_indexed_primitives(
                 render_pass, UInt32(num_text_chars * 6), 1, 0, 0, 0

@@ -79,7 +79,7 @@ def load_stl(path: String) raises -> MeshData:
             mesh.vertices.append(
                 GPUVertex(px=px, py=py, pz=pz, nx=nx, ny=ny, nz=nz)
             )
-            mesh.indices.append(UInt16(tri * 3 + v))
+            mesh.indices.append(UInt32(tri * 3 + v))
 
         offset += 50
 

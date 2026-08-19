@@ -285,11 +285,22 @@ struct MeshData(Movable):
     """CPU-side mesh data for upload to GPU."""
 
     var vertices: List[GPUVertex]
-    var indices: List[UInt16]
+    var indices: List[UInt32]
+    """⚠⚠ 32-BIT, AND IT WAS 16 UNTIL A ROBOT'S FACE WENT MISSING. `UInt16`
+    caps a mesh at 65,535 vertices, and an index past that WRAPS rather than
+    failing: the triangles beyond it are drawn connecting the wrong points, so
+    the mesh renders PARTIALLY. Menagerie's ToddlerBot head is 62,912
+    triangles = 188,736 vertices, and about a third of it drew — the model
+    appeared with no face and one eye. Nothing raised, and every other check
+    passed (the asset resolved, the file loaded, the body was at MuJoCo's
+    exact position), because the loss happens inside a single mesh.
+
+    Our own assets are all under the limit, which is why this survived: it
+    takes a ~3 MB STL to reach it."""
 
     def __init__(out self):
         self.vertices = List[GPUVertex]()
-        self.indices = List[UInt16]()
+        self.indices = List[UInt32]()
 
     def __init__(out self, *, deinit move: Self):
         self.vertices = move.vertices^
@@ -299,7 +310,7 @@ struct MeshData(Movable):
         return len(self.vertices) * 32  # sizeof(GPUVertex)
 
     def index_byte_size(self) -> Int:
-        return len(self.indices) * 2  # sizeof(UInt16)
+        return len(self.indices) * 4  # sizeof(UInt32)
 
 
 struct MeshHandle(Copyable, Movable):
