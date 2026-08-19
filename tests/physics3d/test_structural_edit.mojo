@@ -47,6 +47,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
 from mojo_rl.physics3d.fields import Model, DynDims
 from mojo_rl.physics3d.studio.structure import (
     delete_body, delete_joint, delete_geom, leftover_dangling,
+    add_body, add_joint, add_geom, rename_element,
 )
 from mojo_rl.physics3d.studio.validate import (
     validate_model, SEV_ERROR,
@@ -293,6 +294,107 @@ def main() raises:
                 else String("1")
             manifest += out_path + " " + expect_load + " " + after.row() + "\n"
             n_judged += 1
+
+    # ── build UP, not only down ───────────────────────────────────────────
+    # ⚠ THE SAME FOUR ARMS APPLY, and one of them is sharper here: a RENAME
+    # must be structurally the IDENTITY. If it dropped a reference — the weld
+    # and the exclude both name `post` — `neq` or the contact set would change
+    # and MuJoCo would disagree, which a "does it still load" check alone
+    # would miss.
+    print("--- rename, and the references that follow it ---")
+    var zoo0 = expand_mjcf(
+        _read(String("tests/physics3d/assets/structural_edit_zoo.xml")),
+        String("tests/physics3d/assets"),
+    )
+    var zbase = String("tests/physics3d/assets")
+    var before_zoo = _load_counts(zoo0, zbase)
+
+    var rn = rename_element(zoo0, String("body"), String("post"),
+                            String("pillar"))
+    t.truth(rn.ok, "renamed body 'post' -> 'pillar'")
+    for note in rn.notes:
+        print("       note:", note)
+    t.truth(len(leftover_dangling(rn.xml)) == 0,
+            "the rename left no dangling reference")
+    var after_rn = _load_counts(rn.xml, zbase)
+    t.truth(after_rn.row() == before_zoo.row(),
+            String("a rename is structurally the IDENTITY (", after_rn.row(),
+                   ")"))
+    # ⚠⚠ AND IT MUST HAVE REWRITTEN SOMETHING. `post` is named by a `<weld>`
+    # and an `<exclude>`; a rename that touched only the declaration would
+    # leave two dangling references, so "identity" plus "nothing dangles" is
+    # only meaningful if references existed to break.
+    t.truth(rn.xml.find(String('body2="pillar"')) != -1,
+            "the weld/exclude now name 'pillar'")
+    t.truth(rn.xml.find(String('body2="post"')) == -1,
+            "and no reference still names 'post'")
+
+    # ⚠ THE NAMESPACE ARM. half_cheetah names a body, a joint, a geom AND a
+    # motor `bthigh`; renaming the BODY must leave `joint="bthigh"` alone.
+    # A document-wide find-and-replace would re-point all four and still load.
+    print("--- a rename stays inside its own namespace ---")
+    var hc = expand_mjcf(
+        _read(String("mojo_rl/envs/half_cheetah/assets/half_cheetah.xml")),
+        String("mojo_rl/envs/half_cheetah/assets"),
+    )
+    var hcr = rename_element(hc, String("body"), String("bthigh"),
+                             String("hip_link"))
+    t.truth(hcr.ok, "renamed half_cheetah's BODY 'bthigh'")
+    t.truth(hcr.xml.find(String('joint="bthigh"')) != -1,
+            "the motor still drives the JOINT 'bthigh' (untouched)")
+    t.truth(hcr.xml.find(String('name="bthigh"')) != -1,
+            "the joint and geom keep the name too")
+    t.truth(hcr.xml.find(String('<body name="hip_link"')) != -1,
+            "and the body is renamed")
+
+    # ⚠ THE COLLISION GUARD.
+    var clash = rename_element(zoo0, String("body"), String("post"),
+                               String("trunk"))
+    t.truth(not clash.ok, "renaming onto an existing body name is REFUSED")
+
+    print("--- add a body, a geom and a joint ---")
+    var a1 = add_body(zoo0, String("trunk"), String("tail"), 0.0, 0.0, -0.2)
+    t.truth(a1.ok, "added body 'tail' under 'trunk'")
+    var a2 = add_joint(a1.xml, String("tail"), String("tail_j"),
+                       String("hinge"), 0.0, 1.0, 0.0)
+    t.truth(a2.ok, "added a hinge to it")
+    var a3 = add_geom(a2.xml, String("tail"), String("tail_tip"),
+                      String("capsule"), String("0.02 0.08"), 0.0, 0.0, -0.1)
+    t.truth(a3.ok, "added a capsule geom to it")
+    t.truth(len(leftover_dangling(a3.xml)) == 0,
+            "the additions left no dangling reference")
+    var after_add = _load_counts(a3.xml, zbase)
+    t.truth(
+        after_add.nbody == before_zoo.nbody + 1
+        and after_add.njnt == before_zoo.njnt + 1
+        and after_add.ngeom == before_zoo.ngeom + 2,
+        String("nbody +1, njnt +1, ngeom +2 (", after_add.row(), ")"),
+    )
+    # ⚠ THE DUPLICATE GUARD, on each of the three.
+    t.truth(not add_body(a3.xml, String("trunk"), String("tail"),
+                         0.0, 0.0, 0.0).ok,
+            "a second body named 'tail' is REFUSED")
+    t.truth(not add_joint(a3.xml, String("tail"), String("tail_j"),
+                          String("hinge"), 0.0, 1.0, 0.0).ok,
+            "a second joint named 'tail_j' is REFUSED")
+    t.truth(not add_geom(a3.xml, String("tail"), String("tail_tip"),
+                         String("sphere"), String("0.02"), 0.0, 0.0, 0.0).ok,
+            "a second geom named 'tail_tip' is REFUSED")
+
+    for extra in [rn.xml, hcr.xml, a3.xml]:
+        var op = OUT_DIR + "/" + String(n_judged) + ".xml"
+        var xf = open(op, "w")
+        xf.write(extra)
+        xf.close()
+        n_judged += 1
+    # These three keep their counts; the rename rows reuse the numbers above.
+    manifest += OUT_DIR + "/" + String(n_judged - 3) + ".xml 1 " \
+        + after_rn.row() + "\n"
+    manifest += OUT_DIR + "/" + String(n_judged - 2) + ".xml 1 " \
+        + _load_counts(hcr.xml,
+                       String("mojo_rl/envs/half_cheetah/assets")).row() + "\n"
+    manifest += OUT_DIR + "/" + String(n_judged - 1) + ".xml 1 " \
+        + after_add.row() + "\n"
 
     # ── the cascade, named ────────────────────────────────────────────────
     # ⚠⚠ THE INDIRECT PRUNE IS THE ONE A SINGLE PASS MISSES, so it gets its

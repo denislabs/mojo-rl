@@ -797,6 +797,12 @@ def run_studio(
                 ui.del_element = True
             else:
                 print("  smoke: no body named", delete_body_named)
+        # ⚠ AND THE SAVE, in the same run. A structural edit whose result
+        # cannot be written back is not an edit anyone can use, and the file
+        # this writes is exactly what `test_structural_edit` hands to MuJoCo.
+        if delete_body_named.byte_length() > 0 and max_frames > 0 \
+                and frame == (2 * max_frames) // 3 and panel.want_save == 0:
+            panel.want_save = 3
         renderer.set_show_hud(panel.show_hud)
         renderer.set_show_sites(panel.show_sites)
         if ui.quit:
@@ -837,12 +843,26 @@ def run_studio(
         if panel.want_save != 0:
             var which = panel.want_save
             panel.want_save = 0
-            var out_path = L.path + (
-                ".scene.xml" if which == 1 else ".flat.xml"
-            )
+            var suffix = String(".scene.xml")
+            if which == 2:
+                suffix = String(".flat.xml")
+            elif which == 3:
+                suffix = String(".edited.xml")
+            var out_path = L.path + suffix
             try:
-                var body = doc.to_mjcf(String("scene")) if which == 1 \
-                    else export_flat_mjcf(L.fmd, String("exported"))
+                # ⚠⚠ OPTION 3 WRITES THE LIVE DOCUMENT VERBATIM, and that is
+                # the only lossless way out of a structural edit. `to_mjcf`
+                # REFUSES a model with <tendon>/<equality>/<keyframe> rather
+                # than drop them, and the scene document cannot express an
+                # edited robot tree at all — so before this, deleting a body
+                # from softfoot was an edit with no save.
+                var body = String("")
+                if which == 1:
+                    body = doc.to_mjcf(String("scene"))
+                elif which == 3:
+                    body = L.flat
+                else:
+                    body = export_flat_mjcf(L.fmd, String("exported"))
                 var wf = open(out_path, "w")
                 wf.write(body)
                 wf.close()

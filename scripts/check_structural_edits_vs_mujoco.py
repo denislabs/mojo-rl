@@ -79,16 +79,16 @@ def main() -> int:
 
     # ⚠ NON-VACUITY. An empty or truncated manifest would print "0 failures"
     # and mean nothing; the Mojo half writes six documents.
-    if len(rows) < 6:
+    if len(rows) < 9:
         fails += 1
-        print(f"FAIL: manifest has {len(rows)} rows, expected at least 6 —"
+        print(f"FAIL: manifest has {len(rows)} rows, expected at least 9 —"
               " the Mojo gate did not write everything it judges")
 
     # ⚠ NON-VACUITY, BOTH WAYS. A manifest of only-refusals would make the
     # count comparison decoration; a manifest of only-loads would never
     # exercise the disagreement check above.
     n_loads = len(rows) - n_expected_refusals
-    if n_loads < 4 or n_expected_refusals < 1:
+    if n_loads < 7 or n_expected_refusals < 1:
         fails += 1
         print(f"FAIL: {n_loads} must-load and {n_expected_refusals}"
               " must-refuse rows — the table needs both to mean anything")

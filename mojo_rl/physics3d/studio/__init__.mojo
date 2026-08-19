@@ -21,6 +21,7 @@ from .validate import (
 from .structure import (
     EditResult, delete_body, delete_geom, delete_joint, delete_site,
     delete_element, leftover_dangling, find_named,
+    add_body, add_geom, add_joint, rename_element,
 )
 from .remap import remap_state, RemapReport, joint_qpos_adr, joint_dof_adr
 from .edit import (

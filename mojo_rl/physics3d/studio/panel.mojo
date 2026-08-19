@@ -89,7 +89,17 @@ struct StudioPanel(Movable):
     """Visibility per geom group 0-5, MuJoCo's `mjvOption.geomgroup`."""
     var filter: TextBuffer
     var want_save: Int
-    """0 none, 1 scene document, 2 flattened export — consumed each frame."""
+    """0 none, 1 scene document, 2 flattened export, 3 the EDITED MODEL.
+
+    ⚠ THREE, NOT TWO, AND THE THIRD IS THE ONE V2 NEEDS. The scene document
+    keeps the composition and cannot express a robot's edited tree; the
+    flattened export goes through `writer.to_mjcf`, which REFUSES a model
+    carrying `<tendon>`, `<equality>` or `<keyframe>` rather than drop them
+    silently — so a structurally edited robot has no way out through either.
+    Option 3 writes the studio's live document verbatim. It is already valid
+    MJCF (`test_structural_edit` has MuJoCo load exactly this text after every
+    edit), it is lossless by construction, and it is what is being simulated.
+    """
     var want_undo: Int
     """0 none, 1 undo, 2 redo — consumed by the studio each frame."""
     var browser_open: Bool
@@ -285,6 +295,8 @@ def ui_menu_bar(mut p: StudioPanel, mut out: PanelOut) raises -> Float32:
             ig_separator()
             if ig_menu_item(String("Save scene")) and p.want_save == 0:
                 p.want_save = 1
+            if ig_menu_item(String("Save edited model")) and p.want_save == 0:
+                p.want_save = 3
             if ig_menu_item(String("Export flattened MJCF")) \
                     and p.want_save == 0:
                 p.want_save = 2

@@ -448,3 +448,312 @@ def leftover_dangling(xml: String) -> List[String]:
     the post-condition of every operation in this file.
     """
     return dangling_references(xml)
+
+
+# =============================================================================
+# Adding — the constructive half
+# =============================================================================
+
+
+def _open_tag_end(xml: String, at: Int) -> Int:
+    """Byte just past the `>` of the open tag starting at `at`, or -1."""
+    var e = xml.find(">", at)
+    return (e + 1) if e != -1 else -1
+
+
+def _is_self_closing_at(xml: String, at: Int) -> Bool:
+    var e = xml.find(">", at)
+    if e < 1:
+        return False
+    return String(xml[byte = e - 1 : e]) == "/"
+
+
+def _insert_child(
+    xml: String, tag: String, parent: String, child: String
+) raises -> String:
+    """Put `child` in as the LAST child of `<tag name="parent">`.
+
+    `parent` == "" means the worldbody.
+
+    ⚠ A SELF-CLOSING PARENT IS REWRITTEN. `<body name="x" pos="0 0 1"/>` is a
+    legal, childless body, and splicing a child in front of a `</body>` that
+    does not exist would corrupt the document. The `/>` becomes `>` … `</body>`
+    and the attributes are untouched.
+
+    ⚠ LAST CHILD, NOT FIRST, for bodies and geoms: MuJoCo's element ORDER is
+    the id order, so appending keeps every existing index stable and only the
+    new element takes a fresh one. Prepending would renumber the siblings —
+    invisible in the file and visible in every gate that reads by index.
+    """
+    var at: Int
+    if parent.byte_length() == 0:
+        at = _find_tag(xml, String("<worldbody"), 0)
+        if at != -1 and _in_comment(xml, at):
+            at = -1
+    else:
+        at = find_named(xml, tag, parent)
+    if at == -1:
+        raise Error(
+            "no <" + (tag if parent.byte_length() > 0 else String("worldbody"))
+            + (' name="' + parent + '">' if parent.byte_length() > 0 else ">")
+            + " to add to"
+        )
+    var closer = tag if parent.byte_length() > 0 else String("worldbody")
+
+    if _is_self_closing_at(xml, at):
+        var e = xml.find(">", at)
+        return (
+            String(xml[byte = 0 : e - 1]) + ">\n" + child + "  </" + closer
+            + ">" + String(xml[byte = e + 1 : xml.byte_length()])
+        )
+
+    var end = element_end(xml, closer, at)
+    # `end` is just past `</closer>`; step back to its `<`.
+    var close_at = String(xml[byte=0:end]).rfind("</" + closer)
+    if close_at == -1:
+        raise Error("malformed <" + closer + "> around '" + parent + "'")
+    return (
+        String(xml[byte=0:close_at]) + child
+        + String(xml[byte = close_at : xml.byte_length()])
+    )
+
+
+def _f(v: Float64) -> String:
+    """FULL precision — this text IS the model, not a display."""
+    return String(v)
+
+
+def _taken(xml: String, name: String, kind: String) -> Bool:
+    return name_table(_strip_comments_for_scan(xml)).has(name, kind)
+
+
+def _strip_comments_for_scan(xml: String) -> String:
+    """`xml` with every `<!-- … -->` removed — for NAME scans only.
+
+    ⚠ NEVER FOR THE DOCUMENT ITSELF. Comments are the user's; a structural
+    edit that quietly deleted them would be a worse edit than the one asked
+    for. This is a scratch copy used to answer "is this name taken".
+    """
+    var out = String("")
+    var pos = 0
+    var n = xml.byte_length()
+    while pos < n:
+        var c = xml.find("<!--", pos)
+        if c == -1:
+            out += String(xml[byte=pos:n])
+            break
+        out += String(xml[byte=pos:c])
+        var e = xml.find("-->", c)
+        if e == -1:
+            break
+        pos = e + 3
+    return out^
+
+
+def add_body(
+    xml: String, parent: String, name: String,
+    px: Float64, py: Float64, pz: Float64,
+    radius: Float64 = 0.05,
+) raises -> EditResult:
+    """A new body under `parent` ("" = worldbody), carrying one sphere geom.
+
+    ⚠ WITH A GEOM, DELIBERATELY. An empty body is legal MJCF and is also
+    invisible, unpickable and — the moment a joint is added to it — a model
+    MuJoCo refuses for having no mass. Shipping the geom means the very next
+    edit cannot break the model by accident.
+
+    ⚠ THE NAME IS CHECKED FIRST. A repeated name within one element kind is a
+    hard MuJoCo error, and the edit that caused it would be three edits back
+    by the time anything noticed.
+    """
+    var notes = List[String]()
+    if name.byte_length() == 0:
+        notes.append("a new body needs a name")
+        return EditResult(xml, False, notes^)
+    if _taken(xml, name, String("body")):
+        notes.append(
+            "a body named '" + name + "' already exists; MuJoCo refuses a"
+            " repeated name within one element kind"
+        )
+        return EditResult(xml, False, notes^)
+    var gname = name + "_geom"
+    if _taken(xml, gname, String("geom")):
+        notes.append("geom name '" + gname + "' was taken; the body's geom is"
+                     " unnamed")
+        gname = String("")
+    var child = String("    <body name=\"") + name + "\" pos=\""
+    child += _f(px) + " " + _f(py) + " " + _f(pz) + "\">\n      <geom"
+    if gname.byte_length() > 0:
+        child += " name=\"" + gname + "\""
+    child += " type=\"sphere\" size=\"" + _f(radius) + "\"/>\n    </body>\n"
+    var out = _insert_child(xml, String("body"), parent, child)
+    return EditResult(out^, True, notes^)
+
+
+def add_geom(
+    xml: String, body: String, name: String, geom_type: String,
+    size_attr: String, px: Float64, py: Float64, pz: Float64,
+) raises -> EditResult:
+    """A geom on an existing body ("" = worldbody).
+
+    `size_attr` is written through verbatim, because the component COUNT is
+    per type and MuJoCo refuses the wrong one — a sphere takes one number, a
+    capsule two, a box three. `studio.writer._geom_size` is the other place
+    that knows this.
+    """
+    var notes = List[String]()
+    if name.byte_length() > 0 and _taken(xml, name, String("geom")):
+        notes.append("a geom named '" + name + "' already exists")
+        return EditResult(xml, False, notes^)
+    var child = String("      <geom")
+    if name.byte_length() > 0:
+        child += " name=\"" + name + "\""
+    child += " type=\"" + geom_type + "\" size=\"" + size_attr + "\""
+    child += " pos=\"" + _f(px) + " " + _f(py) + " " + _f(pz) + "\"/>\n"
+    var out = _insert_child(xml, String("body"), body, child)
+    return EditResult(out^, True, notes^)
+
+
+def add_joint(
+    xml: String, body: String, name: String, joint_type: String,
+    ax: Float64, ay: Float64, az: Float64,
+) raises -> EditResult:
+    """A joint on `body`.
+
+    ⚠ THIS EDIT IS ALLOWED TO BREAK THE MODEL, and the validator is what says
+    so rather than a guard here. A free joint on a nested body, a seventh dof,
+    a rotational joint after a ball, a body with no mass — MuJoCo refuses all
+    four, and `validate_model` names each one by code. Duplicating those rules
+    here would be a second opinion that can drift from the gated one.
+    """
+    var notes = List[String]()
+    if name.byte_length() > 0 and _taken(xml, name, String("joint")):
+        notes.append("a joint named '" + name + "' already exists")
+        return EditResult(xml, False, notes^)
+    if body.byte_length() == 0:
+        notes.append("a joint needs a body; the worldbody cannot have one")
+        return EditResult(xml, False, notes^)
+    var child = String("      <joint")
+    if name.byte_length() > 0:
+        child += " name=\"" + name + "\""
+    child += " type=\"" + joint_type + "\""
+    if joint_type != "free" and joint_type != "ball":
+        child += " axis=\"" + _f(ax) + " " + _f(ay) + " " + _f(az) + "\""
+    child += "/>\n"
+    var out = _insert_child(xml, String("body"), body, child)
+    return EditResult(out^, True, notes^)
+
+
+# =============================================================================
+# Renaming — the name IS the identity, so this rewrites references too
+# =============================================================================
+
+
+def rename_element(
+    xml: String, tag: String, old: String, new: String
+) -> EditResult:
+    """Rename one element and every reference to it, IN ITS OWN NAMESPACE.
+
+    ⚠⚠ THE NAMESPACE IS THE WHOLE PROBLEM. `half_cheetah.xml` names a body, a
+    joint, a geom and a motor all `bthigh`; renaming the BODY must rewrite
+    `body1="bthigh"` and leave `joint="bthigh"` exactly where it is. A
+    document-wide find-and-replace would silently re-point four references and
+    produce a model that loads.
+
+    ⚠ AND THE TARGET MUST BE FREE. A repeated name within one kind is a hard
+    MuJoCo error; refusing here names the collision while the user is still
+    looking at it.
+    """
+    var notes = List[String]()
+    if new.byte_length() == 0:
+        notes.append("the new name is empty")
+        return EditResult(xml, False, notes^)
+    var kind = decl_kind(tag)
+    var at = find_named(xml, tag, old)
+    if at == -1:
+        notes.append("no <" + tag + " name=\"" + old + "\"> in this model")
+        return EditResult(xml, False, notes^)
+    if _taken(xml, new, kind):
+        notes.append(
+            "'" + new + "' is already used by another " + kind
+            + "; MuJoCo refuses a repeated name within one element kind"
+        )
+        return EditResult(xml, False, notes^)
+
+    # The declaration itself, by span, so a same-named element of another
+    # kind elsewhere is untouched.
+    var e = xml.find(">", at)
+    var head = String(xml[byte = at : e + 1])
+    var new_head = head.replace(
+        String('name="') + old + '"', String('name="') + new + '"'
+    )
+    var out = (
+        String(xml[byte=0:at]) + new_head
+        + String(xml[byte = e + 1 : xml.byte_length()])
+    )
+
+    # ── every reference, in this namespace only ───────────────────────────
+    var rewrote = 0
+    for attr in _prune_attrs():
+        if attr_kind(attr) != kind:
+            continue
+        var needle = attr + '="' + old + '"'
+        var repl = attr + '="' + new + '"'
+        var n_before = _count_occurrences(out, needle)
+        if n_before == 0:
+            continue
+        out = out.replace(needle, repl)
+        rewrote += n_before
+        notes.append(
+            "rewrote " + String(n_before) + " " + attr + "= reference(s)"
+        )
+    # ⚠ `objname=` CARRIES ITS KIND IN A SIBLING ATTRIBUTE (`objtype="site"`),
+    # so it cannot be matched by attribute name alone. Sensors are rewritten
+    # only when the sibling agrees.
+    out = _rename_objname(out, old, new, kind, notes)
+    _ = rewrote
+    return EditResult(out^, True, notes^)
+
+
+def _count_occurrences(xml: String, needle: String) -> Int:
+    var n = 0
+    var scan = 0
+    while True:
+        var at = xml.find(needle, scan)
+        if at == -1:
+            return n
+        n += 1
+        scan = at + needle.byte_length()
+
+
+def _rename_objname(
+    xml: String, old: String, new: String, kind: String,
+    mut notes: List[String]
+) -> String:
+    """`<... objtype="site" objname="old"/>` — rewrite only on a kind match."""
+    var out = xml
+    var scan = 0
+    var n = 0
+    while True:
+        var at = out.find('objname="' + old + '"', scan)
+        if at == -1:
+            break
+        var lt = String(out[byte=0:at]).rfind("<")
+        var gt = out.find(">", at)
+        if lt == -1 or gt == -1:
+            break
+        var el = String(out[byte = lt : gt + 1])
+        var ot = _trim(_extract_attr(el, "objtype"))
+        if ot == kind:
+            out = (
+                String(out[byte=0:at]) + 'objname="' + new + '"'
+                + String(out[byte = at + 9 + old.byte_length() + 1
+                             : out.byte_length()])
+            )
+            n += 1
+            scan = at + 9 + new.byte_length() + 1
+        else:
+            scan = gt + 1
+    if n > 0:
+        notes.append("rewrote " + String(n) + " sensor objname= reference(s)")
+    return out^
