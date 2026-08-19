@@ -2046,6 +2046,7 @@ def resolve_includes(
         )
 
     var parts = List[String]()
+    var inc_first = True
     var scan = 0
     var n = xml.byte_length()
     var tail_after_include = False
@@ -2078,17 +2079,42 @@ def resolve_includes(
         if cut > 0:
             sub_base = String(path[byte=0:cut])
         parts.append(resolve_includes(text, sub_base, depth + 1))
-        # ⚠ CONTENT AFTER THE LAST INCLUDE IS FINE (Menagerie's shape);
-        # content BEFORE one is what this cannot order correctly.
-        var before = String(xml[byte=scan:inc])
-        for sec in _mjcf_sections():
-            if _has_section(before, sec):
-                raise Error(
-                    "physics3d: <include> appears AFTER a <" + sec + ">"
-                    " section. Splicing at the tag's position is not"
-                    " implemented; move the <include> above it, or flatten the"
-                    " file. (Menagerie puts it first.)"
-                )
+        # ⚠⚠ ONLY `<worldbody>`, AND ONLY BEFORE THE **FIRST** INCLUDE.
+        #
+        # The first version checked every section and used `xml[scan:inc]`,
+        # where `scan` advances past each include — so for a SECOND include
+        # "before" meant "between the two", and any section written in between
+        # tripped it. Three real Menagerie models (aloha, ms_human_700,
+        # trossen_wxai) were refused by that, all with their include FIRST.
+        #
+        # And most sections do not care: `merge_mjcf` concatenates them and
+        # every element in `<asset>`, `<default>`, `<actuator>`, `<equality>`
+        # and `<contact>` is addressed BY NAME, so their order is not
+        # observable. `<worldbody>` is the exception — body order IS body id,
+        # and ids are what `<contact>` pairs, keyframes and every record refer
+        # to. Splicing all included bodies first would renumber whatever the
+        # host declared above the include.
+        if inc_first and _has_section(String(xml[byte=0:inc]), "worldbody"):
+            # ⚠⚠ A WARNING, NOT A REFUSAL, AND THE DISTINCTION IS MEASURED.
+            # `merge_mjcf` concatenates sections, so the included bodies land
+            # BEFORE any the host declared above the `<include>` — where
+            # MuJoCo splices at the tag's position. The model is otherwise
+            # identical: every MJCF reference is BY NAME and is resolved after
+            # the merge, so the ids stay self-consistent. What differs is the
+            # ORDER, and therefore the ids themselves against MuJoCo's.
+            #
+            # Refusing cost four Menagerie models (aloha, ms_human_700,
+            # trossen_wxai each put a floor above a second include) for a
+            # difference that does not affect simulating or looking at them.
+            # It DOES affect a record-for-record gate against `mjModel`, which
+            # is why this says so rather than staying quiet.
+            print(
+                "Warning: <include> appears after a <worldbody>; the included"
+                " bodies are spliced FIRST, so body IDS may differ from"
+                " MuJoCo's order for this model (names and simulation are"
+                " unaffected)."
+            )
+        inc_first = False
         tail_after_include = True
         scan = inc_end + 1
     _ = tail_after_include
@@ -2096,18 +2122,18 @@ def resolve_includes(
     var host = _strip_include_tags(xml)
     parts.append(host)
 
-    var merged: String
-    if len(parts) == 2:
-        merged = merge_mjcf(parts[0], parts[1])
-    elif len(parts) == 3:
-        merged = merge_mjcf(parts[0], parts[1], parts[2])
-    elif len(parts) == 4:
-        merged = merge_mjcf(parts[0], parts[1], parts[2], parts[3])
-    else:
-        raise Error(
-            "physics3d: more than three <include>s in one file — raise the"
-            " arity here if a real model needs it."
-        )
+    # ⚠ FOLDED PAIRWISE RATHER THAN SPREAD, because `merge_mjcf` is variadic
+    # and Mojo cannot forward a runtime-length list to it. The first version
+    # enumerated arities up to four and raised beyond — Menagerie's
+    # ms_human_700 has five includes, so "no real model needs it" lasted
+    # exactly as long as the models I had tried.
+    #
+    # ⚠ THE FOLD IS LEFT-TO-RIGHT AND THAT PRESERVES ORDER: `merge_mjcf`
+    # concatenates each accumulator in argument order, so ((a,b),c) puts a
+    # before b before c, the same as a single variadic call would.
+    var merged = parts[0]
+    for i in range(1, len(parts)):
+        merged = merge_mjcf(merged, parts[i])
 
     # ⚠⚠ THE STRICTNESS CHECK. See the docstring: `merge_mjcf` drops silently.
     for sec in _mjcf_sections():

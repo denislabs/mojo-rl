@@ -10,14 +10,37 @@ Auto-generates UV coordinates via box projection (largest face of bounding box).
 from std.memory import Pointer
 from std.math import abs as math_abs
 from .gpu_types import GPUVertex, MeshData
+from .obj_loader import load_obj
+
+
+def _is_obj(path: String) -> Bool:
+    var n = path.byte_length()
+    if n < 4:
+        return False
+    var ext = String(path[byte = n - 4 : n])
+    return ext == ".obj" or ext == ".OBJ"
 
 
 def load_stl(path: String) raises -> MeshData:
-    """Load a binary STL file and return MeshData with auto-generated UVs.
+    """Load a mesh — binary STL, or Wavefront OBJ by extension.
+
+    ⚠⚠ THE OBJ DISPATCH IS HERE, NOT AT THE CALL SITES, and the name stayed
+    `load_stl` for the same reason: there are three callers (the renderer's
+    `draw_mesh`, `mesh_inertia`, `convex_hull`) and adding the check to each
+    would eventually miss one. A missed one is silent — the mesh simply does
+    not load.
+
+    Before this, an `.obj` was read as a binary STL: bytes 80-84 of its TEXT
+    became a triangle count, and the failure was "STL file too small: expected
+    46324738584 bytes, got 2193823". A wrong diagnosis pointing at the right
+    file, which sends you to check the file's size. Menagerie ships 1184 `.obj`
+    against 1129 `.stl`, so about half of it was unreadable.
 
     UVs are generated via box projection: the two axes with the largest
     bounding box extent are mapped to [0, 1] UV range.
     """
+    if _is_obj(path):
+        return load_obj(path)
     var f = open(path, "r")
     var content = f.read_bytes()
     f.close()

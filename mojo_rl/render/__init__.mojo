@@ -131,6 +131,7 @@ from .camera3d import Camera3D
 from .renderer3d import Renderer3D, RendererHandoff
 from .gpu_types import MeshHandle, MeshCacheEntry, TextureCacheEntry, SkyboxUniforms
 from .stl_loader import load_stl
+from .obj_loader import load_obj
 from .png_loader import load_png, TextureData
 from .light import Light, LightMode
 from .video_recorder import VideoRecorder

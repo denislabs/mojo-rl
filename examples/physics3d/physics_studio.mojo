@@ -758,8 +758,16 @@ def run_studio(
                 changed = False
             if changed:
                 try:
+                    # ⚠⚠ BASE DIR IS "" — THE CWD — AND NOT THE MODEL'S.
+                    # The document's `<asset><model file=>` entries hold the
+                    # path the user OPENED, which is relative to the process
+                    # CWD; expanding against the loaded model's directory
+                    # concatenated the two:
+                    #   .../boston_dynamics_spot/references/.../toddlerbot/...
+                    # Two different bases for one path, which is the oldest
+                    # bug shape in this file.
                     var nxt = Loaded(
-                        L.path, doc.to_mjcf(String("scene")), L.base_dir
+                        L.path, doc.to_mjcf(String("scene")), String("")
                     )
                     # ⚠ THE SELECTION CANNOT SURVIVE. Indices shift when a
                     # body is added or removed, so a kept index names a
@@ -851,6 +859,12 @@ def run_studio(
                 # yellow outline around the wrong part is worse than none.
                 panel.clear_selection()
                 panel.remember(L.path)
+                # ⚠ THE DOCUMENT FOLLOWS THE MODEL. `doc` was built from the
+                # FIRST file and never rebuilt, so after a File > Open the
+                # scene still referenced the previous robot — adding a prop to
+                # spot composed toddlerbot plus a box. The document describes
+                # what is on screen; a swap replaces what is on screen.
+                doc = scene_from_base(L.path)
                 positions.clear()
                 quats.clear()
                 actions.clear()

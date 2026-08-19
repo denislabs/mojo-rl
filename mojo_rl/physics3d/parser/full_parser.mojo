@@ -4548,6 +4548,7 @@ def parse_xml_full(
     # `<compiler meshdir>` / `assetdir` — see `_apply_meshdir` below.
     var meshdir = String("")
     var assetdir = String("")
+    var texturedir = String("")
     var compiler_t = xml.find("<compiler")
     if compiler_t != -1:
         var compiler_end = xml.find(">", compiler_t)
@@ -4592,6 +4593,7 @@ def parse_xml_full(
 
             meshdir = _trim(_extract_attr(ctag, "meshdir"))
             assetdir = _trim(_extract_attr(ctag, "assetdir"))
+            texturedir = _trim(_extract_attr(ctag, "texturedir"))
 
     # Assets: textures and materials
     _fill_assets(asset_sec, result)
@@ -4627,8 +4629,14 @@ def parse_xml_full(
     # relies on. Pass `base_dir` to get MuJoCo's rule instead; see the block
     # below `effective_dir`.
     #
-    # ⚠ `texturedir` is NOT handled. Textures are renderer-only and no ported
-    # model loads one from disk; adding it belongs with whatever first needs it.
+    # ⚠ `texturedir` IS HANDLED NOW, and the note it replaces was true when
+    # written: "textures are renderer-only and no ported model loads one from
+    # disk". The studio changed that — it opens arbitrary Menagerie models,
+    # and umi_gripper writes
+    # `<compiler meshdir="assets" texturedir="assets"/>` with its ArUco decals
+    # in `assets/`. Without this the loader looked beside the .xml and printed
+    # "No such file or directory" for each one. Same fallback chain as meshes:
+    # the specific dir, else `assetdir`.
     var effective_dir = meshdir if meshdir.byte_length() > 0 else assetdir
     if effective_dir.byte_length() > 0:
         var base = effective_dir
@@ -4639,6 +4647,16 @@ def parse_xml_full(
             # An absolute path ignores meshdir, as MuJoCo does.
             if f.byte_length() > 0 and not f.startswith("/"):
                 result.mesh_asset_files[i] = base + f
+
+    var tex_dir = texturedir if texturedir.byte_length() > 0 else assetdir
+    if tex_dir.byte_length() > 0:
+        var tbase = tex_dir
+        if not tbase.endswith("/"):
+            tbase = tbase + "/"
+        for i in range(len(result.textures)):
+            var tf = result.textures[i].file
+            if tf.byte_length() > 0 and not tf.startswith("/"):
+                result.textures[i].file = tbase + tf
 
     # ── `base_dir`: WHAT A RELATIVE ASSET PATH IS RELATIVE TO ─────────────
     #

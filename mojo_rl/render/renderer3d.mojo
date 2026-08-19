@@ -2033,7 +2033,23 @@ struct Renderer3D(Movable):
         self.depth_texture = untracked(create_gpu_texture(self.device.value(), Ptr(to=info)))
 
     def _create_shadow_resources(mut self) raises:
-        """Create shadow map texture and comparison sampler."""
+        """Create shadow map texture and comparison sampler.
+
+        ⚠⚠ `shadow_size` COMES FROM THE MODEL (`<visual><quality
+        shadowsize=>`) AND MuJoCo LETS IT BE ZERO — that is how a model turns
+        shadows OFF. Menagerie's umi_gripper writes `shadowsize="0"`, and
+        passing it straight through aborted SDL: "width, height, and
+        layer_count_or_depth must be >= 1", inside an assert that kills the
+        process rather than raising. The model had already parsed and built;
+        the only visible outcome was an empty error message.
+
+        Clamped rather than branched: the shadow PASS still runs and samples a
+        1x1 map, which is a shadow nobody can see — the same end state the
+        model asked for, without a second code path through the renderer that
+        only a handful of models would ever exercise.
+        """
+        if self.shadow_size < 1:
+            self.shadow_size = 1
         # Shadow map: D32_FLOAT, usable as both depth target and sampler source
         var sm_info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
@@ -2559,6 +2575,27 @@ struct Renderer3D(Movable):
         Returns:
             Index into self.texture_cache.
         """
+        # ⚠⚠ A ZERO-SIZED TEXTURE ABORTS SDL, NOT JUST THIS UPLOAD.
+        # `SDL_CreateGPUTexture` asserts "width, height, and
+        # layer_count_or_depth must be >= 1", and the raise that follows
+        # carried an EMPTY message — so the whole model failed to open with no
+        # reason given. Menagerie's umi_gripper is the trigger: a
+        # `<texture type="2d" file="...png"/>` declares no width/height,
+        # because for a file texture the PNG carries them, and anything that
+        # reads the XML's (absent) values gets 0.
+        #
+        # Refusing ONE texture is the right blast radius: the model still
+        # loads and the geom draws untextured, which is visible and
+        # recoverable, unlike an abort.
+        if texture_data.width < 1 or texture_data.height < 1:
+            raise Error(
+                "texture '" + name + "' has no pixels ("
+                + String(texture_data.width) + "x"
+                + String(texture_data.height)
+                + ") — a file texture takes its size from the image, so a 0"
+                " here means the image did not load. Skipping it."
+            )
+
         # Check cache
         for i in range(len(self.texture_cache)):
             if self.texture_cache[i].matches(name):
