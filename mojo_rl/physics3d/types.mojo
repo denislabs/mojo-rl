@@ -40,3 +40,26 @@ comptime EQ_OBJ_SITE: Int = 1
 struct ConeType:
     comptime PYRAMIDAL: Int = 0
     comptime ELLIPTIC: Int = 1
+
+
+struct SolverType:
+    """MuJoCo `mjtSolver`, in MuJoCo's own numbering.
+
+    ⚠ THE DEFAULT IS NEWTON (2), NOT PGS. `m.opt.solver` reads 2 on a model
+    whose `<option>` says nothing — confirmed on the 3.10.0 runtime — while
+    `EulerIntegrator`'s `SOLVER` parameter defaults to `"pgs"`. Every tool that
+    does not pass one is therefore running a solver the reference does not use.
+    """
+
+    comptime PGS: Int = 0
+    comptime CG: Int = 1
+    comptime NEWTON: Int = 2
+
+
+struct IntegratorType:
+    """MuJoCo `mjtIntegrator`, in MuJoCo's own numbering."""
+
+    comptime EULER: Int = 0
+    comptime RK4: Int = 1
+    comptime IMPLICIT: Int = 2
+    comptime IMPLICITFAST: Int = 3

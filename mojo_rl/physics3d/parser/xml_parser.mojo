@@ -26,6 +26,7 @@ from std.collections import InlineArray
 
 from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION, ACT_KIND_VELOCITY
 from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
+from ..types import ConeType, SolverType, IntegratorType
 
 
 # =============================================================================
@@ -69,6 +70,15 @@ struct ParsedModel:
     var NOSLIP_ITER: Int  # <option noslip_iterations="..."/>, 0 = pass off
     var CCD_TOL: Float64  # <option ccd_tolerance="..."/>, MuJoCo default 1e-6
     var CCD_ITER: Int  # <option ccd_iterations="..."/>, MuJoCo default 35
+    # ⚠ THE THREE `<option>` SETTINGS THAT DECIDE WHICH SOLVER THE MODEL WANTS,
+    # and that no parser read until 2026-08-19 — so every caller stated them by
+    # hand (`cone_type=` in 32 def files) or, on the runtime path, could not
+    # state them at all. Defaults are MuJoCo's, which for SOLVER is NEWTON and
+    # for CONE is PYRAMIDAL — both the opposite of what this tree habitually
+    # builds.
+    var CONE: Int  # <option cone="pyramidal|elliptic"/>
+    var SOLVER: Int  # <option solver="PGS|CG|Newton"/>
+    var INTEGRATOR: Int  # <option integrator="Euler|RK4|implicit*"/>
 
     def __init__(
         out self,
@@ -92,6 +102,9 @@ struct ParsedModel:
         noslip_iter: Int = 0,
         ccd_tol: Float64 = MJ_CCD_TOLERANCE,
         ccd_iter: Int = MJ_CCD_ITERATIONS,
+        cone: Int = ConeType.PYRAMIDAL,
+        solver: Int = SolverType.NEWTON,
+        integrator: Int = IntegratorType.EULER,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -113,6 +126,9 @@ struct ParsedModel:
         self.NOSLIP_ITER = noslip_iter
         self.CCD_TOL = ccd_tol
         self.CCD_ITER = ccd_iter
+        self.CONE = cone
+        self.SOLVER = solver
+        self.INTEGRATOR = integrator
 
     def __str__(self) -> String:
         return (
@@ -2692,6 +2708,99 @@ def _scan_ccd_iterations(xml: String) -> Int:
     return val
 
 
+def _lower(s: String) -> String:
+    """ASCII lowercase. MuJoCo matches `<option solver>` and `integrator`
+    case-insensitively and writes them capitalised ("PGS", "Newton", "RK4"),
+    so a byte-exact compare against a lowercase literal would miss every real
+    model. `cone` is lowercase in MuJoCo's own schema and is compared directly.
+    """
+    var out = String("")
+    for i in range(s.byte_length()):
+        var c = Int(s.as_bytes()[i])
+        if c >= ord("A") and c <= ord("Z"):
+            out += chr(c + 32)
+        else:
+            out += chr(c)
+    return out
+
+
+def _scan_cone(xml: String) -> Int:
+    """`<option cone="pyramidal|elliptic">`, MuJoCo's default PYRAMIDAL.
+
+    ⚠⚠ THIS WAS TRANSCRIBED BY HAND INTO 32 DEF FILES AND CHECKED BY NOTHING.
+    `cone_type` is a `ModelDefFromXML` parameter, so every model def states its
+    own cone as a literal and nothing compared that literal with the XML it
+    names. All 161 in-tree instantiations happen to agree today (audited), but
+    the RUNTIME path could not agree even in principle: it has no parsed value
+    to agree with, so the studio ran every model it opened on ELLIPTIC —
+    including the menagerie models that ask for pyramidal.
+
+    ⚠ THE DEFAULT IS PYRAMIDAL, which is the opposite of what the manipulation
+    suite made habitual: 21 of the def files say ELLIPTIC because their XML
+    says so, not because it is the default.
+
+    Like `_scan_noslip_iterations` this reads only the REAL `<option>` element:
+    a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return ConeType.PYRAMIDAL
+    var v = _trim(_extract_attr(opt, "cone"))
+    if v == String("elliptic"):
+        return ConeType.ELLIPTIC
+    # ⚠ AN UNRECOGNISED VALUE FALLS BACK TO THE DEFAULT rather than guessing.
+    # MuJoCo's compiler rejects the file outright; we cannot, because this runs
+    # at comptime inside a dimension counter, and a wrong cone is a quieter
+    # failure than a missing model.
+    return ConeType.PYRAMIDAL
+
+
+def _scan_solver(xml: String) -> Int:
+    """`<option solver="PGS|CG|Newton">`, MuJoCo's default NEWTON.
+
+    ⚠⚠ THE DEFAULT IS NEWTON AND OURS WAS PGS. `m.opt.solver` reads 2 on a
+    model whose `<option>` says nothing, while `EulerIntegrator`'s `SOLVER`
+    parameter defaults to `"pgs"` — so every tool that does not pass one runs a
+    solver the reference does not use. Measured on spot, whose friction rows
+    are stiff (`impratio=100`): PGS moves the normal force 3.3% between
+    impratio 1 and 100 where the reference moves it 62%.
+
+    ⚠ MuJoCo MATCHES THE NAME CASE-INSENSITIVELY in its own parser; the values
+    it writes are "PGS", "CG" and "Newton".
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return SolverType.NEWTON
+    var v = _lower(_trim(_extract_attr(opt, "solver")))
+    if v == String("pgs"):
+        return SolverType.PGS
+    if v == String("cg"):
+        return SolverType.CG
+    return SolverType.NEWTON
+
+
+def _scan_integrator(xml: String) -> Int:
+    """`<option integrator="Euler|RK4|implicit|implicitfast">`, default EULER.
+
+    ⚠ NOT READ BY ANY TOOL YET, and stated here so that stops being invisible:
+    the studio builds an `EulerIntegrator` for every model it opens, including
+    spot, which asks for `implicitfast`. MuJoCo's implicit integrators fold the
+    damping terms into the mass matrix, which is what lets a model with stiff
+    actuator velocity feedback stay stable at its declared timestep.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return IntegratorType.EULER
+    var v = _lower(_trim(_extract_attr(opt, "integrator")))
+    if v == String("rk4"):
+        return IntegratorType.RK4
+    if v == String("implicitfast"):
+        return IntegratorType.IMPLICITFAST
+    if v == String("implicit"):
+        return IntegratorType.IMPLICIT
+    return IntegratorType.EULER
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -2831,6 +2940,9 @@ def parse_xml(xml: String) -> ParsedModel:
         _scan_noslip_iterations(xml),
         _scan_ccd_tolerance(xml),
         _scan_ccd_iterations(xml),
+        _scan_cone(xml),
+        _scan_solver(xml),
+        _scan_integrator(xml),
     )
 
 

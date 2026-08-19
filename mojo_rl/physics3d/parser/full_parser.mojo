@@ -51,6 +51,7 @@ from .xml_parser import (
     body_names_in_order,
     _sqrt_f64,
 )
+from ..types import ConeType, SolverType, IntegratorType
 from .flat_model import (
     BodyData,
     JointData,
@@ -167,15 +168,27 @@ def _option_flag_disabled(xml: String, flag: String) -> Bool:
 # =============================================================================
 
 
+def _lower_ascii(s: String) -> String:
+    """ASCII lowercase, for the `<option>` values MuJoCo writes capitalised."""
+    var out = String("")
+    for i in range(s.byte_length()):
+        var c = Int(s.as_bytes()[i])
+        if c >= ord("A") and c <= ord("Z"):
+            out += chr(c + 32)
+        else:
+            out += chr(c)
+    return out
+
+
 def _parse_option(
     xml: String,
 ) -> Tuple[
     Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,
-    Int, Float64
+    Int, Float64, Int, Int, Int
 ]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
-    noslip_tolerance, ccd_tolerance, ccd_iterations, impratio) from
-    <option .../>.
+    noslip_tolerance, ccd_tolerance, ccd_iterations, impratio, cone, solver,
+    integrator) from <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
     noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35,
@@ -240,10 +253,14 @@ def _parse_option(
     var ccdtol = Float64(MJ_CCD_TOLERANCE)
     var ccditer = MJ_CCD_ITERATIONS
     var impratio = 1.0
+    var cone = ConeType.PYRAMIDAL
+    var solver = SolverType.NEWTON
+    var integrator = IntegratorType.EULER
 
     var pos = xml.find("<option")
     if pos == -1:
-        return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer, impratio)
+        return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
+                impratio, cone, solver, integrator)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -325,7 +342,37 @@ def _parse_option(
         if vr > 0.0:
             impratio = vr
 
-    return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer, impratio)
+    # `cone` / `solver` / `integrator` — see the docstring. Unrecognised values
+    # fall back to MuJoCo's default rather than guessing; MuJoCo's own compiler
+    # rejects the file, which is not available to us here.
+    var cone_s = _trim(_extract_attr(tag, "cone"))
+    if cone_s == String("elliptic"):
+        cone = ConeType.ELLIPTIC
+    elif cone_s == String("pyramidal"):
+        cone = ConeType.PYRAMIDAL
+
+    # ⚠ CASE-INSENSITIVE: MuJoCo writes "PGS" / "CG" / "Newton" and "RK4" /
+    # "implicitfast", and matches them without regard to case.
+    var solver_s = _lower_ascii(_trim(_extract_attr(tag, "solver")))
+    if solver_s == String("pgs"):
+        solver = SolverType.PGS
+    elif solver_s == String("cg"):
+        solver = SolverType.CG
+    elif solver_s == String("newton"):
+        solver = SolverType.NEWTON
+
+    var integ_s = _lower_ascii(_trim(_extract_attr(tag, "integrator")))
+    if integ_s == String("rk4"):
+        integrator = IntegratorType.RK4
+    elif integ_s == String("implicitfast"):
+        integrator = IntegratorType.IMPLICITFAST
+    elif integ_s == String("implicit"):
+        integrator = IntegratorType.IMPLICIT
+    elif integ_s == String("euler"):
+        integrator = IntegratorType.EULER
+
+    return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
+            impratio, cone, solver, integrator)
 
 
 # =============================================================================
@@ -4617,6 +4664,9 @@ def parse_xml_full(
     result.ccd_tolerance = opt[7]
     result.ccd_iterations = opt[8]
     result.impratio = opt[9]
+    result.cone = opt[10]
+    result.solver = opt[11]
+    result.integrator = opt[12]
 
     # <flag multiccd="disable" nativeccd="disable"/> — `mjDSBL_MULTICCD` and
     # `mjDSBL_NATIVECCD`.

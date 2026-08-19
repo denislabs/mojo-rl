@@ -163,6 +163,9 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_3,
     MODEL_META_IDX_SOLIMP_LIMIT_4,
     MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_CONE,
+    MODEL_META_IDX_SOLVER,
+    MODEL_META_IDX_INTEGRATOR,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEXCLUDE,
@@ -851,6 +854,14 @@ def build_model_fields_from_flat[
     # tree happened to use 1 — `contact_solve.mojo`'s note says so — which is
     # why the write and the reads agreed for as long as they did.
     mf.meta.data[MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](fmd.impratio)
+    # `<option cone/solver/integrator>` — what the MODEL asked for. Nothing in
+    # the engine dispatches on these yet (the cone and the solver are comptime
+    # parameters of the integrator), which is exactly why they are recorded:
+    # a tool can now compare what it built against what the file wanted instead
+    # of having no way to know.
+    mf.meta.data[MODEL_META_IDX_CONE] = Scalar[DTYPE](fmd.cone)
+    mf.meta.data[MODEL_META_IDX_SOLVER] = Scalar[DTYPE](fmd.solver)
+    mf.meta.data[MODEL_META_IDX_INTEGRATOR] = Scalar[DTYPE](fmd.integrator)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         len(fmd.equalities) if len(fmd.equalities) < mf.dims.get_nequality()
         else mf.dims.get_nequality()

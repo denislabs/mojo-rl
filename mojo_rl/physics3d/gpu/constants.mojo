@@ -283,7 +283,7 @@ comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 34
+comptime MODEL_META_SIZE: Int = 37
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -313,6 +313,14 @@ comptime MODEL_META_IDX_SOLIMP_LIMIT_3: Int = 20  # midpoint
 comptime MODEL_META_IDX_SOLIMP_LIMIT_4: Int = 21  # power
 # Friction cone model
 comptime MODEL_META_IDX_IMPRATIO: Int = 22  # MuJoCo impratio
+# ⚠ WHICH SOLVER THE **MODEL** ASKS FOR, as opposed to the one the caller
+# happened to build. `<option cone/solver/integrator>` went unparsed until
+# 2026-08-19, so on the runtime path there was nothing to compare a built
+# integrator against and the studio ran every model on ELLIPTIC + PGS + Euler.
+# Appended (34 -> 37), so every index 0..33 keeps its value.
+comptime MODEL_META_IDX_CONE: Int = 34  # ConeType, MuJoCo default PYRAMIDAL
+comptime MODEL_META_IDX_SOLVER: Int = 35  # SolverType, MuJoCo default NEWTON
+comptime MODEL_META_IDX_INTEGRATOR: Int = 36  # IntegratorType, default EULER
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons

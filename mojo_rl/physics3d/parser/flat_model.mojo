@@ -6,6 +6,7 @@ holds the fully-populated data parsed from MJCF XML and can populate a Model
 struct via setup_model().
 """
 
+from ..types import ConeType, SolverType, IntegratorType
 from std.collections import InlineArray
 from mojo_rl.physics3d.joint_types import (
     JNT_HINGE,
@@ -1675,6 +1676,13 @@ struct FlatModelDef(Movable):
     # `MODEL_META_IDX_IMPRATIO` and `fields_build` hardcoded 1.0 into it, so
     # this attribute was parsed by nothing and every model was simulated at 1.
     var impratio: Float64
+    # `<option cone/solver/integrator>` — which solver the MODEL asks for, as
+    # opposed to the one the caller happened to build. Parsed 2026-08-19; see
+    # `_parse_option` in `full_parser`. Defaults are MuJoCo's: PYRAMIDAL and
+    # NEWTON, both the opposite of what this tree habitually builds.
+    var cone: Int
+    var solver: Int
+    var integrator: Int
     # `<option><flag multiccd="disable" nativeccd="disable"/></option>` —
     # `mjDSBL_MULTICCD` / `mjDSBL_NATIVECCD`, both DISABLE bits that are off by
     # default on the 3.10.0 runtime.
@@ -1861,6 +1869,9 @@ struct FlatModelDef(Movable):
         self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
         self.ccd_iterations = MJ_CCD_ITERATIONS
         self.impratio = 1.0
+        self.cone = ConeType.PYRAMIDAL
+        self.solver = SolverType.NEWTON
+        self.integrator = IntegratorType.EULER
         # Both default OFF, matching MuJoCo: the features are ON unless a model
         # disables them.
         self.multiccd_disabled = False
