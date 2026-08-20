@@ -216,7 +216,13 @@ def hull_cache_dir() -> String:
 
 def hull_cache_path[
     DTYPE: DType
-](mesh_filename: String, mi: MeshInertia[DTYPE]) raises -> String:
+](
+    mesh_filename: String,
+    mi: MeshInertia[DTYPE],
+    sx: Float64 = 1.0,
+    sy: Float64 = 1.0,
+    sz: Float64 = 1.0,
+) raises -> String:
     """Cache file for this (mesh contents, mesh frame, format version).
 
     Returns "" when the cache is disabled or the mesh cannot be read — both
@@ -264,6 +270,17 @@ def hull_cache_path[
 
     # ⚠ The FRAME, not just the file — see the module docstring. Promoted to
     # float64 so the stored bits are dtype-stable for a given `DTYPE` input.
+    # ⚠⚠ `<mesh scale>` IS IN THE KEY EXPLICITLY, and the reason is written
+    # ten lines up: the dtype was once left implicit on the argument that `mi`
+    # already carried it, and that was false often enough to fail a test. The
+    # same argument would be available here — a scaled mesh has a scaled CoM —
+    # and it is just as unsafe. A hull cached before this feature existed is
+    # UNSCALED, and serving it to a `scale="0.001"` model reproduces the exact
+    # bug (hulls 1000x oversized) from disk, invisibly.
+    h = _fnv(h, _f2u(sx))
+    h = _fnv(h, _f2u(sy))
+    h = _fnv(h, _f2u(sz))
+
     h = _fnv(h, _f2u(Float64(mi.com_x)))
     h = _fnv(h, _f2u(Float64(mi.com_y)))
     h = _fnv(h, _f2u(Float64(mi.com_z)))

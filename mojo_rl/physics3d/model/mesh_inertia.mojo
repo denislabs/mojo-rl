@@ -319,7 +319,12 @@ def transform_verts_to_principal_frame[
 
 def mesh_inertia_from_file[
     DTYPE: DType
-](mesh_filename: String) raises -> MeshInertia[DTYPE]:
+](
+    mesh_filename: String,
+    sx: Float64 = 1.0,
+    sy: Float64 = 1.0,
+    sz: Float64 = 1.0,
+) raises -> MeshInertia[DTYPE]:
     """`mesh_legacy_inertia` straight off an STL path.
 
     ⚠ Reads the RAW triangle soup — `load_stl` yields three vertices per face
@@ -330,7 +335,7 @@ def mesh_inertia_from_file[
     """
     from mojo_rl.render.stl_loader import load_stl
 
-    var mesh_data = load_stl(mesh_filename)
+    var mesh_data = load_stl(mesh_filename, sx, sy, sz)
     var n = len(mesh_data.vertices)
     var tris = List[Scalar[DTYPE]]()
     for i in range(n):

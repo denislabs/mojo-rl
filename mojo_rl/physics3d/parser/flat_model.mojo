@@ -283,6 +283,16 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var priority: Int  # `<geom priority>`; higher wins ALL contact params
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
+    var mesh_scale_x: Float64
+    var mesh_scale_y: Float64
+    var mesh_scale_z: Float64
+    """`<mesh scale>` of the ASSET this geom names — 1,1,1 when unset.
+
+    ⚠ CARRIED ON THE GEOM, NOT LOOKED UP AT LOAD TIME, because the loader is
+    handed a FILENAME and nothing else, and two geoms may name two assets that
+    share one file at different scales (a mirrored left/right pair is exactly
+    that). Resolving it here, where `mesh_filename` is resolved, keeps the two
+    from disagreeing."""
     # `material="..."` AFTER the `<default>`/`childclass` chain is applied,
     # and whether the geom (or its class) stated a colour of its own. Both are
     # parse-time bookkeeping for `_resolve_geom_materials`, which turns the
@@ -402,6 +412,9 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.priority = 0  # MuJoCo default; set by the parser when declared
         self.mesh_id = mesh_id
         self.mesh_filename = mesh_filename
+        self.mesh_scale_x = 1.0
+        self.mesh_scale_y = 1.0
+        self.mesh_scale_z = 1.0
 
 
 # =============================================================================
@@ -1263,6 +1276,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_inheritrange_s: String
     var motor_kv_s: String
     var motor_dampratio_s: String
+    var mesh_scale_s: String
+    """`<default><mesh scale="x y z"/></default>` — raw, "" when unset.
+
+    ⚠ THE ASSET TABLE IS WHERE THIS IS CONSUMED, not a body. `<mesh>` is an
+    ASSET, so unlike every other field here it is resolved in `_fill_assets`
+    against the top-level default (and a named class when the asset carries
+    `class=`), not while walking the body tree."""
     var motor_gaintype_s: String
     var motor_biastype_s: String
     var motor_gainprm_s: String
@@ -1404,6 +1424,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_inheritrange_s = ""
         self.motor_kv_s = ""
         self.motor_dampratio_s = ""
+        self.mesh_scale_s = ""
         self.motor_gaintype_s = ""
         self.motor_biastype_s = ""
         self.motor_gainprm_s = ""
@@ -1845,6 +1866,15 @@ struct FlatModelDef(Movable):
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
     var mesh_asset_files: List[String]
+    var mesh_asset_scale: List[Float64]
+    """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
+
+    ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
+    declarations are `0.001 0.001 0.001` (the STL is in MILLIMETRES) and 44
+    are a MIRROR like `1 -1 1` (one mesh serving a left and a right part).
+    Ignoring it made robotis_op3's collision hulls 1000x oversized — every
+    hull spanning metres, overlapping the floor and each other, which the
+    solver answered by launching the robot to 77 m."""
     # ── `<visual>` (phase 1a.5) ──────────────────────────────────────────
     #
     # ⚠ RENDER-ONLY, and absent from this record until 1a.5: the viewer read
@@ -1929,6 +1959,7 @@ struct FlatModelDef(Movable):
         self.nativeccd_disabled = False
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
+        self.mesh_asset_scale = List[Float64]()
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0

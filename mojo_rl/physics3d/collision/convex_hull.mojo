@@ -717,6 +717,9 @@ def load_mesh_hull[
     mut edge_adr: List[Int],
     mut edge_list: List[Int],
     mi: MeshInertia[DTYPE],
+    sx: Float64 = 1.0,
+    sy: Float64 = 1.0,
+    sz: Float64 = 1.0,
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
 
@@ -743,11 +746,11 @@ def load_mesh_hull[
     # WHOLE output keyed on the STL's contents AND `mi`'s frame; see that
     # module for why the frame belongs in the key and for the rebasing table
     # the append block below implements.
-    var cache_path = hull_cache_path[DTYPE](mesh_filename, mi)
+    var cache_path = hull_cache_path[DTYPE](mesh_filename, mi, sx, sy, sz)
     var p = HullPayload()
 
     if not hull_cache_load(cache_path, p):
-        var mesh_data = load_stl(mesh_filename)
+        var mesh_data = load_stl(mesh_filename, sx, sy, sz)
 
         # Extract positions from GPUVertex structs into flat array
         var raw = List[Scalar[DTYPE]]()

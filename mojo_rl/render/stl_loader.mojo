@@ -8,7 +8,7 @@ Auto-generates UV coordinates via box projection (largest face of bounding box).
 """
 
 from std.memory import Pointer
-from std.math import abs as math_abs
+from std.math import abs as math_abs, sqrt
 from .gpu_types import GPUVertex, MeshData
 from .obj_loader import load_obj
 
@@ -21,8 +21,73 @@ def _is_obj(path: String) -> Bool:
     return ext == ".obj" or ext == ".OBJ"
 
 
-def load_stl(path: String) raises -> MeshData:
+def _scale_mesh(
+    mut mesh: MeshData, sx: Float64, sy: Float64, sz: Float64
+):
+    """Apply `<mesh scale>` to an already-loaded mesh — the OBJ path.
+
+    ⚠ THE STL PATH SCALES AS IT READS instead, because it is building the
+    bounding box in the same pass and the UV box-projection picks the two
+    LARGEST axes — under a non-uniform scale those can be different axes. Same
+    arithmetic, applied at the only point each path can apply it.
+    """
+    if sx == 1.0 and sy == 1.0 and sz == 1.0:
+        return
+    var fx = Float32(sx)
+    var fy = Float32(sy)
+    var fz = Float32(sz)
+    var mirrored = (sx * sy * sz) < 0.0
+    for i in range(len(mesh.vertices)):
+        ref v = mesh.vertices[i]
+        v.px = v.px * fx
+        v.py = v.py * fy
+        v.pz = v.pz * fz
+        var nx = v.nx / fx
+        var ny = v.ny / fy
+        var nz = v.nz / fz
+        if mirrored:
+            nx = -nx
+            ny = -ny
+            nz = -nz
+        var nl = sqrt(nx * nx + ny * ny + nz * nz)
+        if nl > Float32(1e-20):
+            nx = nx / nl
+            ny = ny / nl
+            nz = nz / nl
+        v.nx = nx
+        v.ny = ny
+        v.nz = nz
+    if mirrored:
+        # Reverse each triangle's winding so the front face still faces out.
+        var ntri = len(mesh.indices) // 3
+        for t in range(ntri):
+            var a = mesh.indices[t * 3 + 1]
+            mesh.indices[t * 3 + 1] = mesh.indices[t * 3 + 2]
+            mesh.indices[t * 3 + 2] = a
+
+
+def load_stl(
+    path: String,
+    sx: Float64 = 1.0,
+    sy: Float64 = 1.0,
+    sz: Float64 = 1.0,
+) raises -> MeshData:
     """Load a mesh — binary STL, or Wavefront OBJ by extension.
+
+    `sx`/`sy`/`sz` are MJCF's `<mesh scale>`, applied HERE for the same reason
+    the OBJ dispatch is here: the three callers (the renderer's `draw_mesh`,
+    `mesh_inertia`, `convex_hull`) must not each carry their own copy, and a
+    caller that forgot would be silently wrong rather than broken. 19
+    Menagerie robots set it — 38 declarations are `0.001 0.001 0.001`, i.e.
+    the STL is in MILLIMETRES.
+
+    ⚠ A NEGATIVE COMPONENT IS A MIRROR, NOT A ROTATION, and 44 Menagerie
+    declarations use one (`1 -1 1` and friends) to build a left part and a
+    right part from a single file. Mirroring reverses triangle winding, so
+    the winding is flipped and the face normal recomputed whenever the scale's
+    determinant is negative; without that the mirrored copy renders inside-out.
+    Both are skipped entirely at scale 1, so the default path is byte-identical
+    to what it was.
 
     ⚠⚠ THE OBJ DISPATCH IS HERE, NOT AT THE CALL SITES, and the name stayed
     `load_stl` for the same reason: there are three callers (the renderer's
@@ -40,12 +105,20 @@ def load_stl(path: String) raises -> MeshData:
     bounding box extent are mapped to [0, 1] UV range.
     """
     if _is_obj(path):
-        return load_obj(path)
+        var om = load_obj(path)
+        _scale_mesh(om, sx, sy, sz)
+        return om^
     var f = open(path, "r")
     var content = f.read_bytes()
     f.close()
 
     var raw_ptr = content.unsafe_ptr()
+
+    var fx = Float32(sx)
+    var fy = Float32(sy)
+    var fz = Float32(sz)
+    var scaled = sx != 1.0 or sy != 1.0 or sz != 1.0
+    var mirrored = (sx * sy * sz) < 0.0
 
     # Parse number of triangles at offset 80
     var num_triangles = Int((raw_ptr.unsafe_offset(80)).unsafe_bitcast[UInt32]()[])
@@ -79,12 +152,37 @@ def load_stl(path: String) raises -> MeshData:
         var nx = np[unsafe_offset=0]
         var ny = np[unsafe_offset=1]
         var nz = np[unsafe_offset=2]
+        if scaled:
+            # ⚠ A NORMAL DOES NOT SCALE LIKE A POSITION. Under a non-uniform
+            # scale it transforms by the INVERSE TRANSPOSE, i.e. n_i / s_i,
+            # renormalised; scaling it like a point tilts every normal and the
+            # shading goes with it. Uniform scales (the 0.001 case) come out
+            # unchanged after renormalising, which is why this was invisible
+            # until a `0.9 1 1` model showed up.
+            nx = nx / fx
+            ny = ny / fy
+            nz = nz / fz
+            if mirrored:
+                nx = -nx
+                ny = -ny
+                nz = -nz
+            var nl = sqrt(nx * nx + ny * ny + nz * nz)
+            if nl > Float32(1e-20):
+                nx = nx / nl
+                ny = ny / nl
+                nz = nz / nl
 
-        for v in range(3):
+        for v_ in range(3):
+            # ⚠ THE WINDING FLIP IS AN INDEX SWAP, not a second pass: for a
+            # mirrored scale the triangle is emitted 0,2,1 so its front face
+            # still points outward.
+            var v = v_
+            if mirrored:
+                v = 0 if v_ == 0 else (3 - v_)
             var vp = (raw_ptr.unsafe_offset(offset + 12 + v * 12)).unsafe_bitcast[Float32]()
-            var px = vp[unsafe_offset=0]
-            var py = vp[unsafe_offset=1]
-            var pz = vp[unsafe_offset=2]
+            var px = vp[unsafe_offset=0] * fx
+            var py = vp[unsafe_offset=1] * fy
+            var pz = vp[unsafe_offset=2] * fz
 
             if px < min_x:
                 min_x = px

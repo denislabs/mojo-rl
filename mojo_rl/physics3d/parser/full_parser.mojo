@@ -417,6 +417,19 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
     """Parse joint/geom/motor attrs from a default section, inheriting from parent."""
     var d = parent  # start with parent defaults
 
+    # ── `<default><mesh scale="x y z"/></default>` ────────────────────────
+    # ⚠⚠ THE ONLY PLACE 38 MENAGERIE DECLARATIONS PUT IT. A model whose STLs
+    # are in millimetres writes the scale ONCE here and leaves all 48 of its
+    # `<mesh file=.../>` assets bare — robotis_op3 does exactly that. Reading
+    # `scale` off the asset's own tag therefore finds nothing and the hulls
+    # come out 1000x oversized, which is the failure this block exists for.
+    var mshpos = defaults_sec.find("<mesh")
+    if mshpos != -1:
+        var mshtag = _extract_opening_tag(defaults_sec, mshpos)
+        var msc_s = _extract_attr(mshtag, "scale")
+        if msc_s.byte_length() > 0:
+            d.mesh_scale_s = msc_s
+
     # Find default <joint
     var jpos = defaults_sec.find("<joint")
     if jpos != -1:
@@ -1270,6 +1283,8 @@ def _fill_assets(
 
     asset_sec: String,
     mut result: FlatModelDef,
+    defaults: DefaultsData,
+    named_defaults: NamedDefaultsList,
 ) raises:
     """Parse <asset> section: fill result.textures[] and result.materials[]."""
 
@@ -1452,6 +1467,35 @@ def _fill_assets(
         if mesh_name.byte_length() > 0 and mesh_file.byte_length() > 0:
             result.mesh_asset_names.append(mesh_name)
             result.mesh_asset_files.append(mesh_file)
+            # ── `scale`, own tag first, then the class chain ──────────────
+            # ⚠ AN ASSET RESOLVES ITS CLASS LIKE ANY OTHER ELEMENT: an
+            # explicit `class=` names one, otherwise the TOP-LEVEL default
+            # applies. Only 1 of op3's 49 `<mesh>` tags carries `scale` — the
+            # one inside `<default>` — so the fallback is the whole feature,
+            # not a nicety.
+            var sc_s = _extract_attr(tag, "scale")
+            if sc_s.byte_length() == 0:
+                var mcls = _extract_attr(tag, "class")
+                if mcls.byte_length() > 0:
+                    sc_s = named_defaults.find(mcls).mesh_scale_s
+                if sc_s.byte_length() == 0:
+                    sc_s = defaults.mesh_scale_s
+            var sx = 1.0
+            var sy = 1.0
+            var sz = 1.0
+            if sc_s.byte_length() > 0:
+                var sv = _parse_rgb3(sc_s)
+                # ⚠ A ZERO COMPONENT IS REJECTED, NOT COPIED. MuJoCo requires
+                # three reals; a short or malformed value parses to 0 here,
+                # and a 0 scale collapses the hull to a plane or a point —
+                # far worse, and far harder to see, than ignoring the attr.
+                if sv[0] != 0.0 and sv[1] != 0.0 and sv[2] != 0.0:
+                    sx = sv[0]
+                    sy = sv[1]
+                    sz = sv[2]
+            result.mesh_asset_scale.append(sx)
+            result.mesh_asset_scale.append(sy)
+            result.mesh_asset_scale.append(sz)
             mesh_count += 1
         mesh_pos = tag_end + 1
     result.num_mesh_assets = mesh_count
@@ -1772,6 +1816,10 @@ def _parse_one_geom(
                 if assets.mesh_asset_names[mi] == mesh_attr:
                     gd.mesh_id = mi
                     gd.mesh_filename = assets.mesh_asset_files[mi]
+                    if mi * 3 + 2 < len(assets.mesh_asset_scale):
+                        gd.mesh_scale_x = assets.mesh_asset_scale[mi * 3 + 0]
+                        gd.mesh_scale_y = assets.mesh_asset_scale[mi * 3 + 1]
+                        gd.mesh_scale_z = assets.mesh_asset_scale[mi * 3 + 2]
                     break
 
     # fromto — overrides pos and quat for capsule
@@ -4839,7 +4887,7 @@ def parse_xml_full(
             texturedir = _trim(_extract_attr(ctag, "texturedir"))
 
     # Assets: textures and materials
-    _fill_assets(asset_sec, result)
+    _fill_assets(asset_sec, result, defaults, named_defaults)
 
     # `<compiler meshdir>` — UNPARSED until 2026-08-13, and silently.
     #

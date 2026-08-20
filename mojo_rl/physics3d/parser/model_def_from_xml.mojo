@@ -2428,6 +2428,18 @@ struct ModelDefFromXML[
                     renderer.draw_mesh(
                         name=rf.mesh_names[mid2], file_path=rf.mesh_files[mid2],
                         center=geom_pos, orientation=geom_quat,
+                        # ⚠ `<mesh scale>`, APPLIED AT DRAW TIME. The
+                        # renderer caches one GPU upload per mesh NAME, so
+                        # baking the scale into the vertices would give a
+                        # mirrored pair a single shared (wrong) copy. As a
+                        # draw transform each geom gets its own, and op3 —
+                        # whose STLs are in millimetres — stops rendering
+                        # 1000x oversized.
+                        scale=_RVec3(
+                            rf.geom_mesh_scale[i * 3 + 0],
+                            rf.geom_mesh_scale[i * 3 + 1],
+                            rf.geom_mesh_scale[i * 3 + 2],
+                        ),
                         color=geom_color, shininess=shininess,
                         specular=specular, reflectance=reflectance,
                         texture_name=tex_name_str,

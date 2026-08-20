@@ -1384,8 +1384,18 @@ def build_model_fields_from_flat[
         if not (collidable or needs_inertia):
             continue
         try:
+            # ⚠ THE INERTIA MUST SEE THE SCALED MESH. `mesh_pos`/`mesh_quat`
+            # are the CoM and principal axes MuJoCo bakes into every mesh, and
+            # they are computed from the COMPILED vertices — i.e. after
+            # `<mesh scale>`. Feeding the raw STL here would put a millimetre
+            # model's centre of mass a thousand times too far out, and the hull
+            # (which IS scaled) would then be built in a different frame from
+            # the geom that carries it.
             mesh_inertia_cache[gd_m.mesh_id] = mesh_inertia_from_file[DTYPE](
-                gd_m.mesh_filename
+                gd_m.mesh_filename,
+                gd_m.mesh_scale_x,
+                gd_m.mesh_scale_y,
+                gd_m.mesh_scale_z,
             )
             mesh_inertia_valid[gd_m.mesh_id] = True
         except:
@@ -1597,6 +1607,9 @@ def build_model_fields_from_flat[
                         edge_adr,
                         edge_list,
                         mesh_inertia_cache[gd.mesh_id],
+                        gd.mesh_scale_x,
+                        gd.mesh_scale_y,
+                        gd.mesh_scale_z,
                     )
                     var mesh_id = result[0]
                     mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](

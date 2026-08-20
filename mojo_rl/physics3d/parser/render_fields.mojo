@@ -71,6 +71,16 @@ struct RenderFields(Copyable, Movable):
     var geom_rgba_a: List[Float64]
     var geom_material_id: List[Int]
     var geom_mesh_id: List[Int]
+    var geom_mesh_scale: List[Float64]
+    """`<mesh scale>` per GEOM, three each — 1,1,1 for a non-mesh geom.
+
+    ⚠ PER GEOM, NOT PER ASSET, and deliberately so. `geom_mesh_id` resolves
+    against the asset table BY FILENAME, and a mirrored pair (`scale="1 1 1"`
+    and `scale="1 -1 1"` on the same file, which is how a model builds a left
+    part from a right one) is two assets sharing one filename — so an
+    asset-indexed scale would give both geoms whichever came first. The geom
+    already carries its own resolved scale; read that.
+    """
     var geom_group: List[Int]
     var nmesh: Int
     var mesh_names: List[String]
@@ -193,6 +203,7 @@ struct RenderFields(Copyable, Movable):
         self.geom_rgba_a = List[Float64]()
         self.geom_material_id = List[Int]()
         self.geom_mesh_id = List[Int]()
+        self.geom_mesh_scale = List[Float64]()
         self.geom_group = List[Int]()
         self.nmesh = 0
         self.mesh_names = List[String]()
@@ -374,6 +385,9 @@ def build_render_fields(
                     mid = k
                     break
         rf.geom_mesh_id.append(mid)
+        rf.geom_mesh_scale.append(g.mesh_scale_x)
+        rf.geom_mesh_scale.append(g.mesh_scale_y)
+        rf.geom_mesh_scale.append(g.mesh_scale_z)
 
     # ── mesh assets ───────────────────────────────────────────────────────
     rf.nmesh = fmd.num_mesh_assets
