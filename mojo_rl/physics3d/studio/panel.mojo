@@ -181,6 +181,8 @@ struct PanelOut(Copyable, Movable):
     """-1 none, else a joint TYPE index to add to the selected body."""
     var rename_here: Bool
     """Rename the selected element to `new_name`."""
+    var reparent_here: Bool
+    """Move the selected BODY under the body in the name box ("" = world)."""
 
     var del_element: Bool
     """Delete the SELECTED body or geom from the model itself — V2.1.
@@ -216,6 +218,7 @@ struct PanelOut(Copyable, Movable):
         self.add_body_here = False
         self.add_joint_here = -1
         self.rename_here = False
+        self.reparent_here = False
         self.edit_field = -1
         self.edit_value = 0.0
         self.open_path = String("")
@@ -583,6 +586,12 @@ def ui_options(
                 else String("body")
             if ig_button(String("rename selected ") + what, 200.0):
                 out.rename_here = True
+            if p.sel_kind == SEL_BODY:
+                # ⚠ THE NAME BOX MEANS THE NEW PARENT HERE, and empty means
+                # the world. One box for three verbs is fine because they are
+                # never in flight together, but the label has to say which.
+                if ig_button(String("reparent under (name, or world)"), 200.0):
+                    out.reparent_here = True
             if ig_button(String("delete selected ") + what, 200.0):
                 out.del_element = True
             # ⚠ SAID OUT LOUD, BEFORE THE CLICK. Deleting the only geom of a

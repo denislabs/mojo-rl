@@ -47,7 +47,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
 from mojo_rl.physics3d.fields import Model, DynDims
 from mojo_rl.physics3d.studio.structure import (
     delete_body, delete_joint, delete_geom, leftover_dangling,
-    add_body, add_joint, add_geom, rename_element,
+    add_body, add_joint, add_geom, rename_element, reparent_body,
 )
 from mojo_rl.physics3d.studio.validate import (
     validate_model, SEV_ERROR,
@@ -395,6 +395,59 @@ def main() raises:
                        String("mojo_rl/envs/half_cheetah/assets")).row() + "\n"
     manifest += OUT_DIR + "/" + String(n_judged - 1) + ".xml 1 " \
         + after_add.row() + "\n"
+
+    # ── reparent ──────────────────────────────────────────────────────────
+    # ⚠ THE COUNTS DO NOT MOVE, so a counts-only check says nothing here. The
+    # arm that matters is that the PARENT changed — and that MuJoCo agrees,
+    # which is why the expected pair goes into a sidecar for the python half.
+    print("--- reparent ---")
+    var ant_src = expand_mjcf(
+        _read(String("mojo_rl/envs/ant/assets/ant.xml")),
+        String("mojo_rl/envs/ant/assets"),
+    )
+    var ant_base = String("mojo_rl/envs/ant/assets")
+    var before_ant = _load_counts(ant_src, ant_base)
+    var rp = reparent_body(ant_src, String("front_left_leg"),
+                           String("front_right_leg"))
+    t.truth(rp.ok, "moved 'front_left_leg' under 'front_right_leg'")
+    for note in rp.notes:
+        print("       note:", note)
+    t.truth(len(leftover_dangling(rp.xml)) == 0,
+            "the reparent left no dangling reference")
+    var after_rp = _load_counts(rp.xml, ant_base)
+    t.truth(after_rp.row() == before_ant.row(),
+            String("a reparent moves nothing but the TREE (", after_rp.row(),
+                   ")"))
+    var rp_fmd = parse_xml_full(rp.xml, ant_base)
+    var moved_to = String("")
+    for b in range(1, len(rp_fmd.bodies) + 1):
+        if rp_fmd.body_names[b] == "front_left_leg":
+            moved_to = rp_fmd.body_names[rp_fmd.bodies[b - 1].parent]
+    t.truth(moved_to == "front_right_leg",
+            String("its parent is now '", moved_to, "'"))
+    # ⚠ THE UNREPRESENTABLE CASE, refused here rather than left to the
+    # validator: splicing a body inside its own subtree LOSES the subtree,
+    # so there is no invalid state to report — there is nothing left to
+    # report it about.
+    t.truth(not reparent_body(ant_src, String("front_left_leg"),
+                              String("aux_1")).ok,
+            "moving a body under its own descendant is REFUSED (a cycle)")
+    t.truth(not reparent_body(ant_src, String("front_left_leg"),
+                              String("front_left_leg")).ok,
+            "and under itself")
+    t.truth(not reparent_body(ant_src, String("front_left_leg"),
+                              String("no_such_body")).ok,
+            "and under a body that does not exist (control)")
+
+    var rp_path = OUT_DIR + "/" + String(n_judged) + ".xml"
+    var rf2 = open(rp_path, "w")
+    rf2.write(rp.xml)
+    rf2.close()
+    manifest += rp_path + " 1 " + after_rp.row() + "\n"
+    n_judged += 1
+    var pf = open(OUT_DIR + "/reparent_expect.txt", "w")
+    pf.write(rp_path + " front_left_leg front_right_leg\n")
+    pf.close()
 
     # ── the cascade, named ────────────────────────────────────────────────
     # ⚠⚠ THE INDIRECT PRUNE IS THE ONE A SINGLE PASS MISSES, so it gets its

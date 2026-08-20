@@ -79,26 +79,56 @@ def main() -> int:
 
     # ⚠ NON-VACUITY. An empty or truncated manifest would print "0 failures"
     # and mean nothing; the Mojo half writes six documents.
-    if len(rows) < 9:
+    if len(rows) < 10:
         fails += 1
-        print(f"FAIL: manifest has {len(rows)} rows, expected at least 9 —"
+        print(f"FAIL: manifest has {len(rows)} rows, expected at least 10 —"
               " the Mojo gate did not write everything it judges")
 
     # ⚠ NON-VACUITY, BOTH WAYS. A manifest of only-refusals would make the
     # count comparison decoration; a manifest of only-loads would never
     # exercise the disagreement check above.
     n_loads = len(rows) - n_expected_refusals
-    if n_loads < 7 or n_expected_refusals < 1:
+    if n_loads < 8 or n_expected_refusals < 1:
         fails += 1
         print(f"FAIL: {n_loads} must-load and {n_expected_refusals}"
               " must-refuse rows — the table needs both to mean anything")
 
     fails += _check_document_edit()
+    fails += _check_reparent()
 
     print(f"\n{len(rows) - fails} / {len(rows)} edited documents agree with"
           f" MuJoCo ({n_loads} load, {n_expected_refusals} refused as"
           " predicted)")
     return 1 if fails else 0
+
+
+def _check_reparent() -> int:
+    """Did the reparented body actually change PARENT, in MuJoCo's view?
+
+    ⚠ THE COUNTS ARE UNCHANGED BY A REPARENT, so the row comparison above says
+    nothing about it — a no-op edit would pass that arm exactly. This is the
+    only check that distinguishes "moved" from "did not move".
+    """
+    import mujoco
+
+    expect = OUT / "reparent_expect.txt"
+    if not expect.exists():
+        print("SKIP reparent check — run the Mojo gate first")
+        return 1
+    path, child, parent = expect.read_text().split()
+    m = mujoco.MjModel.from_xml_path(path)
+    cid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, child)
+    if cid < 0:
+        print(f"FAIL reparent: MuJoCo cannot find body {child!r}")
+        return 1
+    got = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY,
+                            int(m.body_parentid[cid])) or "world"
+    if got != parent:
+        print(f"FAIL reparent: MuJoCo says {child}'s parent is {got!r},"
+              f" we moved it under {parent!r}")
+        return 1
+    print(f"ok   reparent: MuJoCo agrees {child}'s parent is {parent}")
+    return 0
 
 
 def _check_document_edit() -> int:

@@ -866,3 +866,67 @@ def find_child(
             seen += 1
         pos = c_end
     return -1
+
+
+# =============================================================================
+# Re-parenting
+# =============================================================================
+
+
+def reparent_body(
+    xml: String, name: String, new_parent: String
+) raises -> EditResult:
+    """Move a body (and its subtree) under `new_parent` — "" = the worldbody.
+
+    ⚠⚠ THE LOCAL TRANSFORM IS KEPT, SO THE BODY MOVES. `pos`/`quat` on a
+    `<body>` are relative to its PARENT, and MJCF has no world-frame spelling;
+    re-parenting therefore relocates the body by the difference between the two
+    parents' frames. That is MuJoCo's semantics for the same edit, and it is
+    the honest default — preserving the WORLD pose would mean recomputing
+    `pos`/`quat` from `xpos`/`xquat`, which needs the built model and belongs
+    to a caller that has one. The note says so out loud rather than leaving the
+    user to discover it by watching the robot jump.
+
+    ⚠ A CYCLE IS REFUSED HERE because it is unrepresentable, not merely
+    invalid: splicing a body inside its own subtree loses the subtree. Every
+    OTHER rule this edit can break — a free joint that is no longer top level,
+    a seventh dof, a plane that stopped being static — belongs to
+    `validate_model`, which owns and gates them. A second opinion here could
+    only drift from the one that is checked.
+    """
+    var notes = List[String]()
+    if name == new_parent:
+        notes.append("a body cannot be its own parent")
+        return EditResult(xml, False, notes^)
+
+    var at = find_named(xml, String("body"), name)
+    if at == -1:
+        notes.append("no <body name=\"" + name + "\"> in this model")
+        return EditResult(xml, False, notes^)
+    var end = element_end(xml, String("body"), at)
+    var span = String(xml[byte=at:end])
+
+    if new_parent.byte_length() > 0 \
+            and find_named(span, String("body"), new_parent) != -1:
+        notes.append(
+            "'" + new_parent + "' is inside '" + name + "', so this would"
+            " splice the body into its own subtree"
+        )
+        return EditResult(xml, False, notes^)
+
+    var without = String(xml[byte=0:at]) + String(
+        xml[byte = end : xml.byte_length()]
+    )
+    if new_parent.byte_length() > 0 \
+            and find_named(without, String("body"), new_parent) == -1:
+        notes.append("no <body name=\"" + new_parent + "\"> to move it under")
+        return EditResult(xml, False, notes^)
+
+    var out = _insert_child(without, String("body"), new_parent,
+                            "    " + span + "\n")
+    notes.append(
+        "moved '" + name + "' under '"
+        + (new_parent if new_parent.byte_length() > 0 else String("world"))
+        + "' — its pos/quat are relative to the PARENT, so it has MOVED"
+    )
+    return EditResult(out^, True, notes^)

@@ -89,6 +89,7 @@ from mojo_rl.physics3d.studio.validate import (
 )
 from mojo_rl.physics3d.studio.structure import (
     delete_body, delete_geom, add_body, add_joint, rename_element,
+    reparent_body,
 )
 from mojo_rl.physics3d.studio.remap import remap_state
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -1012,6 +1013,20 @@ def run_studio(
                     print("  cannot add joint:", r.notes[0])
             except e:
                 print("  add joint failed:", e)
+        elif ui.reparent_here and panel.sel_kind == SEL_BODY \
+                and panel.sel_index > 0:
+            try:
+                var r = reparent_body(
+                    L.flat, _label_of(L.fmd.body_names, panel.sel_index),
+                    ui.new_name,
+                )
+                if r.ok:
+                    struct_xml = r.xml
+                    struct_note = r.notes[0]
+                else:
+                    print("  cannot reparent:", r.notes[0])
+            except e:
+                print("  reparent failed:", e)
         elif ui.rename_here and ui.new_name.byte_length() > 0 \
                 and panel.sel_kind != SEL_NONE:
             var is_g = panel.sel_kind == SEL_GEOM
