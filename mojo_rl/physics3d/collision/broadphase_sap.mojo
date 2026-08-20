@@ -1435,44 +1435,24 @@ def _detect_contacts_sap_env[
                 ny = -r[5]
                 nz = -r[6]
 
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
-                var r = cylinder_capsule[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
-                var r = cylinder_capsule[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
-                var r = cylinder_cylinder[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-
-            elif (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX) or (
-                gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER
+            elif (
+                (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX)
+                or (gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER)
+                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
+                or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
+                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
             ):
+                # ⚠⚠ THE SAME MERGE AS `contact_detection.mojo` — see the
+                # long note there. MuJoCo's `mjCOLLISIONFUNC` sends every
+                # cylinder pair except SPHERE and PLANE to `mjc_Convex`;
+                # `cylinder_capsule` / `cylinder_cylinder` use the
+                # CAPSULE-capsule formula, which rounds the cylinder's flat
+                # ends into hemispheres and bulges its surface a full radius.
+                #
+                # ⚠ THIS FILE IS A SECOND DISPATCH COPY of the same table, and
+                # the CYLINDER x BOX re-route below landed in BOTH. The two
+                # must move together or a model collides differently depending
+                # on which path ran it.
                 # MuJoCo routes CYLINDER x BOX to `mjc_Convex` — GJK plus EPA
                 # (`engine_collision_driver.c:41`), not to a primitive. Ours
                 # used `cylinder_box`, which REDUCES THE CYLINDER TO A CAPSULE,

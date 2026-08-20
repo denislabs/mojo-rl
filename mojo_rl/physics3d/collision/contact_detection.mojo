@@ -2809,51 +2809,30 @@ def _detect_contacts_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
-                var r = cylinder_capsule[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
-                var r = cylinder_capsule[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
-                var r = cylinder_cylinder[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX) or (
-                gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER
+            elif (
+                (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX)
+                or (gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER)
+                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
+                or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
+                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
             ):
-                # MuJoCo routes CYLINDER x BOX to `mjc_Convex` — GJK plus EPA
-                # (`engine_collision_driver.c:41`), not to a primitive. Ours
-                # used `cylinder_box`, which REDUCES THE CYLINDER TO A CAPSULE,
-                # so the hemispherical cap dips a full radius below the flat
-                # face. Measured against the analytic depth that is an error of
-                # exactly -r in EVERY configuration, separated or penetrating:
+                # ⚠⚠ EVERY CYLINDER PAIR EXCEPT SPHERE AND PLANE COMES HERE,
+                # and MuJoCo's own table is why: row CYLINDER of
+                # `mjCOLLISIONFUNC` (`engine_collision_driver.c:52`) is
+                # `mjc_Convex` against CYLINDER, BOX and MESH, and column
+                # CYLINDER is `mjc_Convex` from CAPSULE and ELLIPSOID down.
+                # Only `mjc_SphereCylinder` and `mjc_PlaneCylinder` are real
+                # primitives. CAPSULE x CYLINDER and CYLINDER x CYLINDER were
+                # still going to `cylinder_capsule` / `cylinder_cylinder`,
+                # which compute `dist = axis_axis_distance - r1 - r2` — the
+                # CAPSULE-capsule formula. That rounds the cylinder's flat end
+                # caps into hemispheres, so the surface bulges a full radius
+                # past where it is.
+                #
+                # CYLINDER x BOX came here first, for the same reason: it used
+                # `cylinder_box`, the same capsule reduction. Measured against
+                # the analytic depth that is an error of exactly -r in EVERY
+                # configuration, separated or penetrating:
                 # at 1 cm of CLEARANCE it still reported a 4 cm penetration. On
                 # sawyer (obj r = 0.02) it manufactured a 2 cm contact at the
                 # canonical reset pose, where MuJoCo has none and where all 13

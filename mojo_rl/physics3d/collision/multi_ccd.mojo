@@ -248,45 +248,19 @@ def _convex_pair_single[
         out[k] = Scalar[DTYPE](0)
     out[0] = Scalar[DTYPE](1e30)  # no contact
 
-    if gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
-        var r = cylinder_capsule[DTYPE](
-            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-        )
-        out[0] = r[0]
-        out[1] = r[1]
-        out[2] = r[2]
-        out[3] = r[3]
-        out[4] = r[4]
-        out[5] = r[5]
-        out[6] = r[6]
-    elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
-        var r = cylinder_capsule[DTYPE](
-            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-        )
-        out[0] = r[0]
-        out[1] = r[1]
-        out[2] = r[2]
-        out[3] = r[3]
-        out[4] = -r[4]
-        out[5] = -r[5]
-        out[6] = -r[6]
-    elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
-        var r = cylinder_cylinder[DTYPE](
-            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-        )
-        out[0] = r[0]
-        out[1] = r[1]
-        out[2] = r[2]
-        out[3] = r[3]
-        out[4] = r[4]
-        out[5] = r[5]
-        out[6] = r[6]
-    elif (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX) or (
-        gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER
+    if (
+        (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX)
+        or (gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER)
+        or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
+        or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
+        or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
     ):
+        # ⚠⚠ THE THIRD COPY OF THE SAME TABLE, moved with the other two. This
+        # file's own docstring says it must be: its four perturbed extensions
+        # used to come from the capsule reduction, wrong by exactly -r, and no
+        # gate could see it because MuJoCo copies `con[0].dist` onto every
+        # extra row. CAPSULE x CYLINDER and CYLINDER x CYLINDER are
+        # `mjc_Convex` in MuJoCo's table, exactly as CYLINDER x BOX is.
         # ONE branch for both orderings, exactly as the dispatch writes it:
         # `cylinder_box` needed two because the primitive is asymmetric in its
         # operands, but the convex query is symmetric and returns `gi -> gj`
