@@ -172,6 +172,14 @@ struct Loaded(Movable):
     var joint_body: List[Int]
     var mesh_half: List[Float64]
     """Real half-extents per geom, 3 each — see `_measure_meshes`."""
+    var dirty: Bool
+    """Has the document changed since it was loaded?
+
+    ⚠ THE SCENE FILE READS THIS. A scene REFERENCES its base model by path, so
+    a scene written while the robot has been edited would reopen as the
+    ORIGINAL robot — the one silent loss `File > Save edited model` does not
+    cover. See `SceneDoc.retarget_asset`."""
+
     var diags: List[Diagnostic]
     """What is wrong with this model, refreshed on load and after a rebuild.
 
@@ -281,6 +289,7 @@ struct Loaded(Movable):
         # method call needs every field initialised — so the real list cannot
         # be built before it.
         self.diags = List[Diagnostic]()
+        self.dirty = False
         self.mesh_half = self._measure_meshes()
         for mi in range(MAX_GPU_MESHES):
             self.hull_verts += Int(Float64(
@@ -803,6 +812,12 @@ def run_studio(
         if delete_body_named.byte_length() > 0 and max_frames > 0 \
                 and frame == (2 * max_frames) // 3 and panel.want_save == 0:
             panel.want_save = 3
+        # ⚠ AND THE SCENE, which is a DIFFERENT question: it references the
+        # base model by path, so it has to be re-pointed at the edited copy or
+        # it reopens as the original robot.
+        if delete_body_named.byte_length() > 0 and max_frames > 0 \
+                and frame == (5 * max_frames) // 6 and panel.want_save == 0:
+            panel.want_save = 1
         renderer.set_show_hud(panel.show_hud)
         renderer.set_show_sites(panel.show_sites)
         if ui.quit:
@@ -825,6 +840,7 @@ def run_studio(
             # `test_edit_reaches_the_document`.
             try:
                 L.flat = apply_edit_to_document(L.fmd, L.m, L.flat, e)
+                L.dirty = True
             except de:
                 # ⚠ NAMED, NOT SWALLOWED. The locator can fail on an element
                 # with no name and no body to count within; the edit is still
@@ -870,6 +886,26 @@ def run_studio(
                 # from softfoot was an edit with no save.
                 var body = String("")
                 if which == 1:
+                    # ⚠⚠ A SCENE REFERENCES ITS BASE BY PATH. Writing one while
+                    # the robot has been edited produces a file that reopens as
+                    # the ORIGINAL robot — a composition pointing at the wrong
+                    # model, with nothing to say so. So the edited model is
+                    # written FIRST and the asset entry re-pointed at it:
+                    # §11.1's materialize-on-override, at asset granularity.
+                    if L.dirty:
+                        var side = L.path + ".edited.xml"
+                        var sf = open(side, "w")
+                        sf.write(L.flat)
+                        sf.close()
+                        if doc.retarget_asset(L.path, side):
+                            print("  wrote", side,
+                                  "and pointed the scene at it (the base model"
+                                  " has edits an <attach> cannot carry)")
+                        else:
+                            print("  wrote", side,
+                                  "— WARNING: the scene's asset table does not"
+                                  " name", L.path,
+                                  "so it still references the ORIGINAL")
                     body = doc.to_mjcf(String("scene"))
                 elif which == 3:
                     body = L.flat
@@ -929,6 +965,7 @@ def run_studio(
                     for note in r.notes:
                         print("   ", note)
                     var nxt = Loaded(L.path, r.xml, L.base_dir)
+                    nxt.dirty = True
                     # ⚠ THE POSE IS CARRIED BY NAME. A positional copy would
                     # take the knee's angle into the ankle — every address
                     # after a removed joint has shifted. See `studio/remap`.

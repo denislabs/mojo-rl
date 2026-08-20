@@ -36,7 +36,8 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.expander import expand_mjcf
 from mojo_rl.physics3d.studio.scene import (
-    SceneDoc, PROP_BOX, PROP_SPHERE, PROP_CAPSULE, PROP_CYLINDER,
+    SceneDoc, scene_from_base,
+    PROP_BOX, PROP_SPHERE, PROP_CAPSULE, PROP_CYLINDER,
 )
 
 comptime DT = DType.float64
@@ -168,6 +169,32 @@ def main() raises:
         if n == "capsule1":
             still = True
     t.truth(still, "the OTHER props keep their identity after a delete")
+
+    # ── materialize on override, at ASSET granularity — V2.5 ──────────────
+    # ⚠⚠ A SCENE REFERENCES ITS BASE BY PATH, and `<attach>` cannot express a
+    # per-instance change (plan §11.1). So a scene written while the robot has
+    # been edited reopens as the ORIGINAL robot — a composition pointing at
+    # the wrong model, with nothing to say so. The studio writes the edited
+    # copy and re-points the entry at it; this is that re-point.
+    print("--- retarget_asset ---")
+    var d3 = scene_from_base(String("mojo_rl/envs/ant/assets/ant.xml"))
+    var before3 = d3.to_mjcf(String("s"))
+    t.truth(before3.find(String("assets/ant.xml\"")) != -1,
+            "the scene names its base model")
+    t.truth(d3.retarget_asset(String("mojo_rl/envs/ant/assets/ant.xml"),
+                              String("/tmp/edited_ant.xml")),
+            "retarget_asset finds the entry")
+    var after3 = d3.to_mjcf(String("s"))
+    t.truth(after3.find(String("/tmp/edited_ant.xml")) != -1,
+            "and the scene now names the EDITED file")
+    # ⚠ NON-VACUITY: the original path must be GONE, not merely joined by the
+    # new one — a scene naming both would load whichever MuJoCo saw first.
+    t.truth(after3.find(String("mojo_rl/envs/ant/assets/ant.xml")) == -1,
+            "and no longer names the original")
+    # ⚠ AND THE CONTROL: a path the table does not hold must report False,
+    # or the studio would print "pointed the scene at it" having done nothing.
+    t.truth(not d3.retarget_asset(String("nope.xml"), String("x.xml")),
+            "an unknown path reports False (control)")
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:

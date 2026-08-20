@@ -267,6 +267,28 @@ struct SceneDoc(Movable):
         self.asset_names.append(name)
         self.asset_files.append(file)
 
+    def retarget_asset(mut self, file_from: String, file_to: String) -> Bool:
+        """Point an asset entry at a different file. Returns False if absent.
+
+        ⚠⚠ THIS IS §11.1's "MATERIALIZE ON OVERRIDE", at ASSET granularity.
+        `<attach>` has no way to express a per-instance change, so a scene that
+        merely REFERENCES a robot cannot carry an edit made to that robot's
+        tree — reopening the scene would silently load the original. Writing
+        the edited model beside the scene and re-pointing the entry at it is
+        the honest answer: the scene stays MuJoCo-loadable, stays a
+        composition, and names the file it actually means.
+
+        ⚠ ASSET granularity, not INSTANCE. Every instance of an edited asset
+        follows it, which is right for the one case the studio can currently
+        reach (a single opened robot) and is the thing to revisit when a scene
+        instantiates one asset twice and only one copy is edited.
+        """
+        for i in range(len(self.asset_files)):
+            if self.asset_files[i] == file_from:
+                self.asset_files[i] = file_to
+                return True
+        return False
+
     def unique_prefix(self, asset: String) -> String:
         """`cube1_`, `cube2_`, … — never colliding with a live instance.
 
