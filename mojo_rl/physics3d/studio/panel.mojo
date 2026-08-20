@@ -36,7 +36,7 @@ modes, and its **KEEP IT NON-GENERIC** rule.
 offset — the symptom points at the panel rather than at the bar.
 """
 
-from std.os import listdir
+from std.os import listdir, stat
 from std.pathlib import Path
 
 from mojo_rl.render.imgui import (
@@ -56,6 +56,10 @@ from .validate import Diagnostic, SEV_INFO, SEV_WARN, SEV_ERROR
 
 comptime SIDEBAR_W: Float32 = 300.0
 comptime RIGHT_W: Float32 = 340.0
+
+comptime SORT_NAME: Int = 0
+comptime SORT_SIZE: Int = 1
+comptime SORT_TIME: Int = 2
 
 comptime SEL_NONE: Int = 0
 comptime SEL_BODY: Int = 1
@@ -110,6 +114,11 @@ struct StudioPanel(Movable):
     var browser_open: Bool
     var browser_dir: String
     var browser_path: TextBuffer
+    var browser_sort: Int
+    """Which column the listing is ordered by — `SORT_NAME` / `SORT_SIZE` /
+    `SORT_TIME`. On the panel, not local to the browser, so the choice
+    survives closing and reopening the window (the directory already does)."""
+    var browser_desc: Bool
     var recent: List[String]
 
     def __init__(out self, drive: Int, scale: Float64, start_dir: String):
@@ -136,6 +145,8 @@ struct StudioPanel(Movable):
         self.browser_open = False
         self.browser_dir = start_dir
         self.browser_path = TextBuffer()
+        self.browser_sort = SORT_NAME
+        self.browser_desc = False
         self.recent = List[String]()
 
     def remember(mut self, path: String):
@@ -392,6 +403,145 @@ def ui_menu_bar(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+struct _Entry(Copyable, Movable):
+    """One row of the browser: what `listdir` gave plus what `stat` knows."""
+
+    var name: String
+    var size: Int
+    var mtime: Int
+    """Seconds since the epoch, UTC. 0 when `stat` refused."""
+    var is_dir: Bool
+
+    def __init__(out self, name: String, size: Int, mtime: Int, is_dir: Bool):
+        self.name = name
+        self.size = size
+        self.mtime = mtime
+        self.is_dir = is_dir
+
+
+def _fold(s: String) -> String:
+    """ASCII lowercase, for a CASE-INSENSITIVE name order.
+
+    ⚠ FINDER IS CASE-INSENSITIVE AND BYTE ORDER IS NOT. Raw `<` puts every
+    capitalised name before every lowercase one, so `Panda.xml` sorts above
+    `ant.xml` — which reads as "not sorted" rather than as "sorted by a rule
+    you did not expect". Names here are ASCII paths; a full Unicode fold would
+    be a different and much larger promise.
+    """
+    var out = String("")
+    for i in range(s.byte_length()):
+        var c = ord(String(s[byte = i : i + 1]))
+        if c >= 65 and c <= 90:
+            out += chr(c + 32)
+        else:
+            out += chr(c)
+    return out^
+
+
+def _p2(n: Int) -> String:
+    return String("0", n) if n < 10 else String(n)
+
+
+def _fmt_time(secs: Int) -> String:
+    """`YYYY-MM-DD HH:MM`, UTC, from a Unix timestamp.
+
+    ⚠ UTC, AND THE COLUMN SAYS SO. There is no timezone database reachable
+    from here, and quietly showing a UTC clock under a heading that reads
+    "modified" would have people comparing it against Finder and finding it
+    hours out.
+
+    Days-to-civil is Howard Hinnant's `civil_from_days` — exact for the whole
+    range, no lookup tables, and the same algorithm `<chrono>` uses.
+    """
+    if secs <= 0:
+        return String("--")
+    var days = secs // 86400
+    var rem = secs - days * 86400
+    var z = days + 719468
+    var era = (z if z >= 0 else z - 146096) // 146097
+    var doe = z - era * 146097
+    var yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    var y = yoe + era * 400
+    var doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    var mp = (5 * doy + 2) // 153
+    var d = doy - (153 * mp + 2) // 5 + 1
+    var m = mp + 3 if mp < 10 else mp - 9
+    if m <= 2:
+        y += 1
+    return String(y, "-", _p2(m), "-", _p2(d), " ",
+                  _p2(rem // 3600), ":", _p2((rem % 3600) // 60))
+
+
+def _fmt_size(n: Int, is_dir: Bool) -> String:
+    if is_dir:
+        return String("--")
+    if n < 1024:
+        return String(n, " B")
+    if n < 1024 * 1024:
+        return String((n + 512) // 1024, " KB")
+    return String((n + 524288) // (1024 * 1024), " MB")
+
+
+def _entry_before(a: _Entry, b: _Entry, key: Int, desc: Bool) -> Bool:
+    """Is `a` ordered before `b`?
+
+    ⚠⚠ DIRECTORIES FIRST, ALWAYS, AND THE DIRECTION DOES NOT FLIP THEM. A
+    reversed sort that also moved the folders to the bottom would put the
+    `.. up` target and the subdirectories below a hundred files — the browser
+    would look broken rather than reversed. Finder's "Folders on top" is the
+    same decision.
+
+    ⚠ AND NAME IS THE TIE-BREAK FOR EVERY KEY. Two files of the same size in
+    arbitrary order re-shuffle whenever the OS hands `listdir` a different
+    sequence, and a listing that changes under a stationary cursor is worse
+    than one sorted by something you did not pick.
+    """
+    if a.is_dir != b.is_dir:
+        return a.is_dir
+    var na = _fold(a.name)
+    var nb = _fold(b.name)
+    if key == SORT_SIZE and a.size != b.size:
+        return (a.size > b.size) if desc else (a.size < b.size)
+    if key == SORT_TIME and a.mtime != b.mtime:
+        return (a.mtime > b.mtime) if desc else (a.mtime < b.mtime)
+    if na == nb:
+        return False
+    return (na > nb) if (desc and key == SORT_NAME) else (na < nb)
+
+
+def _sort_entries(mut e: List[_Entry], key: Int, desc: Bool):
+    """Insertion sort. ⚠ O(n^2) ON PURPOSE — the directories this browser
+    opens hold tens of entries, and a hand-rolled comparator sort would be
+    more code to be wrong in than the thing it replaces."""
+    for i in range(1, len(e)):
+        var j = i
+        while j > 0 and _entry_before(e[j], e[j - 1], key, desc):
+            e.swap_elements(j, j - 1)
+            j -= 1
+
+
+def _sort_header(mut p: StudioPanel, label: String, key: Int) raises:
+    """One clickable column heading. Marks the active key and its direction.
+
+    ⚠ ASCII ARROWS. ImGui's default font atlas is Latin-1; a `\u25b2` renders
+    as a box, which looks like a missing glyph rather than like a sort marker.
+
+    ⚠ SIZE AND TIME OPEN **DESCENDING**, NAME ASCENDING. Picking "size" almost
+    always means "show me the big ones" and picking "modified" means "what did
+    I touch last"; opening those ascending makes the first click useless and
+    the second click the real one.
+    """
+    var l = label.copy()
+    if p.browser_sort == key:
+        l += " v" if p.browser_desc else " ^"
+    if ig_small_button(l):
+        if p.browser_sort == key:
+            p.browser_desc = not p.browser_desc
+        else:
+            p.browser_sort = key
+            p.browser_desc = key != SORT_NAME
+
+
 def ui_file_browser(mut p: StudioPanel, mut out: PanelOut) raises:
     """Pick an MJCF without relaunching. A floating window, not a panel.
 
@@ -426,13 +576,34 @@ def ui_file_browser(mut p: StudioPanel, mut out: PanelOut) raises:
     if ig_button(String(".. up")):
         p.browser_dir = _parent_dir(p.browser_dir)
 
-    if ig_begin_child(String("entries"), 0.0, 300.0, True):
+    # ── the column headings, which are also the sort control ─────────────
+    # ⚠ THE HEADER ROW IS OUTSIDE THE SCROLL CHILD so it stays put — with 65
+    # Menagerie directories the sort control has to be reachable after
+    # scrolling. The cost is that its content region starts a few pixels
+    # inside the child's, so `border=False` here and `True` below: one set of
+    # vertical rules, drawn where the rows are, rather than two sets a few
+    # pixels apart. The horizontal `ig_separator` is what reads as the header
+    # rule.
+    ig_columns(3, False)
+    ig_set_column_width(0, 300.0)
+    ig_set_column_width(1, 80.0)
+    _sort_header(p, String("name"), SORT_NAME)
+    ig_next_column()
+    _sort_header(p, String("size"), SORT_SIZE)
+    ig_next_column()
+    _sort_header(p, String("modified (UTC)"), SORT_TIME)
+    ig_next_column()
+    ig_columns(1)
+    ig_separator()
+
+    if ig_begin_child(String("entries"), 0.0, 276.0, True):
         # ⚠ ONE `listdir` PER FRAME, and it is fine: this window is open for
         # seconds, not for a session, and caching it would need invalidation
         # the moment the user creates a file. Measured directories here are
-        # tens of entries.
-        var dirs = List[String]()
-        var files = List[String]()
+        # tens of entries. The `stat` per row rides along on the same
+        # reasoning — `is_dir` was already one syscall per entry per frame.
+        var rows = List[_Entry]()
+        var readable = True
         try:
             var entries = listdir(Path(p.browser_dir))
             for e in entries:
@@ -440,25 +611,57 @@ def ui_file_browser(mut p: StudioPanel, mut out: PanelOut) raises:
                 if nm.startswith("."):
                     continue
                 var full = p.browser_dir + "/" + nm
-                if nm.endswith(".xml"):
-                    files.append(nm)
-                elif Path(full).is_dir():
-                    dirs.append(nm)
+                var is_x = nm.endswith(".xml")
+                var is_d = False
+                if not is_x:
+                    is_d = Path(full).is_dir()
+                    if not is_d:
+                        continue
+                var sz = 0
+                var mt = 0
+                try:
+                    var st = stat(Path(full))
+                    sz = Int(st.st_size)
+                    # ⚠⚠ THE FIELD IS `st_mtimespec`, NOT `st_mtime`.
+                    # `stat_result.write_to` PRINTS the label "st_mtime=",
+                    # so the repr names an attribute that does not exist —
+                    # reading the printout and typing what it said is a
+                    # compile error with a confusing message.
+                    mt = Int(st.st_mtimespec.tv_sec)
+                except:
+                    # ⚠ A ROW THAT CANNOT BE STATTED STILL LISTS. A broken
+                    # symlink or a permission hole must not remove a file
+                    # from a browser whose whole job is to show what is there.
+                    sz = 0
+                    mt = 0
+                rows.append(_Entry(nm, sz, mt, is_d))
         except:
+            readable = False
             ig_text_disabled(String("cannot read this directory"))
 
-        for i in range(len(dirs)):
+        _sort_entries(rows, p.browser_sort, p.browser_desc)
+
+        ig_columns(3, True)
+        ig_set_column_width(0, 300.0)
+        ig_set_column_width(1, 80.0)
+        for i in range(len(rows)):
             ig_push_id_int(i)
-            if ig_selectable(String("[dir] ", dirs[i])):
-                p.browser_dir = p.browser_dir + "/" + dirs[i]
+            var label = String("[dir] ", rows[i].name) if rows[i].is_dir \
+                else rows[i].name.copy()
+            if ig_selectable(label):
+                if rows[i].is_dir:
+                    p.browser_dir = p.browser_dir + "/" + rows[i].name
+                else:
+                    out.open_path = p.browser_dir + "/" + rows[i].name
+                    p.browser_open = False
+            ig_next_column()
+            ig_text_disabled(_fmt_size(rows[i].size, rows[i].is_dir))
+            ig_next_column()
+            ig_text_disabled(_fmt_time(rows[i].mtime))
+            ig_next_column()
             ig_pop_id()
-        for i in range(len(files)):
-            ig_push_id_int(100000 + i)
-            if ig_selectable(files[i]):
-                out.open_path = p.browser_dir + "/" + files[i]
-                p.browser_open = False
-            ig_pop_id()
-        if len(dirs) == 0 and len(files) == 0:
+        ig_columns(1)
+        if readable and len(rows) == 0:
             ig_text_disabled(String("no .xml here"))
     ig_end_child()
 
