@@ -50,6 +50,10 @@ from mojo_rl.physics3d.constants import (
     GEOM_ELLIPSOID,
 )
 from mojo_rl.physics3d.fields import Model, SpecFields, Dims, DimsLike
+from mojo_rl.physics3d.collision.native_multicontact import (
+    MC_MAX_POLYVERT,
+    MC_MAX_DEG,
+)
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
     compute_mesh_rbound_at,
@@ -1794,6 +1798,46 @@ def build_model_fields_from_flat[
             + String(mf.dims.get_nmesh_verts()) + ". These caps are Euler's formula for a"
             " CONVEX hull, so exceeding them means the hull or the polygon"
             " merge is wrong, not that the budget is too small."
+        )
+    # ⚠⚠ AND THE NARROW PHASE'S OWN TWO CAPS, SAID OUT LOUD. `MC_MAX_POLYVERT`
+    # and `MC_MAX_DEG` size the InlineArrays inside `native_multicontact`, and
+    # neither is a capacity of THIS tensor — they are comptime because a Metal
+    # kernel cannot size a local array from a model field, where MuJoCo carries
+    # `npolygonmax` / `nmeshdegmax` as runtime model fields with no cap at all.
+    #
+    # Exceeding either is NOT fatal: `_mesh_face` returns 0 and the caller
+    # emits the single EPA point, which is exactly the reference's own
+    # fallback when no faces line up. It is a LOST MANIFOLD, not a lost geom,
+    # and refusing to load a model over it would be worse than the degradation.
+    #
+    # ⚠ IT USED TO BE SILENT, AND THAT COST A REAL DEFECT. At the old cap of
+    # 16, 47 of Menagerie's 59 mesh-bearing scenes had at least one polygon it
+    # could not hold (the worst is robotiq_2f85's 144) and 39 had a vertex with
+    # more polygons than `MC_MAX_DEG` — so those pairs quietly fell back to one
+    # point. kinova_gen3, whose reset pose interpenetrates two 31-vertex-face
+    # hulls, was 4.4e-02 from MuJoCo at step one and 5.7e-12 once the faces
+    # fit. Print what was dropped; a bound nobody can see is a bound nobody
+    # raises.
+    var _mc_worst_pv = 0
+    var _mc_worst_deg = 0
+    for p in range(len(poly_vertnum)):
+        if poly_vertnum[p] > _mc_worst_pv:
+            _mc_worst_pv = poly_vertnum[p]
+    for v in range(len(polymap_num)):
+        if polymap_num[v] > _mc_worst_deg:
+            _mc_worst_deg = polymap_num[v]
+    if _mc_worst_pv > MC_MAX_POLYVERT or _mc_worst_deg > MC_MAX_DEG:
+        print(
+            "physics3d: a collision mesh exceeds the multi-contact caps —"
+            " widest face polygon", _mc_worst_pv, "vertices (MC_MAX_POLYVERT",
+            MC_MAX_POLYVERT, ") and busiest vertex", _mc_worst_deg,
+            "polygons (MC_MAX_DEG", MC_MAX_DEG, "). Those pairs fall back to"
+            " a SINGLE contact point where MuJoCo would clip a face manifold"
+            " of up to four. Matching the reference here needs at least",
+            _mc_worst_pv, "and", _mc_worst_deg,
+            "— but the constants are already at the largest pair a Metal"
+            " collision kernel compiles with, so going higher means moving"
+            " those buffers off the per-thread stack.",
         )
     for p in range(len(poly_vertadr)):
         var o = p * MODEL_MESH_POLY_SIZE

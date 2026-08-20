@@ -79,16 +79,47 @@ from ..fields import DimsLike
 comptime MC_FACE_TOL: Float64 = 0.99999872
 comptime MC_EDGE_TOL: Float64 = 0.00159999931
 
-# ⚠ THESE CAPS ARE CHECKED AT MODEL BUILD, NOT SILENTLY OBEYED HERE. They are
-# MuJoCo's `npolygonmax` / `nmeshdegmax`, which are runtime model fields there
-# and have to be compile-time here. `MC_MAX_POLYVERT` is the largest number of
-# vertices in one face polygon; `MC_MAX_DEG` the most polygons meeting at one
-# vertex. A clipped polygon can reach the sum of the two input sizes, hence the
-# separate `MC_CLIP_CAP`. Truncating instead of raising would shrink a contact
-# face and lose manifold points with one sign — the exact shape of the bug that
-# `NMESH_VERTS = 0` was.
-comptime MC_MAX_POLYVERT: Int = 16
-comptime MC_MAX_DEG: Int = 16
+# MuJoCo's `npolygonmax` / `nmeshdegmax`, which are RUNTIME model fields there
+# — sized per model, so the reference has no cap at all. Ours have to be
+# compile-time: a Metal kernel cannot size a local array from a model field.
+# `MC_MAX_POLYVERT` is the largest number of vertices in one face polygon;
+# `MC_MAX_DEG` the most polygons meeting at one vertex. A clipped polygon can
+# reach the sum of the two input sizes, hence the separate `MC_CLIP_CAP`.
+#
+# ⚠⚠ EXCEEDING EITHER IS A LOST MANIFOLD, AND IT USED TO BE SILENT. `_mesh_face`
+# returns 0 past the cap, which is this routine's own "the features do not line
+# up" answer, so the caller emitted the single EPA point — the reference's own
+# fallback, reached for a reason the reference does not have. At the previous
+# values of 16 and 16 that hit 47 of Menagerie's 59 mesh-bearing scenes on
+# polygon width and 39 on vertex degree; the tree's worst are robotiq_2f85's
+# 144-vertex face and flexiv_rizon4's degree-47 vertex. kinova_gen3, which
+# interpenetrates two 31- and 29-vertex faces at its own keyframe, was
+# 4.4e-02 from MuJoCo at step one and 5.7e-12 once they fit.
+#
+# ⚠⚠ AND METAL SETS THE CEILING. These arrays are per-thread stack in the
+# collision kernel. Bisected on this machine, `test_plane_mesh_fields` compiles
+# at (56, 48) and dies at (64, 48) and (56, 64) with "Compute function exceeds
+# available stack space". So 56/48 is the largest pair that keeps the GPU path
+# alive, and the CPU takes the same numbers rather than quietly computing a
+# manifold the GPU cannot. That covers EVERY vertex degree in the tree and 36
+# of 59 scenes outright, against 12 before; the widest faces (robotiq_2f85's
+# 144) still degrade. Raising further means moving these buffers off the stack
+# into a scratch tensor — a signature change, not a constant change.
+#
+# ⚠ THE COST IS THE WORK, NOT THE BUFFERS. A pair that never reaches the
+# manifold path never touches them: measured across a 10x raise, barkour
+# 106.1 -> 105.7 us/step and spot 115.7 -> 115.5, interleaved, min of 3.
+# kinova pays 55.4 -> 70.8 because it now clips a manifold and solves four
+# rows.
+#
+# ⚠ AN EARLIER COMMENT HERE CLAIMED THESE WERE "CHECKED AT MODEL BUILD". They
+# were not. `parser/fields_build.mojo` now prints the widest polygon and the
+# busiest vertex whenever a model passes either — a print and not a raise,
+# because unlike a missing hull this degrades to a working simulation and
+# refusing to load a third-party model over it would be worse.
+# See `tests/physics3d/test_multicontact_polygon_caps_vs_mujoco.mojo`.
+comptime MC_MAX_POLYVERT: Int = 56
+comptime MC_MAX_DEG: Int = 48
 comptime MC_CLIP_CAP: Int = 2 * MC_MAX_POLYVERT
 
 # ⚠⚠ OFF: THIS PATH IS NOT CORRECT YET AND MUST NOT DRIVE THE ENGINE.
