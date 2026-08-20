@@ -713,6 +713,7 @@ def run_studio(
     var actions = List[Float64]()
     var act = List[Scalar[DT]]()
     var held_reported = False
+    var browser_reported = False
     var frame = 0
     var smoke_nbody0 = 0
     var smoke_nbody1 = 0
@@ -835,8 +836,30 @@ def run_studio(
         # before it would be overwritten and the smoke path would silently
         # never fire, which is exactly the shape of a test that proves
         # nothing.
+        # ⚠ THE BROWSER IS DRAWN FIRST, for the quarter of the run before
+        # the swap fires. `test_browser_sort` gates the ORDER and the two
+        # derived columns; what it cannot reach is the ImGui call sequence —
+        # nested `ig_columns` inside a scroll child, a selectable in column 0,
+        # a pushed id per row. Those fail as an assert in the shim, not as a
+        # wrong string, so the only way to cover them is to draw the window.
+        if swap_to.byte_length() > 0 and max_frames > 0 \
+                and frame >= max_frames // 4 and frame < max_frames // 2:
+            panel.browser_open = True
+        # ⚠ REPORTED, NOT ASSUMED. "did not crash" reads identically on a
+        # browser that enumerated nothing, so the smoke prints the row count
+        # once — the one number that says the listing ran.
+        # ⚠ ON THE FIRST FRAME IT IS AVAILABLE, not on the frame the browser
+        # is opened. `browser_open` is set below, AFTER `build_ui` has already
+        # run for this frame, so the count only exists from the NEXT one — a
+        # print keyed to the opening frame fires while the field is still -1
+        # and reports nothing, which is how this was first written.
+        if max_frames > 0 and ui.browser_rows >= 0 and not browser_reported:
+            browser_reported = True
+            print("  smoke: browser listed", ui.browser_rows, "row(s) in",
+                  panel.browser_dir)
         if swap_to.byte_length() > 0 and max_frames > 0 \
                 and frame == max_frames // 2:
+            panel.browser_open = False
             ui.open_path = swap_to
         # ⚠ THE SMOKE PATH FOR THE STRUCTURAL DELETE, and it goes through the
         # SAME `PanelOut.del_element` a click sets — including the selection,

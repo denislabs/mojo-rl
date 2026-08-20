@@ -215,6 +215,13 @@ struct PanelOut(Copyable, Movable):
     var open_path: String
     """A model to LOAD, or "" for none. The swap is the studio's to perform:
     it owns the renderer handoff and every container that has to be rebuilt."""
+    var browser_rows: Int
+    """How many rows the file browser listed this frame, -1 when it is closed.
+
+    ⚠ IT EXISTS SO THE HEADLESS SMOKE IS NOT VACUOUS. Drawing the browser
+    proves the ImGui call sequence does not assert; it proves nothing about
+    whether the listing found anything, and "did not crash" reads identically
+    on a directory that enumerated zero entries."""
 
     def __init__(out self):
         self.reset = False
@@ -233,6 +240,7 @@ struct PanelOut(Copyable, Movable):
         self.edit_field = -1
         self.edit_value = 0.0
         self.open_path = String("")
+        self.browser_rows = -1
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -640,6 +648,7 @@ def ui_file_browser(mut p: StudioPanel, mut out: PanelOut) raises:
             ig_text_disabled(String("cannot read this directory"))
 
         _sort_entries(rows, p.browser_sort, p.browser_desc)
+        out.browser_rows = len(rows)
 
         ig_columns(3, True)
         ig_set_column_width(0, 300.0)
