@@ -91,10 +91,13 @@ from mojo_rl.physics3d.studio.structure import (
     delete_body, delete_geom, add_body, add_joint, rename_element,
     reparent_body,
 )
-from mojo_rl.physics3d.studio.remap import remap_state
+from mojo_rl.physics3d.studio.remap import (
+    remap_state, pose_snapshot, apply_pose_snapshot,
+)
+from mojo_rl.physics3d.studio.history import History, edit_key
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.studio.edit import (
-    Edit, EditLog, apply_edit, apply_edit_to_document, needs_rebuild,
+    Edit, apply_edit, apply_edit_to_document, needs_rebuild, field_name,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Y, F_POS_Z, F_SIZE_0, F_SIZE_1, F_SIZE_2,
     F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
@@ -261,7 +264,7 @@ struct Loaded(Movable):
 
         self.dims = dims
         self.m = m^
-        self.sf = spec_fields_runtime[DT](self.fmd, self.dims)
+        self.sf = spec_fields_runtime[DT](self.fmd, self.dims, self.m)
         self.d = Data[DT, DynDims, 1](self.dims)
         self.integ_pyr = StudioIntegPyr(self.dims)
         self.integ_ell = StudioIntegEll(self.dims)
@@ -597,6 +600,19 @@ def _label_of(names: List[String], i: Int) -> String:
     return String("")
 
 
+def _sel_label(L: Loaded, p: StudioPanel) -> String:
+    """What the selection is called, for the Undo menu. `#index` when unnamed.
+
+    ⚠ MOST GEOMS IN THIS TREE HAVE NO NAME, and "size on " with nothing after
+    it reads as a bug in the menu rather than as an unnamed element.
+    """
+    var n = _label_of(L.fmd.geom_names, p.sel_index) \
+        if p.sel_kind == SEL_GEOM else _label_of(L.fmd.body_names, p.sel_index)
+    if n.byte_length() > 0:
+        return String("'", n, "'")
+    return String("#", p.sel_index)
+
+
 def _sync_pose(
     mut L: Loaded, mut positions: List[Vec3], mut quats: List[Quat]
 ) raises:
@@ -635,10 +651,10 @@ def _sync_pose(
 def run_studio(
     first: String, drive: Int, scale: Float64, max_frames: Int = 0,
     swap_to: String = String(""), delete_body_named: String = String(""),
-    smoke_add: String = String(""),
+    smoke_add: String = String(""), smoke_undo: Bool = False,
 ) raises:
     """`swap_to` is the SMOKE PATH for File > Open, `delete_body_named` for
-    the structural delete.
+    the structural delete, `smoke_undo` for undo/redo across one.
 
     ⚠ IT EXISTS BECAUSE A MENU CANNOT BE CLICKED FROM A SCRIPT, and the swap
     is the riskiest code in this file: it detaches a live window, rebuilds
@@ -681,12 +697,20 @@ def run_studio(
     var act = List[Scalar[DT]]()
     var held_reported = False
     var frame = 0
+    var smoke_nbody0 = 0
+    var smoke_nbody1 = 0
     var positions = List[Vec3]()
     var quats = List[Quat]()
     var keys = List[String]()
     var vals = List[Float64]()
     var editable = List[Int]()
-    var log = EditLog()
+
+    # ⚠⚠ ONE UNDO STACK FOR BOTH TIERS — V2.9. The `EditLog` this replaced
+    # replayed dims-preserving edits onto a fresh parse, which cannot express
+    # a delete, so every structural edit RESET it: the most destructive
+    # operation here had no undo at all. `Loaded` is a pure function of
+    # (document, base_dir), so a document snapshot restores either kind.
+    var hist = History()
 
     # ⚠ THE SCENE DOCUMENT IS BUILT AROUND WHATEVER WAS OPENED. A plain model
     # becomes an ASSET of a one-instance scene, so a robot and a prop are
@@ -694,6 +718,10 @@ def run_studio(
     # "scene mode". The opened file is never rewritten; the scene is a new
     # document that REFERENCES it.
     var doc = scene_from_base(first)
+    # ⚠ THE STACK IS SEEDED WITH THE FILE AS OPENED, not left empty. An empty
+    # stack makes the FIRST edit the floor — undo it and there is nowhere to
+    # go, so the state the user started from is the one state unreachable.
+    hist.push(L.flat, L.base_dir, doc, String("opened"))
 
     var t = 0
     var last_ncon = 0
@@ -783,7 +811,8 @@ def run_studio(
                 Float32(renderer.renderer.height),
                 L.fmd.body_names, L.fmd.geom_names, L.fmd.joint_names,
                 L.body_parent, L.geom_body, L.joint_body, keys, vals,
-                editable, L.diags, log.can_undo(), log.can_redo(),
+                editable, L.diags, hist.can_undo(), hist.can_redo(),
+                hist.undo_label(), hist.redo_label(),
             )
         # ⚠ AFTER `build_ui`, WHICH RETURNS A FRESH `PanelOut` — injecting
         # before it would be overwritten and the smoke path would silently
@@ -810,12 +839,41 @@ def run_studio(
                 ui.del_element = True
             else:
                 print("  smoke: no body named", delete_body_named)
+            # ⚠ CAPTURED BEFORE THE DELETE LANDS, from the LIVE model rather
+            # than from the file: an expected value re-derived later would
+            # move with whatever bug it was meant to catch.
+            smoke_nbody0 = len(L.fmd.bodies) + 1
         # ⚠ AND THE SAVE, in the same run. A structural edit whose result
         # cannot be written back is not an edit anyone can use, and the file
         # this writes is exactly what `test_structural_edit` hands to MuJoCo.
+        # ⚠ NOT WHEN THE UNDO SMOKE IS DRIVING — it needs the same frames.
         if delete_body_named.byte_length() > 0 and max_frames > 0 \
+                and not smoke_undo \
                 and frame == (2 * max_frames) // 3 and panel.want_save == 0:
             panel.want_save = 3
+        # ── the UNDO smoke — V2.9 ─────────────────────────────────────────
+        # ⚠⚠ THIS DRIVES `PanelOut`/`StudioPanel` EXACTLY AS THE MENU DOES.
+        # `test_undo_history` gates the STACK; what it cannot reach is the
+        # wiring — that the rebuild uses the entry's own `base_dir`, that the
+        # pose is remapped, that the renderer is handed the new
+        # `RenderFields`, that `SceneDoc` comes back. Every one of those lives
+        # here, and a library test would have proved none of them.
+        if smoke_undo and delete_body_named.byte_length() > 0 \
+                and max_frames > 0:
+            if frame == max_frames // 2:
+                print("  smoke: undo")
+                panel.want_undo = 1
+            elif frame == (2 * max_frames) // 3:
+                # ⚠ PRINTED, AND THE EXPECTED VALUE PRINTED BESIDE IT. A
+                # smoke that logged only the outcome would read the same
+                # whether the undo restored the model or never ran.
+                print("  smoke: nbody after undo =", len(L.fmd.bodies) + 1,
+                      "(as opened:", smoke_nbody0, ")")
+                print("  smoke: redo")
+                panel.want_undo = 2
+            elif frame == (5 * max_frames) // 6:
+                print("  smoke: nbody after redo =", len(L.fmd.bodies) + 1,
+                      "(after the delete:", smoke_nbody1, ")")
         # ⚠ ADD AND RENAME GO THROUGH THE SAME `PanelOut` FIELDS a click sets,
         # including the name box — `out.new_name` is what the handler reads,
         # so a smoke that set the name anywhere else would test a path the
@@ -841,6 +899,7 @@ def run_studio(
         # base model by path, so it has to be re-pointed at the edited copy or
         # it reopens as the original robot.
         if delete_body_named.byte_length() > 0 and max_frames > 0 \
+                and not smoke_undo \
                 and frame == (5 * max_frames) // 6 and panel.want_save == 0:
             panel.want_save = 1
         renderer.set_show_hud(panel.show_hud)
@@ -857,7 +916,6 @@ def run_studio(
             var tgt = TARGET_GEOM if panel.sel_kind == SEL_GEOM \
                 else TARGET_BODY
             var e = Edit(tgt, panel.sel_index, ui.edit_field, ui.edit_value)
-            log.push(e)
             apply_edit(L.fmd, L.m, e)
             # ⚠⚠ AND INTO THE DOCUMENT — the third copy. Without this the sim
             # and the inspector show the edit and `File > Save edited model`
@@ -866,6 +924,16 @@ def run_studio(
             try:
                 L.flat = apply_edit_to_document(L.fmd, L.m, L.flat, e)
                 L.dirty = True
+                # ⚠ COALESCED BY (target, index, field). A drag emits a value
+                # every frame it is held; one snapshot per frame would be a
+                # hundred undo steps that each appear to do nothing, and a
+                # hundred copies of the document. The key folds the drag into
+                # one step and a DIFFERENT field starts a new one.
+                hist.push(L.flat, L.base_dir, doc,
+                          String(field_name(ui.edit_field), " on ")
+                          + _sel_label(L, panel),
+                          edit_key(tgt, panel.sel_index, ui.edit_field),
+                          pose_snapshot(L.fmd, L.d))
             except de:
                 # ⚠ NAMED, NOT SWALLOWED. The locator can fail on an element
                 # with no name and no body to count within; the edit is still
@@ -948,26 +1016,58 @@ def run_studio(
                 print("  save failed:", e)
 
         if panel.want_undo != 0:
-            # ⚠ UNDO IS A REPLAY FROM A FRESH PARSE, not an inverse — see
-            # `EditLog`. It costs 0.2-14 ms, which is a click.
-            if panel.want_undo == 1:
-                log.undo()
-            else:
-                log.redo()
+            # ⚠⚠ UNDO IS A REBUILD FROM A SNAPSHOT — V2.9. The previous
+            # version re-parsed `L.path` and REPLAYED an `EditLog` onto it,
+            # which can only express dims-preserving edits; a delete, an add,
+            # a rename or a reparent reset the log, so the destructive half of
+            # the studio was not undoable at all. The document is now
+            # authoritative, so one snapshot restores either kind, and the
+            # cost is the same rebuild the old path already paid.
+            # ⚠ THE OUTGOING POSE GOES IN WITH THE MOVE. It is the only
+            # moment this state's joint values exist; one tool call later
+            # `L` has been replaced.
+            var out_pose = pose_snapshot(L.fmd, L.d)
+            var moved = hist.undo(out_pose) if panel.want_undo == 1 \
+                else hist.redo(out_pose)
+            var what = String("undo") if panel.want_undo == 1 \
+                else String("redo")
             panel.want_undo = 0
-            try:
-                var fresh = Loaded(L.path)
-                fresh.flat = log.replay_all(fresh.fmd, fresh.m, fresh.flat)
-                build_model_runtime[DT](fresh.fmd, fresh.dims, fresh.m)
-                fresh.rf = build_render_fields(
-                    fresh.fmd, fresh.flat, fresh.base_dir
-                )
-                fresh.mesh_half = fresh._measure_meshes()
-                renderer.set_render_fields(fresh.rf.copy())
-                L = fresh^
-                _sync_pose(L, positions, quats)
-            except e:
-                print("  undo failed:", e)
+            # ⚠ NOTHING HAPPENS AT THE FLOOR. Rebuilding on a cursor that did
+            # not move would throw the live pose away and re-run the remap for
+            # a document identical to the current one — an "undo" that
+            # visibly resets the robot while having undone nothing.
+            if not moved:
+                print("  nothing to", what)
+            else:
+                try:
+                    var fresh = Loaded(L.path, hist.doc(), hist.base_dir())
+                    # ⚠ THE POSE IS CARRIED BY NAME, exactly as after a
+                    # delete. An undo changes the model's SHAPE — that is the
+                    # whole point of this change — so every qpos address may
+                    # have moved.
+                    var rep = remap_state(L.fmd, L.d, fresh.fmd, fresh.d)
+                    # ⚠⚠ AND THEN WHAT THE LIVE STATE COULD NOT ACCOUNT FOR,
+                    # FROM THE SNAPSHOT. Undoing a delete brings joints back
+                    # that the live model does not have, so `remap_state`
+                    # leaves them at `qpos0` and the limb reappears in a
+                    # different attitude from the one it was deleted in. The
+                    # live state still wins everywhere it has an answer, so
+                    # this does not rewind a running sim.
+                    apply_pose_snapshot(hist.pose(), fresh.fmd, fresh.d, rep)
+                    # ⚠ AND THE SCENE COMES BACK TOO. `SceneDoc` is separate
+                    # state and `to_mjcf` is one-way, so restoring the text
+                    # without it would leave the next `add prop` regenerating
+                    # from a composition the user had just undone.
+                    doc = hist.scene()
+                    fresh.dirty = hist.can_undo()
+                    print(" ", what, "—", hist.label(), "|", rep.summary())
+                    # ⚠ THE SELECTION CANNOT SURVIVE: indices shift.
+                    panel.clear_selection()
+                    renderer.set_render_fields(fresh.rf.copy())
+                    L = fresh^
+                    _sync_pose(L, positions, quats)
+                except e:
+                    print(" ", what, "failed:", e)
 
         # ── add / rename — V2.3, through the same rebuild as a delete ─────
         # ⚠ ONE HANDLER, ONE REBUILD PATH. Each of these regenerates the
@@ -1050,13 +1150,15 @@ def run_studio(
                 print(" ", struct_note)
                 var nxt2 = Loaded(L.path, struct_xml, L.base_dir)
                 nxt2.dirty = True
+                var out2 = pose_snapshot(L.fmd, L.d)
                 var rep2 = remap_state(L.fmd, L.d, nxt2.fmd, nxt2.d)
                 print("   ", rep2.summary())
                 panel.clear_selection()
                 renderer.set_render_fields(nxt2.rf.copy())
                 L = nxt2^
                 _sync_pose(L, positions, quats)
-                log = EditLog()
+                hist.push(L.flat, L.base_dir, doc, struct_note,
+                          String(""), out2)
             except e:
                 print("  the edit did not load:", e)
 
@@ -1085,6 +1187,7 @@ def run_studio(
                     # ⚠ THE POSE IS CARRIED BY NAME. A positional copy would
                     # take the knee's angle into the ankle — every address
                     # after a removed joint has shifted. See `studio/remap`.
+                    var out1 = pose_snapshot(L.fmd, L.d)
                     var rep = remap_state(L.fmd, L.d, nxt.fmd, nxt.d)
                     print("   ", rep.summary())
                     # ⚠ THE SELECTION CANNOT SURVIVE: indices shift, and a
@@ -1093,13 +1196,17 @@ def run_studio(
                     renderer.set_render_fields(nxt.rf.copy())
                     L = nxt^
                     _sync_pose(L, positions, quats)
-                    log = EditLog()
+                    hist.push(L.flat, L.base_dir, doc,
+                              String("deleted '", victim, "'"),
+                              String(""), out1)
+                    smoke_nbody1 = len(L.fmd.bodies) + 1
             except e:
                 print("  delete failed:", e)
 
         # ── props: a STRUCTURAL edit, so the whole model is rebuilt ───────
         if ui.add_prop >= 0 or ui.dup_prop or ui.del_prop:
             var changed = True
+            var prop_note = String("prop edit")
             if ui.add_prop >= 0:
                 # In front of the camera, at a size that reads on screen.
                 var cam2 = renderer.renderer.camera.copy()
@@ -1107,12 +1214,15 @@ def run_studio(
                 var at = cam2.target + fwd * 0.0
                 _ = doc.add_prop(ui.add_prop, 0.05, 0.05, 0.05,
                                  at.x, at.y, at.z + 0.3)
+                prop_note = String("added a prop")
             elif ui.dup_prop and panel.sel_kind == SEL_BODY:
                 _ = doc.duplicate_prop(
                     _label_of(L.fmd.body_names, panel.sel_index)
                 )
+                prop_note = String("duplicated a prop")
             elif ui.del_prop and panel.sel_kind == SEL_BODY:
                 doc.remove_prop(_label_of(L.fmd.body_names, panel.sel_index))
+                prop_note = String("removed a prop")
             else:
                 changed = False
             if changed:
@@ -1125,6 +1235,7 @@ def run_studio(
                     #   .../boston_dynamics_spot/references/.../toddlerbot/...
                     # Two different bases for one path, which is the oldest
                     # bug shape in this file.
+                    var out3 = pose_snapshot(L.fmd, L.d)
                     var nxt = Loaded(
                         L.path, doc.to_mjcf(String("scene")), String("")
                     )
@@ -1136,7 +1247,13 @@ def run_studio(
                     renderer.set_render_fields(nxt.rf.copy())
                     L = nxt^
                     _sync_pose(L, positions, quats)
-                    log = EditLog()
+                    # ⚠ THE SCENE GOES IN WITH THE DOCUMENT. A prop edit is
+                    # the one edit that changes `doc` rather than the robot's
+                    # own text, and an entry holding one without the other
+                    # would restore half of it — which is why `HistoryEntry`
+                    # carries a `SceneDoc` at all.
+                    hist.push(L.flat, L.base_dir, doc, prop_note,
+                              String(""), out3)
                 except e:
                     print("  prop edit failed:", e)
 
@@ -1293,4 +1410,6 @@ def main() raises:
     var smoke_add = String("")
     if len(args) > 7:
         smoke_add = String(args[7])
-    run_studio(path, drive, scale, frames, swap_to, del_body, smoke_add)
+    var smoke_undo = len(args) > 8 and String(args[8]) == "undo"
+    run_studio(path, drive, scale, frames, swap_to, del_body, smoke_add,
+               smoke_undo)

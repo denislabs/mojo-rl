@@ -23,7 +23,13 @@ from .structure import (
     delete_element, leftover_dangling, find_named,
     add_body, add_geom, add_joint, rename_element, reparent_body,
 )
-from .remap import remap_state, RemapReport, joint_qpos_adr, joint_dof_adr
+from .history import (
+    History, HistoryEntry, edit_key, HISTORY_CAP,
+)
+from .remap import (
+    remap_state, RemapReport, joint_qpos_adr, joint_dof_adr,
+    PoseSnapshot, pose_snapshot, apply_pose_snapshot,
+)
 from .edit import (
     Edit, EditLog, apply_edit, needs_rebuild, field_name,
     TARGET_GEOM, TARGET_BODY,

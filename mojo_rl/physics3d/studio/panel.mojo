@@ -294,7 +294,11 @@ def _parent_dir(p: String) -> String:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ui_menu_bar(mut p: StudioPanel, mut out: PanelOut) raises -> Float32:
+def ui_menu_bar(
+    mut p: StudioPanel, mut out: PanelOut,
+    can_undo: Bool = False, can_redo: Bool = False,
+    undo_label: String = String(""), redo_label: String = String(""),
+) raises -> Float32:
     """The top strip. Returns the height it took, which both panels must skip.
 
     ⚠ RETURNING THE HEIGHT rather than hardcoding it: the bar's height follows
@@ -329,9 +333,25 @@ def ui_menu_bar(mut p: StudioPanel, mut out: PanelOut) raises -> Float32:
                 out.quit = True
             ig_end_menu()
         if ig_begin_menu(String("Edit")):
-            if ig_menu_item(String("Undo"), String("")) and p.want_undo == 0:
+            # ⚠ ENABLED FROM THE STACK, AND LABELLED WITH WHAT IT WILL TAKE
+            # BACK. `can_undo`/`can_redo` were passed in from the first
+            # version of this panel and read by nothing: both items were
+            # always live, so clicking Undo on a fresh file looked like an
+            # undo that did nothing rather than like an empty stack. Naming
+            # the edit matters more here than in most editors — a structural
+            # undo can restore a whole subtree, and "Undo deleted 'bthigh'"
+            # is the difference between confidence and a guess.
+            var ul = String("Undo")
+            if undo_label.byte_length() > 0:
+                ul += " " + undo_label
+            var rl = String("Redo")
+            if redo_label.byte_length() > 0:
+                rl += " " + redo_label
+            if ig_menu_item(ul, String(""), False, can_undo) \
+                    and p.want_undo == 0:
                 p.want_undo = 1
-            if ig_menu_item(String("Redo"), String("")) and p.want_undo == 0:
+            if ig_menu_item(rl, String(""), False, can_redo) \
+                    and p.want_undo == 0:
                 p.want_undo = 2
             ig_end_menu()
         if ig_begin_menu(String("Simulation")):
@@ -901,10 +921,12 @@ def build_ui(
     diags: List[Diagnostic],
     can_undo: Bool = False,
     can_redo: Bool = False,
+    undo_label: String = String(""),
+    redo_label: String = String(""),
 ) raises -> PanelOut:
     """The whole UI for one frame. See the module header for the layout."""
     var out = PanelOut()
-    var y0 = ui_menu_bar(p, out)
+    var y0 = ui_menu_bar(p, out, can_undo, can_redo, undo_label, redo_label)
     var h = win_h - y0
     ui_options(p, out, path, step_i, ncon, contact_budget, step_us, y0, h)
     ui_right_panel(p, body_names, geom_names, joint_names, body_parent,

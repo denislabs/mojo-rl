@@ -219,7 +219,7 @@ struct Instance(Copyable, Movable):
         self.qz = 0.0
 
 
-struct SceneDoc(Movable):
+struct SceneDoc(Copyable, Movable):
     """A scene: the base model's own text, an asset table, and instances.
 
     ⚠ THE BASE IS TEXT, NOT A PARSE. A scene composes assets around a robot

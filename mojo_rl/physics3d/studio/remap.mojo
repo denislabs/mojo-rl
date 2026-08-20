@@ -71,18 +71,36 @@ struct RemapReport(Copyable, Movable):
     """Joints that fell back to the reference pose (new, renamed or retyped)."""
     var dropped: Int
     """Joints in the OLD model with no counterpart in the new one."""
+    var restored: Int
+    """Joints filled from a POSE SNAPSHOT rather than from the live state —
+    see `apply_pose_snapshot`. Zero unless the caller offered one."""
+    var carried_mask: List[Bool]
+    """Per NEW joint: did the live state account for it?
 
-    def __init__(out self, carried: Int, reset: Int, dropped: Int):
+    ⚠ THE MASK IS THE REASON UNDO CAN RESTORE A DELETED LEG'S POSE. "which
+    slots are still at the reference" cannot be recovered by inspecting
+    `qpos` afterwards — a joint whose live value happens to equal `qpos0` is
+    indistinguishable from one that was never written. It has to be recorded
+    where it is known."""
+
+    def __init__(out self, carried: Int, reset: Int, dropped: Int,
+                 carried_mask: List[Bool]):
         self.carried = carried
         self.reset = reset
         self.dropped = dropped
+        self.restored = 0
+        self.carried_mask = carried_mask.copy()
 
     def summary(self) -> String:
-        return (
+        var s = (
             String(self.carried) + " joint(s) kept their pose, "
             + String(self.reset) + " reset to the reference, "
             + String(self.dropped) + " gone with the edit"
         )
+        if self.restored > 0:
+            s += String(" (", self.restored, " of the reset came back from"
+                        " the snapshot)")
+        return s^
 
 
 def _index_of(names: List[String], want: String) -> Int:
@@ -115,6 +133,9 @@ def remap_state(
     var carried = 0
     var reset = 0
     var matched_old = 0
+    var mask = List[Bool]()
+    for _ in range(len(new_fmd.joints)):
+        mask.append(False)
 
     for nj in range(len(new_fmd.joints)):
         var name = new_fmd.joint_names[nj] if nj < len(new_fmd.joint_names) \
@@ -130,9 +151,120 @@ def remap_state(
             continue
         matched_old += 1
         carried += 1
+        mask[nj] = True
         for k in range(new_fmd.joints[nj].nq):
             new_d.qpos.data[new_q[nj] + k] = old_d.qpos.data[old_q[oj] + k]
         for k in range(new_fmd.joints[nj].nv):
             new_d.qvel.data[new_v[nj] + k] = old_d.qvel.data[old_v[oj] + k]
 
-    return RemapReport(carried, reset, len(old_fmd.joints) - matched_old)
+    return RemapReport(carried, reset, len(old_fmd.joints) - matched_old,
+                       mask)
+
+
+# =============================================================================
+# The pose of what came BACK — V2.9
+# =============================================================================
+
+
+struct PoseSnapshot(Copyable, Movable):
+    """A model's joints and their live values, keyed by name.
+
+    ⚠⚠ WHY THIS EXISTS. Undo restores a deleted body, and `remap_state` fills
+    the new model from the LIVE one — which no longer contains the joints that
+    were deleted. So the leg came back at `qpos0` while the rest of the robot
+    stayed where it was: half the pose from now, half from the reference, and
+    a limb visibly popping into a different attitude on undo.
+
+    ⚠ A `FlatModelDef` CANNOT BE THE SNAPSHOT. It is `Movable` and not
+    `Copyable` — the same constraint that made `EditLog` a replay rather than
+    a snapshot in the first place. All that is needed to place a value is the
+    joint's NAME, its TYPE and its width, so that is what this holds.
+    """
+
+    var names: List[String]
+    var types: List[Int]
+    var nq: List[Int]
+    var nv: List[Int]
+    var qpos: List[Float64]
+    var qvel: List[Float64]
+
+    def __init__(out self):
+        self.names = List[String]()
+        self.types = List[Int]()
+        self.nq = List[Int]()
+        self.nv = List[Int]()
+        self.qpos = List[Float64]()
+        self.qvel = List[Float64]()
+
+
+def pose_snapshot(
+    fmd: FlatModelDef, d: Data[DT, DynDims, 1]
+) -> PoseSnapshot:
+    """Capture every joint's live `qpos`/`qvel`, packed per joint."""
+    var s = PoseSnapshot()
+    var qa = joint_qpos_adr(fmd)
+    var va = joint_dof_adr(fmd)
+    for j in range(len(fmd.joints)):
+        s.names.append(
+            fmd.joint_names[j].copy() if j < len(fmd.joint_names)
+            else String("")
+        )
+        s.types.append(fmd.joints[j].jnt_type)
+        s.nq.append(fmd.joints[j].nq)
+        s.nv.append(fmd.joints[j].nv)
+        for k in range(fmd.joints[j].nq):
+            s.qpos.append(Float64(d.qpos.data[qa[j] + k]))
+        for k in range(fmd.joints[j].nv):
+            s.qvel.append(Float64(d.qvel.data[va[j] + k]))
+    return s^
+
+
+def apply_pose_snapshot(
+    snap: PoseSnapshot,
+    new_fmd: FlatModelDef,
+    mut new_d: Data[DT, DynDims, 1],
+    mut rep: RemapReport,
+):
+    """Fill the slots the LIVE state could not account for, from `snap`.
+
+    ⚠⚠ ONLY THE UNCARRIED SLOTS, AND THAT ORDERING IS THE WHOLE DESIGN. The
+    live state wins wherever it has an answer, so an undo does NOT rewind the
+    running sim: the robot stays where it is and only the parts that just came
+    back from the dead take their old values. Applying the snapshot to
+    everything would teleport the entire model to where it stood at the edit,
+    which in a running sim is a bigger surprise than the bug it fixes.
+
+    ⚠ NAME **AND** TYPE, as in `remap_state` — the same guard, because the
+    same "free joint became a hinge" case writes seven numbers into a slot
+    that holds one.
+    """
+    var qa = joint_qpos_adr(new_fmd)
+    var va = joint_dof_adr(new_fmd)
+    # Where each snapshot joint's values start, in the packed lists.
+    var sq = List[Int]()
+    var sv = List[Int]()
+    var q = 0
+    var v = 0
+    for j in range(len(snap.names)):
+        sq.append(q)
+        sv.append(v)
+        q += snap.nq[j]
+        v += snap.nv[j]
+
+    for nj in range(len(new_fmd.joints)):
+        if nj < len(rep.carried_mask) and rep.carried_mask[nj]:
+            continue
+        var name = new_fmd.joint_names[nj] if nj < len(new_fmd.joint_names) \
+            else String("")
+        var sj = _index_of(snap.names, name)
+        if sj == -1:
+            continue
+        if snap.types[sj] != new_fmd.joints[nj].jnt_type:
+            continue
+        for k in range(new_fmd.joints[nj].nq):
+            new_d.qpos.data[qa[nj] + k] = Scalar[DT](snap.qpos[sq[sj] + k])
+        for k in range(new_fmd.joints[nj].nv):
+            new_d.qvel.data[va[nj] + k] = Scalar[DT](snap.qvel[sv[sj] + k])
+        rep.restored += 1
+        if nj < len(rep.carried_mask):
+            rep.carried_mask[nj] = True
