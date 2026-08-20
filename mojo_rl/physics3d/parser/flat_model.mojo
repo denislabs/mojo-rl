@@ -1887,6 +1887,21 @@ struct FlatModelDef(Movable):
     #   1 biastype not none/affine 3 biasprm[1] not in {-gain, 0}
     var bad_actuator: Int
     var bad_actuator_code: Int
+    # How many `<actuator>` children this parser SKIPPED because it does not
+    # model their element type — `<adhesion>`, `<plugin>`, `<muscle>`, ... —
+    # so that `len(actuators) + this == MuJoCo's nu` for every model.
+    #
+    # ⚠⚠ WITHOUT IT A SHORT `nact` IS INDISTINGUISHABLE FROM A SHORT MODEL. A
+    # skipped actuator does not fail, it shifts: every control index past the
+    # first one missing lands on the wrong actuator. flybody reports nu 78 to
+    # MuJoCo and 70 here (eight `<adhesion>`) and shadow_dexee 12 and 0
+    # (twelve `<plugin plugin="mujoco.pid">`); both were found by diffing
+    # counts against the runtime, not by anything the parser said.
+    #
+    # The invariant is what to assert, not the value: a model whose skipped
+    # types get implemented should send this to 0 and `nact` up by the same
+    # amount, and the sum stays right either way.
+    var unmodelled_actuators: Int
     # ── qpos0 / initial pose ─────────────────────────────────────────────
     # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
     #   1. each joint's `ref`, already deg-converted, at its qpos address
@@ -1970,6 +1985,7 @@ struct FlatModelDef(Movable):
         self.na = 0
         self.bad_actuator = -1
         self.bad_actuator_code = -1
+        self.unmodelled_actuators = 0
         self.qpos0 = List[Float64]()
         self.qpos0_nq = 0
         self.free_joint_qpos_adr = -1

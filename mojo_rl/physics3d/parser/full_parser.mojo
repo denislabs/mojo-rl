@@ -3186,6 +3186,46 @@ def _fill_actuators(
     var scan_pos = 0
     var alen = actuator_sec.byte_length()
 
+    # ── the actuator elements we do NOT model, said out loud ─────────────
+    #
+    # ⚠⚠ AN UNMODELLED ACTUATOR TAG SHORTENS `nu` AND NOTHING SAID SO. The
+    # scan below looks for four spellings; MJCF has ten. Anything else in this
+    # section is skipped, so the model still loads, still steps, and quietly
+    # consumes a control vector of the wrong length — every index past the
+    # first missing actuator lands on the wrong actuator. Measured: flybody
+    # reports nu 78 to MuJoCo and 70 here (eight `<adhesion>`), shadow_dexee
+    # 12 and 0 (twelve `<plugin plugin="mujoco.pid">`). Those are the only two
+    # in Menagerie, and both were found by diffing counts rather than by
+    # anything the parser volunteered.
+    #
+    # ⚠ A PRINT, NOT A RAISE. A missing actuator is a lost capability, not a
+    # corrupt model — the same call `native_multicontact`'s caps make — and
+    # refusing to load flybody over eight adhesion pads would be worse than
+    # loading it with seventy working servos. The count is what matters: a
+    # caller comparing `nact` against its policy's action size sees the gap.
+    var _unmodelled: List[String] = [
+        String("<intvelocity"), String("<damper"), String("<cylinder"),
+        String("<muscle"), String("<adhesion"), String("<plugin"),
+    ]
+    for _u in range(len(_unmodelled)):
+        var _n = 0
+        var _at = 0
+        while True:
+            var _hit = actuator_sec.find(_unmodelled[_u], _at)
+            if _hit == -1:
+                break
+            _n += 1
+            _at = _hit + 1
+        if _n > 0:
+            result.unmodelled_actuators += _n
+            print(
+                "physics3d: <actuator> declares", _n, "`"
+                + _unmodelled[_u] + ">` element(s), which this parser does not"
+                " model — they are SKIPPED, so `nact` is short by that many"
+                " and a control vector sized for MuJoCo's `nu` will be"
+                " misaligned from the first one onwards.",
+            )
+
     while scan_pos < alen:
         # Find next actuator tag: motor, position, velocity, general
         var nm = actuator_sec.find("<motor", scan_pos)
