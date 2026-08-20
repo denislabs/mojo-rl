@@ -475,7 +475,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
 
         var srl_s = _extract_attr(jtag, "solreflimit")
         if srl_s.byte_length() > 0:
-            var sv = _parse_vec3(srl_s)
+            var sv = _solref_into(
+                srl_s, d.joint_solref_limit_0, d.joint_solref_limit_1
+            )
             d.joint_solref_limit_0 = sv[0]
             d.joint_solref_limit_1 = sv[1]
 
@@ -555,7 +557,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
 
         var sr0_s = _extract_attr(gtag, "solref")
         if sr0_s.byte_length() > 0:
-            var sv = _parse_vec3(sr0_s)
+            var sv = _solref_into(
+                sr0_s, d.geom_solref_0, d.geom_solref_1
+            )
             d.geom_solref_0 = sv[0]
             d.geom_solref_1 = sv[1]
 
@@ -1179,6 +1183,48 @@ def _orientation_to_quat(
     return (Float64(0), Float64(0), Float64(0), Float64(1))
 
 
+def _solref_into(
+    s: String, cur0: Float64, cur1: Float64
+) -> Tuple[Float64, Float64]:
+    """`solref`, overwriting ONLY the components the attribute supplies.
+
+    ⚠⚠ A PARTIAL `solref` KEEPS ITS OTHER COMPONENT, and every site here used
+    `_parse_vec3`, which returns 0 for anything the string does not contain.
+    So `solref="0.01"` — one value, which MJCF allows — compiled to
+    `(0.01, 0.0)`, and the second component is the DAMPRATIO.
+
+    `contact_solve` builds the constraint stiffness as
+    `K = 1/(dmax^2 * timeconst^2 * dampratio^2)`, so a zero dampratio is a
+    DIVISION BY ZERO dressed up as a number. Measured on Menagerie's
+    trossen_wxai, whose gripper pads declare `solref="0.01"`: the contact
+    normal force came out 7.3e13 N and `qacc` 5.6e13 rad/s^2, against MuJoCo's
+    102 N and 642 rad/s^2. Every solver — PGS, Newton, both cones — produced
+    the same explosion, because none of them was the problem.
+
+    ⚠ THE RULE IS MuJoCo'S, MEASURED ON THE 3.10.0 RUNTIME rather than
+    assumed, on a bare sphere:
+
+        (absent)            -> solref (0.02, 1)
+        solref="0.01"       -> solref (0.01, 1)     <- component 1 KEPT
+        solref="0.01 0.5"   -> solref (0.01, 0.5)
+        solimp="0.8"        -> solimp (0.8, 0.95, 0.001, 0.5, 2)
+
+    i.e. supplied components overwrite, omitted ones keep whatever they had —
+    the default, or the value inherited from the `<default>` class. The
+    `solimp` readers in this file already do exactly that, one component at a
+    time; only `solref` took the whole vector.
+    """
+    var parts = List[String]()
+    _split_spaces(_trim(s), parts)
+    var a = cur0
+    var b = cur1
+    if len(parts) >= 1 and parts[0].byte_length() > 0:
+        a = _parse_float(parts[0])
+    if len(parts) >= 2:
+        b = _parse_float(parts[1])
+    return (a, b)
+
+
 def _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Convert xyaxes="x1 x2 x3 y1 y2 y3" to quaternion (qx, qy, qz, qw).
 
@@ -1730,7 +1776,9 @@ def _parse_one_joint(
     # solreflimit (per-joint or default)
     var srl_s = _extract_attr(tag, "solreflimit")
     if srl_s.byte_length() > 0:
-        var sv = _parse_vec3(srl_s)
+        var sv = _solref_into(
+            srl_s, jdef.joint_solref_limit_0, jdef.joint_solref_limit_1
+        )
         jd.solref_limit_0 = sv[0]
         jd.solref_limit_1 = sv[1]
     else:
@@ -2016,7 +2064,9 @@ def _parse_one_geom(
     # solref / solimp
     var sr_s = _extract_attr(tag, "solref")
     if sr_s.byte_length() > 0:
-        var sv = _parse_vec3(sr_s)
+        var sv = _solref_into(
+            sr_s, eff_defaults.geom_solref_0, eff_defaults.geom_solref_1
+        )
         gd.solref_0 = sv[0]
         gd.solref_1 = sv[1]
     else:
@@ -3281,7 +3331,7 @@ def _fill_equality_solparams(tag: String, mut ed: EqualityData) raises:
 
     var sr_s = _extract_attr(tag, "solref")
     if sr_s.byte_length() > 0:
-        var sv = _parse_vec3(sr_s)
+        var sv = _solref_into(sr_s, ed.solref_0, ed.solref_1)
         ed.solref_0 = sv[0]
         ed.solref_1 = sv[1]
 
@@ -4076,11 +4126,11 @@ def _fill_tendon_equalities(
         if sr.byte_length() == 0:
             sr = _trim(_extract_attr(cls_tag, "solref"))
         if sr.byte_length() > 0:
-            var sp = List[String]()
-            _split_spaces(sr, sp)
-            if len(sp) >= 2:
-                td.solref_eq_0 = _parse_float(sp[0])
-                td.solref_eq_1 = _parse_float(sp[1])
+            # ⚠ THE MIRROR OF THE OTHERS: this one required BOTH
+            # components and dropped a one-value `solref` on the floor.
+            var sv2 = _solref_into(sr, td.solref_eq_0, td.solref_eq_1)
+            td.solref_eq_0 = sv2[0]
+            td.solref_eq_1 = sv2[1]
         var si = _trim(_extract_attr(tag, "solimp"))
         if si.byte_length() == 0:
             si = _trim(_extract_attr(cls_tag, "solimp"))
