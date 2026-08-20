@@ -51,6 +51,7 @@ from mojo_rl.render.imgui import (
     ig_menu_item, ig_frame_height_with_spacing,
     ig_begin_tab_bar, ig_end_tab_bar, ig_begin_tab_item, ig_end_tab_item,
     ig_columns, ig_next_column, ig_set_column_width, ig_drag_float,
+    ig_toggle_button,
 )
 from .validate import Diagnostic, SEV_INFO, SEV_WARN, SEV_ERROR
 
@@ -120,6 +121,22 @@ struct StudioPanel(Movable):
     survives closing and reopening the window (the directory already does)."""
     var browser_desc: Bool
     var recent: List[String]
+    var gizmo_mode: Int
+    """0 off, 1 move, 2 turn — `studio/gizmo.mojo`'s `GIZMO_*`.
+
+    ⚠ THE PANEL DOES NOT IMPORT THOSE ALIASES, deliberately. `gizmo.mojo`
+    names `FlatModelDef`, and one import of it here would make every widget
+    line in this file generic — the same rule that keeps `_record` in the
+    studio rather than in `ui_inspector`. The values are the contract; the
+    studio is the side that knows their names."""
+    var gizmo_world: Bool
+    """False = the element's own axes, True = world axes.
+
+    Defaults to LOCAL, because MJCF stores a local frame: rotating about the
+    part's own axis is the edit whose numbers a user can predict."""
+    var gizmo_snap: Float32
+    """0 = off. Metres for move, DEGREES for turn — ImGuizmo's convention,
+    which is why one scalar covers both and why the label has to say which."""
 
     def __init__(out self, drive: Int, scale: Float64, start_dir: String):
         self.sel_kind = SEL_NONE
@@ -148,6 +165,9 @@ struct StudioPanel(Movable):
         self.browser_sort = SORT_NAME
         self.browser_desc = False
         self.recent = List[String]()
+        self.gizmo_mode = 0
+        self.gizmo_world = False
+        self.gizmo_snap = 0.0
 
     def remember(mut self, path: String):
         """Push onto the recent list, most recent first, without duplicates."""
@@ -694,6 +714,7 @@ def ui_options(
     step_us: Float64,
     y0: Float32,
     h: Float32,
+    gizmo_hint: String,
 ) raises:
     ig_begin_panel(String("Options"), 0.0, y0, SIDEBAR_W, h)
 
@@ -738,6 +759,43 @@ def ui_options(
             p.drive = Int(cur)
         ig_set_next_item_width(-60.0)
         _ = ig_slider_float(String("scale"), p.scale, 0.0, 1.0)
+
+    # ── the transform gizmo — V2.10 ──────────────────────────────────────
+    # ⚠ MODAL, AND OFF BY DEFAULT. A gizmo permanently on top of the
+    # selection swallows clicks meant for the geom BEHIND it — the pick and
+    # the gizmo hit-test the same pixels, and the gizmo wins by design. Off
+    # is therefore the state in which the studio still behaves the way S1
+    # shipped it, and the mode buttons are the opt-in.
+    if ig_collapsing_header(String("Transform"), True):
+        if ig_toggle_button(String("off"), p.gizmo_mode == 0, 58.0):
+            p.gizmo_mode = 0
+        ig_same_line()
+        if ig_toggle_button(String("move"), p.gizmo_mode == 1, 58.0):
+            p.gizmo_mode = 1
+        ig_same_line()
+        if ig_toggle_button(String("turn"), p.gizmo_mode == 2, 58.0):
+            p.gizmo_mode = 2
+        if p.gizmo_mode != 0:
+            var w = p.gizmo_world
+            if ig_checkbox(String("world axes"), w):
+                p.gizmo_world = w
+            var on = p.gizmo_snap > 0.0
+            if ig_checkbox(String("snap"), on):
+                # The defaults are per-MODE because the UNIT is per-mode:
+                # 1 cm and 15 degrees. A single number would be one of the
+                # two silently misread.
+                p.gizmo_snap = 0.0 if not on \
+                    else (Float32(15.0) if p.gizmo_mode == 2 else Float32(0.01))
+            if p.gizmo_snap > 0.0:
+                var st = p.gizmo_snap
+                ig_set_next_item_width(-70.0)
+                if ig_drag_float(String("deg") if p.gizmo_mode == 2
+                                 else String("m"), st, 0.005, 0.0001, 90.0):
+                    p.gizmo_snap = st
+            if gizmo_hint.byte_length() > 0:
+                ig_text_colored(gizmo_hint, 1.0, 0.75, 0.2, 1.0)
+        else:
+            ig_text_disabled(String("select a body or geom, then move/turn"))
 
     if ig_collapsing_header(String("Visibility groups")):
         # MuJoCo's `mjvOption.geomgroup`, six checkboxes. Not cosmetic: dog
@@ -1135,12 +1193,14 @@ def build_ui(
     can_redo: Bool = False,
     undo_label: String = String(""),
     redo_label: String = String(""),
+    gizmo_hint: String = String(""),
 ) raises -> PanelOut:
     """The whole UI for one frame. See the module header for the layout."""
     var out = PanelOut()
     var y0 = ui_menu_bar(p, out, can_undo, can_redo, undo_label, redo_label)
     var h = win_h - y0
-    ui_options(p, out, path, step_i, ncon, contact_budget, step_us, y0, h)
+    ui_options(p, out, path, step_i, ncon, contact_budget, step_us, y0, h,
+               gizmo_hint)
     ui_right_panel(p, body_names, geom_names, joint_names, body_parent,
                    geom_body, joint_body, keys, vals, editable, diags, out,
                    win_w - RIGHT_W, y0, h)

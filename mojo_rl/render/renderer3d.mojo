@@ -546,6 +546,20 @@ struct Renderer3D(Movable):
     typing "reacher" would reset the camera, save a screenshot and start a
     video recording. ESC is included deliberately: quitting the window mid-word
     is worse than making the app responsible for unfocusing."""
+    var pointer_claimed: Bool
+    """An OVERLAY that owns the pointer without ImGui knowing it does.
+
+    ⚠⚠ `ig_want_mouse()` IS NOT A COMPLETE ANSWER, and the gap is not
+    theoretical. ImGuizmo draws into a window created with
+    `ImGuiWindowFlags_NoInputs`, so ImGui truthfully reports that it does NOT
+    want the mouse while a gizmo handle is being dragged — and the drag then
+    orbits the camera at the same time as it moves the part. Anything
+    hit-testing the viewport for itself sets this each frame and the press
+    latch below reads it beside `ig_mouse`.
+
+    ⚠ WRITTEN BY THE APPLICATION, ONE FRAME AHEAD, which is the same staleness
+    `ig_want_mouse` already has and for the same reason: the overlay can only
+    answer after its own layout has run."""
     var ui_sidebar_width: Int
     """Pixels reserved on the LEFT for screen-space UI. 0 = full-window scene.
 
@@ -644,6 +658,7 @@ struct Renderer3D(Movable):
         self.mouse_clicked = False
         self.text_budget_warned = False
         self.ui_sidebar_width = 0
+        self.pointer_claimed = False
         self.text_input_mode = False
         self.initialized = False
 
@@ -835,6 +850,7 @@ struct Renderer3D(Movable):
         self.mouse_clicked = move.mouse_clicked
         self.text_budget_warned = move.text_budget_warned
         self.ui_sidebar_width = move.ui_sidebar_width
+        self.pointer_claimed = move.pointer_claimed
         self.text_input_mode = move.text_input_mode
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
@@ -2892,6 +2908,14 @@ struct Renderer3D(Movable):
         self.ui_sidebar_width = w if w > 0 else 0
         self.camera.set_screen_size(self.scene_width(), self.height)
 
+    def set_pointer_claimed(mut self, on: Bool):
+        """Declare that an overlay ImGui cannot speak for owns the pointer.
+
+        See `pointer_claimed`. Set it EVERY frame — it is a level, not an
+        event, and a latched True would leave the camera permanently frozen.
+        """
+        self.pointer_claimed = on
+
     def set_capture_scene_only(mut self, on: Bool):
         """Whether screenshots/recordings exclude the reserved UI strip."""
         self.capture_scene_only = on
@@ -4922,6 +4946,11 @@ struct Renderer3D(Movable):
                 ig_kbd = ig_want_keyboard()
             except:
                 pass
+        # ⚠ AN OVERLAY ImGui CANNOT SPEAK FOR. See `pointer_claimed` — a
+        # gizmo's window carries `NoInputs`, so `ig_want_mouse()` says False
+        # while it is being dragged.
+        if self.pointer_claimed:
+            ig_mouse = True
 
         while has_events:
             try:

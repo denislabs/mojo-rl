@@ -16,6 +16,12 @@ set -euo pipefail
 
 ROOT="${PIXI_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 IMGUI_DIR="$ROOT/third_party/imgui"
+# ⚠ ImGuizmo IS A SECOND VENDORED LIBRARY IN THE SAME DYLIB. It is not a
+# separate artifact: it draws through ImGui's draw list and shares its
+# context, so linking it anywhere else would give it a SECOND ImGui context
+# and a gizmo that never sees the mouse. `mrl_gz_*` lives beside `mrl_ig_*`
+# in one shim for that reason.
+GZ_DIR="$ROOT/third_party/ImGuizmo"
 SRC="$ROOT/mojo_rl/render/imgui/imgui_shim.cpp"
 
 case "$(uname -s)" in
@@ -34,6 +40,18 @@ if [ ! -d "$IMGUI_DIR" ]; then
         https://github.com/ocornut/imgui.git "$IMGUI_DIR"
 fi
 
+if [ ! -d "$GZ_DIR" ]; then
+    echo "[imgui] cloning ImGuizmo into third_party/ImGuizmo ..."
+    git clone --depth 1 \
+        https://github.com/CedricGuillemet/ImGuizmo.git "$GZ_DIR"
+fi
+
+if [ ! -f "$GZ_DIR/src/ImGuizmo.cpp" ]; then
+    echo "[imgui] ERROR: $GZ_DIR has no src/ImGuizmo.cpp." >&2
+    echo "[imgui] Delete third_party/ImGuizmo and re-run to re-clone." >&2
+    exit 1
+fi
+
 if [ ! -f "$IMGUI_DIR/backends/imgui_impl_sdlgpu3.cpp" ]; then
     echo "[imgui] ERROR: $IMGUI_DIR has no SDL_GPU3 backend." >&2
     echo "[imgui] Delete third_party/imgui and re-run to re-clone." >&2
@@ -44,6 +62,7 @@ fi
 if [ "$FORCE" = "0" ] && [ -f "$LIB" ]; then
     NEWER=$(find "$SRC" "$IMGUI_DIR"/*.cpp "$IMGUI_DIR"/backends/imgui_impl_sdl3.cpp \
                  "$IMGUI_DIR"/backends/imgui_impl_sdlgpu3.cpp \
+                 "$GZ_DIR"/src/ImGuizmo.cpp "$GZ_DIR"/src/ImGuizmo.h \
                  -newer "$LIB" 2>/dev/null | head -1)
     if [ -z "$NEWER" ]; then
         echo "[imgui] $LIB is up to date"
@@ -66,8 +85,10 @@ echo "[imgui] building $LIB ..."
 # gallery nothing here calls. Add it back if you want ShowDemoWindow().
 clang++ -O2 -std=c++17 -fPIC -shared \
     -I "$IMGUI_DIR" -I "$IMGUI_DIR/backends" \
+    -I "$GZ_DIR/src" \
     -I "$SDL_PREFIX/include" \
     "$SRC" \
+    "$GZ_DIR/src/ImGuizmo.cpp" \
     "$IMGUI_DIR/imgui.cpp" \
     "$IMGUI_DIR/imgui_draw.cpp" \
     "$IMGUI_DIR/imgui_tables.cpp" \

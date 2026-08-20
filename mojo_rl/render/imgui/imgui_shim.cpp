@@ -24,6 +24,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
+#include "ImGuizmo.h"
 #include <SDL3/SDL.h>
 #include <string.h>
 
@@ -328,5 +329,57 @@ void mrl_ig_style_classic(void) { ImGui::StyleColorsClassic(); }
 void mrl_ig_set_font_scale(float s) {
     ImGui::GetIO().FontGlobalScale = s;
 }
+
+// ─── ImGuizmo — the transform gizmo ─────────────────────────────────────────
+//
+// ⚠⚠ IT SHARES THIS TRANSLATION UNIT'S ImGui CONTEXT ON PURPOSE. ImGuizmo
+// draws through an ImGui draw list and hit-tests against ImGui's `io`; built
+// into a second dylib it would link a second copy of ImGui's globals and the
+// gizmo would render into a frame nobody submits. One shim, one context.
+//
+// ⚠ MATRICES ARE COLUMN-MAJOR float[16], the OpenGL convention — translation
+// at [12][13][14]. `mat4_to_gpu_f32` on the Mojo side already transposes
+// row-major `Mat4` into exactly this, so the studio hands over the SAME
+// buffer it hands the GPU. A row-major matrix passed here does not fail; it
+// draws a gizmo in a plausible wrong place.
+
+void mrl_gz_begin_frame(void) { ImGuizmo::BeginFrame(); }
+
+// The VIEWPORT, not the window: the studio reserves a strip on each side for
+// its panels, and a gizmo hit-tested against the full window is offset by
+// half the missing strip — the same bias the ray-pick had to avoid.
+void mrl_gz_set_rect(float x, float y, float w, float h) {
+    ImGuizmo::SetRect(x, y, w, h);
+}
+
+void mrl_gz_set_orthographic(bool ortho) { ImGuizmo::SetOrthographic(ortho); }
+
+// Gizmo radius as a fraction of clip space (default 0.1). A model 30 cm
+// across and one 3 m across want the same on-screen size, which this gives:
+// it is resolution-independent and distance-independent by construction.
+void mrl_gz_set_size(float v) { ImGuizmo::SetGizmoSizeClipSpace(v); }
+
+// `matrix` is IN-OUT.
+//
+// ⚠ `use_snap` RATHER THAN A NULLABLE `snap`. ImGuizmo takes NULL to mean
+// "no snapping", but the Mojo side's `Ptr` is a *safe* pointer with no null
+// value, so expressing the absence across the boundary would need an unsafe
+// cast at every call. A flag plus an always-valid buffer costs one int and
+// keeps the binding honest.
+bool mrl_gz_manipulate(const float* view, const float* proj, int op, int mode,
+                       float* matrix, const float* snap, int use_snap) {
+    return ImGuizmo::Manipulate(view, proj,
+                                (ImGuizmo::OPERATION)op,
+                                (ImGuizmo::MODE)mode,
+                                matrix, nullptr,
+                                use_snap ? snap : nullptr);
+}
+
+// ⚠⚠ THESE ARE THE MOUSE ARBITRATION, and `mrl_ig_want_mouse` does NOT cover
+// them. ImGuizmo's own window carries `ImGuiWindowFlags_NoInputs`, so ImGui
+// reports it does not want the mouse while the gizmo is being dragged —
+// without these two the same drag orbits the camera and moves the part.
+bool mrl_gz_is_over(void) { return ImGuizmo::IsOver(); }
+bool mrl_gz_is_using(void) { return ImGuizmo::IsUsing(); }
 
 }  // extern "C"

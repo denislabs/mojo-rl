@@ -82,7 +82,7 @@ from mojo_rl.physics3d.studio.scene import SceneDoc, scene_from_base
 from mojo_rl.physics3d.studio.writer import to_mjcf as export_flat_mjcf
 from mojo_rl.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
-    StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W,
+    StudioPanel, PanelOut, build_ui, SIDEBAR_W,
 )
 from mojo_rl.physics3d.studio.panel import SEL_BODY, SEL_GEOM, SEL_NONE
 from mojo_rl.physics3d.studio.validate import (
@@ -98,13 +98,23 @@ from mojo_rl.physics3d.studio.remap import (
 )
 from mojo_rl.physics3d.studio.history import History, edit_key
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.kinematics.mocap import reset_mocap_from_model
 from mojo_rl.physics3d.studio.edit import (
     Edit, apply_edit, apply_edit_to_document, needs_rebuild, field_name,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Y, F_POS_Z, F_SIZE_0, F_SIZE_1, F_SIZE_2,
     F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
 )
-from mojo_rl.render.imgui import ig_want_mouse
+from mojo_rl.render.imgui import (
+    ig_want_mouse, gz_begin_frame, gz_set_rect, gz_set_orthographic,
+    gz_set_size, gz_manipulate, gz_is_over, gz_is_using,
+    GZ_TRANSLATE, GZ_ROTATE, GZ_LOCAL, GZ_WORLD,
+)
+from mojo_rl.render.gpu_types import perspective_projection
+from mojo_rl.physics3d.studio.gizmo import (
+    Frame, frame_to_cm, mat4_to_cm, edit_frame, frame_drift, gizmo_edits,
+    gizmo_mode_name, GIZMO_OFF, GIZMO_MOVE, GIZMO_TURN,
+)
 from mojo_rl.physics3d.studio.mesh_bounds import (
     empty_half_extents, measure_geom_from_file, biggest_half_extent,
 )
@@ -226,6 +236,13 @@ struct Loaded(Movable):
     COLLIDABLE hulls are loaded; the 45 visual meshes go straight from STL to
     the GPU and never enter this budget at all."""
 
+    var n_mocap: Int
+    """Bodies whose pose is an EXTERNAL input, seeded from the XML at load.
+
+    ⚠ COUNTED, so `describe()` can say so. A model with a mocap body has a
+    part that no joint moves and no `qpos` describes; that is worth one line
+    of output rather than a mystery about why one geom ignores the sim."""
+
     def __init__(out self, path: String, xml: String,
                  base_dir: String) raises:
         """Build from scene TEXT the studio generated, not from a file.
@@ -286,6 +303,14 @@ struct Loaded(Movable):
         self.m = m^
         self.sf = spec_fields_runtime[DT](self.fmd, self.dims, self.m)
         self.d = Data[DT, DynDims, 1](self.dims)
+        # ⚠⚠ MOCAP BODIES OTHERWISE SIT AT THE WORLD ORIGIN. `Data` allocates
+        # `mocap_pos` zeroed and `forward_kinematics` SKIPS mocap bodies by
+        # design — their pose is an external input, which an env facade
+        # supplies and a tool does not. Without this, so_arm101's `target`
+        # sphere is drawn, picked and outlined at (0,0,0) while `m.bodies`
+        # says (0.25, 0, 0.2), and nothing raises. `mj_resetData` seeds them
+        # from the XML frame for exactly this reason.
+        self.n_mocap = reset_mocap_from_model[DT, DynDims, 1](self.m, self.d)
         self.integ_pyr = StudioIntegPyr(self.dims)
         self.integ_ell = StudioIntegEll(self.dims)
         self.imp_pyr = StudioImpFastPyr(self.dims)
@@ -395,9 +420,22 @@ struct Loaded(Movable):
             self.d.qpos.data[i] = self.sf.qpos0.data[i]
         for i in range(self.dims.get_nv()):
             self.d.qvel.data[i] = Scalar[DT](0)
+        # ⚠ AND THE MOCAP TARGETS, which `qpos` does not describe. Resetting
+        # without this leaves a target wherever the last step left it while
+        # every jointed body snaps back — a pose that is half reset.
+        _ = reset_mocap_from_model[DT, DynDims, 1](self.m, self.d)
 
     def describe(self) raises:
         print("  ", self.path)
+        if self.n_mocap > 0:
+            # ⚠ SAID OUT LOUD. A mocap body is moved by neither a joint nor
+            # the solver — its pose is an external input — so a user watching
+            # it ignore gravity and every actuator has no way to tell that
+            # from a bug. It is seeded from the XML frame at load, which is
+            # what `mj_resetData` does.
+            print("    ", self.n_mocap,
+                  "mocap body(ies) — pose is an EXTERNAL input, seeded from"
+                  " the XML frame; no joint moves them")
         print("    nbody", self.dims.get_nbody(),
               " ngeom", self.dims.get_ngeom(),
               " nq", self.dims.get_nq(), " nv", self.dims.get_nv(),
@@ -555,6 +593,16 @@ def _outline_of(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _f4(v: Float64) -> String:
+    """Four decimals, for a hint line. `String(v)` prints 17 digits."""
+    var scaled = Int(v * 10000.0 + 0.5)
+    var whole = scaled // 10000
+    var frac = String(scaled % 10000)
+    while frac.byte_length() < 4:
+        frac = String("0") + frac
+    return String(whole, ".", frac)
+
+
 def _label_of(names: List[String], i: Int) -> String:
     if i >= 0 and i < len(names):
         return names[i].copy()
@@ -613,6 +661,7 @@ def run_studio(
     first: String, drive: Int, scale: Float64, max_frames: Int = 0,
     swap_to: String = String(""), delete_body_named: String = String(""),
     smoke_add: String = String(""), smoke_undo: Bool = False,
+    smoke_gizmo: Bool = False,
 ) raises:
     """`swap_to` is the SMOKE PATH for File > Open, `delete_body_named` for
     the structural delete, `smoke_undo` for undo/redo across one.
@@ -713,8 +762,42 @@ def run_studio(
             positions.append(Vec3(0.0, 0.0, 0.0))
             quats.append(Quat(1.0, 0.0, 0.0, 0.0))
 
+        # ⚠⚠ ONE VIEWPORT, READ BY THE PICK AND BY THE GIZMO. It is the
+        # region `Renderer3D` actually draws the scene into —
+        # `[ui_sidebar_width, width]`, FULL height (`renderer3d.mojo`'s
+        # `set_gpu_viewport`, and `scene_width()` is what the camera's aspect
+        # is built from). The right-hand panel is drawn OVER the scene rather
+        # than inset from it.
+        #
+        # ⚠⚠ THE PICK USED TO SUBTRACT `RIGHT_W` HERE AND THAT WAS A BUG, not
+        # a style difference. `ray_through_pixel` scales the pixel by the
+        # viewport it is told about, so a viewport 340 px narrower than the
+        # projection's biases EVERY ray by a constant angle: measured on a
+        # 1600x900 window with a 45 degree camera, a click at the exact
+        # centre of the drawn scene produced a ray 8.9 degrees off the camera
+        # axis, missing by 0.47 m at 3 m. It reads as "picking is off to one
+        # side", which is easy to blame on the unprojection. Deriving both
+        # numbers here is what stops the gizmo and the pick disagreeing about
+        # where the world is.
+        var vp_x0 = Float64(renderer.renderer.ui_sidebar_width)
+        var vp_w = Float64(renderer.renderer.width) - vp_x0
+        var vp_h = Float64(renderer.renderer.height)
         if have_ui:
             renderer.imgui_new_frame()
+            # ⚠⚠ THE GIZMO'S FRAME OPENS AFTER ImGui's AND BEFORE ANY WIDGET.
+            # `ImGuizmo::BeginFrame` pushes a full-screen `NoInputs` window
+            # to draw into; opened after the panels it would sit ON TOP of
+            # them and the gizmo would draw over the sidebar.
+            gz_begin_frame()
+            # ⚠⚠ THE RECT IS THE RENDERER'S SCENE VIEWPORT, WHICH IS
+            # `[ui_sidebar_width, width]` — the LEFT strip only. The right
+            # panel is drawn OVER the scene rather than inset from it, so
+            # subtracting it here (as the ray-pick does) would shift every
+            # gizmo handle by half its width against the geometry it sits
+            # on. The projection is the authority on where the scene lands,
+            # and it is built from `scene_width()`.
+            gz_set_rect(Float32(vp_x0), 0.0, Float32(vp_w), Float32(vp_h))
+            gz_set_orthographic(False)
 
         # ⚠ THE PICK, THE OUTLINE AND THE DRAW MUST SEE THE SAME POSES.
         # Rebuilding these inside the picker would let a click resolve against
@@ -740,15 +823,11 @@ def run_studio(
         # geom happens to sit under the sidebar.
         var clicked = renderer.take_click()
         if clicked and not (have_ui and ig_want_mouse()):
-            var x0 = Float64(renderer.renderer.ui_sidebar_width)
-            var right = Float64(RIGHT_W) if have_ui else 0.0
-            var vp_w = Float64(renderer.renderer.width) - x0 - right
-            var vp_h = Float64(renderer.renderer.height)
             if vp_w > 1.0 and vp_h > 1.0:
                 var cam = renderer.renderer.camera.copy()
                 var ray = ray_through_pixel(
                     Float64(renderer.mouse_x()), Float64(renderer.mouse_y()),
-                    x0, vp_w, vp_h, cam.eye, cam.target, cam.up, cam.fov,
+                    vp_x0, vp_w, vp_h, cam.eye, cam.target, cam.up, cam.fov,
                 )
                 var hit = pick_geom(ray, L.rf, positions, quats)
                 if hit.geom >= 0:
@@ -765,6 +844,24 @@ def run_studio(
         renderer.set_overlay_lines(_outline_of(L, panel, positions, quats))
 
         # ── the UI ────────────────────────────────────────────────────────
+        # ⚠⚠ THE GIZMO EDITS THE FRAME MJCF STORES, NOT THE POSE ON SCREEN,
+        # and for a JOINTED BODY those are two different places. `xpos`
+        # carries the joint transform on top of the body's `pos=`; a gizmo
+        # dragging the drawn pose would be asking for an edit the document
+        # cannot express. So it stays on the frame it edits and the panel
+        # SAYS when the two have separated, rather than leaving the user
+        # looking at a handle floating beside the part.
+        var gizmo_hint = String("")
+        if panel.gizmo_mode != GIZMO_OFF and panel.sel_kind == SEL_BODY \
+                and panel.sel_index > 0:
+            var drift = frame_drift(L.fmd, positions, quats, L.body_parent,
+                                    TARGET_BODY, panel.sel_index)
+            if drift > 1e-6:
+                gizmo_hint = String(
+                    "on the model frame, ", _f4(drift),
+                    " m from the pose on screen\n(this body's joints have"
+                    " moved it — reset to line them up)"
+                )
         var ui = PanelOut()
         if have_ui:
             ui = build_ui(
@@ -774,7 +871,7 @@ def run_studio(
                 L.fmd.body_names, L.fmd.geom_names, L.fmd.joint_names,
                 L.body_parent, L.geom_body, L.joint_body, keys, vals,
                 editable, L.diags, hist.can_undo(), hist.can_redo(),
-                hist.undo_label(), hist.redo_label(),
+                hist.undo_label(), hist.redo_label(), gizmo_hint,
             )
         # ⚠ AFTER `build_ui`, WHICH RETURNS A FRESH `PanelOut` — injecting
         # before it would be overwritten and the smoke path would silently
@@ -890,34 +987,157 @@ def run_studio(
         renderer.set_show_sites(panel.show_sites)
         if ui.quit:
             break
+        # ── the transform gizmo — V2.10 ───────────────────────────────────
+        # ⚠ DRAWN AFTER THE PANELS AND BEFORE THE EDIT IS APPLIED. It reads
+        # `positions`/`quats`, which are this frame's forward kinematics, and
+        # it must not read a record the edit below has already changed —
+        # otherwise the handle chases the drag by one frame.
+        var gz_out = List[Edit]()
+        var gz_target = TARGET_GEOM if panel.sel_kind == SEL_GEOM \
+            else TARGET_BODY
+        var gz_hot = False
+        if have_ui and panel.gizmo_mode != GIZMO_OFF:
+            # ⚠ THE WORLDBODY HAS NO EDITABLE FRAME. It is body 0, absent
+            # from `fmd.bodies`, and its `pos` is not a thing MJCF spells —
+            # a gizmo on it would write into the record one before the list.
+            var gz_ok = (panel.sel_kind == SEL_GEOM and panel.sel_index >= 0
+                         and panel.sel_index < len(L.fmd.geoms)) \
+                or (panel.sel_kind == SEL_BODY and panel.sel_index > 0
+                    and panel.sel_index - 1 < len(L.fmd.bodies))
+            if gz_ok:
+                var gcam = renderer.renderer.camera.copy()
+                # ⚠⚠ THE **SAME** PROJECTION THE SCENE IS DRAWN WITH.
+                # `Camera3D.get_projection_matrix` builds a DIFFERENT one
+                # (`Mat4.perspective`); `_build_scene_uniforms` uses this
+                # one. Two perspective matrices that differ only in depth
+                # convention put the gizmo a few pixels off the geometry —
+                # visible, and easy to misread as a picking bug.
+                var gview = mat4_to_cm(gcam.get_view_matrix())
+                var gproj = mat4_to_cm(perspective_projection(
+                    gcam.fov, gcam.aspect, gcam.near, gcam.far
+                ))
+                var gmat = frame_to_cm(edit_frame(
+                    L.fmd, positions, quats, L.body_parent,
+                    gz_target, panel.sel_index,
+                ))
+                var gop = GZ_TRANSLATE if panel.gizmo_mode == GIZMO_MOVE \
+                    else GZ_ROTATE
+                var gmode = GZ_WORLD if panel.gizmo_world else GZ_LOCAL
+                if gz_manipulate(gview, gproj, gop, gmode, gmat,
+                                 panel.gizmo_snap):
+                    # ⚠ THE SCALE IS THE CAMERA DISTANCE, and it is what the
+                    # noise floor is measured against: one pixel of drag is
+                    # worth about `2*dist*tan(fov/2)/height` metres, so the
+                    # threshold has to know how far away we are or it means
+                    # something different on every model.
+                    gz_out = gizmo_edits(
+                        L.fmd, positions, quats, L.body_parent,
+                        gz_target, panel.sel_index, panel.gizmo_mode, gmat,
+                        (gcam.eye - gcam.target).length(),
+                    )
+                gz_hot = gz_is_over() or gz_is_using()
+        # ⚠⚠ THE SMOKE DRIVES `gizmo_edits` WITH A SYNTHESISED MATRIX, and it
+        # is honest about what that does and does not cover. A script cannot
+        # move a pointer, so ImGuizmo's own hit-test and drag are out of
+        # reach of any headless run — what IS reachable, and what breaks
+        # silently, is everything downstream: the record write, the document
+        # write, the undo push, the `RenderFields` refresh and the rebuild
+        # decision. Those all live in this file and a library test proves
+        # none of them. The FRAME ALGEBRA is gated separately by
+        # `test_gizmo_math` and against MuJoCo by `check_gizmo_vs_mujoco.py`.
+        if smoke_gizmo and max_frames > 0 and len(L.fmd.geoms) > 1:
+            if frame == max_frames // 5 or frame == (2 * max_frames) // 5:
+                var turn = frame != max_frames // 5
+                panel.sel_kind = SEL_GEOM
+                panel.sel_index = 1
+                panel.gizmo_mode = GIZMO_TURN if turn else GIZMO_MOVE
+                gz_target = TARGET_GEOM
+                var f0 = edit_frame(L.fmd, positions, quats, L.body_parent,
+                                    TARGET_GEOM, 1)
+                var f1 = Frame(f0.pos + Vec3(0.031, -0.017, 0.023), f0.quat)
+                if turn:
+                    f1 = Frame(
+                        f0.pos,
+                        (Quat.from_axis_angle(
+                            Vec3(0.37, -0.55, 0.75).normalized(), 0.31
+                        ) * f0.quat).normalized(),
+                    )
+                gz_out = gizmo_edits(
+                    L.fmd, positions, quats, L.body_parent, TARGET_GEOM, 1,
+                    panel.gizmo_mode, frame_to_cm(f1), 1.0,
+                )
+                # ⚠ PRINTED WITH THE COUNT. "did not crash" reads identically
+                # on a gizmo that emitted nothing at all.
+                print("  smoke: gizmo",
+                      String("turn") if turn else String("move"),
+                      "on geom 1 emitted", len(gz_out), "edit(s)")
+        # ⚠⚠ AND THE POINTER ARBITRATION, EVERY FRAME. `ig_want_mouse()` is
+        # False while a gizmo handle is dragged — ImGuizmo's window carries
+        # `NoInputs` — so without this the same drag moves the part AND
+        # orbits the camera behind it. Written unconditionally because it is
+        # a level, not an event: latched True would freeze the camera.
+        renderer.set_pointer_claimed(gz_hot)
+
         # ── an inspector edit ─────────────────────────────────────────────
         # ⚠ APPLIED HERE, AFTER `build_ui` AND BEFORE THE STEP. The panel
         # returns a REQUEST precisely so this happens at a defined point: an
         # edit landing between the step and the draw would render a pose that
         # never existed, and one landing inside the panel would need the panel
         # to hold a `Model`, which is what keeps it compiling once.
+        # ⚠⚠ ONE LIST, TWO PRODUCERS. The inspector's drag emits ONE edit; a
+        # gizmo drag emits up to FOUR (a quaternion is not four independent
+        # numbers — see `edits_from_frame`). Routing both through the same
+        # list is what keeps the document write, the undo push, the render
+        # refresh and the rebuild decision from existing twice.
+        var pending = List[Edit]()
+        var pending_key = String("")
+        var pending_label = String("")
         if ui.edit_field >= 0 and panel.sel_kind != SEL_NONE:
             var tgt = TARGET_GEOM if panel.sel_kind == SEL_GEOM \
                 else TARGET_BODY
-            var e = Edit(tgt, panel.sel_index, ui.edit_field, ui.edit_value)
-            apply_edit(L.fmd, L.m, e)
+            pending.append(
+                Edit(tgt, panel.sel_index, ui.edit_field, ui.edit_value)
+            )
+            # ⚠ COALESCED BY (target, index, field). A drag emits a value
+            # every frame it is held; one snapshot per frame would be a
+            # hundred undo steps that each appear to do nothing, and a
+            # hundred copies of the document. The key folds the drag into
+            # one step and a DIFFERENT field starts a new one.
+            pending_key = edit_key(tgt, panel.sel_index, ui.edit_field)
+            pending_label = String(field_name(ui.edit_field), " on ") \
+                + _sel_label(L, panel)
+        elif len(gz_out) > 0:
+            pending = gz_out.copy()
+            # ⚠ ONE KEY FOR THE WHOLE GIZMO DRAG, not one per component. The
+            # four quaternion edits of a single turn must fold into ONE undo
+            # step, and the next frame of the same drag into that same step —
+            # `edit_key`'s field slot carries the OPERATION for that reason,
+            # offset past every `F_*` so it can never collide with one.
+            pending_key = edit_key(gz_target, panel.sel_index,
+                                   1000 + panel.gizmo_mode)
+            pending_label = String(gizmo_mode_name(panel.gizmo_mode), " ") \
+                + _sel_label(L, panel)
+        if len(pending) > 0:
+            # ⚠ EVERY RECORD WRITE BEFORE ANY DOCUMENT WRITE.
+            # `apply_edit_to_document` re-reads the WHOLE attribute off the
+            # record (all four quaternion components, all three of `pos`), so
+            # interleaving them would write a half-updated quaternion into
+            # the file and then correct it — which is fine on the last
+            # iteration and wrong if the loop raises in the middle.
+            for i in range(len(pending)):
+                apply_edit(L.fmd, L.m, pending[i])
             # ⚠⚠ AND INTO THE DOCUMENT — the third copy. Without this the sim
             # and the inspector show the edit and `File > Save edited model`
             # writes the value the file had when it was OPENED. Gated by
             # `test_edit_reaches_the_document`.
             try:
-                L.flat = apply_edit_to_document(L.fmd, L.m, L.flat, e)
+                for i in range(len(pending)):
+                    L.flat = apply_edit_to_document(
+                        L.fmd, L.m, L.flat, pending[i]
+                    )
                 L.dirty = True
-                # ⚠ COALESCED BY (target, index, field). A drag emits a value
-                # every frame it is held; one snapshot per frame would be a
-                # hundred undo steps that each appear to do nothing, and a
-                # hundred copies of the document. The key folds the drag into
-                # one step and a DIFFERENT field starts a new one.
-                hist.push(L.flat, L.base_dir, doc,
-                          String(field_name(ui.edit_field), " on ")
-                          + _sel_label(L, panel),
-                          edit_key(tgt, panel.sel_index, ui.edit_field),
-                          pose_snapshot(L.fmd, L.d))
+                hist.push(L.flat, L.base_dir, doc, pending_label,
+                          pending_key, pose_snapshot(L.fmd, L.d))
             except de:
                 # ⚠ NAMED, NOT SWALLOWED. The locator can fail on an element
                 # with no name and no body to count within; the edit is still
@@ -937,10 +1157,15 @@ def run_studio(
             L.mesh_half = empty_half_extents(len(L.fmd.geoms))
             L.biggest_half = 0.0
             renderer.set_render_fields(L.rf.copy())
-            if needs_rebuild(e):
-                # Mass changes the DERIVED inertia and invweight0, so the
-                # record is authoritative and the live model must be rebuilt
-                # rather than patched. See `needs_rebuild`.
+            var want_rebuild = False
+            for i in range(len(pending)):
+                if needs_rebuild(pending[i]):
+                    want_rebuild = True
+            if want_rebuild:
+                # Mass changes the DERIVED inertia and invweight0, and a body
+                # frame changes `dof_invweight0` and a free joint's `qpos0`,
+                # so the record is authoritative and the live model must be
+                # rebuilt rather than patched. See `needs_rebuild`.
                 build_model_runtime[DT](L.fmd, L.dims, L.m)
             L.revalidate()
 
@@ -1410,5 +1635,6 @@ def main() raises:
     if len(args) > 7:
         smoke_add = String(args[7])
     var smoke_undo = len(args) > 8 and String(args[8]) == "undo"
+    var smoke_gizmo = len(args) > 9 and String(args[9]) == "gizmo"
     run_studio(path, drive, scale, frames, swap_to, del_body, smoke_add,
-               smoke_undo)
+               smoke_undo, smoke_gizmo)

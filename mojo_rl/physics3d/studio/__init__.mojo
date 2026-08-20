@@ -36,5 +36,10 @@ from .remap import (
 )
 from .edit import (
     Edit, EditLog, apply_edit, needs_rebuild, field_name,
-    TARGET_GEOM, TARGET_BODY,
+    TARGET_GEOM, TARGET_BODY, is_pos_field, is_quat_field,
+)
+from .gizmo import (
+    Frame, frame_to_cm, cm_to_frame, mat4_to_cm, parent_frame, local_frame, edit_frame,
+    frame_drift, edits_from_frame, gizmo_edits, gizmo_mode_name,
+    GIZMO_OFF, GIZMO_MOVE, GIZMO_TURN,
 )

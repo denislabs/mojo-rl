@@ -665,6 +665,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Reserve `w` px on the left for UI; the scene renders to the rest."""
         self.renderer.set_ui_sidebar_width(w)
 
+    def set_pointer_claimed(mut self, on: Bool):
+        """Declare that a viewport overlay owns the pointer this frame.
+
+        For overlays ImGui cannot report on — a transform gizmo's window is
+        created with `NoInputs`, so `ig_want_mouse()` returns False while it
+        is being dragged and the same drag would also orbit the camera."""
+        self.renderer.set_pointer_claimed(on)
+
     def imgui_init(mut self) raises -> Bool:
         """Attach a Dear ImGui overlay; False if the shim is not built."""
         return self.renderer.imgui_init()

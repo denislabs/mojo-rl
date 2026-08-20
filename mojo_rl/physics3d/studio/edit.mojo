@@ -48,6 +48,7 @@ from ..parser.flat_model import FlatModelDef
 from ..gpu.constants import (
     MODEL_GEOM_SIZE, MODEL_BODY_SIZE, MODEL_JOINT_SIZE,
     GEOM_IDX_POS_X, GEOM_IDX_POS_Y, GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_W, GEOM_IDX_QUAT_X, GEOM_IDX_QUAT_Y, GEOM_IDX_QUAT_Z,
     GEOM_IDX_RADIUS, GEOM_IDX_HALF_LENGTH,
     GEOM_IDX_HALF_X, GEOM_IDX_HALF_Y, GEOM_IDX_HALF_Z,
     GEOM_IDX_FRICTION, GEOM_IDX_RBOUND,
@@ -60,6 +61,8 @@ from ..gpu.constants import (
     BODY_IDX_IXX, BODY_IDX_IYY, BODY_IDX_IZZ, BODY_IDX_MASS,
     BODY_IDX_IPOS_X, BODY_IDX_IPOS_Y, BODY_IDX_IPOS_Z,
     BODY_IDX_IQUAT_X, BODY_IDX_IQUAT_Y, BODY_IDX_IQUAT_Z, BODY_IDX_IQUAT_W,
+    BODY_IDX_POS_X, BODY_IDX_POS_Y, BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_W, BODY_IDX_QUAT_X, BODY_IDX_QUAT_Y, BODY_IDX_QUAT_Z,
 )
 from .structure import set_attribute_at, find_child, find_named
 
@@ -85,6 +88,24 @@ comptime F_RGBA_B: Int = 8
 comptime F_RGBA_A: Int = 9
 comptime F_FRICTION: Int = 10
 comptime F_MASS: Int = 11
+# ⚠ ORIENTATION — ADDED FOR THE GIZMO (V2.10). Four components, not three:
+# an Euler triple would have to pick a convention, and MJCF has FIVE
+# spellings for the same rotation (`quat`, `euler`, `axisangle`, `xyaxes`,
+# `zaxis`). The record carries a quaternion, so that is what an edit carries;
+# `apply_edit_to_document` is where the spelling question is answered, and it
+# answers it by writing `quat` and REMOVING the other four.
+comptime F_QUAT_W: Int = 12
+comptime F_QUAT_X: Int = 13
+comptime F_QUAT_Y: Int = 14
+comptime F_QUAT_Z: Int = 15
+
+
+def is_pos_field(f: Int) -> Bool:
+    return f == F_POS_X or f == F_POS_Y or f == F_POS_Z
+
+
+def is_quat_field(f: Int) -> Bool:
+    return f == F_QUAT_W or f == F_QUAT_X or f == F_QUAT_Y or f == F_QUAT_Z
 
 
 def field_name(f: Int) -> String:
@@ -110,6 +131,14 @@ def field_name(f: Int) -> String:
         return String("rgba[3]")
     if f == F_FRICTION:
         return String("friction")
+    if f == F_QUAT_W:
+        return String("quat[0]")
+    if f == F_QUAT_X:
+        return String("quat[1]")
+    if f == F_QUAT_Y:
+        return String("quat[2]")
+    if f == F_QUAT_Z:
+        return String("quat[3]")
     return String("mass")
 
 
@@ -157,6 +186,18 @@ def apply_edit(mut fmd: FlatModelDef, mut m: Model[DT, DynDims], e: Edit):
         elif e.field == F_POS_Z:
             g.pos_z = e.value
             m.geoms.data[o + GEOM_IDX_POS_Z] = Scalar[DT](e.value)
+        elif e.field == F_QUAT_W:
+            g.quat_w = e.value
+            m.geoms.data[o + GEOM_IDX_QUAT_W] = Scalar[DT](e.value)
+        elif e.field == F_QUAT_X:
+            g.quat_x = e.value
+            m.geoms.data[o + GEOM_IDX_QUAT_X] = Scalar[DT](e.value)
+        elif e.field == F_QUAT_Y:
+            g.quat_y = e.value
+            m.geoms.data[o + GEOM_IDX_QUAT_Y] = Scalar[DT](e.value)
+        elif e.field == F_QUAT_Z:
+            g.quat_z = e.value
+            m.geoms.data[o + GEOM_IDX_QUAT_Z] = Scalar[DT](e.value)
         elif e.field == F_RGBA_R:
             g.rgba_r = e.value
         elif e.field == F_RGBA_G:
@@ -179,6 +220,42 @@ def apply_edit(mut fmd: FlatModelDef, mut m: Model[DT, DynDims], e: Edit):
         if bi < 0 or bi >= len(fmd.bodies):
             return
         ref b = fmd.bodies[bi]
+        # ⚠⚠ A BODY'S OWN FRAME — NEW IN V2.10, AND IT HAD NO PATH AT ALL.
+        # `F_POS_*` existed and only geoms honoured it, so a body pos edit
+        # was accepted and silently dropped. It is live because forward
+        # kinematics reads these columns every step; it is nonetheless a
+        # SLOW-PATH field (see `needs_rebuild`), because `dof_invweight0` and
+        # a free joint's `qpos0` are DERIVED from the body frame at build
+        # time and go stale the moment it moves.
+        var bo = e.index * MODEL_BODY_SIZE
+        if e.field == F_POS_X:
+            b.pos_x = e.value
+            m.bodies.data[bo + BODY_IDX_POS_X] = Scalar[DT](e.value)
+            return
+        if e.field == F_POS_Y:
+            b.pos_y = e.value
+            m.bodies.data[bo + BODY_IDX_POS_Y] = Scalar[DT](e.value)
+            return
+        if e.field == F_POS_Z:
+            b.pos_z = e.value
+            m.bodies.data[bo + BODY_IDX_POS_Z] = Scalar[DT](e.value)
+            return
+        if e.field == F_QUAT_W:
+            b.quat_w = e.value
+            m.bodies.data[bo + BODY_IDX_QUAT_W] = Scalar[DT](e.value)
+            return
+        if e.field == F_QUAT_X:
+            b.quat_x = e.value
+            m.bodies.data[bo + BODY_IDX_QUAT_X] = Scalar[DT](e.value)
+            return
+        if e.field == F_QUAT_Y:
+            b.quat_y = e.value
+            m.bodies.data[bo + BODY_IDX_QUAT_Y] = Scalar[DT](e.value)
+            return
+        if e.field == F_QUAT_Z:
+            b.quat_z = e.value
+            m.bodies.data[bo + BODY_IDX_QUAT_Z] = Scalar[DT](e.value)
+            return
         if e.field == F_MASS:
             # ⚠⚠ SETTING A MASS MUST ALSO MAKE THE INERTIAL EXPLICIT, and
             # until now it did not — so the slider DID NOTHING on any body
@@ -466,6 +543,34 @@ def _geom_ordinal(fmd: FlatModelDef, gi: Int) -> Int:
     return n
 
 
+def _write_quat_at(
+    xml: String, at: Int, w: Float64, x: Float64, y: Float64, z: Float64
+) -> String:
+    """Write `quat=` on the open tag at `at` and REMOVE every rival spelling.
+
+    ⚠⚠ MJCF HAS FIVE SPELLINGS FOR ONE ROTATION — `quat`, `euler`,
+    `axisangle`, `xyaxes`, `zaxis` — AND MuJoCo REFUSES A TAG CARRYING TWO.
+    So writing `quat` beside an existing `euler` does not produce a model
+    with the new rotation; it produces a file that will not load, from a
+    studio that shows the new rotation happily. Dropping the rivals is not
+    tidying, it is what makes the edit expressible.
+
+    ⚠ AND `euler` IS UNIT-DEPENDENT: `<compiler angle="degree">` is MJCF's
+    DEFAULT, so the same triple means two different rotations in two files.
+    `quat` is the one spelling with no such dependency, which is why it is
+    the one we write rather than the one the file happened to use.
+    """
+    var out = set_attribute_at(
+        xml, at, String("quat"),
+        _n(w) + " " + _n(x) + " " + _n(y) + " " + _n(z),
+    )
+    out = _drop_attribute_at(out, at, String("euler"))
+    out = _drop_attribute_at(out, at, String("axisangle"))
+    out = _drop_attribute_at(out, at, String("xyaxes"))
+    out = _drop_attribute_at(out, at, String("zaxis"))
+    return out^
+
+
 def apply_edit_to_document(
     fmd: FlatModelDef, m: Model[DT, DynDims], xml: String, e: Edit
 ) raises -> String:
@@ -511,6 +616,16 @@ def apply_edit_to_document(
                 ),
                 at, g,
             )
+        if is_quat_field(e.field):
+            # ⚠ `_materialise_fromto` SECOND, and it writes the quat AGAIN
+            # from the record — deliberately. A `fromto` capsule carries its
+            # own orientation and overrides anything written beside it, so
+            # the rotation only survives once `fromto` is gone.
+            return _materialise_fromto(
+                _write_quat_at(xml, at, g.quat_w, g.quat_x, g.quat_y,
+                               g.quat_z),
+                at, g,
+            )
         if e.field == F_SIZE_0 or e.field == F_SIZE_1 or e.field == F_SIZE_2:
             return _materialise_fromto(
                 set_attribute_at(xml, at, String("size"), _geom_size_attr(g)),
@@ -530,6 +645,35 @@ def apply_edit_to_document(
                 + _n(g.friction_roll),
             )
         return xml
+
+    if e.target == TARGET_BODY \
+            and (is_pos_field(e.field) or is_quat_field(e.field)):
+        var bpi = e.index - 1
+        if bpi < 0 or bpi >= len(fmd.bodies):
+            return xml
+        ref bd = fmd.bodies[bpi]
+        # ⚠ BY NAME, AND ONLY BY NAME. A geom can be found positionally
+        # ("the third geom of body `thigh`") because its parent is named;
+        # a body's own position in the document is a path through the tree,
+        # and `find_child` counts SIBLINGS, which is not the same thing on a
+        # tree three deep. An unnamed body is refused rather than guessed at.
+        var bname = fmd.body_names[e.index] if e.index < len(fmd.body_names) \
+            else String("")
+        if bname.byte_length() == 0:
+            raise Error(
+                "cannot save a transform edit on an unnamed body — there is"
+                " nothing in the document to find it by"
+            )
+        var bat = find_named(xml, String("body"), bname)
+        if bat == -1:
+            raise Error("body '" + bname + "' is not in the document")
+        if is_quat_field(e.field):
+            return _write_quat_at(xml, bat, bd.quat_w, bd.quat_x, bd.quat_y,
+                                  bd.quat_z)
+        return set_attribute_at(
+            xml, bat, String("pos"),
+            _n(bd.pos_x) + " " + _n(bd.pos_y) + " " + _n(bd.pos_z),
+        )
 
     if e.target == TARGET_BODY and e.field == F_MASS:
         var bi = e.index - 1

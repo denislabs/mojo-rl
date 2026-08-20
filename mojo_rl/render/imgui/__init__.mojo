@@ -818,3 +818,105 @@ def ig_input_text(var label: String, mut buf: TextBuffer,
             c_int,
         ) thin -> Bool,
     ]()(_c(label), ptr, c_int(TextBuffer.CAP))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ImGuizmo — the transform gizmo
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ⚠⚠ MATRICES ARE COLUMN-MAJOR float[16] — translation at [12][13][14], the
+# OpenGL convention. `mojo_rl.render.gpu_types.mat4_to_gpu_f32` transposes
+# this project's ROW-major `Mat4` into exactly that layout, so the caller
+# hands the gizmo the same buffer it hands the GPU. Passing a row-major
+# matrix does not fail: it draws a gizmo in a plausible wrong place, which is
+# the hardest kind of wrong to see.
+#
+# ⚠ `gz_is_over()` / `gz_is_using()` ARE PART OF THE MOUSE ARBITRATION and
+# `ig_want_mouse()` does NOT cover them — ImGuizmo's window is created with
+# `NoInputs`, so ImGui truthfully reports that it does not want the mouse
+# while the gizmo is being dragged. A host that gates only on `ig_want_mouse`
+# orbits the camera and moves the part with one drag.
+
+
+comptime GZ_TRANSLATE: Int = 7
+"""TRANSLATE_X | TRANSLATE_Y | TRANSLATE_Z."""
+comptime GZ_ROTATE: Int = 120
+"""ROTATE_X | ROTATE_Y | ROTATE_Z | ROTATE_SCREEN."""
+comptime GZ_SCALE: Int = 896
+"""SCALE_X | SCALE_Y | SCALE_Z."""
+
+comptime GZ_LOCAL: Int = 0
+comptime GZ_WORLD: Int = 1
+
+
+def gz_begin_frame() raises:
+    """Open the gizmo's frame. Must follow `ig_new_frame()` every frame."""
+    _get_dylib_function[lib, "mrl_gz_begin_frame", def() thin -> None]()()
+
+
+def gz_set_rect(x: Float32, y: Float32, w: Float32, h: Float32) raises:
+    """The VIEWPORT the gizmo hit-tests against, not the window.
+
+    A host reserving a sidebar must subtract it here for the same reason its
+    ray-pick does: a gizmo told about the full window is biased by half the
+    missing strip, and the symptom reads as a projection bug.
+    """
+    _get_dylib_function[
+        lib, "mrl_gz_set_rect",
+        def(c_float, c_float, c_float, c_float) thin -> None,
+    ]()(x, y, w, h)
+
+
+def gz_set_orthographic(ortho: Bool) raises:
+    _get_dylib_function[
+        lib, "mrl_gz_set_orthographic", def(Bool) thin -> None
+    ]()(ortho)
+
+
+def gz_set_size(v: Float32 = 0.1) raises:
+    """Gizmo radius as a fraction of clip space — distance-independent, so a
+    30 cm arm and a 3 m quadruped get the same handle on screen."""
+    _get_dylib_function[lib, "mrl_gz_set_size", def(c_float) thin -> None]()(v)
+
+
+def gz_manipulate(
+    view: List[Float32], proj: List[Float32], op: Int, mode: Int,
+    mut matrix: List[Float32], snap: Float32 = 0.0,
+) raises -> Bool:
+    """Draw the gizmo at `matrix` and let the pointer move it. IN-OUT.
+
+    Returns True on the frames the pointer actually moved it — NOT while it
+    is merely hovered. `snap <= 0` disables snapping; the unit is metres for
+    TRANSLATE and degrees for ROTATE, which is ImGuizmo's convention and the
+    reason a single scalar suffices for both.
+    """
+    if len(view) < 16 or len(proj) < 16 or len(matrix) < 16:
+        raise Error("gz_manipulate: view/proj/matrix must each hold 16 floats")
+    # ⚠ ALWAYS A VALID BUFFER, and a FLAG for whether to use it. `Ptr` here
+    # is a *safe* pointer with no null value, so "no snapping" cannot be
+    # spelled as NULL without an unsafe cast at the call site; the C side
+    # takes the flag instead.
+    var s = [snap, snap, snap]
+    return _get_dylib_function[
+        lib, "mrl_gz_manipulate",
+        def(
+            Ptr[c_float, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
+            c_int, c_int,
+            Ptr[c_float, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
+            c_int,
+        ) thin -> Bool,
+    ]()(
+        untracked(view.unsafe_ptr()), untracked(proj.unsafe_ptr()),
+        c_int(op), c_int(mode), untracked(matrix.unsafe_ptr()),
+        untracked(s.unsafe_ptr()), c_int(1 if snap > 0.0 else 0),
+    )
+
+
+def gz_is_over() raises -> Bool:
+    """True when the pointer is over a gizmo handle. See the header note."""
+    return _get_dylib_function[lib, "mrl_gz_is_over", def() thin -> Bool]()()
+
+
+def gz_is_using() raises -> Bool:
+    """True while a handle is being dragged. See the header note."""
+    return _get_dylib_function[lib, "mrl_gz_is_using", def() thin -> Bool]()()

@@ -434,6 +434,57 @@ def test_outline(mut t: Tally) raises:
                                    " segments)"))
 
 
+def test_viewport_must_be_the_projections(mut t: Tally) raises:
+    """⚠⚠ THE VIEWPORT HANDED TO `ray_through_pixel` MUST BE THE ONE THE SCENE
+    IS PROJECTED INTO — and the studio got this wrong for two slices.
+
+    `Renderer3D` draws the scene into `[ui_sidebar_width, width]` at FULL
+    height (`set_gpu_viewport`), and builds the camera's aspect from
+    `scene_width()`, the same span. The studio's pick subtracted the RIGHT
+    panel's width as well, on the reasoning that the panel covers that strip
+    — but the panel is drawn OVER the scene, not inset from it, so the
+    projection still maps NDC across the whole span.
+
+    Getting it wrong does not break picking visibly. It biases EVERY ray by a
+    CONSTANT angle, so the symptom is "selection is offset to one side",
+    which reads as an unprojection bug rather than as a wrong input. This arm
+    is the invariant that names it: at the centre of the correct viewport the
+    ray IS the camera axis, and at the centre of a narrowed one it is not.
+    """
+    print("--- the viewport is the PROJECTION's, not the visible strip ---")
+    var W = 1600.0
+    var H = 900.0
+    var x0 = 300.0
+    var narrowed = 340.0
+    var eye = Vec3(3.0, 0.0, 0.0)
+    var tgt = Vec3(0.0, 0.0, 0.0)
+    var up = Vec3(0.0, 0.0, 1.0)
+    var fov = pi / 4.0
+    var fwd = (tgt - eye).normalized()
+
+    var cx = x0 + (W - x0) * 0.5
+    var cy = H * 0.5
+    var ok_ray = ray_through_pixel(cx, cy, x0, W - x0, H, eye, tgt, up, fov)
+    var dot_ok = ok_ray.dir.dot(fwd)
+    t.truth(dot_ok > 1.0 - 1e-12,
+            String("the centre of the scene viewport IS the camera axis"
+                   " (dot ", dot_ok, ")"))
+
+    # ⚠ THE NEGATIVE CONTROL, WITH THE NUMBER. Without it "dot == 1" could be
+    # true for a `ray_through_pixel` that ignored the viewport entirely.
+    var bad = ray_through_pixel(cx, cy, x0, W - x0 - narrowed, H, eye, tgt,
+                                up, fov)
+    var dot_bad = bad.dir.dot(fwd)
+    t.truth(dot_bad < 1.0 - 1e-6,
+            String("a viewport narrowed by the right panel is NOT (dot ",
+                   dot_bad, ")"))
+    # How far that misses by, at the camera's target — the number that says
+    # this is a real defect rather than a rounding difference.
+    var miss = (bad.dir * (3.0 / dot_bad) - fwd * 3.0).length()
+    t.truth(miss > 0.4,
+            String("and it misses by ", miss, " m at 3 m — a bias, not noise"))
+
+
 def main() raises:
     var t = Tally()
     print("=== studio ray-pick + outline ===")
@@ -441,6 +492,7 @@ def main() raises:
     test_primitives(t)
     test_sweep(t)
     test_outline(t)
+    test_viewport_must_be_the_projections(t)
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
         raise Error("test_studio_ray_pick: " + String(t.fails) + " failed")
