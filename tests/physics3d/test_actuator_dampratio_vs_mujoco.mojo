@@ -28,6 +28,17 @@ a new model field. `dof_M0` is the diagonal of M at qpos0 — NOT
 for a diagonal M. `compute_invweight0` already forms M there, so it banks the
 diagonal on the way past, before `ldl_factor` overwrites it in place.
 
+⚠⚠ AND THE RULE IS NOT ATTACHED TO THE `<position>` TAG. It lives in the
+ENGINE, downstream of every spelling, so `<general biastype="affine"
+biasprm="0 -kp Z">` reaches `mj_setConst` as the same record and gets the same
+conversion. Reading `dampratio` off the tag alone left that spelling with
+`kv = -Z` — not a weaker damper but an ANTI-damper, which the implicit
+integrators SUBTRACT from the mass matrix. sharpa_wave is the pair that shows
+it: the two hands are the same robot, the left spells it `<position
+dampratio="0.9">` and the right spells it `<general biasprm="0 -6.95 0.9">`,
+and one file apart the left stepped to 4.3e-18 while the right went to
+6.2e-03.
+
 ⚠ THE EXPECTED VALUES ARE MUJOCO'S OWN, read off `-actuator_biasprm[:,2]` on
 the 3.10.0 runtime. The synthetic fixture is built so they are exact round
 numbers and a wrong formula cannot coincide with the right one: a box of mass
@@ -53,6 +64,10 @@ comptime G1 = String(
     "references/mujoco_menagerie-main/unitree_g1/scene.xml"
 )
 
+comptime SHARPA_R = String(
+    "references/mujoco_menagerie-main/sharpa_wave/scene_right.xml"
+)
+
 # ⚠ FOUR ACTUATORS ON ONE JOINT, ON PURPOSE. They share a transmission, so
 # every difference below is the dampratio arithmetic and nothing else.
 # ⚠ `<compiler angle="radian"/>` IS LOAD-BEARING — MJCF defaults to DEGREES
@@ -71,6 +86,33 @@ comptime XML = String(
     <position name='b' joint='j' kp='300' dampratio='0.5'/>
     <position name='c' joint='j' kp='300' kv='7'/>
     <position name='d' joint='j' kp='300'/>
+  </actuator>
+</mujoco>"""
+)
+
+# The SAME body and the SAME kp, stated the other way. `gaintype`/`biastype`
+# are written out because a `<general>` defaults to `fixed`/`none` and a
+# bias-free actuator would not reach the rule at all.
+comptime XML_GENERAL = String(
+    """<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body>
+      <joint name='j' type='hinge' axis='0 0 1'/>
+      <geom type='box' size='.1 .1 .1' mass='2'/>
+    </body>
+  </worldbody>
+  <actuator>
+    <general name='a' joint='j' gaintype='fixed' gainprm='300'
+             biastype='affine' biasprm='0 -300 1'/>
+    <general name='b' joint='j' gaintype='fixed' gainprm='300'
+             biastype='affine' biasprm='0 -300 0.5'/>
+    <general name='c' joint='j' gaintype='fixed' gainprm='300'
+             biastype='affine' biasprm='0 -300 -7'/>
+    <general name='d' joint='j' gaintype='fixed' gainprm='300'
+             biastype='affine' biasprm='0 0 1'/>
+    <general name='e' joint='j' gaintype='fixed' gainprm='300'
+             biastype='affine' biasprm='0 -300 0'/>
   </actuator>
 </mujoco>"""
 )
@@ -204,6 +246,114 @@ def test_dampratio_on_g1_matches_mujoco() raises:
             "g1 actuator #" + String(i) + " has kv " + String(kv[i])
             + " — every one of its 29 servos declares dampratio='1' and none"
             " should be undamped.",
+        )
+    print("  PASS")
+
+
+def test_general_biasprm_carries_the_same_dampratio() raises:
+    """The SECOND spelling of the same rule, with its own negative controls.
+
+    Same body, same kp, same numbers as the `<position>` fixture above — the
+    only thing that changes is which tag states the ratio. Rows a and b must
+    land on 4.0 and 2.0 exactly as rows 0 and 1 there do.
+
+    ⚠ ROW `d` IS THE ONE THAT KEEPS THIS HONEST. `biasprm[1] = 0` makes it a
+    VELOCITY servo, not a position one, so MuJoCo's gate
+    (`gainprm[0] != -biasprm[1]` -> skip) leaves its positive `biasprm[2]`
+    ALONE and the actuator really does carry `kv = -1`. Measured on 3.10.0:
+    `-biasprm[:,2]` reads `[4, 2, 7, -1, 0]`. Converting every positive
+    `biasprm[2]` would pass rows a-c and fail here.
+    """
+    print("=== <general biasprm> -> kv, synthetic ===")
+    var kv = _kv_of(XML_GENERAL, String(""))
+    assert_true(
+        len(kv) == 5,
+        "fixture did not parse five actuators — the gate would be vacuous",
+    )
+    for i in range(5):
+        print("  actuator", i, " kv", kv[i])
+    assert_true(
+        abs(kv[0] - 4.0) < 1e-9,
+        "biasprm='0 -300 1' is dampratio 1 on a position-like actuator and"
+        " MuJoCo derives kv 4.0; got " + String(kv[0])
+        + ". A raw `kv = -biasprm[2]` gives -1 here — an ANTI-damper.",
+    )
+    assert_true(
+        abs(kv[1] - 2.0) < 1e-9,
+        "kv is LINEAR in the ratio: 0.5 must halve it to 2.0; got "
+        + String(kv[1]),
+    )
+    # ⚠ THE SIGN IS THE WHOLE DISCRIMINATOR. A NEGATIVE biasprm[2] is a
+    # literal kv and must pass through untouched — no sqrt, no mass.
+    assert_true(
+        abs(kv[2] - 7.0) < 1e-12,
+        "a NEGATIVE biasprm[2] is a literal kv and must survive verbatim;"
+        " got " + String(kv[2]),
+    )
+    # ⚠ NEGATIVE CONTROL — see the docstring. MuJoCo keeps this one at -1.
+    assert_true(
+        abs(kv[3] + 1.0) < 1e-12,
+        "biasprm='0 0 1' is NOT position-like (gainprm[0] != -biasprm[1]), so"
+        " MuJoCo does not convert it and it keeps kv -1; got " + String(kv[3])
+        + ". Converting it would invent damping the reference does not have.",
+    )
+    # ⚠ NEGATIVE CONTROL — a zero must stay a zero, not become a ratio of 0
+    # that some later sqrt turns into something else.
+    assert_true(
+        kv[4] == 0.0,
+        "biasprm[2] = 0 must leave the servo UNDAMPED; got " + String(kv[4]),
+    )
+    print("  PASS")
+
+
+def test_general_dampratio_on_sharpa_wave_matches_mujoco() raises:
+    """The model it was found on: 22 servos, all spelled `<general biasprm>`.
+
+    ⚠ THE FIXTURE CANNOT CATCH WHAT THIS CATCHES. Its single box makes
+    `kp * mass` a round number by construction; sharpa's reflected inertias
+    come from a 22-dof hand and every one of these is irrational, so a
+    formula that agrees with MuJoCo here is using MuJoCo's `dof_M0`.
+    """
+    print("=== <general biasprm> -> kv, sharpa_wave right hand ===")
+    var src = read_model_source(SHARPA_R)
+    var kv = _kv_of(src[0], src[1])
+    print("  nact", len(kv))
+    assert_true(
+        len(kv) == 22,
+        "sharpa_wave's right hand has 22 actuators; parsed "
+        + String(len(kv)) + " — the gate would be comparing the wrong rows",
+    )
+    # MuJoCo 3.10.0, `-actuator_biasprm[:,2]`, printed at full precision.
+    var want: List[Float64] = [
+        0.2844001777075252, 0.403408719431069, 0.20380858182545714,
+        0.2403441941312949, 0.04189004080632966, 0.2078418814338731,
+    ]
+    var names: List[String] = [
+        String("thumb_CMC_FE"), String("thumb_CMC_AA"),
+        String("thumb_MCP_FE"), String("thumb_MCP_AA"),
+        String("thumb_IP"), String("index_MCP_FE"),
+    ]
+    var worst = 0.0
+    for i in range(len(want)):
+        var err = abs(kv[i] - want[i])
+        if err > worst:
+            worst = err
+        print("   ", names[i], " ours", kv[i], " MuJoCo", want[i])
+        assert_true(
+            err < 1e-9,
+            "sharpa_wave actuator " + names[i] + ": kv is " + String(kv[i])
+            + " but MuJoCo derives " + String(want[i]) + " from the"
+            " dampratio 0.9 in its `biasprm`.",
+        )
+    print("  worst |diff| over the six", worst)
+    # ⚠ THE PROPERTY THE BUG VIOLATED, stated for all 22: every one of them
+    # was NEGATIVE — an anti-damper — and the smallest true value is 0.0287.
+    for i in range(len(kv)):
+        assert_true(
+            kv[i] > 0.02,
+            "sharpa_wave actuator #" + String(i) + " has kv " + String(kv[i])
+            + " — a negative or zero value here is the anti-damper this gate"
+            " exists for.",
         )
     print("  PASS")
 

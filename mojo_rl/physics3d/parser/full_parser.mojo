@@ -3506,6 +3506,36 @@ def _fill_actuators(
                 # laws collapse to `force = -kv*vel` and POSITION keeps it.
                 ad.kind = ACT_KIND_VELOCITY
 
+        # ── `biasprm[2]`'s SIGN IS A DISCRIMINATOR ────────────────────────
+        # MuJoCo carries `kv` and `dampratio` in the SAME slot and tells them
+        # apart by sign (`user_api.cc:1211`: "negative: regular damping,
+        # positive: dampratio"). `mj_setConst` then converts the positive one
+        # once the mass matrix exists (`engine_setconst.c:998-1035`):
+        #
+        #     if gainprm[0] != -biasprm[1]: skip     # not position-like
+        #     if biasprm[2] <= 0:           skip     # a literal kv
+        #     biasprm[2] = -dampratio * 2 * sqrt(gainprm[0] * mass)
+        #
+        # ⚠⚠ THE RULE IS ON THE COMPILED ACTUATOR, NOT ON THE TAG. It lives
+        # in the ENGINE, downstream of every spelling, so `<position
+        # dampratio="0.9">` and `<general biasprm="0 -6.95 0.9">` reach it as
+        # the same record. Reading `dampratio` off the `<position>` tag alone
+        # — which is all this did until now — leaves the `<general>` spelling
+        # with `kv = -0.9`: not a weaker damper but an ANTI-damper, and the
+        # implicit integrators subtract it from the mass matrix. Measured on
+        # sharpa_wave, whose left hand spells it `<position dampratio>` and
+        # whose right hand spells it `<general biasprm>`: the left stepped to
+        # 4.3e-18 and the right to 6.2e-03, one file apart.
+        #
+        # `ad.kv` IS `-biasprm[2]`, so "biasprm[2] > 0" reads as "kv < 0", and
+        # `kind == ACT_KIND_POSITION` is exactly the `gainprm[0] ==
+        # -biasprm[1]` gate — that equality is what makes this parser call an
+        # actuator a position servo in the first place.
+        if ad.kv < 0.0 and ad.dampratio == 0.0:
+            if ad.kind == ACT_KIND_POSITION:
+                ad.dampratio = -ad.kv
+                ad.kv = 0.0
+
         # dyntype/dynprm -> dyn_tau + act_adr, and the running `na`.
         #
         # ⚠ `<general>` ONLY, mirroring `xml_parser.mojo:4292`'s
