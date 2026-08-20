@@ -84,6 +84,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_ACTFRC_LIMITED,
     JLIM_IDX_ACTFRC_MIN,
     JLIM_IDX_ACTFRC_MAX,
+    METADATA_SIZE,
+    META_IDX_ACTDAMP_LIVE,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields, Dims, DimsLike
@@ -1263,6 +1265,18 @@ struct ModelDefFromXML[
         joint_limits: LayoutTensor[
             DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE), MutAnyOrigin
         ],
+        # `d.dof_actdamp` + `d.meta` — THIS STEP's actuator damping diagonal
+        # and the flag saying it was filled. MuJoCo's `mjd_actuator_vel` skips
+        # an actuator whose force is clamped by `forcerange`, so the value is
+        # state-dependent and cannot live on `Model`. Filled here for the same
+        # reason the ctrl and force clamps are: the CPU and GPU paths must
+        # compute the same forces AND the same derivative from one action.
+        dof_actdamp: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
     ) raises:
         """Generalized forces from the model spec — the GPU mirror of
         `apply_actions` above, term for term.
@@ -1336,6 +1350,13 @@ struct ModelDefFromXML[
                 DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE),
                 MutAnyOrigin
             ],
+            dof_actdamp: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+            ],
+            meta: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE),
+                MutAnyOrigin
+            ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
@@ -1345,6 +1366,9 @@ struct ModelDefFromXML[
             # not keep the previous step's force.
             comptime for i in range(Self.NV):
                 qfrc[env, i] = Scalar[DTYPE](0)
+            comptime for i in range(Self.NV):
+                dof_actdamp[env, i] = Scalar[DTYPE](0)
+            meta[env, META_IDX_ACTDAMP_LIVE] = Scalar[DTYPE](1)
 
             # ⚠⚠ THIS LOOP USED TO BE `comptime for`, WITH EVERY VALUE A
             # BAKED LITERAL. It now reads `acts` / `act_tendons` — the same
@@ -1441,6 +1465,7 @@ struct ModelDefFromXML[
 
                 # `forcerange` — the CPU twin's comment explains why the
                 # clamp sits here, on the scalar force, and not on `qfrc`.
+                var saturated = False
                 if acts[o + ACT_IDX_FORCE_LIMITED] != 0:
                     var f_hi = rebind[Scalar[DTYPE]](
                         acts[o + ACT_IDX_FORCE_MAX]
@@ -1452,6 +1477,31 @@ struct ModelDefFromXML[
                         force = f_hi
                     elif force < f_lo:
                         force = f_lo
+                    # `<=` / `>=` on the CLAMPED force, exactly as MuJoCo
+                    # tests it — an actuator sitting ON its bound also loses
+                    # its derivative.
+                    saturated = force <= f_lo or force >= f_hi
+
+                # `-d force / d qvel` onto each transmission dof, skipped for
+                # a saturated actuator (`mjd_actuator_vel`).
+                if (
+                    kind == ACT_KIND_POSITION or kind == ACT_KIND_VELOCITY
+                ) and not saturated:
+                    var kv_d = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KV])
+                    if kv_d != Scalar[DTYPE](0):
+                        for k in range(n):
+                            var dadr_d = Int(
+                                rebind[Scalar[DTYPE]](
+                                    acts[o + ACT_IDX_TRN_DADR_0 + k]
+                                )
+                            )
+                            if dadr_d >= 0 and dadr_d < Self.NV:
+                                var gc = gear * rebind[Scalar[DTYPE]](
+                                    acts[o + ACT_IDX_TRN_COEF_0 + k]
+                                )
+                                dof_actdamp[env, dadr_d] = (
+                                    dof_actdamp[env, dadr_d] + kv_d * gc * gc
+                                )
 
                 for k in range(n):
                     var dadr = Int(
@@ -1564,6 +1614,8 @@ struct ModelDefFromXML[
             acts,
             act_tendons,
             joint_limits,
+            dof_actdamp,
+            meta,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

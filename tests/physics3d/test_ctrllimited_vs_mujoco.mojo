@@ -56,6 +56,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.physics3d.fields import Data, SpecFields, Dims
 from mojo_rl.physics3d.model.model_dims import ModelDims
@@ -293,6 +294,16 @@ def test_apply_actions_gpu_matches_cpu() raises:
 
     var sfg = SpecFields[GT, MD]()
     M.init_spec_fields[GT](ctx, sfg)
+    var t_actd = TensorImpl[GT]()
+    t_actd.data = List[Scalar[GT]](length=B * M.NV, fill=Scalar[GT](0))
+    t_actd.n = B * M.NV
+    t_actd.upload(ctx)
+    var t_meta = TensorImpl[GT]()
+    t_meta.data = List[Scalar[GT]](
+        length=B * METADATA_SIZE, fill=Scalar[GT](0)
+    )
+    t_meta.n = B * METADATA_SIZE
+    t_meta.upload(ctx)
     M.apply_actions_kernel_gpu[GT, B, AD](
         ctx,
         t_qfrc.lt["gpu", L_QF](),
@@ -314,6 +325,11 @@ def test_apply_actions_gpu_matches_cpu() raises:
         sfg.joint_limits.lt[
             "gpu", Layout.row_major(M.NJOINT * JLIM_SIZE)
         ](),
+        # `dof_actdamp` + `meta` — this step's actuator damping diagonal.
+        # Inert for this fixture (no forcerange saturation); passed because
+        # the kernel requires it and the CPU/GPU pair must not diverge.
+        t_actd.lt["gpu", Layout.row_major(B, M.NV)](),
+        t_meta.lt["gpu", Layout.row_major(B, METADATA_SIZE)](),
     )
     ctx.synchronize()
     t_qfrc.download(ctx)

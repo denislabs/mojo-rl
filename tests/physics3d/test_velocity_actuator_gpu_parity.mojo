@@ -34,6 +34,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
 
@@ -244,6 +245,16 @@ def _gate[
     t_qvel.upload(ctx)
     t_actv.upload(ctx)
 
+    var t_actd = TensorImpl[DTYPE]()
+    t_actd.data = List[Scalar[DTYPE]](length=BATCH * NV, fill=Scalar[DTYPE](0))
+    t_actd.n = BATCH * NV
+    t_actd.upload(ctx)
+    var t_meta = TensorImpl[DTYPE]()
+    t_meta.data = List[Scalar[DTYPE]](
+        length=BATCH * METADATA_SIZE, fill=Scalar[DTYPE](0)
+    )
+    t_meta.n = BATCH * METADATA_SIZE
+    t_meta.upload(ctx)
     var sfg = SpecFields[DTYPE, MD]()
     M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](
@@ -264,6 +275,11 @@ def _gate[
         sfg.joint_limits.lt[
             "gpu", Layout.row_major(M.NJOINT * JLIM_SIZE)
         ](),
+        # Inert here — this fixture's `forcerange` case is exercised for the
+        # FORCE, not the derivative. `test_saturated_actuator_deriv_vs_mujoco`
+        # is where the derivative is gated.
+        t_actd.lt["gpu", Layout.row_major(BATCH, NV)](),
+        t_meta.lt["gpu", Layout.row_major(BATCH, METADATA_SIZE)](),
     )
     ctx.synchronize()
     t_qfrc.download(ctx)

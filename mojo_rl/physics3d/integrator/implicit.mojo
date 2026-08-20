@@ -95,6 +95,8 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_DAMPING,
+    METADATA_SIZE,
+    META_IDX_ACTDAMP_LIVE,
 )
 
 comptime IM_TPB: Int = 64
@@ -107,6 +109,8 @@ def _qderiv_damping_env[
     D: DimsLike,
     L_JOINTS: Layout,
     L_ACTD: Layout,
+    L_ACTDL: Layout,
+    L_META: Layout,
     L_QDERIV: Layout](
     env: Int,
     dims: D,
@@ -115,6 +119,8 @@ def _qderiv_damping_env[
     ],
     njoint: Int,
     actd: LayoutTensor[DTYPE, L_ACTD, MutAnyOrigin],
+    actd_live: LayoutTensor[DTYPE, L_ACTDL, MutAnyOrigin],
+    meta: LayoutTensor[DTYPE, L_META, MutAnyOrigin],
     qderiv: LayoutTensor[DTYPE, L_QDERIV, MutAnyOrigin],
 ):
     var nv = dims.get_nv()
@@ -145,8 +151,28 @@ def _qderiv_damping_env[
     # `J^T diag(kv) J`, banked at build time because for a JOINT transmission
     # it is constant in qpos and exact. Subtracted, because qDeriv holds
     # d(force)/d(vel) and the servo term is `-kv*vel`.
+    # ⚠⚠ THE LIVE ARRAY WHEN IT WAS FILLED, THE MODEL'S WHEN IT WAS NOT.
+    # MuJoCo's `mjd_actuator_vel` SKIPS an actuator whose force is clamped by
+    # its `forcerange` — a saturated servo's force is pinned at the bound and
+    # no longer depends on velocity — and whether it is saturated changes
+    # every step, so no model-time array can carry it. `apply_actions_fields`
+    # writes `d.dof_actdamp` and raises `META_IDX_ACTDAMP_LIVE`; a step taken
+    # with no actuation call at all leaves the flag down, and then the
+    # model-time value IS right because nothing can be saturated.
+    #
+    # Measured on rby1, whose 24 servos are `forcerange="-270 270"` and
+    # saturate at qpos0: MuJoCo's `qDeriv` diagonal is -5 there (joint damping
+    # alone) against our -405, while its two `<velocity>` wheels — no
+    # forcerange, never clamped — read -4005 in both.
+    var live = rebind[Scalar[DTYPE]](
+        meta[env, META_IDX_ACTDAMP_LIVE]
+    ) != Scalar[DTYPE](0)
     for i in range(nv):
-        qderiv[env, i * nv + i] -= actd[i, 0]
+        var a = (
+            rebind[Scalar[DTYPE]](actd_live[env, i]) if live
+            else rebind[Scalar[DTYPE]](actd[i, 0])
+        )
+        qderiv[env, i * nv + i] -= a
 
 
 # ── M_hat: M -= dt * qDeriv (full, non-symmetric) ─────────────────────────
@@ -325,6 +351,12 @@ def _qderiv_damping_kernel[
     ],
     njoint_arg: Int64,
     actd: LayoutTensor[DTYPE, Layout.row_major(NV, 1), MutAnyOrigin],
+    actd_live: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
     qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
     # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
@@ -334,7 +366,8 @@ def _qderiv_damping_kernel[
     if env >= BATCH:
         return
     _qderiv_damping_env[DTYPE](
-        env, Dims[nv=NV, njoint=NJOINT](), joints, njoint, actd, qderiv
+        env, Dims[nv=NV, njoint=NJOINT](), joints, njoint, actd, actd_live,
+        meta, qderiv
     )
 
 
@@ -667,9 +700,14 @@ struct ImplicitIntegrator[
             var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
             var rl_ACTD = rl2(dm.get_nv(), 1)
             var actd_v = m.dof_actdamp.lt_dyn["cpu", DYN2](rl_ACTD)
+            var rl_ACTDL = rl2(Self.BATCH, dm.get_nv())
+            var actdl_v = d.dof_actdamp.lt_dyn["cpu", DYN2](rl_ACTDL)
+            var rl_META = rl2(Self.BATCH, METADATA_SIZE)
+            var meta_v = d.meta.lt_dyn["cpu", DYN2](rl_META)
             for e in range(Self.BATCH):
                 _qderiv_damping_env[
-                    Self.DTYPE](e, dm, joints_v, njoint, actd_v, qd_v)
+                    Self.DTYPE](e, dm, joints_v, njoint, actd_v, actdl_v,
+                                meta_v, qd_v)
         else:
             ctx.value().enqueue_function[
                 _qderiv_damping_kernel[
@@ -679,6 +717,10 @@ struct ImplicitIntegrator[
                 m.joints.lt["gpu", L_JOINT](),
                 Int64(njoint),
                 m.dof_actdamp.lt["gpu", L_ACTD](),
+                d.dof_actdamp.lt["gpu", Layout.row_major(
+                    Self.BATCH, Self.D.NV)](),
+                d.meta.lt["gpu", Layout.row_major(
+                    Self.BATCH, METADATA_SIZE)](),
                 self.iscratch.qderiv.lt["gpu", L_M](),
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),

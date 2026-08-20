@@ -69,6 +69,12 @@ struct Data[
     var qvel: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     var qacc: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     var qfrc: TensorImpl[Self.DTYPE]  # [BATCH, NV]
+    # THIS STEP's actuator damping diagonal — `-diag(d qfrc_actuator/d qvel)`.
+    # ⚠ IT IS STATE-DEPENDENT AND `Model` CANNOT HOLD IT: MuJoCo's
+    # `mjd_actuator_vel` skips any actuator whose force is CLAMPED by its
+    # `forcerange`, and whether it is clamped changes every step. Guarded by
+    # `META_IDX_ACTDAMP_LIVE`, which says whether this was filled.
+    var dof_actdamp: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     # World space (FK products)
     var xpos: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var xquat: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
@@ -160,6 +166,7 @@ struct Data[
         self.qvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.qacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.qfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.xquat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
         self.xipos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
@@ -192,6 +199,7 @@ struct Data[
         self.qvel.upload(ctx)
         self.qacc.upload(ctx)
         self.qfrc.upload(ctx)
+        self.dof_actdamp.upload(ctx)
         self.xpos.upload(ctx)
         self.xquat.upload(ctx)
         self.xipos.upload(ctx)

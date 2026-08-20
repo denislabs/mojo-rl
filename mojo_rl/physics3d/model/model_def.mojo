@@ -17,6 +17,7 @@ from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
+    METADATA_SIZE,
     POSE_META_SIZE,
 )
 
@@ -242,6 +243,12 @@ trait ModelDefLike:
         ],
         joint_limits: LayoutTensor[
             DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE), MutAnyOrigin
+        ],
+        dof_actdamp: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
     ) raises:
         """⚠ `joint_limits` added for `jnt_actfrcrange` — MuJoCo's SECOND

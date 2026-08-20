@@ -36,6 +36,7 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_MIN,
     JLIM_SIZE,
+    META_IDX_ACTDAMP_LIVE,
     JLIM_IDX_DOF_ADR,
     JLIM_IDX_ACTFRC_LIMITED,
     JLIM_IDX_ACTFRC_MIN,
@@ -122,6 +123,23 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
     # chain identical to the `_acd` version term for term.
     for i in range(nv):
         d.qfrc.data[i] = Scalar[DTYPE](0)
+    # ── THIS STEP's actuator damping diagonal ────────────────────────────
+    #
+    # ⚠⚠ IT IS NOT `Model.dof_actdamp`. MuJoCo's `mjd_actuator_vel` opens by
+    # SKIPPING any actuator whose force is clamped by its `forcerange` — a
+    # saturated actuator's force is pinned at the bound and no longer depends
+    # on velocity, so it contributes NOTHING to `qDeriv`. Whether it is
+    # saturated changes every step, so the model-time value (baked from `kv`)
+    # is right only while nothing is clamped.
+    #
+    # ⚠ MEASURED ON rby1, whose 24 position servos are `forcerange="-270 270"`
+    # and saturate at `qpos0`: MuJoCo's own `qDeriv` diagonal reads -5 on
+    # those dofs (joint damping alone) and -4005 on the two `<velocity>` wheel
+    # dofs, which have no `forcerange` and are not clamped. We used -405
+    # everywhere and over-damped every saturated dof.
+    for i in range(nv):
+        d.dof_actdamp.data[i] = Scalar[DTYPE](0)
+    d.meta.data[META_IDX_ACTDAMP_LIVE] = Scalar[DTYPE](1)
 
     for i in range(n_act):
         if i >= len(actions):
@@ -217,6 +235,7 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         # forcerange="-1 1">` at ctrl 5 gives actuator_force 1, moment 3,
         # qfrc 3. Clamping the accumulated `qfrc` instead would cap this
         # actuator at 1 N·m where MuJoCo delivers 3.
+        var saturated = False
         if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:
             var f_hi = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MAX])
             var f_lo = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MIN])
@@ -224,6 +243,31 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
                 force = f_hi
             elif force < f_lo:
                 force = f_lo
+            # ⚠ THE TEST IS ON THE CLAMPED FORCE AND IT IS `<=` / `>=`, not a
+            # strict compare — MuJoCo's is `force <= range[0] || force >=
+            # range[1]`, so an actuator sitting EXACTLY on its bound also
+            # loses its derivative. Testing "did the clamp change the value"
+            # instead would disagree on that boundary.
+            saturated = force <= f_lo or force >= f_hi
+
+        # `-d force / d qvel` for this actuator, onto each transmission dof.
+        # POSITION and VELOCITY are the two laws with a `kv` term; a MOTOR's
+        # force does not depend on velocity at all.
+        if (kind == _POS or kind == _VEL) and not saturated:
+            var kv_d = Float64(sf.actuators.data[o + ACT_IDX_KV])
+            if kv_d != 0.0:
+                for k in range(n):
+                    var dadr_d = Int(
+                        sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k]
+                    )
+                    if dadr_d < 0 or dadr_d >= nv:
+                        continue
+                    var gc = gear * Float64(
+                        sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+                    )
+                    d.dof_actdamp.data[dadr_d] += Scalar[DTYPE](
+                        kv_d * gc * gc
+                    )
 
         for k in range(n):
             var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])

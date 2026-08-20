@@ -1365,6 +1365,12 @@ struct Phyics3dBatchedEnv[
                         "gpu",
                         Layout.row_major(Self.MODEL_DEF.NJOINT * JLIM_SIZE),
                     ](),
+                    # This step's actuator damping diagonal + the flag. The
+                    # batched env builds Euler/RK4, neither of which reads
+                    # them; they are filled anyway so a future implicit
+                    # caller cannot silently get the model-time value.
+                    self.d.dof_actdamp.lt["gpu", type_of(self.d).L_NV](),
+                    self.d.meta.lt["gpu", type_of(self.d).L_META](),
                 )
             comptime if Self.CONFIG.INTEGRATOR == "euler":
                 self.integ_euler.step["gpu"](self.d, self.mf, ctx)

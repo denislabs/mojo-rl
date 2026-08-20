@@ -121,7 +121,7 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 16
+comptime METADATA_SIZE: Int = 17
 """Per-env metadata words: 4 fixed slots plus `META_IDX_TASK_PARAM_0..11`.
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
@@ -179,6 +179,28 @@ comptime META_IDX_TASK_PARAM_8: Int = 12
 comptime META_IDX_TASK_PARAM_9: Int = 13
 comptime META_IDX_TASK_PARAM_10: Int = 14
 comptime META_IDX_TASK_PARAM_11: Int = 15
+
+# ── `d.dof_actdamp` holds THIS STEP's actuator damping diagonal ───────────
+#
+# ⚠⚠ THE ACTUATOR VELOCITY DERIVATIVE IS STATE-DEPENDENT, WHICH `Model` CANNOT
+# EXPRESS. `mjd_actuator_vel` opens with
+#
+#     // skip if force is clamped by forcerange
+#     if (m->actuator_forcelimited[i]) {
+#       mjtNum force = d->actuator_force[i];
+#       if (force <= range[0] || force >= range[1]) continue;
+#     }                              // engine_derivative.c
+#
+# — a SATURATED actuator contributes NOTHING to `qDeriv`, because its force is
+# pinned at the bound and no longer depends on velocity. Whether it is
+# saturated changes every step, so `Model.dof_actdamp` (baked from `kv` at
+# build time) is only correct while nothing is clamped.
+#
+# This flag says "`d.dof_actdamp` was filled this step". `apply_actions_fields`
+# sets it; an integrator run without any actuation call leaves it 0 and falls
+# back to `Model.dof_actdamp`, which is the right answer there — an unactuated
+# model saturates nothing.
+comptime META_IDX_ACTDAMP_LIVE: Int = 16
 
 
 # =============================================================================
