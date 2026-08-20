@@ -19,7 +19,7 @@ from ..kinematics.quat_math import (
     gpu_quat_rotate,
     gpu_axis_angle_to_quat,
 )
-from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
+from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE, JNT_BALL
 from ..fields import (
     Data,
     Model,
@@ -256,6 +256,76 @@ def _cdof_body[
             cx += disp * a_w[0]
             cy += disp * a_w[1]
             cz += disp * a_w[2]
+
+        elif jnt_type == JNT_BALL:
+            # ⚠⚠ THIS BRANCH DID NOT EXIST, AND `JNT_BALL` WAS NOT EVEN
+            # IMPORTED HERE. A ball joint therefore had NO motion subspace:
+            # its three `cdof` rows stayed zero, so the mass matrix rows and
+            # every Jacobian column built from them were zero too, no force
+            # could reach the joint, `qacc` was zero and `qvel` stayed
+            # EXACTLY 0.0 forever. The joint is free in the model and frozen
+            # in the simulation — measured on cassie, whose achilles rods
+            # never rotated while MuJoCo drove them to -0.797 rad/s.
+            #
+            # `mass_matrix.mojo` and `rne.mojo` both already had their
+            # `JNT_BALL` cases; they were consuming a `cdof` nobody wrote.
+            #
+            # MuJoCo (`engine_core_smooth.c:329`) FALLS THROUGH from FREE into
+            # BALL with `skip = 18`, so these three rows and the free joint's
+            # rotational three are the SAME construction: axis k is column k
+            # of the body's world orientation, and the linear part is
+            # `axis x (subtree_com - xanchor)`.
+            #
+            # ⚠ THE OFFSET IS FROM THE **ANCHOR**, NOT THE BODY ORIGIN. They
+            # coincide for a free joint (its anchor IS the origin) and for any
+            # ball joint that omits `pos`, which is why the free branch below
+            # can use `xpos` and still be right. cassie omits it; a model that
+            # does not would be off by the anchor offset.
+            var b_jpx = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_X])
+            var b_jpy = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Y])
+            var b_jpz = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Z])
+            var b_jp = gpu_quat_rotate(
+                acc_qx, acc_qy, acc_qz, acc_qw, b_jpx, b_jpy, b_jpz
+            )
+            var b_ox = ref_x - (cx + b_jp[0])
+            var b_oy = ref_y - (cy + b_jp[1])
+            var b_oz = ref_z - (cz + b_jp[2])
+
+            var bbqx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+            var bbqy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+            var bbqz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+            var bbqw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+            var two = Scalar[DTYPE](2)
+            var one = Scalar[DTYPE](1)
+            # Columns of the rotation matrix built from the body quaternion.
+            var bx0 = one - two * (bbqy * bbqy + bbqz * bbqz)
+            var by0 = two * (bbqx * bbqy + bbqw * bbqz)
+            var bz0 = two * (bbqx * bbqz - bbqw * bbqy)
+            var bx1 = two * (bbqx * bbqy - bbqw * bbqz)
+            var by1 = one - two * (bbqx * bbqx + bbqz * bbqz)
+            var bz1 = two * (bbqy * bbqz + bbqw * bbqx)
+            var bx2 = two * (bbqx * bbqz + bbqw * bbqy)
+            var by2 = two * (bbqy * bbqz - bbqw * bbqx)
+            var bz2 = one - two * (bbqx * bbqx + bbqy * bbqy)
+
+            cdof[env, (dof_adr + 0) * 6 + 0] = bx0
+            cdof[env, (dof_adr + 0) * 6 + 1] = by0
+            cdof[env, (dof_adr + 0) * 6 + 2] = bz0
+            cdof[env, (dof_adr + 0) * 6 + 3] = by0 * b_oz - bz0 * b_oy
+            cdof[env, (dof_adr + 0) * 6 + 4] = bz0 * b_ox - bx0 * b_oz
+            cdof[env, (dof_adr + 0) * 6 + 5] = bx0 * b_oy - by0 * b_ox
+            cdof[env, (dof_adr + 1) * 6 + 0] = bx1
+            cdof[env, (dof_adr + 1) * 6 + 1] = by1
+            cdof[env, (dof_adr + 1) * 6 + 2] = bz1
+            cdof[env, (dof_adr + 1) * 6 + 3] = by1 * b_oz - bz1 * b_oy
+            cdof[env, (dof_adr + 1) * 6 + 4] = bz1 * b_ox - bx1 * b_oz
+            cdof[env, (dof_adr + 1) * 6 + 5] = bx1 * b_oy - by1 * b_ox
+            cdof[env, (dof_adr + 2) * 6 + 0] = bx2
+            cdof[env, (dof_adr + 2) * 6 + 1] = by2
+            cdof[env, (dof_adr + 2) * 6 + 2] = bz2
+            cdof[env, (dof_adr + 2) * 6 + 3] = by2 * b_oz - bz2 * b_oy
+            cdof[env, (dof_adr + 2) * 6 + 4] = bz2 * b_ox - bx2 * b_oz
+            cdof[env, (dof_adr + 2) * 6 + 5] = bx2 * b_oy - by2 * b_ox
 
         elif jnt_type == JNT_FREE:
             # Translation DOFs: pure linear

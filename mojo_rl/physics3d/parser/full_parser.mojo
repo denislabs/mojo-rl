@@ -3763,6 +3763,29 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
                 result.qpos0[adr + 0] = result.bodies[b].pos_x
                 result.qpos0[adr + 1] = result.bodies[b].pos_y
                 result.qpos0[adr + 2] = result.bodies[b].pos_z
+            # ⚠ AND THE ORIENTATION, HERE, FOR **EVERY** FREE JOINT. The
+            # identity used to be written once after this loop, from
+            # `free_joint_qpos_adr` — which records only the FIRST free joint,
+            # so a scene with two floating bodies left the second one's
+            # quaternion at (0,0,0,0).
+            if adr + 3 < q:
+                result.qpos0[adr + 3] = 1.0
+        elif jd.jnt_type == JNT_BALL:
+            # ⚠⚠ A BALL JOINT'S qpos0 IS THE IDENTITY QUATERNION, AND ZERO IS
+            # NOT A ROTATION. This branch did not exist: `qpos0` is
+            # zero-filled and only the free joint's `w` was ever set, so every
+            # `<joint type="ball">` reset to (0,0,0,0). Forward kinematics
+            # multiplies by it, so the body AND EVERYTHING BELOW IT collapses
+            # to a zero quaternion — measured on cassie, whose two achilles
+            # rods are ball-jointed: `xquat` came out exactly (0,0,0,0), the
+            # two closed-loop anchors derived from it were 0.91 m off, and the
+            # robot settled at 1.128 against MuJoCo's 1.013.
+            #
+            # ⚠ `ref` DOES NOT APPLY. MuJoCo's `ref` is a hinge/slide scalar;
+            # a ball joint's reference is the identity, which is why this is
+            # its own branch and not `ref_val` in the `else`.
+            if adr < q:
+                result.qpos0[adr + 0] = 1.0
         elif adr < q:
             result.qpos0[adr] = jd.ref_val
         adr += jd.nq
@@ -3797,6 +3820,11 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
     if not found and q > 0:
         result.qpos0_nq = q
         # qw = 1 for a free joint's identity quaternion.
+        # ⚠ NOW REDUNDANT with the loop above, which writes the same 1.0 for
+        # every free joint rather than only the one `free_joint_qpos_adr`
+        # names. Kept because it is the only thing that runs when a
+        # `<custom><numeric init_qpos>` was NOT found, and re-writing an
+        # identical value is cheaper than proving the two can never disagree.
         if result.free_joint_qpos_adr >= 0:
             var qw = result.free_joint_qpos_adr + 3
             if qw < len(result.qpos0):

@@ -315,6 +315,34 @@ def _finalize_env[
             qpos[env, jnt_qpos_adr + 5] = norm[1]  # qy
             qpos[env, jnt_qpos_adr + 6] = norm[2]  # qz
 
+        # ⚠⚠ THIS BRANCH DID NOT EXIST, so a `<joint type="ball">` NEVER
+        # MOVED. Its three DOFs accumulated velocity that nothing applied to
+        # `qpos`, while the quaternion stayed at whatever the reset left —
+        # a joint that is free in the mass matrix and frozen on screen.
+        # `kinematics/integrate_pos.mojo` has carried the correct body since
+        # it was written and has no callers; the integrators each roll their
+        # own qpos loop and only FREE and HINGE/SLIDE were ever transcribed.
+        #
+        # ⚠ MuJoCo FALLS THROUGH from FREE into BALL (`mj_integratePos`) —
+        # the free joint's rotation IS this update on shifted addresses, which
+        # is why the two are the same four lines and must stay that way.
+        # qpos holds the quaternion w FIRST; `quat_math` takes and returns
+        # (x, y, z, w).
+        elif jnt_type == JNT_BALL:
+            var bqw = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 0])
+            var bqx = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 1])
+            var bqy = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 2])
+            var bqz = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 3])
+            var bwx = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 0])
+            var bwy = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 1])
+            var bwz = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 2])
+            var bres = quat_integrate(bqx, bqy, bqz, bqw, bwx, bwy, bwz, dt)
+            var bnorm = quat_normalize(bres[0], bres[1], bres[2], bres[3])
+            qpos[env, jnt_qpos_adr + 0] = bnorm[3]  # qw
+            qpos[env, jnt_qpos_adr + 1] = bnorm[0]  # qx
+            qpos[env, jnt_qpos_adr + 2] = bnorm[1]  # qy
+            qpos[env, jnt_qpos_adr + 3] = bnorm[2]  # qz
+
         elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
             var qp = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr])
             var qv = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr])

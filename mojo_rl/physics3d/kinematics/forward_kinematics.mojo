@@ -354,10 +354,20 @@ def _fk_body[
                 cur_pz = cur_pz + axis_world[2] * displacement
 
             elif jnt_type == JNT_BALL:
-                var ball_qx = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 0])
-                var ball_qy = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 1])
-                var ball_qz = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 2])
-                var ball_qw = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 3])
+                # ⚠⚠ w IS FIRST, AND THIS READ HAD IT LAST. MuJoCo stores a
+                # ball joint's qpos as the quaternion (w, x, y, z) — the same
+                # order as a free joint's rotation half, which the FREE branch
+                # 100 lines up already reads correctly (`qw` at +3 of a 7-wide
+                # slot, then x, y, z). Reading (x, y, z, w) here made the
+                # identity quaternion (1,0,0,0) parse as (0,0,0,1)'s mirror
+                # image: a 180-degree rotation, or — from a zero-filled
+                # qpos0 — the zero quaternion, which is not a rotation at all
+                # and collapses the body and everything below it to nothing.
+                # Measured on cassie, whose two achilles rods are ball-jointed.
+                var ball_qw = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 0])
+                var ball_qx = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 1])
+                var ball_qy = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 2])
+                var ball_qz = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 3])
 
                 var normalized = gpu_quat_normalize(
                     ball_qx, ball_qy, ball_qz, ball_qw
