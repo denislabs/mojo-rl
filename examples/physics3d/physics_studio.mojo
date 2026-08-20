@@ -69,6 +69,8 @@ from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.studio.stepping import (
     StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
+    StudioImpFastPyr, StudioImpFastEll, studio_uses_implicit,
+    studio_integrator_warning,
 )
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
@@ -168,6 +170,15 @@ struct Loaded(Movable):
     # dance in the step loop.
     var integ_pyr: StudioIntegPyr
     var integ_ell: StudioIntegEll
+    var imp_pyr: StudioImpFastPyr
+    var imp_ell: StudioImpFastEll
+    var use_implicit: Bool
+    """⚠⚠ THE MODEL ASKED FOR `implicitfast` AND WE WERE RUNNING EULER.
+    `spot` and `g1` both declare it, and both have `dof_damping` 0 — their
+    only damping is actuator `kv`, which explicit Euler integrates unstably:
+    spot flew to 18 m instead of standing at 0.65. Honouring `<option
+    integrator=>` is not a refinement here, it is the difference between the
+    robot the file describes and a different one."""
     var cone_used: Int
     """`ConeType.PYRAMIDAL` / `ELLIPTIC` — which of the two is stepping."""
     var rf: RenderFields
@@ -268,10 +279,16 @@ struct Loaded(Movable):
         self.d = Data[DT, DynDims, 1](self.dims)
         self.integ_pyr = StudioIntegPyr(self.dims)
         self.integ_ell = StudioIntegEll(self.dims)
+        self.imp_pyr = StudioImpFastPyr(self.dims)
+        self.imp_ell = StudioImpFastEll(self.dims)
         self.cone_used = studio_cone_of(self.fmd)
+        self.use_implicit = studio_uses_implicit(self.fmd)
         var solver_note = studio_solver_warning(self.fmd)
         if solver_note.byte_length() > 0:
             print(solver_note)
+        var integ_note = studio_integrator_warning(self.fmd)
+        if integ_note.byte_length() > 0:
+            print(integ_note)
         # ⚠ THE **EXPANDED** TEXT, NOT THE SOURCE. `RenderFields.xml_text` is
         # what `render_skin` and `body_names_of` scan, and after an `<attach>`
         # the source names none of the spliced bodies — the scene file is a
@@ -1297,7 +1314,16 @@ def run_studio(
             if nact > 0:
                 apply_actions_fields[DT](L.sf, L.d, actions, act,
                                          L.fmd.timestep)
-            if L.cone_used == ConeType.ELLIPTIC:
+            # ⚠ THE INTEGRATOR THE FILE ASKED FOR, THEN THE CONE. Four
+            # combinations, and the studio must pick the one the MJCF
+            # declares — a model stepped with a different integrator is not
+            # the model the user opened.
+            if L.use_implicit:
+                if L.cone_used == ConeType.ELLIPTIC:
+                    L.imp_ell.step["cpu"](L.d, L.m)
+                else:
+                    L.imp_pyr.step["cpu"](L.d, L.m)
+            elif L.cone_used == ConeType.ELLIPTIC:
                 L.integ_ell.step["cpu"](L.d, L.m)
             else:
                 L.integ_pyr.step["cpu"](L.d, L.m)
