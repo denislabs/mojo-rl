@@ -88,6 +88,11 @@ struct StudioPanel(Movable):
     var group_shown: List[Bool]
     """Visibility per geom group 0-5, MuJoCo's `mjvOption.geomgroup`."""
     var filter: TextBuffer
+    var name_buf: TextBuffer
+    """The Structure section's name box — one buffer, because add and rename
+    are never in flight at the same moment."""
+    var joint_kind: Int
+    """0 hinge, 1 slide, 2 ball, 3 free — the type the Add joint button uses."""
     var want_save: Int
     """0 none, 1 scene document, 2 flattened export, 3 the EDITED MODEL.
 
@@ -124,6 +129,8 @@ struct StudioPanel(Movable):
             # everything draws the collision proxy as if it were the model.
             self.group_shown.append(g < 3)
         self.filter = TextBuffer()
+        self.name_buf = TextBuffer()
+        self.joint_kind = 0
         self.want_save = 0
         self.want_undo = 0
         self.browser_open = False
@@ -165,6 +172,16 @@ struct PanelOut(Copyable, Movable):
     var dup_prop: Bool
     var del_prop: Bool
 
+    var new_name: String
+    """The name typed in the Structure box — "" when it is empty."""
+    var add_body_here: Bool
+    """Add a child body to the selected body (or to the world when nothing
+    is selected)."""
+    var add_joint_here: Int
+    """-1 none, else a joint TYPE index to add to the selected body."""
+    var rename_here: Bool
+    """Rename the selected element to `new_name`."""
+
     var del_element: Bool
     """Delete the SELECTED body or geom from the model itself — V2.1.
 
@@ -195,6 +212,10 @@ struct PanelOut(Copyable, Movable):
         self.dup_prop = False
         self.del_prop = False
         self.del_element = False
+        self.new_name = String("")
+        self.add_body_here = False
+        self.add_joint_here = -1
+        self.rename_here = False
         self.edit_field = -1
         self.edit_value = 0.0
         self.open_path = String("")
@@ -530,11 +551,38 @@ def ui_options(
         # and remove INSTANCES; this removes a body or a geom from the robot's
         # own tree, taking every reference to it — the actuator on its joint,
         # the exclude that names it, the tendon routed through its sites.
+        ig_set_next_item_width(-1.0)
+        _ = ig_input_text(String("##newname"), p.name_buf,
+                          String("name for add / rename"))
+        out.new_name = p.name_buf.value()
+
+        if ig_button(String("add body"), 92.0):
+            out.add_body_here = True
+        ig_same_line()
+        # ⚠ THE JOINT TYPE IS A CHOICE, and `free` is one of them even though
+        # MuJoCo refuses a free joint on a nested body. Hiding it would be a
+        # second opinion on a rule `validate_model` already owns and gates;
+        # the Problems tab names the refusal by code.
+        ig_set_next_item_width(110.0)
+        var kinds = List[String]()
+        for k in ["hinge", "slide", "ball", "free"]:
+            kinds.append(String(k))
+        var jk = Int32(p.joint_kind)
+        if ig_combo(String("##jt"), jk, kinds):
+            p.joint_kind = Int(jk)
+        ig_same_line()
+        if ig_button(String("add joint"), 92.0):
+            out.add_joint_here = p.joint_kind
+
         if p.sel_kind == SEL_NONE:
-            ig_text_disabled(String("select a body or a geom first"))
+            ig_text_disabled(String(
+                "nothing selected — a new body goes into the world"
+            ))
         else:
             var what = String("geom") if p.sel_kind == SEL_GEOM \
                 else String("body")
+            if ig_button(String("rename selected ") + what, 200.0):
+                out.rename_here = True
             if ig_button(String("delete selected ") + what, 200.0):
                 out.del_element = True
             # ⚠ SAID OUT LOUD, BEFORE THE CLICK. Deleting the only geom of a
@@ -542,7 +590,7 @@ def ui_options(
             # a repair, and one the user should not discover by surprise. The
             # Problems tab names it afterwards; this names it beforehand.
             ig_text_disabled(String(
-                "removes it and everything that referenced it"
+                "delete removes it and everything that referenced it"
             ))
 
     if ig_collapsing_header(String("Model")):

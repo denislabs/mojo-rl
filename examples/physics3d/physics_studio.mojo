@@ -87,7 +87,9 @@ from mojo_rl.physics3d.studio.validate import (
     Diagnostic, validate_all, worst_severity, count_at, format_diagnostic,
     SEV_ERROR, SEV_WARN,
 )
-from mojo_rl.physics3d.studio.structure import delete_body, delete_geom
+from mojo_rl.physics3d.studio.structure import (
+    delete_body, delete_geom, add_body, add_joint, rename_element,
+)
 from mojo_rl.physics3d.studio.remap import remap_state
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.studio.edit import (
@@ -632,6 +634,7 @@ def _sync_pose(
 def run_studio(
     first: String, drive: Int, scale: Float64, max_frames: Int = 0,
     swap_to: String = String(""), delete_body_named: String = String(""),
+    smoke_add: String = String(""),
 ) raises:
     """`swap_to` is the SMOKE PATH for File > Open, `delete_body_named` for
     the structural delete.
@@ -812,6 +815,27 @@ def run_studio(
         if delete_body_named.byte_length() > 0 and max_frames > 0 \
                 and frame == (2 * max_frames) // 3 and panel.want_save == 0:
             panel.want_save = 3
+        # ⚠ ADD AND RENAME GO THROUGH THE SAME `PanelOut` FIELDS a click sets,
+        # including the name box — `out.new_name` is what the handler reads,
+        # so a smoke that set the name anywhere else would test a path the
+        # window does not use.
+        if smoke_add.byte_length() > 0 and max_frames > 0:
+            if frame == max_frames // 6:
+                ui.new_name = smoke_add
+                ui.add_body_here = True
+            elif frame == max_frames // 2:
+                var vi2 = -1
+                for bi in range(len(L.fmd.body_names)):
+                    if L.fmd.body_names[bi] == smoke_add:
+                        vi2 = bi
+                if vi2 >= 0:
+                    panel.sel_kind = SEL_BODY
+                    panel.sel_index = vi2
+                    ui.new_name = smoke_add + "_r"
+                    ui.rename_here = True
+                else:
+                    print("  smoke: the added body is not there to rename")
+
         # ⚠ AND THE SCENE, which is a DIFFERENT question: it references the
         # base model by path, so it has to be re-pointed at the edited copy or
         # it reopens as the original robot.
@@ -943,6 +967,83 @@ def run_studio(
                 _sync_pose(L, positions, quats)
             except e:
                 print("  undo failed:", e)
+
+        # ── add / rename — V2.3, through the same rebuild as a delete ─────
+        # ⚠ ONE HANDLER, ONE REBUILD PATH. Each of these regenerates the
+        # document and re-parses it; giving any of them its own shortcut is
+        # how the studio would grow a second model path (plan §10 risk 2).
+        var struct_xml = String("")
+        var struct_note = String("")
+        if ui.add_body_here and ui.new_name.byte_length() > 0:
+            var parent = String("")
+            if panel.sel_kind == SEL_BODY and panel.sel_index > 0:
+                parent = _label_of(L.fmd.body_names, panel.sel_index)
+            try:
+                # In front of the camera, so it is visible where it lands.
+                var cam3 = renderer.renderer.camera.copy()
+                var r = add_body(L.flat, parent, ui.new_name,
+                                 cam3.target.x, cam3.target.y,
+                                 cam3.target.z + 0.2)
+                if r.ok:
+                    struct_xml = r.xml
+                    struct_note = String("added body '") + ui.new_name + "'"
+                else:
+                    print("  cannot add:", r.notes[0])
+            except e:
+                print("  add body failed:", e)
+        elif ui.add_joint_here >= 0 and panel.sel_kind == SEL_BODY \
+                and panel.sel_index > 0:
+            var jt = String("hinge")
+            if ui.add_joint_here == 1:
+                jt = String("slide")
+            elif ui.add_joint_here == 2:
+                jt = String("ball")
+            elif ui.add_joint_here == 3:
+                jt = String("free")
+            try:
+                var r = add_joint(
+                    L.flat, _label_of(L.fmd.body_names, panel.sel_index),
+                    ui.new_name, jt, 0.0, 1.0, 0.0,
+                )
+                if r.ok:
+                    struct_xml = r.xml
+                    struct_note = String("added a ") + jt + " joint"
+                else:
+                    print("  cannot add joint:", r.notes[0])
+            except e:
+                print("  add joint failed:", e)
+        elif ui.rename_here and ui.new_name.byte_length() > 0 \
+                and panel.sel_kind != SEL_NONE:
+            var is_g = panel.sel_kind == SEL_GEOM
+            var old = _label_of(L.fmd.geom_names, panel.sel_index) if is_g \
+                else _label_of(L.fmd.body_names, panel.sel_index)
+            var r = rename_element(
+                L.flat, String("geom") if is_g else String("body"),
+                old, ui.new_name,
+            )
+            if r.ok:
+                struct_xml = r.xml
+                struct_note = String("renamed '") + old + "' to '" \
+                    + ui.new_name + "'"
+                for note in r.notes:
+                    print("   ", note)
+            else:
+                print("  cannot rename:", r.notes[0])
+
+        if struct_xml.byte_length() > 0:
+            try:
+                print(" ", struct_note)
+                var nxt2 = Loaded(L.path, struct_xml, L.base_dir)
+                nxt2.dirty = True
+                var rep2 = remap_state(L.fmd, L.d, nxt2.fmd, nxt2.d)
+                print("   ", rep2.summary())
+                panel.clear_selection()
+                renderer.set_render_fields(nxt2.rf.copy())
+                L = nxt2^
+                _sync_pose(L, positions, quats)
+                log = EditLog()
+            except e:
+                print("  the edit did not load:", e)
 
         # ── delete a body or a geom FROM THE MODEL — V2.1 ─────────────────
         # ⚠⚠ THIS IS NOT `del_prop`. That removes an INSTANCE from the scene
@@ -1174,4 +1275,7 @@ def main() raises:
     var del_body = String("")
     if len(args) > 6:
         del_body = String(args[6])
-    run_studio(path, drive, scale, frames, swap_to, del_body)
+    var smoke_add = String("")
+    if len(args) > 7:
+        smoke_add = String(args[7])
+    run_studio(path, drive, scale, frames, swap_to, del_body, smoke_add)
