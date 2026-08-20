@@ -5154,19 +5154,6 @@ def parse_xml_full(
             result.joints[ji].range_min = Float64(-1e10)
             result.joints[ji].range_max = Float64(1e10)
 
-    # ⚠ THE CONDIM THE MODEL NEEDS, so a caller can compare it with the
-    # `MAX_CONDIM` it built. `contact_solve` clamps a contact whose condim
-    # exceeds the built bound SILENTLY, in both cone branches, so spot's
-    # `condim="6"` feet were solved as condim 3 — torsional and rolling
-    # friction dropped with no indication. Computed from the GEOMS because a
-    # contact takes the max of its pair (priority aside), which makes the geom
-    # maximum the bound a caller has to satisfy.
-    var mcd = 3
-    for gi in range(len(result.geoms)):
-        var gc = result.geoms[gi].condim
-        if gc > mcd:
-            mcd = gc
-    result.max_condim = mcd
 
     # Actuators
     _fill_actuators(
@@ -5206,6 +5193,41 @@ def parse_xml_full(
     # Predefined contact pairs — resolved by GEOM name, so this must run
     # after the worldbody walk has grouped geoms by body.
     _fill_pairs(contact_sec, worldbody, result)
+
+    # ⚠⚠ AFTER `_fill_pairs`, NOT BEFORE. This block used to sit up beside the
+    # geom walk, where `result.pairs` is still EMPTY — so adding the pair scan
+    # there would have compiled, run, and changed nothing at all.
+    # ⚠ THE CONDIM THE MODEL NEEDS, so a caller can compare it with the
+    # `MAX_CONDIM` it built. `contact_solve` clamps a contact whose condim
+    # exceeds the built bound SILENTLY, in both cone branches, so spot's
+    # `condim="6"` feet were solved as condim 3 — torsional and rolling
+    # friction dropped with no indication.
+    #
+    # ⚠⚠ `<contact><pair>` IS A SECOND SOURCE, AND IT WAS MISSING. A pair's
+    # `condim` does not come from its geoms and is not bounded by them — it
+    # REPLACES what the mask-based path would have computed. apptronik_apollo
+    # is the case: every geom it owns is `condim="1"` (its root `<default>`
+    # says so) and the soles reach condim 6 only through
+    # `<pair condim="6" .../>`. So this returned the floor of 3 while MuJoCo
+    # reported `contact.dim == 6` on all four foot contacts — and the caller
+    # comparing "what I built" against "what the model needs" was told the
+    # truth about a model it was not looking at.
+    #
+    # ⚠ THE COMPTIME TWIN NEVER HAD THIS GAP, for a reason worth keeping:
+    # `_scan_max_condim` scans the WHOLE FILE for any `condim=` and does not
+    # try to work out which element it belongs to. Deliberately coarse beats
+    # precisely wrong here — over-estimating costs a few unused rows, and
+    # under-estimating is silent.
+    var mcd = 3
+    for gi in range(len(result.geoms)):
+        var gc = result.geoms[gi].condim
+        if gc > mcd:
+            mcd = gc
+    for pi in range(len(result.pairs)):
+        var pc = result.pairs[pi].condim
+        if pc > mcd:
+            mcd = pc
+    result.max_condim = mcd
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials(asset_sec, result)
 

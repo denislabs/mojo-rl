@@ -408,6 +408,17 @@ struct ImplicitIntegrator[
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
     SKIP_RNE_DERIV: Bool = False,
+    # ⚠⚠ THIS DID NOT EXIST, AND ITS ABSENCE WAS SILENT. `solve_newton`
+    # defaults it to 3 and `_contact_solve_env` CLAMPS each contact's own
+    # condim down to it, so every model stepped by an implicit integrator
+    # solved its contacts at condim 3 whatever the file declared — torsional
+    # and rolling friction dropped, with no diagnostic. `EulerIntegrator` has
+    # carried the parameter since the elliptic cone was generalised; this twin
+    # was never given it. Measured on apptronik_apollo, whose soles are
+    # `<pair condim="6">`: worst |d(qpos)| against MuJoCo after ONE step
+    # 1.856e-03, against 5.551e-17 for the same model with its pairs edited
+    # down to condim 3 — i.e. the entire divergence was the dropped rows.
+    MAX_CONDIM: Int = 3,
 ](Movable):
     """Owns its scratch (dynamics + contact + implicit); steps full-implicit
     dynamics on either target. See module docstring for the algorithm and
@@ -422,7 +433,7 @@ struct ImplicitIntegrator[
     # and the kernel that indexes it cannot drift apart.
     comptime JE_WS = je_ws_size[
         Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.D.NTENDON, Self.D.NEQUALITY,
-        Self.D.MAX_CONTACTS, 3,
+        Self.D.MAX_CONTACTS, Self.MAX_CONDIM,
     ]()
 
     var cscratch: ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]
@@ -599,7 +610,7 @@ struct ImplicitIntegrator[
                 " 'cg', or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
                     solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
@@ -607,6 +618,15 @@ struct ImplicitIntegrator[
                     comptime if Self.SOLVER == "island":
                         solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                     else:
+                        # ⚠ `solve_cg`, `solve_island_pgs` and `solve_contacts`
+                        # DO NOT TAKE `MAX_CONDIM` — they have no such
+                        # parameter, and `solve_contacts` calls
+                        # `_contact_solve_env` (which does) without one. So
+                        # those three are condim-3-only, on BOTH integrators;
+                        # `EulerIntegrator` forwards the parameter to
+                        # `solve_newton` alone for the same reason. The studio
+                        # only ever builds `newton`, which is why this is the
+                        # call that had to change first.
                         solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
         else:
             solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)

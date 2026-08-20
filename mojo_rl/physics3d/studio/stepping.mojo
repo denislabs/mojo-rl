@@ -38,11 +38,41 @@ from ..types import ConeType, SolverType, IntegratorType
 
 comptime STUDIO_DT = DType.float64
 
+# ⚠⚠ `MAX_CONDIM = 6`, NOT 3, AND NOT A FIFTH/SIXTH INTEGRATOR EITHER.
+# `_contact_solve_env` clamps each contact's OWN condim down to this bound
+# silently, so a studio built at 3 solved every `condim="6"` foot as condim 3
+# — torsional and rolling friction dropped, with no diagnostic. 46 of the 142
+# models in this tree need more than 3 (29 Menagerie scenes and 17 in-repo
+# assets), including spot, apollo, all four unitree quadrupeds, both shadow
+# hands and every dm_control dog.
+#
+# ⚠ SIX IS NOT FREE, AND THE FIRST VERSION OF THIS NOTE CLAIMED IT WAS. The
+# row builders do loop over each CONTACT's own condim, so the extra rows are
+# not built for a condim-3 contact — but `MAX_CONDIM` also sizes the region
+# they are built INTO and the PYRAMIDAL edge count `2*(MAX_CONDIM-1)` per
+# SLOT, and that shows up. Measured interleaved in one process, min of five
+# rounds, 300 steps:
+#
+#     google_barkour_vb (needs 3)   118.3 -> 132.5 us/step   x1.12
+#     boston_dynamics_spot (needs 6) 69.9 ->  86.6 us/step   x1.24
+#
+# ⚠ ONE BOUND FOR EVERY MODEL ANYWAY, rather than a third dispatch axis on top
+# of cone and integrator: that would take the studio's four integrator
+# instantiations to EIGHT, which this tree has repeatedly paid for in compile
+# time, to save 12% on a tool that steps at 8 kHz and renders at 60 Hz.
+# `MAX_CONDIM=6` is a superset of the answer 3 gives — verified, not assumed:
+# barkour's 100-step trajectory against MuJoCo is unchanged to the last digit.
+# A batched trainer sizing its own integrator should still pass the model's
+# own `fmd.max_condim` and pay nothing.
+comptime STUDIO_MAX_CONDIM = 6
+
 comptime StudioIntegPyr = EulerIntegrator[
-    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", MAX_CONDIM=3
+    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
+    MAX_CONDIM=STUDIO_MAX_CONDIM,
 ]
 comptime StudioIntegEll = EulerIntegrator[
-    STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", MAX_CONDIM=3
+    STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton",
+    MAX_CONDIM=STUDIO_MAX_CONDIM,
 ]
 
 # ⚠⚠ AND THE IMPLICIT PAIR, BECAUSE THE FILE ASKS FOR IT. `integrator` was
@@ -60,10 +90,12 @@ comptime StudioIntegEll = EulerIntegrator[
 # i.e. our Euler is RIGHT and was being asked the wrong question. Stepped
 # with Euler anyway, spot leaves the ground and passes 18 m.
 comptime StudioImpFastPyr = ImplicitIntegrator[
-    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True
+    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True,
+    MAX_CONDIM=STUDIO_MAX_CONDIM,
 ]
 comptime StudioImpFastEll = ImplicitIntegrator[
-    STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", SKIP_RNE_DERIV=True
+    STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", SKIP_RNE_DERIV=True,
+    MAX_CONDIM=STUDIO_MAX_CONDIM,
 ]
 
 
@@ -97,6 +129,32 @@ def studio_solver_warning(fmd: FlatModelDef) -> String:
     return (
         "Warning: this model asks for <option solver='" + asked + "'>; the"
         " studio builds NEWTON only and is stepping with that."
+    )
+
+
+def studio_condim_warning(fmd: FlatModelDef) -> String:
+    """"" when the studio's `MAX_CONDIM` covers this model, else what to say.
+
+    ⚠⚠ THE RECORDER EXISTED AND NOTHING READ IT. `fmd.max_condim` has carried
+    "the condim this model needs" since spot's `condim="6"` feet were found
+    being solved as condim 3, precisely so a caller could compare it against
+    the bound it built — and no caller ever did. `_contact_solve_env` clamps
+    silently, so the studio ran 46 of the tree's 142 models with their
+    torsional and rolling friction dropped and said nothing. Recording a
+    requirement is not checking it.
+
+    ⚠ THIS SHOULD BE UNREACHABLE TODAY, since `STUDIO_MAX_CONDIM` is 6 and
+    MuJoCo's condim domain is {1, 3, 4, 6}. That is the point: it is the
+    assertion that the bound above still covers the domain, sitting where the
+    user would be told if it ever stopped.
+    """
+    if fmd.max_condim <= STUDIO_MAX_CONDIM:
+        return String("")
+    return (
+        "Warning: this model needs condim " + String(fmd.max_condim)
+        + " and the studio solves contacts at " + String(STUDIO_MAX_CONDIM)
+        + "; the extra friction rows are dropped, so it will spin and roll"
+        " with less resistance than the file asks for."
     )
 
 

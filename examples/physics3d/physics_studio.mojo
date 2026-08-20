@@ -69,6 +69,7 @@ from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.studio.stepping import (
     StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
+    studio_condim_warning,
     StudioImpFastPyr, StudioImpFastEll, studio_uses_implicit,
     studio_integrator_warning,
 )
@@ -323,6 +324,9 @@ struct Loaded(Movable):
         var integ_note = studio_integrator_warning(self.fmd)
         if integ_note.byte_length() > 0:
             print(integ_note)
+        var condim_note = studio_condim_warning(self.fmd)
+        if condim_note.byte_length() > 0:
+            print(condim_note)
         # ⚠ THE **EXPANDED** TEXT, NOT THE SOURCE. `RenderFields.xml_text` is
         # what `render_skin` and `body_names_of` scan, and after an `<attach>`
         # the source names none of the spliced bodies — the scene file is a
