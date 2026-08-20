@@ -597,7 +597,25 @@ def build_weld_equality_rows[
                 - p0
             )
 
-            for i in range(V_SIZE):
+            # ⚠⚠ `nv`, NOT `V_SIZE` — THE THIRD TIME IN THIS FILE, AND THE
+            # ONLY COPY THAT WAS LEFT. `V_SIZE` is `cap[D.NV]()`, which is
+            # **0 on a dynamic provider**, so on the runtime path this loop
+            # zeroed NOTHING and the row inherited the PREVIOUS row's
+            # Jacobian. `_weld_jacobian_row` (:171) and the weld branch
+            # (:935) both carry a warning about exactly this; the joint
+            # branch was written the same way and never converted.
+            #
+            # ⚠ IT IS INVISIBLE WITH ONE EQUALITY. `J_row` is allocated
+            # `fill=0`, so the FIRST row is correct whatever this loop does —
+            # a model with a single equality agrees with MuJoCo to 1e-18 and
+            # nothing is wrong. It takes a SECOND joint equality for the
+            # stale entries to appear, and then they appear in the second
+            # row's `J`: measured on a two-chain fixture, row 1 got
+            # `J = [1, -1, 0, 0]` and row 2 got `[1, -1, 1, -1]` where MuJoCo
+            # has `[0, 0, 1, -1]` — a row coupling two chains that share no
+            # dof. aloha, whose two arms each weld their gripper fingers, is
+            # the model in this tree that has two.
+            for i in range(nv):
                 J_row[i] = Scalar[DTYPE](0)
             J_row[jdadr1] = Scalar[DTYPE](1)
             var jdA = rebind[Scalar[DTYPE]](dof_invweight0[jdadr1])
