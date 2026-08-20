@@ -757,3 +757,112 @@ def _rename_objname(
     if n > 0:
         notes.append("rewrote " + String(n) + " sensor objname= reference(s)")
     return out^
+
+
+# =============================================================================
+# Writing a NUMBER back into the document
+# =============================================================================
+
+
+def set_attribute_at(xml: String, at: Int, attr: String, value: String) -> String:
+    """Set `attr="value"` on the open tag starting at `at`, adding it if absent.
+
+    ⚠ THE OPEN TAG ONLY. Rewriting the whole span would hit an attribute of
+    the same name on a CHILD — `<body pos=...><geom pos=...>` is the ordinary
+    case, not a corner one.
+    """
+    var e = xml.find(">", at)
+    if e == -1:
+        return xml
+    var self_closing = String(xml[byte = e - 1 : e]) == "/"
+    var head_end = (e - 1) if self_closing else e
+    var head = String(xml[byte=at:head_end])
+    var needle = attr + '="'
+    var found = -1
+    var scan = 0
+    while True:
+        var k = head.find(needle, scan)
+        if k == -1:
+            break
+        var prev_ok = k > 0 and (
+            String(head[byte = k - 1 : k]) == " "
+            or String(head[byte = k - 1 : k]) == "\n"
+            or String(head[byte = k - 1 : k]) == "\t"
+        )
+        if prev_ok:
+            found = k
+            break
+        scan = k + needle.byte_length()
+    var new_head: String
+    if found == -1:
+        new_head = head + " " + attr + '="' + value + '"'
+    else:
+        var vs = found + needle.byte_length()
+        var ve = head.find('"', vs)
+        if ve == -1:
+            return xml
+        new_head = (
+            String(head[byte=0:vs]) + value
+            + String(head[byte = ve : head.byte_length()])
+        )
+    return (
+        String(xml[byte=0:at]) + new_head
+        + String(xml[byte = head_end : xml.byte_length()])
+    )
+
+
+def find_child(
+    xml: String, parent: String, child_tag: String, ordinal: Int
+) -> Int:
+    """The `ordinal`-th direct `<child_tag>` of `<body name="parent">`.
+
+    `parent` == "" means the worldbody. Returns -1 if there is no such child.
+
+    ⚠⚠ THIS IS THE KEY FOR AN UNNAMED ELEMENT, and most geoms in this tree
+    have no name at all. `FlatModelDef` groups geoms by body in document
+    order, so "the third geom of body `thigh`" identifies one element in both
+    representations without inventing a name for it — which would be an edit
+    the user did not ask for, in a file they may be reading.
+
+    ⚠ DIRECT CHILDREN ONLY. A nested `<body>`'s geoms belong to that body and
+    counting them here would shift every ordinal after the first child body.
+    """
+    var at: Int
+    if parent.byte_length() == 0:
+        at = _find_tag(xml, String("<worldbody"), 0)
+        if at != -1 and _in_comment(xml, at):
+            at = -1
+    else:
+        at = find_named(xml, String("body"), parent)
+    if at == -1:
+        return -1
+    var closer = String("body") if parent.byte_length() > 0 \
+        else String("worldbody")
+    if _is_self_closing_at(xml, at):
+        return -1
+    var span_end = element_end(xml, closer, at)
+    var open_end = xml.find(">", at)
+    if open_end == -1:
+        return -1
+    var pos = open_end + 1
+    var seen = 0
+    while pos < span_end:
+        var lt = xml.find("<", pos)
+        if lt == -1 or lt >= span_end:
+            return -1
+        if lt + 4 <= xml.byte_length() \
+                and String(xml[byte = lt : lt + 4]) == "<!--":
+            var ce = xml.find("-->", lt)
+            pos = (ce + 3) if ce != -1 else span_end
+            continue
+        var tag = tag_name_at(xml, lt)
+        if tag.byte_length() == 0:
+            pos = lt + 1
+            continue
+        var c_end = element_end(xml, tag, lt)
+        if tag == child_tag:
+            if seen == ordinal:
+                return lt
+            seen += 1
+        pos = c_end
+    return -1

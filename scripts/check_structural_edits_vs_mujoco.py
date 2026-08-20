@@ -93,10 +93,54 @@ def main() -> int:
         print(f"FAIL: {n_loads} must-load and {n_expected_refusals}"
               " must-refuse rows — the table needs both to mean anything")
 
+    fails += _check_document_edit()
+
     print(f"\n{len(rows) - fails} / {len(rows)} edited documents agree with"
           f" MuJoCo ({n_loads} load, {n_expected_refusals} refused as"
           " predicted)")
     return 1 if fails else 0
+
+
+def _check_document_edit() -> int:
+    """The values a FAST-PATH edit wrote — does MuJoCo read them back?
+
+    ⚠⚠ `test_edit_reaches_the_document` proves our writer and our PARSER agree.
+    That is a closed loop: a wrong spelling read wrongly cancels out exactly.
+    `size` in particular is per-type and `fromto` silently overrides it, so the
+    interesting failure is a file that reads back with the OLD number — which
+    only the reference can see.
+    """
+    import mujoco
+
+    doc = OUT / "doc_edit.xml"
+    expect = OUT / "doc_edit_expect.txt"
+    if not doc.exists() or not expect.exists():
+        print("SKIP document-edit check — run"
+              " tests/physics3d/test_edit_reaches_the_document.mojo first")
+        return 1
+
+    gname, size0, posz, bname, mass = expect.read_text().split()
+    m = mujoco.MjModel.from_xml_path(str(doc))
+    gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, gname)
+    bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, bname)
+    if gid < 0 or bid < 0:
+        print(f"FAIL document edit: MuJoCo cannot find geom {gname!r}"
+              f" / body {bname!r}")
+        return 1
+
+    bad = 0
+    for label, got, want in (
+        (f"geom {gname} size[0]", m.geom_size[gid][0], float(size0)),
+        (f"geom {gname} pos[2]", m.geom_pos[gid][2], float(posz)),
+        (f"body {bname} mass", m.body_mass[bid], float(mass)),
+    ):
+        if abs(got - want) > 1e-9:
+            bad += 1
+            print(f"FAIL document edit: {label} — MuJoCo reads {got},"
+                  f" we wrote {want}")
+        else:
+            print(f"ok   document edit: {label} = {got}")
+    return bad
 
 
 if __name__ == "__main__":

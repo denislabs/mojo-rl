@@ -293,6 +293,17 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     # the tag alone cost.
     var material_name: String
     var has_own_rgba: Bool
+    var has_explicit_mass: Bool
+    """True when the SOURCE wrote `mass=`, rather than mass being density x
+    volume.
+
+    ⚠ THE STUDIO NEEDS THIS TO WRITE A MASS EDIT BACK. On a model with
+    `<compiler inertiafromgeom="true">` a body's mass comes from its geoms and
+    an `<inertial>` is IGNORED — by MuJoCo too — so the only expressible
+    override is on the geoms. Which attribute to write depends on which one
+    the file used: `density=` is silently overridden by an existing `mass=`.
+    Guessing from the numbers would need the volume and would be wrong on a
+    mesh."""
 
     def __init__(
         out self,
@@ -347,9 +358,11 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         mesh_filename: String = "",
         material_name: String = "",
         has_own_rgba: Bool = False,
+        has_explicit_mass: Bool = False,
     ):
         self.material_name = material_name
         self.has_own_rgba = has_own_rgba
+        self.has_explicit_mass = has_explicit_mass
         self.body_id = body_id
         self.geom_type = geom_type
         self.pos_x = pos_x

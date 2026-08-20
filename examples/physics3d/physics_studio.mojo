@@ -91,7 +91,7 @@ from mojo_rl.physics3d.studio.structure import delete_body, delete_geom
 from mojo_rl.physics3d.studio.remap import remap_state
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.studio.edit import (
-    Edit, EditLog, apply_edit, needs_rebuild,
+    Edit, EditLog, apply_edit, apply_edit_to_document, needs_rebuild,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Y, F_POS_Z, F_SIZE_0, F_SIZE_1, F_SIZE_2,
     F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
@@ -819,6 +819,18 @@ def run_studio(
             var e = Edit(tgt, panel.sel_index, ui.edit_field, ui.edit_value)
             log.push(e)
             apply_edit(L.fmd, L.m, e)
+            # ⚠⚠ AND INTO THE DOCUMENT — the third copy. Without this the sim
+            # and the inspector show the edit and `File > Save edited model`
+            # writes the value the file had when it was OPENED. Gated by
+            # `test_edit_reaches_the_document`.
+            try:
+                L.flat = apply_edit_to_document(L.fmd, L.m, L.flat, e)
+            except de:
+                # ⚠ NAMED, NOT SWALLOWED. The locator can fail on an element
+                # with no name and no body to count within; the edit is still
+                # live in the sim, and the user needs to know it will not be
+                # in the file.
+                print("  this edit cannot be saved:", de)
             # ⚠ THE RENDERER READS `RenderFields`, NOT THE RECORD, so a
             # colour or a size change is invisible until `rf` is rebuilt.
             # Cheap (no re-parse, no mesh load) and it keeps "what you see" and
@@ -884,7 +896,7 @@ def run_studio(
             panel.want_undo = 0
             try:
                 var fresh = Loaded(L.path)
-                log.replay(fresh.fmd, fresh.m)
+                fresh.flat = log.replay_all(fresh.fmd, fresh.m, fresh.flat)
                 build_model_runtime[DT](fresh.fmd, fresh.dims, fresh.m)
                 fresh.rf = build_render_fields(
                     fresh.fmd, fresh.flat, fresh.base_dir

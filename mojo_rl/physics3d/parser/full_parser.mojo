@@ -20,7 +20,7 @@ from std.collections import InlineArray
 # function (non-generic since 2026-08-05), so pulling in a `std.math`-using
 # helper here does not violate the comptime constraint the docstring above
 # describes — that constraint belongs to `xml_parser.parse_xml`.
-from ..model.inertia_from_geom import eig3_symmetric
+from ..model.inertia_from_geom import eig3_symmetric, geom_volume
 from .xml_parser import (
     _split_spaces,
     _strip_xml_comments,
@@ -2013,50 +2013,19 @@ def _parse_one_geom(
         ms_s = eff_defaults.geom_mass_s
     if ms_s.byte_length() > 0:
         gd.mass = _parse_float(ms_s)
+        gd.has_explicit_mass = True
     else:
-        # Compute mass = density * volume based on geom type and size
-        var PI: Float64 = 3.14159265358979323846
-        var vol: Float64 = 0.0
-        if gd.geom_type == _GEOM_SPHERE:
-            vol = (
-                (Float64(4.0) / Float64(3.0))
-                * PI
-                * gd.radius
-                * gd.radius
-                * gd.radius
-            )
-        elif gd.geom_type == _GEOM_CAPSULE:
-            var cyl_vol = (
-                PI
-                * gd.radius
-                * gd.radius
-                * (Float64(2.0) * gd.half_length)
-            )
-            var sph_vol = (
-                (Float64(4.0) / Float64(3.0))
-                * PI
-                * gd.radius
-                * gd.radius
-                * gd.radius
-            )
-            vol = cyl_vol + sph_vol
-        elif gd.geom_type == _GEOM_BOX:
-            vol = Float64(8.0) * gd.half_x * gd.half_y * gd.half_z
-        elif gd.geom_type == _GEOM_CYLINDER:
-            vol = (
-                PI
-                * gd.radius
-                * gd.radius
-                * (Float64(2.0) * gd.half_length)
-            )
-        elif gd.geom_type == _GEOM_ELLIPSOID:
-            vol = (
-                (Float64(4.0) / Float64(3.0))
-                * PI
-                * gd.half_x
-                * gd.half_y
-                * gd.half_z
-            )
+        # ⚠⚠ `geom_volume`, NOT A SECOND COPY OF THE FIVE FORMULAS. This block
+        # used to spell them out again, and the two agreed to within 1 ULP —
+        # which is exactly how a duplicate survives: close enough that nothing
+        # notices, and different enough that a byte-identity gate fails.
+        # `test_edit_reaches_the_document` found it as a 9.362922095815296 vs
+        # ...295 mismatch between the live model and a re-parse of the same
+        # numbers. Same formula, different association order.
+        var vol = Float64(geom_volume[DType.float64](
+            gd.geom_type, gd.radius, gd.half_length,
+            gd.half_x, gd.half_y, gd.half_z,
+        ))
         # PLANE has no volume → mass stays 0
         if vol > Float64(0):
             gd.mass = gd.density * vol

@@ -53,6 +53,15 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION, GEOM_IDX_RBOUND,
 )
 from ..parser.fields_build import rbound_of
+from ..model.inertia_from_geom import geom_volume
+from ..parser.flat_model import GeomData
+from ..parser.expander import element_end, _find_tag
+from ..gpu.constants import (
+    BODY_IDX_IXX, BODY_IDX_IYY, BODY_IDX_IZZ, BODY_IDX_MASS,
+    BODY_IDX_IPOS_X, BODY_IDX_IPOS_Y, BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X, BODY_IDX_IQUAT_Y, BODY_IDX_IQUAT_Z, BODY_IDX_IQUAT_W,
+)
+from .structure import set_attribute_at, find_child, find_named
 
 comptime DT = DType.float64
 
@@ -171,6 +180,99 @@ def apply_edit(mut fmd: FlatModelDef, mut m: Model[DT, DynDims], e: Edit):
             return
         ref b = fmd.bodies[bi]
         if e.field == F_MASS:
+            # ⚠⚠ SETTING A MASS MUST ALSO MAKE THE INERTIAL EXPLICIT, and
+            # until now it did not — so the slider DID NOTHING on any body
+            # without an `<inertial>`, which is most of them. Measured on
+            # walker2d: record 1.0 -> 4.25, built model 4.0578 both before and
+            # after. `inertiafromgeom` defaults to "auto" (derive unless the
+            # body says otherwise), so the rebuild re-derived from the geoms
+            # and threw the edit away, silently, every time.
+            #
+            # MJCF has no `mass=` on `<body>`; the only spelling for an
+            # override IS an explicit inertial frame. So the edit materialises
+            # one, taking the pose and the principal axes from the BUILT model
+            # — which is where the derivation ran — rather than from the
+            # record, whose defaults were never the real values.
+            #
+            # ⚠ AND THE INERTIA IS SCALED BY THE MASS RATIO. Freezing the old
+            # tensor beside a new mass describes a body of the same shape with
+            # a different density in one place and not the other; scaling is
+            # what `<compiler settotalmass>` does for the same reason.
+            var o = e.index * MODEL_BODY_SIZE
+            var old_mass = Float64(m.bodies.data[o + BODY_IDX_MASS])
+
+            # ⚠⚠ AND ON A `inertiafromgeom="true"` MODEL AN `<inertial>` IS
+            # IGNORED — by MuJoCo as well. That mode means "always derive from
+            # the geoms", so the ONLY expressible override is on the geoms
+            # themselves. walker2d, humanoid and ant all set it, so this is
+            # not the rare branch. Scaling every contributing geom by the same
+            # ratio moves the body's mass to the target and leaves its
+            # inertia consistent with its shape, which is what the derivation
+            # would have produced for a denser body.
+            if fmd.inertiafromgeom == 1:
+                # ⚠⚠ THE RATIO COMES FROM THE **RECORD**, NOT THE LIVE MODEL.
+                # `m`'s body mass is only refreshed by a rebuild, so after a
+                # size edit it is one edit stale — and the mass the user typed
+                # then landed off by the volume change. Measured: asked for
+                # 4.25 on walker2d's thigh after resizing it, got 4.332, and
+                # MuJoCo agreed with the 4.332. Summing the geoms is what the
+                # builder will do, so it is the number to divide by.
+                #
+                # ⚠ AND WITH `inertiagrouprange`, because the builder filters
+                # by it: a geom outside the range contributes nothing, and
+                # scaling it would move a mass nobody is looking at.
+                var sum_mass = 0.0
+                for gi in range(len(fmd.geoms)):
+                    if fmd.geoms[gi].body_id != e.index:
+                        continue
+                    if fmd.geoms[gi].group < fmd.inertiagrouprange_min \
+                            or fmd.geoms[gi].group > fmd.inertiagrouprange_max:
+                        continue
+                    if fmd.geoms[gi].mass > 0.0:
+                        sum_mass += fmd.geoms[gi].mass
+                var gr = (e.value / sum_mass) if sum_mass > 1e-15 else 1.0
+                for gi in range(len(fmd.geoms)):
+                    if fmd.geoms[gi].body_id != e.index:
+                        continue
+                    if fmd.geoms[gi].group < fmd.inertiagrouprange_min \
+                            or fmd.geoms[gi].group > fmd.inertiagrouprange_max:
+                        continue
+                    # ⚠⚠ THE MASS IS RE-DERIVED FROM THE SCALED DENSITY, not
+                    # scaled alongside it. The document can only carry ONE of
+                    # the two — `density=` — so a re-parse recomputes
+                    # density x volume, and multiplying `mass` separately left
+                    # the record 1 ULP from what any reload produces
+                    # (4.25 vs 4.249999999999999). Deriving it the way the
+                    # parser will is what makes the round trip exact.
+                    #
+                    # ⚠ AN EXPLICIT `mass=` IS NOT DERIVED and is scaled
+                    # directly — the document carries that one verbatim.
+                    if fmd.geoms[gi].has_explicit_mass:
+                        fmd.geoms[gi].mass *= gr
+                        fmd.geoms[gi].density *= gr
+                        continue
+                    fmd.geoms[gi].density *= gr
+                    var v = Float64(geom_volume[DT](
+                        fmd.geoms[gi].geom_type, fmd.geoms[gi].radius,
+                        fmd.geoms[gi].half_length, fmd.geoms[gi].half_x,
+                        fmd.geoms[gi].half_y, fmd.geoms[gi].half_z,
+                    ))
+                    if v > 0.0:
+                        fmd.geoms[gi].mass = fmd.geoms[gi].density * v
+                b.mass = e.value
+                return
+            var ratio = (e.value / old_mass) if old_mass > 1e-15 else 1.0
+            b.ipos_x = Float64(m.bodies.data[o + BODY_IDX_IPOS_X])
+            b.ipos_y = Float64(m.bodies.data[o + BODY_IDX_IPOS_Y])
+            b.ipos_z = Float64(m.bodies.data[o + BODY_IDX_IPOS_Z])
+            b.iquat_x = Float64(m.bodies.data[o + BODY_IDX_IQUAT_X])
+            b.iquat_y = Float64(m.bodies.data[o + BODY_IDX_IQUAT_Y])
+            b.iquat_z = Float64(m.bodies.data[o + BODY_IDX_IQUAT_Z])
+            b.iquat_w = Float64(m.bodies.data[o + BODY_IDX_IQUAT_W])
+            b.ixx = Float64(m.bodies.data[o + BODY_IDX_IXX]) * ratio
+            b.iyy = Float64(m.bodies.data[o + BODY_IDX_IYY]) * ratio
+            b.izz = Float64(m.bodies.data[o + BODY_IDX_IZZ]) * ratio
+            b.has_explicit_inertia = True
             b.mass = e.value
             # ⚠ MASS IS *NOT* WRITTEN TO THE LIVE MODEL, deliberately. The
             # packed body record carries the INERTIA TENSOR and invweight0,
@@ -243,6 +345,24 @@ def _set_size(
                       g.half_z)
         )
 
+    # ⚠⚠ AND THE MASS FOLLOWS THE SHAPE. `gd.mass` is resolved AT PARSE TIME
+    # as density x volume, so resizing a geom left the old volume's mass in
+    # the record — the sim kept a thigh's original mass however thin it was
+    # made, and a rebuild kept it too, because the rebuild reads `gd.mass`.
+    # Re-parsing the same file gave a DIFFERENT model, which is how the
+    # document round-trip gate found this.
+    #
+    # ⚠ ONLY WHEN THE SOURCE DID NOT WRITE `mass=`. An explicit mass is an
+    # override of exactly this derivation and must survive a resize, the same
+    # way MuJoCo's compiler leaves it alone.
+    if not g.has_explicit_mass:
+        var vol = Float64(geom_volume[DT](
+            g.geom_type, g.radius, g.half_length, g.half_x, g.half_y, g.half_z
+        ))
+        if vol > 0.0:
+            g.mass = g.density * vol
+
+
 
 struct EditLog(Movable):
     """The document's delta over the loaded file. Undo TRUNCATES and replays.
@@ -289,3 +409,277 @@ struct EditLog(Movable):
         """Re-apply the live prefix onto a freshly loaded model."""
         for i in range(self.cursor):
             apply_edit(fmd, m, self.edits[i])
+
+    def replay_all(
+        self, mut fmd: FlatModelDef, mut m: Model[DT, DynDims], xml: String
+    ) raises -> String:
+        """Replay onto the model AND the document, in step.
+
+        ⚠ INTERLEAVED, NOT TWO PASSES. `apply_edit_to_document` reads the
+        record the edit just produced — a mass edit, in particular, writes an
+        `<inertial>` (or a scaled density) computed from it. Running every
+        model edit first and then every document edit would write each one
+        from the FINAL record rather than from the one it belonged to.
+        """
+        var doc = xml
+        for i in range(self.cursor):
+            apply_edit(fmd, m, self.edits[i])
+            doc = apply_edit_to_document(fmd, m, doc, self.edits[i])
+        return doc^
+
+
+# =============================================================================
+# The THIRD copy — the document
+# =============================================================================
+
+
+def _n(v: Float64) -> String:
+    """FULL precision. The document IS the model; a rounded number is an edit."""
+    return String(v)
+
+
+def _geom_size_attr(g: GeomData) -> String:
+    """MJCF `size=` for this geom's TYPE, with the component count it needs.
+
+    ⚠ THE COUNT IS PER TYPE AND MuJoCo ENFORCES IT — a sphere with three
+    numbers is a load error. `writer._geom_size` is the other place that knows
+    this, and `scene.Prop.size_attr` is the third; each names the others.
+    """
+    var t = g.geom_type
+    if t == 0:
+        return _n(g.half_x) + " " + _n(g.half_y) + " " + _n(g.half_z)
+    if t == 1:
+        return _n(g.radius)
+    if t == 2 or t == 4:
+        return _n(g.radius) + " " + _n(g.half_length)
+    if t == 3 or t == 6:
+        return _n(g.half_x) + " " + _n(g.half_y) + " " + _n(g.half_z)
+    return String("")
+
+
+def _geom_ordinal(fmd: FlatModelDef, gi: Int) -> Int:
+    """How many geoms of the same body come before `gi`."""
+    var n = 0
+    for k in range(gi):
+        if fmd.geoms[k].body_id == fmd.geoms[gi].body_id:
+            n += 1
+    return n
+
+
+def apply_edit_to_document(
+    fmd: FlatModelDef, m: Model[DT, DynDims], xml: String, e: Edit
+) raises -> String:
+    """Write the same edit into the DOCUMENT, so all three copies agree.
+
+    ⚠⚠ THIS IS THE THIRD COPY, AND IT WAS THE ONE LOSING WORK. `apply_edit`
+    keeps the live `Model` and the `FlatModelDef` in step; the studio's
+    document (`Loaded.flat`) was written once at load and never again. That
+    was invisible while the only way out was `writer.to_mjcf`, which
+    regenerates from the record — and became a silent loss the moment "Save
+    edited model" started writing the document verbatim: drag a geom's size,
+    save, and the size is the one the file had when it was opened.
+
+    ⚠ THE ELEMENT IS FOUND BY NAME WHERE IT HAS ONE AND BY POSITION WHERE IT
+    DOES NOT — "the third geom of body `thigh`". Most geoms in this tree are
+    unnamed, and naming one to make it addressable would be an edit the user
+    did not ask for, in a file they may be reading.
+    """
+    if e.target == TARGET_GEOM:
+        if e.index < 0 or e.index >= len(fmd.geoms):
+            return xml
+        ref g = fmd.geoms[e.index]
+        var at = -1
+        if e.index < len(fmd.geom_names) \
+                and fmd.geom_names[e.index].byte_length() > 0:
+            at = find_named(xml, String("geom"), fmd.geom_names[e.index])
+        if at == -1:
+            var parent = String("")
+            if g.body_id > 0 and g.body_id < len(fmd.body_names):
+                parent = fmd.body_names[g.body_id]
+            at = find_child(xml, parent, String("geom"),
+                            _geom_ordinal(fmd, e.index))
+        if at == -1:
+            raise Error(
+                "cannot locate this geom in the document — it has no name and"
+                " no body to count within, so the edit cannot be saved"
+            )
+        if e.field == F_POS_X or e.field == F_POS_Y or e.field == F_POS_Z:
+            return _materialise_fromto(
+                set_attribute_at(
+                    xml, at, String("pos"),
+                    _n(g.pos_x) + " " + _n(g.pos_y) + " " + _n(g.pos_z),
+                ),
+                at, g,
+            )
+        if e.field == F_SIZE_0 or e.field == F_SIZE_1 or e.field == F_SIZE_2:
+            return _materialise_fromto(
+                set_attribute_at(xml, at, String("size"), _geom_size_attr(g)),
+                at, g,
+            )
+        if e.field == F_RGBA_R or e.field == F_RGBA_G \
+                or e.field == F_RGBA_B or e.field == F_RGBA_A:
+            return set_attribute_at(
+                xml, at, String("rgba"),
+                _n(g.rgba_r) + " " + _n(g.rgba_g) + " " + _n(g.rgba_b) + " "
+                + _n(g.rgba_a),
+            )
+        if e.field == F_FRICTION:
+            return set_attribute_at(
+                xml, at, String("friction"),
+                _n(g.friction) + " " + _n(g.friction_spin) + " "
+                + _n(g.friction_roll),
+            )
+        return xml
+
+    if e.target == TARGET_BODY and e.field == F_MASS:
+        var bi = e.index - 1
+        if bi < 0 or bi >= len(fmd.bodies):
+            return xml
+
+        # ⚠ THE SAME BRANCH `apply_edit` TOOK. On an `inertiafromgeom="true"`
+        # model the override lives on the GEOMS, so that is what the document
+        # has to say — writing an `<inertial>` there would produce a file
+        # MuJoCo reads with the ORIGINAL mass while the studio shows the new
+        # one, which is precisely the drift this function exists to close.
+        if fmd.inertiafromgeom == 1:
+            var out_g = xml
+            for gi in range(len(fmd.geoms)):
+                if fmd.geoms[gi].body_id != e.index:
+                    continue
+                var gat = -1
+                if gi < len(fmd.geom_names) \
+                        and fmd.geom_names[gi].byte_length() > 0:
+                    gat = find_named(out_g, String("geom"), fmd.geom_names[gi])
+                if gat == -1:
+                    var pn = String("")
+                    if e.index < len(fmd.body_names):
+                        pn = fmd.body_names[e.index]
+                    gat = find_child(out_g, pn, String("geom"),
+                                     _geom_ordinal(fmd, gi))
+                if gat == -1:
+                    raise Error(
+                        "cannot locate a geom of this body in the document,"
+                        " so the mass edit cannot be saved"
+                    )
+                # ⚠ WHICH ATTRIBUTE DEPENDS ON WHICH THE FILE USED. An
+                # existing `mass=` silently overrides `density=`, so writing
+                # the density on such a geom would change nothing and say
+                # nothing.
+                if fmd.geoms[gi].has_explicit_mass:
+                    out_g = set_attribute_at(out_g, gat, String("mass"),
+                                             _n(fmd.geoms[gi].mass))
+                else:
+                    out_g = set_attribute_at(out_g, gat, String("density"),
+                                             _n(fmd.geoms[gi].density))
+            return out_g^
+        var name = fmd.body_names[e.index] if e.index < len(fmd.body_names) \
+            else String("")
+        if name.byte_length() == 0:
+            raise Error(
+                "cannot save a mass edit on an unnamed body — <inertial> has"
+                " to be written INTO that body, and there is nothing to find"
+                " it by"
+            )
+        var at = find_named(xml, String("body"), name)
+        if at == -1:
+            raise Error("body '" + name + "' is not in the document")
+        # ⚠⚠ A MASS EDIT MATERIALISES AN `<inertial>`, AND THAT IS A REAL
+        # SEMANTIC CHANGE, not a serialisation detail. MJCF has no `mass=` on
+        # `<body>`; the only spelling is an explicit inertial frame — which
+        # FREEZES the inertia that was until now DERIVED from the geoms, so a
+        # later size edit stops changing this body's dynamics. `writer`'s
+        # `_body_xml` refuses to write one unprompted for exactly this reason.
+        # Setting a mass by hand IS that override, so the note says so and the
+        # values come from the BUILT model, which is where the derivation ran.
+        var o = e.index * MODEL_BODY_SIZE
+        var inert = String('<inertial pos="')
+        inert += _n(fmd.bodies[bi].ipos_x) + " " + _n(fmd.bodies[bi].ipos_y)
+        inert += " " + _n(fmd.bodies[bi].ipos_z) + '" mass="'
+        inert += _n(fmd.bodies[bi].mass) + '" diaginertia="'
+        inert += _n(Float64(m.bodies.data[o + BODY_IDX_IXX])) + " "
+        inert += _n(Float64(m.bodies.data[o + BODY_IDX_IYY])) + " "
+        inert += _n(Float64(m.bodies.data[o + BODY_IDX_IZZ])) + '"/>'
+        return _replace_or_insert_inertial(xml, at, inert)
+
+    return xml
+
+
+def _materialise_fromto(xml: String, at: Int, g: GeomData) -> String:
+    """Turn a `fromto` capsule into explicit pos/quat/size, if it is one.
+
+    ⚠⚠ `fromto` OVERRIDES BOTH pos AND size[1], so a `size=` or `pos=` written
+    beside it is simply ignored — by MuJoCo and by our parser. Editing such a
+    geom and leaving `fromto` in place produces a saved file that reads back
+    with the OLD length and the OLD position while the inspector shows the new
+    ones: the exact silent loss this whole write-through exists to close, and
+    the reason swimmer's capsules failed the round trip when only `size` was
+    written.
+
+    ⚠ SO THE QUAT GOES IN TOO. `fromto` carries the ORIENTATION as well as
+    the length; dropping it without writing the quat leaves the segment
+    axis-aligned, which looks like the model falling apart.
+    """
+    if xml.find("fromto=", at) == -1:
+        return xml
+    var e = xml.find(">", at)
+    if e == -1 or xml.find("fromto=", at) > e:
+        return xml
+    var out = set_attribute_at(
+        xml, at, String("pos"),
+        _n(g.pos_x) + " " + _n(g.pos_y) + " " + _n(g.pos_z),
+    )
+    out = set_attribute_at(
+        out, at, String("quat"),
+        _n(g.quat_w) + " " + _n(g.quat_x) + " " + _n(g.quat_y) + " "
+        + _n(g.quat_z),
+    )
+    out = set_attribute_at(out, at, String("size"), _geom_size_attr(g))
+    return _drop_attribute_at(out, at, String("fromto"))
+
+
+def _drop_attribute_at(xml: String, at: Int, attr: String) -> String:
+    """Remove `attr="…"` from the open tag at `at`, if present."""
+    var e = xml.find(">", at)
+    if e == -1:
+        return xml
+    var head = String(xml[byte=at:e])
+    var needle = attr + '="'
+    var k = head.find(needle)
+    if k <= 0:
+        return xml
+    var ve = head.find('"', k + needle.byte_length())
+    if ve == -1:
+        return xml
+    var cut_from = k - 1 if String(head[byte = k - 1 : k]) == " " else k
+    var new_head = String(head[byte=0:cut_from]) + String(
+        head[byte = ve + 1 : head.byte_length()]
+    )
+    return (
+        String(xml[byte=0:at]) + new_head
+        + String(xml[byte = e : xml.byte_length()])
+    )
+
+
+def _replace_or_insert_inertial(
+    xml: String, body_at: Int, inert: String
+) raises -> String:
+    """Put `inert` in as the body's `<inertial>`, replacing an existing one."""
+    var have = find_child(xml, String(""), String("inertial"), 0)
+    _ = have
+    var open_end = xml.find(">", body_at)
+    if open_end == -1:
+        return xml
+    var span_end = element_end(xml, String("body"), body_at)
+    var existing = _find_tag(xml, String("<inertial"), open_end)
+    if existing != -1 and existing < span_end:
+        var ee = element_end(xml, String("inertial"), existing)
+        return (
+            String(xml[byte=0:existing]) + inert
+            + String(xml[byte = ee : xml.byte_length()])
+        )
+    if String(xml[byte = open_end - 1 : open_end]) == "/":
+        return xml
+    return (
+        String(xml[byte = 0 : open_end + 1]) + "\n      " + inert
+        + String(xml[byte = open_end + 1 : xml.byte_length()])
+    )
