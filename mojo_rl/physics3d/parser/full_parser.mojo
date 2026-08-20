@@ -781,21 +781,54 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
     # ctrl_min 4/12 and ctrl_max 8/12 wrong, ctrl_limited wrong on 12/12 and
     # 38/38. `gear` looked correct only because 1.0 IS the struct default.
     #
-    # ⚠ ONE tag kind per block. MJCF lets a block declare several
-    # (`<motor gear=.../><general ctrlrange=.../>`) and `DefaultsData` has a
-    # single `motor_*` set, so it cannot represent that. Verified across every
-    # `*_xml.mojo` in the tree: NO `<default>` block mixes actuator tags. If
-    # one ever does, this silently takes `<motor>` and drops the rest — make
-    # `DefaultsData` carry a set per ACT_KIND before that day.
-    var mpos = defaults_sec.find("<motor")
-    if mpos == -1:
-        mpos = defaults_sec.find("<general")
-    if mpos == -1:
-        mpos = defaults_sec.find("<position")
-    if mpos == -1:
-        mpos = defaults_sec.find("<velocity")
-    if mpos != -1:
+    # ⚠ "ONE tag kind per block" WAS THE OLD CONTRACT, AND IT WAS WRONG. The
+    # note here read "NO `<default>` block mixes actuator tags. If one ever
+    # does, this silently takes `<motor>` and drops the rest" — a latent bug
+    # filed against a future model. rainbow_robotics rby1 is that model, and
+    # the loop below now walks them all. The suggested remedy ("carry a set
+    # per ACT_KIND") turned out NOT to be MuJoCo's model either: it layers
+    # every tag onto ONE record in document order. See
+    # `DefaultsData.motor_gain`.
+    # ⚠⚠ EVERY ACTUATOR TAG, IN DOCUMENT ORDER — NOT THE FIRST ONE FOUND.
+    # This used to `find("<motor")`, then fall back to `<general>`, then
+    # `<position>`, then `<velocity>`, and parse THAT ONE ALONE. The comment
+    # here said "NO `<default>` block mixes actuator tags. If one ever does,
+    # this silently takes `<motor>` and drops the rest" — and rainbow_robotics
+    # rby1 does exactly that:
+    #
+    #     <motor    ctrllimited="true" ctrlrange="-100 100"/>
+    #     <velocity ctrllimited="true"/>
+    #     <position ctrllimited="true" kp="4000" kv="400"/>
+    #
+    # so `kp="4000" kv="400"` was dropped and all 24 position servos ran at
+    # MuJoCo's base gain of 1. Measured: MuJoCo's `qfrc_actuator` at qpos0
+    # saturates its joints at +-270/-120/-70/-40 N.m while ours delivered
+    # ~0.1, worst |d| 654 N.m.
+    #
+    # ⚠ MuJoCo LAYERS THEM ONTO ONE RECORD rather than keeping a set per tag
+    # kind — see `DefaultsData.motor_gain`. So the order matters and the
+    # LAST tag to state a field wins, which is why this walks the section
+    # instead of gathering the tags into slots.
+    var _mscan = 0
+    while True:
+        var mpos = -1
+        var _which = 0
+        for _k in range(4):
+            var needle = "<motor"
+            if _k == 1:
+                needle = "<general"
+            elif _k == 2:
+                needle = "<position"
+            elif _k == 3:
+                needle = "<velocity"
+            var hit = defaults_sec.find(String(needle), _mscan)
+            if hit != -1 and (mpos == -1 or hit < mpos):
+                mpos = hit
+                _which = _k
+        if mpos == -1:
+            break
         var mtag = _extract_opening_tag(defaults_sec, mpos)
+        _mscan = mpos + 1
 
         # ctrlrange / ctrllimited (see `_apply_ctrlrange`). ⚠ THIS USED TO
         # READ THE RANGE AND LEAVE `motor_ctrl_limited` ALONE, so a class
@@ -863,6 +896,44 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var bp_s = _extract_attr(mtag, "biasprm")
         if bp_s.byte_length() > 0:
             d.motor_biasprm_s = bp_s
+
+        # ── GAIN and DAMPING BIAS, layered per MuJoCo's own rules ─────────
+        #
+        # ⚠ EACH TAG WRITES WHAT ITS OWN KIND MEANS, and only when the
+        # attribute is present — measured against the 3.10.0 runtime, one
+        # row per rule:
+        #
+        #   <position kp kv>   gain = kp        bias2 = -kv
+        #   <velocity kv>      gain = kv        bias2 = -kv   (BOTH)
+        #   <general gainprm>  gain = gainprm[0]
+        #   <general biasprm>  bias2 = biasprm[2]
+        #   <motor ...>        neither — a motor has no gain or bias to give
+        #
+        # `<velocity>` writing the GAIN as well as the bias is what makes
+        # rby1's wheels inherit `kv = 4000` from a `<position kp="4000">`
+        # tag: the position tag sets gain 4000, and the wheel elements —
+        # which state no `kv` — take `kv = gain`.
+        if _which == 2:  # <position>
+            if kp_s.byte_length() > 0:
+                d.motor_gain = _parse_float(kp_s)
+                d.motor_gain_set = True
+            if kv_s.byte_length() > 0:
+                d.motor_bias2 = -_parse_float(kv_s)
+                d.motor_bias2_set = True
+        elif _which == 3:  # <velocity>
+            if kv_s.byte_length() > 0:
+                var _vk = _parse_float(kv_s)
+                d.motor_gain = _vk
+                d.motor_gain_set = True
+                d.motor_bias2 = -_vk
+                d.motor_bias2_set = True
+        elif _which == 1:  # <general>
+            if gp_s.byte_length() > 0:
+                d.motor_gain = _nth_float(gp_s, 0, 1.0)
+                d.motor_gain_set = True
+            if bp_s.byte_length() > 0:
+                d.motor_bias2 = _nth_float(bp_s, 2, 0.0)
+                d.motor_bias2_set = True
 
     return d
 
@@ -1990,20 +2061,35 @@ def _parse_one_geom(
     # attribute here uses. Reading the element ONLY is what left Jaco's six
     # finger geoms with `mesh_id -1`: they are bare `<geom name="..."/>` tags
     # that take type, mass and mesh from a `childclass`.
-    if gd.geom_type == _GEOM_MESH:
-        var mesh_attr = _extract_attr(tag, "mesh")
-        if mesh_attr.byte_length() == 0:
-            mesh_attr = eff_defaults.geom_mesh_s
-        if mesh_attr.byte_length() > 0:
-            for mi in range(assets.num_mesh_assets):
-                if assets.mesh_asset_names[mi] == mesh_attr:
-                    gd.mesh_id = mi
-                    gd.mesh_filename = assets.mesh_asset_files[mi]
-                    if mi * 3 + 2 < len(assets.mesh_asset_scale):
-                        gd.mesh_scale_x = assets.mesh_asset_scale[mi * 3 + 0]
-                        gd.mesh_scale_y = assets.mesh_asset_scale[mi * 3 + 1]
-                        gd.mesh_scale_z = assets.mesh_asset_scale[mi * 3 + 2]
-                    break
+    # ⚠⚠ RESOLVED FOR EVERY TYPE, NOT ONLY `mesh`. A geom that names a mesh
+    # while its type is a PRIMITIVE is not an error and not a mesh: MuJoCo
+    # FITS the primitive to that mesh (`mjCGeom::Compile` -> `mjCMesh::
+    # FitGeom`, user_objects.cc:4038) and then CLEARS the mesh reference, so
+    # the compiled geom is a sphere/capsule/box sized from the mesh's inertia
+    # box. Gating this block on `_GEOM_MESH` left those geoms with no mesh at
+    # all, and `fit_from_mesh` below is what tells `fields_build` to size them.
+    #
+    # ⚠ IT IS NOT RARE, AND IT IS NOT COSMETIC. rainbow_robotics rby1's
+    # `<default class="in-model-collision">` sets contype/conaffinity and NO
+    # type, so all 49 of its collidable arm and finger geoms are fitted
+    # SPHERES. Without the fit they fell back to the default radius of 0.5 —
+    # 33x too large for a finger — and the model self-collided everywhere:
+    # 128 contacts at `qpos0` where MuJoCo has 0, including a "penetration" of
+    # 0.56 m between two grippers 0.44 m apart (0.5 + 0.5 - 0.44, exactly).
+    var mesh_attr = _extract_attr(tag, "mesh")
+    if mesh_attr.byte_length() == 0:
+        mesh_attr = eff_defaults.geom_mesh_s
+    if mesh_attr.byte_length() > 0:
+        for mi in range(assets.num_mesh_assets):
+            if assets.mesh_asset_names[mi] == mesh_attr:
+                gd.mesh_id = mi
+                gd.mesh_filename = assets.mesh_asset_files[mi]
+                if mi * 3 + 2 < len(assets.mesh_asset_scale):
+                    gd.mesh_scale_x = assets.mesh_asset_scale[mi * 3 + 0]
+                    gd.mesh_scale_y = assets.mesh_asset_scale[mi * 3 + 1]
+                    gd.mesh_scale_z = assets.mesh_asset_scale[mi * 3 + 2]
+                gd.fit_from_mesh = gd.geom_type != _GEOM_MESH
+                break
 
     # fromto — overrides pos and quat for capsule
     var fromto_s = _extract_attr(tag, "fromto")
@@ -3250,14 +3336,31 @@ def _fill_actuators(
         # ── gains, and for `<general>` the force-law classification ───────
         if is_position:
             # kp default 1, kv default 0 (the damping term is optional here).
+            # ⚠⚠ THE FALLBACK IS THE MERGED GAIN/BIAS, NOT "the last kp/kv
+            # string a default tag happened to write". MuJoCo layers every
+            # actuator tag in the block onto ONE record, so a `<velocity kv>`
+            # or `<general gainprm>` earlier in the block supplies this
+            # element's gain just as a `<position kp>` would — see
+            # `DefaultsData.motor_gain`. Measured:
+            #   <default><position kp="100" kv="9"/></default> + <position/>
+            #     -> gainprm[0] 100, biasprm [0, -100, -9]
+            #   <default><velocity kv="7"/></default> + <position/>
+            #     -> gainprm[0]   7, biasprm [0,   -7, -7]
+            # The second is the row a kp-string fallback gets wrong.
             var pkp = _extract_attr(tag, "kp")
-            if pkp.byte_length() == 0:
-                pkp = eff.motor_kp_s
-            ad.kp = _parse_float(pkp) if pkp.byte_length() > 0 else 1.0
+            if pkp.byte_length() > 0:
+                ad.kp = _parse_float(pkp)
+            elif eff.motor_gain_set:
+                ad.kp = eff.motor_gain
+            else:
+                ad.kp = 1.0
             var pkv = _extract_attr(tag, "kv")
-            if pkv.byte_length() == 0:
-                pkv = eff.motor_kv_s
-            ad.kv = _parse_float(pkv) if pkv.byte_length() > 0 else 0.0
+            if pkv.byte_length() > 0:
+                ad.kv = _parse_float(pkv)
+            elif eff.motor_bias2_set:
+                ad.kv = -eff.motor_bias2
+            else:
+                ad.kv = 0.0
 
             # ── `dampratio` — a kv the MODEL cannot state yet ─────────────
             # MuJoCo allows it on `<position>` and `<intvelocity>` only, and
@@ -3336,10 +3439,20 @@ def _fill_actuators(
         elif is_velocity:
             # ⚠ kv DEFAULTS TO 1 here, not 0 — it IS the actuator, and 0 would
             # be a dead motor. gainprm[0] and -biasprm[2] are both K.
+            # ⚠ A `<velocity>` ELEMENT SETS `biasprm[2] = -gainprm[0]`, so
+            # with no `kv` of its own it takes the merged GAIN — not the
+            # merged bias. Measured: a block of `<motor/><position kp="4000"
+            # kv="400"/>` gives a bare `<velocity>` gainprm[0] 4000 and
+            # biasprm [0, 0, -4000], i.e. kv 4000 and NOT 400. rby1's two
+            # wheels are exactly this.
             var vkv = _extract_attr(tag, "kv")
-            if vkv.byte_length() == 0:
-                vkv = eff.motor_kv_s
-            var vk = _parse_float(vkv) if vkv.byte_length() > 0 else 1.0
+            var vk: Float64
+            if vkv.byte_length() > 0:
+                vk = _parse_float(vkv)
+            elif eff.motor_gain_set:
+                vk = eff.motor_gain
+            else:
+                vk = 1.0
             ad.kp = vk
             ad.kv = vk
         elif is_general:

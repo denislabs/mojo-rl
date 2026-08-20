@@ -1377,7 +1377,12 @@ def build_model_fields_from_flat[
         mesh_inertia_cache.append(MeshInertia[DTYPE]())
     for i in range(len(fmd.geoms)):
         var gd_m = fmd.geoms[i]
-        if gd_m.geom_type != GEOM_MESH:
+        # ⚠ `fit_from_mesh` GEOMS NEED THIS TOO, and their type is NOT
+        # `GEOM_MESH` — that is the whole point of them. MuJoCo sizes a
+        # fitted primitive from the mesh's INERTIA BOX, so the inertia this
+        # loop computes is the input to the fit below, not just to the body's
+        # mass properties.
+        if gd_m.geom_type != GEOM_MESH and not gd_m.fit_from_mesh:
             continue
         if gd_m.mesh_id < 0 or gd_m.mesh_filename.byte_length() == 0:
             continue
@@ -1468,8 +1473,18 @@ def build_model_fields_from_flat[
         # `geom_quat = declared_quat (x) mesh_quat`. Measured on Jaco, whose
         # mesh geoms declare no pos/quat: `geom_pos == mesh_pos` and
         # `geom_quat == mesh_quat` for all 13 of them.
+        #
+        # ⚠⚠ A FITTED PRIMITIVE GETS THE SAME FRAME. `mjuu_frameaccum` sits
+        # OUTSIDE MuJoCo's `if (type != mjGEOM_MESH)` fitting branch
+        # (`user_objects.cc:4053`), so a sphere fitted to a mesh is offset by
+        # that mesh's CoM exactly as a mesh geom is. Gating this on
+        # `GEOM_MESH` left every fitted geom at its body's origin, and on
+        # rby1 that put two arm spheres CONCENTRIC — our reported penetration
+        # was exactly `-(r1 + r2)`, which is what a zero centre-distance
+        # gives and is the fingerprint of a dropped offset rather than a
+        # wrong radius.
         if (
-            gd.geom_type == GEOM_MESH
+            (gd.geom_type == GEOM_MESH or gd.fit_from_mesh)
             and gd.mesh_id >= 0
             and mesh_inertia_valid[gd.mesh_id]
         ):
@@ -1505,10 +1520,76 @@ def build_model_fields_from_flat[
             mf.geoms.data[o + GEOM_IDX_QUAT_Y] = cq[1]
             mf.geoms.data[o + GEOM_IDX_QUAT_Z] = cq[2]
             mf.geoms.data[o + GEOM_IDX_QUAT_W] = cq[3]
-            geom_mesh_vol[i] = mi_g.volume
-            geom_mesh_eig[i * 3 + 0] = mi_g.eig0
-            geom_mesh_eig[i * 3 + 1] = mi_g.eig1
-            geom_mesh_eig[i * 3 + 2] = mi_g.eig2
+            # ⚠ BUT NOT ITS INERTIA. `geom_mesh_vol`/`_eig` feed the body's
+            # mass properties when no `<inertial>` is given, and MuJoCo
+            # computes a FITTED geom's inertia from the PRIMITIVE it became,
+            # not from the mesh it was fitted to — it has cleared the mesh
+            # pointer by then. Writing these for a fitted geom would give a
+            # sphere the mesh's inertia tensor.
+            if not gd.fit_from_mesh:
+                geom_mesh_vol[i] = mi_g.volume
+                geom_mesh_eig[i * 3 + 0] = mi_g.eig0
+                geom_mesh_eig[i * 3 + 1] = mi_g.eig1
+                geom_mesh_eig[i * 3 + 2] = mi_g.eig2
+
+        # ── `mjCMesh::FitGeom` — a PRIMITIVE sized from a mesh ────────────
+        #
+        # A geom that names a mesh while its type is a primitive is fitted to
+        # that mesh and then loses its mesh reference (`user_objects.cc:4038`).
+        # The default `fitaabb` is FALSE, so the fit uses the mesh's INERTIA
+        # BOX, not its axis-aligned bounding box (`user_mesh.cc:944`):
+        #
+        #     boxsz[k] = 0.5*sqrt(6*(sum of the OTHER two eigvals - eigval[k])
+        #                          / volume)
+        #     SPHERE            size[0] = (bx + by + bz)/3
+        #     CAPSULE           size[0] = (bx + by)/2, size[1] = max(0, bz - size[0]/2)
+        #     CYLINDER          size[0] = (bx + by)/2, size[1] = bz
+        #     BOX / ELLIPSOID   size    = (bx, by, bz)
+        #
+        # ⚠ VERIFIED AGAINST THE RUNTIME, NOT TRANSCRIBED AND HOPED FOR:
+        # rby1's `EE_FINGER_0` gives boxsz (0.029504, 0.013904, 0.001500) and
+        # a fitted sphere radius of 0.0149700, which is MuJoCo's
+        # `geom_rbound` for that geom to seven digits.
+        #
+        # ⚠ THE EIGENVALUES ARE UNITLESS (length^5) ON BOTH SIDES — MuJoCo
+        # divides by `GetVolumeRef()` here for the same reason, so no mass or
+        # density enters. Scaling them by `mass/volume` first (which is what
+        # the INERTIA path does) would make the box depend on the body's mass.
+        if gd.fit_from_mesh and gd.mesh_id >= 0 and mesh_inertia_valid[
+            gd.mesh_id
+        ]:
+            var mif = mesh_inertia_cache[gd.mesh_id]
+            var volf = Float64(mif.volume)
+            if volf > 1e-18:
+                var e0 = Float64(mif.eig0)
+                var e1 = Float64(mif.eig1)
+                var e2 = Float64(mif.eig2)
+                var t0 = 6.0 * (e1 + e2 - e0) / volf
+                var t1 = 6.0 * (e0 + e2 - e1) / volf
+                var t2 = 6.0 * (e0 + e1 - e2) / volf
+                var bx = 0.5 * sqrt(t0) if t0 > 0.0 else 0.0
+                var by = 0.5 * sqrt(t1) if t1 > 0.0 else 0.0
+                var bz = 0.5 * sqrt(t2) if t2 > 0.0 else 0.0
+                if gd.geom_type == GEOM_SPHERE:
+                    gd.radius = (bx + by + bz) / 3.0
+                elif gd.geom_type == GEOM_CAPSULE:
+                    gd.radius = (bx + by) / 2.0
+                    var hl = bz - gd.radius / 2.0
+                    gd.half_length = hl if hl > 0.0 else 0.0
+                elif gd.geom_type == GEOM_CYLINDER:
+                    gd.radius = (bx + by) / 2.0
+                    gd.half_length = bz
+                else:
+                    gd.half_x = bx
+                    gd.half_y = by
+                    gd.half_z = bz
+                mf.geoms.data[o + GEOM_IDX_RADIUS] = Scalar[DTYPE](gd.radius)
+                mf.geoms.data[o + GEOM_IDX_HALF_LENGTH] = Scalar[DTYPE](
+                    gd.half_length
+                )
+                mf.geoms.data[o + GEOM_IDX_HALF_X] = Scalar[DTYPE](gd.half_x)
+                mf.geoms.data[o + GEOM_IDX_HALF_Y] = Scalar[DTYPE](gd.half_y)
+                mf.geoms.data[o + GEOM_IDX_HALF_Z] = Scalar[DTYPE](gd.half_z)
 
         # Bounding sphere radius for broad-phase (legacy per-type formulas).
         # ⚠ THE FORMULA IS `rbound_of`, NOT INLINE, because the studio has to

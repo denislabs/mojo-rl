@@ -294,6 +294,12 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
     var group: Int  # geom group (0-5), used for inertiagrouprange filtering
     var priority: Int  # `<geom priority>`; higher wins ALL contact params
+    # `<geom mesh="...">` on a geom whose TYPE is a primitive. MuJoCo fits
+    # the primitive to that mesh's inertia box and then drops the mesh
+    # reference, so the result is a sphere/capsule/box sized from the mesh —
+    # NOT a mesh geom, and NOT a default-sized primitive. See the fit in
+    # `fields_build`.
+    var fit_from_mesh: Bool
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
     var mesh_scale_x: Float64
@@ -423,6 +429,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.material_id = material_id
         self.group = group
         self.priority = 0  # MuJoCo default; set by the parser when declared
+        self.fit_from_mesh = False
         self.mesh_id = mesh_id
         self.mesh_filename = mesh_filename
         self.mesh_scale_x = 1.0
@@ -1288,6 +1295,30 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # `<general>`/`<position>`/`<velocity>` gain attributes, raw. dog and
     # quadruped both declare gainprm/biasprm/biastype in a <default> block,
     # so the class path is the one that carries them.
+    # ── The merged actuator default's GAIN and DAMPING BIAS ─────────────
+    #
+    # ⚠⚠ MuJoCo LAYERS EVERY ACTUATOR TAG IN A `<default>` BLOCK ONTO ONE
+    # RECORD, IN DOCUMENT ORDER — it does NOT keep a separate default per tag
+    # kind. `<position kp>` writes `gainprm[0] = kp` and `biasprm[2] = -kv`;
+    # `<velocity kv>` writes BOTH `gainprm[0] = kv` and `biasprm[2] = -kv`;
+    # `<general gainprm/biasprm>` writes them directly. Whichever tag comes
+    # LAST wins per field, and the element that later inherits does not care
+    # which tag kind supplied it.
+    #
+    # ⚠ THAT PRODUCES GENUINELY SURPRISING VALUES, and rby1 is the proof:
+    # its block is `<motor .../><velocity ctrllimited="true"/><position
+    # kp="4000" kv="400"/>`, so the merged gain is 4000 — and its two
+    # `<velocity>` WHEEL actuators, which state no `kv`, compile to
+    # `kv = 4000`, inherited from a `<position>` tag's `kp`. Measured on the
+    # 3.10.0 runtime: `left_wheel_act` gainprm[0] 4000, biasprm [0, 0, -4000].
+    #
+    # `*_set` is "did any tag state it", which is what lets an element fall
+    # back to MuJoCo's own base default (gain 1, bias2 0) rather than to a
+    # value no tag wrote.
+    var motor_gain: Float64
+    var motor_gain_set: Bool
+    var motor_bias2: Float64
+    var motor_bias2_set: Bool
     var motor_kp_s: String
     # `<position inheritrange>` — see `_fill_actuators`. Carried as raw text so
     # an absent attribute inherits the parent class rather than resetting it,
@@ -1445,6 +1476,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_force_max = 0.0
         self.motor_dyntype_s = ""
         self.motor_dynprm_s = ""
+        self.motor_gain = 1.0
+        self.motor_gain_set = False
+        self.motor_bias2 = 0.0
+        self.motor_bias2_set = False
         self.motor_kp_s = ""
         self.motor_inheritrange_s = ""
         self.motor_kv_s = ""
