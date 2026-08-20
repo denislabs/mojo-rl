@@ -300,6 +300,24 @@ comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / r
 # Test against THIS constant, never against `min < max`.
 comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 
+# `mjMAXVAL` (`mjmodel.h:25`) — "maximum value in qpos, qvel, qacc". It is the
+# ONLY velocity bound MuJoCo has, and it is not a clamp: `mj_checkVel`
+# (`engine_forward.c`) tests every dof with `mju_isBad` (NaN, inf, or |v| >
+# this) and, on a hit, WARNS and RESETS the whole state — it never quietly
+# rescales a velocity into range.
+#
+# ⚠⚠ THE INTEGRATORS USED TO SATURATE AT 100 rad/s. That is a physics change
+# no reference performs, and it is silent: one step out of kinova_gen3's own
+# `home` keyframe — where its base and shoulder collision hulls start 12 mm
+# interpenetrated — MuJoCo answers |qvel|max 165.583 and ours stopped dead on
+# 100.0000. The fingerprint is a joint that lands EXACTLY `100*dt` from where
+# it began.
+#
+# ⚠ IT HAPPENS TO EQUAL `JOINT_RANGE_UNLIMITED` ABOVE, and they are NOT the
+# same quantity — that one is this parser's spelling of "no limit", this one
+# is MuJoCo's numeric ceiling. Do not fold them.
+comptime MJ_MAXVAL: Float64 = 1e10
+
 
 # =============================================================================
 # Model Buffer Layout - Global Metadata

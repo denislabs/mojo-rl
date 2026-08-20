@@ -86,6 +86,7 @@ from .euler import (
     _qacc_writeback_kernel,
 )
 from ..gpu.constants import (
+    MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_DENSITY,
@@ -267,11 +268,14 @@ def _implicit_finalize_env[
     var njoint = dims.get_njoint()
     # Velocity update straight from the (constrained) implicit qacc — NO
     # dt*D re-solve (M_hat already carries the implicit terms).
+    #
+    # ⚠ THE BOUND IS `mjMAXVAL`, NOT A STABILITY BUDGET — see
+    # `MJ_MAXVAL`. MuJoCo resets on a bad velocity, it never rescales one.
     for i in range(nv):
         var qacc_final = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
         qacc[env, i] = qacc_final
         var qvel_new = rebind[Scalar[DTYPE]](qvel[env, i]) + qacc_final * dt
-        var qvel_max = Scalar[DTYPE](100.0)
+        var qvel_max = Scalar[DTYPE](MJ_MAXVAL)
         if qvel_new != qvel_new:  # NaN guard
             qvel_new = Scalar[DTYPE](0.0)
         elif qvel_new > qvel_max:

@@ -64,6 +64,7 @@ from ..fields import (
     rl2,
 )
 from ..gpu.constants import (
+    MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_DENSITY,
@@ -267,13 +268,19 @@ def _finalize_env[
     _ldl_factor_env(env, dims, M, L, D)
     _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
 
-    # Step 5: v_new = v_old + dt * qacc_final (NaN guard + clamp)
+    # Step 5: v_new = v_old + dt * qacc_final.
+    #
+    # ⚠ THE BOUND IS `mjMAXVAL`, NOT A STABILITY BUDGET. MuJoCo's only
+    # velocity guard is `mj_checkVel`, which WARNS and resets the state
+    # when a dof goes NaN/inf or past 1e10; it never rescales one. A
+    # tighter saturation here is a silent physics change that only shows
+    # up on the models fast enough to reach it.
     for i in range(nv):
         var old_qvel = rebind[Scalar[DTYPE]](qvel[env, i])
         var qacc_final = rebind[Scalar[DTYPE]](qacc_ws[env, i])
         qacc[env, i] = qacc_final
         var qvel_new = old_qvel + qacc_final * dt
-        var qvel_max = Scalar[DTYPE](100.0)
+        var qvel_max = Scalar[DTYPE](MJ_MAXVAL)
         if qvel_new != qvel_new:  # NaN guard
             qvel_new = Scalar[DTYPE](0.0)
         elif qvel_new > qvel_max:

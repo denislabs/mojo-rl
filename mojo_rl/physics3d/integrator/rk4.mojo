@@ -88,6 +88,7 @@ from ..fields import (
     rl2,
 )
 from ..gpu.constants import (
+    MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_DENSITY,
@@ -345,15 +346,18 @@ def _rk4_combine_env[
         var c3_i = v0_i + dt * a2_i
 
         # Combined velocity — stored in A0 for position integration.
-        # NaN guard + clamp: if any stage produced NaN qacc, c1/c2/c3 are
-        # NaN; clamp v_combined to prevent NaN qpos integration.
+        # NaN guard: if any stage produced NaN qacc, c1/c2/c3 are NaN and
+        # the position integration below would spread it.
+        #
+        # ⚠ THE SATURATION BOUND IS `mjMAXVAL` — see `MJ_MAXVAL`. It is a
+        # numeric backstop on an already-diverged sim, not a speed limit.
         var v_combined_i = (
             ONE_SIXTH * v0_i
             + ONE_THIRD * c1_i
             + ONE_THIRD * c2_i
             + ONE_SIXTH * c3_i
         )
-        var vpos_max = Scalar[DTYPE](100.0)
+        var vpos_max = Scalar[DTYPE](MJ_MAXVAL)
         if v_combined_i != v_combined_i:  # NaN guard: no position change
             v_combined_i = Scalar[DTYPE](0.0)
         elif v_combined_i > vpos_max:
@@ -362,9 +366,9 @@ def _rk4_combine_env[
             v_combined_i = -vpos_max
         A0[env, i] = v_combined_i
 
-        # Integrate: qvel = v0 + qacc * dt (NaN guard + velocity clamp)
+        # Integrate: qvel = v0 + qacc * dt (NaN guard + `mjMAXVAL`)
         var qvel_new = v0_i + qacc_i * dt
-        var qvel_max = Scalar[DTYPE](100.0)
+        var qvel_max = Scalar[DTYPE](MJ_MAXVAL)
         if qvel_new != qvel_new:  # NaN guard: reset to zero
             qvel_new = Scalar[DTYPE](0.0)
         elif qvel_new > qvel_max:
