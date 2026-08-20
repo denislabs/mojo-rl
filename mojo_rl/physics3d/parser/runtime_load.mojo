@@ -59,6 +59,7 @@ from .fields_build import (
     build_model_fields_from_flat,
     apply_auto_spring_damper,
     build_spec_fields,
+    build_actuator_damping,
 )
 from ..fields import Data, Model, DynamicsScratch, SpecFields, DynDims
 from ..dynamics.invweight import compute_invweight0
@@ -219,7 +220,9 @@ def build_model_runtime[
 
 def spec_fields_runtime[
     DTYPE: DType
-](fmd: FlatModelDef, dims: DynDims) raises -> SpecFields[DTYPE, DynDims]:
+](
+    fmd: FlatModelDef, dims: DynDims, mut mf: Model[DTYPE, DynDims]
+) raises -> SpecFields[DTYPE, DynDims]:
     """The actuation records, reference pose, keyframes and joint limits.
 
     ⚠ SEPARATE FROM `build_model_runtime` BECAUSE THE TWO BUNDLES ARE
@@ -236,4 +239,12 @@ def spec_fields_runtime[
     """
     var sf = SpecFields[DTYPE, DynDims](dims)
     build_spec_fields[DTYPE](fmd, sf)
+    # ⚠⚠ THE MODEL IS A REQUIRED ARGUMENT, NOT AN OPTIONAL ONE, and that is
+    # the whole design of this call. `<position dampratio>` resolves to a `kv`
+    # only against `mf.dof_M0`, so a caller without a model cannot produce
+    # correct actuators — and the failure is SILENT (kv = 0, an undamped
+    # servo). Taking the model here makes a missed call site a compile error
+    # instead of a robot that flies off under a policy and sits still without
+    # one, which is how this was found.
+    build_actuator_damping[DTYPE](fmd, mf, sf)
     return sf^

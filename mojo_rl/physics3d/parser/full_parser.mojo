@@ -711,6 +711,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var kv_s = _extract_attr(mtag, "kv")
         if kv_s.byte_length() > 0:
             d.motor_kv_s = kv_s
+        var dr_s = _extract_attr(mtag, "dampratio")
+        if dr_s.byte_length() > 0:
+            d.motor_dampratio_s = dr_s
         var ir_s = _extract_attr(mtag, "inheritrange")
         if ir_s.byte_length() > 0:
             d.motor_inheritrange_s = ir_s
@@ -3029,6 +3032,24 @@ def _fill_actuators(
             if pkv.byte_length() == 0:
                 pkv = eff.motor_kv_s
             ad.kv = _parse_float(pkv) if pkv.byte_length() > 0 else 0.0
+
+            # ── `dampratio` — a kv the MODEL cannot state yet ─────────────
+            # MuJoCo allows it on `<position>` and `<intvelocity>` only, and
+            # it is EXCLUSIVE with kv ("kv and dampratio cannot both be
+            # defined", `user_api.cc:1213`). MuJoCo raises; a parser that must
+            # keep loading cannot, so an explicit kv wins — the same
+            # precedence `inheritrange` takes against an explicit ctrlrange,
+            # and the one a saved file has, since MuJoCo always writes the
+            # DERIVED kv back out.
+            #
+            # ⚠ IT CANNOT BE RESOLVED HERE. The value depends on the
+            # reflected inertia at qpos0, which does not exist until the mass
+            # matrix is built — see `apply_actuator_dampratio`.
+            var pdr = _extract_attr(tag, "dampratio")
+            if pdr.byte_length() == 0:
+                pdr = eff.motor_dampratio_s
+            if pdr.byte_length() > 0 and pkv.byte_length() == 0:
+                ad.dampratio = _parse_float(pdr)
 
             # ── `inheritrange` (`user_objects.cc:7138`) ───────────────────
             # "Automatically set the actuator's ctrlrange to match the

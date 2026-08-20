@@ -130,6 +130,36 @@ struct Model[
     var sites: TensorImpl[Self.DTYPE]  # [NSITE, MODEL_SITE_SIZE]
     var body_invweight0: TensorImpl[Self.DTYPE]  # [NBODY, 2]
     var dof_invweight0: TensorImpl[Self.DTYPE]  # [NV]
+    var dof_M0: TensorImpl[Self.DTYPE]  # [NV]
+    """Diagonal of the mass matrix at qpos0, armature included — MuJoCo's
+    `dof_M0`.
+
+    ⚠ NOT `1/dof_invweight0`. That is the diagonal of M INVERSE, and the two
+    are reciprocals only for a diagonal M. MuJoCo keeps both for a reason and
+    reads THIS one when it turns an actuator's `dampratio` into a `kv`
+    (`engine_setconst.c:1025`).
+
+    Filled by `compute_invweight0`, which already forms M at qpos0 and must
+    read the diagonal BEFORE `ldl_factor` overwrites it in place."""
+    var dof_actdamp: TensorImpl[Self.DTYPE]  # [NV]
+    """Per-dof actuator damping, `sum over actuators of kv * trn^2`.
+
+    ⚠ THIS IS NOT `dof_damping`. `<joint damping>` is passive and MuJoCo's
+    Euler already folds it into the velocity update; THIS is the `-kv*vel`
+    term of a `<position>`/`<velocity>` servo, which Euler integrates
+    EXPLICITLY and `implicitfast` folds into the mass matrix
+    (`mjd_actuator_vel`). The distinction is the whole reason spot flies: its
+    `dof_damping` is 0, so the passive path has nothing to stabilise and the
+    only damping in the model is this.
+
+    ⚠ THE DIAGONAL ONLY. MuJoCo forms the full `J^T diag(kv) J`, which for a
+    JOINT transmission (one dof, `trn = gear*coef`) is exactly this diagonal
+    and for a multi-dof transmission (tendon, site, ball) also has
+    off-diagonal terms. `build_actuator_damping` WARNS when it meets one
+    rather than dropping them quietly.
+
+    Filled alongside the `dampratio` conversion, which is the point where the
+    final `kv` of every actuator is known."""
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
     var pairs: TensorImpl[Self.DTYPE]  # [NPAIR, MODEL_PAIR_SIZE]
     var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
@@ -194,6 +224,8 @@ struct Model[
         self.sites = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nsite() * MODEL_SITE_SIZE))
         self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nbody() * 2)
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
+        self.dof_M0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
+        self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nexclude() * 2))
         self.pairs = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(dims.get_npair() * MODEL_PAIR_SIZE)
@@ -249,6 +281,8 @@ struct Model[
         self.sites.upload(ctx)
         self.body_invweight0.upload(ctx)
         self.dof_invweight0.upload(ctx)
+        self.dof_M0.upload(ctx)
+        self.dof_actdamp.upload(ctx)
         self.excludes.upload(ctx)
         self.pairs.upload(ctx)
         self.mesh_meta.upload(ctx)

@@ -91,6 +91,7 @@ from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .fields_build import (
     build_model_fields_from_flat,
     build_spec_fields,
+    assert_no_pending_dampratio,
     apply_auto_spring_damper,
 )
 from .flat_model import (
@@ -681,6 +682,7 @@ struct ModelDefFromXML[
         the duplication; merging the two builds is 1b's business.
         """
         var fmd = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
+        assert_no_pending_dampratio(fmd, String("init_spec_fields"))
         build_spec_fields[DTYPE](fmd, sf)
         sf.upload_all(ctx)
 
@@ -695,9 +697,9 @@ struct ModelDefFromXML[
         with a page-long message.
         """
         var sf = SpecFields[DTYPE, ModelDims[Self]]()
-        build_spec_fields[DTYPE](
-            parse_xml_full(Self.xml_text(), Self.asset_base_dir()), sf
-        )
+        var fmd_ms = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
+        assert_no_pending_dampratio(fmd_ms, String("make_spec_fields"))
+        build_spec_fields[DTYPE](fmd_ms, sf)
         return sf^
 
     @staticmethod

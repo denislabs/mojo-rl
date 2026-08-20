@@ -31,8 +31,9 @@ Matching the reference is also the faster path here.
 
 from ..fields import DynDims
 from ..integrator.euler import EulerIntegrator
+from ..integrator.implicit import ImplicitIntegrator
 from ..parser.flat_model import FlatModelDef
-from ..types import ConeType, SolverType
+from ..types import ConeType, SolverType, IntegratorType
 
 
 comptime STUDIO_DT = DType.float64
@@ -42,6 +43,27 @@ comptime StudioIntegPyr = EulerIntegrator[
 ]
 comptime StudioIntegEll = EulerIntegrator[
     STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", MAX_CONDIM=3
+]
+
+# ⚠⚠ AND THE IMPLICIT PAIR, BECAUSE THE FILE ASKS FOR IT. `integrator` was
+# the one `<option>` the studio still ignored, and it is not cosmetic: spot
+# and g1 both say `implicitfast`, both are driven by `<position>` servos, and
+# spot's `dof_damping` is 0 — so its ONLY damping is the actuator's `kv=40`,
+# which explicit Euler integrates unstably. Measured at spot's first step,
+# same forces (qfrc_actuator 127.824) and same qacc (18300.2) in both
+# engines:
+#
+#     MuJoCo implicitfast : |qvel|max  2.8516
+#     MuJoCo Euler        : |qvel|max 36.6005
+#     ours   (Euler)      : |qvel|max 36.600467   <- exact agreement
+#
+# i.e. our Euler is RIGHT and was being asked the wrong question. Stepped
+# with Euler anyway, spot leaves the ground and passes 18 m.
+comptime StudioImpFastPyr = ImplicitIntegrator[
+    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True
+]
+comptime StudioImpFastEll = ImplicitIntegrator[
+    STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", SKIP_RNE_DERIV=True
 ]
 
 
@@ -75,4 +97,51 @@ def studio_solver_warning(fmd: FlatModelDef) -> String:
     return (
         "Warning: this model asks for <option solver='" + asked + "'>; the"
         " studio builds NEWTON only and is stepping with that."
+    )
+
+
+def studio_uses_implicit(fmd: FlatModelDef) -> Bool:
+    """True when this model must be stepped by the implicit pair.
+
+    ⚠ ONE FUNCTION, for the same reason `studio_cone_of` is one: the studio's
+    dispatch and the gate must not be able to disagree about which integrator
+    a model gets.
+
+    `implicit` maps here too — see `studio_integrator_warning`.
+    """
+    return (
+        fmd.integrator == IntegratorType.IMPLICITFAST
+        or fmd.integrator == IntegratorType.IMPLICIT
+    )
+
+
+def studio_integrator_warning(fmd: FlatModelDef) -> String:
+    """"" when we step what the file asked for, else what to tell the user.
+
+    ⚠ TWO SUBSTITUTIONS ARE POSSIBLE AND BOTH ARE NAMED. `implicit` gets the
+    IMPLICITFAST pair — the same M_hat minus the dense RNE velocity
+    derivative, so it is damped correctly and merely less exact in the
+    Coriolis terms. `RK4` gets Euler, which is a real difference in accuracy
+    rather than in stability. Neither is silent; a substitution nobody is told
+    about is how a tool ends up disagreeing with the file it is displaying.
+    """
+    if fmd.integrator == IntegratorType.EULER:
+        return String("")
+    if fmd.integrator == IntegratorType.IMPLICITFAST:
+        return String("")
+    if fmd.integrator == IntegratorType.IMPLICIT:
+        return String(
+            "Note: this model asks for <option integrator='implicit'>; the"
+            " studio is stepping it with IMPLICITFAST — the same implicit"
+            " damping, without the dense RNE velocity derivative."
+        )
+    if fmd.integrator == IntegratorType.RK4:
+        return String(
+            "Warning: this model asks for <option integrator='RK4'>; the"
+            " studio builds Euler and implicitfast only and is stepping with"
+            " EULER. Expect a less accurate trajectory, not an unstable one."
+        )
+    return (
+        "Warning: unknown <option integrator> #" + String(fmd.integrator)
+        + "; stepping with EULER."
     )

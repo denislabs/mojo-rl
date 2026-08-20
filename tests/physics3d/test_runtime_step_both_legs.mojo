@@ -143,7 +143,7 @@ def both_legs[
     )
     var mr = Model[DT, DynDims](dims)
     build_model_runtime[DT](fmd, dims, mr)
-    var sf = spec_fields_runtime[DT](fmd, dims)
+    var sf = spec_fields_runtime[DT](fmd, dims, mr)
     var dr = Data[DT, DynDims, 1](dims)
     var integ_r = EulerIntegrator[DT, DynDims, BATCH=1, MAX_CONDIM=3](dims)
 

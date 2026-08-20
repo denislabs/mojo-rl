@@ -330,7 +330,10 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_RANGE_MIN,
     JLIM_IDX_RANGE_MAX,
 )
-from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT
+from .flat_model import (
+    FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT,
+    ACT_KIND_POSITION, ACT_KIND_VELOCITY,
+)
 
 
 def _jnt_qpos_size(jnt_type: Int) -> Int:
@@ -760,6 +763,156 @@ def apply_auto_spring_damper[
         mf.joints.data[jo + JOINT_IDX_DAMPING] = Scalar[DTYPE](
             2.0 * inertia / tc_d
         )
+
+
+def build_actuator_damping[
+    DTYPE: DType,
+    D: DimsLike,
+    D2: DimsLike,
+](
+    fmd: FlatModelDef,
+    mut mf: Model[DTYPE, D],
+    mut sf: SpecFields[DTYPE, D2],
+) raises:
+    """Resolve `<position dampratio>` to a `kv`, then bank `dof_actdamp`.
+
+    ⚠ THE ACTUATOR HAS NO DAMPING UNTIL THIS RUNS. `dampratio` is the ONLY
+    way g1 and 30-odd other Menagerie models state their servo damping, and
+    an unparsed one leaves `kv = 0` — an undamped 500 N.m/rad spring. Driven
+    by anything (a policy, a nudge, a contact) it pumps energy with nothing to
+    remove it: g1 under a random policy left the ground and reached 2.9 m,
+    while the SAME model with no actions sat still, because an undamped spring
+    at its equilibrium is indistinguishable from a damped one.
+
+    THE FORMULA (`engine_setconst.c:998-1035`), which is why it cannot live in
+    the parser: the reflected inertia does not exist until M does.
+
+        mass = sum over the transmission dofs of  dof_M0[dof] / trn^2
+        kv   = dampratio * 2 * sqrt(kp * mass)
+
+    where `trn` is the actuator's moment entry, `gear * coef`, and the sum
+    skips entries whose `trn^2` is below mjMINVAL — a zero-coefficient dof
+    contributes nothing and would divide by zero.
+
+    ⚠ ORDER IS LOAD-BEARING, exactly as for `apply_auto_spring_damper`: this
+    READS `mf.dof_M0`, so it must run AFTER `compute_invweight0` and before
+    any upload. MuJoCo has the same ordering for the same reason — the
+    conversion is at the END of `mj_setConst`, after the mass matrix.
+
+    ⚠ POSITION-LIKE ONLY. MuJoCo gates on `gainprm[0] == -biasprm[1]`, which
+    is what makes an actuator a position servo; `<velocity>` and `<motor>` do
+    not admit `dampratio` at all (`xml_native_reader.cc:346`). The parser only
+    sets `dampratio` on `<position>`, so the loop below is already restricted
+    — but a non-position actuator carrying one would be a parser bug, not
+    something to silently convert.
+    """
+    # mjMINVAL — the same floor `apply_auto_spring_damper` uses, spelled
+    # locally because that one is a function-local comptime.
+    comptime _MINVAL = 1e-15
+    var nv = mf.dims.get_nv()
+    var nact = len(fmd.actuators)
+    for i in range(nact):
+        var dr = fmd.actuators[i].dampratio
+        if dr <= 0.0:
+            continue
+        var o = i * MODEL_ACTUATOR_SIZE
+        var gear = Float64(sf.actuators.data[o + ACT_IDX_GEAR])
+        var n = Int(sf.actuators.data[o + ACT_IDX_TRN_N])
+        var mass = Float64(0)
+        for k in range(n):
+            var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])
+            if dadr < 0 or dadr >= nv:
+                continue
+            var trn = gear * Float64(
+                sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+            )
+            var trn2 = trn * trn
+            if trn2 > _MINVAL:
+                mass += Float64(mf.dof_M0.data[dadr]) / trn2
+        var kp = Float64(sf.actuators.data[o + ACT_IDX_KP])
+        var kpm = kp * mass
+        if kpm < 0.0:
+            kpm = 0.0
+        sf.actuators.data[o + ACT_IDX_KV] = Scalar[DTYPE](
+            dr * 2.0 * sqrt(kpm)
+        )
+
+    # ── dof_actdamp — the servo damping the IMPLICIT integrators fold in ──
+    #
+    # ⚠ SECOND LOOP, AND IT MUST STAY SECOND. It reads the FINAL kv of every
+    # actuator, which for a `dampratio` model only exists after the loop
+    # above. Merging the two would bank the pre-conversion 0 for exactly the
+    # actuators this whole pass is about.
+    for i in range(nv):
+        mf.dof_actdamp.data[i] = Scalar[DTYPE](0)
+    for i in range(nact):
+        var o = i * MODEL_ACTUATOR_SIZE
+        var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
+        # ⚠ ONLY THESE TWO CARRY A `-kv*vel` TERM. A `<motor>` has no velocity
+        # feedback at all, so banking a kv for it would invent damping the
+        # reference does not have — `apply_actions_fields` applies the term
+        # under this same test.
+        if kind != ACT_KIND_POSITION and kind != ACT_KIND_VELOCITY:
+            continue
+        var kv = Float64(sf.actuators.data[o + ACT_IDX_KV])
+        if kv == 0.0:
+            continue
+        var gear = Float64(sf.actuators.data[o + ACT_IDX_GEAR])
+        var n = Int(sf.actuators.data[o + ACT_IDX_TRN_N])
+        var ndof = 0
+        for k in range(n):
+            var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])
+            if dadr < 0 or dadr >= nv:
+                continue
+            ndof += 1
+            var trn = gear * Float64(
+                sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+            )
+            mf.dof_actdamp.data[dadr] += Scalar[DTYPE](kv * trn * trn)
+        # ⚠ SAID OUT LOUD RATHER THAN DROPPED. For a one-dof (joint)
+        # transmission `J^T diag(kv) J` IS this diagonal and nothing is lost —
+        # that covers every servo in Menagerie's legged models. A multi-dof
+        # transmission also has off-diagonal terms, which this does not carry,
+        # so the implicit integrators would damp it slightly less than MuJoCo
+        # does. Printing beats a silent approximation; see the field's docs.
+        if ndof > 1:
+            print(
+                "physics3d: actuator #", i, " drives", ndof, "dofs and has"
+                " kv", kv, "— dof_actdamp keeps only the diagonal of its"
+                " J^T diag(kv) J, so an implicit integrator will damp it a"
+                " little less than MuJoCo. Joint transmissions (one dof) are"
+                " exact.",
+            )
+
+
+def assert_no_pending_dampratio(fmd: FlatModelDef, who: String) raises:
+    """Refuse to build actuators whose `dampratio` nothing will resolve.
+
+    ⚠⚠ THE ALTERNATIVE IS A SILENT `kv = 0`, which is an UNDAMPED servo and
+    the exact defect this pass exists to fix — so a `SpecFields` builder that
+    has no `Model` to read `dof_M0` from must not quietly produce one. The
+    comptime builders (`init_spec_fields` / `make_spec_fields`) re-parse the
+    XML and hold no model, so they call this.
+
+    No in-tree comptime model uses `dampratio` (so_arm100's XML carries a
+    hand-converted `kv` and says so in a comment), which is why this is a
+    guard rather than a second implementation. If one ever does, the fix is to
+    give that path its model, not to loosen this.
+    """
+    for i in range(len(fmd.actuators)):
+        if fmd.actuators[i].dampratio > 0.0:
+            raise Error(
+                String(
+                    "physics3d: actuator #", i, " uses <position dampratio=",
+                    fmd.actuators[i].dampratio,
+                    ">, which resolves to a kv only against the mass matrix at"
+                    " qpos0 (dof_M0) — and ", who, " has no Model to read it"
+                    " from. Building anyway would leave kv = 0: an UNDAMPED"
+                    " servo, which looks correct at rest and pumps energy"
+                    " under any drive. Use the runtime loader"
+                    " (`spec_fields_runtime`), which takes the model.",
+                )
+            )
 
 
 def rbound_of(

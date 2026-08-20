@@ -106,6 +106,7 @@ def _qderiv_damping_env[
     DTYPE: DType,
     D: DimsLike,
     L_JOINTS: Layout,
+    L_ACTD: Layout,
     L_QDERIV: Layout](
     env: Int,
     dims: D,
@@ -113,6 +114,7 @@ def _qderiv_damping_env[
         DTYPE, L_JOINTS, MutAnyOrigin
     ],
     njoint: Int,
+    actd: LayoutTensor[DTYPE, L_ACTD, MutAnyOrigin],
     qderiv: LayoutTensor[DTYPE, L_QDERIV, MutAnyOrigin],
 ):
     var nv = dims.get_nv()
@@ -130,6 +132,21 @@ def _qderiv_damping_env[
         for d in range(nd):
             var dof = dof_adr + d
             qderiv[env, dof * nv + dof] = -damp
+
+    # ── d qfrc_actuator / d qvel — `mjd_actuator_vel` ────────────────────
+    #
+    # ⚠⚠ THE TERM WITHOUT WHICH THIS INTEGRATOR IS NOT IMPLICIT FOR SERVOS.
+    # MuJoCo's `mjd_smooth_vel` is actuator + passive + (optional) RNE; only
+    # the last two were here, so a model whose damping is ENTIRELY actuator
+    # `kv` — spot's `dof_damping` is 0 — got an M_hat identical to M and an
+    # integrator that was implicit in name only.
+    #
+    # `dof_actdamp` is `sum_a kv_a * trn_a^2`, the diagonal of
+    # `J^T diag(kv) J`, banked at build time because for a JOINT transmission
+    # it is constant in qpos and exact. Subtracted, because qDeriv holds
+    # d(force)/d(vel) and the servo term is `-kv*vel`.
+    for i in range(nv):
+        qderiv[env, i * nv + i] -= actd[i, 0]
 
 
 # ── M_hat: M -= dt * qDeriv (full, non-symmetric) ─────────────────────────
@@ -231,6 +248,7 @@ def _qderiv_damping_kernel[
         DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
     ],
     njoint_arg: Int64,
+    actd: LayoutTensor[DTYPE, Layout.row_major(NV, 1), MutAnyOrigin],
     qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
     # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
@@ -240,7 +258,7 @@ def _qderiv_damping_kernel[
     if env >= BATCH:
         return
     _qderiv_damping_env[DTYPE](
-        env, Dims[nv=NV, njoint=NJOINT](), joints, njoint, qderiv
+        env, Dims[nv=NV, njoint=NJOINT](), joints, njoint, actd, qderiv
     )
 
 
@@ -288,6 +306,7 @@ struct ImplicitIntegrator[
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
+    SKIP_RNE_DERIV: Bool = False,
 ](Movable):
     """Owns its scratch (dynamics + contact + implicit); steps full-implicit
     dynamics on either target. See module docstring for the algorithm and
@@ -355,6 +374,7 @@ struct ImplicitIntegrator[
         compute_mass_matrix[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU, TREEWALK = Self.CRBA_TREEWALK](d, m, self.scratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
+        comptime L_ACTD = Layout.row_major(Self.D.NV, 1)
         comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)
         comptime L_QPOS = Layout.row_major(Self.BATCH, Self.D.NQ)
@@ -387,9 +407,11 @@ struct ImplicitIntegrator[
             var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
             var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
             var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
+            var rl_ACTD = rl2(dm.get_nv(), 1)
+            var actd_v = m.dof_actdamp.lt_dyn["cpu", DYN2](rl_ACTD)
             for e in range(Self.BATCH):
                 _qderiv_damping_env[
-                    Self.DTYPE](e, dm, joints_v, njoint, qd_v)
+                    Self.DTYPE](e, dm, joints_v, njoint, actd_v, qd_v)
         else:
             ctx.value().enqueue_function[
                 _qderiv_damping_kernel[
@@ -398,11 +420,26 @@ struct ImplicitIntegrator[
             ](
                 m.joints.lt["gpu", L_JOINT](),
                 Int64(njoint),
+                m.dof_actdamp.lt["gpu", L_ACTD](),
                 self.iscratch.qderiv.lt["gpu", L_M](),
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),
             )
-        compute_rne_vel_derivative[target, Self.DTYPE, Self.BATCH](d, m, self.scratch, self.iscratch, ctx)
+        # ⚠⚠ THIS ONE FLAG IS THE DIFFERENCE BETWEEN `implicit` AND
+        # `implicitfast`, and it is MuJoCo's own: `mj_implicitSkip` calls
+        # `mjd_smooth_vel(m, d, flg_bias)` with 1 for `implicit` and 0 for
+        # `implicitfast` (`engine_forward.c:1794` vs `:1806`). `flg_bias`
+        # gates exactly this term — the dense RNE velocity derivative
+        # (Coriolis/centrifugal).
+        #
+        # Skipping it is not only cheaper. Without it qDeriv is SYMMETRIC, so
+        # MuJoCo factorises `implicitfast` with its ordinary Cholesky and
+        # keeps LU for `implicit`. We use LU for both: correct either way, and
+        # a second factorisation path is a second thing to keep in step for a
+        # speed difference the studio does not need. Noted so the choice reads
+        # as a decision rather than an oversight.
+        comptime if not Self.SKIP_RNE_DERIV:
+            compute_rne_vel_derivative[target, Self.DTYPE, Self.BATCH](d, m, self.scratch, self.iscratch, ctx)
 
         # ── M_hat = M - dt * qDeriv ──────────────────────────────────────
         comptime if target == "cpu":

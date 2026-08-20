@@ -502,6 +502,19 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
 
     var kp: Float64
     var kv: Float64
+    var dampratio: Float64
+    """`<position dampratio="X">` — a kv MuJoCo DERIVES, 0 when absent.
+
+    ⚠ NOT A kv AND NOT INTERCHANGEABLE WITH ONE. MuJoCo carries it in the
+    same slot as kv under a SIGN convention (`user_api.cc:1211`: negative is a
+    literal kv, positive is a pending dampratio) and converts it in
+    `mj_setConst` once the mass matrix at qpos0 exists:
+
+        mass = sum over the transmission dofs of dof_M0[dof] / gear^2
+        kv   = dampratio * 2 * sqrt(kp * mass)
+
+    so it cannot be resolved by the parser — the reflected inertia is not
+    known until the model is built. `build_actuator_damping` does it."""
 
     def __init__(
         out self,
@@ -537,6 +550,7 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         # `<motor>` branch to set it; the default IS the value.
         self.kp = 1.0
         self.kv = 0.0
+        self.dampratio = 0.0
 
 
 # =============================================================================
@@ -1248,6 +1262,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # exactly like `motor_kp_s`.
     var motor_inheritrange_s: String
     var motor_kv_s: String
+    var motor_dampratio_s: String
     var motor_gaintype_s: String
     var motor_biastype_s: String
     var motor_gainprm_s: String
@@ -1388,6 +1403,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_kp_s = ""
         self.motor_inheritrange_s = ""
         self.motor_kv_s = ""
+        self.motor_dampratio_s = ""
         self.motor_gaintype_s = ""
         self.motor_biastype_s = ""
         self.motor_gainprm_s = ""

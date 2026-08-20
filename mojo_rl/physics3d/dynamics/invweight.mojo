@@ -217,9 +217,18 @@ def compute_invweight0[
     #
     # Consumed only by `mj_solNoSlip`'s convergence test — see
     # `MODEL_META_IDX_MEANINERTIA`.
+    # ⚠ `dof_M0` COMES FROM THE SAME PRE-FACTORIZATION DIAGONAL, and for the
+    # same reason: `ldl_factor` below overwrites `sc.M` in place, so after it
+    # the diagonal is the factor's D. MuJoCo computes `dof_M0` in its own CRB
+    # pass (`engine_setconst.c:36`) as `armature + cdof_i . (crb_i * cdof_i)`,
+    # which is exactly this diagonal — armature was added a few lines up.
+    # Read here rather than recomputed because a second CRBA is a second
+    # implementation to keep in step.
     var _mi_sum = Float64(0)
     for i in range(nv):
-        _mi_sum += Float64(sc.M.data[i * nv + i])
+        var _mii = Float64(sc.M.data[i * nv + i])
+        mf.dof_M0.data[i] = Scalar[DTYPE](_mii)
+        _mi_sum += _mii
     mf.meta.data[MODEL_META_IDX_MEANINERTIA] = Scalar[DTYPE](
         _mi_sum / Float64(nv) if nv > 0 else Float64(0)
     )

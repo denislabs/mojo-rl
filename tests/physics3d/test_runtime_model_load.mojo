@@ -180,7 +180,7 @@ def check_records[NAME: StaticString, MODEL: ModelDefLike](
     # path makes, against the same parse.
     var ss = SpecFields[DT, MD]()
     build_spec_fields[DT](fmd, ss)
-    var sr = spec_fields_runtime[DT](fmd, dims)
+    var sr = spec_fields_runtime[DT](fmd, dims, mr)
     t.same(ss.actuators.data, sr.actuators.data, "spec: actuators")
     t.same(ss.act_tendons.data, sr.act_tendons.data, "spec: act_tendons")
     t.same(ss.qpos0.data, sr.qpos0.data, "spec: qpos0")

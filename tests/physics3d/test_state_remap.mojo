@@ -104,7 +104,7 @@ def main() raises:
     var dims_b = dims_from_flat(fmd_b)
     var m_b = Model[DT, DynDims](dims_b)
     build_model_runtime[DT](fmd_b, dims_b, m_b)
-    var sf_b = spec_fields_runtime[DT](fmd_b, dims_b)
+    var sf_b = spec_fields_runtime[DT](fmd_b, dims_b, m_b)
     var d_b = Data[DT, DynDims, 1](dims_b)
     for i in range(dims_b.get_nq()):
         d_b.qpos.data[i] = sf_b.qpos0.data[i]
@@ -189,7 +189,7 @@ def main() raises:
     var dims_c = dims_from_flat(fmd_c)
     var m_c = Model[DT, DynDims](dims_c)
     build_model_runtime[DT](fmd_c, dims_c, m_c)
-    var sf_c = spec_fields_runtime[DT](fmd_c, dims_c)
+    var sf_c = spec_fields_runtime[DT](fmd_c, dims_c, m_c)
     var d_c = Data[DT, DynDims, 1](dims_c)
     for i in range(dims_c.get_nq()):
         d_c.qpos.data[i] = sf_c.qpos0.data[i]
