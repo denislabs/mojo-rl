@@ -567,18 +567,41 @@ def _check_actuators(fmd: FlatModelDef, mut out: List[Diagnostic]):
         var subj = _named(fmd.actuator_names, ai, String("actuator"))
 
         if a.joint_id < 0 and a.tendon_id < 0:
-            out.append(
-                Diagnostic(
-                    SEV_ERROR,
-                    String("actuator-no-transmission"),
-                    subj,
-                    String(
-                        "drives neither a joint nor a tendon. MuJoCo refuses"
-                        " it ('missing transmission target'); this engine"
-                        " would give it zero force, which is worse."
-                    ),
+            if a.unsupported_transmission:
+                # ⚠⚠ A GAP HERE, NOT A BROKEN FILE, and the words matter.
+                # `bitcraze_crazyflie_2` drives four rotors through SITES —
+                # legal MJCF that MuJoCo simulates. Reporting it as "MuJoCo
+                # refuses this model" was a false alarm on a working model,
+                # which is the failure mode that gets a diagnostics panel
+                # switched off. WARN, because the model LOADS: the rule is
+                # unchanged, and the message carries the real severity.
+                out.append(
+                    Diagnostic(
+                        SEV_WARN,
+                        String("unsupported-transmission"),
+                        subj,
+                        String(
+                            "drives through a site, body or slider-crank."
+                            " MuJoCo simulates that; this engine implements"
+                            " only joint and tendon transmissions, so the"
+                            " actuator applies ZERO FORCE here. The model"
+                            " loads and does not do what the file says."
+                        ),
+                    )
                 )
-            )
+            else:
+                out.append(
+                    Diagnostic(
+                        SEV_ERROR,
+                        String("actuator-no-transmission"),
+                        subj,
+                        String(
+                            "drives neither a joint nor a tendon, and names no"
+                            " transmission at all. MuJoCo refuses it"
+                            " ('missing transmission target')."
+                        ),
+                    )
+                )
 
         # ⚠ MuJoCo REFUSES an equal pair here, `ctrlrange="0 0"` included —
         # that spelling is the "undefined" marker some models use and it does

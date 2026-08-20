@@ -2258,6 +2258,29 @@ def _fill_model(
             var tag_end = worldbody.find(">", next_body_open)
             scan_pos = tag_end + 1 if tag_end != -1 else wlen
 
+            # ⚠⚠ A SELF-CLOSING `<body .../>` HAS NO `</body>` TO POP IT, and
+            # without this the walk stays one level deeper for the rest of the
+            # document: every LATER SIBLING becomes a child of this body's
+            # parent chain. `hello_robot_stretch_3` has one
+            # (`link_grasp_center`), and the scene's floor, table and two
+            # free-jointed objects all ended up inside `base_link` — MuJoCo
+            # parents them to the world.
+            #
+            # ⚠ AND NBODY STAYS CORRECT, which is why every count-based gate
+            # passed. The bodies are all there; only the TREE is wrong, and a
+            # wrong tree is a different robot. Found by `studio.validate`
+            # reporting a free joint on a nested body and a plane in a moving
+            # body — two rules MuJoCo enforces, on a model MuJoCo loads.
+            # Three Menagerie models use one: stretch_3, apptronik_apollo,
+            # franka_fr3_v2.
+            # ⚠ VIA `_is_self_closing_tag`, the same helper the two `<default>`
+            # walkers use. Both of those already handled this — the body walk
+            # was the one that did not, and spelling the test a third way here
+            # is how they drift.
+            if _is_self_closing_tag(worldbody, next_body_open):
+                if depth > 0:
+                    depth -= 1
+
         elif earliest == next_body_close:
             # Closing </body>
             if depth > 0:
@@ -2933,6 +2956,17 @@ def _fill_actuators(
             var tname = _trim(_extract_attr(tag, "tendon"))
             if tname.byte_length() > 0:
                 ad.tendon_id = _tendon_index_by_name(tendon_sec, tname)
+            else:
+                # ⚠ A TRANSMISSION WE DO NOT MODEL IS NOT THE SAME AS NONE.
+                # MuJoCo also drives through sites, bodies and slider-cranks;
+                # this engine does not, and the resolved record is
+                # indistinguishable from an actuator with no target at all —
+                # which MuJoCo REFUSES. Recording which case it is lets
+                # `studio.validate` say the true thing about each.
+                for a in ["site", "body", "cranksite", "slidersite",
+                          "refsite"]:
+                    if _trim(_extract_attr(tag, String(a))).byte_length() > 0:
+                        ad.unsupported_transmission = True
 
         # ctrlrange / ctrllimited.
         #

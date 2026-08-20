@@ -79,6 +79,17 @@ def scale_models() -> List[String]:
     v.append(String("references/mujoco_menagerie-main/iit_softfoot/scene.xml"))
     v.append(String("references/mujoco_menagerie-main/ms_human_700/scene.xml"))
     v.append(String("references/mujoco_menagerie-main/shadow_hand/scene_right.xml"))
+    # ⚠⚠ THESE FOUR ARE HERE BECAUSE THEY WERE FALSE ALARMS. A twelve-model
+    # control passed while `bitcraze_crazyflie_2` reported four errors (its
+    # rotors drive through SITES, which MuJoCo simulates and this engine does
+    # not) and `hello_robot_stretch_3` reported three (a real parser bug — a
+    # self-closing `<body/>` re-parented half the scene). Both were found by
+    # opening every Menagerie scene in the studio, not by this gate; adding
+    # them is what stops either coming back.
+    v.append(String("references/mujoco_menagerie-main/bitcraze_crazyflie_2/scene.xml"))
+    v.append(String("references/mujoco_menagerie-main/hello_robot_stretch_3/scene.xml"))
+    v.append(String("references/mujoco_menagerie-main/apptronik_apollo/scene.xml"))
+    v.append(String("references/mujoco_menagerie-main/franka_fr3_v2/scene.xml"))
     return v^
 
 
@@ -315,6 +326,13 @@ def main() raises:
         t.eq(nerr, 0, String(path))
 
     print("    warnings across the same models:", total_warn)
+    # ⚠ AND THE WARNINGS ARE NOT ZERO. `bitcraze_crazyflie_2` MUST warn: its
+    # four rotors apply zero force here, and a model that loads and does
+    # nothing is the case a silent panel would hide. If this ever reads 0
+    # again, either the model changed or the check went quiet.
+    t.truth(total_warn >= 4,
+            String("real models DO produce warnings where they should: ",
+                   total_warn))
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:

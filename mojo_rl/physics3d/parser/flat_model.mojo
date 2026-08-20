@@ -488,6 +488,18 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     # ⚠ kp and kv are INDEPENDENT. `<velocity>` happens to set both to K, but
     # `gainprm="5 0 0" biasprm="0 0 -3"` is legal and means
     # `force = 5*u - 3*vel`. Do not collapse them.
+    var unsupported_transmission: Bool
+    """True when the actuator names a transmission this engine does not model.
+
+    ⚠⚠ MuJoCo drives actuators through SITES, BODIES and slider-cranks as well
+    as joints and tendons; this engine implements the last two. Such an
+    actuator resolves to `joint_id = -1, tendon_id = -1` — identical to an
+    actuator with NO transmission, which MuJoCo refuses outright. Without this
+    flag `studio.validate` reported `bitcraze_crazyflie_2`'s four rotor
+    actuators as "MuJoCo refuses this model", on a model MuJoCo loads. The two
+    cases need different words: one is a broken file, the other is a gap here.
+    """
+
     var kp: Float64
     var kv: Float64
 
@@ -516,6 +528,7 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.tendon_id = -1
         self.dof_adr = -1
         self.trn_n = 0
+        self.unsupported_transmission = False
         # ⚠ kp DEFAULTS TO 1.0, NOT 0.0 — MuJoCo's `gainprm[0]` default, and
         # the comptime twin inits the same way (`fill=1.0`, xml_parser:3204).
         # `apply_actions` computes `force = kp * u` for EVERY kind, including
