@@ -693,7 +693,6 @@ def rename_element(
     )
 
     # ── every reference, in this namespace only ───────────────────────────
-    var rewrote = 0
     for attr in _prune_attrs():
         if attr_kind(attr) != kind:
             continue
@@ -703,7 +702,6 @@ def rename_element(
         if n_before == 0:
             continue
         out = out.replace(needle, repl)
-        rewrote += n_before
         notes.append(
             "rewrote " + String(n_before) + " " + attr + "= reference(s)"
         )
@@ -711,7 +709,6 @@ def rename_element(
     # so it cannot be matched by attribute name alone. Sensors are rewritten
     # only when the sibling agrees.
     out = _rename_objname(out, old, new, kind, notes)
-    _ = rewrote
     return EditResult(out^, True, notes^)
 
 

@@ -664,8 +664,6 @@ def _replace_or_insert_inertial(
     xml: String, body_at: Int, inert: String
 ) raises -> String:
     """Put `inert` in as the body's `<inertial>`, replacing an existing one."""
-    var have = find_child(xml, String(""), String("inertial"), 0)
-    _ = have
     var open_end = xml.find(">", body_at)
     if open_end == -1:
         return xml
