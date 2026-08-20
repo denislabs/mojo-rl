@@ -905,11 +905,36 @@ comptime KEY_IDX_NCTRL: Int = 3
 # LIMITED flag. `range_min < range_max` is not that test — MuJoCo spells an
 # unlimited joint BOTH as `[0, 0]` and as `[-1e10, 1e10]`, and the second
 # satisfies it.
-comptime JLIM_SIZE: Int = 4
+comptime JLIM_SIZE: Int = 8
 comptime JLIM_IDX_LIMITED: Int = 0
 comptime JLIM_IDX_QPOS_ADR: Int = 1
 comptime JLIM_IDX_RANGE_MIN: Int = 2
 comptime JLIM_IDX_RANGE_MAX: Int = 3
+# --- `<joint actuatorfrcrange>` — MuJoCo's `jnt_actfrcrange` ----------------
+#
+# ⚠⚠ A SECOND, INDEPENDENT FORCE LIMIT, AND IT IS NOT THE ACTUATOR'S.
+# `mj_fwdActuation` clamps TWICE: `actuator_forcerange` on each actuator's own
+# scalar force (engine_forward.c:417), and then
+#
+#     clampVec(d->qfrc_actuator, m->jnt_actfrcrange, m->jnt_actfrclimited,
+#              m->njnt, m->jnt_dofadr);                            // :477
+#
+# on the ACCUMULATED `qfrc_actuator`, per JOINT, at that joint's dof address.
+# The two are unrelated: on unitree_g1 `actuator_forcelimited` is FALSE on all
+# 29 actuators while `jnt_actfrclimited` is TRUE on 29 of 30 joints, so the
+# joint-level clamp is the ONLY force limit the model has. 481 of this tree's
+# 2519 joints declare one, across 20 robots — and the tightest are tiny: g1's
+# wrists are +-5 N.m against a `kp=500` servo, sharpa_wave's are +-0.19.
+#
+# ⚠ IT LIVES HERE, NOT ON `Model.joints`, because `apply_actions_fields` is
+# handed `sf` and not the model — and because this record already carries the
+# LIMITED flag idiom that the joint record deliberately does not have.
+# `JLIM_IDX_DOF_ADR` is what `jnt_dofadr` is in the clampVec call above; the
+# existing `QPOS_ADR` column is the wrong address for it.
+comptime JLIM_IDX_DOF_ADR: Int = 4
+comptime JLIM_IDX_ACTFRC_LIMITED: Int = 5
+comptime JLIM_IDX_ACTFRC_MIN: Int = 6
+comptime JLIM_IDX_ACTFRC_MAX: Int = 7
 
 
 # =============================================================================

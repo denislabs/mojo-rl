@@ -16,6 +16,7 @@ from ..parser.render_fields import RenderFields
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    JLIM_SIZE,
     POSE_META_SIZE,
 )
 
@@ -239,8 +240,19 @@ trait ModelDefLike:
             Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
             MutAnyOrigin,
         ],
+        joint_limits: LayoutTensor[
+            DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE), MutAnyOrigin
+        ],
     ) raises:
-        """⚠ `acts`/`act_tendons` added 2026-08-15 with phase 1a.3. Every
+        """⚠ `joint_limits` added for `jnt_actfrcrange` — MuJoCo's SECOND
+        actuator force clamp (`engine_forward.c:477`), which is per-JOINT on
+        the ACCUMULATED `qfrc_actuator` and is NOT the actuator's own
+        `forcerange`. It is in the TRAIT and not just the implementation for
+        the usual reason: the CPU and GPU paths must compute the same force
+        from the same action, and a trait that does not carry the argument
+        cannot make that a requirement.
+
+        ⚠ `acts`/`act_tendons` added 2026-08-15 with phase 1a.3. Every
         actuator value used to be a comptime literal baked into a fully
         unrolled loop; they are now loads from the SAME `SpecFields` records
         the CPU `apply_actions` reads, so the two targets cannot drift.

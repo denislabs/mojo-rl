@@ -80,6 +80,10 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_QPOS_ADR,
     JLIM_IDX_RANGE_MIN,
     JLIM_IDX_RANGE_MAX,
+    JLIM_IDX_DOF_ADR,
+    JLIM_IDX_ACTFRC_LIMITED,
+    JLIM_IDX_ACTFRC_MIN,
+    JLIM_IDX_ACTFRC_MAX,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields, Dims, DimsLike
@@ -1250,6 +1254,15 @@ struct ModelDefFromXML[
             Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
             MutAnyOrigin,
         ],
+        # `sf.joint_limits` — for `JLIM_IDX_ACTFRC_*` only. The GPU twin has
+        # to receive it because `mj_fwdActuation`'s SECOND force clamp is
+        # per-JOINT, and a kernel that clamps only the actuator's own
+        # `forcerange` computes a different force from the CPU path for the
+        # same action — the shape of defect #54, which this file already
+        # carries two warnings about.
+        joint_limits: LayoutTensor[
+            DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE), MutAnyOrigin
+        ],
     ) raises:
         """Generalized forces from the model spec — the GPU mirror of
         `apply_actions` above, term for term.
@@ -1318,6 +1331,10 @@ struct ModelDefFromXML[
                 DTYPE,
                 Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
                 MutAnyOrigin,
+            ],
+            joint_limits: LayoutTensor[
+                DTYPE, Layout.row_major(Self.NJOINT * JLIM_SIZE),
+                MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1463,6 +1480,31 @@ struct ModelDefFromXML[
                         Self.TIMESTEP
                     )
 
+            # ── `jnt_actfrcrange` (`engine_forward.c:477`) ──────────────
+            #
+            # ⚠ ON THE ACCUMULATED `qfrc`, AFTER EVERY ACTUATOR, AND BEFORE
+            # THE SPRINGS. MuJoCo clamps `qfrc_actuator`; a fixed-tendon
+            # spring is `qfrc_passive` and is NOT subject to this limit, so
+            # putting it after the spring loop would clamp a sum MuJoCo never
+            # clamps. The CPU twin sits at the identical position.
+            comptime for jj in range(Self.NJOINT):
+                var jo = jj * JLIM_SIZE
+                if joint_limits[jo + JLIM_IDX_ACTFRC_LIMITED] != 0:
+                    var jdof = Int(
+                        rebind[Scalar[DTYPE]](joint_limits[jo + JLIM_IDX_DOF_ADR])
+                    )
+                    if jdof >= 0 and jdof < Self.NV:
+                        var a_hi = rebind[Scalar[DTYPE]](
+                            joint_limits[jo + JLIM_IDX_ACTFRC_MAX]
+                        )
+                        var a_lo = rebind[Scalar[DTYPE]](
+                            joint_limits[jo + JLIM_IDX_ACTFRC_MIN]
+                        )
+                        if qfrc[env, jdof] > a_hi:
+                            qfrc[env, jdof] = a_hi
+                        elif qfrc[env, jdof] < a_lo:
+                            qfrc[env, jdof] = a_lo
+
             # Fixed-tendon springs, deadbanded on `tendon_lengthspring`.
             # ⚠ BOUND BY THE RECORD CAPACITY, not by `_acd.ntendon` — padding
             # rows are zero-filled and `stiffness == 0` skips them, exactly as
@@ -1521,6 +1563,7 @@ struct ModelDefFromXML[
             act,
             acts,
             act_tendons,
+            joint_limits,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

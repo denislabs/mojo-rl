@@ -33,6 +33,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    JLIM_SIZE,
 )
 from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
 
@@ -257,6 +258,11 @@ def _gate[
         ](),
         sfg.act_tendons.lt[
             "gpu", Layout.row_major(M.NTEN_F * MODEL_ACT_TENDON_SIZE)
+        ](),
+        # `jnt_actfrcrange` — inert on this fixture, which declares none.
+        # `test_jnt_actfrcrange_vs_mujoco` is where it is exercised.
+        sfg.joint_limits.lt[
+            "gpu", Layout.row_major(M.NJOINT * JLIM_SIZE)
         ](),
     )
     ctx.synchronize()

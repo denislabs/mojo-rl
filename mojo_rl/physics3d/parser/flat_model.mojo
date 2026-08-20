@@ -122,6 +122,13 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var range_min: Float64
     var range_max: Float64
     var is_limited: Bool
+    # `<joint actuatorfrcrange>` — MuJoCo's `jnt_actfrcrange`, the clamp
+    # `mj_fwdActuation` applies to the ACCUMULATED `qfrc_actuator` at this
+    # joint's dof address. A DIFFERENT limit from the actuator's own
+    # `forcerange`, and on most models that declare it the only one.
+    var actfrc_min: Float64
+    var actfrc_max: Float64
+    var is_actfrc_limited: Bool
     var armature: Float64
     var damping: Float64
     var stiffness: Float64
@@ -179,6 +186,9 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         range_min: Float64 = -1e10,
         range_max: Float64 = 1e10,
         is_limited: Bool = False,
+        actfrc_min: Float64 = 0.0,
+        actfrc_max: Float64 = 0.0,
+        is_actfrc_limited: Bool = False,
         armature: Float64 = 0.0,
         damping: Float64 = 0.0,
         stiffness: Float64 = 0.0,
@@ -209,6 +219,9 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         self.range_min = range_min
         self.range_max = range_max
         self.is_limited = is_limited
+        self.actfrc_min = actfrc_min
+        self.actfrc_max = actfrc_max
+        self.is_actfrc_limited = is_actfrc_limited
         self.armature = armature
         self.damping = damping
         self.stiffness = stiffness
@@ -1218,6 +1231,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var joint_springdamper_0: Float64
     var joint_springdamper_1: Float64
     var joint_limited: Bool
+    # `<joint actuatorfrcrange/actuatorfrclimited>` from a default
+    # CLASS. Same three-field shape as `motor_force_*`, and resolved
+    # by the same shared helper (`_apply_actfrcrange`).
+    var joint_actfrc_min: Float64
+    var joint_actfrc_max: Float64
+    var joint_actfrc_limited: Bool
     var joint_frictionloss: Float64
     var joint_springref: Float64
     var joint_solref_limit_0: Float64
@@ -1340,6 +1359,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_springdamper_0: Float64 = 0.0,
         joint_springdamper_1: Float64 = 0.0,
         joint_limited: Bool = False,
+        joint_actfrc_min: Float64 = 0.0,
+        joint_actfrc_max: Float64 = 0.0,
+        joint_actfrc_limited: Bool = False,
         joint_frictionloss: Float64 = 0.0,
         joint_springref: Float64 = 0.0,
         joint_solref_limit_0: Float64 = 0.02,
@@ -1380,6 +1402,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_springdamper_0 = joint_springdamper_0
         self.joint_springdamper_1 = joint_springdamper_1
         self.joint_limited = joint_limited
+        self.joint_actfrc_min = joint_actfrc_min
+        self.joint_actfrc_max = joint_actfrc_max
+        self.joint_actfrc_limited = joint_actfrc_limited
         self.joint_frictionloss = joint_frictionloss
         self.joint_springref = joint_springref
         self.joint_solref_limit_0 = joint_solref_limit_0

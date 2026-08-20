@@ -382,6 +382,55 @@ def _parse_option(
 # =============================================================================
 
 
+def _apply_actfrcrange(
+    fr: String,
+    fl_raw: String,
+    mut limited: Bool,
+    mut lo: Float64,
+    mut hi: Float64,
+):
+    """`<joint actuatorfrcrange/actuatorfrclimited>` — MuJoCo's
+    `jnt_actfrcrange`. The THIRD instance of the same "auto" rule, and it
+    goes through a shared helper for the reason the other two now do.
+
+    `actuatorfrclimited` defaults to "auto" = limited iff the range is
+    DEFINED, `"0 0"` is the undefined marker, an explicit true/false wins.
+
+    ⚠⚠ THIS IS NOT THE ACTUATOR'S `forcerange`. `mj_fwdActuation` clamps
+    TWICE — `actuator_forcerange` on each actuator's own scalar force
+    (`engine_forward.c:417`), and then
+
+        clampVec(d->qfrc_actuator, m->jnt_actfrcrange, m->jnt_actfrclimited,
+                 m->njnt, m->jnt_dofadr);                            // :477
+
+    on the ACCUMULATED `qfrc_actuator`, per JOINT, at that joint's dof
+    address. Having one is not having the other: on unitree_g1
+    `actuator_forcelimited` is FALSE on all 29 actuators while
+    `jnt_actfrclimited` is TRUE on 29 of 30 joints, so the joint clamp is the
+    ONLY force limit that model has — and we implemented only the one it does
+    not use.
+
+    ⚠ THE CONSEQUENCE IS A SERVO WITH NO CEILING. g1's wrists declare
+    `actuatorfrcrange="-5 5"` against a `kp=500` servo whose `ctrl` is a
+    target ANGLE over a +-1.61 rad range, so a command at the end of the
+    range asks for ~800 N.m and MuJoCo delivers 5. Driven by the studio's
+    random policy from `qpos0`, ours moved the wrist 54x further than MuJoCo
+    in a single step (-0.0686 rad against -0.0013).
+    """
+    if fr.byte_length() > 0:
+        var parts = List[String]()
+        _split_spaces(fr, parts)
+        if len(parts) >= 2:
+            lo = _parse_float(parts[0])
+            hi = _parse_float(parts[1])
+            limited = lo != 0.0 or hi != 0.0
+    var fl = _trim(fl_raw)
+    if fl == "true" or fl == "1":
+        limited = True
+    elif fl == "false" or fl == "0":
+        limited = False
+
+
 def _apply_ctrlrange(
     cr: String,
     cl_raw: String,
@@ -518,6 +567,17 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.joint_limited = True
         elif lim_s == "false":
             d.joint_limited = False
+
+        # `actuatorfrcrange` — see `_apply_actfrcrange`. Menagerie states it
+        # in a class as often as on the element (aloha and berkeley_humanoid
+        # in a class, g1 inline), so both paths must resolve it.
+        _apply_actfrcrange(
+            _extract_attr(jtag, "actuatorfrcrange"),
+            _extract_attr(jtag, "actuatorfrclimited"),
+            d.joint_actfrc_limited,
+            d.joint_actfrc_min,
+            d.joint_actfrc_max,
+        )
 
         var fl_s = _extract_attr(jtag, "frictionloss")
         if fl_s.byte_length() > 0:
@@ -1731,6 +1791,24 @@ def _parse_one_joint(
         jd.range_max = Float64(1e10)
     elif lim_s == "true":
         jd.is_limited = True
+
+    # `actuatorfrcrange` — start from the class chain, then let the element
+    # override, the same 3-way order the actuator's `forcerange` uses.
+    #
+    # ⚠ NO DEGREE CONVERSION. `range` above converts for angular joints
+    # because it is an ANGLE; this is a TORQUE and `deg_factor` would scale
+    # g1's +-5 N.m to +-0.087. MuJoCo's `mjCJoint::Compile` converts `range`
+    # and `springref` and leaves `actfrcrange` alone for exactly this reason.
+    jd.actfrc_min = jdef.joint_actfrc_min
+    jd.actfrc_max = jdef.joint_actfrc_max
+    jd.is_actfrc_limited = jdef.joint_actfrc_limited
+    _apply_actfrcrange(
+        _extract_attr(tag, "actuatorfrcrange"),
+        _extract_attr(tag, "actuatorfrclimited"),
+        jd.is_actfrc_limited,
+        jd.actfrc_min,
+        jd.actfrc_max,
+    )
 
     # armature (explicit or default)
     var arm_s = _extract_attr(tag, "armature")

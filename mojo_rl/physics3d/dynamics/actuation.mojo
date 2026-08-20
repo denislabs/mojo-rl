@@ -35,6 +35,11 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_FORCE_LIMITED,
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_MIN,
+    JLIM_SIZE,
+    JLIM_IDX_DOF_ADR,
+    JLIM_IDX_ACTFRC_LIMITED,
+    JLIM_IDX_ACTFRC_MIN,
+    JLIM_IDX_ACTFRC_MAX,
     ACT_IDX_GEAR,
     ACT_IDX_KIND,
     ACT_IDX_KP,
@@ -242,6 +247,45 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
             act[adr] = Scalar[DTYPE](
                 u + (ctrl - u) / tau * timestep
             )
+
+    # ── `jnt_actfrcrange` — MuJoCo's SECOND force clamp ──────────────────
+    #
+    #     clampVec(d->qfrc_actuator, m->jnt_actfrcrange, m->jnt_actfrclimited,
+    #              m->njnt, m->jnt_dofadr);          // engine_forward.c:477
+    #
+    # ⚠⚠ NOT THE SAME LIMIT AS `forcerange` ABOVE, AND HAVING ONE IS NOT
+    # HAVING THE OTHER. `forcerange` is per-ACTUATOR and clamps that
+    # actuator's SCALAR force before the moment; this is per-JOINT and clamps
+    # the ACCUMULATED `qfrc_actuator` at the joint's dof address, after every
+    # actuator has contributed. On unitree_g1 `actuator_forcelimited` is FALSE
+    # on all 29 actuators while `jnt_actfrclimited` is TRUE on 29 of 30
+    # joints, so this is the only force limit that model has — and it was the
+    # one we did not implement. 481 of the tree's 2519 joints declare it,
+    # across 20 robots.
+    #
+    # ⚠ BEFORE THE SPRINGS, NOT AFTER. A fixed-tendon spring is
+    # `qfrc_passive` and is NOT subject to this limit; clamping after the
+    # loop below would clamp a sum MuJoCo never clamps. `d.qfrc` is our
+    # single accumulator for both, so the ORDER is what keeps them separable.
+    #
+    # ⚠ THE DOF ADDRESS, NOT THE QPOS ONE — `jnt_dofadr` is the index in
+    # MuJoCo's call, and the two differ on every model with a free or ball
+    # joint (g1's are 7 and 6).
+    var n_jnt = sf.dims.get_njoint()
+    for j in range(n_jnt):
+        var jo = j * JLIM_SIZE
+        if sf.joint_limits.data[jo + JLIM_IDX_ACTFRC_LIMITED] == 0:
+            continue
+        var jdof = Int(sf.joint_limits.data[jo + JLIM_IDX_DOF_ADR])
+        if jdof < 0 or jdof >= nv:
+            continue
+        var a_hi = Float64(sf.joint_limits.data[jo + JLIM_IDX_ACTFRC_MAX])
+        var a_lo = Float64(sf.joint_limits.data[jo + JLIM_IDX_ACTFRC_MIN])
+        var cur = Float64(d.qfrc.data[jdof])
+        if cur > a_hi:
+            d.qfrc.data[jdof] = Scalar[DTYPE](a_hi)
+        elif cur < a_lo:
+            d.qfrc.data[jdof] = Scalar[DTYPE](a_lo)
 
     # Fixed-tendon springs (`engine_passive.c`, tendon-level spring):
     # a DEADBAND on `tendon_lengthspring`, zero inside the band.

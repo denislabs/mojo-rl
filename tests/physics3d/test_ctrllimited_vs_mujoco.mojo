@@ -55,6 +55,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    JLIM_SIZE,
 )
 from mojo_rl.physics3d.fields import Data, SpecFields, Dims
 from mojo_rl.physics3d.model.model_dims import ModelDims
@@ -304,6 +305,14 @@ def test_apply_actions_gpu_matches_cpu() raises:
         ](),
         sfg.act_tendons.lt[
             "gpu", Layout.row_major(M.NTEN_F * MODEL_ACT_TENDON_SIZE)
+        ](),
+        # `jnt_actfrcrange` — MuJoCo's per-JOINT clamp on the accumulated
+        # `qfrc_actuator`. This fixture declares none, so it is inert here;
+        # it is passed because the kernel now requires it, and the model
+        # that DOES exercise it is g1 in
+        # `test_jnt_actfrcrange_vs_mujoco`.
+        sfg.joint_limits.lt[
+            "gpu", Layout.row_major(M.NJOINT * JLIM_SIZE)
         ](),
     )
     ctx.synchronize()

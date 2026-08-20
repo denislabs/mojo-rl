@@ -327,6 +327,10 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_SIZE,
     JLIM_IDX_LIMITED,
     JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_DOF_ADR,
+    JLIM_IDX_ACTFRC_LIMITED,
+    JLIM_IDX_ACTFRC_MIN,
+    JLIM_IDX_ACTFRC_MAX,
     JLIM_IDX_RANGE_MIN,
     JLIM_IDX_RANGE_MAX,
 )
@@ -2282,4 +2286,20 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         )
         sf.joint_limits.data[o + JLIM_IDX_RANGE_MAX] = Scalar[DTYPE](
             fmd.joints[j].range_max
+        )
+        # ── `<joint actuatorfrcrange>` (MuJoCo's `jnt_actfrcrange`) ──────
+        #
+        # ⚠ THE DOF ADDRESS, NOT THE QPOS ONE. `mj_fwdActuation` indexes the
+        # clamp with `m->jnt_dofadr`, and the two differ on every model with
+        # a free or ball joint — g1's are 7 and 6, so a qpos-indexed clamp
+        # would land one dof past every joint in the tree.
+        sf.joint_limits.data[o + JLIM_IDX_DOF_ADR] = Scalar[DTYPE](dadr[j])
+        sf.joint_limits.data[o + JLIM_IDX_ACTFRC_LIMITED] = Scalar[DTYPE](
+            1 if fmd.joints[j].is_actfrc_limited else 0
+        )
+        sf.joint_limits.data[o + JLIM_IDX_ACTFRC_MIN] = Scalar[DTYPE](
+            fmd.joints[j].actfrc_min
+        )
+        sf.joint_limits.data[o + JLIM_IDX_ACTFRC_MAX] = Scalar[DTYPE](
+            fmd.joints[j].actfrc_max
         )

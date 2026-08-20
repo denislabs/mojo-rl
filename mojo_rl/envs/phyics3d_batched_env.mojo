@@ -57,6 +57,7 @@ from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    JLIM_SIZE,
     POSE_META_SIZE,
     TPB,
     MODEL_BODY_SIZE,
@@ -1355,6 +1356,14 @@ struct Phyics3dBatchedEnv[
                         Layout.row_major(
                             Self.MODEL_DEF.NTEN_F * MODEL_ACT_TENDON_SIZE
                         ),
+                    ](),
+                    # `jnt_actfrcrange` — the per-JOINT force clamp
+                    # `mj_fwdActuation` applies after every actuator has
+                    # contributed. Passed so this target and the CPU one
+                    # cannot compute different forces from the same action.
+                    self.sf.joint_limits.lt[
+                        "gpu",
+                        Layout.row_major(Self.MODEL_DEF.NJOINT * JLIM_SIZE),
                     ](),
                 )
             comptime if Self.CONFIG.INTEGRATOR == "euler":
