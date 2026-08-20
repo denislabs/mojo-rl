@@ -382,6 +382,60 @@ def _parse_option(
 # =============================================================================
 
 
+def _apply_ctrlrange(
+    cr: String,
+    cl_raw: String,
+    mut limited: Bool,
+    mut lo: Float64,
+    mut hi: Float64,
+):
+    """MuJoCo's ctrlrange/ctrllimited resolution — the twin of
+    `_apply_forcerange`, and shared by the SAME two callers for the same
+    reason.
+
+    `ctrllimited` defaults to "auto" = limited iff the range is DEFINED, and
+    `"0 0"` is the undefined marker: an explicit `ctrlrange="0 0"` still
+    reports ctrllimited 0 (`test_ctrllimited_vs_mujoco`'s `a5`). An explicit
+    true/false overrides, in all four spellings MJCF admits.
+
+    Writes nothing when the attribute is absent, so a class inherits its
+    parent's value rather than being reset.
+
+    ⚠⚠ THIS EXISTS BECAUSE THE RULE WAS WRITTEN INLINE TWICE AND ONLY ONE
+    COPY GOT IT. The `<default>` block read `ctrlrange` into the class's
+    min/max and left `ctrl_limited` alone, so a range stated in a class —
+    which is where Menagerie states nearly all of them — produced a bound
+    that NOTHING CLAMPED AGAINST. `apply_actions_fields` guards its clamp on
+    `ACT_IDX_CTRL_LIMITED` (correctly: an unlimited actuator must not be
+    squeezed into the fallback range), so the range was carried all the way
+    to the force law and then ignored.
+
+    ⚠ THE CONSEQUENCE IS A SERVO COMMANDED OUTSIDE THE RANGE THE FILE GAVE
+    IT, which is the SAME failure `inheritrange` was implemented to fix and
+    is invisible for the same reason: it only bites when `ctrl` is actually
+    out of range. Measured on `google_barkour_vb`, whose knee class says
+    `<general ctrlrange="0.1 2.34346"/>` while `ctrl` and `qpos0` are both 0
+    — MuJoCo clamps to 0.1 and delivers `actuator_force` 5 N.m on each of the
+    four knees; we delivered 0, on all twelve actuators, every step.
+
+    ⚠ `autolimits` IS ASSUMED TRUE, matching MuJoCo's own default and the
+    element path's long-standing behaviour. No model in the tree sets
+    `autolimits="false"` (audited: zero files, Menagerie included).
+    """
+    if cr.byte_length() > 0:
+        var parts = List[String]()
+        _split_spaces(cr, parts)
+        if len(parts) >= 2:
+            lo = _parse_float(parts[0])
+            hi = _parse_float(parts[1])
+            limited = lo != 0.0 or hi != 0.0
+    var cl = _trim(cl_raw)
+    if cl == "true" or cl == "1":
+        limited = True
+    elif cl == "false" or cl == "0":
+        limited = False
+
+
 def _apply_forcerange(
     fr: String,
     fl_raw: String,
@@ -683,15 +737,17 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
     if mpos != -1:
         var mtag = _extract_opening_tag(defaults_sec, mpos)
 
-        var cl_s = _extract_attr(mtag, "ctrllimited")
-        if cl_s == "true":
-            d.motor_ctrl_limited = True
-
-        var cr_s = _extract_attr(mtag, "ctrlrange")
-        if cr_s.byte_length() > 0:
-            var cvec = _parse_vec3(cr_s)
-            d.motor_ctrl_min = cvec[0]
-            d.motor_ctrl_max = cvec[1]
+        # ctrlrange / ctrllimited (see `_apply_ctrlrange`). ⚠ THIS USED TO
+        # READ THE RANGE AND LEAVE `motor_ctrl_limited` ALONE, so a class
+        # `ctrlrange` gave a bound nothing clamped against — barkour's twelve
+        # actuators, and every other model that states the range in a class.
+        _apply_ctrlrange(
+            _extract_attr(mtag, "ctrlrange"),
+            _extract_attr(mtag, "ctrllimited"),
+            d.motor_ctrl_limited,
+            d.motor_ctrl_min,
+            d.motor_ctrl_max,
+        )
 
         # `gear` was missing here (and in the comptime twin) until 2026-07-29,
         # so a default-class gear silently actuated at 1.0. dm_control's
@@ -3070,41 +3126,34 @@ def _fill_actuators(
                     if _trim(_extract_attr(tag, String(a))).byte_length() > 0:
                         ad.unsupported_transmission = True
 
-        # ctrlrange / ctrllimited.
+        # ctrlrange / ctrllimited — the "auto" rule lives in
+        # `_apply_ctrlrange`, which the `<default>` block calls too.
         #
-        # ⚠⚠ `ctrlrange="0 0"` IS THE UNDEFINED MARKER, NOT A ZERO-WIDTH
-        # RANGE. MuJoCo's `ctrllimited` defaults to "auto" = limited iff a
-        # range was DEFINED, and it reads `"0 0"` as "none supplied" — an
-        # explicit `ctrlrange="0 0"` still reports ctrllimited 0, and the
-        # actuator is unclamped. This branch used to set `is_ctrl_limited =
-        # True` for ANY present `ctrlrange`, so such an actuator was clamped
-        # to [0, 0] and delivered ZERO FORCE where MuJoCo delivers the full
-        # command. Caught by `test_ctrllimited_vs_mujoco`'s `a5` (dof 5: ours
-        # 0.0, MuJoCo 5.0).
+        # ⚠⚠ IT WAS INLINE HERE, AND ONLY HERE, WHICH IS THE WHOLE BUG. The
+        # `"0 0"` half of the rule was fixed on this path (that fix is
+        # `test_ctrllimited_vs_mujoco`'s `a5`: an explicit `ctrlrange="0 0"`
+        # still reports ctrllimited 0, and clamping to [0, 0] delivered ZERO
+        # FORCE where MuJoCo delivers the full command) and the `<default>`
+        # path never had the rule at all, so a range stated in a CLASS was
+        # never limited. That is where Menagerie states nearly all of them.
+        # `_apply_forcerange` was written as a shared helper from the start
+        # and never drifted; this is now its twin.
         #
-        # ⚠ The 1a.1/1a.2 differential gates could NOT see this: `_acd` has
-        # the rule and the runtime record did not, but no model in the gate
-        # writes `"0 0"` — the same vacuity that hid `gear`, `force_*` and the
-        # tendon springs. `_apply_forcerange` below is the identical rule for
-        # the twin attribute and was written correctly; this one was not.
+        # Start from the class-resolved defaults, then let the element
+        # override — the same 3-way order (element -> class chain -> root)
+        # `_apply_forcerange` uses below. `cr_s` stays in scope because
+        # `inheritrange` is skipped when an explicit ctrlrange is present.
         var cr_s = _extract_attr(tag, "ctrlrange")
-        if cr_s.byte_length() > 0:
-            var cv = _parse_vec3(cr_s)
-            ad.ctrl_min = cv[0]
-            ad.ctrl_max = cv[1]
-            ad.is_ctrl_limited = cv[0] != 0.0 or cv[1] != 0.0
-        else:
-            ad.ctrl_min = eff.motor_ctrl_min
-            ad.ctrl_max = eff.motor_ctrl_max
-            ad.is_ctrl_limited = eff.motor_ctrl_limited
-
-        # `"1"`/`"0"` as well as `"true"`/`"false"`, and trimmed — MJCF admits
-        # all four and the comptime twin accepts all four.
-        var cl_s = _trim(_extract_attr(tag, "ctrllimited"))
-        if cl_s == "true" or cl_s == "1":
-            ad.is_ctrl_limited = True
-        elif cl_s == "false" or cl_s == "0":
-            ad.is_ctrl_limited = False
+        ad.ctrl_min = eff.motor_ctrl_min
+        ad.ctrl_max = eff.motor_ctrl_max
+        ad.is_ctrl_limited = eff.motor_ctrl_limited
+        _apply_ctrlrange(
+            cr_s,
+            _extract_attr(tag, "ctrllimited"),
+            ad.is_ctrl_limited,
+            ad.ctrl_min,
+            ad.ctrl_max,
+        )
 
         # forcerange / forcelimited: start from the class-resolved defaults,
         # then let the element override. Same 3-way order `_acd` uses
