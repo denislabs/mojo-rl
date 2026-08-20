@@ -4059,7 +4059,52 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
             # `free_joint_qpos_adr` — which records only the FIRST free joint,
             # so a scene with two floating bodies left the second one's
             # quaternion at (0,0,0,0).
-            if adr + 3 < q:
+            #
+            # ⚠⚠ AND IT IS THE BODY'S QUAT, NOT THE IDENTITY. A free joint's
+            # `qpos0` is its body's pose in the parent frame — MuJoCo takes
+            # BOTH `body_pos` and `body_quat`, and this took the position and
+            # then hardcoded `w = 1`. Measured on anybotics_anymal_b, whose
+            # base is `<body pos="0 0 0.58" quat="0 0 0 1">`: MuJoCo's
+            # `qpos0[:7]` is `[0, 0, 0.58, 0, 0, 0, 1]` — a 180-degree yaw —
+            # and ours was `[0, 0, 0.58, 1, 0, 0, 0]`. The robot reset facing
+            # the other way, and since anymal ships NO keyframe that is the
+            # pose everything starts from.
+            #
+            # ⚠ THE RECORD IS (x, y, z, w) AND `qpos` IS (w, x, y, z). The two
+            # orders differ here and nowhere else in this loop, which is
+            # exactly the kind of place this tree has lost a quaternion
+            # before.
+            if adr + 6 < q:
+                var _bqw = 1.0
+                var _bqx = 0.0
+                var _bqy = 0.0
+                var _bqz = 0.0
+                if b >= 0 and b < len(result.bodies):
+                    _bqw = result.bodies[b].quat_w
+                    _bqx = result.bodies[b].quat_x
+                    _bqy = result.bodies[b].quat_y
+                    _bqz = result.bodies[b].quat_z
+                # `mju_normalize4`: a norm below mjMINVAL becomes the
+                # IDENTITY, not a scaled zero.
+                var _n2 = (
+                    _bqw * _bqw + _bqx * _bqx + _bqy * _bqy + _bqz * _bqz
+                )
+                if _n2 < 1e-30:
+                    _bqw = 1.0
+                    _bqx = 0.0
+                    _bqy = 0.0
+                    _bqz = 0.0
+                else:
+                    var _inv = 1.0 / _sqrt_f64(_n2)
+                    _bqw *= _inv
+                    _bqx *= _inv
+                    _bqy *= _inv
+                    _bqz *= _inv
+                result.qpos0[adr + 3] = _bqw
+                result.qpos0[adr + 4] = _bqx
+                result.qpos0[adr + 5] = _bqy
+                result.qpos0[adr + 6] = _bqz
+            elif adr + 3 < q:
                 result.qpos0[adr + 3] = 1.0
         elif jd.jnt_type == JNT_BALL:
             # ⚠⚠ A BALL JOINT'S qpos0 IS THE IDENTITY QUATERNION, AND ZERO IS
@@ -4110,16 +4155,20 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
 
     if not found and q > 0:
         result.qpos0_nq = q
-        # qw = 1 for a free joint's identity quaternion.
-        # ⚠ NOW REDUNDANT with the loop above, which writes the same 1.0 for
-        # every free joint rather than only the one `free_joint_qpos_adr`
-        # names. Kept because it is the only thing that runs when a
-        # `<custom><numeric init_qpos>` was NOT found, and re-writing an
-        # identical value is cheaper than proving the two can never disagree.
-        if result.free_joint_qpos_adr >= 0:
-            var qw = result.free_joint_qpos_adr + 3
-            if qw < len(result.qpos0):
-                result.qpos0[qw] = 1.0
+        # ⚠⚠ A `qpos0[qw] = 1.0` STAMP USED TO SIT HERE, and its own comment
+        # said it was "NOW REDUNDANT with the loop above ... re-writing an
+        # identical value is cheaper than proving the two can never disagree."
+        # It stopped being identical the moment that loop started writing the
+        # BODY's quaternion instead of the identity: on anybotics_anymal_b,
+        # whose base is `quat="0 0 0 1"`, the loop wrote (0, 0, 0, 1) and this
+        # line stamped `w = 1` back over it, leaving (1, 0, 0, 1) — norm
+        # sqrt(2), which FK then normalised to a 90-degree yaw where MuJoCo
+        # has 180. The residual was exactly 1/sqrt(2) = 0.7071, which is what
+        # a half-corrected quaternion looks like.
+        #
+        # ⚠ A REDUNDANT WRITE IS A SECOND WRITER. It is only redundant while
+        # the other one agrees, and nothing was checking that.
+        pass
 
 
 def _fill_keyframes(xml: String, mut result: FlatModelDef) raises:
@@ -4189,6 +4238,64 @@ def _fill_keyframes(xml: String, mut result: FlatModelDef) raises:
             for i in range(n):
                 result.key_qpos[k * stride_q + i] = _parse_float(pq[i])
             result.key_nqpos[k] = len(pq)
+
+            # ── `mj_normalizeQuat` on the keyframe (`user_model.cc:5353`) ──
+            #
+            # ⚠⚠ A KEYFRAME MAY CARRY A DEGENERATE QUATERNION AND MuJoCo
+            # REPAIRS IT. `mju_normalize4` sets a vector whose norm is below
+            # `mjMINVAL` to the IDENTITY (1,0,0,0), and otherwise normalizes;
+            # `mj_normalizeQuat` applies it to every BALL and FREE joint's
+            # quaternion slots, and `mjCModel::Compile` runs it over every
+            # key. We took the file's numbers verbatim.
+            #
+            # ⚠ IT IS NOT A HYPOTHETICAL. `pal_tiago/tiago_position.xml`
+            # literally writes `qpos="0 0 -0.985 0 0 0 0 ..."` — a ZERO
+            # quaternion on its free joint. MuJoCo compiles that to
+            # `key_qpos[3] = 1`; we reset the robot with a zero quat, and FK
+            # multiplies by it, so the base and everything under it collapsed.
+            # Both `scene_position` and `scene_velocity` diverged by exactly
+            # 1.000e+00 at step ONE while the same robot's `scene_motor` —
+            # which ships no keyframe — was at 6.7e-16.
+            #
+            # ⚠ THE NON-DEGENERATE HALF MATTERS TOO: a keyframe quat that is
+            # merely UNNORMALISED (a hand-written 0.7 0.7 0 0) is scaled by
+            # MuJoCo and would otherwise stretch every child transform.
+            #
+            # ⚠ `mjuu_normvec`, which runs EARLIER in the compiler over the
+            # same array, RETURNS ON A ZERO VECTOR WITHOUT TOUCHING IT — it is
+            # `mju_normalize4` via `mj_normalizeQuat` that does the repair.
+            # Reading only the first of the two would give the wrong rule.
+            var _kadr = 0
+            for ji in range(len(result.joints)):
+                ref _jd = result.joints[ji]
+                var _qa = -1
+                if _jd.jnt_type == JNT_FREE:
+                    _qa = _kadr + 3
+                elif _jd.jnt_type == JNT_BALL:
+                    _qa = _kadr
+                if _qa >= 0 and _qa + 3 < stride_q:
+                    var _o = k * stride_q + _qa
+                    var _w = result.key_qpos[_o + 0]
+                    var _x = result.key_qpos[_o + 1]
+                    var _y = result.key_qpos[_o + 2]
+                    var _z = result.key_qpos[_o + 3]
+                    var _n2 = _w * _w + _x * _x + _y * _y + _z * _z
+                    if _n2 < 1e-30:
+                        result.key_qpos[_o + 0] = 1.0
+                        result.key_qpos[_o + 1] = 0.0
+                        result.key_qpos[_o + 2] = 0.0
+                        result.key_qpos[_o + 3] = 0.0
+                    # ⚠ THE TEST IS ON THE NORM, NOT ITS SQUARE. MuJoCo's is
+                    # `mju_abs(norm - 1) > mjMINVAL`; testing `|n2 - 1|`
+                    # instead is a ~2x tighter threshold near 1 and would make
+                    # this "almost" MuJoCo's rule for no reason.
+                    elif abs(_sqrt_f64(_n2) - 1.0) > 1e-15:
+                        var _inv = 1.0 / _sqrt_f64(_n2)
+                        result.key_qpos[_o + 0] = _w * _inv
+                        result.key_qpos[_o + 1] = _x * _inv
+                        result.key_qpos[_o + 2] = _y * _inv
+                        result.key_qpos[_o + 3] = _z * _inv
+                _kadr += _jd.nq
 
         var kv = _trim(_extract_attr(ktag, "qvel"))
         if kv.byte_length() > 0:
