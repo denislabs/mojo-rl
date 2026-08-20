@@ -168,6 +168,54 @@ def _msub_qderiv_env[
         M[env, i] = cur - dt * qd
 
 
+# ── rhs = M * qacc_constrained, and adopting the re-solved acceleration ───
+@always_inline
+def _mrhs_env[
+    DTYPE: DType,
+    D: DimsLike,
+    L_M: Layout,
+    L_NV: Layout](
+    env: Int,
+    dims: D,
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    qacc_c: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+):
+    """`fnet = M * qacc_constrained` — the force MuJoCo re-solves against.
+
+    ⚠⚠ THIS MUST RUN WHILE `M` IS STILL THE PLAIN MASS MATRIX, before
+    `_msub_qderiv_env` turns it into M_hat in place. `qfrc_smooth +
+    qfrc_constraint` is exactly `M * qacc_constrained`: the constraint solver
+    reports an ACCELERATION, and multiplying it back by the same `M` it was
+    solved against recovers the total force without needing the solver to
+    hand out `qfrc_constraint` separately.
+    """
+    var nv = dims.get_nv()
+    for i in range(nv):
+        var acc = Scalar[DTYPE](0)
+        for j in range(nv):
+            acc += rebind[Scalar[DTYPE]](M[env, i * nv + j]) * rebind[
+                Scalar[DTYPE]
+            ](qacc_c[env, j])
+        fnet[env, i] = acc
+
+
+@always_inline
+def _adopt_qacc_env[
+    DTYPE: DType,
+    D: DimsLike,
+    L_NV: Layout](
+    env: Int,
+    dims: D,
+    qacc_ws: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+    qacc_c: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+):
+    """`qacc_constrained <- qacc_ws`, the M_hat re-solve's answer."""
+    var nv = dims.get_nv()
+    for i in range(nv):
+        qacc_c[env, i] = rebind[Scalar[DTYPE]](qacc_ws[env, i])
+
+
 # ── implicit finalize: v += dt*qacc ; integrate qpos (quat-aware) ─────────
 @always_inline
 def _implicit_finalize_env[
@@ -303,6 +351,31 @@ def _msub_qderiv_kernel[
     _msub_qderiv_env[DTYPE](env, dt, Dims[nv=NV](), M, qderiv)
 
 
+def _mrhs_kernel[
+    DTYPE: DType, NV: Int, BATCH: Int
+](
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    qacc_c: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _mrhs_env[DTYPE](env, Dims[nv=NV](), M, qacc_c, fnet)
+
+
+def _adopt_qacc_kernel[
+    DTYPE: DType, NV: Int, BATCH: Int
+](
+    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qacc_c: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _adopt_qacc_env[DTYPE](env, Dims[nv=NV](), qacc_ws, qacc_c)
+
+
 def _implicit_finalize_kernel[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
@@ -428,6 +501,143 @@ struct ImplicitIntegrator[
                 block_dim=(IM_TPB,),
             )
 
+
+        # ── LU factor the PLAIN M (+ M^-1 for the constraint solver) ────
+        #
+        # ⚠⚠ PLAIN M, NOT M_hat, AND THE ORDER IS THE WHOLE POINT. MuJoCo's
+        # `mj_step` is `mj_forward` then `mj_implicit`: the constraint rows are
+        # built AND SOLVED against the plain mass matrix, and only then does
+        # the integrator form `M_hat = M - dt*qDeriv` and RE-SOLVE
+        # `qacc = M_hat^-1 (qfrc_smooth + qfrc_constraint)`
+        # (`engine_forward.c:1983` then `:2003`).
+        #
+        # This used to form M_hat first and hand `M_hat^-1` to the solver, so
+        # every constraint row was solved against a mass matrix the reference
+        # never uses. With no active rows the two orderings agree exactly —
+        # which is why spot's implicitfast first step matched to 2.851622 —
+        # and they diverge as soon as a row carries force. Measured on
+        # sharpa_wave, whose 22 dof-friction rows are live from step 0: the
+        # thumb's acceleration came out -1.86249 against MuJoCo's -1.56997,
+        # and the one-dof algebra says exactly that: with R = 29.23 recovered
+        # from MuJoCo's own efc_force, `a = a0*R/(K+R)` gives -1.902 at
+        # K = 1/M and -1.8629 at K = 1/M_hat.
+        lu_factor[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+        compute_m_inv_from_lu[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+
+        # ── RNE bias forces ──────────────────────────────────────────────
+        compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
+
+        # ── fnet = qfrc - bias - damping*qvel - stiffness - friction ─────
+        comptime if target == "cpu":
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qfrc_v = d.qfrc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var bias_v = self.scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
+            var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
+            for e in range(Self.BATCH):
+                _fnet_passive_env[
+                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
+        else:
+            ctx.value().enqueue_function[
+                _fnet_passive_kernel[
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
+                ]
+            ](
+                d.qpos.lt["gpu", L_QPOS](),
+                d.qvel.lt["gpu", L_NV](),
+                d.qfrc.lt["gpu", L_NV](),
+                m.joints.lt["gpu", L_JOINT](),
+                self.scratch.bias.lt["gpu", L_NV](),
+                self.scratch.fnet.lt["gpu", L_NV](),
+                grid_dim=(BLOCKS,),
+                block_dim=(IM_TPB,),
+            )
+
+        # Fluid drag into fnet (no-op unless meta density/viscosity > 0).
+        compute_fluid_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+        # ── LU solve: qacc_ws = M^-1 fnet (the SMOOTH acceleration) ─────
+        lu_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+
+        # ── qacc writeback: qacc + qacc_constrained = qacc_ws ────────────
+        comptime if target == "cpu":
+            var dm = d.dims
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var qacc_ws_v = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+            for e in range(Self.BATCH):
+                _qacc_writeback_env[Self.DTYPE](
+                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
+                )
+        else:
+            ctx.value().enqueue_function[
+                _qacc_writeback_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
+            ](
+                self.scratch.qacc_ws.lt["gpu", L_NV](),
+                d.qacc.lt["gpu", L_NV](),
+                self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                grid_dim=(BLOCKS,),
+                block_dim=(IM_TPB,),
+            )
+
+        # ── constraint seam (mirrors euler; uses M^-1 of the PLAIN M) ───
+        comptime if CONTACTS:
+            detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+            comptime assert (
+                Self.SOLVER == "pgs"
+                or Self.SOLVER == "newton"
+                or Self.SOLVER == "cg"
+                or Self.SOLVER == "island"
+            ), (
+                "ImplicitIntegrator: SOLVER must be 'pgs', 'newton',"
+                " 'cg', or 'island'"
+            )
+            comptime if Self.SOLVER == "newton":
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+            else:
+                comptime if Self.SOLVER == "cg":
+                    solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+                else:
+                    comptime if Self.SOLVER == "island":
+                        solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+                    else:
+                        solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+        else:
+            solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+        # ── the implicit re-solve: qacc = M_hat^-1 * (M * qacc_constrained)
+        #
+        # `M * qacc_constrained` IS `qfrc_smooth + qfrc_constraint` — the
+        # solver hands back an acceleration, and multiplying by the same M it
+        # was solved against recovers the force MuJoCo re-solves with. It has
+        # to happen while `M` is still plain, which is why it comes before the
+        # qDeriv block below rather than after it.
+        comptime if target == "cpu":
+            var dm_r = d.dims
+            var rl_M_r = rl2(Self.BATCH, dm_r.get_nv() * dm_r.get_nv())
+            var rl_NV_r = rl2(Self.BATCH, dm_r.get_nv())
+            var M_r = self.scratch.M.lt_dyn["cpu", DYN2](rl_M_r)
+            var qc_r = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV_r)
+            var fnet_r = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV_r)
+            for e in range(Self.BATCH):
+                _mrhs_env[Self.DTYPE](e, dm_r, M_r, qc_r, fnet_r)
+        else:
+            ctx.value().enqueue_function[
+                _mrhs_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
+            ](
+                self.scratch.M.lt["gpu", L_M](),
+                self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                self.scratch.fnet.lt["gpu", L_NV](),
+                grid_dim=(BLOCKS,),
+                block_dim=(IM_TPB,),
+            )
+
         # ── qDeriv = damping diagonal, then subtract RNE velocity deriv ──
         comptime if target == "cpu":
             var dm = d.dims
@@ -490,96 +700,28 @@ struct ImplicitIntegrator[
                 block_dim=(IM_TPB,),
             )
 
-        # ── LU factor M_hat (+ M^-1 for the constraint solver) ───────────
+        # M_hat is formed; factor it and re-solve. `compute_m_inv_from_lu` is
+        # deliberately NOT re-run: nothing downstream of here reads `m_inv`,
+        # and M_hat^-1 is not what the constraint rows were solved against.
         lu_factor[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
-        compute_m_inv_from_lu[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
-
-        # ── RNE bias forces ──────────────────────────────────────────────
-        compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
-
-        # ── fnet = qfrc - bias - damping*qvel - stiffness - friction ─────
-        comptime if target == "cpu":
-            var dm = d.dims
-            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
-            var rl_NV = rl2(Self.BATCH, dm.get_nv())
-            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
-            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
-            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
-            var qfrc_v = d.qfrc.lt_dyn["cpu", DYN2](rl_NV)
-            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
-            var bias_v = self.scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
-            var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
-            for e in range(Self.BATCH):
-                _fnet_passive_env[
-                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
-        else:
-            ctx.value().enqueue_function[
-                _fnet_passive_kernel[
-                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
-                ]
-            ](
-                d.qpos.lt["gpu", L_QPOS](),
-                d.qvel.lt["gpu", L_NV](),
-                d.qfrc.lt["gpu", L_NV](),
-                m.joints.lt["gpu", L_JOINT](),
-                self.scratch.bias.lt["gpu", L_NV](),
-                self.scratch.fnet.lt["gpu", L_NV](),
-                grid_dim=(BLOCKS,),
-                block_dim=(IM_TPB,),
-            )
-
-        # Fluid drag into fnet (no-op unless meta density/viscosity > 0).
-        compute_fluid_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
-
-        # ── LU solve: qacc_ws = M_hat^-1 fnet ────────────────────────────
         lu_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
-        # ── qacc writeback: qacc + qacc_constrained = qacc_ws ────────────
         comptime if target == "cpu":
-            var dm = d.dims
-            var rl_NV = rl2(Self.BATCH, dm.get_nv())
-            var qacc_ws_v = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
-            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
-            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+            var dm_a = d.dims
+            var rl_NV_a = rl2(Self.BATCH, dm_a.get_nv())
+            var qws_a = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV_a)
+            var qc_a = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV_a)
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE](
-                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
-                )
+                _adopt_qacc_env[Self.DTYPE](e, dm_a, qws_a, qc_a)
         else:
             ctx.value().enqueue_function[
-                _qacc_writeback_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
+                _adopt_qacc_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
             ](
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
-                d.qacc.lt["gpu", L_NV](),
                 self.scratch.qacc_constrained.lt["gpu", L_NV](),
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),
             )
-
-        # ── constraint seam (mirrors euler; uses M^-1 of M_hat) ──────────
-        comptime if CONTACTS:
-            detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
-            comptime assert (
-                Self.SOLVER == "pgs"
-                or Self.SOLVER == "newton"
-                or Self.SOLVER == "cg"
-                or Self.SOLVER == "island"
-            ), (
-                "ImplicitIntegrator: SOLVER must be 'pgs', 'newton',"
-                " 'cg', or 'island'"
-            )
-            comptime if Self.SOLVER == "newton":
-                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-            else:
-                comptime if Self.SOLVER == "cg":
-                    solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-                else:
-                    comptime if Self.SOLVER == "island":
-                        solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-                    else:
-                        solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-        else:
-            solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
         # ── implicit finalize: v += dt*qacc ; integrate qpos ─────────────
         comptime if target == "cpu":
