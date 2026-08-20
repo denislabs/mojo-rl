@@ -105,6 +105,9 @@ from mojo_rl.physics3d.studio.edit import (
     F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
 )
 from mojo_rl.render.imgui import ig_want_mouse
+from mojo_rl.physics3d.studio.mesh_bounds import (
+    empty_half_extents, measure_geom_from_file, biggest_half_extent,
+)
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3G[DT]
@@ -188,7 +191,13 @@ struct Loaded(Movable):
     var geom_body: List[Int]
     var joint_body: List[Int]
     var mesh_half: List[Float64]
-    """Real half-extents per geom, 3 each — see `_measure_meshes`."""
+    """Real half-extents per geom, 3 each — see `studio/mesh_bounds`.
+
+    ⚠ MUTATED AFTER LOAD. The file pass is lazy, so a geom's entry can be 0
+    ("not measured yet") until it is first selected."""
+    var biggest_half: Float64
+    """The largest half-extent any geom measured — the marker of last resort
+    for a geom no pass could measure. ⚠ IT IS A SCALE, NOT A BOUND."""
     var dirty: Bool
     """Has the document changed since it was loaded?
 
@@ -307,13 +316,18 @@ struct Loaded(Movable):
         for j in self.fmd.joints:
             self.joint_body.append(j.body_id)
         self.mesh_half = List[Float64]()
+        self.biggest_half = 0.0
         self.hull_verts = 0
-        # ⚠ EMPTY FIRST, FILLED BELOW. `_measure_meshes` is a METHOD, and a
-        # method call needs every field initialised — so the real list cannot
-        # be built before it.
+        # ⚠ EMPTY FIRST, FILLED BELOW — every field must be initialised before
+        # the first method call on `self`.
         self.diags = List[Diagnostic]()
         self.dirty = False
-        self.mesh_half = self._measure_meshes()
+        # ⚠ NOTHING IS MEASURED HERE. Every extent is read from the mesh
+        # FILE, lazily, when the geom is first selected — measuring all of
+        # them at open cost ~900 ms on go2 and panda to fill slots the outline
+        # reads one of. See `studio/mesh_bounds`.
+        self.mesh_half = empty_half_extents(len(self.fmd.geoms))
+        self.biggest_half = 0.0
         for mi in range(MAX_GPU_MESHES):
             self.hull_verts += Int(Float64(
                 self.m.mesh_meta.data[mi * MODEL_MESH_META_SIZE + 1]
@@ -355,101 +369,25 @@ struct Loaded(Movable):
         var src = read_model_source(path)
         self = Self(path, src[0], src[1])
 
-    def _measure_meshes(self) -> List[Float64]:
-        """Per-geom half-extents, measured from the LOADED hull vertices.
+    def measure_selection(mut self, kind: Int, index: Int) raises:
+        """Measure whatever the selection will outline — one geom, or a body's.
 
-        ⚠⚠ WITHOUT THIS, A MESH GEOM OUTLINES AS A ONE-METRE CUBE. A `<geom
-        mesh="...">` normally carries no `size` attribute — the mesh defines
-        the shape — so `GeomData`'s defaults survive: `half_x/y/z` are 0 and
-        `radius` is 0.5. Drawing a box from `radius` therefore boxed every
-        part of a 30 cm arm in a 1 m cube, which reads as a broken outline
-        rather than as empty size fields.
-
-        The vertices exist only AFTER the build (`fields_build` loads the
-        STLs), which is why this runs here and not in `build_render_fields` —
-        the parser has the filename, not the geometry.
-
-        ⚠ THE HULL IS ALREADY IN THE GEOM'S OWN FRAME, so this is a plain
-        min/max over the vertex block; no pose is applied. Applying the body
-        transform here would make the box grow as the robot moves.
+        ⚠ THE BODY CASE IS NOT ONE GEOM. `outline_body` draws every visible
+        geom of the body, so measuring only the first would leave the rest at
+        the fallback and the cage would be half right — the exact half-correct
+        state that reads as a rendering glitch rather than a missing measure.
         """
-        var out = List[Float64](length=len(self.fmd.geoms) * 3, fill=0.0)
-        var nverts = self.dims.get_nmesh_verts()
-        if nverts <= 0:
-            return out^
-        var biggest = 0.0
-        var unmeasured = List[Int]()
-        for g in range(len(self.fmd.geoms)):
-            # ⚠⚠ THE MESH ID MUST COME FROM THE **MODEL**, NOT THE PARSE.
-            # `FlatModelDef.geoms[g].mesh_id` is an index into the XML's ASSET
-            # table (ToddlerBot declares 47); `mesh_meta` is keyed by the
-            # LOADED-hull index, and only collidable meshes are loaded, capped
-            # at `MAX_GPU_MESHES` (16). Using the asset index read
-            # `mesh_meta[43]` out of a 16-row table — "index 172 is out of
-            # bounds, valid range is 0 to 63". It went unnoticed on so_arm101
-            # only because its asset and hull indices happen to overlap in the
-            # low range. `fields_build` does the remap; read its result.
-            var mid = Int(Float64(
-                self.m.geoms.data[g * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]
-            ))
-            if mid < 0 or mid >= MAX_GPU_MESHES:
-                unmeasured.append(g)
-                continue
-            var adr = Int(Float64(
-                self.m.mesh_meta.data[mid * MODEL_MESH_META_SIZE + 0]
-            ))
-            var n = Int(Float64(
-                self.m.mesh_meta.data[mid * MODEL_MESH_META_SIZE + 1]
-            ))
-            if n <= 0 or adr < 0 or adr + n > nverts:
-                # ⚠ A VISUAL-ONLY MESH HAS NO VERTICES HERE, and that is by
-                # design: `fields_build` loads the COLLIDABLE hulls only —
-                # so_arm101 has 30 mesh geoms and one of them measures 0, and
-                # sawyer keeps 10 such visual geoms. The RENDERER still draws
-                # the shape (it loads the STL by filename), so the part is on
-                # screen with no measurable bound in the model. Collected and
-                # given the model's own scale below rather than the meaningless
-                # 0.5 default.
-                unmeasured.append(g)
-                continue
-            var hx = 0.0
-            var hy = 0.0
-            var hz = 0.0
-            for v in range(adr, adr + n):
-                var x = abs(Float64(self.m.mesh_verts.data[v * 3 + 0]))
-                var y = abs(Float64(self.m.mesh_verts.data[v * 3 + 1]))
-                var z = abs(Float64(self.m.mesh_verts.data[v * 3 + 2]))
-                if x > hx:
-                    hx = x
-                if y > hy:
-                    hy = y
-                if z > hz:
-                    hz = z
-            out[g * 3 + 0] = hx
-            out[g * 3 + 1] = hy
-            out[g * 3 + 2] = hz
-            if hx > biggest:
-                biggest = hx
-            if hy > biggest:
-                biggest = hy
-            if hz > biggest:
-                biggest = hz
-
-        # ⚠ THE UNMEASURABLE ONES GET THE MODEL'S OWN SCALE, AND IT IS A
-        # MARKER RATHER THAN A BOUND. The alternative is `radius`, which for a
-        # mesh geom is `GeomData`'s untouched default of **0.5** — measured on
-        # so_arm101, whose real parts are 0.012-0.050 m, so that default boxes
-        # a 3 cm part in a 1 m cube. Wrong by 20-40x reads as a broken
-        # outline; wrong by a little reads as an approximate one, which is
-        # what it is.
-        if biggest <= 0.0:
-            biggest = 0.02
-        for i in range(len(unmeasured)):
-            var g = unmeasured[i]
-            out[g * 3 + 0] = biggest
-            out[g * 3 + 1] = biggest
-            out[g * 3 + 2] = biggest
-        return out^
+        if kind == SEL_GEOM:
+            measure_geom_from_file(self.rf, index, self.mesh_half,
+                                   self.biggest_half)
+        elif kind == SEL_BODY:
+            for g in range(len(self.fmd.geoms)):
+                if self.fmd.geoms[g].body_id == index:
+                    measure_geom_from_file(self.rf, g, self.mesh_half,
+                                           self.biggest_half)
+        # ⚠ AFTER, NOT BEFORE. The marker scale is the max of what has been
+        # measured, so it only improves once something has been.
+        self.biggest_half = biggest_half_extent(self.mesh_half)
 
     def reset(mut self):
         """The reference pose, and zero velocity."""
@@ -595,8 +533,14 @@ def _record(
 
 
 def _outline_of(
-    L: Loaded, p: StudioPanel, positions: List[Vec3], quats: List[Quat]
-) -> List[OverlayLine]:
+    mut L: Loaded, p: StudioPanel, positions: List[Vec3], quats: List[Quat]
+) raises -> List[OverlayLine]:
+    # ⚠ MEASURE FIRST, AND IT IS CHEAP AFTER THE FIRST FRAME. A geom whose
+    # mesh has no loaded collision hull is measured from its FILE the first
+    # time it is selected; `measure_geom_from_file` returns immediately once
+    # the entry is non-zero, so this costs a bounds check per frame after
+    # that. Doing it at model-open instead added ~900 ms to go2 and panda.
+    L.measure_selection(p.sel_kind, p.sel_index)
     if p.sel_kind == SEL_GEOM:
         return outline_geom(L.rf, p.sel_index, positions, quats, 1.0,
                             L.mesh_half)
@@ -985,7 +929,13 @@ def run_studio(
             # Cheap (no re-parse, no mesh load) and it keeps "what you see" and
             # "what you edited" the same thing.
             L.rf = build_render_fields(L.fmd, L.flat, L.base_dir)
-            L.mesh_half = L._measure_meshes()
+            # ⚠ RE-MEASURED FROM THE HULLS ONLY, and the lazily-read entries
+            # are dropped with it. A size edit can change a geom's extents, so
+            # a stale `mesh_half` would outline the shape as it was before the
+            # drag; re-reading the file for the selected geom costs one load
+            # on the next frame, which the selection path does anyway.
+            L.mesh_half = empty_half_extents(len(L.fmd.geoms))
+            L.biggest_half = 0.0
             renderer.set_render_fields(L.rf.copy())
             if needs_rebuild(e):
                 # Mass changes the DERIVED inertia and invweight0, so the

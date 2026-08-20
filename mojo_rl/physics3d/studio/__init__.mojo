@@ -26,6 +26,10 @@ from .structure import (
 from .history import (
     History, HistoryEntry, edit_key, HISTORY_CAP,
 )
+from .mesh_bounds import (
+    empty_half_extents, measure_geom_from_file, biggest_half_extent,
+    FALLBACK_HALF,
+)
 from .remap import (
     remap_state, RemapReport, joint_qpos_adr, joint_dof_adr,
     PoseSnapshot, pose_snapshot, apply_pose_snapshot,
