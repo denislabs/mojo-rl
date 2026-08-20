@@ -42,6 +42,7 @@ from .xml_parser import (
     _parse_euler_to_quat,
     _parse_zaxis_to_quat,
     _compiler_deg_factor,
+    _last_compiler_attr,
     _fromto_to_pos_quat,
     _find_joint_index_by_name,
     _find_body_index_by_name,
@@ -4873,14 +4874,14 @@ def parse_xml_full(
         var compiler_end = xml.find(">", compiler_t)
         if compiler_end != -1:
             var ctag = String(xml[byte = compiler_t : compiler_end + 1])
-            var seq_val = _trim(_extract_attr(ctag, "eulerseq"))
+            var seq_val = _last_compiler_attr(xml, "eulerseq")
             if seq_val.byte_length() == 3:
                 eulerseq = seq_val
             # boundmass / boundinertia — see `FlatModelDef.boundmass`.
-            var bm_s = _trim(_extract_attr(ctag, "boundmass"))
+            var bm_s = _last_compiler_attr(xml, "boundmass")
             if bm_s.byte_length() > 0:
                 result.boundmass = _parse_float(bm_s)
-            var bi_s = _trim(_extract_attr(ctag, "boundinertia"))
+            var bi_s = _last_compiler_attr(xml, "boundinertia")
             if bi_s.byte_length() > 0:
                 result.boundinertia = _parse_float(bi_s)
 
@@ -4888,7 +4889,7 @@ def parse_xml_full(
             # `<compiler>` build modes. See `FlatModelDef.inertiafromgeom`;
             # each keeps MuJoCo's default when the attribute is absent, and
             # ⚠ that default is AUTO for inertiafromgeom, not off.
-            var ifg_s = _trim(_extract_attr(ctag, "inertiafromgeom"))
+            var ifg_s = _last_compiler_attr(xml, "inertiafromgeom")
             if ifg_s == "true":
                 result.inertiafromgeom = 1
             elif ifg_s == "false":
@@ -4896,7 +4897,7 @@ def parse_xml_full(
             elif ifg_s == "auto":
                 result.inertiafromgeom = 2
 
-            var igr_s = _trim(_extract_attr(ctag, "inertiagrouprange"))
+            var igr_s = _last_compiler_attr(xml, "inertiagrouprange")
             if igr_s.byte_length() > 0:
                 var igr_parts = List[String]()
                 _split_spaces(igr_s, igr_parts)
@@ -4906,10 +4907,19 @@ def parse_xml_full(
 
             # ⚠ ABSENT is -1.0, not 0.0 — `settotalmass="0"` is a legal (if
             # odd) request and must not read as "not specified".
-            var stm_s = _trim(_extract_attr(ctag, "settotalmass"))
+            var stm_s = _last_compiler_attr(xml, "settotalmass")
             if stm_s.byte_length() > 0:
                 result.settotalmass = _parse_float(stm_s)
 
+            # ⚠ THE THREE DIRECTORIES STAY ON THE FIRST TAG, DELIBERATELY.
+            # Every attribute above moved to `_last_compiler_attr` because
+            # MuJoCo lets a later `<compiler>` override an earlier one — but
+            # these three are PATHS, and `expand_mjcf` has already rebased
+            # every `file=` it spliced in against the directory of the file
+            # that WROTE it. Re-resolving them against a different
+            # `<compiler>`'s directory here is the exact double-application
+            # that `50d99683` was written to remove. If this ever needs the
+            # last-wins rule too, it needs it in the expander, not here.
             meshdir = _trim(_extract_attr(ctag, "meshdir"))
             assetdir = _trim(_extract_attr(ctag, "assetdir"))
             texturedir = _trim(_extract_attr(ctag, "texturedir"))

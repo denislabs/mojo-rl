@@ -1004,6 +1004,48 @@ def _count_joints_with_type(xml: String, joint_type: String) -> Int:
 # =============================================================================
 
 
+def _last_compiler_attr(xml: String, name: String) -> String:
+    """`<compiler name="...">` from the LAST tag that STATES it, else "".
+
+    ⚠⚠ THE LAST ONE THAT STATES IT, WHICH IS NOT THE FIRST TAG AND NOT THE
+    LAST TAG. Every reader here used to take `xml.find("<compiler")` — the
+    FIRST element — and a model assembled from `<include>`s routinely has
+    several. Measured against the 3.10.0 runtime on a hinge with
+    `range="-1.5 1.5"`:
+
+        <compiler angle="radian"/> then <compiler angle="degree"/>  -> degree
+        <include (radian)/>        then <compiler angle="degree"/>  -> degree
+        <compiler meshdir=.../>    then <include (radian)/>         -> radian
+        <compiler angle="radian"/> then <compiler meshdir=.../>     -> radian
+
+    So: later declarations override earlier ones, and a later tag that OMITS
+    the attribute does NOT reset it to the default. "The included file wins"
+    is the wrong rule — putting the `<include>` first makes the parent win.
+
+    ⚠ THIS IS NOT A STYLE POINT. aloha's `scene.xml` opens with
+    `<compiler meshdir="assets" texturedir="assets"/>` — no `angle` — and then
+    includes `aloha.xml`, which says `angle="radian"`. Reading the first tag
+    gives DEGREE, so every joint range in the model was divided by 57.3: the
+    waist compiled to +-0.0548 rad instead of +-3.14159, and the arms sat far
+    outside limits they should never have touched.
+    """
+    var out = String("")
+    var pos = 0
+    while True:
+        var t = xml.find("<compiler", pos)
+        if t == -1:
+            break
+        var tag_end = xml.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(xml[byte = t : tag_end + 1])
+        var v = _trim(_extract_attr(tag, name))
+        if v.byte_length() > 0:
+            out = v
+        pos = tag_end + 1
+    return out
+
+
 def _compiler_angle_is_deg(xml: String) -> Bool:
     """Return True when the model's angles are in degrees.
 
@@ -1013,14 +1055,7 @@ def _compiler_angle_is_deg(xml: String) -> Bool:
     be written once, which is what let the wrong default sit in four separate
     inline copies of this check.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return True
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return True
-    var tag = String(xml[byte = t : tag_end + 1])
-    var angle_val = _trim(_extract_attr(tag, "angle"))
+    var angle_val = _last_compiler_attr(xml, "angle")
     if angle_val.byte_length() == 0:
         return True
     return angle_val == "degree"
@@ -1047,14 +1082,7 @@ def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     joint ranges in degrees, so walker's ankles came out with a +-45 RADIAN
     range — effectively unlimited.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return True
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return True
-    var tag = String(xml[byte = t : tag_end + 1])
-    var angle_val = _trim(_extract_attr(tag, "angle"))
+    var angle_val = _last_compiler_attr(xml, "angle")
     if angle_val.byte_length() == 0:
         return True
     return angle_val == "degree"
@@ -1072,14 +1100,7 @@ def _xml_compiler_inertiafromgeom[xml: String]() -> Int:
     env XMLs state `inertiafromgeom="true"` explicitly; the dm_control suite
     XMLs state nothing, and pendulum came out with ~1/21 of its true inertia.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return 2
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return 2
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _trim(_extract_attr(tag, "inertiafromgeom"))
+    var val = _last_compiler_attr(xml, "inertiafromgeom")
     if val == "true":
         return 1
     elif val == "auto":
@@ -1092,15 +1113,7 @@ def _xml_compiler_inertiafromgeom[xml: String]() -> Int:
 def _xml_compiler_settotalmass[xml: String]() -> Float64:
     """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return Float64(-1.0)
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return Float64(-1.0)
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _extract_attr(tag, "settotalmass")
-    var trimmed = _trim(val)
+    var trimmed = _last_compiler_attr(xml, "settotalmass")
     if trimmed.byte_length() == 0:
         return Float64(-1.0)
     return _parse_float(trimmed)
@@ -1110,15 +1123,7 @@ def _xml_compiler_inertiagrouprange[xml: String]() -> Tuple[Int, Int]:
     """Return (group_min, group_max) from <compiler inertiagrouprange="min max"/>.
     Defaults to (0, 5) if absent. Comptime-safe.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return (0, 5)
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return (0, 5)
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _extract_attr(tag, "inertiagrouprange")
-    var trimmed = _trim(val)
+    var trimmed = _last_compiler_attr(xml, "inertiagrouprange")
     if trimmed.byte_length() == 0:
         return (0, 5)
     var parts = List[String]()
@@ -1695,6 +1700,48 @@ def _extract_singleton_tag(xml: String, tag: String) -> String:
     if end == -1:
         return String("")
     return String(xml[byte=pos : end + 1])
+
+
+def _append_singleton_tags(
+    xml: String, tag: String, mut out: List[String]
+):
+    """Append EVERY `<tag .../>` in `xml`, in document order.
+
+    ⚠⚠ `_extract_singleton_tag` RETURNS ONLY THE FIRST, and that is what made
+    `<compiler>` a lie. `resolve_includes` splices the included files into ONE
+    document and then calls `merge_mjcf` with a SINGLE argument, so a
+    per-input "find the singleton" returns the host's tag and every included
+    file's is silently discarded — the merge that `_merge_singleton_attrs`
+    performs so carefully never sees them.
+
+    Measured on Menagerie's aloha: `scene.xml` opens with
+    `<compiler meshdir="assets" texturedir="assets"/>` and then includes
+    `aloha.xml`, whose `<compiler angle="radian"/>` was dropped. MJCF's
+    default is DEGREE, so every angular joint range in the model was divided
+    by 57.3 — the waist compiled to +-0.0548 rad instead of +-3.14159 — and
+    the arms sat far outside limits they should never have reached. The
+    resulting limit forces gave `qacc` ~2200 rad/s^2 where MuJoCo has 0.15.
+
+    ⚠ THE DELIMITER CHECK IS NOT OPTIONAL: a bare `find` for `"<size"` would
+    also match `<sizefoo`, and this function is used for `<size>` too.
+    """
+    var marker = "<" + tag
+    var pos = 0
+    while True:
+        var t = xml.find(marker, pos)
+        if t == -1:
+            return
+        var after = t + marker.byte_length()
+        var ok = after >= xml.byte_length()
+        if not ok:
+            var ch = String(xml[byte = after : after + 1])
+            ok = ch == " " or ch == "/" or ch == ">" or ch == "\n" or ch == "\t" or ch == "\r"
+        var end = xml.find(">", t)
+        if end == -1:
+            return
+        if ok:
+            out.append(String(xml[byte = t : end + 1]))
+        pos = end + 1
 
 
 def _merge_singleton_attrs(tags: List[String], tag_name: String) -> String:
@@ -2432,22 +2479,18 @@ def merge_mjcf(*xmls: String) -> String:
         )
 
         # Singleton tags
-        var opt = _extract_singleton_tag(stripped, "option")
-        if opt.byte_length() > 0:
-            option_tags.append(opt)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "option", option_tags)
         # Carry any <flag .../> children of this fragment's <option>.
         all_option_flags = all_option_flags + _extract_section_inner(
             stripped, "option"
         )
-        var comp = _extract_singleton_tag(stripped, "compiler")
-        if comp.byte_length() > 0:
-            compiler_tags.append(comp)
-        var stat = _extract_singleton_tag(stripped, "statistic")
-        if stat.byte_length() > 0:
-            statistic_tags.append(stat)
-        var siz = _extract_singleton_tag(stripped, "size")
-        if siz.byte_length() > 0:
-            size_tags.append(siz)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "compiler", compiler_tags)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "statistic", statistic_tags)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "size", size_tags)
 
         # Accumulator sections (extract inner content, handle multiple occurrences)
         all_assets = all_assets + _extract_section_inner(stripped, "asset")
