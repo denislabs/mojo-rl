@@ -193,6 +193,18 @@ def build_tendon_limit_rows[
     mut Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
     mut De: Scratch[Scalar[DTYPE], E_CAP],
     mut bias_e: Scratch[Scalar[DTYPE], E_CAP],
+    # ⚠⚠ THE LIVE ROW BUDGET, NOT `E_CAP`. `E_CAP` is the COMPTIME array
+    # capacity and is **0** on a dynamic dimension provider — the studio,
+    # every runtime-loaded model, every Menagerie scene. Guarding the emit
+    # loop with it meant `0 >= 0` on the first tendon, so every limit and
+    # every tendon equality was dropped and the solver ran an
+    # unconstrained system. The caller documents this exact trap twenty
+    # lines above the call (`newton_solve.mojo:836`, "TWO SPELLINGS OF THE
+    # ROW BUDGET") for the rows it builds INLINE, and then handed the cap
+    # to the two builders it calls out to. A comptime caller passes its
+    # cap here, which is also its live budget; a runtime caller passes the
+    # live count. See `test_tendon_rows_live_budget_vs_mujoco`.
+    max_rows: Int,
     mut num_edges: Int,
 ):
     """Append a row per violated tendon limit side to the pyramidal edge list.
@@ -276,7 +288,7 @@ def build_tendon_limit_rows[
         # side = -1 (lower), +1 (upper); `sign` below is MuJoCo's -side, so
         # the row's Jacobian is `sign * ten_J`.
         for s in range(2):
-            if num_edges >= E_CAP:
+            if num_edges >= max_rows:
                 break
             var side = Scalar[DTYPE](-1) if s == 0 else Scalar[DTYPE](1)
             var bound = rmin if s == 0 else rmax
@@ -359,6 +371,18 @@ def build_tendon_equality_rows[
     mut De: Scratch[Scalar[DTYPE], E_CAP],
     mut bias_e: Scratch[Scalar[DTYPE], E_CAP],
     mut kind_e: Scratch[Int, E_CAP],
+    # ⚠⚠ THE LIVE ROW BUDGET, NOT `E_CAP`. `E_CAP` is the COMPTIME array
+    # capacity and is **0** on a dynamic dimension provider — the studio,
+    # every runtime-loaded model, every Menagerie scene. Guarding the emit
+    # loop with it meant `0 >= 0` on the first tendon, so every limit and
+    # every tendon equality was dropped and the solver ran an
+    # unconstrained system. The caller documents this exact trap twenty
+    # lines above the call (`newton_solve.mojo:836`, "TWO SPELLINGS OF THE
+    # ROW BUDGET") for the rows it builds INLINE, and then handed the cap
+    # to the two builders it calls out to. A comptime caller passes its
+    # cap here, which is also its live budget; a runtime caller passes the
+    # live count. See `test_tendon_rows_live_budget_vs_mujoco`.
+    max_rows: Int,
     mut num_edges: Int,
 ):
     """Append one BILATERAL row per `<equality><tendon>` to the pyramidal edge
@@ -420,7 +444,7 @@ def build_tendon_equality_rows[
     for t in range(nten):
         if Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_IS_EQUALITY])) == 0:
             continue
-        if num_edges >= E_CAP:
+        if num_edges >= max_rows:
             break
 
         # --- length, rate and moment arm, per kind -------------------------

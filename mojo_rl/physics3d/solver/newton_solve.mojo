@@ -1117,7 +1117,7 @@ def _newton_solve_env[
                 env, dims, qvel, tendons, sites, geoms_w, bodies, joints,
                 mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
-                Je, De, bias_e, num_edges,
+                Je, De, bias_e, me, num_edges,
             )
 
         # Tendon equality rows (MuJoCo mjEQ_TENDON), FIXED and SPATIAL alike.
@@ -1132,7 +1132,7 @@ def _newton_solve_env[
                 env, dims, qpos, qvel, tendons, sites, geoms_w, bodies,
                 joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
-                Je, De, bias_e, kind_e, num_edges,
+                Je, De, bias_e, kind_e, me, num_edges,
             )
 
         # connect / weld EQUALITY rows (defect 29a), dense J, BILATERAL.
@@ -1688,19 +1688,57 @@ def _newton_solve_env[
     #
     # The row is built by the SAME function the pyramidal edge list uses, so
     # both cones get bit-identical (J, D, bias).
-    # Capacity covers BOTH dense-J equality kinds: fixed tendons, and the
-    # connect/weld rows added for defect 29a (3 and 6 rows each).
-    comptime EQ_CAP = cap[D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]()
+    # Capacity covers THREE dense-J row kinds now: one equality row per
+    # tendon, up to TWO limit rows per tendon (a `range` has two sides; only
+    # one can be violated at a time, but the builder tries both), and the
+    # connect/weld rows added for defect 29a (6 each).
+    comptime EQ_CAP = cap[3 * D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]()
     # the LIVE budget for the capacity guard below -- never the cap
-    var max_eq_rows = ntendon + 6 * nequality
+    var max_eq_rows = 3 * ntendon + 6 * nequality
     var eq_J = Scratch[Scalar[DTYPE], EQ_CAP * V_CAP](max_eq_rows * nv, fill=Scalar[DTYPE](0))
     var eq_D = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var eq_bias = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var eq_kind = Scratch[Int, EQ_CAP](max_eq_rows, fill=0)
+    # Per-row solver STATE (`SROW_QUADRATIC` / `SROW_SATISFIED`), the
+    # dense-J twin of `sr_st`. It exists because these rows stopped being
+    # unconditionally bilateral when the tendon limit rows joined the list.
+    var eq_st = Scratch[Int, EQ_CAP](max_eq_rows, fill=SROW_QUADRATIC)
     var eq_jar = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var eq_f = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var eq_Js = Scratch[Scalar[DTYPE], EQ_CAP](max_eq_rows, fill=Scalar[DTYPE](0))
     var neq_rows = 0
+    # ⚠⚠ TENDON LIMIT ROWS, WHICH THIS BRANCH DID NOT BUILD AT ALL.
+    # `build_tendon_limit_rows` was called from the PYRAMIDAL branch (:1114)
+    # and from the blocked kernel (:3363) and from nowhere else, so an
+    # elliptic model's `<spatial limited="true">` produced no force —
+    # `robotiq_2f85/scene.xml` hangs a free box from a 2 cm string and the
+    # box fell straight through it. Two of three call sites is the failure
+    # mode this file has had before (see the `build_weld_equality_rows`
+    # conversion note below); the gate is
+    # `test_tendon_rows_live_budget_vs_mujoco`.
+    #
+    # ⚠ THESE ROWS ARE ONE-SIDED. The `eq_*` list was BILATERAL-ONLY until
+    # now — `eq_kind` was written and never read, and every consumer below
+    # assumed `f = -D*jar` unconditionally. Each of those is now routed
+    # through `scalar_row_state`/`scalar_row_force`, which for
+    # `SROW_EQ_BILATERAL` returns exactly the old expression, so the
+    # equality rows are bit-identical and only the limit rows can switch
+    # off.
+    comptime if may_exist[D.NTENDON]():
+        build_tendon_limit_rows[
+            DTYPE, V_CAP, EQ_CAP, BATCH
+        ](
+            env, dims, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
+            subtree_com, cdof, xpos, xquat, m_inv,
+            eq_J, eq_D, eq_bias, max_eq_rows, neq_rows,
+        )
+        # `build_tendon_limit_rows` does not take `kind_e` — the pyramidal
+        # edge list seeds it to `SROW_LIMIT`, which is what these rows are.
+        # `eq_kind` seeds to 0, and `SROW_LIMIT` IS 0, so this loop is
+        # belt-and-braces; it is here because the seed being the right
+        # constant is a coincidence of the enum's ordering, not a contract.
+        for e in range(neq_rows):
+            eq_kind[e] = SROW_LIMIT
     comptime if may_exist[D.NTENDON]():
         build_tendon_equality_rows[
             DTYPE, V_CAP, EQ_CAP, BATCH
@@ -1708,7 +1746,7 @@ def _newton_solve_env[
             env, dims, qpos, qvel, tendons, sites, geoms_w, bodies, joints,
             mmeta,
             subtree_com, cdof, xpos, xquat, m_inv,
-            eq_J, eq_D, eq_bias, eq_kind, neq_rows,
+            eq_J, eq_D, eq_bias, eq_kind, max_eq_rows, neq_rows,
         )
 
     # === connect/weld EQUALITY rows (dense J) — defect 29a ===
@@ -1846,14 +1884,29 @@ def _newton_solve_env[
         sr_st[s] = st
         sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
 
-    # Equality rows: BILATERAL, so unconditionally QUADRATIC — no state, and
-    # `f = -D*jar` always.
+    # Dense-J rows. `SROW_EQ_BILATERAL` is unconditionally QUADRATIC with
+    # `f = -D*jar`, which is what this loop used to hardcode; `SROW_LIMIT`
+    # (the tendon limit rows above) switches off once `jar >= 0`. Routing
+    # both through the shared classifier keeps the bilateral answer
+    # bit-identical — `scalar_row_state(SROW_EQ_BILATERAL, ...)` is
+    # `SROW_QUADRATIC` and `scalar_row_force(SROW_QUADRATIC, ...)` is
+    # `-D*jar` — while giving the one-sided rows their state.
+    #
+    # ⚠ `R` AND `floss` ARE PASSED AS ZERO ON PURPOSE. Both are read only on
+    # the `SROW_FRICTION` branch, and no dense-J row is ever friction; the
+    # dry-friction dofs are SCALAR rows (`sr_*`) with their own arrays.
     for e in range(neq_rows):
         var jar_e = eq_bias[e]
         for d in range(nv):
             jar_e += eq_J[e * nv + d] * qacc[d]
         eq_jar[e] = jar_e
-        eq_f[e] = -eq_D[e] * jar_e
+        var st_e = scalar_row_state[DTYPE](
+            eq_kind[e], jar_e, Scalar[DTYPE](0), Scalar[DTYPE](0)
+        )
+        eq_st[e] = st_e
+        eq_f[e] = scalar_row_force[DTYPE](
+            st_e, jar_e, eq_D[e], Scalar[DTYPE](0)
+        )
 
     # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
     # Scalar rows contribute D only on their own dof (J = sign*e_dof, so
@@ -1862,9 +1915,12 @@ def _newton_solve_env[
         if sr_st[s] == SROW_QUADRATIC:
             var d = sr_dof[s]
             H[d * nv + d] += sr_D[s]
-    # Equality rows have a DENSE J, so their contribution is a full rank-1
-    # outer product rather than a diagonal bump.
+    # Dense-J rows contribute a full rank-1 outer product rather than a
+    # diagonal bump — and only while QUADRATIC. A satisfied one-sided row
+    # carries no force and no curvature.
     for e in range(neq_rows):
+        if eq_st[e] != SROW_QUADRATIC:
+            continue
         for a in range(nv):
             var Ja = eq_J[e * nv + a]
             if Ja == Scalar[DTYPE](0):
@@ -1989,7 +2045,8 @@ def _newton_solve_env[
                 p0_d2 += sr_D[s] * sr_Js[s] * sr_Js[s]
         for e in range(neq_rows):
             p0_d1 += -eq_f[e] * eq_Js[e]
-            p0_d2 += eq_D[e] * eq_Js[e] * eq_Js[e]
+            if eq_st[e] == SROW_QUADRATIC:
+                p0_d2 += eq_D[e] * eq_Js[e] * eq_Js[e]
         if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
             p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -2033,8 +2090,17 @@ def _newton_solve_env[
                     p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
             for e in range(neq_rows):
                 var tje = eq_jar[e] + p1_alpha * eq_Js[e]
-                p1_d1 += eq_D[e] * tje * eq_Js[e]
-                p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
+                var tste = scalar_row_state[DTYPE](
+                    eq_kind[e], tje, Scalar[DTYPE](0), Scalar[DTYPE](0)
+                )
+                p1_d1 += (
+                    -scalar_row_force[DTYPE](
+                        tste, tje, eq_D[e], Scalar[DTYPE](0)
+                    )
+                    * eq_Js[e]
+                )
+                if tste == SROW_QUADRATIC:
+                    p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
             if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                 p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -2081,8 +2147,18 @@ def _newton_solve_env[
                             p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
                     for e in range(neq_rows):
                         var tje = eq_jar[e] + p1_alpha * eq_Js[e]
-                        p1_d1 += eq_D[e] * tje * eq_Js[e]
-                        p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
+                        var tste = scalar_row_state[DTYPE](
+                            eq_kind[e], tje, Scalar[DTYPE](0),
+                            Scalar[DTYPE](0),
+                        )
+                        p1_d1 += (
+                            -scalar_row_force[DTYPE](
+                                tste, tje, eq_D[e], Scalar[DTYPE](0)
+                            )
+                            * eq_Js[e]
+                        )
+                        if tste == SROW_QUADRATIC:
+                            p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
                     if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                         p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
                     if p1_d1 * p1_d1 < gtol_sq:
@@ -2125,7 +2201,16 @@ def _newton_solve_env[
                             )
                         for e in range(neq_rows):
                             var tje = eq_jar[e] + mid * eq_Js[e]
-                            mid_d1 += eq_D[e] * tje * eq_Js[e]
+                            var tste = scalar_row_state[DTYPE](
+                                eq_kind[e], tje, Scalar[DTYPE](0),
+                                Scalar[DTYPE](0),
+                            )
+                            mid_d1 += (
+                                -scalar_row_force[DTYPE](
+                                    tste, tje, eq_D[e], Scalar[DTYPE](0)
+                                )
+                                * eq_Js[e]
+                            )
                         if mid_d1 * mid_d1 < gtol_sq:
                             p1_alpha = mid
                             p1_d1 = mid_d1
@@ -2193,14 +2278,24 @@ def _newton_solve_env[
             sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
             if st != old_st:
                 state_changed = True
-        # Bilateral: no state, so nothing can flip `state_changed` — but jar
-        # and f still track qacc every iteration.
+        # Dense-J rows. A BILATERAL row still cannot flip `state_changed` —
+        # its state is `SROW_QUADRATIC` at every `jar` — but a tendon LIMIT
+        # row can, and the Hessian below has to be rebuilt when it does.
         for e in range(neq_rows):
             var jar_e = eq_bias[e]
             for d in range(nv):
                 jar_e += eq_J[e * nv + d] * qacc[d]
             eq_jar[e] = jar_e
-            eq_f[e] = -eq_D[e] * jar_e
+            var old_ste = eq_st[e]
+            var ste = scalar_row_state[DTYPE](
+                eq_kind[e], jar_e, Scalar[DTYPE](0), Scalar[DTYPE](0)
+            )
+            eq_st[e] = ste
+            eq_f[e] = scalar_row_force[DTYPE](
+                ste, jar_e, eq_D[e], Scalar[DTYPE](0)
+            )
+            if ste != old_ste:
+                state_changed = True
 
         # Recompute qfrc_c = J^T * updated forces (all InlineArray ops)
         for i in range(nv):
@@ -2227,9 +2322,11 @@ def _newton_solve_env[
                 if sr_st[s] == SROW_QUADRATIC:
                     var d = sr_dof[s]
                     H[d * nv + d] += sr_D[s]
-            # Equality rows are always QUADRATIC, so their outer product is
-            # always in the Hessian — no state to test.
+            # …and only the QUADRATIC dense-J rows. Bilateral rows always
+            # are; a satisfied tendon limit is not.
             for e in range(neq_rows):
+                if eq_st[e] != SROW_QUADRATIC:
+                    continue
                 for a in range(nv):
                     var Ja = eq_J[e * nv + a]
                     if Ja == Scalar[DTYPE](0):
@@ -3365,7 +3462,7 @@ def _newton_blocked_fields_kernel[
                 BATCH](
                 env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
-                t_je, t_de, t_bias, t_n,
+                t_je, t_de, t_bias, MAX_TLIM, t_n,
             )
             for r in range(t_n):
                 if num_edges >= ME:
@@ -3394,7 +3491,7 @@ def _newton_blocked_fields_kernel[
                 BATCH](
                 env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
-                q_je, q_de, q_bias, q_kind, q_n,
+                q_je, q_de, q_bias, q_kind, MAX_TEQ, q_n,
             )
             for r in range(q_n):
                 if num_edges >= ME:
