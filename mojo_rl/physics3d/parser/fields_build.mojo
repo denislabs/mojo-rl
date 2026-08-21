@@ -117,6 +117,7 @@ from mojo_rl.physics3d.gpu.constants import (
     BODY_IDX_ROOTID,
     BODY_IDX_WELDID,
     BODY_IDX_MOCAP,
+    BODY_IDX_GRAVCOMP,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -172,6 +173,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_INTEGRATOR,
     MODEL_META_IDX_MAX_CONDIM,
     MODEL_META_IDX_EULERDAMP_DISABLED,
+    MODEL_META_IDX_NGRAVCOMP,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEXCLUDE,
@@ -1067,6 +1069,23 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_EULERDAMP_DISABLED] = Scalar[DTYPE](
         1.0 if fmd.eulerdamp_disabled else 0.0
     )
+    # `mjModel.ngravcomp` — `engine_setconst.c:99-104` counts bodies with
+    # `body_gravcomp > 0` STRICTLY, so a negative value (which the compiler
+    # does not reject) would not raise the count and `mj_gravcomp` would then
+    # skip the whole pass. Transcribed with the same `> 0`, not `!= 0`, so a
+    # nonsense model diverges the same way in both engines rather than only in
+    # ours.
+    #
+    # ⚠ COUNTED FROM `fmd.bodies`, NOT FROM `mf.bodies` — this meta block runs
+    # ~140 lines BEFORE the body records are written, so reading them back here
+    # would count zeros on every model.
+    var _ngravcomp = 0
+    for _bi in range(len(fmd.bodies)):
+        if _bi + 1 >= mf.dims.get_nbody():
+            break
+        if fmd.bodies[_bi].gravcomp > 0:
+            _ngravcomp += 1
+    mf.meta.data[MODEL_META_IDX_NGRAVCOMP] = Scalar[DTYPE](_ngravcomp)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         len(fmd.equalities) if len(fmd.equalities) < mf.dims.get_nequality()
         else mf.dims.get_nequality()
@@ -1228,6 +1247,7 @@ def build_model_fields_from_flat[
         mf.bodies.data[o + BODY_IDX_MOCAP] = Scalar[DTYPE](
             1.0 if b.is_mocap else 0.0
         )
+        mf.bodies.data[o + BODY_IDX_GRAVCOMP] = Scalar[DTYPE](b.gravcomp)
 
     # Worldbody record: pos 0, quat identity, parent 0, mocap 0.
     mf.bodies.data[BODY_IDX_QUAT_W] = Scalar[DTYPE](1)

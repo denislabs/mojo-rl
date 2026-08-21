@@ -2716,6 +2716,13 @@ def _fill_model(
             if mocap_s == "true":
                 b.is_mocap = True
 
+            # ⚠⚠ GRAVITY COMPENSATION — the whole of `qfrc_passive` on eight
+            # models here, and zero in this engine until 2026-08-21. See
+            # `BODY_IDX_GRAVCOMP` and `dynamics/gravcomp.mojo`.
+            var gravcomp_s = _extract_attr(tag, "gravcomp")
+            if gravcomp_s.byte_length() > 0:
+                b.gravcomp = _parse_float(gravcomp_s)
+
             result.bodies.append(b)
             body_count += 1
             # Advance past the opening tag
@@ -5659,6 +5666,33 @@ def parse_xml_full(
     result.eulerdamp_disabled = _option_flag_disabled(xml, "eulerdamp")
     result.multiccd_disabled = _option_flag_disabled(xml, "multiccd")
     result.nativeccd_disabled = _option_flag_disabled(xml, "nativeccd")
+
+    # ⚠ `<joint actuatorgravcomp="true">` — COUNTED OVER THE DOCUMENT, not off
+    # the element. `<default><joint>` carries every joint attribute, so reading
+    # this one off each `<joint>` tag would report ZERO on a model that sets it
+    # in a class — the exact mistake the first `maxhullvert` warning made
+    # (§11.6). A textual count cannot miss a `<default>` chain. It is only a
+    # report: see `FlatModelDef.act_gravcomp_joints`.
+    var _agc_scan = 0
+    var _agc_at = xml.find("actuatorgravcomp")
+    while _agc_at != -1:
+        var _agc_eq = xml.find('"', _agc_at)
+        if _agc_eq != -1:
+            var _agc_end = xml.find('"', _agc_eq + 1)
+            if _agc_end != -1:
+                var _agc_v = xml[byte=_agc_eq + 1 : _agc_end]
+                if _agc_v == "true" or _agc_v == "1":
+                    _agc_scan += 1
+        _agc_at = xml.find("actuatorgravcomp", _agc_at + 16)
+    result.act_gravcomp_joints = _agc_scan
+    if _agc_scan > 0:
+        print(
+            "physics3d:", _agc_scan, "joint(s) declare"
+            " `actuatorgravcomp`. Gravity compensation is applied here at the"
+            " PASSIVE seam (`dynamics/gravcomp.mojo`) for every dof; MuJoCo"
+            " routes these ones into `qfrc_actuator` instead, where"
+            " `jnt_actfrcrange` can clamp them. Unclamped is what you get.",
+        )
 
     # <flag gravity="disable"/> — zero the gravity vector.
     if _option_flag_disabled(xml, "gravity"):

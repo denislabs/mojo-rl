@@ -212,7 +212,7 @@ comptime META_IDX_ACTDAMP_LIVE: Int = 16
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 26
+comptime MODEL_BODY_SIZE: Int = 27
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -240,6 +240,22 @@ comptime BODY_IDX_IQUAT_W: Int = 22
 comptime BODY_IDX_ROOTID: Int = 23  # Root body index (child of worldbody)
 comptime BODY_IDX_WELDID: Int = 24  # Weld body index (MuJoCo body_weldid)
 comptime BODY_IDX_MOCAP: Int = 25  # 1.0 if body pose is externally set (mocap)
+# ⚠⚠ `<body gravcomp="F">` — the FRACTION OF ITS OWN WEIGHT a body is held up
+# by, and the whole of `d->qfrc_passive` on every model in this tree that sets
+# it. `mj_gravcomp` (engine_passive.c:817) applies
+# `force = -gravity * body_mass[i] * body_gravcomp[i]` at `xipos[i]` through
+# `mj_applyFT`, accumulates into `d->qfrc_gravcomp`, and `mj_passive` then adds
+# that into `qfrc_passive` for every dof whose joint does NOT set
+# `actuatorgravcomp`.
+#
+# ⚠ IT IS NOT A SMALL TERM. Eight Menagerie models declare it and on
+# `hello_robot_stretch_3` — the top of the fidelity board — the peak is
+# **46.9 N·m**, against a `qfrc_passive` that is otherwise exactly zero. Read
+# as "an arm that sags": without it every gravcomp link falls under its own
+# weight and the whole chain diverges from the first step.
+#
+# Appended (26 -> 27), so every index 0..25 keeps its value.
+comptime BODY_IDX_GRAVCOMP: Int = 26
 
 
 # =============================================================================
@@ -323,7 +339,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 39
+comptime MODEL_META_SIZE: Int = 40
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -384,6 +400,11 @@ comptime MODEL_META_IDX_MAX_CONDIM: Int = 37  # max geom condim, >= 3
 # never asked about this name — the same shape as `<option integrator>` being
 # parsed and dispatched on by nobody.
 comptime MODEL_META_IDX_EULERDAMP_DISABLED: Int = 38
+# `mjModel.ngravcomp` — the number of bodies with `body_gravcomp > 0`
+# (`engine_setconst.c:99-104`). Its only job is the early-out at the top of
+# `mj_gravcomp`, and it is stored rather than recounted so the pass costs one
+# load on the ~77 of 85 scenes that have none.
+comptime MODEL_META_IDX_NGRAVCOMP: Int = 39
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons

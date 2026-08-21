@@ -53,6 +53,13 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
     var izz: Float64
     var is_mocap: Bool  # True when <body mocap="true">
     var has_explicit_inertia: Bool  # True when body has mass/diaginertia/inertial
+    # `<body gravcomp="F">` — the fraction of its own weight the body is held
+    # up by. MuJoCo's default is 0. ⚠ NOT DEFAULTABLE AND NOT INHERITED: MJCF's
+    # `<default>` has no `<body>` element, and each link that wants it says so
+    # itself (rizon4 writes it on all seven, stretch_3 on all fourteen), so the
+    # `<default>`-chain trap that has bitten this parser repeatedly does not
+    # apply here — reading it off the element's own tag is CORRECT for once.
+    var gravcomp: Float64
 
     def __init__(
         out self,
@@ -77,6 +84,7 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
         izz: Float64 = 0.01,
         is_mocap: Bool = False,
         has_explicit_inertia: Bool = False,
+        gravcomp: Float64 = 0.0,
     ):
         self.parent = parent
         self.mass = mass
@@ -99,6 +107,7 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
         self.izz = izz
         self.is_mocap = is_mocap
         self.has_explicit_inertia = has_explicit_inertia
+        self.gravcomp = gravcomp
 
 
 # =============================================================================
@@ -2003,6 +2012,14 @@ struct FlatModelDef(Movable):
     # `dynamics/pose_transmission.apply_pose_transmission`, which runs after
     # forward kinematics. See `_fill_actuator_transmission`.
     var pose_transmission_actuators: Int
+    # ⚠ `<joint actuatorgravcomp="true">` — `mjModel.jnt_actgravcomp`. It moves
+    # that joint's share of `qfrc_gravcomp` OUT of `qfrc_passive` and into
+    # `qfrc_actuator` (engine_forward.c:722-738), where it is then subject to
+    # `jnt_actfrcrange` clamping. We apply gravcomp at the PASSIVE seam only,
+    # so a model setting this would be given the unclamped answer silently.
+    # NOTHING in `mujoco_menagerie-main` sets it — counted and printed rather
+    # than modelled, and the count is what would make a future model say so.
+    var act_gravcomp_joints: Int
     # ── qpos0 / initial pose ─────────────────────────────────────────────
     # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
     #   1. each joint's `ref`, already deg-converted, at its qpos address
@@ -2118,6 +2135,7 @@ struct FlatModelDef(Movable):
         self.unmodelled_actuators = 0
         self.zero_transmission_actuators = 0
         self.pose_transmission_actuators = 0
+        self.act_gravcomp_joints = 0
         self.qpos0 = List[Float64]()
         self.qpos0_nq = 0
         self.free_joint_qpos_adr = -1

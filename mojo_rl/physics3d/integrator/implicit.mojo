@@ -44,6 +44,7 @@ from ..dynamics.cdof import compute_cdof
 from ..dynamics.mass_matrix import compute_mass_matrix
 from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.fluid_forces import compute_fluid_forces
+from ..dynamics.gravcomp import compute_gravcomp_forces
 from ..dynamics.lu import (
     lu_factor,
     lu_solve,
@@ -608,6 +609,11 @@ struct ImplicitIntegrator[
 
         # Fluid drag into fnet (no-op unless meta density/viscosity > 0).
         compute_fluid_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+        # ⚠ AFTER the fluid call, not before: `mj_passive` adds `qfrc_fluid`
+        # into `qfrc_passive` and only then `qfrc_gravcomp`
+        # (engine_passive.c:1000-1022). No-op unless the model declares
+        # `<body gravcomp>`.
+        compute_gravcomp_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
         # ── LU solve: qacc_ws = M^-1 fnet (the SMOOTH acceleration) ─────
         lu_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
