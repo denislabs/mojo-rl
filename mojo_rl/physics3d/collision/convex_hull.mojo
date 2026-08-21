@@ -837,8 +837,27 @@ def load_mesh_hull[
     var vert_float_offset = len(mesh_vert)
     var vert_base = vert_float_offset // 3
     mesh_vertadr.append(vert_base)
+    # ⚠⚠ ROUNDED TO float32, BECAUSE MUJOCO'S `mjModel.mesh_vert` IS `float*`.
+    # Its compiler does every mesh step in double — scale, recentre, hull — and
+    # then copies the result into a FLOAT array, which is what every collision
+    # routine reads (`mjc_initCCDObj` hands `m->mesh_vert` straight to the
+    # support function). Keeping our copy in double leaves the hull a few
+    # hundred picometres away from the one the reference collides with.
+    #
+    # ⚠ THAT IS ENOUGH TO CREATE OR DESTROY A CONTACT. rby1's drive wheels are
+    # modelled EXACTLY tangent to the floor: MuJoCo's lowest hull vertex lands
+    # at world z = +6.372e-11 and ours at -7.451e-10, so we opened two contacts
+    # it does not have and the robot diverged 4.99e-03 in one step. The two
+    # differ by ONE float32 ulp at 0.1 — `float32(ours) == MuJoCo's` exactly,
+    # on every coordinate.
+    #
+    # ⚠ AFTER THE HULL, NOT BEFORE. MuJoCo picks hull membership from the
+    # double vertices and only the STORED coordinates are float; rounding
+    # earlier could change which vertices survive.
     for i in range(len(p.hull_vert)):
-        mesh_vert.append(Scalar[DTYPE](p.hull_vert[i]))
+        mesh_vert.append(
+            Scalar[DTYPE](p.hull_vert[i].cast[DType.float32]())
+        )
     var num_hull = p.num_hull
     mesh_vertnum.append(num_hull)
     num_meshes += 1
