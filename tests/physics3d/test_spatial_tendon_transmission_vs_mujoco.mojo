@@ -326,8 +326,25 @@ def test_tetheria_matches_mujoco() raises:
     EXACT again and moved the onset to step 20 — a proportional error would
     have scaled, not moved.
 
-    Nine of 88 Menagerie scenes set a non-default solver budget, and our own
-    default (200) is not MuJoCo's (100) either. That is its own fix.
+    ⚠⚠ AND HONOURING THE BUDGET IS **NOT** THE FIX — MEASURED, DO NOT REDO IT.
+    Parsing all four attributes and clamping both loops to them was written
+    and thrown away: the Menagerie sweep went from 68 to 65 scenes at or below
+    1e-9, and tetheria's own step 1 went from 4.4e-16 to 1.9e-04. The reason
+    is that our iterate at 5 is not MuJoCo's iterate at 5. MuJoCo CONVERGES
+    within its 5 (its step-1 answer at 5/8 equals its answer at 200/50 to
+    4.4e-16, which is also ours); we do not. So truncating at the file's count
+    lands us on an unconverged point that MuJoCo never visits, while running
+    to convergence lands us on the point MuJoCo reaches.
+
+    That makes the real defect our CONVERGENCE RATE, not the budget: our
+    Newton needs more iterations than MuJoCo's to reach the same tolerance,
+    and the 1.5e-03 is the steps where MuJoCo runs out of budget first and
+    stops somewhere we do not. Warm-starting is the obvious suspect — MuJoCo
+    seeds `qacc` from `d->qacc_warmstart` (`mjDSBL_WARMSTART` is off by
+    default) and we start from `qacc_constrained` every step — but that is a
+    solver investigation, not a parser one. Nine of 88 scenes set a
+    non-default budget; our own default (200) is not MuJoCo's (100) either,
+    and neither number matters until the rate does.
     """
     print("=== tetheria_aero_hand_open/scene_right, one step ===")
     var MJ_TETH = _mj_teth()
