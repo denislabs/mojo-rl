@@ -52,6 +52,8 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_LIMITED,
     ACT_IDX_KP,
+    ACT_IDX_BIAS0,
+    ACT_IDX_BIAS1,
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
     ACT_IDX_ACT_ADR,
@@ -1106,9 +1108,10 @@ struct ModelDefFromXML[
                     fmd.bad_actuator,
                     " has an unsupported gain/bias/dyn shape (code ",
                     fmd.bad_actuator_code,
-                    "). Supported: gaintype=fixed, biastype=affine,"
-                    " biasprm[0] == 0, biasprm[1] == -gainprm[0] (i.e. a"
-                    " position servo), and dyntype none|filter.",
+                    "). Supported: gaintype=fixed, biastype none or"
+                    " affine with ANY biasprm (the full affine law lives in"
+                    " `actuator_scalar_force` since 2026-08-21 — codes 2 and"
+                    " 3 are retired), and dyntype none|filter.",
                 )
             )
 
@@ -1422,6 +1425,12 @@ struct ModelDefFromXML[
                 var kind = Int(rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KIND]))
                 if kind == ACT_KIND_POSITION or kind == ACT_KIND_VELOCITY:
                     var kv = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KV])
+                    var b0_g = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_BIAS0]
+                    )
+                    var b1_g = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_BIAS1]
+                    )
                     var length = Scalar[DTYPE](0)
                     var vel = Scalar[DTYPE](0)
                     for k in range(n):
@@ -1438,13 +1447,13 @@ struct ModelDefFromXML[
                         var coef = rebind[Scalar[DTYPE]](
                             acts[o + ACT_IDX_TRN_COEF_0 + k]
                         )
-                        # `kind == POSITION` on the qpos read so a VELOCITY
-                        # actuator does not load a position it will not use.
-                        if (
-                            kind == ACT_KIND_POSITION
-                            and qadr >= 0
-                            and qadr < Self.NQ
-                        ):
+                        # ⚠ THE GATE IS `biasprm[1] != 0`, NOT `kind ==
+                        # POSITION`. It used to be the latter, which is the
+                        # same set only while `biasprm[1]` is assumed to be
+                        # `-gainprm[0]` or 0 — the assumption `ACT_IDX_BIAS1`
+                        # exists to stop making. A VELOCITY actuator still
+                        # does not load a position it will not use.
+                        if b1_g != 0.0 and qadr >= 0 and qadr < Self.NQ:
                             length += coef * rebind[Scalar[DTYPE]](
                                 qpos[env, qadr]
                             )
@@ -1456,12 +1465,14 @@ struct ModelDefFromXML[
                     vel *= gear
                     # `u`, not `ctrl` — for a dyntype actuator the servo
                     # setpoint is the ACTIVATION, which lags the control.
-                    # ⚠ VELOCITY does NOT subtract `length`; folding it in
-                    # would add position feedback MuJoCo does not have.
-                    var setpoint = u
-                    if kind == ACT_KIND_POSITION:
-                        setpoint = u - length
-                    force = kp * setpoint - kv * vel
+                    # ⚠ ONE LAW, FIVE CALLERS: this is
+                    # `dynamics.actuation.actuator_scalar_force` inlined for
+                    # the kernel's scalar type. The CPU twin calls the
+                    # function; the arithmetic and its GROUPING are the
+                    # same, and the helper's docstring is the reference.
+                    force = kp * u + (
+                        b0_g + b1_g * length + (-kv) * vel
+                    )
 
                 # `forcerange` — the CPU twin's comment explains why the
                 # clamp sits here, on the scalar force, and not on `qfrc`.

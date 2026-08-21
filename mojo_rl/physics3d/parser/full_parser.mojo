@@ -3633,6 +3633,12 @@ def _fill_actuators(
             else:
                 ad.kv = 0.0
 
+            # `<position>` compiles to `biasprm = [0, -kp, -kv]` — that is
+            # what makes it a position servo. Recorded rather than assumed by
+            # the force law; see `ActuatorData.bias1`.
+            ad.bias0 = 0.0
+            ad.bias1 = -ad.kp
+
             # ── `dampratio` — a kv the MODEL cannot state yet ─────────────
             # MuJoCo allows it on `<position>` and `<intvelocity>` only, and
             # it is EXCLUSIVE with kv ("kv and dampratio cannot both be
@@ -3726,6 +3732,11 @@ def _fill_actuators(
                 vk = 1.0
             ad.kp = vk
             ad.kv = vk
+            # `<velocity>` compiles to `biasprm = [0, 0, -kv]` — no position
+            # feedback at all, which is the ONE term that separates it from
+            # `<position>`.
+            ad.bias0 = 0.0
+            ad.bias1 = 0.0
         elif is_general:
             var gt = _trim(_extract_attr(tag, "gaintype"))
             if gt.byte_length() == 0:
@@ -3755,17 +3766,24 @@ def _fill_actuators(
                 if result.bad_actuator < 0:
                     result.bad_actuator = act_count
                     result.bad_actuator_code = 1
-            elif (not no_bias) and b0 != 0.0:
-                if result.bad_actuator < 0:
-                    result.bad_actuator = act_count
-                    result.bad_actuator_code = 2
-            elif (not no_bias) and b1 != -gain and b1 != 0.0:
-                if result.bad_actuator < 0:
-                    result.bad_actuator = act_count
-                    result.bad_actuator_code = 3
+            # ⚠ CODES 2 AND 3 ARE GONE, NOT RENUMBERED. They read
+            # "biasprm[0] != 0" and "biasprm[1] not in {-gain, 0}", and both
+            # are now MODELLED — `ACT_IDX_BIAS0` / `ACT_IDX_BIAS1` carry them
+            # and the force law evaluates MuJoCo's affine bias directly.
+            # Renumbering 4 down to 2 would silently change what an older
+            # error message meant, so the numbering stands and the two values
+            # are simply never produced.
 
             ad.kp = gain
             ad.kv = 0.0 if no_bias else -b2
+            # ⚠⚠ THE OTHER TWO BIAS TERMS, WHICH USED TO BE DISCARDED. Until
+            # 2026-08-21 only `-biasprm[2]` survived and the force law
+            # reconstructed the rest from `kind`, which is right exactly when
+            # `biasprm[1] == -gainprm[0]`. Codes 2 and 3 below used to REFUSE
+            # the shapes where it is not — on the comptime path — and say
+            # nothing at all on the runtime one.
+            ad.bias0 = 0.0 if no_bias else b0
+            ad.bias1 = 0.0 if no_bias else b1
 
             # Correct the provisional POSITION now that biastype is known.
             #   no bias   -> gained torque motor

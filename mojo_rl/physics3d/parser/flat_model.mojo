@@ -581,6 +581,18 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
 
     var kp: Float64
     var kv: Float64
+    var bias0: Float64
+    """`biasprm[0]`. Zero for every actuator in `mujoco_menagerie-main`,
+    carried anyway because the force law reads it and a slot that is always
+    zero on today's corpus is exactly the slot the next model uses."""
+    var bias1: Float64
+    """`biasprm[1]` — the POSITION-feedback gain, and NOT always `-kp`.
+
+    ⚠⚠ THE ASSUMPTION THAT IT IS was baked into the force law rather than
+    into a field: `apply_actions` rebuilt the bias from `kind`, so a
+    `<general gainprm="0.0157" biasprm="0 -100 -10">` (panda's gripper) got
+    100 where MuJoCo reads it and 0.0157 where we did — 1/6375 of the force.
+    See `ACT_IDX_BIAS1`."""
     var dampratio: Float64
     """`<position dampratio="X">` — a kv MuJoCo DERIVES, 0 when absent.
 
@@ -635,6 +647,8 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         # `<motor>` branch to set it; the default IS the value.
         self.kp = 1.0
         self.kv = 0.0
+        self.bias0 = 0.0
+        self.bias1 = 0.0
         self.dampratio = 0.0
 
 
@@ -1974,8 +1988,12 @@ struct FlatModelDef(Movable):
     # Mirrors `ComptimeActData.bad_actuator` / `_code`, which
     # `ModelDefFromXML` already refuses at BUILD time (`:1122`). Ported here so
     # the runtime path can make the same refusal in 1a.3; nothing reads it yet.
-    #   0 gaintype != fixed        2 biasprm[0] != 0
-    #   1 biastype not none/affine 3 biasprm[1] not in {-gain, 0}
+    #   0 gaintype != fixed        2 (retired — biasprm[0] is modelled)
+    #   1 biastype not none/affine 3 (retired — biasprm[1] is modelled)
+    #   4 dyntype not none/filter
+    # ⚠ 2 and 3 are RETIRED, not reused. `ACT_IDX_BIAS0` / `ACT_IDX_BIAS1`
+    # carry those two terms since 2026-08-21 and the force law evaluates
+    # MuJoCo's affine bias, so the shapes they refused now load correctly.
     var bad_actuator: Int
     var bad_actuator_code: Int
     # How many `<actuator>` children this parser SKIPPED because it does not

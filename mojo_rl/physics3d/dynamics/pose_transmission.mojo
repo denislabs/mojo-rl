@@ -97,6 +97,7 @@ from ..dynamics.subtree_com import compute_subtree_com
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.tendon import spatial_tendon_length_jac
 from ..dynamics.jac_point import jac_point
+from ..dynamics.actuation import actuator_scalar_force
 from ..kinematics.quat_math import gpu_quat_rotate
 from ..parser.flat_model import ACT_KIND_POSITION, ACT_KIND_VELOCITY
 from ..gpu.constants import (
@@ -115,6 +116,8 @@ from ..gpu.constants import (
     ACT_IDX_KIND,
     ACT_IDX_KP,
     ACT_IDX_KV,
+    ACT_IDX_BIAS0,
+    ACT_IDX_BIAS1,
     ACT_IDX_TENDON_ID,
     ACT_IDX_SITE_ID,
     ACT_IDX_GEAR_1,
@@ -314,9 +317,16 @@ def apply_pose_transmission[
                     vel += Float64(tJ[a]) * Float64(d.qvel.data[e * nv + a])
                 var length = gear * ten_len
                 vel *= gear
-                var setpoint = u - length if kind == _POS else u
-                var kv = Float64(sf.actuators.data[o + ACT_IDX_KV])
-                force = kp * setpoint - kv * vel
+                force = actuator_scalar_force(
+                    kp,
+                    u,
+                    True,
+                    Float64(sf.actuators.data[o + ACT_IDX_BIAS0]),
+                    Float64(sf.actuators.data[o + ACT_IDX_BIAS1]),
+                    Float64(sf.actuators.data[o + ACT_IDX_KV]),
+                    length,
+                    vel,
+                )
 
             var saturated = False
             if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:
@@ -484,10 +494,22 @@ def apply_pose_transmission[
                     vel_s += Float64(tJ[a]) * Float64(
                         d.qvel.data[e * nv + a]
                     )
-                # `length` is 0 for a site transmission, so a POSITION servo
-                # reads `u - 0`.
-                var kv_s = Float64(sf.actuators.data[o + ACT_IDX_KV])
-                force_s = kp_s * u_s - kv_s * vel_s
+                # ⚠ `length` IS 0 FOR A SITE TRANSMISSION — MuJoCo's
+                # `mjTRN_SITE` sets `length[i] = 0` outright
+                # (`engine_core_smooth.c`), so `biasprm[1]` multiplies zero
+                # and a `<position site=>` servos toward 0. That is the
+                # definition, not an omission; the 0.0 is passed explicitly
+                # so the law stays the shared one.
+                force_s = actuator_scalar_force(
+                    kp_s,
+                    u_s,
+                    True,
+                    Float64(sf.actuators.data[o + ACT_IDX_BIAS0]),
+                    Float64(sf.actuators.data[o + ACT_IDX_BIAS1]),
+                    Float64(sf.actuators.data[o + ACT_IDX_KV]),
+                    0.0,
+                    vel_s,
+                )
 
             var sat_s = False
             if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:

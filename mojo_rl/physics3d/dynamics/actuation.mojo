@@ -45,6 +45,8 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_KIND,
     ACT_IDX_KP,
     ACT_IDX_KV,
+    ACT_IDX_BIAS0,
+    ACT_IDX_BIAS1,
     ACT_IDX_TRN_COEF_0,
     ACT_IDX_TRN_DADR_0,
     ACT_IDX_TRN_N,
@@ -59,6 +61,56 @@ def _floor1(n: Int) -> Int:
     """`SpecFields`' `*_F` floor, on the live dimension — the record tensors
     are sized `max(n, 1)`, so the loop bound must match."""
     return n if n > 0 else 1
+
+
+@always_inline
+def actuator_scalar_force(
+    gain: Float64,
+    u: Float64,
+    has_bias: Bool,
+    b0: Float64,
+    b1: Float64,
+    kv: Float64,
+    length: Float64,
+    vel: Float64,
+) -> Float64:
+    """`mj_fwdActuation`'s scalar `force[i]`, before `forcerange`.
+
+    ONE COPY OF THE LAW, FIVE CALLERS. `apply_actions_fields` (CPU),
+    `apply_actions_kernel_gpu`, and the three loops in `pose_transmission`
+    (spatial-tendon actuator, site actuator, spatial-tendon spring) each used
+    to spell it out. ⚠ The `<default>`-class rule that drifted between two
+    inline copies (`ctrllimited`, 322 unclamped actuators) is the same shape
+    of accident; a law with five copies is five chances to fix four of them.
+
+    MuJoCo, `engine_forward.c:508-628`:
+
+        gain  = gainprm[0]                                (gaintype FIXED)
+        force = gain * u                                  (u = ctrl or act)
+        bias  = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity
+        force += bias                                     (biastype AFFINE)
+
+    ⚠ `kv` IS `-biasprm[2]`, which is how this record has always stored it,
+    so the third term is written `(-kv) * vel`. Negation is exact, so this is
+    `biasprm[2] * velocity` bit for bit.
+
+    ⚠ `has_bias` IS `kind != ACT_KIND_MOTOR`, i.e. MuJoCo's `biastype ==
+    mjBIAS_NONE`. It is passed rather than derived so the callers that
+    already branch on `kind` do not load it twice, and so a caller that has
+    no `length` to give (a site transmission, where MuJoCo defines it as 0)
+    can still say honestly that it has a bias.
+
+    ⚠ THE GROUPING IS THE REFERENCE'S, NOT AN EQUIVALENT ONE. The old
+    position law was `kp*(u - length) - kv*vel`, which is the same number in
+    exact arithmetic and a different one in float64. Every model whose
+    actuators already matched to 0.000e+00 does so through this expression
+    now; `gainprm[0] == -biasprm[1]` makes the two agree to the last bit only
+    when nothing rounds.
+    """
+    var force = gain * u
+    if has_bias:
+        force = force + (b0 + b1 * length + (-kv) * vel)
+    return force
 
 
 def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
@@ -194,6 +246,9 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         comptime _POS = ACT_KIND_POSITION
         comptime _VEL = ACT_KIND_VELOCITY
         var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
+        # ⚠ `kind != MOTOR` IS `biastype != mjBIAS_NONE`. The parser sets
+        # MOTOR exactly when `<general>` has no bias block and for every
+        # `<motor>` element, so this branch is the bias, not a heuristic.
         if kind == _POS or kind == _VEL:
             var length = Float64(0)
             var vel = Float64(0)
@@ -225,9 +280,16 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
             # `u`, not `ctrl` — for a dyntype actuator the servo setpoint
             # is the ACTIVATION, which lags the control. They coincide
             # only when the actuator has no activation (then u == ctrl).
-            var setpoint = u - length if kind == _POS else u
-            var kv = Float64(sf.actuators.data[o + ACT_IDX_KV])
-            force = kp * setpoint - kv * vel
+            force = actuator_scalar_force(
+                kp,
+                u,
+                True,
+                Float64(sf.actuators.data[o + ACT_IDX_BIAS0]),
+                Float64(sf.actuators.data[o + ACT_IDX_BIAS1]),
+                Float64(sf.actuators.data[o + ACT_IDX_KV]),
+                length,
+                vel,
+            )
 
         # `forcerange` (mj_fwdActuation). ⚠ THE CLAMP IS HERE — on the
         # SCALAR force, BEFORE the moment loop below multiplies by

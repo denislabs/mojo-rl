@@ -895,7 +895,7 @@ comptime PAIR_IDX_MARGIN: Int = 13
 # already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
 # with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
 # Anything diffing the two must convert; the equivalence gate does.
-comptime MODEL_ACTUATOR_SIZE: Int = 22 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACTUATOR_SIZE: Int = 24 + 3 * TENDON_MAX_WRAPS
 
 comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
 comptime ACT_IDX_GEAR: Int = 1
@@ -944,6 +944,36 @@ comptime ACT_IDX_GEAR_2: Int = ACT_IDX_SITE_ID + 2
 comptime ACT_IDX_GEAR_3: Int = ACT_IDX_SITE_ID + 3
 comptime ACT_IDX_GEAR_4: Int = ACT_IDX_SITE_ID + 4
 comptime ACT_IDX_GEAR_5: Int = ACT_IDX_SITE_ID + 5
+
+# ⚠⚠ `biasprm[0]` AND `biasprm[1]`, WHICH THIS RECORD DID NOT CARRY. The force
+# law MuJoCo evaluates (`mj_fwdActuation`, engine_forward.c:571-628) is
+#
+#     force = gain * u  +  (biasprm[0] + biasprm[1]*length + biasprm[2]*vel)
+#
+# and `ACT_IDX_KP` / `ACT_IDX_KV` are `gainprm[0]` and `-biasprm[2]`. With
+# nowhere to put the other two, `apply_actions` reconstructed the bias from
+# the KIND instead — POSITION assumed `biasprm[1] == -gainprm[0]`, VELOCITY
+# assumed `biasprm[1] == 0` — which is true of every `<position>` and
+# `<velocity>` ELEMENT by construction and NOT true of a `<general>` that
+# writes the two independently.
+#
+# ⚠ FIVE Menagerie scenes write exactly that: franka_emika_panda,
+# robotiq_2f85, robotiq_2f85_v4, stanford_tidybot and ufactory_xarm7, each
+# one gripper actuator whose `ctrlrange` is remapped to travel units —
+# panda's is `gainprm="0.01568627451 0 0" biasprm="0 -100 -10"`, i.e. a gain
+# of 1/64 against a position feedback of 100. We answered its two finger dofs
+# -0.00031373 where MuJoCo answers **-2.0**, a factor of 6375.
+#
+# ⚠ THE PARSER ALREADY KNEW. `_fill_actuators` records
+# `bad_actuator_code = 3` for "biasprm[1] not in {-gain, 0}" — and the
+# COMPTIME path raises on it while the RUNTIME path reads the field nowhere,
+# so every Menagerie model with one loaded silently. A detected-and-unread
+# diagnostic is not a diagnostic.
+#
+# Appended after the site block, so indices 0..15, the triple span and
+# `SITE_ID + 0..5` all keep their meaning.
+comptime ACT_IDX_BIAS0: Int = ACT_IDX_SITE_ID + 6
+comptime ACT_IDX_BIAS1: Int = ACT_IDX_SITE_ID + 7
 
 # The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
 # record rather than folded into `MODEL_TENDON_SIZE`.

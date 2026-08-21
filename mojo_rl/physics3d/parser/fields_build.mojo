@@ -305,6 +305,8 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_LIMITED,
     ACT_IDX_KP,
+    ACT_IDX_BIAS0,
+    ACT_IDX_BIAS1,
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
     ACT_IDX_ACT_ADR,
@@ -1075,7 +1077,6 @@ def build_model_fields_from_flat[
     # skip the whole pass. Transcribed with the same `> 0`, not `!= 0`, so a
     # nonsense model diverges the same way in both engines rather than only in
     # ours.
-    #
     # ⚠ COUNTED FROM `fmd.bodies`, NOT FROM `mf.bodies` — this meta block runs
     # ~140 lines BEFORE the body records are written, so reading them back here
     # would count zeros on every model.
@@ -2366,6 +2367,12 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         )
         sf.actuators.data[o + ACT_IDX_KP] = Scalar[DTYPE](a.kp)
         sf.actuators.data[o + ACT_IDX_KV] = Scalar[DTYPE](a.kv)
+        # `biasprm[0]` / `biasprm[1]`. Written unconditionally, including
+        # for a MOTOR whose biastype is NONE: the force law gates on `kind`,
+        # and a slot only sometimes written is a slot whose zero cannot be
+        # told from an absent attribute.
+        sf.actuators.data[o + ACT_IDX_BIAS0] = Scalar[DTYPE](a.bias0)
+        sf.actuators.data[o + ACT_IDX_BIAS1] = Scalar[DTYPE](a.bias1)
         sf.actuators.data[o + ACT_IDX_DYN_TAU] = Scalar[DTYPE](a.dyn_tau)
         sf.actuators.data[o + ACT_IDX_ACT_ADR] = Scalar[DTYPE](a.act_adr)
         sf.actuators.data[o + ACT_IDX_TRN_N] = Scalar[DTYPE](a.trn_n)
