@@ -1730,6 +1730,66 @@ def _fill_assets(
             result.mesh_asset_scale.append(sx)
             result.mesh_asset_scale.append(sy)
             result.mesh_asset_scale.append(sz)
+            # ── `refpos` / `refquat` — the transform BEFORE the scale ─────
+            # `mjCMesh::ApplyTransformations` (user_mesh.cc:1257) subtracts
+            # `refpos`, rotates by `R(normalize(refquat))^T` — the INVERSE of
+            # the quaternion, since `mjuu_mulvecmatT` is `M^T v` — and only
+            # then applies `scale`.
+            #
+            # ⚠⚠ IGNORING IT MOVES THE MESH'S CENTRE OF MASS. shadow_dexee is
+            # the one Menagerie model that uses it, on all 13 of its meshes,
+            # every one `refquat="1 -1 0 0"`: a -90 deg turn about x, so the
+            # vertices rotate +90 deg. Its knuckle mesh's CoM came out
+            # (-0.000234, -0.015295, 0.007838) here against MuJoCo's
+            # (-0.000234, -0.007838, -0.015295) — the same three numbers with
+            # y and z exchanged and a sign flipped, which is what a dropped
+            # 90 deg rotation looks like. That frame is composed into
+            # `geom_pos`/`geom_quat`, so the body's inertial frame and its
+            # MASS MATRIX went with it: 25% off the reference on the diagonal.
+            var rp_s = _extract_attr(tag, "refpos")
+            var rpx = 0.0
+            var rpy = 0.0
+            var rpz = 0.0
+            if rp_s.byte_length() > 0:
+                var rpv = _parse_vec3(rp_s)
+                rpx = rpv[0]
+                rpy = rpv[1]
+                rpz = rpv[2]
+            result.mesh_asset_refpos.append(rpx)
+            result.mesh_asset_refpos.append(rpy)
+            result.mesh_asset_refpos.append(rpz)
+            var rq_s = _extract_attr(tag, "refquat")
+            var rqw = 1.0
+            var rqx = 0.0
+            var rqy = 0.0
+            var rqz = 0.0
+            if rq_s.byte_length() > 0:
+                var rqp = List[String]()
+                _split_spaces(rq_s, rqp)
+                if len(rqp) >= 4:
+                    rqw = _parse_float(rqp[0])
+                    rqx = _parse_float(rqp[1])
+                    rqy = _parse_float(rqp[2])
+                    rqz = _parse_float(rqp[3])
+                    # `mjuu_normvec` — MuJoCo normalises before building the
+                    # matrix, so `refquat="1 -1 0 0"` is a unit quaternion by
+                    # the time it rotates anything.
+                    var rn2 = rqw * rqw + rqx * rqx + rqy * rqy + rqz * rqz
+                    if rn2 > 1e-30:
+                        var rinv = 1.0 / _sqrt_f64(rn2)
+                        rqw *= rinv
+                        rqx *= rinv
+                        rqy *= rinv
+                        rqz *= rinv
+                    else:
+                        rqw = 1.0
+                        rqx = 0.0
+                        rqy = 0.0
+                        rqz = 0.0
+            result.mesh_asset_refquat.append(rqw)
+            result.mesh_asset_refquat.append(rqx)
+            result.mesh_asset_refquat.append(rqy)
+            result.mesh_asset_refquat.append(rqz)
             mesh_count += 1
         mesh_pos = tag_end + 1
     result.num_mesh_assets = mesh_count
@@ -2088,6 +2148,15 @@ def _parse_one_geom(
                     gd.mesh_scale_x = assets.mesh_asset_scale[mi * 3 + 0]
                     gd.mesh_scale_y = assets.mesh_asset_scale[mi * 3 + 1]
                     gd.mesh_scale_z = assets.mesh_asset_scale[mi * 3 + 2]
+                if mi * 3 + 2 < len(assets.mesh_asset_refpos):
+                    gd.mesh_ref_pos_x = assets.mesh_asset_refpos[mi * 3 + 0]
+                    gd.mesh_ref_pos_y = assets.mesh_asset_refpos[mi * 3 + 1]
+                    gd.mesh_ref_pos_z = assets.mesh_asset_refpos[mi * 3 + 2]
+                if mi * 4 + 3 < len(assets.mesh_asset_refquat):
+                    gd.mesh_ref_quat_w = assets.mesh_asset_refquat[mi * 4 + 0]
+                    gd.mesh_ref_quat_x = assets.mesh_asset_refquat[mi * 4 + 1]
+                    gd.mesh_ref_quat_y = assets.mesh_asset_refquat[mi * 4 + 2]
+                    gd.mesh_ref_quat_z = assets.mesh_asset_refquat[mi * 4 + 3]
                 gd.fit_from_mesh = gd.geom_type != _GEOM_MESH
                 break
 

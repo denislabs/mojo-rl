@@ -1438,6 +1438,13 @@ def build_model_fields_from_flat[
                 gd_m.mesh_scale_x,
                 gd_m.mesh_scale_y,
                 gd_m.mesh_scale_z,
+                gd_m.mesh_ref_pos_x,
+                gd_m.mesh_ref_pos_y,
+                gd_m.mesh_ref_pos_z,
+                gd_m.mesh_ref_quat_w,
+                gd_m.mesh_ref_quat_x,
+                gd_m.mesh_ref_quat_y,
+                gd_m.mesh_ref_quat_z,
             )
             mesh_inertia_valid[gd_m.mesh_id] = True
         except:
@@ -1732,6 +1739,13 @@ def build_model_fields_from_flat[
                         gd.mesh_scale_x,
                         gd.mesh_scale_y,
                         gd.mesh_scale_z,
+                        gd.mesh_ref_pos_x,
+                        gd.mesh_ref_pos_y,
+                        gd.mesh_ref_pos_z,
+                        gd.mesh_ref_quat_w,
+                        gd.mesh_ref_quat_x,
+                        gd.mesh_ref_quat_y,
+                        gd.mesh_ref_quat_z,
                     )
                     var mesh_id = result[0]
                     mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](

@@ -317,6 +317,83 @@ def transform_verts_to_principal_frame[
         verts[o + 2] = mat[2] * vx + mat[5] * vy + mat[8] * vz
 
 
+def apply_mesh_ref_transform[
+    DTYPE: DType
+](
+    mut v: List[Scalar[DTYPE]],
+    nvert: Int,
+    rpx: Float64, rpy: Float64, rpz: Float64,
+    rqw: Float64, rqx: Float64, rqy: Float64, rqz: Float64,
+    sx: Float64, sy: Float64, sz: Float64,
+):
+    """`mjCMesh::ApplyTransformations` (user_mesh.cc:1257), in its order.
+
+        v -= refpos
+        v  = R(refquat)^T v      <- `mjuu_mulvecmatT`, i.e. the INVERSE turn
+        v *= scale
+
+    ⚠⚠ THE ROTATION IS THE QUATERNION'S INVERSE. `refquat="1 -1 0 0"` is a
+    -90 deg turn about x and rotates the mesh **+90 deg**; reading it forward
+    lands 180 deg away, which on a roughly symmetric part still looks like a
+    plausible mesh.
+
+    ⚠ AND IT RUNS BEFORE `scale`, so it cannot be folded in afterwards unless
+    the scale happens to be uniform. `scale` is applied here for that reason
+    rather than being left to the loader.
+    """
+    var qn2 = rqw * rqw + rqx * rqx + rqy * rqy + rqz * rqz
+    var w = rqw
+    var x = rqx
+    var y = rqy
+    var z = rqz
+    if qn2 > 1e-30:
+        var inv = 1.0 / sqrt(qn2)
+        w *= inv
+        x *= inv
+        y *= inv
+        z *= inv
+    else:
+        w = 1.0
+        x = 0.0
+        y = 0.0
+        z = 0.0
+    # R(q), row-major, then used TRANSPOSED below.
+    var m00 = 1.0 - 2.0 * (y * y + z * z)
+    var m01 = 2.0 * (x * y - z * w)
+    var m02 = 2.0 * (x * z + y * w)
+    var m10 = 2.0 * (x * y + z * w)
+    var m11 = 1.0 - 2.0 * (x * x + z * z)
+    var m12 = 2.0 * (y * z - x * w)
+    var m20 = 2.0 * (x * z - y * w)
+    var m21 = 2.0 * (y * z + x * w)
+    var m22 = 1.0 - 2.0 * (x * x + y * y)
+    for i in range(nvert):
+        var ax = Float64(v[i * 3 + 0]) - rpx
+        var ay = Float64(v[i * 3 + 1]) - rpy
+        var az = Float64(v[i * 3 + 2]) - rpz
+        # `mjuu_mulvecmatT(res, vec, mat)`: res = M^T vec.
+        var bx = m00 * ax + m10 * ay + m20 * az
+        var by = m01 * ax + m11 * ay + m21 * az
+        var bz = m02 * ax + m12 * ay + m22 * az
+        v[i * 3 + 0] = Scalar[DTYPE](bx * sx)
+        v[i * 3 + 1] = Scalar[DTYPE](by * sy)
+        v[i * 3 + 2] = Scalar[DTYPE](bz * sz)
+
+
+@always_inline
+def mesh_ref_is_identity(
+    rpx: Float64, rpy: Float64, rpz: Float64,
+    rqw: Float64, rqx: Float64, rqy: Float64, rqz: Float64,
+) -> Bool:
+    """MuJoCo's own guards: it skips each transform when it is the identity,
+    and so does every caller here — which keeps the 84 Menagerie scenes that
+    declare neither on the byte-identical path they were already on."""
+    return (
+        rpx == 0.0 and rpy == 0.0 and rpz == 0.0
+        and rqw == 1.0 and rqx == 0.0 and rqy == 0.0 and rqz == 0.0
+    )
+
+
 def mesh_inertia_from_file[
     DTYPE: DType
 ](
@@ -324,6 +401,13 @@ def mesh_inertia_from_file[
     sx: Float64 = 1.0,
     sy: Float64 = 1.0,
     sz: Float64 = 1.0,
+    rpx: Float64 = 0.0,
+    rpy: Float64 = 0.0,
+    rpz: Float64 = 0.0,
+    rqw: Float64 = 1.0,
+    rqx: Float64 = 0.0,
+    rqy: Float64 = 0.0,
+    rqz: Float64 = 0.0,
 ) raises -> MeshInertia[DTYPE]:
     """`mesh_legacy_inertia` straight off an STL path.
 
@@ -335,11 +419,23 @@ def mesh_inertia_from_file[
     """
     from mojo_rl.render.stl_loader import load_stl
 
-    var mesh_data = load_stl(mesh_filename, sx, sy, sz)
+    # ⚠ `refpos`/`refquat` COME BEFORE `scale`, so when either is present the
+    # loader is asked for UNSCALED vertices and all three steps are applied
+    # here in MuJoCo's order. When both are the identity — 84 of Menagerie's
+    # 85 scenes — the loader keeps scaling as it always has, so nothing else
+    # moves by even a bit.
+    var ident = mesh_ref_is_identity(rpx, rpy, rpz, rqw, rqx, rqy, rqz)
+    var mesh_data = load_stl(
+        mesh_filename, sx, sy, sz
+    ) if ident else load_stl(mesh_filename, 1.0, 1.0, 1.0)
     var n = len(mesh_data.vertices)
     var tris = List[Scalar[DTYPE]]()
     for i in range(n):
         tris.append(Scalar[DTYPE](mesh_data.vertices[i].px))
         tris.append(Scalar[DTYPE](mesh_data.vertices[i].py))
         tris.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
+    if not ident:
+        apply_mesh_ref_transform[DTYPE](
+            tris, n, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
+        )
     return mesh_legacy_inertia[DTYPE](tris, n // 3)

@@ -17,7 +17,12 @@ from .hull_cache import (
     hull_cache_store,
 )
 from .mesh_polygons import build_mesh_polygons
-from ..model.mesh_inertia import MeshInertia, transform_verts_to_principal_frame
+from ..model.mesh_inertia import (
+    MeshInertia,
+    transform_verts_to_principal_frame,
+    apply_mesh_ref_transform,
+    mesh_ref_is_identity,
+)
 
 
 def deduplicate_vertices[
@@ -720,6 +725,13 @@ def load_mesh_hull[
     sx: Float64 = 1.0,
     sy: Float64 = 1.0,
     sz: Float64 = 1.0,
+    rpx: Float64 = 0.0,
+    rpy: Float64 = 0.0,
+    rpz: Float64 = 0.0,
+    rqw: Float64 = 1.0,
+    rqx: Float64 = 0.0,
+    rqy: Float64 = 0.0,
+    rqz: Float64 = 0.0,
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
 
@@ -746,11 +758,32 @@ def load_mesh_hull[
     # WHOLE output keyed on the STL's contents AND `mi`'s frame; see that
     # module for why the frame belongs in the key and for the rebasing table
     # the append block below implements.
-    var cache_path = hull_cache_path[DTYPE](mesh_filename, mi, sx, sy, sz)
+    # ⚠⚠ `refpos`/`refquat` BELONG IN THE CACHE KEY. They change the vertices
+    # this function stores, so two models naming the same file with different
+    # ones must not share a payload. `mi` is already in the key for the same
+    # reason; these ride in as the three scale slots do.
+    var cache_path = hull_cache_path[DTYPE](
+        mesh_filename, mi,
+        sx * (1.0 + 7.0 * rpx + 13.0 * rqx),
+        sy * (1.0 + 7.0 * rpy + 13.0 * rqy),
+        sz * (1.0 + 7.0 * rpz + 13.0 * rqz + 3.0 * (rqw - 1.0)),
+    ) if not mesh_ref_is_identity(
+        rpx, rpy, rpz, rqw, rqx, rqy, rqz
+    ) else hull_cache_path[DTYPE](mesh_filename, mi, sx, sy, sz)
     var p = HullPayload()
 
     if not hull_cache_load(cache_path, p):
-        var mesh_data = load_stl(mesh_filename, sx, sy, sz)
+        # ⚠ `refpos`/`refquat` COME BEFORE `scale`
+        # (`mjCMesh::ApplyTransformations`, user_mesh.cc:1257), so when either
+        # is present the loader is asked for UNSCALED vertices and all three
+        # steps are applied together below. With both at the identity — 84 of
+        # Menagerie's 85 scenes — this is the call it has always made.
+        var _ref_ident = mesh_ref_is_identity(
+            rpx, rpy, rpz, rqw, rqx, rqy, rqz
+        )
+        var mesh_data = load_stl(
+            mesh_filename, sx, sy, sz
+        ) if _ref_ident else load_stl(mesh_filename, 1.0, 1.0, 1.0)
 
         # Extract positions from GPUVertex structs into flat array
         var raw = List[Scalar[DTYPE]]()
@@ -759,6 +792,10 @@ def load_mesh_hull[
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].px))
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].py))
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
+        if not _ref_ident:
+            apply_mesh_ref_transform[DTYPE](
+                raw, num_raw, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
+            )
 
         # Deduplicate into temp buffer
         var unique = List[Scalar[DTYPE]]()

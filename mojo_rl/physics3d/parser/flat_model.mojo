@@ -302,6 +302,16 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var fit_from_mesh: Bool
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
+    var mesh_ref_pos_x: Float64
+    var mesh_ref_pos_y: Float64
+    var mesh_ref_pos_z: Float64
+    var mesh_ref_quat_w: Float64
+    var mesh_ref_quat_x: Float64
+    var mesh_ref_quat_y: Float64
+    var mesh_ref_quat_z: Float64
+    """`<mesh refpos>` / `<mesh refquat>` for the asset this geom names — see
+    `FlatModelDef.mesh_asset_refpos`. Identity when the asset declares
+    neither, which is 84 of Menagerie's 85 scenes."""
     var mesh_scale_x: Float64
     var mesh_scale_y: Float64
     var mesh_scale_z: Float64
@@ -432,6 +442,13 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.fit_from_mesh = False
         self.mesh_id = mesh_id
         self.mesh_filename = mesh_filename
+        self.mesh_ref_pos_x = 0.0
+        self.mesh_ref_pos_y = 0.0
+        self.mesh_ref_pos_z = 0.0
+        self.mesh_ref_quat_w = 1.0
+        self.mesh_ref_quat_x = 0.0
+        self.mesh_ref_quat_y = 0.0
+        self.mesh_ref_quat_z = 0.0
         self.mesh_scale_x = 1.0
         self.mesh_scale_y = 1.0
         self.mesh_scale_z = 1.0
@@ -1954,6 +1971,22 @@ struct FlatModelDef(Movable):
     var mesh_asset_names: List[String]
     var mesh_asset_files: List[String]
     var mesh_asset_scale: List[Float64]
+    # `<mesh refpos="x y z" refquat="w x y z">` — a rigid transform MuJoCo
+    # applies to the RAW vertices before everything else
+    # (`mjCMesh::ApplyTransformations`, user_mesh.cc:1257):
+    #
+    #     v -= refpos                    ; then
+    #     v  = R(normalize(refquat))^T v ; then
+    #     v *= scale
+    #
+    # ⚠ THE ROTATION IS THE INVERSE OF THE QUATERNION. `mjuu_mulvecmatT` is
+    # `M^T v`, so `refquat="1 -1 0 0"` (a -90 deg turn about x) rotates the
+    # mesh +90 deg. Reading it as a forward rotation lands 180 deg away.
+    #
+    # ⚠ IT COMES BEFORE `scale`, so it cannot be folded in afterwards unless
+    # the scale is uniform.
+    var mesh_asset_refpos: List[Float64]   # 3 per asset
+    var mesh_asset_refquat: List[Float64]  # 4 per asset, w x y z
     """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
 
     ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
@@ -2049,6 +2082,8 @@ struct FlatModelDef(Movable):
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
         self.mesh_asset_scale = List[Float64]()
+        self.mesh_asset_refpos = List[Float64]()
+        self.mesh_asset_refquat = List[Float64]()
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0
