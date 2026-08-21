@@ -1445,6 +1445,7 @@ def build_model_fields_from_flat[
                 gd_m.mesh_ref_quat_x,
                 gd_m.mesh_ref_quat_y,
                 gd_m.mesh_ref_quat_z,
+                gd_m.mesh_inertia_shell,
             )
             mesh_inertia_valid[gd_m.mesh_id] = True
         except:

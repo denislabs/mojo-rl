@@ -302,6 +302,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var fit_from_mesh: Bool
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
+    var mesh_inertia_shell: Bool
+    """`<mesh inertia="shell">` on the asset this geom names."""
     var mesh_ref_pos_x: Float64
     var mesh_ref_pos_y: Float64
     var mesh_ref_pos_z: Float64
@@ -442,6 +444,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.fit_from_mesh = False
         self.mesh_id = mesh_id
         self.mesh_filename = mesh_filename
+        self.mesh_inertia_shell = False
         self.mesh_ref_pos_x = 0.0
         self.mesh_ref_pos_y = 0.0
         self.mesh_ref_pos_z = 0.0
@@ -1987,6 +1990,13 @@ struct FlatModelDef(Movable):
     # the scale is uniform.
     var mesh_asset_refpos: List[Float64]   # 3 per asset
     var mesh_asset_refquat: List[Float64]  # 4 per asset, w x y z
+    # `<mesh inertia="shell">` — 1 per asset, 0 for MuJoCo's default "legacy".
+    #
+    # ⚠ A DIFFERENT PHYSICAL MODEL, NOT A FALLBACK: the mass sits on the
+    # SURFACE rather than through the volume. Three Menagerie models declare
+    # it — hello_robot_stretch_3 (11 meshes), hello_robot_stretch (8),
+    # pndbotics_adam_lite (4).
+    var mesh_asset_inertia_shell: List[Int]
     """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
 
     ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
@@ -2084,6 +2094,7 @@ struct FlatModelDef(Movable):
         self.mesh_asset_scale = List[Float64]()
         self.mesh_asset_refpos = List[Float64]()
         self.mesh_asset_refquat = List[Float64]()
+        self.mesh_asset_inertia_shell = List[Int]()
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0

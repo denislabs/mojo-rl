@@ -137,13 +137,39 @@ def _tri_area_center_normal[
 
 def mesh_legacy_inertia[
     DTYPE: DType
-](tri_verts: List[Scalar[DTYPE]], num_tris: Int) -> MeshInertia[DTYPE]:
-    """`mjCMesh::Compute` for `inertia="legacy"` — MuJoCo's default.
+](
+    tri_verts: List[Scalar[DTYPE]],
+    num_tris: Int,
+    shell: Bool = False,
+) -> MeshInertia[DTYPE]:
+    """`mjCMesh::Compute` for `inertia="legacy"` (MuJoCo's default) or
+    `inertia="shell"`.
 
     `tri_verts` is the RAW triangle soup, 9 scalars per face (three xyz corners
     in winding order) — i.e. exactly what an STL yields before deduplication.
     Deduplicating first is harmless (it changes indices, not geometry) but the
     faces must be ALL of them, not the convex hull's.
+
+    ⚠⚠ `shell=True` IS A DIFFERENT PHYSICAL MODEL, not a fallback. LEGACY
+    spreads the mass through the enclosed VOLUME; SHELL spreads it over the
+    SURFACE, as if the part were a thin skin. `<mesh inertia="shell">` is how a
+    model says its part is hollow, and MuJoCo's own error message recommends it
+    for a mesh whose volume comes out too small — so a mesh that declares it
+    may well have no usable volume at all.
+
+    Three lines differ (`mjCMesh::ComputeInertia`, user_mesh.cc:1590):
+
+        weight  area                      instead of  |dot(center, n)| * area/3
+        C       12                        instead of  20
+        abs()   NOT taken (areas are >=0) instead of  taken per face
+
+    and the centre of mass is area-weighted rather than volume-weighted
+    (`ComputeSurfaceArea`, :1230) — with the SAME `center*3/4 + facecen/4`
+    pyramid formula, which is the part that is easy to drop.
+
+    ⚠ THREE MENAGERIE MODELS USE IT: hello_robot_stretch_3 (11 meshes),
+    hello_robot_stretch (8) and pndbotics_adam_lite (4). Treating them as
+    legacy put stretch_3's gripper centre of mass 1.4e-04 out.
     """
     var mi = MeshInertia[DTYPE]()
     if num_tris <= 0:
@@ -186,8 +212,12 @@ def mesh_legacy_inertia[
         var dot = (
             (r[1] - fx) * r[4] + (r[2] - fy) * r[5] + (r[3] - fz) * r[6]
         )
-        # ⚠ LEGACY takes the absolute value per face.
-        var v = math_abs(dot * r[0] / Scalar[DTYPE](3))
+        # ⚠ LEGACY takes the absolute value per face. SHELL weighs each face
+        # by its AREA instead of the tetrahedron's volume — the pyramid CoM
+        # formula below is shared, which is why only the weight changes here.
+        var v = r[0] if shell else math_abs(
+            dot * r[0] / Scalar[DTYPE](3)
+        )
         vol_total += v
         cx += v * (r[1] * Scalar[DTYPE](0.75) + fx * Scalar[DTYPE](0.25))
         cy += v * (r[2] * Scalar[DTYPE](0.75) + fy * Scalar[DTYPE](0.25))
@@ -229,9 +259,16 @@ def mesh_legacy_inertia[
             dx, dy, dz, ex, ey, ez, gx, gy, gz
         )
         var dot = r[1] * r[4] + r[2] * r[5] + r[3] * r[6]
-        var v = math_abs(dot * r[0] / Scalar[DTYPE](3))
+        var v = r[0] if shell else math_abs(
+            dot * r[0] / Scalar[DTYPE](3)
+        )
         vol_recomputed += v
-        var s = v / Scalar[DTYPE](20)
+        # ⚠ THE DIVISOR IS 12 FOR A SHELL AND 20 FOR A SOLID
+        # (`int C = (inertia == mjMESH_INERTIA_SHELL) ? 12 : 20`). Keeping 20
+        # would scale every shell moment by 0.6 — a plausible-looking number.
+        var s = v / (
+            Scalar[DTYPE](12) if shell else Scalar[DTYPE](20)
+        )
 
         # k = {00, 11, 22, 01, 02, 12}
         p0 += s * (
@@ -408,6 +445,7 @@ def mesh_inertia_from_file[
     rqx: Float64 = 0.0,
     rqy: Float64 = 0.0,
     rqz: Float64 = 0.0,
+    shell: Bool = False,
 ) raises -> MeshInertia[DTYPE]:
     """`mesh_legacy_inertia` straight off an STL path.
 
@@ -438,4 +476,4 @@ def mesh_inertia_from_file[
         apply_mesh_ref_transform[DTYPE](
             tris, n, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
         )
-    return mesh_legacy_inertia[DTYPE](tris, n // 3)
+    return mesh_legacy_inertia[DTYPE](tris, n // 3, shell)

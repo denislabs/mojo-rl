@@ -1790,6 +1790,22 @@ def _fill_assets(
             result.mesh_asset_refquat.append(rqx)
             result.mesh_asset_refquat.append(rqy)
             result.mesh_asset_refquat.append(rqz)
+            # ── `inertia` — "legacy" (default), "shell", "convex", "exact" ──
+            # ⚠ SHELL IS A DIFFERENT PHYSICAL MODEL, not a numerical variant:
+            # the mass lies on the SURFACE instead of through the volume, and
+            # MuJoCo's own "mesh volume is too small — try setting inertia to
+            # shell" is the message that sends a model here. Three Menagerie
+            # models use it. `convex` and `exact` are not modelled; they are
+            # named rather than silently treated as legacy.
+            var in_s = _trim(_extract_attr(tag, "inertia"))
+            result.mesh_asset_inertia_shell.append(1 if in_s == "shell" else 0)
+            if in_s.byte_length() > 0 and in_s != "shell" and in_s != "legacy":
+                print(
+                    "physics3d: <mesh inertia=\"" + in_s + "\"> is not"
+                    " modelled — the mesh will be weighed as `legacy`"
+                    " (mass through the volume), which is a different"
+                    " inertia tensor.",
+                )
             mesh_count += 1
         mesh_pos = tag_end + 1
     result.num_mesh_assets = mesh_count
@@ -2152,6 +2168,10 @@ def _parse_one_geom(
                     gd.mesh_ref_pos_x = assets.mesh_asset_refpos[mi * 3 + 0]
                     gd.mesh_ref_pos_y = assets.mesh_asset_refpos[mi * 3 + 1]
                     gd.mesh_ref_pos_z = assets.mesh_asset_refpos[mi * 3 + 2]
+                if mi < len(assets.mesh_asset_inertia_shell):
+                    gd.mesh_inertia_shell = (
+                        assets.mesh_asset_inertia_shell[mi] != 0
+                    )
                 if mi * 4 + 3 < len(assets.mesh_asset_refquat):
                     gd.mesh_ref_quat_w = assets.mesh_asset_refquat[mi * 4 + 0]
                     gd.mesh_ref_quat_x = assets.mesh_asset_refquat[mi * 4 + 1]
