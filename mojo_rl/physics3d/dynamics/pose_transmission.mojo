@@ -52,6 +52,26 @@ bitcraze_crazyflie_2). Re-clamping here would be wrong in the other
 direction — it would clamp the tendon SPRING, which is `qfrc_passive` and
 which MuJoCo never clamps.
 
+⚠⚠ ONE PER CONTROL SUBSTEP, WHICH IS EXACT UNDER EULER AND NOT UNDER RK4.
+The caller computes these forces once and then integrates; `mj_Euler`
+evaluates the derivative once too, so the two agree exactly. `mj_RungeKutta`
+evaluates it FOUR TIMES, at four different poses, and recomputes the
+transmission at each — while ours stays frozen at the stage-0 moment. The
+error is the rotation of the site (or the stretch of the tendon) across one
+step, so it is small but real:
+
+    bitcraze_crazyflie_2, one step, worst |d(qpos)| vs MuJoCo
+        as shipped (`integrator="RK4"`)            9.200e-06
+        the same model rewritten to Euler          5.294e-23
+
+That is the whole of that scene's residual — ablating `density`/`viscosity`
+changes nothing, and its `qfrc_actuator` matches MuJoCo to 0.0 exactly at
+stage 0. A pose-INDEPENDENT transmission does not care: a `<motor joint=>`
+has the same force at all four stages, which is why RK4 models have been
+exact until a transmission started depending on the pose. Fixing it means
+evaluating actuation inside the RK4 stage loop, i.e. giving the integrator
+`sf` and the controls — the refactor this file was written to avoid.
+
 ⚠ CPU ONLY, AND THE GPU PATH IS NOT SILENTLY WRONG. `actions` is a host
 `List`, so there is nothing to launch; `apply_actions_kernel_gpu` keeps the
 `(qadr, dadr, coef)` walk and therefore keeps giving a spatial-tendon
@@ -76,6 +96,8 @@ from ..kinematics.forward_kinematics import forward_kinematics
 from ..dynamics.subtree_com import compute_subtree_com
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.tendon import spatial_tendon_length_jac
+from ..dynamics.jac_point import jac_point
+from ..kinematics.quat_math import gpu_quat_rotate
 from ..parser.flat_model import ACT_KIND_POSITION, ACT_KIND_VELOCITY
 from ..gpu.constants import (
     ACTTEN_IDX_SPRING_HI,
@@ -94,6 +116,20 @@ from ..gpu.constants import (
     ACT_IDX_KP,
     ACT_IDX_KV,
     ACT_IDX_TENDON_ID,
+    ACT_IDX_SITE_ID,
+    ACT_IDX_GEAR_1,
+    ACT_IDX_GEAR_2,
+    ACT_IDX_GEAR_3,
+    ACT_IDX_GEAR_4,
+    ACT_IDX_GEAR_5,
+    SITE_IDX_BODY,
+    SITE_IDX_POS_X,
+    SITE_IDX_POS_Y,
+    SITE_IDX_POS_Z,
+    SITE_IDX_QUAT_X,
+    SITE_IDX_QUAT_Y,
+    SITE_IDX_QUAT_Z,
+    SITE_IDX_QUAT_W,
     ACT_IDX_TRN_N,
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -139,6 +175,8 @@ def model_has_pose_transmission[
         var o = i * MODEL_ACTUATOR_SIZE
         if Int(sf.actuators.data[o + ACT_IDX_TRN_N]) != 0:
             continue
+        if Int(sf.actuators.data[o + ACT_IDX_SITE_ID]) >= 0:
+            return True
         var tid = Int(sf.actuators.data[o + ACT_IDX_TENDON_ID])
         if tid >= 0 and tid < n_ten and _is_spatial(m, tid):
             return True
@@ -186,6 +224,16 @@ def apply_pose_transmission[
 
     comptime V_CAP = cap[D2.CAP_NV]()
     var tJ = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
+    # The site branch's two Jacobian blocks, ROW-MAJOR 3 x nv as `jac_point`
+    # writes them (`jacp[k*nv + i]`). Allocated once for the whole loop.
+    var jacp = Scratch[Scalar[DTYPE], 3 * V_CAP](
+        3 * nv, fill=Scalar[DTYPE](0)
+    )
+    var jacr = Scratch[Scalar[DTYPE], 3 * V_CAP](
+        3 * nv, fill=Scalar[DTYPE](0)
+    )
+    var nb3 = dm.get_nbody() * 3
+    var nb4 = dm.get_nbody() * 4
 
     # LayoutTensor views, the same idiom every `dynamics/` dispatcher uses.
     var rl_TEN = rl2(mdm.get_ntendon(), MODEL_TENDON_SIZE)
@@ -307,6 +355,175 @@ def apply_pose_transmission[
                 if tau < 1e-10:
                     tau = 1e-10
                 act[adr] = Scalar[DTYPE](u + (ctrl - u) / tau * timestep)
+
+        # ── actuators through a SITE (`mjTRN_SITE`) ──────────────────────
+        # `mj_jacSite` at the site's world point, then the gear rotated into
+        # the world by the site's frame and contracted with the two Jacobian
+        # blocks. `length` is 0 by definition, so a `<position site=>` servos
+        # toward 0 — MuJoCo's rule, not an omission.
+        for i in range(n_act):
+            if i >= len(actions):
+                break
+            var o = i * MODEL_ACTUATOR_SIZE
+            if Int(sf.actuators.data[o + ACT_IDX_TRN_N]) != 0:
+                continue
+            var sid = Int(sf.actuators.data[o + ACT_IDX_SITE_ID])
+            if sid < 0 or sid >= mdm.get_nsite():
+                continue
+
+            # The site's world pose, composed rather than read. `Data` has no
+            # `site_xmat`; it has the body's `xquat` and the site's LOCAL
+            # quat. Rotating by `R_body · R_site` is two `gpu_quat_rotate`
+            # calls, and it avoids binding `site_xpos`, which is EMPTY on
+            # every site-less model — the operand that crashed three solver
+            # tests when `tendon.mojo` tried it (see `_site_world` there).
+            var s_body = Int(
+                Float64(m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_BODY])
+            )
+            var slx = Float64(
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_POS_X]
+            )
+            var sly = Float64(
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_POS_Y]
+            )
+            var slz = Float64(
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_POS_Z]
+            )
+            var sqx = Scalar[DTYPE](
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_QUAT_X]
+            )
+            var sqy = Scalar[DTYPE](
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_QUAT_Y]
+            )
+            var sqz = Scalar[DTYPE](
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_QUAT_Z]
+            )
+            var sqw = Scalar[DTYPE](
+                m.sites.data[sid * MODEL_SITE_SIZE + SITE_IDX_QUAT_W]
+            )
+            # ⚠ `xquat` IS STORED (x, y, z, w) — w LAST — while a free
+            # joint's `qpos` stores it w FIRST. The two conventions live one
+            # file apart; `_site_world` in `tendon.mojo` reads it the same
+            # way this does.
+            var bqx = Scalar[DTYPE](d.xquat.data[e * nb4 + s_body * 4 + 0])
+            var bqy = Scalar[DTYPE](d.xquat.data[e * nb4 + s_body * 4 + 1])
+            var bqz = Scalar[DTYPE](d.xquat.data[e * nb4 + s_body * 4 + 2])
+            var bqw = Scalar[DTYPE](d.xquat.data[e * nb4 + s_body * 4 + 3])
+            var srot = gpu_quat_rotate[DTYPE](
+                bqx, bqy, bqz, bqw,
+                Scalar[DTYPE](slx), Scalar[DTYPE](sly), Scalar[DTYPE](slz),
+            )
+            var spx = Scalar[DTYPE](
+                d.xpos.data[e * nb3 + s_body * 3 + 0]
+            ) + srot[0]
+            var spy = Scalar[DTYPE](
+                d.xpos.data[e * nb3 + s_body * 3 + 1]
+            ) + srot[1]
+            var spz = Scalar[DTYPE](
+                d.xpos.data[e * nb3 + s_body * 3 + 2]
+            ) + srot[2]
+
+            for k in range(3 * nv):
+                jacp[k] = Scalar[DTYPE](0)
+                jacr[k] = Scalar[DTYPE](0)
+            jac_point[DTYPE, V_CAP](
+                e, stcom_v, joints_v, bodies_v, mmeta_v, cdof_v,
+                s_body, spx, spy, spz, jacp, jacr, nv,
+            )
+
+            # gear -> a world-frame wrench. `R_body · (R_site · gear)`.
+            var g0 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR])
+            var g1 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR_1])
+            var g2 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR_2])
+            var g3 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR_3])
+            var g4 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR_4])
+            var g5 = Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_GEAR_5])
+            var wl = gpu_quat_rotate[DTYPE](sqx, sqy, sqz, sqw, g0, g1, g2)
+            var w = gpu_quat_rotate[DTYPE](
+                bqx, bqy, bqz, bqw, wl[0], wl[1], wl[2]
+            )
+            var w2l = gpu_quat_rotate[DTYPE](sqx, sqy, sqz, sqw, g3, g4, g5)
+            var w2 = gpu_quat_rotate[DTYPE](
+                bqx, bqy, bqz, bqw, w2l[0], w2l[1], w2l[2]
+            )
+
+            # moment = jacp^T w + jacr^T w2, into `tJ` (free here — the
+            # tendon loops above have finished with it).
+            for a in range(nv):
+                tJ[a] = (
+                    jacp[0 * nv + a] * w[0]
+                    + jacp[1 * nv + a] * w[1]
+                    + jacp[2 * nv + a] * w[2]
+                    + jacr[0 * nv + a] * w2[0]
+                    + jacr[1 * nv + a] * w2[1]
+                    + jacr[2 * nv + a] * w2[2]
+                )
+
+            var ctrl_s = actions[i]
+            if sf.actuators.data[o + ACT_IDX_CTRL_LIMITED] != 0:
+                var cx = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MAX])
+                var cn = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MIN])
+                if ctrl_s > cx:
+                    ctrl_s = cx
+                elif ctrl_s < cn:
+                    ctrl_s = cn
+            var adr_s = Int(sf.actuators.data[o + ACT_IDX_ACT_ADR])
+            var u_s = ctrl_s
+            if adr_s >= 0 and adr_s < len(act):
+                u_s = Float64(act[adr_s])
+
+            # ⚠ NO `gear` FACTOR HERE. The whole six-vector is already in the
+            # moment; multiplying by `ACT_IDX_GEAR` as the joint and
+            # fixed-tendon paths do would square its first component.
+            var kp_s = Float64(sf.actuators.data[o + ACT_IDX_KP])
+            var force_s = kp_s * u_s
+            var kind_s = Int(sf.actuators.data[o + ACT_IDX_KIND])
+            var vel_s = Float64(0)
+            if kind_s == ACT_KIND_POSITION or kind_s == ACT_KIND_VELOCITY:
+                for a in range(nv):
+                    vel_s += Float64(tJ[a]) * Float64(
+                        d.qvel.data[e * nv + a]
+                    )
+                # `length` is 0 for a site transmission, so a POSITION servo
+                # reads `u - 0`.
+                var kv_s = Float64(sf.actuators.data[o + ACT_IDX_KV])
+                force_s = kp_s * u_s - kv_s * vel_s
+
+            var sat_s = False
+            if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:
+                var fh = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MAX])
+                var fl = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MIN])
+                if force_s > fh:
+                    force_s = fh
+                elif force_s < fl:
+                    force_s = fl
+                sat_s = force_s <= fl or force_s >= fh
+
+            if (
+                kind_s == ACT_KIND_POSITION or kind_s == ACT_KIND_VELOCITY
+            ) and not sat_s:
+                var kvd_s = Float64(sf.actuators.data[o + ACT_IDX_KV])
+                if kvd_s != 0.0:
+                    for a in range(nv):
+                        var mj_a = Float64(tJ[a])
+                        d.dof_actdamp.data[e * nv + a] += Scalar[DTYPE](
+                            kvd_s * mj_a * mj_a
+                        )
+
+            for a in range(nv):
+                if tJ[a] == Scalar[DTYPE](0):
+                    continue
+                d.qfrc.data[e * nv + a] += Scalar[DTYPE](
+                    Float64(tJ[a]) * force_s
+                )
+
+            if adr_s >= 0 and adr_s < len(act):
+                var tau_s = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
+                if tau_s < 1e-10:
+                    tau_s = 1e-10
+                act[adr_s] = Scalar[DTYPE](
+                    u_s + (ctrl_s - u_s) / tau_s * timestep
+                )
 
         # ── spatial-tendon SPRINGS (`qfrc_passive`) ──────────────────────
         # Deadband on `tendon_lengthspring`, zero inside the band — the same

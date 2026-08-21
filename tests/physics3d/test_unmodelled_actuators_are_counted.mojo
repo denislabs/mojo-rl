@@ -77,13 +77,20 @@ comptime MJ_NU_G1 = 29
 
 
 def _counts(path: String) raises -> List[Int]:
-    """`[nact, unmodelled_actuators, zero_transmission_actuators]`."""
+    """`[nact, unmodelled, zero_transmission, pose_transmission]`.
+
+    ⚠ THE LAST TWO ARE DISJOINT AND BOTH MATTER. A `site=` or `<spatial>`
+    tendon actuator has `trn_n == 0` like a genuinely dead one, so the only
+    thing separating "applied elsewhere" from "applies nothing" is which
+    counter it lands in.
+    """
     var src = read_model_source(path)
     var fmd = parse_xml_full(expand_mjcf(src[0], src[1]), src[1])
     var out = List[Int]()
     out.append(len(fmd.actuators))
     out.append(fmd.unmodelled_actuators)
     out.append(fmd.zero_transmission_actuators)
+    out.append(fmd.pose_transmission_actuators)
     return out^
 
 
@@ -146,41 +153,69 @@ def test_skipped_actuators_are_counted() raises:
 def test_zero_transmission_actuators_are_counted() raises:
     """An actuator that parses and still drives nothing must say so.
 
-    ⚠ THE NUMBERS ARE THE POINT, NOT THE PASS. skydio_x2 is 4 of 4 and
-    tetheria 6 of 7 — "all of them" and "all but one" are what tell a caller
-    that the model will not move rather than move slightly wrong.
+    ⚠⚠ THIS TEST INVERTED ON 2026-08-21, AND THAT IS THE POINT OF KEEPING IT.
+    It used to assert that skydio_x2's four rotors and six of tetheria's seven
+    actuators were counted as ZERO-TRANSMISSION — a gate that encoded a known
+    capability gap. Both gaps are now closed (`site=` and SPATIAL-tendon
+    transmissions are applied by `dynamics/pose_transmission.mojo`), so the
+    old assertions had to go red before they could be corrected. Its own
+    failure message said "A 0 here means the count went unwritten, not that
+    the drone flies"; the drone flies.
+
+    What the counts mean now:
+
+      `pose_transmission_actuators`  resolved and APPLIED, but not through a
+                                     `(qadr, dadr, coef)` triple — the moment
+                                     needs the pose. `site=` and `<spatial>`
+                                     tendons.
+      `zero_transmission_actuators`  resolved to nothing at all and applying
+                                     ZERO FORCE. `body=` / `slidersite=` /
+                                     `cranksite=`, and a `site=` with
+                                     `refsite=`.
+
+    Keeping BOTH counts separate is what stops a fixed defect from reading as
+    a live one every time this message is read.
     """
-    print("=== actuators that resolved to no transmission ===")
+    print("=== transmissions: applied-by-pose vs no-transmission ===")
     var sk = _counts(SKYDIO)
-    print("  skydio_x2  nact", sk[0], " zero-transmission", sk[2])
+    print("  skydio_x2  nact", sk[0], " zero-transmission", sk[2],
+          " pose", sk[3])
     assert_true(
         sk[0] == 4,
         "skydio_x2 has four rotors; parsed " + String(sk[0]),
     )
     assert_true(
-        sk[2] == 4,
-        "skydio_x2 drives all four rotors through `<motor site=...>` and this"
-        " engine models no site transmission, so all four must be counted as"
-        " zero-transmission; got " + String(sk[2]) + ". A 0 here means the"
-        " count went unwritten, not that the drone flies.",
+        sk[3] == 4,
+        "skydio_x2 drives all four rotors through `<motor site=...>`, which"
+        " `pose_transmission` applies — all four must be in the POSE count;"
+        " got " + String(sk[3]) + ".",
+    )
+    assert_true(
+        sk[2] == 0,
+        "…and none of them is a dead transmission any more; got "
+        + String(sk[2]) + " counted as zero-transmission.",
     )
     var te = _counts(TETHERIA)
-    print("  tetheria   nact", te[0], " zero-transmission", te[2])
+    print("  tetheria   nact", te[0], " zero-transmission", te[2],
+          " pose", te[3])
     assert_true(
-        te[0] == 7 and te[2] == 6,
+        te[0] == 7 and te[3] == 6 and te[2] == 0,
         "tetheria_aero_hand_open has seven actuators, six of them on SPATIAL"
-        " tendons this engine does not build; got nact " + String(te[0])
-        + " with " + String(te[2]) + " counted.",
+        " tendons that `pose_transmission` applies; got nact " + String(te[0])
+        + " with " + String(te[3]) + " pose and " + String(te[2])
+        + " zero.",
     )
-    # ⚠ THE NEGATIVE CONTROL. g1's 29 servos all drive joints directly; a
-    # nonzero count here would mean the tally is catching working actuators.
+    # ⚠ THE NEGATIVE CONTROL, AND IT NOW GUARDS BOTH COUNTS. g1's 29 servos
+    # all drive joints directly through a triple; a nonzero value in EITHER
+    # column would mean the tally is catching working actuators.
     var g1 = _counts(G1)
-    print("  unitree_g1 nact", g1[0], " zero-transmission", g1[2])
+    print("  unitree_g1 nact", g1[0], " zero-transmission", g1[2],
+          " pose", g1[3])
     assert_true(
-        g1[2] == 0,
+        g1[2] == 0 and g1[3] == 0,
         "unitree_g1's " + String(g1[0]) + " actuators all drive joints"
         " directly; " + String(g1[2]) + " were counted as having no"
-        " transmission.",
+        " transmission and " + String(g1[3]) + " as pose-dependent.",
     )
     print("  PASS")
 

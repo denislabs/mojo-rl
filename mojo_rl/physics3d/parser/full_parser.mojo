@@ -3454,9 +3454,31 @@ def _fill_actuators(
             ad.kind = ACT_KIND_MOTOR
 
         # gear (element attribute wins, else the <default><motor> class)
+        #
+        # ⚠⚠ SIX VALUES, NOT ONE. `_parse_float` reads the FIRST number, which
+        # is correct for a `joint=` or `tendon=` transmission (MuJoCo uses
+        # `gear[0]` and ignores the rest) and WRONG for a `site=` one, where
+        # the six are a wrench in the site frame. Both Menagerie quadrotors
+        # say `gear="0 0 1 0 0 -.0201"`, so reading only the first gave them
+        # a gear of **0** — a second, quieter defect underneath the missing
+        # transmission. The tail defaults to 0, which is what MuJoCo stores
+        # for an unspecified component.
         var gear_s = _extract_attr(tag, "gear")
         if gear_s.byte_length() > 0:
-            ad.gear = _parse_float(gear_s)
+            var gparts = List[String]()
+            _split_spaces(gear_s, gparts)
+            if len(gparts) >= 1:
+                ad.gear = _parse_float(gparts[0])
+            if len(gparts) >= 2:
+                ad.gear1 = _parse_float(gparts[1])
+            if len(gparts) >= 3:
+                ad.gear2 = _parse_float(gparts[2])
+            if len(gparts) >= 4:
+                ad.gear3 = _parse_float(gparts[3])
+            if len(gparts) >= 5:
+                ad.gear4 = _parse_float(gparts[4])
+            if len(gparts) >= 6:
+                ad.gear5 = _parse_float(gparts[5])
         else:
             ad.gear = eff.motor_gear
 
@@ -3488,6 +3510,35 @@ def _fill_actuators(
             # exists now) rather than `result.tendons` (which does not yet) —
             # `_tendon_index_by_name` numbers in XML order exactly as
             # `_fill_tendons` will.
+            # `site=` (`mjTRN_SITE`). Resolved here beside `joint=` and
+            # `tendon=`; the moment is the SITE JACOBIAN at the current pose,
+            # so like a spatial tendon it cannot become a `(qadr, dadr, coef)`
+            # triple and is applied by `dynamics/pose_transmission.mojo`.
+            #
+            # ⚠ `refsite=` IS NOT MODELLED. MuJoCo's reference-site form
+            # (`actuator_trnid[2*i+1] != -1`) measures the wrench between two
+            # sites; nothing in this tree uses it, and an actuator that asks
+            # for it would silently get the single-site answer — so it is
+            # counted as unmodelled rather than approximated.
+            var sname = _trim(_extract_attr(tag, "site"))
+            if sname.byte_length() > 0:
+                if _trim(_extract_attr(tag, "refsite")).byte_length() > 0:
+                    print(
+                        "physics3d: <actuator ... site='", sname,
+                        "' refsite=...> — the two-site (reference) form of"
+                        " mjTRN_SITE is not modelled. This actuator applies"
+                        " NO FORCE.",
+                    )
+                else:
+                    ad.site_id = _find_site_index_by_name(worldbody, sname)
+                    if ad.site_id < 0:
+                        raise Error(
+                            "physics3d: <actuator ... site='" + sname
+                            + "'/> names no site in <worldbody>. An"
+                            " unresolved transmission applies ZERO FORCE and"
+                            " nothing downstream can tell it from an"
+                            " actuator that has no site at all."
+                        )
             var tname = _trim(_extract_attr(tag, "tendon"))
             if tname.byte_length() > 0:
                 ad.tendon_id = _tendon_index_by_name(tendon_sec, tname)
@@ -4608,6 +4659,12 @@ def _fill_actuator_transmission(mut result: FlatModelDef):
             result.motor_trn_dadr[base] = dadr[a.joint_id]
             result.motor_trn_coef[base] = 1.0
             a.trn_n = 1
+        elif a.site_id >= 0:
+            # `site=` — `mjTRN_SITE`. No triple to write: the moment is the
+            # site Jacobian at the current pose, so it stays `trn_n = 0` and
+            # `dynamics/pose_transmission.mojo` applies it. Counted with the
+            # spatial tendons below, NOT with the unmodelled transmissions.
+            result.pose_transmission_actuators += 1
         elif a.tendon_id >= 0 and a.tendon_id < len(result.tendons):
             var td = result.tendons[a.tendon_id]
             # ⚠⚠ ONLY A **FIXED** TENDON HAS A `(joint, coef)` LIST. A
@@ -4658,16 +4715,20 @@ def _fill_actuator_transmission(mut result: FlatModelDef):
         # unmodelled transmission would put a fixed defect back on the
         # board every time this message is read.
         var _spatial_trn = (
-            a.tendon_id >= 0
-            and a.tendon_id < len(result.tendons)
-            and result.tendons[a.tendon_id].kind == _TENDON_KIND_SPATIAL
+            a.site_id >= 0
+            or (
+                a.tendon_id >= 0
+                and a.tendon_id < len(result.tendons)
+                and result.tendons[a.tendon_id].kind == _TENDON_KIND_SPATIAL
+            )
         )
         if a.trn_n == 0 and not _spatial_trn:
             result.zero_transmission_actuators += 1
     if result.pose_transmission_actuators > 0:
         print(
             "physics3d:", result.pose_transmission_actuators, "of",
-            na_, "actuators drive a SPATIAL tendon. Their length and moment"
+            na_, "actuators drive a SPATIAL tendon or a SITE. Their length"
+            " and moment"
             " arm depend on the pose, so they are applied by"
             " `dynamics/pose_transmission.apply_pose_transmission`, which"
             " the CPU env and the studio call after"

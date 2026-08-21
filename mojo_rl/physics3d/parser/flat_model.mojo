@@ -487,7 +487,24 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime actuator data parsed from <motor/position/velocity> tags."""
 
     var joint_id: Int  # 0-based joint index this actuator drives
-    var gear: Float64  # Force/torque scaling
+    var gear: Float64  # Force/torque scaling — `gear[0]`
+    # ⚠⚠ `gear` IS A SIX-VECTOR AND ONLY ITS FIRST ENTRY IS A "RATIO". For a
+    # `joint=` or `tendon=` transmission MuJoCo uses `gear[0]` alone and the
+    # rest are ignored; for a `site=` one the whole six is a WRENCH in the
+    # site frame (`gear[0:3]` a force, `gear[3:6]` a torque) and every entry
+    # matters. `ad.gear` was parsed with `_parse_float("0 0 1 0 0 -.0201")`,
+    # which reads the FIRST number — 0 — so both Menagerie quadrotors had a
+    # zero gear before they had a missing transmission.
+    var gear1: Float64
+    var gear2: Float64
+    var gear3: Float64
+    var gear4: Float64
+    var gear5: Float64
+    # `site=` transmission (`mjTRN_SITE`), -1 otherwise. Like `tendon_id` on a
+    # SPATIAL tendon this leaves `trn_n = 0`: there is no `(qadr, dadr, coef)`
+    # triple to walk, because the moment is the site Jacobian at the current
+    # pose. `dynamics/pose_transmission.mojo` applies it.
+    var site_id: Int
     var ctrl_min: Float64
     var ctrl_max: Float64
     var is_ctrl_limited: Bool
@@ -580,6 +597,12 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     ):
         self.joint_id = joint_id
         self.gear = gear
+        self.gear1 = 0.0
+        self.gear2 = 0.0
+        self.gear3 = 0.0
+        self.gear4 = 0.0
+        self.gear5 = 0.0
+        self.site_id = -1
         self.ctrl_min = ctrl_min
         self.ctrl_max = ctrl_max
         self.is_ctrl_limited = is_ctrl_limited

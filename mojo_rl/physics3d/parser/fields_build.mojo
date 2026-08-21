@@ -309,6 +309,12 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_TRN_N,
     ACT_IDX_DOF_ADR,
     ACT_IDX_TENDON_ID,
+    ACT_IDX_SITE_ID,
+    ACT_IDX_GEAR_1,
+    ACT_IDX_GEAR_2,
+    ACT_IDX_GEAR_3,
+    ACT_IDX_GEAR_4,
+    ACT_IDX_GEAR_5,
     ACT_IDX_JOINT_ID,
     ACT_IDX_TRN_QADR_0,
     ACT_IDX_TRN_DADR_0,
@@ -2345,6 +2351,16 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         sf.actuators.data[o + ACT_IDX_TRN_N] = Scalar[DTYPE](a.trn_n)
         sf.actuators.data[o + ACT_IDX_DOF_ADR] = Scalar[DTYPE](a.dof_adr)
         sf.actuators.data[o + ACT_IDX_TENDON_ID] = Scalar[DTYPE](a.tendon_id)
+        # `site=` (`mjTRN_SITE`) and the five gear components beyond
+        # `gear[0]`. Meaningful only on a site transmission — see
+        # `ACT_IDX_SITE_ID` — and written unconditionally so the slot's 0
+        # cannot be mistaken for an absent attribute.
+        sf.actuators.data[o + ACT_IDX_SITE_ID] = Scalar[DTYPE](a.site_id)
+        sf.actuators.data[o + ACT_IDX_GEAR_1] = Scalar[DTYPE](a.gear1)
+        sf.actuators.data[o + ACT_IDX_GEAR_2] = Scalar[DTYPE](a.gear2)
+        sf.actuators.data[o + ACT_IDX_GEAR_3] = Scalar[DTYPE](a.gear3)
+        sf.actuators.data[o + ACT_IDX_GEAR_4] = Scalar[DTYPE](a.gear4)
+        sf.actuators.data[o + ACT_IDX_GEAR_5] = Scalar[DTYPE](a.gear5)
         sf.actuators.data[o + ACT_IDX_JOINT_ID] = Scalar[DTYPE](a.joint_id)
         # ⚠ ONLY THE FIRST `trn_n` TRIPLES ARE MEANINGFUL, and the rest keep
         # the -1 the constructor seeded. Copying all `TENDON_MAX_WRAPS` slots

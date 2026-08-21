@@ -874,7 +874,7 @@ comptime PAIR_IDX_MARGIN: Int = 13
 # already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
 # with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
 # Anything diffing the two must convert; the equivalence gate does.
-comptime MODEL_ACTUATOR_SIZE: Int = 16 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACTUATOR_SIZE: Int = 22 + 3 * TENDON_MAX_WRAPS
 
 comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
 comptime ACT_IDX_GEAR: Int = 1
@@ -906,6 +906,23 @@ comptime ACT_IDX_JOINT_ID: Int = 15  # -1 unless a `joint=` transmission
 comptime ACT_IDX_TRN_QADR_0: Int = 16
 comptime ACT_IDX_TRN_DADR_0: Int = ACT_IDX_TRN_QADR_0 + TENDON_MAX_WRAPS
 comptime ACT_IDX_TRN_COEF_0: Int = ACT_IDX_TRN_QADR_0 + 2 * TENDON_MAX_WRAPS
+# ⚠⚠ APPENDED AFTER THE TRIPLE BLOCK, so every index 0..15 and the whole
+# `[16, 16 + 3*TENDON_MAX_WRAPS)` span keep their meaning. `site=`
+# (`mjTRN_SITE`) has no triple — its moment is the site Jacobian at the
+# CURRENT pose — so it stores the site and the full six-component gear
+# instead, and `dynamics/pose_transmission.mojo` reads them.
+#
+# ⚠ `GEAR_1..5` ARE ONLY MEANINGFUL ON A SITE TRANSMISSION. For `joint=` and
+# `tendon=` MuJoCo uses `gear[0]` alone; here the six are a WRENCH in the site
+# frame (force, then torque), and the whole of it is baked into the moment —
+# so a site actuator's force must NOT be multiplied by `ACT_IDX_GEAR` again
+# the way a joint or fixed-tendon one is.
+comptime ACT_IDX_SITE_ID: Int = ACT_IDX_TRN_QADR_0 + 3 * TENDON_MAX_WRAPS
+comptime ACT_IDX_GEAR_1: Int = ACT_IDX_SITE_ID + 1
+comptime ACT_IDX_GEAR_2: Int = ACT_IDX_SITE_ID + 2
+comptime ACT_IDX_GEAR_3: Int = ACT_IDX_SITE_ID + 3
+comptime ACT_IDX_GEAR_4: Int = ACT_IDX_SITE_ID + 4
+comptime ACT_IDX_GEAR_5: Int = ACT_IDX_SITE_ID + 5
 
 # The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
 # record rather than folded into `MODEL_TENDON_SIZE`.
