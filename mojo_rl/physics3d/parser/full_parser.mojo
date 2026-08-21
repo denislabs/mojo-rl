@@ -4501,6 +4501,28 @@ def _fill_actuator_transmission(mut result: FlatModelDef):
         # the subscript yields a copy. Same trap `_fill_tendon_equalities`
         # documents at `:3264`.
         result.actuators[ai] = a
+        # ⚠⚠ AND COUNT THE ONES THAT GOT NOTHING. The two branches above are
+        # `if joint … elif tendon …` with NO ELSE, so an actuator driven
+        # through a `site=`, `body=`, `slidersite=` or `cranksite=`
+        # transmission keeps `trn_n = 0`: it occupies a slot in `nact`, eats
+        # its control, and applies ZERO FORCE. An unresolved `joint=` already
+        # raises above; this is the rest of that family, and it is a whole
+        # robot class rather than a rounding error — skydio_x2 and
+        # bitcraze_crazyflie_2 drive all four rotors through
+        # `<motor site="thrust1" gear="0 0 1 0 0 -.0201"/>`, so neither
+        # aircraft has any thrust here. MuJoCo answers skydio's first step with
+        # `qfrc_actuator = [0, 0, 0.378896, 0.01744, -0.053045, -0.001947]`;
+        # we answered six zeros.
+        if a.trn_n == 0:
+            result.zero_transmission_actuators += 1
+    if result.zero_transmission_actuators > 0:
+        print(
+            "physics3d:", result.zero_transmission_actuators, "of",
+            na_, "actuators resolved to NO transmission this engine models"
+            " (a `site=`, `body=`, `slidersite=` or `cranksite=` motor). They"
+            " keep their slot in `nact` and their control, and apply ZERO"
+            " FORCE — a model driven only through those does not move at all.",
+        )
 
 
 def _fill_tendon_equalities(

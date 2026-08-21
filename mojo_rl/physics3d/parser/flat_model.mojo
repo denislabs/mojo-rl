@@ -1902,6 +1902,18 @@ struct FlatModelDef(Movable):
     # types get implemented should send this to 0 and `nact` up by the same
     # amount, and the sum stays right either way.
     var unmodelled_actuators: Int
+    # How many actuators PARSED fine and then found no transmission this
+    # engine can express — a `site=`, `body=`, `slidersite=` or `cranksite=`
+    # motor. They occupy a slot in `nact`, consume their control, and produce
+    # ZERO FORCE.
+    #
+    # ⚠⚠ THIS IS A WHOLE ROBOT CLASS, NOT A ROUNDING ERROR. Both quadrotors in
+    # Menagerie — skydio_x2 and bitcraze_crazyflie_2 — drive EVERY one of their
+    # four rotors through `<motor site="thrust1" gear="0 0 1 0 0 -.0201"/>`, so
+    # in this engine neither aircraft has any thrust at all. MuJoCo answers
+    # `qfrc_actuator = [0, 0, 0.378896, 0.01744, -0.053045, -0.001947]` on
+    # skydio's first step; we answered six zeros.
+    var zero_transmission_actuators: Int
     # ── qpos0 / initial pose ─────────────────────────────────────────────
     # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
     #   1. each joint's `ref`, already deg-converted, at its qpos address
@@ -1986,6 +1998,7 @@ struct FlatModelDef(Movable):
         self.bad_actuator = -1
         self.bad_actuator_code = -1
         self.unmodelled_actuators = 0
+        self.zero_transmission_actuators = 0
         self.qpos0 = List[Float64]()
         self.qpos0_nq = 0
         self.free_joint_qpos_adr = -1
