@@ -5306,6 +5306,73 @@ def _fill_excludes(
         scan_pos = tag_end + 1 if tag_end != -1 else ne + 1
 
 
+def _apply_disable_flags(xml: String, mut result: FlatModelDef) -> None:
+    """`<option><flag .../></option>` — the `mjtDisableBit` bits we can honour
+    by EDITING THE MODEL, since this engine has no runtime disable word.
+
+    ⚠⚠ WHY THIS IS NOT WHERE IT USED TO BE. The original version sat beside
+    the worldbody walk and could only reach `result.geoms` and
+    `result.joints`. `pairs`, `equalities` and `tendons` are all filled AFTER
+    that point, so `<flag constraint="disable"/>` — which in MuJoCo makes
+    `mj_makeConstraint` return with `nefc == 0` — left equality rows, dry
+    friction rows and tendon limits all live here. It cost a real
+    measurement: an ablation that switched constraints off in both engines to
+    see what was left came back saying the residual GREW on six of eight
+    models, which is what you get when the reference drops every row and you
+    drop a third of them.
+
+    ⚠⚠ AND `contact="disable"` DID NOT DROP `<contact><pair>`. Zeroing
+    `contype`/`conaffinity` is how the mask-based path is switched off, and an
+    EXPLICIT PAIR BYPASSES THAT MASK ENTIRELY (that is what a pair is for) —
+    so a model with pairs kept colliding. apptronik_apollo has six.
+
+    The mapping, from `mjtDisableBit` / `mj_makeConstraint`:
+
+        contact       geom mask off  +  drop `<pair>`
+        equality      drop `<equality>`, and `<equality><tendon>` flags
+        frictionloss  zero every joint `frictionloss`
+        limit         every joint range -> the unlimited sentinel; tendon
+                      `limited` -> 0
+        constraint    all four of the above (mjDSBL_CONSTRAINT is total)
+
+    ⚠ NOT a general disable-word implementation — a model that wanted these
+    at RUNTIME would need one. As a parse-time rewrite it is exact for a
+    model that sets the flag in its XML, which is the only way MJCF can set
+    it, and it is what makes single-variable ablation trustworthy.
+    """
+    var off_constraint = _option_flag_disabled(xml, "constraint")
+    var off_contact = _option_flag_disabled(xml, "contact") or off_constraint
+    var off_equality = _option_flag_disabled(xml, "equality") or off_constraint
+    var off_friction = (
+        _option_flag_disabled(xml, "frictionloss") or off_constraint
+    )
+    var off_limit = _option_flag_disabled(xml, "limit") or off_constraint
+
+    if off_contact:
+        for gi in range(len(result.geoms)):
+            result.geoms[gi].contype = 0
+            result.geoms[gi].conaffinity = 0
+        # ⚠ THE PAIRS, WHICH THE MASK DOES NOT REACH.
+        result.pairs = List[PairData]()
+
+    if off_equality:
+        result.equalities = List[EqualityData]()
+        for ti in range(len(result.tendons)):
+            result.tendons[ti].is_equality = 0
+
+    if off_friction:
+        for ji in range(len(result.joints)):
+            result.joints[ji].frictionloss = Float64(0)
+
+    if off_limit:
+        for ji in range(len(result.joints)):
+            result.joints[ji].range_min = Float64(-JOINT_RANGE_UNLIMITED)
+            result.joints[ji].range_max = Float64(JOINT_RANGE_UNLIMITED)
+            result.joints[ji].is_limited = False
+        for ti in range(len(result.tendons)):
+            result.tendons[ti].limited = 0
+
+
 def _fill_pairs(
 
     contact_sec: String,
@@ -5943,17 +6010,11 @@ def parse_xml_full(
     #
     # acrobot.xml relies on this — its lower arm sweeps a metre BELOW the
     # floor plane, so with contacts live the swing-up dynamics are wrong.
-    var constraints_off = _option_flag_disabled(xml, "constraint")
-
-    if _option_flag_disabled(xml, "contact") or constraints_off:
-        for gi in range(len(result.geoms)):
-            result.geoms[gi].contype = 0
-            result.geoms[gi].conaffinity = 0
-
-    if constraints_off:
-        for ji in range(len(result.joints)):
-            result.joints[ji].range_min = Float64(-1e10)
-            result.joints[ji].range_max = Float64(1e10)
+    # ⚠⚠ MOVED TO `_apply_disable_flags`, AT THE END OF THIS FUNCTION.
+    # This block used to live here and could only reach `result.geoms` and
+    # `result.joints` — `pairs`, `equalities` and `tendons` are all filled
+    # BELOW it, so `<flag constraint="disable"/>` left every one of them
+    # generating rows. See that function for what each flag actually means.
 
 
     # Actuators
@@ -6034,5 +6095,8 @@ def parse_xml_full(
     result.max_condim = mcd
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials(asset_sec, result)
+
+    # ⚠ LAST, because every list it clears is filled above it.
+    _apply_disable_flags(xml, result)
 
     return result^
