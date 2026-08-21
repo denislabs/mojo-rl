@@ -556,17 +556,27 @@ struct Phyics3dEnv[
                 # line recomputes it from the same `qpos` — allocating a
                 # parallel scratch would double the nv*nv arrays to hold the
                 # same numbers.
-                comptime if Self.CONFIG.INTEGRATOR == "euler":
-                    apply_pose_transmission[Self.DTYPE](
-                        self.sf, self.mf, self.d,
-                        self.integ_euler.scratch, action_list, self.act,
-                        Self.MODEL_DEF.TIMESTEP,
-                    )
-                else:
-                    apply_pose_transmission[Self.DTYPE](
-                        self.sf, self.mf, self.d,
-                        self.integ_rk4.scratch, action_list, self.act,
-                        Self.MODEL_DEF.TIMESTEP,
+                #
+                # ⚠ `try`, FOR THE SAME REASON THE INTEGRATOR CALL BELOW HAS
+                # ONE: `forward_kinematics` / `compute_cdof` carry `raises`
+                # for their GPU `ctx` handling and cannot actually raise on
+                # the CPU target, but `step` here is not a raising function.
+                try:
+                    comptime if Self.CONFIG.INTEGRATOR == "euler":
+                        apply_pose_transmission[Self.DTYPE](
+                            self.sf, self.mf, self.d,
+                            self.integ_euler.scratch, action_list, self.act,
+                            Self.MODEL_DEF.TIMESTEP,
+                        )
+                    else:
+                        apply_pose_transmission[Self.DTYPE](
+                            self.sf, self.mf, self.d,
+                            self.integ_rk4.scratch, action_list, self.act,
+                            Self.MODEL_DEF.TIMESTEP,
+                        )
+                except e:
+                    print(
+                        "Phyics3dEnv.step: pose transmission error:", e
                     )
             try:
                 # CPU target: cannot actually raise (the `raises` on the
