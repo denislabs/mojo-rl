@@ -1997,6 +1997,12 @@ struct FlatModelDef(Movable):
     # it — hello_robot_stretch_3 (11 meshes), hello_robot_stretch (8),
     # pndbotics_adam_lite (4).
     var mesh_asset_inertia_shell: List[Int]
+    # How many `maxhullvert` declarations the document carries that this
+    # engine does not honour. MuJoCo decimates each convex hull to that many
+    # vertices; we keep all of them, so ours CONTAINS MuJoCo's and contacts on
+    # the decimated faces sit slightly differently. Recorded so the gate can
+    # assert the count rather than watching for a print.
+    var unhonoured_maxhullvert: Int
     """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
 
     ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
@@ -2095,6 +2101,7 @@ struct FlatModelDef(Movable):
         self.mesh_asset_refpos = List[Float64]()
         self.mesh_asset_refquat = List[Float64]()
         self.mesh_asset_inertia_shell = List[Int]()
+        self.unhonoured_maxhullvert = 0
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0

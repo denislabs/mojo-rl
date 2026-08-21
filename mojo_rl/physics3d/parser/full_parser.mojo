@@ -1813,6 +1813,7 @@ def _fill_assets(
 
 
 
+
 # =============================================================================
 # Phase 4b: Combined DFS scan — fills bodies, joints, geoms in one pass
 # =============================================================================
@@ -5552,6 +5553,39 @@ def parse_xml_full(
 
     # Assets: textures and materials
     _fill_assets(asset_sec, result, defaults, named_defaults)
+    # ── `maxhullvert` — a hull BUDGET we do not honour ────────────────────
+    #
+    # ⚠ MuJoCo decimates the convex hull to this many vertices
+    # (`mjCMesh::MakeGraph`), and its compiled hull really is smaller:
+    # measured on trossen_wxai, whose meshes inherit `maxhullvert="64"`,
+    # MuJoCo reports hulls of exactly 64 vertices where ours keep 86, 91,
+    # 110... Ours CONTAINS MuJoCo's, so contacts on the decimated faces sit
+    # slightly differently. Two Menagerie models declare it (trossen_wxai,
+    # robotstudio_so101) and both step to 1e-10 or better, so this is a
+    # fidelity gap rather than a live defect — but a silent one until now.
+    #
+    # ⚠ COUNTED OVER THE WHOLE DOCUMENT, NOT OFF THE ELEMENT. Both models put
+    # it in a `<default><mesh maxhullvert="64"/></default>`, so an
+    # element-only read reports ZERO on trossen_wxai and 4 on so101 — the
+    # `<default>`-chain trap this parser has been bitten by repeatedly, here
+    # in the warning itself. A diagnostic that misses the common spelling is
+    # worse than none.
+    var _mhv_n = 0
+    var _mhv_at = 0
+    while True:
+        var _hit = xml.find(String("maxhullvert"), _mhv_at)
+        if _hit == -1:
+            break
+        _mhv_n += 1
+        _mhv_at = _hit + 1
+    result.unhonoured_maxhullvert = _mhv_n
+    if _mhv_n > 0:
+        print(
+            "physics3d:", _mhv_n, "`maxhullvert` declaration(s) are not"
+            " honoured — MuJoCo decimates each convex hull to that many"
+            " vertices and this engine keeps all of them, so contacts on the"
+            " decimated faces will differ slightly.",
+        )
 
     # `<compiler meshdir>` — UNPARSED until 2026-08-13, and silently.
     #

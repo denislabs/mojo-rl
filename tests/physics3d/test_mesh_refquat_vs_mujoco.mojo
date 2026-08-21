@@ -69,6 +69,12 @@ comptime DEXEE_DIR = String(
 comptime DEXEE = String(
     "references/mujoco_menagerie-main/shadow_dexee/scene.xml"
 )
+comptime WXAI = String(
+    "references/mujoco_menagerie-main/trossen_wxai/scene.xml"
+)
+comptime SO101 = String(
+    "references/mujoco_menagerie-main/robotstudio_so101/scene.xml"
+)
 
 # ⚠ THREE BODIES, ONE MESH FILE, AND THE ONLY DIFFERENCE IS THE ATTRIBUTE.
 # `a` declares neither, `b` the rotation, `c` the offset — so a mismatch on
@@ -172,6 +178,12 @@ def _ipos(path: String, body: Int) raises -> List[Float64]:
     return out^
 
 
+def _count_mhv(path: String) raises -> Int:
+    var src = read_model_source(path)
+    var fmd = parse_xml_full(expand_mjcf(src[0], src[1]), src[1])
+    return fmd.unhonoured_maxhullvert
+
+
 def test_refquat_rotates_by_the_inverse() raises:
     """One mesh file, three declarations, MuJoCo's three answers."""
     print("=== <mesh refpos/refquat>, one file three ways ===")
@@ -245,6 +257,46 @@ def test_shadow_dexee_inertial_frame() raises:
         + String(D4_X) + ", " + String(D4_Y) + ", " + String(D4_Z)
         + "). y and z exchanged with a sign flipped is the dropped 90 deg"
         " turn; this body's mass matrix goes with it.",
+    )
+    print("  PASS")
+
+
+def test_maxhullvert_is_counted_not_ignored() raises:
+    """`maxhullvert` is a hull budget we do NOT honour — so it must be seen.
+
+    MuJoCo decimates each convex hull to that many vertices
+    (`mjCMesh::MakeGraph`). Measured on trossen_wxai, whose meshes inherit
+    `maxhullvert="64"`, MuJoCo reports hulls of exactly 64 vertices where ours
+    keep 86, 91, 110... Ours CONTAINS MuJoCo's, so contacts on the decimated
+    faces sit slightly differently. Both models that declare it step to 1e-10
+    or better, so this is a fidelity gap rather than a live defect — but it was
+    a SILENT one, and this row is what keeps it from going silent again.
+
+    ⚠ THE COUNT IS TAKEN OVER THE WHOLE DOCUMENT, NOT OFF THE ELEMENT. Both
+    models put it in a `<default><mesh maxhullvert="64"/></default>`, so an
+    element-only read reports ZERO on trossen_wxai — the `<default>`-chain trap
+    this parser has been bitten by repeatedly, here inside the warning itself.
+    """
+    print("=== maxhullvert declarations seen ===")
+    var t = _count_mhv(WXAI)
+    var so = _count_mhv(SO101)
+    var g = _count_mhv(DEXEE)
+    print("  trossen_wxai", t, " robotstudio_so101", so,
+          "  shadow_dexee (none)", g)
+    assert_true(
+        t == 1,
+        "trossen_wxai declares `maxhullvert` once, in a `<default>`; counted "
+        + String(t) + ". A 0 means the scan is reading elements only.",
+    )
+    assert_true(
+        so == 4,
+        "robotstudio_so101 declares it four times (one default, three"
+        " elements); counted " + String(so),
+    )
+    # ⚠ NEGATIVE CONTROL: a model that never mentions it must count zero.
+    assert_true(
+        g == 0,
+        "shadow_dexee declares no `maxhullvert`; counted " + String(g),
     )
     print("  PASS")
 
