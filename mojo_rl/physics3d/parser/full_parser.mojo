@@ -2336,6 +2336,23 @@ def _parse_one_geom(
     if ms_s.byte_length() > 0:
         gd.mass = _parse_float(ms_s)
         gd.has_explicit_mass = True
+    elif gd.fit_from_mesh:
+        # ⚠⚠ A FITTED PRIMITIVE HAS NO SIZE YET, SO IT CANNOT HAVE A MASS YET.
+        # `mjCMesh::FitGeom` runs in the COMPILER, after this parser has read
+        # the tag: a `<geom mesh="base_link" class="collision"/>` whose class
+        # says `type="capsule"` carries no `size` at all, so the fields below
+        # still hold `GeomData`'s placeholder 0.5. Computing `density * volume`
+        # from those gives the volume of a HALF-METRE capsule —
+        # `pi*0.25*(4*0.5/3 + 2*0.5) = 1.309 m^3` — and arx_l5's base_link
+        # weighed **1308.997 kg** against MuJoCo's 0.128420, its inertia 0.6506
+        # against 6.4e-05. The fitted dimensions land in `fields_build`, and
+        # `-1` is the sentinel that says "weigh me once you have them".
+        #
+        # ⚠ THE 49 FITTED SPHERES ON rby1 ESCAPED ONLY BY LUCK: every one of
+        # their bodies declares an explicit `<inertial>`, so the geom-derived
+        # pass skips them entirely and the 523 kg each would have contributed
+        # never landed. A body without one is what exposes this.
+        gd.mass = Float64(-1)
     else:
         # ⚠⚠ `geom_volume`, NOT A SECOND COPY OF THE FIVE FORMULAS. This block
         # used to spell them out again, and the two agreed to within 1 ULP —
@@ -2642,6 +2659,37 @@ def _fill_model(
                     b.iyy = dv[1]
                     b.izz = dv[2]
                     b.has_explicit_inertia = True
+                elif (
+                    im_s.byte_length() > 0
+                    and _trim(_extract_attr(tag, "fullinertia")).byte_length()
+                    == 0
+                ):
+                    # ⚠⚠ AN `<inertial>` REPLACES THE WHOLE INERTIA, INCLUDING
+                    # THE PART IT DOES NOT MENTION. `<inertial pos="0 0 0"
+                    # mass="0"/>` is a legal and common way to spell a massless
+                    # frame body, and MuJoCo compiles it to `body_inertia
+                    # [0, 0, 0]` — measured on 3.10.0. We left `BodyData`'s
+                    # constructor default of **0.01** standing on all three
+                    # axes, because the branch above only writes when
+                    # `diaginertia` is present and the geom-derived path
+                    # `continue`s past any body with an explicit inertial.
+                    #
+                    # ⚠ IT IS NOT A SMALL NUMBER WHERE IT LANDS. rby1's
+                    # v1.3 arms carry two of these (`EE_GR_TF_L/R`, the
+                    # gripper transforms) plus `NECK_0`, and 0.01 kg m^2 at
+                    # the wrist is comparable to the whole forearm: its mass
+                    # matrix was off by 3.0e-02 against MuJoCo and the arm
+                    # joints diverged 1.9e-03 in one step. The v1.2 model has
+                    # only `NECK_0` — one body, on a head nobody drives — and
+                    # sat two orders lower at 2.1e-05, which is why the same
+                    # defect looked like "1.3 is a different robot".
+                    #
+                    # ⚠ MASS ALONE IS THE TRIGGER. A `<inertial>` giving
+                    # `fullinertia` has its own diagonalisation below and must
+                    # not be zeroed on the way past.
+                    b.ixx = 0.0
+                    b.iyy = 0.0
+                    b.izz = 0.0
 
                 # `fullinertia` is the 6-vector (ixx iyy izz ixy ixz iyz).
                 # It is APPLIED BELOW, after the orientation block, because

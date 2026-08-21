@@ -59,7 +59,7 @@ from mojo_rl.physics3d.collision.convex_hull import (
     compute_mesh_rbound_at,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import (
-    geom_effective_mass,
+    geom_volume,
     geom_inertia,
     globalinertia,
     offcenter,
@@ -373,6 +373,7 @@ def _geom_mass_and_inertia[
     half_z: Scalar[DTYPE],
     geom_mesh_vol: List[Scalar[DTYPE]],
     geom_mesh_eig: List[Scalar[DTYPE]],
+    stored_density: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """(mass, Ixx, Iyy, Izz) for one geom, meshes included.
 
@@ -389,18 +390,38 @@ def _geom_mass_and_inertia[
             return out^
         # mass= wins; otherwise density * volume, the same rule
         # `geom_effective_mass` applies to every other type.
+        # ⚠⚠ THE GEOM'S OWN DENSITY, NOT THE GLOBAL DEFAULT. This used to read
+        # `MJ_DEFAULT_DENSITY` (1000) for every mesh, which threw away
+        # `<geom density=...>` on exactly the geom type that cannot state a
+        # mass any other way: `geom_volume` returns 0 for a mesh, so the parser
+        # leaves `mass = -1` and the density is the ONLY thing carrying the
+        # answer here.
+        #
+        # ⚠ `density="0"` IS THE COMMON CASE, NOT AN EXOTIC ONE. Menagerie's
+        # `<default class="visual">` blocks set it so the render-only shells
+        # weigh nothing, and every one of those was being charged 1000 kg/m^3.
+        # trs_so_arm100's base carries the same `Base` mesh twice — once
+        # visual, once collision — and came out at 1.168357 kg against
+        # MuJoCo's 0.562466, i.e. the visual copy again plus the motor shell.
+        # arx_l5's base read 1309.42 kg against 0.128420.
         var m = stored_mass
         if m < Scalar[DTYPE](0):
-            m = Scalar[DTYPE](MJ_DEFAULT_DENSITY) * vol
+            m = stored_density * vol
         var dens = m / vol
         out[0] = m
         out[1] = geom_mesh_eig[g * 3 + 0] * dens
         out[2] = geom_mesh_eig[g * 3 + 1] * dens
         out[3] = geom_mesh_eig[g * 3 + 2] * dens
         return out^
-    var m2 = geom_effective_mass[DTYPE](
-        geom_type, stored_mass, radius, half_length, half_x, half_y, half_z
-    )
+    # ⚠ THE GEOM'S OWN DENSITY HERE TOO. `geom_effective_mass` falls back to
+    # `MJ_DEFAULT_DENSITY`, which is the right number only for a geom that
+    # never stated one — and `<default class="visual"><geom density="0"/>` is
+    # the single most common thing a Menagerie model states.
+    var m2 = stored_mass
+    if m2 < Scalar[DTYPE](0):
+        m2 = stored_density * geom_volume[DTYPE](
+            geom_type, radius, half_length, half_x, half_y, half_z
+        )
     var d = geom_inertia[DTYPE](
         geom_type, m2, radius, half_length, half_x, half_y, half_z
     )
@@ -432,6 +453,10 @@ def _inertia_from_geoms_staging[
     geoms: List[Scalar[DTYPE]],  # packed [NGEOM * MODEL_GEOM_SIZE] records
     bodies: List[Scalar[DTYPE]],  # packed [NBODY * MODEL_BODY_SIZE] records
     geom_mass: List[Scalar[DTYPE]],  # build-only (-1 = use density*volume)
+    # ⚠ AND THE DENSITY THAT `-1` REFERS TO. A mesh geom always arrives with
+    # `mass = -1` (the parser cannot compute its volume), so without this the
+    # only thing left to multiply by is a constant.
+    geom_density: List[Scalar[DTYPE]],  # build-only
     geom_group: List[Int],  # build-only (inertiagrouprange filter)
     # Mesh geoms only. `geom_inertia` takes scalar dims and cannot reach a
     # vertex list, so a mesh's volume and UNITLESS principal moments are
@@ -477,6 +502,7 @@ def _inertia_from_geoms_staging[
                     geoms[go + GEOM_IDX_HALF_Z],
                     geom_mesh_vol,
                     geom_mesh_eig,
+                    geom_density[g],
                 )
                 var gm = gmi0[0]
                 if gm > Scalar[DTYPE](1e-10):
@@ -556,6 +582,7 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_Z],
                         geom_mesh_vol,
                         geom_mesh_eig,
+                        geom_density[g],
                     )
                     var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
@@ -616,6 +643,7 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_Z],
                         geom_mesh_vol,
                         geom_mesh_eig,
+                        geom_density[g],
                     )
                     var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
@@ -652,6 +680,7 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_Z],
                         geom_mesh_vol,
                         geom_mesh_eig,
+                        geom_density[g],
                     )
                     var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
@@ -1419,6 +1448,9 @@ def build_model_fields_from_flat[
 
     # ── geoms (+ build-only mass/group staging for inertiafromgeom) ───────
     var geom_mass = List[Scalar[DTYPE]](length=mf.dims.get_ngeom(), fill=Scalar[DTYPE](0))
+    var geom_density = List[Scalar[DTYPE]](
+        length=mf.dims.get_ngeom(), fill=Scalar[DTYPE](MJ_DEFAULT_DENSITY)
+    )
     var geom_group = List[Int](length=mf.dims.get_ngeom(), fill=0)
     # Per-geom mesh volume + UNITLESS principal moments, staged for the inertia
     # assembly. `geom_inertia` cannot compute these — it takes scalar dims and
@@ -1470,6 +1502,7 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_MARGIN] = Scalar[DTYPE](gd.margin)
         mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](gd.mesh_id)
         geom_mass[i] = Scalar[DTYPE](gd.mass)
+        geom_density[i] = Scalar[DTYPE](gd.density)
         geom_group[i] = gd.group
 
         # Compose the mesh frame into the geom frame, as MuJoCo's compiler
@@ -2119,6 +2152,7 @@ def build_model_fields_from_flat[
             mf.geoms.data,
             mf.bodies.data,
             geom_mass,
+            geom_density,
             geom_group,
             geom_mesh_vol,
             geom_mesh_eig,
