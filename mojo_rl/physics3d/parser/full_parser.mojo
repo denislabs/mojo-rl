@@ -734,6 +734,41 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         if gg_s.byte_length() > 0:
             d.geom_group_s = gg_s
 
+    # ── `<default><tendon .../></default>` ────────────────────────────────
+    # Captured RAW, one attribute at a time, so a child class can override a
+    # single one without clearing what it inherits — the same shape as the
+    # site block below and for the same reason.
+    var tpos = defaults_sec.find("<tendon")
+    if tpos != -1:
+        var ttag = _extract_opening_tag(defaults_sec, tpos)
+        var tst_s = _extract_attr(ttag, "stiffness")
+        if tst_s.byte_length() > 0:
+            d.tendon_stiffness_s = tst_s
+        var tsl_s = _extract_attr(ttag, "springlength")
+        if tsl_s.byte_length() > 0:
+            d.tendon_springlength_s = tsl_s
+        var tlim_s = _extract_attr(ttag, "limited")
+        if tlim_s.byte_length() > 0:
+            d.tendon_limited_s = tlim_s
+        var trng_s = _extract_attr(ttag, "range")
+        if trng_s.byte_length() > 0:
+            d.tendon_range_s = trng_s
+        var tmg_s = _extract_attr(ttag, "margin")
+        if tmg_s.byte_length() > 0:
+            d.tendon_margin_s = tmg_s
+        var tsr_s = _extract_attr(ttag, "solreflimit")
+        if tsr_s.byte_length() > 0:
+            d.tendon_solreflimit_s = tsr_s
+        var tsi_s = _extract_attr(ttag, "solimplimit")
+        if tsi_s.byte_length() > 0:
+            d.tendon_solimplimit_s = tsi_s
+        var tw_s = _extract_attr(ttag, "width")
+        if tw_s.byte_length() > 0:
+            d.tendon_width_s = tw_s
+        var trg_s = _extract_attr(ttag, "rgba")
+        if trg_s.byte_length() > 0:
+            d.tendon_rgba_s = trg_s
+
     # Find default <site  (structural attrs only — the touch sensor's zone)
     var spos = defaults_sec.find("<site")
     if spos != -1:
@@ -4575,18 +4610,33 @@ def _fill_actuator_transmission(mut result: FlatModelDef):
             a.trn_n = 1
         elif a.tendon_id >= 0 and a.tendon_id < len(result.tendons):
             var td = result.tendons[a.tendon_id]
-            var n = td.num_joints
-            if n > TENDON_MAX_WRAPS:
-                n = TENDON_MAX_WRAPS
-            for k in range(n):
-                var jid = td.joint_ids[k]
-                if jid >= 0 and jid < nj:
-                    result.motor_trn_qadr[base + k] = qadr[jid]
-                    result.motor_trn_dadr[base + k] = dadr[jid]
-                result.motor_trn_coef[base + k] = td.coefs[k]
-            a.trn_n = n
-            if n > 0:
-                a.dof_adr = result.motor_trn_dadr[base]
+            # ⚠⚠ ONLY A **FIXED** TENDON HAS A `(joint, coef)` LIST. A
+            # SPATIAL one is a polyline through sites, so `num_joints` is 0
+            # and this walk writes nothing: the actuator came out with
+            # `trn_n = 0` and applied ZERO FORCE while still eating its
+            # control. tetheria drives six of its seven actuators through
+            # `<position tendon="if_tendon0" kp="10000"/>`, so the hand had
+            # no tendons pulling it at all — the worst scene in the
+            # Menagerie sweep. Its length and moment arm depend on the POSE,
+            # not on `qpos` alone, so it cannot live in these triples at
+            # all; `dynamics/pose_transmission.mojo` evaluates it after
+            # forward kinematics, and the count below is what tells the
+            # difference between "handled elsewhere" and "dropped".
+            if td.kind == _TENDON_KIND_SPATIAL:
+                result.pose_transmission_actuators += 1
+            else:
+                var n = td.num_joints
+                if n > TENDON_MAX_WRAPS:
+                    n = TENDON_MAX_WRAPS
+                for k in range(n):
+                    var jid = td.joint_ids[k]
+                    if jid >= 0 and jid < nj:
+                        result.motor_trn_qadr[base + k] = qadr[jid]
+                        result.motor_trn_dadr[base + k] = dadr[jid]
+                    result.motor_trn_coef[base + k] = td.coefs[k]
+                a.trn_n = n
+                if n > 0:
+                    a.dof_adr = result.motor_trn_dadr[base]
         # ⚠ WRITE BACK. `result.actuators[ai].field = ...` does not stick —
         # the subscript yields a copy. Same trap `_fill_tendon_equalities`
         # documents at `:3264`.
@@ -4603,8 +4653,28 @@ def _fill_actuator_transmission(mut result: FlatModelDef):
         # aircraft has any thrust here. MuJoCo answers skydio's first step with
         # `qfrc_actuator = [0, 0, 0.378896, 0.01744, -0.053045, -0.001947]`;
         # we answered six zeros.
-        if a.trn_n == 0:
+        # ⚠ A SPATIAL-TENDON ACTUATOR ALSO HAS `trn_n == 0` AND IS NOT IN
+        # THIS BUCKET. It is handled, just not here — counting it as an
+        # unmodelled transmission would put a fixed defect back on the
+        # board every time this message is read.
+        var _spatial_trn = (
+            a.tendon_id >= 0
+            and a.tendon_id < len(result.tendons)
+            and result.tendons[a.tendon_id].kind == _TENDON_KIND_SPATIAL
+        )
+        if a.trn_n == 0 and not _spatial_trn:
             result.zero_transmission_actuators += 1
+    if result.pose_transmission_actuators > 0:
+        print(
+            "physics3d:", result.pose_transmission_actuators, "of",
+            na_, "actuators drive a SPATIAL tendon. Their length and moment"
+            " arm depend on the pose, so they are applied by"
+            " `dynamics/pose_transmission.apply_pose_transmission`, which"
+            " the CPU env and the studio call after"
+            " `apply_actions_fields`. ⚠ THE GPU BATCHED PATH DOES NOT —"
+            " `apply_actions_kernel_gpu` still walks the (qadr, dadr, coef)"
+            " triples, so these actuators produce NO FORCE there.",
+        )
     if result.zero_transmission_actuators > 0:
         print(
             "physics3d:", result.zero_transmission_actuators, "of",
@@ -4731,6 +4801,15 @@ def _fill_tendons(
 
     tendon_sec: String,
     worldbody: String,
+    # ⚠⚠ THE `<default>` CHAIN, WHICH THIS FUNCTION USED TO IGNORE. Every
+    # attribute below was read off the element's OWN opening tag, so a model
+    # keeping its tendon parameters in a class got zeros — the trap this
+    # parser has hit for geom `type`, geom `material`, actuator tags and
+    # joint ranges, reached here through `stiffness` and `springlength`.
+    # `NamedDefaultsList` already resolves a class against its parents, so
+    # taking it as an argument is the whole fix on this side.
+    named: NamedDefaultsList,
+    root_defaults: DefaultsData,
     mut result: FlatModelDef,
 ) raises:
     """Parse <tendon>: fill result.tendons[] with <fixed> and <spatial> data.
@@ -4778,6 +4857,16 @@ def _fill_tendons(
 
         var td = TendonData()
         td.kind = _TENDON_KIND_SPATIAL if is_spatial else _TENDON_KIND_FIXED
+
+        # ── the effective attribute source: element tag, then class ───────
+        # `eff` starts as the resolved `<default>` chain for this element's
+        # class (or the root block when it names none) and every read below
+        # is "element tag, else `eff`". MuJoCo layers them in exactly that
+        # order.
+        var tcls = _trim(_extract_attr(open_tag, "class"))
+        var eff = root_defaults
+        if tcls.byte_length() > 0:
+            eff = named.find(tcls)
 
         if is_spatial:
             # `width` / `rgba` are RENDER-ONLY and default to MuJoCo's
@@ -4937,9 +5026,13 @@ def _fill_tendons(
                         td.num_joints += 1
                 jpos = inner.find(">", jp) + 1
 
-        # limited / range / margin
+        # limited / range / margin — element tag first, then the class
         var limited_s = _extract_attr(open_tag, "limited")
+        if limited_s.byte_length() == 0:
+            limited_s = eff.tendon_limited_s
         var range_s = _extract_attr(open_tag, "range")
+        if range_s.byte_length() == 0:
+            range_s = eff.tendon_range_s
         if range_s.byte_length() > 0:
             var parts = List[String]()
             _split_spaces(range_s, parts)
@@ -4956,10 +5049,14 @@ def _fill_tendons(
             td.limited = 1
 
         var margin_s = _extract_attr(open_tag, "margin")
+        if margin_s.byte_length() == 0:
+            margin_s = eff.tendon_margin_s
         if margin_s.byte_length() > 0:
             td.margin = _parse_float(margin_s)
 
         var solref_s = _extract_attr(open_tag, "solreflimit")
+        if solref_s.byte_length() == 0:
+            solref_s = eff.tendon_solreflimit_s
         if solref_s.byte_length() > 0:
             var rp = List[String]()
             _split_spaces(solref_s, rp)
@@ -4968,6 +5065,8 @@ def _fill_tendons(
                 td.solref_lim_1 = _parse_float(rp[1])
 
         var solimp_s = _extract_attr(open_tag, "solimplimit")
+        if solimp_s.byte_length() == 0:
+            solimp_s = eff.tendon_solimplimit_s
         if solimp_s.byte_length() > 0:
             var ip = List[String]()
             _split_spaces(solimp_s, ip)
@@ -5009,9 +5108,20 @@ def _fill_tendons(
         # bounds) or two (the band); ABSENT means both bounds are `length0`,
         # the rest length implied by the joint refs — not zero.
         var st_s = _extract_attr(open_tag, "stiffness")
+        if st_s.byte_length() == 0:
+            st_s = eff.tendon_stiffness_s
         if st_s.byte_length() > 0:
             td.stiffness = _parse_float(st_s)
 
+        # ⚠ THE FIXED-TENDON REST LENGTH ONLY. `sum(coef * joint.ref)` is
+        # `mjModel.tendon_length0` for a `<fixed>` tendon; for a `<spatial>`
+        # one MuJoCo takes the POLYLINE length at qpos0 (`mj_setConst`), which
+        # this parser cannot compute — it has no kinematics. `num_joints` is 0
+        # on a spatial tendon, so the sum below reads 0, and the fallback
+        # would put both spring bounds there. Every spatial spring in this
+        # tree declares `springlength` explicitly, so the fallback is not
+        # reached; the raise below is what keeps that from becoming a silent
+        # zero-length spring on the first model that does not.
         var length0 = Float64(0)
         for k in range(td.num_joints):
             var jid = td.joint_ids[k]
@@ -5019,6 +5129,8 @@ def _fill_tendons(
                 length0 += td.coefs[k] * result.joints[jid].ref_val
 
         var sl_s = _extract_attr(open_tag, "springlength")
+        if sl_s.byte_length() == 0:
+            sl_s = eff.tendon_springlength_s
         if sl_s.byte_length() > 0:
             var sparts = List[String]()
             _split_spaces(sl_s, sparts)
@@ -5029,6 +5141,17 @@ def _fill_tendons(
                 td.spring_lo = _parse_float(sparts[0])
                 td.spring_hi = _parse_float(sparts[0])
         else:
+            if is_spatial and td.stiffness != 0.0:
+                raise Error(
+                    "physics3d: <spatial> tendon '"
+                    + _trim(_extract_attr(open_tag, "name"))
+                    + "' has stiffness but no `springlength`. MuJoCo would"
+                    " take its rest length from the POLYLINE at qpos0"
+                    " (`mj_setConst`), which this parser cannot compute —"
+                    " it has no kinematics. Running it would give a spring"
+                    " with both bounds at 0, i.e. one pulling the tendon"
+                    " shut with its full stiffness."
+                )
             td.spring_lo = length0
             td.spring_hi = length0
 
@@ -5469,6 +5592,10 @@ def parse_xml_full(
     # ms per control step against 13-49 ms.
     #
     # ⚠ ONLY `multiccd` HAS A CONSUMER — see `FlatModelDef.nativeccd_disabled`.
+    # <flag eulerdamp="disable"/> — mjDSBL_EULERDAMP. Read by the EULER
+    # integrator's finalize, which otherwise solves `(M + h*diag(B))` for the
+    # new velocity; MuJoCo integrates it explicitly when this is set.
+    result.eulerdamp_disabled = _option_flag_disabled(xml, "eulerdamp")
     result.multiccd_disabled = _option_flag_disabled(xml, "multiccd")
     result.nativeccd_disabled = _option_flag_disabled(xml, "nativeccd")
 
@@ -5733,7 +5860,10 @@ def parse_xml_full(
     # MuJoCo merges the repeats. Every sibling call on line ~4495 was fixed for
     # this; this one was missed because tendons arrived through `merge_mjcf`,
     # which had already collapsed them.
-    _fill_tendons(_extract_section_all(xml, "tendon"), worldbody, result)
+    _fill_tendons(
+        _extract_section_all(xml, "tendon"), worldbody, named_defaults,
+        defaults, result,
+    )
 
     # Actuator transmission: needs BOTH joints and tendons, so it runs here
     # rather than inside `_fill_actuators`.

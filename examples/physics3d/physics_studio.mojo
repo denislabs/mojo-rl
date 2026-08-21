@@ -75,6 +75,9 @@ from mojo_rl.physics3d.studio.stepping import (
 )
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
+from mojo_rl.physics3d.dynamics.pose_transmission import (
+    apply_pose_transmission,
+)
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE, MODEL_GEOM_SIZE,
     GEOM_IDX_MESH_ID, MAX_GPU_MESHES, MODEL_BODY_SIZE, BODY_IDX_MASS,
@@ -1516,6 +1519,22 @@ def run_studio(
             if nact > 0:
                 apply_actions_fields[DT](L.sf, L.d, actions, act,
                                          L.fmd.timestep)
+                # Spatial-tendon actuators and springs — see
+                # `dynamics/pose_transmission.mojo`. It refreshes FK/cdof at
+                # THIS qpos and returns immediately on a model with none, so
+                # the four integrator/cone combinations below can share one
+                # call and one scratch.
+                # ⚠ ANY OF THE FOUR SCRATCHES WILL DO. All four integrators
+                # are sized from the same `dims`, and this call OWNS the
+                # `cdof` it writes: it fills it from the current `qpos`,
+                # reads it, and whichever integrator steps below recomputes
+                # its own from the same pose. Picking one avoids both a
+                # fifth allocation and a four-way branch around a call that
+                # would then have to stay in step with itself.
+                apply_pose_transmission[DT](
+                    L.sf, L.m, L.d, L.integ_pyr.scratch, actions, act,
+                    L.fmd.timestep,
+                )
             # ⚠ THE INTEGRATOR THE FILE ASKED FOR, THEN THE CONE. Four
             # combinations, and the studio must pick the one the MJCF
             # declares — a model stepped with a different integrator is not

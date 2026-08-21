@@ -1388,6 +1388,30 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # dm_control's hopper declares its two touch sites entirely by class
     # (`<default class="hopper"><site type="sphere" size="0.05"/>`), so the
     # touch sensor sees nothing without these.
+    # ── `<default><tendon .../></default>` ────────────────────────────────
+    # ⚠⚠ THE SPRING TENDONS OF AN ENTIRE HAND LIVE HERE. `_fill_tendons` read
+    # every tendon attribute off the ELEMENT's own tag, and
+    # tetheria_aero_hand_open puts `stiffness` and `springlength` in
+    # `<default class="distal_spring"><tendon .../></default>` — so its eight
+    # spring tendons had stiffness 0 and pulled on nothing. That is the same
+    # `<default>`-chain trap this parser has been bitten by for geom `type`,
+    # geom `material`, actuator tags and joint ranges; the cure is the same,
+    # which is to come through THIS struct (whose classes already inherit
+    # from their parent) rather than through a one-level tag lookup.
+    #
+    # Stored as RAW STRINGS, like the site block below: the consumer already
+    # knows how to parse each one (`springlength` takes one value or two,
+    # `solreflimit` has the partial-value rule) and a second parse site is a
+    # second place for those rules to drift.
+    var tendon_stiffness_s: String
+    var tendon_springlength_s: String
+    var tendon_limited_s: String
+    var tendon_range_s: String
+    var tendon_margin_s: String
+    var tendon_solreflimit_s: String
+    var tendon_solimplimit_s: String
+    var tendon_width_s: String
+    var tendon_rgba_s: String
     var site_type_s: String
     var site_size_s: String
     # POSE from a default class. `type`/`size` were enough until manipulator,
@@ -1522,6 +1546,15 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_pos_s = ""
         self.geom_quat_s = ""
         self.geom_group_s = ""
+        self.tendon_stiffness_s = ""
+        self.tendon_springlength_s = ""
+        self.tendon_limited_s = ""
+        self.tendon_range_s = ""
+        self.tendon_margin_s = ""
+        self.tendon_solreflimit_s = ""
+        self.tendon_solimplimit_s = ""
+        self.tendon_width_s = ""
+        self.tendon_rgba_s = ""
         self.site_type_s = ""
         self.site_size_s = ""
         self.site_pos_s = ""
@@ -1845,6 +1878,12 @@ struct FlatModelDef(Movable):
     # silently absent, but nothing reads it: see the note beside
     # `MODEL_META_IDX_MULTICCD_DISABLED` for what honouring it would change and
     # why that is a separate, smaller job.
+    # `<option><flag eulerdamp="disable"/></option>` — mjDSBL_EULERDAMP.
+    # Only the EULER integrator reads it; `mj_implicit` has its own path and
+    # MuJoCo does not consult this flag there. One model in the Menagerie
+    # tree sets it (tetheria_aero_hand_open) and it is worth 61.5% of that
+    # model's velocity — see `MODEL_META_IDX_EULERDAMP_DISABLED`.
+    var eulerdamp_disabled: Bool
     var multiccd_disabled: Bool
     var nativeccd_disabled: Bool
     # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
@@ -1934,6 +1973,13 @@ struct FlatModelDef(Movable):
     # `qfrc_actuator = [0, 0, 0.378896, 0.01744, -0.053045, -0.001947]` on
     # skydio's first step; we answered six zeros.
     var zero_transmission_actuators: Int
+    # Actuators whose transmission needs the POSE, not just `qpos` — today
+    # that is `<position tendon="...">` on a SPATIAL tendon. They keep
+    # `trn_n = 0` like the unmodelled ones above, and are deliberately NOT
+    # in that count: they ARE applied, by
+    # `dynamics/pose_transmission.apply_pose_transmission`, which runs after
+    # forward kinematics. See `_fill_actuator_transmission`.
+    var pose_transmission_actuators: Int
     # ── qpos0 / initial pose ─────────────────────────────────────────────
     # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
     #   1. each joint's `ref`, already deg-converted, at its qpos address
@@ -2048,6 +2094,7 @@ struct FlatModelDef(Movable):
         self.bad_actuator_code = -1
         self.unmodelled_actuators = 0
         self.zero_transmission_actuators = 0
+        self.pose_transmission_actuators = 0
         self.qpos0 = List[Float64]()
         self.qpos0_nq = 0
         self.free_joint_qpos_adr = -1
@@ -2093,6 +2140,7 @@ struct FlatModelDef(Movable):
         self.max_condim = 3
         # Both default OFF, matching MuJoCo: the features are ON unless a model
         # disables them.
+        self.eulerdamp_disabled = False
         self.multiccd_disabled = False
         self.nativeccd_disabled = False
         self.mesh_asset_names = List[String]()

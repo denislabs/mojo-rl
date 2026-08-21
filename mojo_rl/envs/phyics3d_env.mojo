@@ -37,6 +37,9 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from mojo_rl.core.obs_state import ObsState
 from mojo_rl.core.cont_action import ContAction
 
+from mojo_rl.physics3d.dynamics.pose_transmission import (
+    apply_pose_transmission,
+)
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.render.ui import UIRect, UIText
@@ -539,6 +542,32 @@ struct Phyics3dEnv[
                 Self.MODEL_DEF.apply_actions(
                     self.sf, self.d, action_list, self.act
                 )
+                # ⚠⚠ AND THE TRANSMISSIONS THAT NEED THE POSE. A
+                # `<position tendon="...">` on a SPATIAL tendon has no
+                # `(qadr, dadr, coef)` triple to walk — its length and moment
+                # arm are the polyline's, so `apply_actions` above leaves it
+                # at zero force. `apply_pose_transmission` refreshes FK,
+                # subtree CoM and cdof at THIS qpos and adds those forces;
+                # it returns immediately on a model with none, which is
+                # every model in this tree except tetheria's hands.
+                #
+                # ⚠ THE INTEGRATOR'S OWN SCRATCH, NOT A SECOND ONE. `cdof`
+                # lives in `DynamicsScratch`, and the integrator on the next
+                # line recomputes it from the same `qpos` — allocating a
+                # parallel scratch would double the nv*nv arrays to hold the
+                # same numbers.
+                comptime if Self.CONFIG.INTEGRATOR == "euler":
+                    apply_pose_transmission[Self.DTYPE](
+                        self.sf, self.mf, self.d,
+                        self.integ_euler.scratch, action_list, self.act,
+                        Self.MODEL_DEF.TIMESTEP,
+                    )
+                else:
+                    apply_pose_transmission[Self.DTYPE](
+                        self.sf, self.mf, self.d,
+                        self.integ_rk4.scratch, action_list, self.act,
+                        Self.MODEL_DEF.TIMESTEP,
+                    )
             try:
                 # CPU target: cannot actually raise (the `raises` on the
                 # dispatchers exists for the GPU branch's ctx handling).

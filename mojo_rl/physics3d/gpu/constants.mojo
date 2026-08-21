@@ -323,7 +323,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 38
+comptime MODEL_META_SIZE: Int = 39
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -369,6 +369,21 @@ comptime MODEL_META_IDX_INTEGRATOR: Int = 36  # IntegratorType, default EULER
 # equivalent at all, so the studio's hardcoded 3 could not even be compared
 # against what the file asked for.
 comptime MODEL_META_IDX_MAX_CONDIM: Int = 37  # max geom condim, >= 3
+# ⚠⚠ `<option><flag eulerdamp="disable"/></option>` — `mjDSBL_EULERDAMP`.
+# `mj_EulerSkip` (engine_forward.c) opens by deciding whether ANY dof has
+# damping, and that whole scan is behind
+# `if (!mjDISABLED(mjDSBL_EULERDAMP) && !mjDISABLED(mjDSBL_DAMPER))`. With the
+# flag set MuJoCo integrates velocity EXPLICITLY — `qvel += h * qacc` — where
+# the default path solves `(M + h*diag(B)) qacc' = M qacc` first.
+#
+# ⚠ IT IS NOT A SMALL CORRECTION. On tetheria (h = 0.01, dof_damping 0.1 and
+# M's diagonal ~1.6e-03) `h*B/M` is 0.625, so the implicit solve returns 61.5%
+# of the explicit velocity. Running the damping on a model that disables it
+# was the whole of that scene's 2.590e-01 residual once its actuators worked.
+# `_option_flag_disabled` had existed since the `multiccd` work and simply was
+# never asked about this name — the same shape as `<option integrator>` being
+# parsed and dispatched on by nobody.
+comptime MODEL_META_IDX_EULERDAMP_DISABLED: Int = 38
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons

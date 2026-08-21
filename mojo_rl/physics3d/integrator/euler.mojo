@@ -67,6 +67,7 @@ from ..gpu.constants import (
     MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_EULERDAMP_DISABLED,
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
     JOINT_IDX_TYPE,
@@ -212,62 +213,32 @@ def _qacc_writeback_env[
         qacc_constrained[env, i] = qacc_val
 
 
-# ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
+# ── the integrate half of finalize, shared by both damping branches ───────
+#
+# ⚠ EXTRACTED, NOT COPIED. `mj_EulerSkip` has two branches — explicit when
+# `mjDSBL_EULERDAMP` is set (or no dof is damped) and implicit otherwise —
+# and they differ ONLY in how `qacc_final` is obtained. Writing the velocity
+# and position update once means the two cannot drift; this tree has been
+# bitten by a rule written inline twice before.
 @always_inline
-def _finalize_env[
+def _finalize_integrate_env[
     DTYPE: DType,
     DIMS: DimsLike,
     L_QPOS: Layout,
     L_QVEL: Layout,
     L_JOINTS: Layout,
-    L_M: Layout](
+](
     env: Int,
     dt: Scalar[DTYPE],
     dims: DIMS,
     qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
-    joints: LayoutTensor[
-        DTYPE, L_JOINTS, MutAnyOrigin
-    ],
-    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
-    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
-    D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
     qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
-    qacc_constrained: LayoutTensor[
-        DTYPE, L_QVEL, MutAnyOrigin
-    ],
 ):
     var nv = dims.get_nv()
     var njoint = dims.get_njoint()
-    # Step 1: rhs = M * qacc_constrained (into fnet)
-    for i in range(nv):
-        var sum = Scalar[DTYPE](0)
-        for j in range(nv):
-            var M_ij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
-            var qacc_j = rebind[Scalar[DTYPE]](qacc_constrained[env, j])
-            sum += M_ij * qacc_j
-        fnet[env, i] = sum
-
-    # Step 2: M_hat = M + dt*D (damping to diagonal)
-    for j in range(njoint):
-        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
-        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp > Scalar[DTYPE](0):
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
-
-    # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env(env, dims, M, L, D)
-    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
-
     # Step 5: v_new = v_old + dt * qacc_final.
     #
     # ⚠ THE BOUND IS `mjMAXVAL`, NOT A STABILITY BUDGET. MuJoCo's only
@@ -356,6 +327,85 @@ def _finalize_env[
             qpos[env, jnt_qpos_adr] = qp + qv * dt
 
 
+# ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
+@always_inline
+def _finalize_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_M: Layout](
+    env: Int,
+    dt: Scalar[DTYPE],
+    dims: DIMS,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    joints: LayoutTensor[
+        DTYPE, L_JOINTS, MutAnyOrigin
+    ],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, L_QVEL, MutAnyOrigin
+    ],
+    # ⚠⚠ `<option><flag eulerdamp="disable"/></option>` — mjDSBL_EULERDAMP.
+    # `mj_EulerSkip` puts its ENTIRE damping scan behind this flag and, when
+    # it is set, integrates velocity explicitly: `qvel += h * qacc`, with the
+    # `(M + h*diag(B))` solve below skipped, not merely fed a zero B. The two
+    # are far apart whenever `h*B` is comparable to `M`'s diagonal — on
+    # tetheria (`h = 0.01`, `dof_damping = 0.1`, `M_ii ~ 1.6e-03`) the solve
+    # returns 61.5% of the explicit velocity, which was that model's whole
+    # remaining residual.
+    eulerdamp_off: Bool,
+):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    if eulerdamp_off:
+        # Explicit velocity integration — `mj_EulerSkip`'s `if (!dof_damping)`
+        # branch, which copies `d->qacc` and never touches `qH`.
+        for i in range(nv):
+            qacc_ws[env, i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        _finalize_integrate_env(
+            env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+        )
+        return
+    # Step 1: rhs = M * qacc_constrained (into fnet)
+    for i in range(nv):
+        var sum = Scalar[DTYPE](0)
+        for j in range(nv):
+            var M_ij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
+            var qacc_j = rebind[Scalar[DTYPE]](qacc_constrained[env, j])
+            sum += M_ij * qacc_j
+        fnet[env, i] = sum
+
+    # Step 2: M_hat = M + dt*D (damping to diagonal)
+    for j in range(njoint):
+        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
+        if damp > Scalar[DTYPE](0):
+            var nd = 1
+            if jnt_type == JNT_FREE:
+                nd = 6
+            elif jnt_type == JNT_BALL:
+                nd = 3
+            for d in range(nd):
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
+
+    # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
+    _ldl_factor_env(env, dims, M, L, D)
+    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
+
+    _finalize_integrate_env(
+        env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+    )
+
+
 # ── launchable kernels ────────────────────────────────────────────────────
 def _armature_kernel[
     DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
@@ -426,13 +476,17 @@ def _finalize_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    # ⚠ A SCALAR, NOT A `Bool`, so the launch does not need a second
+    # argument kind — every other model constant reaching a kernel here
+    # arrives the same way.
+    eulerdamp_off: Scalar[DTYPE],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     _finalize_env[DTYPE](
         env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
-        qacc_constrained,
+        qacc_constrained, eulerdamp_off != Scalar[DTYPE](0),
     )
 
 
@@ -507,6 +561,13 @@ struct EulerIntegrator[
     ) raises:
         """One full contact-free Euler step."""
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
+        # `<option><flag eulerdamp="disable"/></option>`. Read HERE rather
+        # than inside `_finalize_env` so both targets get it from the same
+        # place and the GPU kernel takes it as a launch argument.
+        var eulerdamp_off = (
+            m.meta.data[MODEL_META_IDX_EULERDAMP_DISABLED]
+            != Scalar[Self.DTYPE](0)
+        )
 
         forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
         compute_body_velocities[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
@@ -718,7 +779,7 @@ struct EulerIntegrator[
                 _finalize_env[
                     Self.DTYPE](
                     e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
-                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3,
+                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, eulerdamp_off,
                 )
         else:
             ctx.value().enqueue_function[
@@ -737,6 +798,8 @@ struct EulerIntegrator[
                 self.scratch.fnet.lt["gpu", L_NV](),
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
                 self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                Scalar[Self.DTYPE](1) if eulerdamp_off
+                else Scalar[Self.DTYPE](0),
                 grid_dim=(BLOCKS,),
                 block_dim=(EU_TPB,),
             )
