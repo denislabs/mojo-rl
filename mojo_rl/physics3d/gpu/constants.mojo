@@ -985,6 +985,66 @@ comptime ACT_IDX_BIAS1: Int = ACT_IDX_SITE_ID + 7
 # `Model.joints` as a second operand purely to do a lookup the parser already
 # did. Storing the addresses is what the comptime twin does
 # (`tendon_trn_qadr` / `_dadr`) and this mirrors it.
+# ⚠⚠ THE OFF-DIAGONAL OF `J^T diag(kv) J`, WHICH `dof_actdamp` DOES NOT CARRY.
+# `mjd_actuator_vel` (engine_derivative.c:1213) adds `moment^T * biasprm[2] *
+# moment` — the FULL outer product over the actuator's transmission — into
+# `d->qDeriv`, and the implicit integrators then solve against
+# `M_hat = M - h*qDeriv`. `Model.dof_actdamp` is only its DIAGONAL.
+#
+# ⚠ FOR A JOINT TRANSMISSION THE TWO ARE THE SAME THING. One dof means one
+# entry, the outer product IS the diagonal, and nothing is lost — which is why
+# this was invisible on every legged model in the tree.
+#
+# ⚠⚠ SEVEN SCENES IN `mujoco_menagerie-main` HAVE A MULTI-DOF `kv`
+# TRANSMISSION, and all seven are a tendon: `hello_robot_stretch` (`arm_extend`,
+# 4 dofs, kv 10), `hello_robot_stretch_3` (`arm`, 4 dofs), and five grippers at
+# 2 dofs each (franka_emika_panda, robotiq_2f85 + v4, stanford_tidybot,
+# ufactory_xarm7). Five of them run `implicitfast`. Measured: forcing BOTH
+# engines to Euler — which does NOT use `qDeriv` at all — takes
+# `hello_robot_stretch` from **4.406e-05 to 1.823e-10**, while 49 of the other
+# 50 `implicitfast` scenes do not move. That scene's whole residual is this
+# term.
+#
+# THE RECORD, one per actuator, holding what the integrator needs to rebuild
+# the outer product without binding `SpecFields` (which is deliberately not
+# part of `Model` — see `MODEL_ACTUATOR_SIZE`):
+#
+#     [n, dof_0..dof_{W-1}, pair_00..pair_{W-1,W-1}]   W = TENDON_MAX_WRAPS
+#
+# where `pair[p*W + q] = kv * mom_p * mom_q` and `mom_k = gear * coef_k`. The
+# integrator subtracts `pair[p*W+q]` at `(dof_p, dof_q)`. `n == 0` means "no
+# velocity feedback", which is every `<motor>`.
+#
+# ⚠⚠ THE PRODUCTS ARE PRE-MULTIPLIED AND PRE-FILTERED AT BUILD TIME, and the
+# FILTER IS THE POINT. MuJoCo does not write the whole outer product: it
+# accumulates through `mju_addToSclSparseInc` into `d->qDeriv`'s SPARSE `D`
+# pattern (`engine_derivative.c:768`), and **any column that pattern does not
+# have is silently dropped**. `D` is the mass matrix's pattern, which for a
+# tree holds `(i, j)` only when the two dofs are ANCESTOR-RELATED.
+#
+# ⚠⚠⚠ SO A TENDON ACROSS PARALLEL BRANCHES GETS ONLY ITS DIAGONAL. Every
+# 2-dof gripper here — franka_emika_panda, robotiq_2f85 + v4,
+# stanford_tidybot, ufactory_xarm7 — spans two SIBLING fingers, and MuJoCo's
+# `qDeriv` has no off-diagonal for them at all (checked against `D_colind`:
+# xarm7's gripper contributes -2.5 at (7,7) and (10,10) and nothing at
+# (7,10)). `hello_robot_stretch`'s four TELESCOPING links are a serial chain,
+# every pair is ancestor-related, and it gets the full 4x4 block.
+#
+# ⚠ Writing the whole outer product instead took the 1-step sweep from 74/85
+# to **72/85** — stretch was fixed and those grippers each acquired a
+# 2.6e-06..3.0e-05 error that had not been there. The rule was then checked
+# exhaustively: over **74,671** dof pairs in all 85 models,
+# "bodies ancestor-related" and "(i,j) in D" disagree **zero** times.
+#
+# `p == q` is stored as 0 as well: the diagonal is `dof_actdamp`'s job and
+# adding it here would double every servo's damping.
+comptime ACTDAMP_TRN_SIZE: Int = 1 + TENDON_MAX_WRAPS + (
+    TENDON_MAX_WRAPS * TENDON_MAX_WRAPS
+)
+comptime ACTDAMP_IDX_N: Int = 0
+comptime ACTDAMP_IDX_DOF_0: Int = 1
+comptime ACTDAMP_IDX_PAIR_0: Int = 1 + TENDON_MAX_WRAPS
+
 comptime MODEL_ACT_TENDON_SIZE: Int = 4 + 3 * TENDON_MAX_WRAPS
 
 comptime ACTTEN_IDX_STIFFNESS: Int = 0  # 0 => no spring, skip the row

@@ -247,6 +247,9 @@ trait ModelDefLike:
         dof_actdamp: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
+        actdamp_act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NACT_F), MutAnyOrigin
+        ],
         meta: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],

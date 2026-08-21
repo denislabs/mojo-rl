@@ -191,6 +191,13 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
     # everywhere and over-damped every saturated dof.
     for i in range(nv):
         d.dof_actdamp.data[i] = Scalar[DTYPE](0)
+    # ⚠ THE OFF-DIAGONAL'S LIVE GATE, cleared with the diagonal. 1.0 means
+    # "this actuator contributed to `qDeriv` this step"; `Model.actdamp_trn`
+    # holds the constants it is multiplied by. Zeroed here and raised below
+    # under exactly the test the diagonal uses, so the two halves of
+    # `mjd_actuator_vel` cannot disagree about a saturated actuator.
+    for i in range(n_act):
+        d.actdamp_act.data[i] = Scalar[DTYPE](0)
     d.meta.data[META_IDX_ACTDAMP_LIVE] = Scalar[DTYPE](1)
 
     for i in range(n_act):
@@ -330,6 +337,10 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
                     d.dof_actdamp.data[dadr_d] += Scalar[DTYPE](
                         kv_d * gc * gc
                     )
+                # The off-diagonal half — see `Model.actdamp_trn`. Set
+                # INSIDE the `kv_d != 0` guard so an actuator with no
+                # velocity feedback never lights up.
+                d.actdamp_act.data[i] = Scalar[DTYPE](1)
 
         for k in range(n):
             var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])

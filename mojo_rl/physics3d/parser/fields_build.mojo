@@ -296,6 +296,10 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_QUAT_Y,
     SITE_IDX_QUAT_Z,
     MODEL_ACTUATOR_SIZE,
+    ACTDAMP_TRN_SIZE,
+    ACTDAMP_IDX_N,
+    ACTDAMP_IDX_DOF_0,
+    ACTDAMP_IDX_PAIR_0,
     ACT_IDX_KIND,
     ACT_IDX_GEAR,
     ACT_IDX_CTRL_MIN,
@@ -813,6 +817,46 @@ def apply_auto_spring_damper[
         )
 
 
+@always_inline
+def _dofs_are_ancestor_related[
+    DTYPE: DType, D: DimsLike
+](dof_body: List[Int], mf: Model[DTYPE, D], i: Int, j: Int) -> Bool:
+    """Is `(i, j)` a slot MuJoCo's `qDeriv` sparsity actually has?
+
+    ⚠⚠ THIS IS NOT AN OPTIMISATION, IT IS THE SEMANTICS. `addJTBJSparse`
+    (`engine_derivative.c:768`) accumulates the actuator's `moment (x) moment`
+    into `d->qDeriv` through `mju_addToSclSparseInc`, which writes only the
+    columns the `D` pattern lists for that row and **silently drops the rest**.
+    `D` is the mass matrix's pattern, and a tree's mass matrix couples two dofs
+    only when one's body is an ancestor of the other's.
+
+    So a tendon spanning two SIBLING branches — every 2-dof gripper in this
+    tree — contributes its diagonal and nothing else, while a serial chain
+    (hello_robot_stretch's four telescoping links) gets the full block.
+    Writing the whole outer product regardless took the Menagerie sweep from
+    74/85 to 72/85.
+
+    ⚠ Checked rather than assumed: over **74,671** dof pairs across all 85
+    scenes, this predicate and membership in `D_colind` agree every time.
+    """
+    if i < 0 or j < 0 or i >= len(dof_body) or j >= len(dof_body):
+        return False
+    var bi = dof_body[i]
+    var bj = dof_body[j]
+    # walk bi's parents looking for bj, then the other way round
+    var c = bi
+    while c > 0:
+        if c == bj:
+            return True
+        c = Int(mf.bodies.data[c * MODEL_BODY_SIZE + BODY_IDX_PARENT])
+    c = bj
+    while c > 0:
+        if c == bi:
+            return True
+        c = Int(mf.bodies.data[c * MODEL_BODY_SIZE + BODY_IDX_PARENT])
+    return False
+
+
 def build_actuator_damping[
     DTYPE: DType,
     D: DimsLike,
@@ -893,6 +937,26 @@ def build_actuator_damping[
     # actuators this whole pass is about.
     for i in range(nv):
         mf.dof_actdamp.data[i] = Scalar[DTYPE](0)
+    # ⚠ AND ITS OFF-DIAGONAL COMPANION, cleared over the WHOLE capacity — the
+    # record is read by actuator index and an unwritten one must say `n = 0`.
+    for i in range(mf.dims.get_nact() * ACTDAMP_TRN_SIZE):
+        mf.actdamp_trn.data[i] = Scalar[DTYPE](0)
+    # dof -> owning body, for the ancestor test below. Built from the joint
+    # records rather than stored, because it is only wanted here.
+    var dof_body = List[Int](length=nv if nv > 0 else 1, fill=0)
+    for j in range(mf.dims.get_njoint()):
+        var jo = j * MODEL_JOINT_SIZE
+        var jb = Int(mf.joints.data[jo + JOINT_IDX_BODY_ID])
+        var jda = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
+        var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
+        var jnd = 1
+        if jt == JNT_FREE:
+            jnd = 6
+        elif jt == JNT_BALL:
+            jnd = 3
+        for k in range(jnd):
+            if jda + k >= 0 and jda + k < nv:
+                dof_body[jda + k] = jb
     for i in range(nact):
         var o = i * MODEL_ACTUATOR_SIZE
         var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
@@ -907,30 +971,65 @@ def build_actuator_damping[
             continue
         var gear = Float64(sf.actuators.data[o + ACT_IDX_GEAR])
         var n = Int(sf.actuators.data[o + ACT_IDX_TRN_N])
+        # ⚠ `ao` IS INDEXED BY ACTUATOR, `dof_actdamp` BY DOF. The two halves
+        # of `mjd_actuator_vel` are banked in the same pass so they cannot
+        # disagree about which actuators have velocity feedback.
+        var ao = i * ACTDAMP_TRN_SIZE
         var ndof = 0
+        var moms = List[Float64]()
+        var dofs = List[Int]()
         for k in range(n):
             var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])
             if dadr < 0 or dadr >= nv:
                 continue
-            ndof += 1
             var trn = gear * Float64(
                 sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
             )
             mf.dof_actdamp.data[dadr] += Scalar[DTYPE](kv * trn * trn)
-        # ⚠ SAID OUT LOUD RATHER THAN DROPPED. For a one-dof (joint)
-        # transmission `J^T diag(kv) J` IS this diagonal and nothing is lost —
-        # that covers every servo in Menagerie's legged models. A multi-dof
-        # transmission also has off-diagonal terms, which this does not carry,
-        # so the implicit integrators would damp it slightly less than MuJoCo
-        # does. Printing beats a silent approximation; see the field's docs.
-        if ndof > 1:
-            print(
-                "physics3d: actuator #", i, " drives", ndof, "dofs and has"
-                " kv", kv, "— dof_actdamp keeps only the diagonal of its"
-                " J^T diag(kv) J, so an implicit integrator will damp it a"
-                " little less than MuJoCo. Joint transmissions (one dof) are"
-                " exact.",
+            # ⚠ ONLY THE RESOLVED DOFS, PACKED. `k` skips an unresolvable
+            # `dadr`, so the record's slot index is `ndof`, not `k` — writing
+            # at `k` would leave a hole the integrator reads as dof 0.
+            if ndof < TENDON_MAX_WRAPS:
+                mf.actdamp_trn.data[ao + ACTDAMP_IDX_DOF_0 + ndof] = (
+                    Scalar[DTYPE](dadr)
+                )
+                dofs.append(dadr)
+                moms.append(trn)
+            ndof += 1
+        # ── the off-diagonal pairs, FILTERED BY THE SPARSITY MuJoCo WRITES
+        #    INTO. See `ACTDAMP_TRN_SIZE`: `addJTBJSparse` accumulates into
+        #    `qDeriv`'s `D` pattern and drops every column that pattern does
+        #    not have, and `D` holds `(i, j)` only for ANCESTOR-RELATED dofs.
+        #    Checked exhaustively against `D_colind`: over 74,671 dof pairs in
+        #    all 85 Menagerie models the two agree every time.
+        for pp in range(len(dofs)):
+            for qq in range(len(dofs)):
+                if pp == qq:
+                    continue  # the diagonal is `dof_actdamp`'s
+                if not _dofs_are_ancestor_related(
+                    dof_body, mf, dofs[pp], dofs[qq]
+                ):
+                    continue
+                mf.actdamp_trn.data[
+                    ao + ACTDAMP_IDX_PAIR_0 + pp * TENDON_MAX_WRAPS + qq
+                ] = Scalar[DTYPE](kv * moms[pp] * moms[qq])
+        # ⚠ THE CAP IS `TENDON_MAX_WRAPS` AND IT IS THE SAME ONE THE
+        # TRANSMISSION ITSELF USES, so a transmission that fits in the
+        # actuator record fits here too. Recording a SHORT `n` rather than the
+        # full one would silently drop the tail's off-diagonal terms; raising
+        # instead, because there is no honest partial answer.
+        if ndof > TENDON_MAX_WRAPS:
+            raise Error(
+                String(
+                    "physics3d: actuator ", i, " resolves ", ndof,
+                    " dofs but `Model.actdamp_trn` holds TENDON_MAX_WRAPS (",
+                    TENDON_MAX_WRAPS, "). The actuator record itself is capped",
+                    " at the same number, so this should be unreachable —",
+                    " raise both together.",
+                )
             )
+        # ⚠ `kv` IS NOT STORED — it is already inside every `pair` entry.
+        mf.actdamp_trn.data[ao + ACTDAMP_IDX_N] = Scalar[DTYPE](ndof)
 
 
 def assert_no_pending_dampratio(fmd: FlatModelDef, who: String) raises:

@@ -75,6 +75,15 @@ struct Data[
     # `forcerange`, and whether it is clamped changes every step. Guarded by
     # `META_IDX_ACTDAMP_LIVE`, which says whether this was filled.
     var dof_actdamp: TensorImpl[Self.DTYPE]  # [BATCH, NV]
+    # ⚠ THE SAME LIVE/BANKED SPLIT, FOR THE OFF-DIAGONAL. `Model.actdamp_trn`
+    # holds each actuator's `(dof, gear*coef)` pairs and its `kv`, which are
+    # model-time constants; this says WHICH ACTUATORS CONTRIBUTED THIS STEP —
+    # 1.0 normally, 0.0 for one whose force `mjd_actuator_vel` skips because
+    # `forcerange` clamped it. Written by `apply_actions_fields` beside
+    # `dof_actdamp`, and read only when `META_IDX_ACTDAMP_LIVE` is up; with
+    # the flag down every actuator counts, because nothing can be saturated
+    # in a step that never actuated.
+    var actdamp_act: TensorImpl[Self.DTYPE]  # [BATCH, NACT]
     # World space (FK products)
     var xpos: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var xquat: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
@@ -167,6 +176,13 @@ struct Data[
         self.qacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.qfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        # ⚠ NEVER ZERO-LENGTH. A model with no actuators would otherwise
+        # allocate 0 and any later bind of this tensor is a null view — the
+        # trap `site_xpos` sprang on every site-less model.
+        var _nact_alloc = B * dims.get_nact()
+        if _nact_alloc < 1:
+            _nact_alloc = 1
+        self.actdamp_act = TensorImpl[Self.DTYPE].alloc(_nact_alloc)
         self.xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.xquat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
         self.xipos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
@@ -200,6 +216,7 @@ struct Data[
         self.qacc.upload(ctx)
         self.qfrc.upload(ctx)
         self.dof_actdamp.upload(ctx)
+        self.actdamp_act.upload(ctx)
         self.xpos.upload(ctx)
         self.xquat.upload(ctx)
         self.xipos.upload(ctx)

@@ -1370,6 +1370,12 @@ struct Phyics3dBatchedEnv[
                     # them; they are filled anyway so a future implicit
                     # caller cannot silently get the model-time value.
                     self.d.dof_actdamp.lt["gpu", type_of(self.d).L_NV](),
+                    self.d.actdamp_act.lt[
+                        "gpu",
+                        Layout.row_major(
+                            Self.N_ENVS, Self.MODEL_DEF.NACT_F
+                        ),
+                    ](),
                     self.d.meta.lt["gpu", type_of(self.d).L_META](),
                 )
             comptime if Self.CONFIG.INTEGRATOR == "euler":

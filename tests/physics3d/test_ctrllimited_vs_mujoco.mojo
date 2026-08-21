@@ -298,6 +298,12 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_actd.data = List[Scalar[GT]](length=B * M.NV, fill=Scalar[GT](0))
     t_actd.n = B * M.NV
     t_actd.upload(ctx)
+    var t_aact = TensorImpl[GT]()
+    t_aact.data = List[Scalar[GT]](
+        length=B * M.NACT_F, fill=Scalar[GT](0)
+    )
+    t_aact.n = B * M.NACT_F
+    t_aact.upload(ctx)
     var t_meta = TensorImpl[GT]()
     t_meta.data = List[Scalar[GT]](
         length=B * METADATA_SIZE, fill=Scalar[GT](0)
@@ -325,10 +331,12 @@ def test_apply_actions_gpu_matches_cpu() raises:
         sfg.joint_limits.lt[
             "gpu", Layout.row_major(M.NJOINT * JLIM_SIZE)
         ](),
-        # `dof_actdamp` + `meta` — this step's actuator damping diagonal.
-        # Inert for this fixture (no forcerange saturation); passed because
-        # the kernel requires it and the CPU/GPU pair must not diverge.
+        # `dof_actdamp` + `actdamp_act` + `meta` — this step's actuator
+        # damping, diagonal and per-actuator gate. Inert for this fixture (no
+        # forcerange saturation); passed because the kernel requires them and
+        # the CPU/GPU pair must not diverge.
         t_actd.lt["gpu", Layout.row_major(B, M.NV)](),
+        t_aact.lt["gpu", Layout.row_major(B, M.NACT_F)](),
         t_meta.lt["gpu", Layout.row_major(B, METADATA_SIZE)](),
     )
     ctx.synchronize()

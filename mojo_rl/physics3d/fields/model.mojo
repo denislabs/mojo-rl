@@ -39,6 +39,7 @@ from ..gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_PAIR_SIZE,
+    ACTDAMP_TRN_SIZE,
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
@@ -160,6 +161,25 @@ struct Model[
 
     Filled alongside the `dampratio` conversion, which is the point where the
     final `kv` of every actuator is known."""
+    var actdamp_trn: TensorImpl[Self.DTYPE]  # [NACT * ACTDAMP_TRN_SIZE]
+    """The OFF-DIAGONAL half of `mjd_actuator_vel`, per actuator.
+
+    `dof_actdamp` above is the DIAGONAL of `J^T diag(kv) J`; MuJoCo adds the
+    whole outer product `moment^T * biasprm[2] * moment` to `d->qDeriv`
+    (`engine_derivative.c:1213`). For a JOINT transmission those are the same
+    thing — one dof, one entry — and for a multi-dof one they are not.
+
+    ⚠⚠ IT IS WORTH A FIELD BECAUSE IT IS A WHOLE SCENE. Seven models here have
+    a multi-dof `kv` transmission and all seven are a tendon; forcing both
+    engines to Euler — which never touches `qDeriv` — takes
+    `hello_robot_stretch` from **4.406e-05 to 1.823e-10** while 49 of the
+    other 50 `implicitfast` scenes do not move.
+
+    ⚠ IN `Model`, NOT IN `Data`, because it is a model-time constant: the
+    `(dof, gear*coef)` pairs of a joint or FIXED-tendon transmission do not
+    depend on `qpos`. What IS state-dependent is whether the actuator is
+    `forcerange`-saturated, and that rides on `Data.actdamp_act` — the same
+    split `dof_actdamp` already uses. See `ACTDAMP_TRN_SIZE`."""
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
     var pairs: TensorImpl[Self.DTYPE]  # [NPAIR, MODEL_PAIR_SIZE]
     var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
@@ -226,6 +246,9 @@ struct Model[
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.dof_M0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
+        self.actdamp_trn = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nact() * ACTDAMP_TRN_SIZE)
+        )
         self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nexclude() * 2))
         self.pairs = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(dims.get_npair() * MODEL_PAIR_SIZE)
@@ -283,6 +306,7 @@ struct Model[
         self.dof_invweight0.upload(ctx)
         self.dof_M0.upload(ctx)
         self.dof_actdamp.upload(ctx)
+        self.actdamp_trn.upload(ctx)
         self.excludes.upload(ctx)
         self.pairs.upload(ctx)
         self.mesh_meta.upload(ctx)

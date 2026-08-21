@@ -249,6 +249,12 @@ def _gate[
     t_actd.data = List[Scalar[DTYPE]](length=BATCH * NV, fill=Scalar[DTYPE](0))
     t_actd.n = BATCH * NV
     t_actd.upload(ctx)
+    var t_aact = TensorImpl[DTYPE]()
+    t_aact.data = List[Scalar[DTYPE]](
+        length=BATCH * M.NACT_F, fill=Scalar[DTYPE](0)
+    )
+    t_aact.n = BATCH * M.NACT_F
+    t_aact.upload(ctx)
     var t_meta = TensorImpl[DTYPE]()
     t_meta.data = List[Scalar[DTYPE]](
         length=BATCH * METADATA_SIZE, fill=Scalar[DTYPE](0)
@@ -279,6 +285,7 @@ def _gate[
         # FORCE, not the derivative. `test_saturated_actuator_deriv_vs_mujoco`
         # is where the derivative is gated.
         t_actd.lt["gpu", Layout.row_major(BATCH, NV)](),
+        t_aact.lt["gpu", Layout.row_major(BATCH, M.NACT_F)](),
         t_meta.lt["gpu", Layout.row_major(BATCH, METADATA_SIZE)](),
     )
     ctx.synchronize()

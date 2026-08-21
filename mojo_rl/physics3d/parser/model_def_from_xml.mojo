@@ -1277,6 +1277,13 @@ struct ModelDefFromXML[
         dof_actdamp: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
+        # `d.actdamp_act` — the OFF-DIAGONAL's live gate, 1.0 per actuator
+        # that contributed. `Model.actdamp_trn` holds the constants; this
+        # says which of them count this step. Same reason as `dof_actdamp`:
+        # one action must give the CPU and GPU paths the same derivative.
+        actdamp_act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NACT_F), MutAnyOrigin
+        ],
         meta: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
@@ -1356,6 +1363,9 @@ struct ModelDefFromXML[
             dof_actdamp: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
             ],
+            actdamp_act: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NACT_F), MutAnyOrigin
+            ],
             meta: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE),
                 MutAnyOrigin
@@ -1371,6 +1381,8 @@ struct ModelDefFromXML[
                 qfrc[env, i] = Scalar[DTYPE](0)
             comptime for i in range(Self.NV):
                 dof_actdamp[env, i] = Scalar[DTYPE](0)
+            comptime for i in range(Self.NACT_F):
+                actdamp_act[env, i] = Scalar[DTYPE](0)
             meta[env, META_IDX_ACTDAMP_LIVE] = Scalar[DTYPE](1)
 
             # ⚠⚠ THIS LOOP USED TO BE `comptime for`, WITH EVERY VALUE A
@@ -1513,6 +1525,13 @@ struct ModelDefFromXML[
                                 dof_actdamp[env, dadr_d] = (
                                     dof_actdamp[env, dadr_d] + kv_d * gc * gc
                                 )
+                        # The off-diagonal's gate — the CPU twin sets it at
+                        # exactly this point: AFTER the dof loop, inside
+                        # `kv_d != 0`. ⚠ The actuator index here is `act_i`,
+                        # not `i` — writing `i` compiled nowhere `drive`
+                        # instantiates this kernel and broke eight test files
+                        # at once.
+                        actdamp_act[env, act_i] = Scalar[DTYPE](1)
 
                 for k in range(n):
                     var dadr = Int(
@@ -1626,6 +1645,7 @@ struct ModelDefFromXML[
             act_tendons,
             joint_limits,
             dof_actdamp,
+            actdamp_act,
             meta,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
