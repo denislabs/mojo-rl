@@ -3872,9 +3872,51 @@ def _fill_actuators(
 # =============================================================================
 
 
-def _fill_equality_solparams(tag: String, mut ed: EqualityData) raises:
+def _root_default_tag(xml: String, tag_name: String) -> String:
+    """First `<tag_name ...>` inside the ROOT `<default>`, or "".
+
+    ⚠⚠ THE ROOT `<default>` IS A CLASS AND `_default_class_tag` CANNOT REACH
+    IT. MJCF's top-level `<default>` block is the class "main", and every
+    element that names no `class` inherits from it. `_default_class_tag`
+    returns "" for an empty class name, so a parser that only calls that one
+    reads the root block for NO element at all — which is what
+    `<equality solref="0.005 1"/>` hit on cassie and apollo.
+
+    Nested classes are stripped first, so a root block containing sub-classes
+    resolves to its OWN child rather than a grandchild's — the same rule
+    `_default_class_tag` applies.
+    """
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var t = xml.find("<default", scan)
+        if t == -1:
+            return String("")
+        var te = xml.find(">", t)
+        if te == -1:
+            return String("")
+        # The root block is the one with no class, or the one MuJoCo lets you
+        # spell explicitly as class="main".
+        var cls = _trim(_extract_attr(_extract_opening_tag(xml, t), "class"))
+        if cls.byte_length() != 0 and cls != String("main"):
+            scan = te + 1
+            continue
+        var close = _find_matching_default_close(xml, t)
+        if close == -1:
+            return String("")
+        var inner = _strip_nested_defaults(String(xml[byte = te + 1 : close]))
+        var it = inner.find("<" + tag_name)
+        if it == -1:
+            return String("")
+        return _extract_opening_tag(inner, it)
+    return String("")
+
+
+def _fill_equality_solparams(
+    tag: String, cls_tag: String, root_tag: String, mut ed: EqualityData
+) raises:
     """Read the attributes EVERY equality type shares: torquescale, solref,
-    solimp.
+    solimp — element first, then its `class`, then the ROOT `<default>`.
 
     ⚠ EXTRACTED SO THERE IS EXACTLY ONE COPY. `_fill_equality`'s loop has
     three exits now (weld/connect body, connect site, joint), and the site
@@ -3883,20 +3925,47 @@ def _fill_equality_solparams(tag: String, mut ed: EqualityData) raises:
     solref/solimp. ToddlerBot's connects carry `solref="0.004 1"`, a far
     stiffer constraint than the 0.02/1 they were getting. A shared tail that
     any branch can skip is a defect waiting to be re-introduced; a call is not.
+
+    ⚠⚠ AND THEN IT READ ONLY THE ELEMENT. `<default><equality solref="0.005 1"/>
+    </default>` is the spelling agility_cassie and apptronik_apollo use — the
+    ROOT default, no class — and every one of their equalities took MuJoCo's
+    built-in 0.02 instead. That is a constraint time constant FOUR TIMES too
+    slow on eight closed-loop rows. The `<equality><tendon>` branch 900 lines
+    below already consulted a class tag, so the rule existed here twice and
+    drifted; both now go through this function.
+
+    ⚠ THE CHAIN IS TWO DEEP, NOT ARBITRARY. `class="X"` resolves to X's own
+    `<equality>` tag and then to the root's; an `<equality>` attribute sitting
+    on an INTERMEDIATE ancestor of X is not picked up. No Menagerie model
+    spells it that way (the survey finds exactly two, both on the root), and
+    closing it properly means giving `DefaultsData` equality fields so
+    `_parse_one_default_block`'s existing parent-merge does the work.
     """
     # torquescale (weld) — MuJoCo's eq_data[10], scaling BOTH the orientation
     # residual and the rotational Jacobian. Default 1.
     var ts_s = _trim(_extract_attr(tag, "torquescale"))
+    if ts_s.byte_length() == 0:
+        ts_s = _trim(_extract_attr(cls_tag, "torquescale"))
+    if ts_s.byte_length() == 0:
+        ts_s = _trim(_extract_attr(root_tag, "torquescale"))
     if ts_s.byte_length() > 0:
         ed.torquescale = _parse_float(ts_s)
 
     var sr_s = _extract_attr(tag, "solref")
+    if sr_s.byte_length() == 0:
+        sr_s = _extract_attr(cls_tag, "solref")
+    if sr_s.byte_length() == 0:
+        sr_s = _extract_attr(root_tag, "solref")
     if sr_s.byte_length() > 0:
         var sv = _solref_into(sr_s, ed.solref_0, ed.solref_1)
         ed.solref_0 = sv[0]
         ed.solref_1 = sv[1]
 
     var si_s = _extract_attr(tag, "solimp")
+    if si_s.byte_length() == 0:
+        si_s = _extract_attr(cls_tag, "solimp")
+    if si_s.byte_length() == 0:
+        si_s = _extract_attr(root_tag, "solimp")
     if si_s.byte_length() > 0:
         var parts = List[String]()
         _split_spaces(si_s, parts)
@@ -3916,6 +3985,10 @@ def _fill_equality(
 
     equality_sec: String,
     worldbody: String,
+    # ⚠ THE WHOLE DOCUMENT, for the `<default>` chain — see
+    # `_fill_equality_solparams`. `equality_sec` is the `<equality>` section
+    # only and the classes live outside it.
+    xml: String,
     mut result: FlatModelDef,
 ) raises:
     """Parse <equality> section: fill result.equalities[] with weld/connect data."""
@@ -4012,7 +4085,13 @@ def _fill_equality(
                 if len(pc) >= 5:
                     ed.anchor_b_y = _parse_float(pc[4])
 
-            _fill_equality_solparams(tag, ed)
+            _fill_equality_solparams(
+                tag,
+                _default_class_tag(xml, _trim(_extract_attr(tag, "class")),
+                                   "equality"),
+                _root_default_tag(xml, "equality"),
+                ed,
+            )
             result.equalities.append(ed)
             eq_count += 1
             var j_end = equality_sec.find(">", earliest)
@@ -4239,7 +4318,13 @@ def _fill_equality(
                 ed.relpose_z = _parse_float(parts[6])
                 ed.relpose_w = _parse_float(parts[3])
 
-        _fill_equality_solparams(tag, ed)
+        _fill_equality_solparams(
+            tag,
+            _default_class_tag(xml, _trim(_extract_attr(tag, "class")),
+                               "equality"),
+            _root_default_tag(xml, "equality"),
+            ed,
+        )
 
         result.equalities.append(ed)
         eq_count += 1
@@ -6068,7 +6153,7 @@ def parse_xml_full(
     )
 
     # Equality constraints
-    _fill_equality(equality_sec, worldbody, result)
+    _fill_equality(equality_sec, worldbody, xml, result)
     # Tendons
     # ⚠ `_extract_section_all`: MJCF lets `<tendon>` appear more than once and
     # MuJoCo merges the repeats. Every sibling call on line ~4495 was fixed for
