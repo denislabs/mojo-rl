@@ -148,7 +148,8 @@ from .plane_frame import (
 from .collision_primitives import (
     sphere_sphere,
     capsule_sphere,
-    capsule_capsule,
+    capsule_capsule_manifold,
+    CC_MAX_POINTS,
     box_sphere,
     box_capsule_manifold,
     CB_MAX_POINTS,
@@ -1258,6 +1259,98 @@ def _plane_box_contacts[
 
 
 @always_inline
+def _capsule_capsule_contacts[
+    DTYPE: DType,
+    D: DimsLike,
+    L_CONTACTS: Layout,
+](
+    env: Int,
+    body_a: Int,
+    body_b: Int,
+    ai_x: Scalar[DTYPE], ai_y: Scalar[DTYPE], ai_z: Scalar[DTYPE],
+    ai_qx: Scalar[DTYPE], ai_qy: Scalar[DTYPE], ai_qz: Scalar[DTYPE],
+    ai_qw: Scalar[DTYPE],
+    ai_hl: Scalar[DTYPE], ai_r: Scalar[DTYPE],
+    bj_x: Scalar[DTYPE], bj_y: Scalar[DTYPE], bj_z: Scalar[DTYPE],
+    bj_qx: Scalar[DTYPE], bj_qy: Scalar[DTYPE], bj_qz: Scalar[DTYPE],
+    bj_qw: Scalar[DTYPE],
+    bj_hl: Scalar[DTYPE], bj_r: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    dims: D,
+    contacts: LayoutTensor[
+        DTYPE, L_CONTACTS,
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+) -> Int:
+    """Capsule/capsule: up to TWO contacts, MuJoCo's manifold.
+
+    Two PARALLEL capsules touch along a segment and `mjraw_CapsuleCapsule`
+    emits a point at each end; a single closest-point query emits one, which
+    leaves the pair free to pivot about it. See `capsule_capsule_manifold`.
+
+    ⚠ NORMAL SIGN. The manifold's normal is capsule A -> capsule B, i.e.
+    `gi -> gj`, and the record's convention is `body_b -> body_a`. So it is
+    NEGATED here, which is what the shared single-point emit does
+    unconditionally at the bottom of this loop.
+
+    Returns the number of records written.
+    """
+    var max_contacts = dims.get_max_contacts()
+    var cc_dist = InlineArray[Scalar[DTYPE], CC_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var cc_pos = InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var cc_n = InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var n_cc = capsule_capsule_manifold[DTYPE](
+        ai_x, ai_y, ai_z, ai_qx, ai_qy, ai_qz, ai_qw, ai_hl, ai_r,
+        bj_x, bj_y, bj_z, bj_qx, bj_qy, bj_qz, bj_qw, bj_hl, bj_r,
+        contact_margin,
+        cc_dist,
+        cc_pos,
+        cc_n,
+    )
+
+    var written = 0
+    for c in range(n_cc):
+        if num_contacts >= max_contacts:
+            break
+        if cc_dist[c] >= contact_margin:
+            continue
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
+        contacts[env, c_off + CONTACT_IDX_POS_X] = cc_pos[3 * c + 0]
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = cc_pos[3 * c + 1]
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = cc_pos[3 * c + 2]
+        contacts[env, c_off + CONTACT_IDX_NX] = -cc_n[3 * c + 0]
+        contacts[env, c_off + CONTACT_IDX_NY] = -cc_n[3 * c + 1]
+        contacts[env, c_off + CONTACT_IDX_NZ] = -cc_n[3 * c + 2]
+        contacts[env, c_off + CONTACT_IDX_DIST] = cc_dist[c]
+        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_SPIN
+        ] = contact_friction_spin
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_ROLL
+        ] = contact_friction_roll
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contact_condim
+        )
+        num_contacts += 1
+        written += 1
+    return written
+
+
 def _capsule_box_contacts[
     DTYPE: DType,
     D: DimsLike,
@@ -2598,33 +2691,24 @@ def _detect_contacts_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
-                var r = capsule_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
+                # Two PARALLEL capsules touch over a segment, and MuJoCo emits
+                # a point at each end — see `_capsule_capsule_contacts`, which
+                # writes its own records.
+                _ = _capsule_capsule_contacts[DTYPE](
+                    env, gi_body, gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    contact_margin,
+                    contact_friction,
+                    contact_friction_spin,
+                    contact_friction_roll,
+                    contact_condim,
+                    dims, contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
+                _fill_pair_solparams[DTYPE](
+                    env, _n0, num_contacts, _mx, contacts
+                )
+                continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
                 var r = box_sphere[DTYPE](
                     pi_x,

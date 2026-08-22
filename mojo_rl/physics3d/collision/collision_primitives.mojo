@@ -748,6 +748,12 @@ def capsule_capsule[
         b_half_len: Half-length of capsule B.
         b_radius: Radius of capsule B.
 
+    ⚠ THE NARROW PHASES DO NOT CALL THIS. `mjraw_CapsuleCapsule` emits TWO
+    points when the axes are parallel, and this returns one; both contact
+    detectors go through `capsule_capsule_manifold` below. This stays as the
+    plain single-point query — it is on the package's public surface and it is
+    what `cylinder_capsule` and the tools want.
+
     Returns:
         Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
         - dist: Signed distance (negative = penetration).
@@ -877,6 +883,232 @@ def capsule_capsule[
 
     # Normal case: treat as sphere-sphere between the closest points
     return sphere_sphere(c1_x, c1_y, c1_z, a_radius, c2_x, c2_y, c2_z, b_radius)
+
+
+# ⚠ TWO, NOT ONE. `mjraw_CapsuleCapsule` emits a SECOND point whenever the two
+# axes are parallel, and it tries four candidate ends to find it. Two parallel
+# capsules resting on each other over a segment are exactly the case one point
+# cannot express — the same reason `CB_MAX_POINTS` is 2.
+comptime CC_MAX_POINTS: Int = 2
+
+
+@always_inline
+def _cc_sphere_sphere[
+    DTYPE: DType
+](
+    margin: Scalar[DTYPE],
+    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    a1x: Scalar[DTYPE], a1y: Scalar[DTYPE], a1z: Scalar[DTYPE],
+    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    a2x: Scalar[DTYPE], a2y: Scalar[DTYPE], a2z: Scalar[DTYPE],
+    slot: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+) -> Int:
+    """`mjraw_SphereSphere` writing into `slot`. Returns 0 or 1.
+
+    ⚠ IT REJECTS ON `margin`, and that rejection is what makes the parallel
+    branch's four-candidate search terminate — `mjraw_CapsuleCapsule` counts
+    the points that came back, not the ones it asked for.
+
+    `a1`/`a2` are the two geoms' UNIT z axes, used only when the two centres
+    coincide: MuJoCo takes their cross product and then `mju_normalize3`,
+    which rewrites a zero vector as `(1, 0, 0)`.
+    """
+    comptime MINV = Scalar[DTYPE](1e-15)
+    var dx = p1x - p2x
+    var dy = p1y - p2y
+    var dz = p1z - p2z
+    var cd_sq = dx * dx + dy * dy + dz * dz
+    var min_dist = margin + r1 + r2
+    if cd_sq > min_dist * min_dist:
+        return 0
+
+    var dist = sqrt(cd_sq) - r1 - r2
+    var nx = p2x - p1x
+    var ny = p2y - p1y
+    var nz = p2z - p1z
+    var ln = sqrt(nx * nx + ny * ny + nz * nz)
+    if ln >= MINV:
+        nx /= ln
+        ny /= ln
+        nz /= ln
+    else:
+        nx = a1y * a2z - a1z * a2y
+        ny = a1z * a2x - a1x * a2z
+        nz = a1x * a2y - a1y * a2x
+        var cl = sqrt(nx * nx + ny * ny + nz * nz)
+        if cl >= MINV:
+            nx /= cl
+            ny /= cl
+            nz /= cl
+        else:
+            nx = Scalar[DTYPE](1)
+            ny = Scalar[DTYPE](0)
+            nz = Scalar[DTYPE](0)
+
+    var off = r1 + dist * Scalar[DTYPE](0.5)
+    dist_out[slot] = dist
+    pos_out[3 * slot + 0] = p1x + nx * off
+    pos_out[3 * slot + 1] = p1y + ny * off
+    pos_out[3 * slot + 2] = p1z + nz * off
+    normal_out[3 * slot + 0] = nx
+    normal_out[3 * slot + 1] = ny
+    normal_out[3 * slot + 2] = nz
+    return 1
+
+
+@always_inline
+def _cc_clip[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`mju_clip(x, -1, 1)`."""
+    if x < Scalar[DTYPE](-1):
+        return Scalar[DTYPE](-1)
+    if x > Scalar[DTYPE](1):
+        return Scalar[DTYPE](1)
+    return x
+
+
+@always_inline
+def capsule_capsule_manifold[
+    DTYPE: DType
+](
+    a_x: Scalar[DTYPE], a_y: Scalar[DTYPE], a_z: Scalar[DTYPE],
+    a_qx: Scalar[DTYPE], a_qy: Scalar[DTYPE], a_qz: Scalar[DTYPE],
+    a_qw: Scalar[DTYPE],
+    a_half_len: Scalar[DTYPE], a_radius: Scalar[DTYPE],
+    b_x: Scalar[DTYPE], b_y: Scalar[DTYPE], b_z: Scalar[DTYPE],
+    b_qx: Scalar[DTYPE], b_qy: Scalar[DTYPE], b_qz: Scalar[DTYPE],
+    b_qw: Scalar[DTYPE],
+    b_half_len: Scalar[DTYPE], b_radius: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+) -> Int:
+    """Full contact MANIFOLD for a capsule/capsule pair — up to TWO points.
+
+    Verbatim port of `mjraw_CapsuleCapsule`
+    (`engine_collision_primitive.c:426`). `capsule_capsule` above is the
+    general branch's single point and stays for the callers that want a plain
+    query; THIS is what the narrow phases use.
+
+    ⚠⚠ THE PARALLEL BRANCH IS THE WHOLE POINT. When `|det| < mjMINVAL` the two
+    centrelines are parallel, one closest-point pair is not unique, and MuJoCo
+    walks FOUR candidates — `x1 = +1`, `x1 = -1`, `x2 = +1`, `x2 = -1` — each
+    paired with the other segment's clipped projection, stopping as soon as two
+    of them are within `margin`. `i2rt_yam` rests two parallel finger capsules
+    on each other and MuJoCo reports 2 contacts there where a single
+    closest-point query reports 1; the two engines then solve different
+    problems even though every number in the one shared contact agrees.
+
+    ⚠ THE AXES ARE SCALED BY HALF-LENGTH, so the segment parameters run over
+    [-1, 1] and every clip in the reference is `mju_clip(., -1, 1)`. Rescaling
+    them to unit vectors changes which branch each clip takes.
+
+    ⚠ `ma` and `mc` are divided by WITHOUT A GUARD, exactly as the reference
+    does: a zero-length capsule makes `det` zero AND `mc` zero. MuJoCo has the
+    same hole and no Menagerie model reaches it; a guard here would be a
+    silent divergence rather than a safety net.
+
+    Returns the number of points written. Normals point from capsule A to
+    capsule B, matching `capsule_capsule`.
+    """
+    comptime MINV = Scalar[DTYPE](1e-15)
+
+    var ua = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+        a_qx, a_qy, a_qz, a_qw,
+    )
+    var ub = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+        b_qx, b_qy, b_qz, b_qw,
+    )
+    var x1x = ua[0] * a_half_len
+    var x1y = ua[1] * a_half_len
+    var x1z = ua[2] * a_half_len
+    var x2x = ub[0] * b_half_len
+    var x2y = ub[1] * b_half_len
+    var x2z = ub[2] * b_half_len
+
+    var dfx = a_x - b_x
+    var dfy = a_y - b_y
+    var dfz = a_z - b_z
+
+    var ma = x1x * x1x + x1y * x1y + x1z * x1z
+    var mb = -(x1x * x2x + x1y * x2y + x1z * x2z)
+    var mc = x2x * x2x + x2y * x2y + x2z * x2z
+    var u = -(x1x * dfx + x1y * dfy + x1z * dfz)
+    var v = x2x * dfx + x2y * dfy + x2z * dfz
+    var det = ma * mc - mb * mb
+
+    var absdet = det if det >= Scalar[DTYPE](0) else -det
+    if absdet >= MINV:
+        var t1 = (mc * u - mb * v) / det
+        var t2 = (ma * v - mb * u) / det
+        if t1 > Scalar[DTYPE](1):
+            t1 = Scalar[DTYPE](1)
+            t2 = (v - mb) / mc
+        elif t1 < Scalar[DTYPE](-1):
+            t1 = Scalar[DTYPE](-1)
+            t2 = (v + mb) / mc
+        if t2 > Scalar[DTYPE](1):
+            t2 = Scalar[DTYPE](1)
+            t1 = _cc_clip[DTYPE]((u - mb) / ma)
+        elif t2 < Scalar[DTYPE](-1):
+            t2 = Scalar[DTYPE](-1)
+            t1 = _cc_clip[DTYPE]((u + mb) / ma)
+        return _cc_sphere_sphere[DTYPE](
+            margin,
+            a_x + x1x * t1, a_y + x1y * t1, a_z + x1z * t1, a_radius,
+            ua[0], ua[1], ua[2],
+            b_x + x2x * t2, b_y + x2y * t2, b_z + x2z * t2, b_radius,
+            ub[0], ub[1], ub[2],
+            0, dist_out, pos_out, normal_out,
+        )
+
+    # parallel axes — up to four candidates, first two hits win
+    var s2 = _cc_clip[DTYPE]((v - mb) / mc)
+    var n1 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x, a_y + x1y, a_z + x1z, a_radius, ua[0], ua[1], ua[2],
+        b_x + x2x * s2, b_y + x2y * s2, b_z + x2z * s2, b_radius,
+        ub[0], ub[1], ub[2],
+        0, dist_out, pos_out, normal_out,
+    )
+    s2 = _cc_clip[DTYPE]((v + mb) / mc)
+    var n2 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x - x1x, a_y - x1y, a_z - x1z, a_radius, ua[0], ua[1], ua[2],
+        b_x + x2x * s2, b_y + x2y * s2, b_z + x2z * s2, b_radius,
+        ub[0], ub[1], ub[2],
+        n1, dist_out, pos_out, normal_out,
+    )
+    if n1 + n2 >= 2:
+        return 2
+
+    var s1 = _cc_clip[DTYPE]((u - mb) / ma)
+    var n3 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x * s1, a_y + x1y * s1, a_z + x1z * s1, a_radius,
+        ua[0], ua[1], ua[2],
+        b_x + x2x, b_y + x2y, b_z + x2z, b_radius, ub[0], ub[1], ub[2],
+        n1 + n2, dist_out, pos_out, normal_out,
+    )
+    if n1 + n2 + n3 >= 2:
+        return 2
+
+    s1 = _cc_clip[DTYPE]((u + mb) / ma)
+    var n4 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x * s1, a_y + x1y * s1, a_z + x1z * s1, a_radius,
+        ua[0], ua[1], ua[2],
+        b_x - x2x, b_y - x2y, b_z - x2z, b_radius, ub[0], ub[1], ub[2],
+        n1 + n2 + n3, dist_out, pos_out, normal_out,
+    )
+    return n1 + n2 + n3 + n4
 
 
 # =============================================================================

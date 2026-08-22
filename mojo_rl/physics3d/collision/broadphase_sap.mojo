@@ -131,7 +131,6 @@ from ..gpu.constants import (
 from .collision_primitives import (
     sphere_sphere,
     capsule_sphere,
-    capsule_capsule,
     box_sphere,
     box_box,
     box_plane,
@@ -165,6 +164,7 @@ from .contact_detection import (
     _plane_cylinder_contacts,
     _box_box_contacts,
     _capsule_box_contacts,
+    _capsule_capsule_contacts,
     _geom_world_pos,
     detect_contacts,
 )
@@ -1231,33 +1231,21 @@ def _detect_contacts_sap_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
-                var r = capsule_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
+                # ⚠ THE TWO NARROW PHASES MUST MOVE TOGETHER
+                # (`feedback_sap_path_missing_a_whole_geom_type`). Parallel
+                # capsules are a two-point manifold; see
+                # `_capsule_capsule_contacts`, which writes its own records.
+                _ = _capsule_capsule_contacts[DTYPE](
+                    env, gi_body, gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    cm, cf, cfs, cfr, cdim,
+                    dims, contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
+                _fill_pair_solparams[DTYPE](
+                    env, _n0, num_contacts, _mx, contacts
+                )
+                continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
                 var r = box_sphere[DTYPE](
                     pi_x,
