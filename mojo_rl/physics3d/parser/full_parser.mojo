@@ -1235,7 +1235,9 @@ def _geom_type_from_str(s: String) -> Int:
     # ⚠ THE DEFAULT IS A SILENT SUBSTITUTION, not an error. `ellipsoid` used
     # to land here, which cost fish its whole mass distribution (bug 26).
     # Anything still falling through — `hfield`, `sdf` — is modelled as a
-    # sphere of radius size[0] with no diagnostic.
+    # sphere of radius size[0]. The parser COUNTS those declarations and says
+    # so at load (search `unmodelled_geom_types`); the substitution itself is
+    # still a substitution.
     return _GEOM_SPHERE  # default
 
 
@@ -5892,6 +5894,44 @@ def parse_xml_full(
             " honoured — MuJoCo decimates each convex hull to that many"
             " vertices and this engine keeps all of them, so contacts on the"
             " decimated faces will differ slightly.",
+        )
+
+    # ── `hfield` / `sdf` geoms — a SILENT SUBSTITUTION, now audible ───────
+    #
+    # ⚠⚠ `_geom_type_from_str` falls through to `_GEOM_SPHERE` for both, so a
+    # heightfield collides as a BALL of radius `size[0]` and nothing says so.
+    # Its own comment has said "with no diagnostic" since `ellipsoid` was
+    # fixed out of the same default. Measured on
+    # `google_barkour_vb/scene_hfield_mjx`: MuJoCo emits 8 contacts and we
+    # emit 4, on 6 different body pairs, 2.219e-01 apart in depth and 81 deg
+    # apart in normal.
+    #
+    # ⚠ COUNTED OVER THE DOCUMENT, like `maxhullvert` above and for the same
+    # reason — `<default><geom type="hfield"/></default>` is a legal spelling
+    # and an element-only read would miss it. `<hfield>` in `<asset>` is NOT
+    # counted: declaring the asset is harmless, it is a GEOM naming the type
+    # that gets substituted.
+    var _ugt_n = 0
+    for _q in range(2):
+        var _lead = String("type=\"") if _q == 0 else String("type='")
+        var _tail = String("\"") if _q == 0 else String("'")
+        for _t in range(2):
+            var _name = String("hfield") if _t == 0 else String("sdf")
+            var _pat = _lead + _name + _tail
+            var _at = 0
+            while True:
+                var _hit = xml.find(_pat, _at)
+                if _hit == -1:
+                    break
+                _ugt_n += 1
+                _at = _hit + 1
+    result.unmodelled_geom_types = _ugt_n
+    if _ugt_n > 0:
+        print(
+            "physics3d:", _ugt_n, "`<geom type=\"hfield\">` / `type=\"sdf\"`"
+            " declaration(s) are NOT modelled — each one collides as a SPHERE"
+            " of radius size[0]. Contacts against it are wrong in count,"
+            " depth and normal, not merely approximate.",
         )
 
     # `<compiler meshdir>` — UNPARSED until 2026-08-13, and silently.

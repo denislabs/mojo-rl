@@ -2107,6 +2107,12 @@ struct FlatModelDef(Movable):
     # the decimated faces sit slightly differently. Recorded so the gate can
     # assert the count rather than watching for a print.
     var unhonoured_maxhullvert: Int
+    # How many `<geom type="hfield">` / `type="sdf"` declarations the document
+    # carries. Neither is modelled: `_geom_type_from_str` falls through to
+    # `_GEOM_SPHERE`, so the geom collides as a ball of radius `size[0]`.
+    # Recorded so the gate can assert the count rather than watching for a
+    # print — the substitution was SILENT until this existed.
+    var unmodelled_geom_types: Int
     """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
 
     ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
@@ -2209,6 +2215,7 @@ struct FlatModelDef(Movable):
         self.mesh_asset_refquat = List[Float64]()
         self.mesh_asset_inertia_shell = List[Int]()
         self.unhonoured_maxhullvert = 0
+        self.unmodelled_geom_types = 0
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0
