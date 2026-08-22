@@ -2899,6 +2899,20 @@ def _detect_contacts_env[
                 or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
                 or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
                 or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
+                # ⚠ EVERY ELLIPSOID PAIR EXCEPT PLANE. Row ELLIPSOID of
+                # `mjCOLLISIONFUNC` is `mjc_Convex` against ELLIPSOID,
+                # CYLINDER, BOX and MESH, and column ELLIPSOID is `mjc_Convex`
+                # from SPHERE and CAPSULE down — only `mjc_PlaneConvex` is a
+                # separate path, and it has its own loop above. Before this
+                # branch existed those pairs fell through to nothing at all,
+                # because `_support` returns a geom's CENTRE for a type it
+                # does not know: an ellipsoid collided as a zero-radius dot.
+                # flybody's two labrum ellipsoids are the case in Menagerie —
+                # MuJoCo has them in contact at the model's own keyframe.
+                # (ELLIPSOID x MESH is caught by the mesh branch below, which
+                # also goes through the same support function.)
+                or (gi_type == GEOM_ELLIPSOID and gj_type != GEOM_MESH)
+                or (gj_type == GEOM_ELLIPSOID and gi_type != GEOM_MESH)
             ):
                 # ⚠⚠ EVERY CYLINDER PAIR EXCEPT SPHERE AND PLANE COMES HERE,
                 # and MuJoCo's own table is why: row CYLINDER of

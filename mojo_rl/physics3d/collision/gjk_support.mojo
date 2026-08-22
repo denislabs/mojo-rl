@@ -12,6 +12,7 @@ from ..constants import (
     GEOM_CAPSULE,
     GEOM_BOX,
     GEOM_CYLINDER,
+    GEOM_ELLIPSOID,
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
@@ -132,6 +133,63 @@ def support_box[
     result[2] = (
         pos_z + sx * half_x * ax[2] + sy * half_y * ay[2] + sz * half_z * az[2]
     )
+    return result^
+
+
+@always_inline
+def support_ellipsoid[
+    DTYPE: DType,
+](
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    pos_x: Scalar[DTYPE],
+    pos_y: Scalar[DTYPE],
+    pos_z: Scalar[DTYPE],
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`mjc_ellipsoidSupport` (`engine_collision_convex.c:562`), verbatim:
+
+        res = local_dir * size          (elementwise)
+        normalize(res)
+        res = res * size                (elementwise)
+
+    i.e. `(a^2 dx, b^2 dy, c^2 dz) / |(a dx, b dy, c dz)|` in the geom frame.
+
+    ⚠⚠ WITHOUT THIS AN ELLIPSOID IS A POINT. `_support`'s fallback returns the
+    geom's CENTRE for a type it does not know, silently, so every ellipsoid
+    pair that is not against a plane collided as if the ellipsoid were a
+    zero-radius dot at its origin — no error, no warning, just no contact.
+    MuJoCo sends EVERY ellipsoid pair except plane to `mjc_Convex`
+    (`mjCOLLISIONFUNC` row ELLIPSOID), including sphere x ellipsoid.
+    """
+    var d = quat_rotate_inverse[DTYPE](qx, qy, qz, qw, dir_x, dir_y, dir_z)
+    var rx = d[0] * half_x
+    var ry = d[1] * half_y
+    var rz = d[2] * half_z
+    var ln = sqrt(rx * rx + ry * ry + rz * rz)
+    # `mju_normalize3` rewrites a zero vector as (1, 0, 0).
+    if ln >= Scalar[DTYPE](1e-15):
+        rx /= ln
+        ry /= ln
+        rz /= ln
+    else:
+        rx = Scalar[DTYPE](1)
+        ry = Scalar[DTYPE](0)
+        rz = Scalar[DTYPE](0)
+    var w = quat_rotate[DTYPE](
+        qx, qy, qz, qw, rx * half_x, ry * half_y, rz * half_z
+    )
+    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    result[0] = pos_x + w[0]
+    result[1] = pos_y + w[1]
+    result[2] = pos_z + w[2]
     return result^
 
 

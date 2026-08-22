@@ -16,12 +16,14 @@ from .gjk_support import (
     support_capsule,
     support_box,
     support_cylinder,
+    support_ellipsoid,
 )
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
     GEOM_BOX,
     GEOM_CYLINDER,
+    GEOM_ELLIPSOID,
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
@@ -632,6 +634,22 @@ def _support[
         )
     elif geom_type == GEOM_BOX:
         return support_box[DTYPE](
+            dir_x,
+            dir_y,
+            dir_z,
+            pos_x,
+            pos_y,
+            pos_z,
+            qx,
+            qy,
+            qz,
+            qw,
+            half_x,
+            half_y,
+            half_z,
+        )
+    elif geom_type == GEOM_ELLIPSOID:
+        return support_ellipsoid[DTYPE](
             dir_x,
             dir_y,
             dir_z,

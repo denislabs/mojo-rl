@@ -22,6 +22,7 @@ NGEOM >= SAP_THRESHOLD dispatches to SAP, else to `detect_contacts`.
 The fields integrators are NOT rewired to auto here (SAP emission ORDER
 differs from O(N^2), which would shift existing bit-exact gates)."""
 
+from std.math import sqrt
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -189,11 +190,24 @@ def _aabb_half_extents[
     half_x: Scalar[DTYPE],
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
+    rbound: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Return (ex, ey, ez) — the AABB half-extents for one geom in world space.
 
     The world-space AABB is [center - e, center + e] on each axis.
     Planes are not handled here (they use infinite bounds, handled separately).
+
+    ⚠⚠ AN UNDER-BOUNDED AABB IS A MISSING CONTACT, SILENTLY. The pair never
+    reaches the narrow phase, so every downstream check agrees that there is
+    nothing there. `rbound` is therefore the FALLBACK for any type without a
+    tight formula here — it is the geom's own bounding-sphere radius, which is
+    correct for every type by construction, where `radius` is `size[0]` and
+    means something different for each of them. The ellipsoid case below is
+    exactly that bug: `size[0]` is the x semi-axis, and flybody's labrum
+    ellipsoids are `0.0035 0.00875 0.0131`, so their AABB came out 3.7x too
+    small on z and the pair was dropped before `mjc_Convex` ever ran. ⚠ The
+    naive path has no AABB stage at all, which is why the same model collided
+    correctly under 16 geoms and not over it.
     """
     if geom_type == GEOM_SPHERE:
         return (radius, radius, radius)
@@ -228,8 +242,39 @@ def _aabb_half_extents[
         var ez = abs(r20) * half_x + abs(r21) * half_y + abs(r22) * half_z
         return (ex, ey, ez)
 
-    # Fallback (unknown geom type): use radius as conservative bound
-    return (radius, radius, radius)
+    if geom_type == GEOM_ELLIPSOID:
+        # ⚠ NOT the box formula. The support of an ellipsoid along a world
+        # axis is the 2-NORM of that row of `R * diag(a, b, c)`, not its
+        # 1-norm; using the box's sum would still bound it, but loosely.
+        var two = Scalar[DTYPE](2)
+        var r00 = Scalar[DTYPE](1) - two * (qy * qy + qz * qz)
+        var r01 = two * (qx * qy - qz * qw)
+        var r02 = two * (qx * qz + qy * qw)
+        var r10 = two * (qx * qy + qz * qw)
+        var r11 = Scalar[DTYPE](1) - two * (qx * qx + qz * qz)
+        var r12 = two * (qy * qz - qx * qw)
+        var r20 = two * (qx * qz - qy * qw)
+        var r21 = two * (qy * qz + qx * qw)
+        var r22 = Scalar[DTYPE](1) - two * (qx * qx + qy * qy)
+        var ax = r00 * half_x
+        var ay = r01 * half_y
+        var az = r02 * half_z
+        var bx = r10 * half_x
+        var by = r11 * half_y
+        var bz = r12 * half_z
+        var cx = r20 * half_x
+        var cy = r21 * half_y
+        var cz = r22 * half_z
+        return (
+            sqrt(ax * ax + ay * ay + az * az),
+            sqrt(bx * bx + by * by + bz * bz),
+            sqrt(cx * cx + cy * cy + cz * cz),
+        )
+
+    # Any other type — MESH above all — gets its BOUNDING SPHERE, which is
+    # what `rbound_of` and the mesh hull loader already compute and store.
+    # This used to be `radius`, i.e. `size[0]`.
+    return (rbound, rbound, rbound)
 
 
 @always_inline
@@ -376,15 +421,30 @@ def _detect_contacts_sap_env[
         var hx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X])
         var hy = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y])
         var hz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z])
+        var rb = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RBOUND])
         var he = _aabb_half_extents[DTYPE](
-            gt, wqx[g], wqy[g], wqz[g], wqw[g], r, hl, hx, hy, hz
+            gt, wqx[g], wqy[g], wqz[g], wqw[g], r, hl, hx, hy, hz, rb
         )
-        aabb_min_x[g] = wpx[g] - he[0]
-        aabb_max_x[g] = wpx[g] + he[0]
-        aabb_min_y[g] = wpy[g] - he[1]
-        aabb_max_y[g] = wpy[g] + he[1]
-        aabb_min_z[g] = wpz[g] - he[2]
-        aabb_max_z[g] = wpz[g] + he[2]
+        # ⚠⚠ THE GEOM'S OWN MARGIN, WHICH THIS SWEEP USED TO OMIT. MuJoCo's
+        # `filterBox` and `mj_filterSphere` are both called WITH the pair's
+        # margin, and the pair's margin is `geom_margin[g1] + geom_margin[g2]`
+        # — a SUM — so widening each geom by its own covers it exactly. Without
+        # it a pair separated by less than its margin but more than its extents
+        # never reaches the narrow phase, and the contact simply does not
+        # happen: flybody's two labrum ellipsoids are `dist = +5.106e-05` with
+        # `margin = 0.001`, and MuJoCo has them ACTIVE (`exclude 0`) while this
+        # engine had nothing. Only the PAIR margin was folded in, below.
+        # ⚠ Conservative by construction — a wider AABB offers the narrow
+        # phase more candidates, it never invents a contact.
+        var gm = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MARGIN])
+        if gm < Scalar[DTYPE](0):
+            gm = Scalar[DTYPE](0)
+        aabb_min_x[g] = wpx[g] - he[0] - gm
+        aabb_max_x[g] = wpx[g] + he[0] + gm
+        aabb_min_y[g] = wpy[g] - he[1] - gm
+        aabb_max_y[g] = wpy[g] + he[1] + gm
+        aabb_min_z[g] = wpz[g] - he[2] - gm
+        aabb_max_z[g] = wpz[g] + he[2] + gm
 
     # Inflate by any predefined pair's margin. MuJoCo never subjects a
     # `<contact><pair>` to the broadphase at all — the merge loop collides it
@@ -393,12 +453,9 @@ def _detect_contacts_sap_env[
     # below. Conservative by construction: a wider AABB only offers the narrow
     # phase more candidates, it never changes a contact.
     #
-    # ⚠ ONLY the pair margin. The geoms' own `margin` is NOT folded in here,
-    # though `mj_filterSphere` does exactly that and this sweep is the same
-    # kind of bound — that is a separate pre-existing divergence, latent while
-    # every geom margin in the tree is small next to the geometry, and one
-    # that would move dog/quadruped/sawyer if changed. Left alone deliberately
-    # rather than smuggled into a commit about pairs.
+    # ⚠ The geoms' OWN margin is folded in above, at the AABB itself; this
+    # loop is only about a `<contact><pair margin=>`, which belongs to the
+    # pair and not to either geom.
     var n_pair_aabb = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
     # EPA's stopping rule, from model META — see `_detect_contacts_env` for
     # why it is read rather than hardcoded, and why a non-positive value falls
@@ -1429,6 +1486,20 @@ def _detect_contacts_sap_env[
                 or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
                 or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
                 or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
+                # ⚠ EVERY ELLIPSOID PAIR EXCEPT PLANE. Row ELLIPSOID of
+                # `mjCOLLISIONFUNC` is `mjc_Convex` against ELLIPSOID,
+                # CYLINDER, BOX and MESH, and column ELLIPSOID is `mjc_Convex`
+                # from SPHERE and CAPSULE down — only `mjc_PlaneConvex` is a
+                # separate path, and it has its own loop above. Before this
+                # branch existed those pairs fell through to nothing at all,
+                # because `_support` returns a geom's CENTRE for a type it
+                # does not know: an ellipsoid collided as a zero-radius dot.
+                # flybody's two labrum ellipsoids are the case in Menagerie —
+                # MuJoCo has them in contact at the model's own keyframe.
+                # (ELLIPSOID x MESH is caught by the mesh branch below, which
+                # also goes through the same support function.)
+                or (gi_type == GEOM_ELLIPSOID and gj_type != GEOM_MESH)
+                or (gj_type == GEOM_ELLIPSOID and gi_type != GEOM_MESH)
             ):
                 # ⚠⚠ THE SAME MERGE AS `contact_detection.mojo` — see the
                 # long note there. MuJoCo's `mjCOLLISIONFUNC` sends every
