@@ -128,6 +128,7 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     comptime NTENDON: Int
     comptime NEXCLUDE: Int
     comptime NMESH_VERTS: Int
+    comptime NHFIELD_DATA: Int
     comptime NPAIR: Int
     comptime NACT: Int
     comptime NTEN: Int
@@ -144,6 +145,7 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     comptime CAP_NTENDON: Int
     comptime CAP_NEXCLUDE: Int
     comptime CAP_NMESH_VERTS: Int
+    comptime CAP_NHFIELD_DATA: Int
     comptime CAP_NPAIR: Int
     comptime CAP_NACT: Int
     comptime CAP_NTEN: Int
@@ -204,6 +206,9 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     def get_nmesh_verts(self) -> Int:
         ...
 
+    def get_nhfield_data(self) -> Int:
+        ...
+
     def get_npair(self) -> Int:
         ...
 
@@ -233,6 +238,7 @@ struct Dims[
     nact: Int = 0,
     nten: Int = 0,
     nkey: Int = 0,
+    nhfield_data: Int = 0,
 ](DimsLike):
     """Dimensions spelled out directly — for models with no `ModelDefLike`.
 
@@ -259,6 +265,7 @@ struct Dims[
     comptime NTENDON = Self.ntendon
     comptime NEXCLUDE = Self.nexclude
     comptime NMESH_VERTS = Self.nmesh_verts
+    comptime NHFIELD_DATA = Self.nhfield_data
     comptime NPAIR = Self.npair
     comptime NACT = Self.nact
     comptime NTEN = Self.nten
@@ -277,6 +284,7 @@ struct Dims[
     comptime CAP_NTENDON = Self.ntendon
     comptime CAP_NEXCLUDE = Self.nexclude
     comptime CAP_NMESH_VERTS = Self.nmesh_verts
+    comptime CAP_NHFIELD_DATA = Self.nhfield_data
     comptime CAP_NPAIR = Self.npair
     comptime CAP_NACT = Self.nact
     comptime CAP_NTEN = Self.nten
@@ -338,6 +346,10 @@ struct Dims[
         return Self.nmesh_verts
 
     @always_inline
+    def get_nhfield_data(self) -> Int:
+        return Self.nhfield_data
+
+    @always_inline
     def get_npair(self) -> Int:
         return Self.npair
 
@@ -370,6 +382,7 @@ comptime AsStatic[D: DimsLike] = Dims[
     nact=D.NACT,
     nten=D.NTEN,
     nkey=D.NKEY,
+    nhfield_data=D.NHFIELD_DATA,
 ]
 """A VALUE of the provider `D`, for a caller that only has it as a parameter.
 
@@ -482,6 +495,7 @@ struct DynDims(DimsLike):
     var _ntendon: Int
     var _nexclude: Int
     var _nmesh_verts: Int
+    var _nhfield_data: Int
     var _npair: Int
     var _nact: Int
     var _nten: Int
@@ -498,6 +512,7 @@ struct DynDims(DimsLike):
     comptime NTENDON = DIM_POISON
     comptime NEXCLUDE = DIM_POISON
     comptime NMESH_VERTS = DIM_POISON
+    comptime NHFIELD_DATA = DIM_POISON
     comptime NPAIR = DIM_POISON
     comptime NACT = DIM_POISON
     comptime NTEN = DIM_POISON
@@ -514,6 +529,7 @@ struct DynDims(DimsLike):
     comptime CAP_NTENDON = 0
     comptime CAP_NEXCLUDE = 0
     comptime CAP_NMESH_VERTS = 0
+    comptime CAP_NHFIELD_DATA = 0
     comptime CAP_NPAIR = 0
     comptime CAP_NACT = 0
     comptime CAP_NTEN = 0
@@ -537,6 +553,7 @@ struct DynDims(DimsLike):
         nact: Int = 0,
         nten: Int = 0,
         nkey: Int = 0,
+        nhfield_data: Int = 0,
     ):
         """Keyword-only, for the reason `Dims`'s docstring gives: fifteen
         `Int`s in a row is the positional hazard this type exists to kill."""
@@ -551,6 +568,7 @@ struct DynDims(DimsLike):
         self._ntendon = ntendon
         self._nexclude = nexclude
         self._nmesh_verts = nmesh_verts
+        self._nhfield_data = nhfield_data
         self._npair = npair
         self._nact = nact
         self._nten = nten
@@ -611,6 +629,10 @@ struct DynDims(DimsLike):
     @always_inline
     def get_nmesh_verts(self) -> Int:
         return self._nmesh_verts
+
+    @always_inline
+    def get_nhfield_data(self) -> Int:
+        return self._nhfield_data
 
     @always_inline
     def get_npair(self) -> Int:

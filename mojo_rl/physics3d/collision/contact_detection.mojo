@@ -31,6 +31,7 @@ from ..constants import (
     GEOM_CYLINDER,
     GEOM_MESH,
     GEOM_ELLIPSOID,
+    GEOM_HFIELD,
 )
 from ..fields import (
     Data,
@@ -130,7 +131,10 @@ from ..gpu.constants import (
     GEOM_IDX_RBOUND,
     GEOM_IDX_MARGIN,
     GEOM_IDX_MESH_ID,
+    GEOM_IDX_HFIELD_ID,
     MAX_GPU_MESHES,
+    MAX_GPU_HFIELDS,
+    MODEL_HFIELD_META_SIZE,
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
     MESH_META_IDX_POLYADR,
@@ -164,6 +168,16 @@ from .collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
+@always_inline
+def _hf_len(n: Int) -> Int:
+    """`Model.hfield_data` is allocated with `_at_least_one`, so a model with
+    no heightfield still has ONE element. A `Layout.row_major(0)` over it is a
+    zero-size view the runtime rejects; every other tensor here is sized by a
+    dimension that is never legitimately zero."""
+    return n if n > 0 else 1
+
+
+from .hfield_convex import hfield_convex_contacts
 from .gjk import gjk_epa, gjk_epa_witness, hillclimb_support_index
 from .native_multicontact import (
     native_multicontact_contacts,
@@ -1351,6 +1365,88 @@ def _capsule_capsule_contacts[
     return written
 
 
+def _hfield_contacts[
+    DTYPE: DType,
+    D: DimsLike,
+    L_HF_META: Layout,
+    L_HF_DATA: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout,
+](
+    env: Int,
+    body_a: Int,
+    body_b: Int,
+    hfield_id: Int,
+    hf_x: Scalar[DTYPE], hf_y: Scalar[DTYPE], hf_z: Scalar[DTYPE],
+    hf_qx: Scalar[DTYPE], hf_qy: Scalar[DTYPE], hf_qz: Scalar[DTYPE],
+    hf_qw: Scalar[DTYPE],
+    gj_type: Int,
+    pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
+    qj_x: Scalar[DTYPE], qj_y: Scalar[DTYPE], qj_z: Scalar[DTYPE],
+    qj_w: Scalar[DTYPE],
+    rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
+    hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
+    rboundj: Scalar[DTYPE],
+    va2: Int, mnv2: Int,
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    # `-1` when the heightfield is geom `gi`, `+1` when it is `gj`.
+    nsign: Scalar[DTYPE],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF_DATA, MutAnyOrigin],
+    mesh_verts: LayoutTensor[DTYPE, L_MESH_VERTS, MutAnyOrigin],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[DTYPE, L_MESH_EDGES, MutAnyOrigin],
+    dims: D,
+    contacts: LayoutTensor[DTYPE, L_CONTACTS, MutAnyOrigin],
+    mut num_contacts: Int,
+) -> Int:
+    """HEIGHTFIELD x convex — one record per prism `mjc_ConvexHField` reports.
+
+    ⚠⚠ IT WRITES THE RECORDS ITSELF rather than returning a manifold for this
+    function to copy, which is the opposite of `_capsule_capsule_contacts` and
+    `_capsule_box_contacts` beside it. Those buffer at most two and four
+    points; a heightfield's ceiling is `mjMAXCONPAIR` = 50, and three
+    `InlineArray`s of that size are 350 float64 of PER-THREAD stack. The Metal
+    collision kernel does not have it — the first version of this file was
+    written the buffering way and `test_plane_mesh_fields` failed to build with
+    "Compute function exceeds available stack space".
+
+    ⚠ NORMAL SIGN, AND IT DEPENDS ON WHICH SIDE THE HEIGHTFIELD IS. The query
+    always returns `hfield -> convex`; the record always stores
+    `body_b -> body_a` with `body_a = gi_body`. So when the field is `gi` the
+    query is `gi -> gj` and must be NEGATED, and when it is `gj` it is already
+    `gj -> gi` and must not be. `nsign` carries that, and the bodies are NOT
+    swapped to compensate — that would land on the right normal and the wrong
+    `body_a`, the double flip the dispatch's own comment warns about.
+
+    ⚠ Only the first case occurs in the tree today (barkour declares its
+    heightfield as geom 0), which is why the second is spelled out here.
+    """
+    return hfield_convex_contacts[DTYPE](
+        hfield_id,
+        hf_x, hf_y, hf_z, hf_qx, hf_qy, hf_qz, hf_qw,
+        gj_type,
+        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+        rj, hlj, hxj, hyj, hzj, rboundj, va2, mnv2,
+        contact_margin,
+        nsign,
+        body_a, body_b,
+        contact_friction, contact_friction_spin, contact_friction_roll,
+        contact_condim,
+        hfield_meta, hfield_data,
+        mesh_verts, mesh_vert_edgeadr, mesh_edges,
+        contacts, num_contacts, dims.get_max_contacts(), env,
+    )
+
+
 def _capsule_box_contacts[
     DTYPE: DType,
     D: DimsLike,
@@ -1626,8 +1722,19 @@ def _detect_contacts_env[
     L_MESH_VERT_POLYMAP: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    L_HF_META: Layout,
+    L_HF_DATA: Layout,
     L_CONTACTS: Layout,
     L_SMETA: Layout,
+    # ⚠⚠ HEIGHTFIELD COLLISION IS COMPILED OUT ON THE GPU, AND THAT IS A METAL
+    # STACK LIMIT, NOT A DESIGN CHOICE. `hfield_convex_contacts` needs its own
+    # instantiation of the whole GJK/EPA stack (the prism is a sixth shape
+    # type), and a second copy of EPA's polytope arrays in the same kernel
+    # pushes it past "Compute function exceeds available stack space" — the
+    # same ceiling that pins `MC_MAX_POLYVERT` at 56. The CPU path is
+    # unaffected. `init_fields` says so at load for any model that has a
+    # heightfield.
+    HFIELD_ENABLED: Bool = True,
 ](
     env: Int,
     dims: D,
@@ -1679,6 +1786,12 @@ def _detect_contacts_env[
     ],
     mesh_edges: LayoutTensor[
         DTYPE, L_MESH_EDGES, MutAnyOrigin
+    ],
+    hfield_meta: LayoutTensor[
+        DTYPE, L_HF_META, MutAnyOrigin
+    ],
+    hfield_data: LayoutTensor[
+        DTYPE, L_HF_DATA, MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE, L_CONTACTS,
@@ -2633,6 +2746,84 @@ def _detect_contacts_env[
             var va2 = 0
             var mnv2 = 0
 
+            # ── HEIGHTFIELD, before every primitive pair ──────────────────
+            #
+            # `mjCOLLISIONFUNC`'s HFIELD row is `mjc_ConvexHField` against
+            # every type but PLANE and HFIELD (`engine_collision_driver.c:48`)
+            # — the two it leaves at 0 are the two that cannot bound a volume.
+            # It writes its own records, one per prism, so it exits the loop
+            # the way the capsule manifold does.
+            if HFIELD_ENABLED and (
+                gi_type == GEOM_HFIELD or gj_type == GEOM_HFIELD
+            ):
+                # PLANE x HFIELD and HFIELD x HFIELD are 0 in the table.
+                if (
+                    gi_type == GEOM_PLANE
+                    or gj_type == GEOM_PLANE
+                    or (gi_type == GEOM_HFIELD and gj_type == GEOM_HFIELD)
+                ):
+                    continue
+                var hf_is_i = gi_type == GEOM_HFIELD
+                var hf_g = gi if hf_is_i else gj
+                var cx_g = gj if hf_is_i else gi
+                var hid = Int(
+                    rebind[Scalar[DTYPE]](geoms[hf_g, GEOM_IDX_HFIELD_ID])
+                )
+                if hid < 0:
+                    continue
+                # The convex geom's mesh range, if it has one.
+                var cvm = Int(
+                    rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_MESH_ID])
+                )
+                var cva = 0
+                var cmnv = 0
+                if cvm >= 0:
+                    cva = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 0]))
+                    cmnv = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 1]))
+                # ⚠ THE BODIES ARE NEVER SWAPPED — `body_a` is `gi_body`
+                # whichever side the field is on, exactly as every other
+                # branch in this loop. The normal's sign carries the
+                # difference instead; see `_hfield_contacts`.
+                var nsg = Scalar[DTYPE](-1) if hf_is_i else Scalar[DTYPE](1)
+                _ = _hfield_contacts[DTYPE](
+                    env, gi_body, gj_body, hid,
+                    pi_x if hf_is_i else pj_x,
+                    pi_y if hf_is_i else pj_y,
+                    pi_z if hf_is_i else pj_z,
+                    qi_x if hf_is_i else qj_x,
+                    qi_y if hf_is_i else qj_y,
+                    qi_z if hf_is_i else qj_z,
+                    qi_w if hf_is_i else qj_w,
+                    gj_type if hf_is_i else gi_type,
+                    pj_x if hf_is_i else pi_x,
+                    pj_y if hf_is_i else pi_y,
+                    pj_z if hf_is_i else pi_z,
+                    qj_x if hf_is_i else qi_x,
+                    qj_y if hf_is_i else qi_y,
+                    qj_z if hf_is_i else qi_z,
+                    qj_w if hf_is_i else qi_w,
+                    rj if hf_is_i else ri,
+                    hlj if hf_is_i else hli,
+                    hxj if hf_is_i else hxi,
+                    hyj if hf_is_i else hyi,
+                    hzj if hf_is_i else hzi,
+                    rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_RBOUND]),
+                    cva, cmnv,
+                    contact_margin,
+                    contact_friction,
+                    contact_friction_spin,
+                    contact_friction_roll,
+                    contact_condim,
+                    nsg,
+                    hfield_meta, hfield_data,
+                    mesh_verts, mesh_vert_edgeadr, mesh_edges,
+                    dims, contacts, num_contacts,
+                )
+                _fill_pair_solparams[DTYPE](
+                    env, _n0, num_contacts, _mx, contacts
+                )
+                continue
+
             if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
                 var r = sphere_sphere[DTYPE](
                     pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
@@ -3267,6 +3458,7 @@ def _detect_contacts_fields_kernel[
     BATCH: Int,
     # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
     NPAIR: Int,
+    NHFIELD_DATA: Int,
 ](
     xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
@@ -3317,6 +3509,14 @@ def _detect_contacts_fields_kernel[
     mesh_edges: LayoutTensor[
         DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
     ],
+    hfield_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE),
+        MutAnyOrigin,
+    ],
+    hfield_data: LayoutTensor[
+        DTYPE, Layout.row_major(NHFIELD_DATA), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -3328,10 +3528,11 @@ def _detect_contacts_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _detect_contacts_env[DTYPE, BATCH](
+    _detect_contacts_env[DTYPE, BATCH, HFIELD_ENABLED=False](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR](), xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
-        mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, contacts, smeta,
+        mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges,
+        hfield_meta, hfield_data, contacts, smeta,
     )
 
 
@@ -3363,6 +3564,10 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
     comptime L_MESH_VPMAP = Layout.row_major(D.NMESH_VERTS, 2)
     comptime L_MESH_VEADR = Layout.row_major(D.NMESH_VERTS)
     comptime L_MESH_EDGE = Layout.row_major(mesh_max_edge(D.NMESH_VERTS))
+    comptime L_HF_META = Layout.row_major(
+        MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
+    )
+    comptime L_HF_DATA = Layout.row_major(_hf_len(D.NHFIELD_DATA))
     comptime L_CONTACTS = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
@@ -3382,6 +3587,8 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var rl_MESH_VPMAP = rl2(dm.get_nmesh_verts(), 2)
         var rl_MESH_VEADR = rl1(dm.get_nmesh_verts())
         var rl_MESH_EDGE = rl1(mesh_max_edge(dm.get_nmesh_verts()))
+        var rl_HF_META = rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
+        var rl_HF_DATA = rl1(_hf_len(dm.get_nhfield_data()))
         var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
         var rl_SMETA = rl2(BATCH, METADATA_SIZE)
         var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
@@ -3403,6 +3610,8 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
             "cpu", DYN1
         ](rl_MESH_VEADR)
         var mesh_edges_v = m.mesh_edges.lt_dyn["cpu", DYN1](rl_MESH_EDGE)
+        var hfield_meta_v = m.hfield_meta.lt_dyn["cpu", DYN1](rl_HF_META)
+        var hfield_data_v = m.hfield_data.lt_dyn["cpu", DYN1](rl_HF_DATA)
         var contacts_v = d.contacts.lt_dyn["cpu", DYN2](rl_CONTACTS)
         var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
         for e in range(BATCH):
@@ -3411,6 +3620,7 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 mesh_vert_edgeadr_v, mesh_edges_v,
+                hfield_meta_v, hfield_data_v,
                 contacts_v, smeta_v,
             )
     else:
@@ -3420,6 +3630,7 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
             _detect_contacts_fields_kernel[
                 DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,
                 D.NEXCLUDE, D.NMESH_VERTS, BATCH, D.NPAIR,
+                _hf_len(D.NHFIELD_DATA),
             ]
         ](
             d.xpos.lt["gpu", L_B3](),
@@ -3437,6 +3648,8 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
             m.mesh_vert_polymap.lt["gpu", L_MESH_VPMAP](),
             m.mesh_vert_edgeadr.lt["gpu", L_MESH_VEADR](),
             m.mesh_edges.lt["gpu", L_MESH_EDGE](),
+            m.hfield_meta.lt["gpu", L_HF_META](),
+            m.hfield_data.lt["gpu", L_HF_DATA](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
             grid_dim=(BLOCKS,),

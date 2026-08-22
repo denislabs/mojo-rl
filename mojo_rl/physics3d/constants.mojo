@@ -34,6 +34,19 @@ comptime GEOM_MESH: Int = 5
 # sphere. See `geom_volume` / `geom_inertia`.
 comptime GEOM_ELLIPSOID: Int = 6
 
+# `<geom type="hfield">` — a HEIGHTFIELD, and until it existed this fell
+# through `_geom_type_from_str`'s `return _GEOM_SPHERE  # default` and collided
+# as a BALL of radius `size[0]`. Measured on
+# `google_barkour_vb/scene_hfield_mjx`: MuJoCo emitted 8 contacts and we
+# emitted 4, on 6 different body pairs, 2.219e-01 apart in depth and 81.1 deg
+# apart in normal.
+#
+# ⚠ THE NUMBER IS OURS, NOT MuJoCo'S. `mjtGeom` puts HFIELD at 1 and PLANE at
+# 0; this enum has never matched it (SPHERE is 1 here and 2 there), so every
+# comparison against `m.geom_type` goes through the parser's mapping. Appending
+# keeps every stored model file readable.
+comptime GEOM_HFIELD: Int = 7
+
 # `kAngleTol` in `mjCMesh::MakePolygons` (`user_mesh.cc:2905`): the bucket width,
 # in radians, used to decide that two hull triangles are coplanar and belong to
 # the same polygon. Faces whose normals differ by less than this merge.

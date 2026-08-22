@@ -17,6 +17,7 @@ from .gjk_support import (
     support_box,
     support_cylinder,
     support_ellipsoid,
+    support_prism,
 )
 from ..constants import (
     GEOM_SPHERE,
@@ -24,6 +25,7 @@ from ..constants import (
     GEOM_BOX,
     GEOM_CYLINDER,
     GEOM_ELLIPSOID,
+    GEOM_HFIELD,
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
@@ -577,6 +579,15 @@ def _support[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    # ⚠⚠ THE PRISM'S LENGTH IS A PARAMETER SO IT COSTS NOTHING WHEN UNUSED.
+    # It was a plain `InlineArray[..., 18]` with a DEFAULT value, and a
+    # defaulted aggregate materialises a fresh temporary at EVERY call site
+    # that omits it — twelve of them, several inside the Metal collision
+    # kernel. That pushed the kernel over the per-thread stack limit and
+    # `test_plane_mesh_fields` died with "Compute function exceeds available
+    # stack space", the same ceiling `MC_MAX_POLYVERT` sits on. At `NPRISM=1`
+    # the argument is eight bytes and the heightfield branch is not compiled.
+    NPRISM: Int = 1,
 ](
     geom_type: Int,
     pos_x: Scalar[DTYPE],
@@ -606,6 +617,14 @@ def _support[
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
     mut warm: Int,
+    # ⚠ THE HEIGHTFIELD PRISM, and it rides on the STACK rather than in a
+    # tensor on purpose. `mjc_ConvexHField` rebuilds these six vertices for
+    # every grid cell it walks, so they are per-CALL data, not model data — a
+    # scratch tensor would be a write into shared memory that every GPU thread
+    # in the collision kernel races on. Eighteen floats in an `InlineArray`
+    # cost nothing and are thread-local by construction. Ignored unless
+    # `geom_type == GEOM_HFIELD`.
+    prism: InlineArray[Scalar[DTYPE], NPRISM],
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Unified support function — reads mesh verts from the record tensor.
 
@@ -613,6 +632,13 @@ def _support[
     type leaves it untouched, so one variable per object is enough regardless
     of what that object turns out to be. See `_support_mesh`.
     """
+    comptime if NPRISM >= 18:
+        if geom_type == GEOM_HFIELD:
+            # A heightfield never enters GJK as a heightfield — the caller has
+            # already reduced it to ONE triangular prism. See `support_prism`.
+            return support_prism[DTYPE](
+                dir_x, dir_y, dir_z, rebind[InlineArray[Scalar[DTYPE], 18]](prism)
+            )
     if geom_type == GEOM_SPHERE:
         return support_sphere[DTYPE](
             dir_x, dir_y, dir_z, pos_x, pos_y, pos_z, radius
@@ -711,6 +737,7 @@ def _minkowski_support[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    NPRISM: Int = 1,
 ](
     type1: Int,
     p1x: Scalar[DTYPE],
@@ -756,6 +783,8 @@ def _minkowski_support[
     dir_z: Scalar[DTYPE],
     mut warm1: Int,
     mut warm2: Int,
+    # The heightfield prism, for geom 1 only — see `_support`.
+    prism: InlineArray[Scalar[DTYPE], NPRISM],
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -767,7 +796,7 @@ def _minkowski_support[
     Scalar[DTYPE],
     Scalar[DTYPE],
 ]:
-    var s1 = _support[DTYPE](
+    var s1 = _support[DTYPE, NPRISM=NPRISM](
         type1,
         p1x,
         p1y,
@@ -790,8 +819,9 @@ def _minkowski_support[
         dir_y,
         dir_z,
         warm1,
+        prism,
     )
-    var s2 = _support[DTYPE](
+    var s2 = _support[DTYPE, NPRISM=NPRISM](
         type2,
         p2x,
         p2y,
@@ -814,6 +844,7 @@ def _minkowski_support[
         -dir_y,
         -dir_z,
         warm2,
+        prism,
     )
     return (
         s1[0] - s2[0],
@@ -833,6 +864,7 @@ def _gjk_intersect[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    NPRISM: Int = 1,
 ](
     mut simplex: InlineArray[Scalar[DTYPE], 36],
     type1: Int,
@@ -859,6 +891,8 @@ def _gjk_intersect[
     hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
     va2: Int, mnv2: Int,
     mut warm1: Int, mut warm2: Int,
+    # The heightfield prism, for geom 1 only — see `_support`.
+    prism: InlineArray[Scalar[DTYPE], NPRISM],
 ) -> Int:
     """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
 
@@ -1004,13 +1038,14 @@ def _gjk_intersect[
             ny = f3[2]
             nz = f3[3]
 
-        var w = _minkowski_support[DTYPE](
+        var w = _minkowski_support[DTYPE, NPRISM=NPRISM](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             nx, ny, nz,
             warm1, warm2,
+            prism,
         )
         var tgt = sidx[index]
         simplex[tgt * 9 + 0] = w[0]
@@ -1041,6 +1076,7 @@ def gjk_epa_witness[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    NPRISM: Int = 1,
 ](
     type1: Int,
     p1x: Scalar[DTYPE],
@@ -1094,6 +1130,12 @@ def gjk_epa_witness[
     # separations of 7-17 cm). Only a caller that uses the result SOLELY for a
     # `dist < margin` contact test may pass a cutoff. See the exit in the loop.
     dist_cutoff: Scalar[DTYPE] = Scalar[DTYPE](-1),
+    # ⚠ DEFAULTED SO THE TWELVE EXISTING CALL SITES ARE UNTOUCHED. Only
+    # `hfield_convex.mojo` passes it, and only with `type1 == GEOM_HFIELD`;
+    # every other caller collides two real geoms and never reads it.
+    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+        Scalar[DTYPE], NPRISM
+    ](fill=Scalar[DTYPE](0)),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1160,7 +1202,7 @@ def gjk_epa_witness[
     dy /= dlen
     dz /= dlen
 
-    var s = _minkowski_support[DTYPE](
+    var s = _minkowski_support[DTYPE, NPRISM=NPRISM](
         type1,
         p1x,
         p1y,
@@ -1199,6 +1241,7 @@ def gjk_epa_witness[
         dz,
         warm1,
         warm2,
+        prism,
     )
     simplex[0] = s[0]
     simplex[1] = s[1]
@@ -1229,7 +1272,7 @@ def gjk_epa_witness[
         var ndy = -vy * inv_vlen
         var ndz = -vz * inv_vlen
 
-        var sn = _minkowski_support[DTYPE](
+        var sn = _minkowski_support[DTYPE, NPRISM=NPRISM](
             type1,
             p1x,
             p1y,
@@ -1268,6 +1311,7 @@ def gjk_epa_witness[
             ndz,
             warm1,
             warm2,
+            prism,
         )
 
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
@@ -1353,13 +1397,14 @@ def gjk_epa_witness[
         # does not contain the origin, which is the single root cause behind
         # three failed attempts to use EPA on penetrating primitives.
         if nsimplex == 4:
-            var gi = _gjk_intersect[DTYPE](
+            var gi = _gjk_intersect[DTYPE, NPRISM=NPRISM](
                 simplex,
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 warm1, warm2,
+                prism,
             )
             if gi == 1:
                 # enclosed, and `simplex` now holds a valid tetrahedron
@@ -1558,21 +1603,23 @@ def gjk_epa_witness[
             tnx /= tln
             tny /= tln
             tnz /= tln
-            var sp4 = _minkowski_support[DTYPE](
+            var sp4 = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 tnx, tny, tnz,
                 warm1, warm2,
+                prism,
             )
-            var sp5 = _minkowski_support[DTYPE](
+            var sp5 = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 -tnx, -tny, -tnz,
                 warm1, warm2,
+                prism,
             )
             ev[27 + 0] = sp4[0]
             ev[27 + 1] = sp4[1]
@@ -1629,13 +1676,14 @@ def gjk_epa_witness[
                 sdz = Scalar[DTYPE](1)
             else:
                 sdz = Scalar[DTYPE](-1)
-            var sp = _minkowski_support[DTYPE](
+            var sp = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 sdx, sdy, sdz,
                 warm1, warm2,
+                prism,
             )
             ev[a * 9 + 0] = sp[0]
             ev[a * 9 + 1] = sp[1]
@@ -1695,13 +1743,14 @@ def gjk_epa_witness[
             break
 
         # support along that normal; converged when it adds no depth
-        var w = _minkowski_support[DTYPE](
+        var w = _minkowski_support[DTYPE, NPRISM=NPRISM](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             best_nx, best_ny, best_nz,
             warm1, warm2,
+            prism,
         )
         var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
         if wd - best_d < _epa_tol:
@@ -1839,13 +1888,14 @@ def gjk_epa_witness[
                 dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](1)
             elif ax == 5:
                 dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](-1)
-            var sw = _minkowski_support[DTYPE](
+            var sw = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 dxx, dyy, dzz,
                 warm1, warm2,
+                prism,
             )
             var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
             if hh < ub:
@@ -2017,13 +2067,14 @@ def gjk_epa_witness[
             dzz = Scalar[DTYPE](1)
         else:
             dzz = Scalar[DTYPE](-1)
-        var sw = _minkowski_support[DTYPE](
+        var sw = _minkowski_support[DTYPE, NPRISM=NPRISM](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             dxx, dyy, dzz,
             warm1, warm2,
+            prism,
         )
         var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
         if hh < fb_ub:
@@ -2035,13 +2086,14 @@ def gjk_epa_witness[
         # Degenerate seed: EPA never ran, so fall back to the estimate that
         # shipped before it existed. Wrong depth, but it KEEPS the contact,
         # which is strictly the prior behaviour rather than a new regression.
-        var s_fwd = _minkowski_support[DTYPE](
+        var s_fwd = _minkowski_support[DTYPE, NPRISM=NPRISM](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             fallback_nx, fallback_ny, fallback_nz,
             warm1, warm2,
+            prism,
         )
         pen_depth = _dot3[DTYPE](
             s_fwd[0], s_fwd[1], s_fwd[2],
@@ -2074,6 +2126,7 @@ def gjk_epa[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    NPRISM: Int = 1,
 ](
     type1: Int,
     p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
@@ -2101,6 +2154,9 @@ def gjk_epa[
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+        Scalar[DTYPE], NPRISM
+    ](fill=Scalar[DTYPE](0)),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -2122,7 +2178,7 @@ def gjk_epa[
     var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     var wx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
-    return gjk_epa_witness[DTYPE](
+    return gjk_epa_witness[DTYPE, NPRISM=NPRISM](
         type1,
         p1x, p1y, p1z, q1x, q1y, q1z, q1w,
         r1, hl1, hx1, hy1, hz1,
@@ -2133,4 +2189,6 @@ def gjk_epa[
         va2, mnv2,
         wf1, wf2, wx, wf_ok,
         ccd_tol, ccd_iter, ccd_margin,
+        Scalar[DTYPE](-1),
+        prism,
     )

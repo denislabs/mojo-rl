@@ -183,6 +183,12 @@ def dims_from_flat(
         nact=len(fmd.actuators),
         nten=len(fmd.tendons),
         nkey=fmd.nkey,
+        # ⚠ AN EXACT COUNT, NOT A BUDGET — unlike `nmesh_verts` above. The
+        # heightfield grids are decoded during the PARSE (their file paths are
+        # final by then), so their total size is known here and the allocation
+        # can be sized to it. A budget with a retry loop would be the wrong
+        # shape: there is nothing to retry.
+        nhfield_data=len(fmd.hfield_data),
     )
 
 

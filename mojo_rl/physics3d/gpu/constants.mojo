@@ -513,7 +513,7 @@ comptime MJ_CCD_ITERATIONS: Int = 35
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 31  # Per unified geom (+7 solref/solimp, +1 margin, +1 mesh_id, +1 priority)
+comptime MODEL_GEOM_SIZE: Int = 32  # Per unified geom (+7 solref/solimp, +1 margin, +1 mesh_id, +1 priority, +1 hfield_id)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -552,6 +552,11 @@ comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
 # force its own `condim="6"` and `solref="-10000 -30"` onto every contact it
 # takes part in, including against the floor.
 comptime GEOM_IDX_PRIORITY: Int = 30
+# `mjModel.geom_dataid` for a HEIGHTFIELD geom, -1 otherwise. MuJoCo reuses one
+# `geom_dataid` slot for meshes and heightfields; this keeps them apart so a
+# `mesh_id >= 0` test — which nine collision branches make — cannot pick up an
+# hfield.
+comptime GEOM_IDX_HFIELD_ID: Int = 31
 
 
 # =============================================================================
@@ -1161,6 +1166,27 @@ comptime MESH_META_IDX_VERTADR: Int = 0
 comptime MESH_META_IDX_VERTNUM: Int = 1
 comptime MESH_META_IDX_POLYADR: Int = 2
 comptime MESH_META_IDX_POLYNUM: Int = 3
+
+# ---- HEIGHTFIELDS -----------------------------------------------------------
+#
+# `mjModel.hfield_*`: an `nrow x ncol` grid of elevations already normalised to
+# [0, 1], scaled at collision time by `size[2]`, sitting on a base that extends
+# to `-size[3]`. One row per hfield, the grid itself in `hfield_data`.
+#
+# ⚠ A FIXED CAP IS FINE HERE AND IS NOT FINE FOR THE DATA. `hfield_meta` is
+# `[MAX_GPU_HFIELDS, 7]` — 448 bytes at float64 — so capping the COUNT costs
+# nothing. The grid does not get a cap: barkour's single field is 256 x 256 =
+# 65 536 samples, which as a fixed allocation every model paid for would be
+# half a megabyte of zeros. It is sized by `dims.get_nhfield_data()`.
+comptime MAX_GPU_HFIELDS: Int = 8
+comptime MODEL_HFIELD_META_SIZE: Int = 7
+comptime HFIELD_META_IDX_ADR: Int = 0  # offset into `hfield_data`
+comptime HFIELD_META_IDX_NROW: Int = 1
+comptime HFIELD_META_IDX_NCOL: Int = 2
+comptime HFIELD_META_IDX_SIZE_X: Int = 3  # radius in x
+comptime HFIELD_META_IDX_SIZE_Y: Int = 4  # radius in y
+comptime HFIELD_META_IDX_SIZE_Z: Int = 5  # elevation scale
+comptime HFIELD_META_IDX_SIZE_BASE: Int = 6  # depth of the base below z = 0
 
 # ---- Mesh POLYGON topology (native multi-contact) ---------------------------
 #

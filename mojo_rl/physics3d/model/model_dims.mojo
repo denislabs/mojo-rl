@@ -60,7 +60,9 @@ from .model_def import ModelDefLike
 # ⇒ containers can convert one at a time with adapters, and each adapter
 # disappears silently when its owner gains a real `D`. No flag day.
 
-comptime ModelDims[MD: ModelDefLike, nmesh_verts: Int = 0] = Dims[
+comptime ModelDims[
+    MD: ModelDefLike, nmesh_verts: Int = 0, nhfield_data: Int = 0
+] = Dims[
     nq = MD.NQ,
     nv = MD.NV,
     nbody = MD.NBODY,
@@ -72,6 +74,7 @@ comptime ModelDims[MD: ModelDefLike, nmesh_verts: Int = 0] = Dims[
     ntendon = MD.MAX_TENDON,
     nexclude = MD.NEXCLUDE,
     nmesh_verts=nmesh_verts,
+    nhfield_data=nhfield_data,
     npair = MD.NPAIR,
     nact = MD.NACT,
     nten = MD.NTEN_F,

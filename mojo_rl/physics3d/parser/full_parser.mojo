@@ -53,6 +53,7 @@ from .xml_parser import (
     _sqrt_f64,
 )
 from ..types import ConeType, SolverType, IntegratorType
+from .hfield_loader import load_hfield_file
 from .flat_model import (
     BodyData,
     JointData,
@@ -88,6 +89,7 @@ from .flat_model import (
     _GEOM_CYLINDER,
     _GEOM_MESH,
     _GEOM_ELLIPSOID,
+    _GEOM_HFIELD,
     TEX_SKYBOX,
     TEX_2D,
     TEX_CUBE,
@@ -733,6 +735,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var gg_s = _extract_attr(gtag, "group")
         if gg_s.byte_length() > 0:
             d.geom_group_s = gg_s
+        var ghf_s = _extract_attr(gtag, "hfield")
+        if ghf_s.byte_length() > 0:
+            d.geom_hfield_s = ghf_s
 
     # ── `<default><tendon .../></default>` ────────────────────────────────
     # Captured RAW, one attribute at a time, so a child class can override a
@@ -1232,12 +1237,14 @@ def _geom_type_from_str(s: String) -> Int:
         return _GEOM_MESH
     elif t == "ellipsoid":
         return _GEOM_ELLIPSOID
+    elif t == "hfield":
+        return _GEOM_HFIELD
     # ⚠ THE DEFAULT IS A SILENT SUBSTITUTION, not an error. `ellipsoid` used
     # to land here, which cost fish its whole mass distribution (bug 26).
-    # Anything still falling through — `hfield`, `sdf` — is modelled as a
-    # sphere of radius size[0]. The parser COUNTS those declarations and says
-    # so at load (search `unmodelled_geom_types`); the substitution itself is
-    # still a substitution.
+    # Anything still falling through — `sdf` — is modelled as a sphere of
+    # radius size[0]. The parser COUNTS those declarations and says so at load
+    # (search `unmodelled_geom_types`); the substitution itself is still a
+    # substitution. `hfield` used to be on that list and is now a real type.
     return _GEOM_SPHERE  # default
 
 
@@ -1702,6 +1709,60 @@ def _fill_assets(
     # this list is the XML's asset table, most of which is usually visual-only.
     # SO-ARM100 loads 8 collidable meshes out of 18 declared, so it was nowhere
     # near the real limit when this silently truncated it.
+    # ---- Heightfields -------------------------------------------------------
+    #
+    # `<hfield name= file= size="rx ry elev base" nrow= ncol=/>`. Only the
+    # name/file/size/dims are read here; the FILE IS NOT DECODED YET because
+    # `meshdir` and `base_dir` have not been applied to it — that happens at
+    # the end of `parse_xml_full`, next to the mesh prefixing, and the decode
+    # rides along there.
+    #
+    # ⚠ `size` IS REQUIRED AND ALL FOUR MUST BE POSITIVE (`mjCHField::Compile`
+    # raises otherwise). A short or absent `size` here is a model error, not a
+    # value to default: `size[2]` scales the elevations and `size[3]` is how
+    # far the solid base reaches below z = 0, so a zero in either is a
+    # heightfield with no thickness that a geom falls straight through.
+    var hf_pos = 0
+    while True:
+        var t = asset_sec.find("<hfield", hf_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte = t : tag_end + 1])
+        hf_pos = tag_end + 1
+
+        var hname = _trim(_extract_attr(tag, "name"))
+        var hfile = _trim(_extract_attr(tag, "file"))
+        # Same rule as `<mesh>`: an absent name is the file stem.
+        if hname.byte_length() == 0:
+            hname = _file_stem(hfile)
+        if hname.byte_length() == 0:
+            continue
+        var hsize_s = _trim(_extract_attr(tag, "size"))
+        var sp = List[String]()
+        _split_spaces(hsize_s, sp)
+        if len(sp) < 4:
+            raise Error(
+                "physics3d: <hfield name='" + hname + "'> needs four `size`"
+                " values (radius_x radius_y elevation base); got '"
+                + hsize_s + "'."
+            )
+        result.hfield_names.append(hname)
+        result.hfield_files.append(hfile)
+        for k in range(4):
+            result.hfield_size.append(_parse_float(sp[k]))
+        var nr_s = _trim(_extract_attr(tag, "nrow"))
+        var nc_s = _trim(_extract_attr(tag, "ncol"))
+        result.hfield_nrow.append(
+            Int(_parse_float(nr_s)) if nr_s.byte_length() > 0 else 0
+        )
+        result.hfield_ncol.append(
+            Int(_parse_float(nc_s)) if nc_s.byte_length() > 0 else 0
+        )
+        result.hfield_adr.append(0)
+
     var mesh_pos = 0
     var mesh_count = 0
     while True:
@@ -2217,6 +2278,36 @@ def _parse_one_geom(
                     gd.mesh_ref_quat_z = assets.mesh_asset_refquat[mi * 4 + 3]
                 gd.fit_from_mesh = gd.geom_type != _GEOM_MESH
                 break
+
+    # ── `hfield="name"` ───────────────────────────────────────────────────
+    #
+    # ⚠ MuJoCo REJECTS THE TWO HALVES SEPARATELY (`user_objects.cc:3961`):
+    # `type="hfield"` without an `hfield=` is an error, and an `hfield=` on a
+    # geom of any other type is an error too. Both are worth raising on rather
+    # than defaulting, because either one silently produces a geom whose SHAPE
+    # is not what the model says.
+    var hf_name = _trim(_extract_attr(tag, "hfield"))
+    if hf_name.byte_length() == 0:
+        hf_name = _trim(eff_defaults.geom_hfield_s)
+    if hf_name.byte_length() > 0:
+        if gd.geom_type != _GEOM_HFIELD:
+            raise Error(
+                "physics3d: <geom hfield='" + hf_name + "'> is not"
+                " type='hfield'."
+            )
+        for hi in range(len(assets.hfield_names)):
+            if assets.hfield_names[hi] == hf_name:
+                gd.hfield_id = hi
+                break
+        if gd.hfield_id < 0:
+            raise Error(
+                "physics3d: <geom hfield='" + hf_name + "'> names no"
+                " <asset><hfield>."
+            )
+    elif gd.geom_type == _GEOM_HFIELD:
+        raise Error(
+            "physics3d: <geom type='hfield'> must name an `hfield` asset."
+        )
 
     # fromto — overrides pos and quat for capsule
     var fromto_s = _extract_attr(tag, "fromto")
@@ -6000,23 +6091,21 @@ def parse_xml_full(
     for _q in range(2):
         var _lead = String("type=\"") if _q == 0 else String("type='")
         var _tail = String("\"") if _q == 0 else String("'")
-        for _t in range(2):
-            var _name = String("hfield") if _t == 0 else String("sdf")
-            var _pat = _lead + _name + _tail
-            var _at = 0
-            while True:
-                var _hit = xml.find(_pat, _at)
-                if _hit == -1:
-                    break
-                _ugt_n += 1
-                _at = _hit + 1
+        var _pat = _lead + String("sdf") + _tail
+        var _at = 0
+        while True:
+            var _hit = xml.find(_pat, _at)
+            if _hit == -1:
+                break
+            _ugt_n += 1
+            _at = _hit + 1
     result.unmodelled_geom_types = _ugt_n
     if _ugt_n > 0:
         print(
-            "physics3d:", _ugt_n, "`<geom type=\"hfield\">` / `type=\"sdf\"`"
-            " declaration(s) are NOT modelled — each one collides as a SPHERE"
-            " of radius size[0]. Contacts against it are wrong in count,"
-            " depth and normal, not merely approximate.",
+            "physics3d:", _ugt_n, "`<geom type=\"sdf\">` declaration(s) are"
+            " NOT modelled — each one collides as a SPHERE of radius size[0]."
+            " Contacts against it are wrong in count, depth and normal, not"
+            " merely approximate.",
         )
 
     # `<compiler meshdir>` — UNPARSED until 2026-08-13, and silently.
@@ -6068,6 +6157,15 @@ def parse_xml_full(
             # An absolute path ignores meshdir, as MuJoCo does.
             if f.byte_length() > 0 and not f.startswith("/"):
                 result.mesh_asset_files[i] = base + f
+        # ⚠ A HEIGHTFIELD FILE TAKES `meshdir` TOO, not `texturedir`, even
+        # though it is usually a PNG. `mjCHField::Compile` builds its path as
+        # `meshdir_ + file_` (user_objects.cc:4818) — barkour's
+        # `file="assets/hfield.png"` happens to work either way, and a model
+        # that sets both would not.
+        for i in range(len(result.hfield_files)):
+            var hf = result.hfield_files[i]
+            if hf.byte_length() > 0 and not hf.startswith("/"):
+                result.hfield_files[i] = base + hf
 
     var tex_dir = texturedir if texturedir.byte_length() > 0 else assetdir
     if tex_dir.byte_length() > 0:
@@ -6115,6 +6213,51 @@ def parse_xml_full(
             var tf = result.textures[i].file
             if tf.byte_length() > 0 and not tf.startswith("/"):
                 result.textures[i].file = bd + tf
+        for i in range(len(result.hfield_files)):
+            var hf = result.hfield_files[i]
+            if hf.byte_length() > 0 and not hf.startswith("/"):
+                result.hfield_files[i] = bd + hf
+
+    # ── DECODE the heightfields, now that their paths are final ───────────
+    #
+    # ⚠ IT HAS TO HAPPEN AT PARSE TIME, not at field build. `dims_from_flat`
+    # sizes `Model.hfield_data` from `len(result.hfield_data)`, and the
+    # allocation precedes every write into it — so a grid decoded later has
+    # nowhere to go. Meshes get away with loading in `fields_build` because
+    # their capacity is a caller-supplied budget that grows on retry; this is
+    # an exact count.
+    for i in range(len(result.hfield_files)):
+        var hf = result.hfield_files[i]
+        result.hfield_adr[i] = len(result.hfield_data)
+        if hf.byte_length() > 0:
+            var loaded = load_hfield_file(hf)
+            if (
+                result.hfield_nrow[i] > 0
+                and result.hfield_nrow[i] != loaded[0]
+            ) or (
+                result.hfield_ncol[i] > 0
+                and result.hfield_ncol[i] != loaded[1]
+            ):
+                raise Error(
+                    "physics3d: <hfield name='" + result.hfield_names[i]
+                    + "'> declares nrow/ncol that disagree with its file."
+                )
+            result.hfield_nrow[i] = loaded[0]
+            result.hfield_ncol[i] = loaded[1]
+            for k in range(len(loaded[2])):
+                result.hfield_data.append(loaded[2][k])
+        else:
+            # No file: MuJoCo takes `nrow`/`ncol` with `userdata`, and a field
+            # with neither is an error there. `userdata` is not parsed, so an
+            # explicit grid is a FLAT one rather than a silent zero-size.
+            var n = result.hfield_nrow[i] * result.hfield_ncol[i]
+            if n < 1:
+                raise Error(
+                    "physics3d: <hfield name='" + result.hfield_names[i]
+                    + "'> has no `file` and no positive nrow/ncol."
+                )
+            for _k in range(n):
+                result.hfield_data.append(0.0)
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model(worldbody, defaults, named_defaults, result, deg_factor, eulerseq)

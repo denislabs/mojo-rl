@@ -46,6 +46,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_CAPSULE,
     GEOM_BOX,
     GEOM_CYLINDER,
+    GEOM_HFIELD,
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
@@ -91,6 +92,16 @@ from mojo_rl.physics3d.gpu.constants import (
     mesh_max_polyvert,
     mesh_max_edge,
     MAX_GPU_MESHES,
+    MAX_GPU_HFIELDS,
+    MODEL_HFIELD_META_SIZE,
+    HFIELD_META_IDX_ADR,
+    HFIELD_META_IDX_NROW,
+    HFIELD_META_IDX_NCOL,
+    HFIELD_META_IDX_SIZE_X,
+    HFIELD_META_IDX_SIZE_Y,
+    HFIELD_META_IDX_SIZE_Z,
+    HFIELD_META_IDX_SIZE_BASE,
+    GEOM_IDX_HFIELD_ID,
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
     BODY_IDX_IXX,
@@ -1642,6 +1653,7 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_SOLIMP_4] = Scalar[DTYPE](gd.solimp_4)
         mf.geoms.data[o + GEOM_IDX_MARGIN] = Scalar[DTYPE](gd.margin)
         mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](gd.mesh_id)
+        mf.geoms.data[o + GEOM_IDX_HFIELD_ID] = Scalar[DTYPE](gd.hfield_id)
         geom_mass[i] = Scalar[DTYPE](gd.mass)
         geom_density[i] = Scalar[DTYPE](gd.density)
         geom_group[i] = gd.group
@@ -1784,6 +1796,40 @@ def build_model_fields_from_flat[
         )
         # GEOM_MESH: refined from hull vertices below.
         mf.geoms.data[o + GEOM_IDX_RBOUND] = rbound
+
+        # ── HEIGHTFIELD: size and rbound come from the ASSET, not the geom ──
+        #
+        # `mjCGeom::Compile` (`user_objects.cc:4078`) overwrites a heightfield
+        # geom's `size` wholesale:
+        #
+        #     size = [rx, ry, 0.25*elevation + 0.5*base]
+        #
+        # and `GetRBound` (:3721) is
+        #
+        #     sqrt(rx^2 + ry^2 + max(elevation^2, base^2))
+        #
+        # ⚠ NEITHER IS THE OBVIOUS FORMULA. `size[2]` is not half the total
+        # height (that would be `0.5*(elevation + base)`), and `rbound` takes
+        # the LARGER of the two z extents squared rather than their sum — a
+        # field whose base is deeper than its peaks is bounded by the base.
+        # Measured on `google_barkour_vb`, `size = "10 10 .05 0.1"`: MuJoCo
+        # reports `geom_size = [10, 10, 0.0625]` and
+        # `geom_rbound = 14.142489172702236`.
+        if gd.geom_type == GEOM_HFIELD and gd.hfield_id >= 0:
+            var hb = gd.hfield_id * 4
+            var hrx = fmd.hfield_size[hb + 0]
+            var hry = fmd.hfield_size[hb + 1]
+            var hez = fmd.hfield_size[hb + 2]
+            var hbz = fmd.hfield_size[hb + 3]
+            mf.geoms.data[o + GEOM_IDX_HALF_X] = Scalar[DTYPE](hrx)
+            mf.geoms.data[o + GEOM_IDX_HALF_Y] = Scalar[DTYPE](hry)
+            mf.geoms.data[o + GEOM_IDX_HALF_Z] = Scalar[DTYPE](
+                0.25 * hez + 0.5 * hbz
+            )
+            var zz = hez * hez if hez * hez > hbz * hbz else hbz * hbz
+            mf.geoms.data[o + GEOM_IDX_RBOUND] = Scalar[DTYPE](
+                sqrt(hrx * hrx + hry * hry + zz)
+            )
 
     # ── mesh convex hulls (STL → dedup → hull; shared meshes remapped) ────
     var mesh_vert = List[Scalar[DTYPE]]()
@@ -1928,6 +1974,60 @@ def build_model_fields_from_flat[
         mf.mesh_meta.data[
             m * MODEL_MESH_META_SIZE + MESH_META_IDX_POLYNUM
         ] = Scalar[DTYPE](mesh_polynum[m])
+
+    # ── HEIGHTFIELDS ────────────────────────────────────────────────────────
+    #
+    # The grids came out of the PARSE already normalised to [0, 1]
+    # (`mjCHField::Compile`'s tail), so this is a straight copy into the two
+    # tensors the narrow phase reads.
+    if len(fmd.hfield_names) > MAX_GPU_HFIELDS:
+        raise Error(
+            String("physics3d: model declares ")
+            + String(len(fmd.hfield_names))
+            + " heightfields but MAX_GPU_HFIELDS is "
+            + String(MAX_GPU_HFIELDS)
+            + ". Raise it in gpu/constants.mojo — it sizes one small table"
+            " and nothing else."
+        )
+    if len(fmd.hfield_names) > 0:
+        # ⚠⚠ SAID OUT LOUD BECAUSE THE GPU PATH IS DIFFERENT, and a silent
+        # difference between targets is the failure mode this engine has paid
+        # for repeatedly. `_detect_contacts_env` compiles its heightfield
+        # branch out when it is instantiated for a Metal kernel: the prism is
+        # a sixth shape type for GJK, and a second instantiation of EPA's
+        # polytope arrays in one kernel exceeds the per-thread stack — the
+        # same ceiling that pins `MC_MAX_POLYVERT` at 56.
+        print(
+            "physics3d:", len(fmd.hfield_names), "heightfield(s) —"
+            " `<geom type=\"hfield\">` collides on the CPU path only. The GPU"
+            " BATCHED path reports NO contacts against a heightfield (a Metal"
+            " per-thread stack limit, not a missing routine).",
+        )
+    for h in range(len(fmd.hfield_names)):
+        var ho = h * MODEL_HFIELD_META_SIZE
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_ADR] = Scalar[DTYPE](
+            fmd.hfield_adr[h]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_NROW] = Scalar[DTYPE](
+            fmd.hfield_nrow[h]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_NCOL] = Scalar[DTYPE](
+            fmd.hfield_ncol[h]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_SIZE_X] = Scalar[DTYPE](
+            fmd.hfield_size[h * 4 + 0]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_SIZE_Y] = Scalar[DTYPE](
+            fmd.hfield_size[h * 4 + 1]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_SIZE_Z] = Scalar[DTYPE](
+            fmd.hfield_size[h * 4 + 2]
+        )
+        mf.hfield_meta.data[ho + HFIELD_META_IDX_SIZE_BASE] = Scalar[DTYPE](
+            fmd.hfield_size[h * 4 + 3]
+        )
+    for k in range(len(fmd.hfield_data)):
+        mf.hfield_data.data[k] = Scalar[DTYPE](fmd.hfield_data[k])
     # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just
     # `break` at the cap, which drops hull vertices from the LAST meshes and
     # shrinks their collision shape — an error with one sign, invisible to

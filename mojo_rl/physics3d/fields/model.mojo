@@ -41,6 +41,8 @@ from ..gpu.constants import (
     MODEL_PAIR_SIZE,
     ACTDAMP_TRN_SIZE,
     MODEL_MESH_META_SIZE,
+    MODEL_HFIELD_META_SIZE,
+    MAX_GPU_HFIELDS,
     MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
     mesh_max_poly,
@@ -183,6 +185,9 @@ struct Model[
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
     var pairs: TensorImpl[Self.DTYPE]  # [NPAIR, MODEL_PAIR_SIZE]
     var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
+    # [MAX_GPU_HFIELDS, 7] and [NHFIELD_DATA] — `mjModel.hfield_*`.
+    var hfield_meta: TensorImpl[Self.DTYPE]
+    var hfield_data: TensorImpl[Self.DTYPE]
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
     var mesh_polys: TensorImpl[Self.DTYPE]  # [NMESH_POLY, 5]
     var mesh_polyvert: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
@@ -256,6 +261,15 @@ struct Model[
         self.mesh_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_MESHES * MODEL_MESH_META_SIZE
         )
+        # HEIGHTFIELDS. The META table is capped (448 bytes) and the grid is
+        # not — see `MAX_GPU_HFIELDS`. A model with no hfield allocates one
+        # float, like every other `_at_least_one` here.
+        self.hfield_meta = TensorImpl[Self.DTYPE].alloc(
+            MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
+        )
+        self.hfield_data = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nhfield_data())
+        )
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
         self.mesh_polys = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(mesh_max_poly(dims.get_nmesh_verts()) * MODEL_MESH_POLY_SIZE)
@@ -310,6 +324,8 @@ struct Model[
         self.excludes.upload(ctx)
         self.pairs.upload(ctx)
         self.mesh_meta.upload(ctx)
+        self.hfield_meta.upload(ctx)
+        self.hfield_data.upload(ctx)
         self.mesh_verts.upload(ctx)
         self.mesh_polys.upload(ctx)
         self.mesh_polyvert.upload(ctx)

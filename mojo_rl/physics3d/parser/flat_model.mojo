@@ -261,6 +261,7 @@ comptime _GEOM_BOX: Int = 3
 comptime _GEOM_CYLINDER: Int = 4
 comptime _GEOM_MESH: Int = 5
 comptime _GEOM_ELLIPSOID: Int = 6
+comptime _GEOM_HFIELD: Int = 7
 
 
 struct GeomData(Copyable, ImplicitlyCopyable, Movable):
@@ -310,6 +311,11 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     # `fields_build`.
     var fit_from_mesh: Bool
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
+    # `<geom type="hfield" hfield="name">` — index into `hfield_*`, -1
+    # otherwise. MuJoCo keeps meshes and heightfields in ONE
+    # `geom_dataid` slot; two slots here so a `mesh_id >= 0` test cannot
+    # pick up an hfield.
+    var hfield_id: Int
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
     var mesh_inertia_shell: Bool
     """`<mesh inertia="shell">` on the asset this geom names."""
@@ -452,6 +458,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.priority = 0  # MuJoCo default; set by the parser when declared
         self.fit_from_mesh = False
         self.mesh_id = mesh_id
+        self.hfield_id = -1
         self.mesh_filename = mesh_filename
         self.mesh_inertia_shell = False
         self.mesh_ref_pos_x = 0.0
@@ -1430,6 +1437,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_pos_s: String
     var geom_quat_s: String
     var geom_group_s: String
+    var geom_hfield_s: String
     # Site structural attrs, same raw-string treatment as the geom ones.
     # dm_control's hopper declares its two touch sites entirely by class
     # (`<default class="hopper"><site type="sphere" size="0.05"/>`), so the
@@ -1592,6 +1600,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_pos_s = ""
         self.geom_quat_s = ""
         self.geom_group_s = ""
+        self.geom_hfield_s = ""
         self.tendon_stiffness_s = ""
         self.tendon_springlength_s = ""
         self.tendon_limited_s = ""
@@ -2074,6 +2083,20 @@ struct FlatModelDef(Movable):
     var motor_trn_dadr: List[Int]
     var motor_trn_coef: List[Float64]
 
+    # ── HEIGHTFIELD assets (`<asset><hfield/>`) ─────────────────────────
+    # `mjModel.hfield_*`. Elevations are stored ALREADY NORMALISED to [0, 1] —
+    # `mjCHField::Compile` min-max rescales whatever the file held — and the
+    # physical height is `data * size[2]`, on a base reaching `-size[3]`.
+    # `hfield_data` is one flat array for every field, indexed by
+    # `hfield_adr` / (nrow * ncol), the same arrangement `mesh_vert` uses.
+    var hfield_names: List[String]
+    var hfield_files: List[String]
+    var hfield_size: List[Float64]  # 4 per field: rx, ry, elevation, base
+    var hfield_nrow: List[Int]
+    var hfield_ncol: List[Int]
+    var hfield_adr: List[Int]
+    var hfield_data: List[Float64]
+
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
     var mesh_asset_files: List[String]
@@ -2107,9 +2130,10 @@ struct FlatModelDef(Movable):
     # the decimated faces sit slightly differently. Recorded so the gate can
     # assert the count rather than watching for a print.
     var unhonoured_maxhullvert: Int
-    # How many `<geom type="hfield">` / `type="sdf"` declarations the document
-    # carries. Neither is modelled: `_geom_type_from_str` falls through to
-    # `_GEOM_SPHERE`, so the geom collides as a ball of radius `size[0]`.
+    # How many `<geom type="sdf">` declarations the document carries. It is
+    # not modelled: `_geom_type_from_str` falls through to `_GEOM_SPHERE`, so
+    # the geom collides as a ball of radius `size[0]`. (`hfield` was counted
+    # here too until it became a real type.)
     # Recorded so the gate can assert the count rather than watching for a
     # print — the substitution was SILENT until this existed.
     var unmodelled_geom_types: Int
@@ -2208,6 +2232,13 @@ struct FlatModelDef(Movable):
         self.eulerdamp_disabled = False
         self.multiccd_disabled = False
         self.nativeccd_disabled = False
+        self.hfield_names = List[String]()
+        self.hfield_files = List[String]()
+        self.hfield_size = List[Float64]()
+        self.hfield_nrow = List[Int]()
+        self.hfield_ncol = List[Int]()
+        self.hfield_adr = List[Int]()
+        self.hfield_data = List[Float64]()
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
         self.mesh_asset_scale = List[Float64]()
