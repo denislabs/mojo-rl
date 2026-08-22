@@ -48,7 +48,7 @@ mechanism and still differs by 0.2%; that residual is a solver-convergence
 question, NOT a structural one, and it is deliberately not gated tightly here.
 """
 
-from std.math import abs
+from std.math import abs, acos
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
@@ -74,6 +74,7 @@ comptime BALL_DADR = 9
 
 struct Built(Movable):
     var fmd_nq: Int
+    var key_qpos: List[Float64]
     var m: Model[DT, DynDims]
     var d: Data[DT, DynDims, 1]
     var dims: DynDims
@@ -117,6 +118,13 @@ struct Built(Movable):
             + String(Float64(sf.qpos0.data[BALL_QADR + 3]))
             + "). All zeros is not a rotation at all.",
         )
+        # ⚠ AND THE KEYFRAME, which is the ONLY pose in this file where the
+        # ball quaternion is not the identity — see
+        # `test_forward_kinematics_matches_mujoco_at_the_keyframe`.
+        self.key_qpos = List[Float64]()
+        if dims.get_nkey() > 0:
+            for i in range(dims.get_nq()):
+                self.key_qpos.append(Float64(sf.key_qpos.data[i]))
         self.fmd_nq = dims.get_nq()
         self.dims = dims
         self.m = m^
@@ -229,6 +237,82 @@ def test_ball_joint_moves_and_the_first_step_matches_mujoco() raises:
         "the root height after one step is " + String(z)
         + " against MuJoCo's 1.099999093606",
     )
+    _ = b^
+    print("  PASS")
+
+
+def test_forward_kinematics_matches_mujoco_at_the_keyframe() raises:
+    """⚠⚠ EVERY OTHER ROW IN THIS FILE IS AT OR NEXT TO THE IDENTITY.
+
+    A ball joint's `qpos0` is (1,0,0,0), and the identity COMMUTES — so
+    `q_parent * q_ball` and `q_ball * q_parent` are the same quaternion and no
+    gate started from `qpos0` can tell them apart. One step from `qpos0` moves
+    the ball by 4.6e-05 rad, which is not enough either: the row above
+    measured 2.2e-16 while `_fk_body` was composing the ball quat in the WRONG
+    ORDER, as a WORLD rotation where `mj_kinematics` composes it as a LOCAL
+    one (`mju_mulQuat(xquat, xquat, qloc)`, engine_core_smooth.c:141).
+
+    cassie's keyframe puts the left rod at (0.97861, -0.01641, 0.01778,
+    -0.20430) — **23.6 deg** off the identity — and that is the only pose in
+    the tree where the two orders differ.
+
+    ⚠ AND IT IS INVISIBLE IN `xpos`. Both ball joints have `jnt_pos == 0`, so
+    the child's origin is the anchor and no rotation reaches the position:
+    `xpos` was exact to 1.7e-16 throughout. `xipos` (= `xpos + R ipos`, with
+    `ipos = (0.247, 0, 0)`) is where it shows, and it is also the field the
+    rest of the pipeline reads — `subtree_com`, `cdof`, RNE. Measured:
+
+        |d qfrc_bias| on cassie   8.999e-04 -> 1.208e-17
+        board, one step           4.460e-04 -> 1.522e-04
+    """
+    print("=== FK at the KEYFRAME, where the ball quat is NOT the identity ===")
+    var b = Built()
+    assert_true(
+        len(b.key_qpos) == b.fmd_nq,
+        "cassie's keyframe did not load; this row would be a second copy of"
+        " the qpos0 one",
+    )
+    for i in range(b.fmd_nq):
+        b.d.qpos.data[i] = Scalar[DT](b.key_qpos[i])
+
+    # ⚠ NON-VACUITY: the pose must actually rotate the ball joint.
+    var kw = b.key_qpos[BALL_QADR]
+    var kwc = kw if kw <= 1.0 else 1.0
+    var ang = 2.0 * acos(abs(kwc)) * 57.29577951308232
+    print("  keyframe ball quat w =", kw, " (~", ang, "deg off identity)")
+    assert_true(
+        abs(kw - 1.0) > 1e-3,
+        "the keyframe leaves the ball joint at the identity (w = " + String(kw)
+        + "), so this row cannot see a composition-ORDER defect at all",
+    )
+
+    forward_kinematics["cpu", DT, DynDims, 1](b.d, b.m)
+
+    # MuJoCo 3.10.0 at keyframe 0. `xipos` is three plain numbers and carries
+    # no layout convention, unlike `xquat`.
+    var mjxi = List[Float64]()
+    mjxi.append(-0.18201613); mjxi.append(0.10913965); mjxi.append(0.70822279)
+    mjxi.append(-0.18201611); mjxi.append(-0.10913967); mjxi.append(0.70822278)
+    var bodies = List[Int]()
+    bodies.append(5); bodies.append(17)
+    for k in range(2):
+        var bi = bodies[k]
+        var rx = mjxi[k * 3 + 0]
+        var ry = mjxi[k * 3 + 1]
+        var rz = mjxi[k * 3 + 2]
+        var ox = Float64(b.d.xipos.data[bi * 3 + 0])
+        var oy = Float64(b.d.xipos.data[bi * 3 + 1])
+        var oz = Float64(b.d.xipos.data[bi * 3 + 2])
+        var e = max(abs(ox - rx), max(abs(oy - ry), abs(oz - rz)))
+        print("  body", bi, " xipos ours", ox, oy, oz)
+        print("            MuJoCo", rx, ry, rz, "  |d| =", e)
+        assert_true(
+            e < 1e-7,
+            String("achilles rod body ") + String(bi) + " xipos is "
+            + String(e) + " from MuJoCo's. With the ball quat composed as a"
+            " WORLD rotation this was 9.8e-02 — a 22 deg error in the rod's"
+            " orientation, with `xpos` still exact.",
+        )
     _ = b^
     print("  PASS")
 

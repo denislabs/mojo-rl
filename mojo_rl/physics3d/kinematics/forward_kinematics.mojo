@@ -394,15 +394,34 @@ def _fk_body[
                 var anchor_y = cur_py + anchor_off[1]
                 var anchor_z = cur_pz + anchor_off[2]
 
+                # ⚠⚠ THE BALL QUATERNION IS A LOCAL ROTATION, AND THIS
+                # COMPOSED IT AS A WORLD ONE. `mj_kinematics`
+                # (engine_core_smooth.c:141) writes
+                # `mju_mulQuat(xquat, xquat, qloc)` — the running frame FIRST,
+                # `qloc` (which is `qpos` verbatim, in the child frame) second.
+                # The HINGE branch above gets away with the other order only
+                # because it rotates its axis into the world first, and
+                # `R(cur) * R_local(a) == R_world(R(cur) a) * R(cur)`; a ball
+                # joint has no axis to rotate, so the same order is simply
+                # wrong.
+                #
+                # ⚠ IT IS INVISIBLE AT `qpos0`. A ball joint's reference
+                # quaternion is the identity, which commutes, so every gate
+                # that starts a ball-jointed model from `qpos0` sees nothing.
+                # It is also invisible in `xpos` whenever `jnt_pos == 0` — the
+                # anchor is then the parent's own origin and the rotation
+                # never reaches the position. Both are true of cassie, the
+                # tree's only ball-jointed model: `xpos` was exact to 1.7e-16
+                # and `xquat` on its two achilles rods was 0.22 out.
                 var new_quat = gpu_quat_mul(
-                    ball_qx,
-                    ball_qy,
-                    ball_qz,
-                    ball_qw,
                     cur_qx,
                     cur_qy,
                     cur_qz,
                     cur_qw,
+                    ball_qx,
+                    ball_qy,
+                    ball_qz,
+                    ball_qw,
                 )
                 cur_qx = new_quat[0]
                 cur_qy = new_quat[1]
@@ -1220,15 +1239,16 @@ def _vel_body[
                 rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 2]),
                 rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 3]),
             )
+            # The running frame FIRST — see the note in `_fk_body`.
             var bq_new = gpu_quat_mul(
-                bnorm[0],
-                bnorm[1],
-                bnorm[2],
-                bnorm[3],
                 cur_qx,
                 cur_qy,
                 cur_qz,
                 cur_qw,
+                bnorm[0],
+                bnorm[1],
+                bnorm[2],
+                bnorm[3],
             )
             cur_qx = bq_new[0]
             cur_qy = bq_new[1]
