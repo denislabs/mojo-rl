@@ -22,7 +22,7 @@ engines would be describing different solids.
 Run: pixi run mojo run -I . tests/physics3d/test_mesh_polygons_vs_mujoco.mojo
 """
 
-from std.math import abs, sqrt
+from std.math import abs, sqrt, acos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
@@ -56,6 +56,7 @@ comptime MP_XML = """
   <asset>
     <mesh name="cube" file="tests/physics3d/assets/mc_cube.stl"/>
     <mesh name="hex" file="tests/physics3d/assets/mc_hex.stl"/>
+    <mesh name="ankle" file="references/mujoco_menagerie-main/toddlerbot_2xc/assets/left_ankle_roll_link_collision.stl"/>
   </asset>
   <worldbody>
     <body name="a" pos="0 0 0.5">
@@ -65,6 +66,10 @@ comptime MP_XML = """
     <body name="b" pos="3 0 0.5">
       <joint name="jb" type="free"/>
       <geom name="gb" type="mesh" mesh="hex"/>
+    </body>
+    <body name="c" pos="6 0 0.5">
+      <joint name="jc" type="free"/>
+      <geom name="gc" type="mesh" mesh="ankle"/>
     </body>
   </worldbody>
 </mujoco>
@@ -234,9 +239,70 @@ def test_mesh_polygons_vs_mujoco() raises:
     # <= 4 (no pruning runs), which is exactly why the box groups looked exact.
     print("  polygons whose cycle START differs from MuJoCo's:", rotated)
     assert_true(
-        total_matched == 14,
-        String("expected 14 polygons across the two fixtures (cube 6, hex 8),"
-               " matched ") + String(total_matched),
+        total_matched == 61,
+        String("expected 61 polygons across the three fixtures (cube 6,"
+               " hex 8, ankle 47), matched ") + String(total_matched),
+    )
+
+
+def test_a_fixture_has_a_non_identity_mesh_frame() raises:
+    """⚠⚠ THE FIRST TWO FIXTURES CANNOT SEE THE FRAME DEFECT, BY CONSTRUCTION.
+
+    `mc_cube` and `mc_hex` are authored centred and axis-aligned, so MuJoCo's
+    principal-axis transform is the identity and every frame is the same
+    frame. That is what made this gate GREEN for the whole life of the defect
+    below: the polygon partition is decided by the QUANTISED DIRECTION of each
+    hull triangle's normal, and a rotation of zero degrees moves nothing
+    across a bucket boundary.
+
+    `mjCMesh::Process` (user_mesh.cc:1350) runs `MakeGraph` (:1387) and
+    `MakePolygons` (:1422) on `dvert` while it still holds the RAW FILE
+    VALUES, then `ApplyTransformations` (:1444), then the CoM shift and the
+    principal-axis `Rotate` (:1517-1524), and only then
+    `MakePolygonNormals` (:1538). We partitioned in the principal frame, so on
+    any mesh MuJoCo actually re-frames we merged a different set of triangles.
+
+    So this row is the gate on the gate: it asserts that at least one fixture
+    IS re-framed, and prints how far. Delete the ankle mesh from `MP_XML` and
+    this fails rather than silently going vacuous again.
+
+    Measured on the ankle mesh — polygon count against MuJoCo's 47:
+
+        this engine, principal frame (what shipped)   46
+        Python transcription on MuJoCo's OWN hull faces:
+          principal frame                             45
+          file frame, without `+ 0.0` in the key       48
+          file frame, with it                          47
+
+    ⚠ The two disagree by one because the transcription is fed MuJoCo's hull
+    and this engine builds its own; that is the point of running both.
+    """
+    print("=== is any fixture actually re-framed? ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(String(MP_XML))
+    var worst_ang = Float64(0)
+    var worst_off = Float64(0)
+    for mi in range(Int(py=m.nmesh)):
+        var qw = abs(Float64(py=m.mesh_quat[mi][0]))
+        if qw > 1.0:
+            qw = 1.0
+        var ang = 2.0 * acos(qw) * (180.0 / 3.141592653589793)
+        var off = sqrt(
+            Float64(py=m.mesh_pos[mi][0]) ** 2
+            + Float64(py=m.mesh_pos[mi][1]) ** 2
+            + Float64(py=m.mesh_pos[mi][2]) ** 2
+        )
+        print("  mesh", mi, " principal rotation ~", ang, "deg  CoM offset",
+              off)
+        if ang > worst_ang:
+            worst_ang = ang
+        if off > worst_off:
+            worst_off = off
+    assert_true(
+        worst_ang > 5.0,
+        String("every fixture mesh has an (almost) identity principal"
+               " rotation — worst is ") + String(worst_ang) + " deg, so this"
+        " file cannot see a frame defect in the polygon partition at all",
     )
 
 

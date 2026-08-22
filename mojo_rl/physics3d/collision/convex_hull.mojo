@@ -773,17 +773,29 @@ def load_mesh_hull[
     var p = HullPayload()
 
     if not hull_cache_load(cache_path, p):
-        # ⚠ `refpos`/`refquat` COME BEFORE `scale`
-        # (`mjCMesh::ApplyTransformations`, user_mesh.cc:1257), so when either
-        # is present the loader is asked for UNSCALED vertices and all three
-        # steps are applied together below. With both at the identity — 84 of
-        # Menagerie's 85 scenes — this is the call it has always made.
-        var _ref_ident = mesh_ref_is_identity(
-            rpx, rpy, rpz, rqw, rqx, rqy, rqz
-        )
-        var mesh_data = load_stl(
-            mesh_filename, sx, sy, sz
-        ) if _ref_ident else load_stl(mesh_filename, 1.0, 1.0, 1.0)
+        # ⚠⚠ THE HULL AND THE POLYGON PARTITION ARE BUILT IN THE FILE'S OWN
+        # FRAME, NOT IN THE PRINCIPAL ONE. `mjCMesh::Process`
+        # (user_mesh.cc:1350) runs `MakeGraph` (:1387) and `MakePolygons`
+        # (:1422) on `dvert` while it still holds the raw file values, THEN
+        # `ApplyTransformations` (:1444, refpos/refquat/scale), THEN the CoM
+        # shift and the principal-axis `Rotate` (:1517-1524), and only then
+        # `MakePolygonNormals` (:1538). So the frame changes UNDER the
+        # topology: the polygon partition is decided in the file's frame and
+        # only the normals are recomputed in the final one.
+        #
+        # That is not a detail. `MakePolygons` groups triangles by the
+        # QUANTISED direction of their normal (`MeshPolygonKey`, 0.01 rad
+        # buckets), and a rotation moves every normal across the bucket grid —
+        # so the same hull merges into a DIFFERENT set of polygons in a
+        # different frame. Measured by transcribing `MakePolygons` into Python
+        # and running it on MuJoCo's own hull faces, over Menagerie's 882
+        # meshes with a stored graph: the principal frame reproduces
+        # `mesh_polyvertnum` on 160 of them and the file's frame on 484.
+        #
+        # `refpos`/`refquat`/`scale` are on the far side of that line too, so
+        # the loader is always asked for UNSCALED vertices now and
+        # `apply_mesh_ref_transform` runs below with the rest of the frame.
+        var mesh_data = load_stl(mesh_filename, 1.0, 1.0, 1.0)
 
         # Extract positions from GPUVertex structs into flat array
         var raw = List[Scalar[DTYPE]]()
@@ -792,21 +804,10 @@ def load_mesh_hull[
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].px))
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].py))
             raw.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
-        if not _ref_ident:
-            apply_mesh_ref_transform[DTYPE](
-                raw, num_raw, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
-            )
 
         # Deduplicate into temp buffer
         var unique = List[Scalar[DTYPE]]()
         var num_unique = deduplicate_vertices[DTYPE](raw, num_raw, unique)
-
-        # Into the principal frame, exactly where MuJoCo does it (`mjCMesh::
-        # Compute` translates by -CoM then `Rotate`s by the conjugate, then
-        # records the pair as mesh_pos/mesh_quat). Everything below — hull,
-        # polygons, rbound — is therefore computed in MuJoCo's frame rather
-        # than the STL's.
-        transform_verts_to_principal_frame[DTYPE](unique, num_unique, mi)
 
         # ⚠ BUILT INTO FRESH, EMPTY LISTS AT `vert_base = 0`. That is what
         # makes the payload position-independent: every `*_adr` these three
@@ -833,6 +834,43 @@ def load_mesh_hull[
             p.polymap_num,
         )
         build_hull_edge_graph(nh, lfaces, 0, p.edge_adr, p.edge_list)
+
+        # ── and NOW the frame ────────────────────────────────────────────────
+        # `ApplyTransformations` (refpos, then refquat's inverse, then scale),
+        # then the CoM translation and the principal-axis rotation. Only the
+        # hull's own vertices need it: `poly_vert`, `polymap` and `edge_list`
+        # are indices and the rotation does not touch them.
+        apply_mesh_ref_transform[DTYPE](
+            lvert, nh, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
+        )
+        transform_verts_to_principal_frame[DTYPE](lvert, nh, mi)
+
+        # `MakePolygonNormals` (user_mesh.cc:2661) — recomputed from the FINAL
+        # vertices, over the first three vertices of each stored path. The
+        # normals `build_mesh_polygons` returned are the file frame's and are
+        # discarded.
+        for pi in range(np_local):
+            var adr = p.poly_vertadr[pi]
+            var a = p.poly_vert[adr + 0] * 3
+            var b = p.poly_vert[adr + 1] * 3
+            var c = p.poly_vert[adr + 2] * 3
+            var ux = lvert[b + 0] - lvert[a + 0]
+            var uy = lvert[b + 1] - lvert[a + 1]
+            var uz = lvert[b + 2] - lvert[a + 2]
+            var vx = lvert[c + 0] - lvert[a + 0]
+            var vy = lvert[c + 1] - lvert[a + 1]
+            var vz = lvert[c + 2] - lvert[a + 2]
+            var wx = uy * vz - uz * vy
+            var wy = uz * vx - ux * vz
+            var wz = ux * vy - uy * vx
+            var wn = sqrt(wx * wx + wy * wy + wz * wz)
+            if wn > Scalar[DTYPE](0):
+                wx /= wn
+                wy /= wn
+                wz /= wn
+            lnormal[pi * 3 + 0] = wx
+            lnormal[pi * 3 + 1] = wy
+            lnormal[pi * 3 + 2] = wz
 
         p.num_hull = nh
         p.npoly = np_local

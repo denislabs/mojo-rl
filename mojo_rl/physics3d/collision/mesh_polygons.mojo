@@ -91,9 +91,16 @@ def _polygon_key[
     # `mjMINVAL`, as MuJoCo's own guard writes it.
     if nrm < Scalar[DTYPE](1e-15):
         return (False, Float64(0), Float64(0))
-    var ux = Float64(nx / nrm)
-    var uy = Float64(ny / nrm)
-    var uz = Float64(nz / nrm)
+    # ⚠ `+ 0.0` IS NOT A NO-OP, IT IS THE REFERENCE'S OWN LINE. MuJoCo writes
+    # `normal[k] = (normal[k] / norm) + 0.0;` with the comment "atan2 is
+    # sensitive to sign of 0.0". A face whose normal has `ny == -0.0` and
+    # `nx < 0` gives `atan2(-0.0, -1) = -pi` where its `+0.0` twin gives
+    # `+pi`, so the two land in buckets -314 and +314 and never merge. On
+    # `toddlerbot`'s ankle collision mesh that split ONE polygon in two: 48
+    # against the reference's 47.
+    var ux = Float64(nx / nrm) + 0.0
+    var uy = Float64(ny / nrm) + 0.0
+    var uz = Float64(nz / nrm) + 0.0
 
     var tol = MESH_POLY_ANGLE_TOL
     if abs(uz) > 1.0 - 1e-7:
