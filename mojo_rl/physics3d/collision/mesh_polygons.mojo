@@ -88,6 +88,56 @@ def polygon_normal[
     SURVIVES. Fixing the discarded one changes nothing measurable, which is
     exactly what the first attempt at this defect did.
     """
+    # ⚠⚠ AREA-WEIGHTED (NEWELL), AND THAT IS A DELIBERATE DIVERGENCE FROM
+    # `MakePolygonNormals`, WHICH READS THREE OF N VERTICES.
+    #
+    # The reference's rule leaves the direction less determined than the test
+    # that consumes it. `alignedFaces` wants two normals anti-parallel within
+    # `MC_FACE_TOL` = 0.09167 deg; measured over Menagerie's merged polygons
+    # with four or more vertices, EXCLUDING cycle starts whose triangle is a
+    # sliver, **3 464 of 22 534 (15.4%)** have a first-three normal that swings
+    # by MORE than that depending on which vertex the stored cycle starts at.
+    # On `hello_robot_stretch_3`'s 26-gon — planar to 1.1e-07 m — the swing is
+    # 0.045 to 0.263 deg, 24 of the 26 starts pass `alignedFaces` and MuJoCo
+    # landed on one of the 2 that do not.
+    #
+    # ⚠ AND WE CANNOT MATCH ITS CHOICE ANYWAY. The cycle start follows the
+    # order faces were inserted, i.e. `GraphFaces()` order, i.e. qhull's;
+    # `e072c62b` made our hull vertex-identical to qhull's without making it
+    # face-order-identical. Given that bit-faithfulness is off the table, the
+    # cyclic sum is the better answer: it is the polygon's exact vector area,
+    # independent of where the cycle starts, and MEASURED CLOSER TO MuJoCo'S
+    # OWN STORED NORMALS than our first-three sample was — over 52 meshes and
+    # 24 475 matched polygons, 721 land beyond `MC_FACE_TOL` of MuJoCo's answer
+    # against 849, and it is strictly closer on 6 564 against 5 412.
+    #
+    # Costs one board scene: `unitree_g1/scene_with_hands` 2.170e-07 ->
+    # 2.749e-07. The other 84 are bit-identical and csweep does not move.
+    var gx = Float64(0)
+    var gy = Float64(0)
+    var gz = Float64(0)
+    for k in range(num):
+        var i0 = vert_float_offset + poly_vert[adr + k] * 3
+        var i1 = vert_float_offset + poly_vert[adr + (k + 1) % num] * 3
+        var p0x = Float64(verts[i0 + 0])
+        var p0y = Float64(verts[i0 + 1])
+        var p0z = Float64(verts[i0 + 2])
+        var p1x = Float64(verts[i1 + 0])
+        var p1y = Float64(verts[i1 + 1])
+        var p1z = Float64(verts[i1 + 2])
+        gx += p0y * p1z - p0z * p1y
+        gy += p0z * p1x - p0x * p1z
+        gz += p0x * p1y - p0y * p1x
+    var gl = sqrt(gx * gx + gy * gy + gz * gz)
+    if gl >= _MJEPS:
+        return (
+            Scalar[DTYPE](gx / gl),
+            Scalar[DTYPE](gy / gl),
+            Scalar[DTYPE](gz / gl),
+        )
+
+    # A polygon with no area at all falls through to the reference's own rule
+    # and then to its `(1, 0, 0)`: see below.
     var a = vert_float_offset + poly_vert[adr + 0] * 3
     var b = vert_float_offset + poly_vert[adr + 1] * 3
     for k in range(2, num):
