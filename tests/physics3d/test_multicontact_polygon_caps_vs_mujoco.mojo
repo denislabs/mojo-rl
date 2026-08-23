@@ -157,10 +157,19 @@ comptime MJ_RMAX = 0.046
 # stack. They now live in the CCD workspace row (`ccd_workspace.mojo`), so the
 # requirement is the tree's and not the compiler's.
 comptime REQUIRED_POLYVERT = 144
-comptime REQUIRED_DEG = 48
-# Menagerie's worst, measured on the runtime over all 59 mesh-bearing scenes.
+comptime REQUIRED_DEG = 50
+# Menagerie's worst, measured per SCENE over collision meshes only — all 96
+# `scene*.xml` in the tree.
 comptime MENAGERIE_MAX_POLYVERT = 144  # robotiq_2f85
 comptime MENAGERIE_MAX_DEG = 47        # flexiv_rizon4
+# ⚠⚠ AND THE OTHER HALF OF THE CORPUS. `MC_MAX_DEG` sat at 48 — Menagerie's
+# worst plus one — for as long as the census only ever ran on the reference
+# tree, while a model this repo SHIPS needs 50. Same method, all 57 in-repo
+# `*.xml`: `envs/robots/assets/so_arm101.xml` peaks at 82 / 50, its STS3215
+# servo hulls each carrying a vertex with 50 incident polygons and its mirror
+# with 49. Everything else in the repo is at or under 50 / 34.
+comptime REPO_MAX_POLYVERT = 82        # so_arm101
+comptime REPO_MAX_DEG = 50             # so_arm101, sts3215_03a_v1
 
 comptime _IMPFAST = ImplicitIntegrator[
     DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True,
@@ -202,6 +211,19 @@ def test_caps_cover_menagerie() raises:
         " vertex where " + String(MENAGERIE_MAX_DEG) + " polygons meet."
         " `_mesh_normals` stops collecting candidate face normals at the cap,"
         " so the matching face may never be offered to `alignedFaces`.",
+    )
+    # ⚠⚠ THE ROW THAT WOULD HAVE CAUGHT THE 48. Asserting only against the
+    # reference tree is what let a cap that a SHIPPED model exceeds stand: the
+    # census ran on Menagerie, the number read as "every model", and
+    # so_arm101's 50 was invisible to every gate in the suite.
+    print("  REPO worst  pv", REPO_MAX_POLYVERT, " deg", REPO_MAX_DEG,
+          " (so_arm101)")
+    assert_true(
+        MC_MAX_POLYVERT >= REPO_MAX_POLYVERT and MC_MAX_DEG >= REPO_MAX_DEG,
+        "the caps are " + String(MC_MAX_POLYVERT) + " / " + String(MC_MAX_DEG)
+        + " but this repo's own so_arm101 needs " + String(REPO_MAX_POLYVERT)
+        + " / " + String(REPO_MAX_DEG) + ". A cap measured only against"
+        " `references/` is a cap for someone else's models.",
     )
     print("  PASS")
 

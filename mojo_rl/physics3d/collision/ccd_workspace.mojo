@@ -53,13 +53,38 @@ comptime EPA_F_CAP: Int = 64
 # the row they size, rather than in `native_multicontact` — a constant and the
 # buffer it dimensions drifting apart is exactly how the old "checked at model
 # build" comment came to be false.
-# ⚠ 144 IS MENAGERIE'S MEASURED WORST, not a round number: robotiq_2f85's
-# base_mount carries a 144-vertex face, and 21 scenes have one wider than the
-# 56 this used to be. 48 covers every vertex degree in the tree (the worst is
-# flexiv_rizon4's 47). A model wider than 144 still degrades — and still says
-# so at load — but nothing in the tree is.
+# ⚠ BOTH ARE MEASURED WORSTS, not round numbers, and they are measured over
+# MENAGERIE **AND** THIS REPO'S OWN MODELS. robotiq_2f85's base_mount carries a
+# 144-vertex face and 21 scenes have one wider than the 56 the width used to
+# be; the degree used to be 48, which covers Menagerie (flexiv_rizon4's 47) and
+# does NOT cover `envs/robots/assets/so_arm101.xml`, whose STS3215 servo hulls
+# (`sts3215_03a_v1`, `sts3215_03a_no_horn_v1`) each carry a vertex with **50**
+# incident polygons and its mirror with 49.
+#
+# ⚠ SO THE CENSUS HAS TO INCLUDE THE MODELS WE SHIP, NOT ONLY THE REFERENCE
+# TREE. The old 48 was Menagerie's worst plus one, and it read as a bound on
+# "every model" because nothing had ever measured the other half of the corpus.
+# Per-scene, collision meshes only: 96 Menagerie scenes give 144 / 47, and all
+# 57 in-repo models give 82 / 50 — worst overall 144 / 50.
+#
+# ⚠⚠ A WHOLE-DIRECTORY CENSUS OVER MESH **FILES** ANSWERS A DIFFERENT QUESTION.
+# Sweeping all 2 149 `.stl`/`.obj` in the tree gives 395 / 187, because most of
+# them are visual-only geometry that never reaches a collision routine. The
+# number these have to cover is the per-SCENE one.
+#
+# ⚠ WHAT THE RAISE BUYS IS A BOUND, NOT A MEASURED CONTACT. Pressed on that
+# exact corner from 128 distinct orientations, shrinking the cap to **8** —
+# dropping 42 of the 50 candidates, not 2 — moves NOTHING: every contact still
+# matches MuJoCo to 3.6e-15 in position and 8.5e-07 degrees in normal. The
+# reason is structural and worth knowing before anyone tries to gate this: a
+# vertex has high degree because it is finely tessellated, so its incident
+# normals arrive in near-duplicate clusters (indices 46 and 48 here are 0.1
+# degrees apart), `_aligned_faces` takes the FIRST match within `MC_FACE_TOL`
+# (0.092 degrees), and an early member of the cluster wins before a late one is
+# ever reached. Running a shipped model with a knowingly truncated candidate
+# list is still not a thing to leave standing.
 comptime MC_MAX_POLYVERT: Int = 144
-comptime MC_MAX_DEG: Int = 48
+comptime MC_MAX_DEG: Int = 50
 comptime MC_CLIP_CAP: Int = 2 * MC_MAX_POLYVERT
 
 # ---- row layout ------------------------------------------------------------
@@ -86,11 +111,14 @@ comptime EPA_WS_SIZE: Int = CCD_WS_HOR + EPA_F_CAP * 6
 # which are RUNTIME MODEL FIELDS — it has no cap at all.
 #
 # ⚠ ONLY THE `MC_MAX_POLYVERT`-SIZED ARRAYS MOVE. The `MC_MAX_DEG` ones
-# (`n1`/`n2`/`idx1`/`idx2`/`endverts`, ~4.2 KB together) stay on the stack
-# because 48 already covers every vertex degree in Menagerie — the worst is
-# flexiv_rizon4's 47 — so that axis was never the one that needed unlocking.
-# The width axis is: the tree's worst face is robotiq_2f85's 144 vertices, and
-# 21 scenes carry a polygon wider than 56.
+# (`n1`/`n2`/`idx1`/`idx2`/`endverts`, ~4.4 KB together at 50) stay on the
+# stack: that axis is small and grows slowly — 48 -> 50 is 240 more bytes per
+# frame — so it was never the one that needed unlocking. The width axis is: the
+# tree's worst face is robotiq_2f85's 144 vertices, and 21 scenes carry a
+# polygon wider than 56. ⚠ The degree arrays being on the STACK is why raising
+# `MC_MAX_DEG` still has to re-run the Metal canary
+# (`tests/physics3d/test_plane_mesh_fields.mojo`) even though `CCD_WS_SIZE`
+# does not move: the ceiling it would hit is the per-thread stack, not the row.
 #
 # ⚠ THE CAP DEGRADES SILENTLY WHEN IT BITES. `_mesh_face` returns 0 past it,
 # which is the routine's own "the features do not line up" answer, so the

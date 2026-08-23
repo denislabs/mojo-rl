@@ -2097,6 +2097,13 @@ def build_model_fields_from_flat[
     # hulls, was 4.4e-02 from MuJoCo at step one and 5.7e-12 once the faces
     # fit. Print what was dropped; a bound nobody can see is a bound nobody
     # raises.
+    #
+    # ⚠⚠ AND IT IS THE ONLY REASON THE DEGREE GAP WAS EVER FOUND. `MC_MAX_DEG`
+    # sat at 48 — Menagerie's worst plus one — while `envs/robots/assets/
+    # so_arm101.xml`, a model this repo SHIPS, needs 50. Nothing pointed at it
+    # except this print, on a test that loads so_arm101 for an unrelated
+    # reason. When a cap is stated as "the tree's worst", say WHICH tree: the
+    # census has to cover the models we ship as well as the reference ones.
     var _mc_worst_pv = 0
     var _mc_worst_deg = 0
     for p in range(len(poly_vertnum)):
@@ -2115,8 +2122,10 @@ def build_model_fields_from_flat[
             " of up to four. Matching the reference here needs at least",
             _mc_worst_pv, "and", _mc_worst_deg,
             "— raise them in `collision/ccd_workspace.mojo`, which sizes the"
-            " workspace row they live in. Nothing in Menagerie needs more"
-            " than 144 and 47.",
+            " workspace row they live in. Measured per SCENE over collision"
+            " meshes only, the worst in Menagerie is 144 and 47 and the worst"
+            " in this repo's own models is 82 and 50 (so_arm101's STS3215"
+            " servo hulls), so the caps cover both today.",
         )
     for p in range(len(poly_vertadr)):
         var o = p * MODEL_MESH_POLY_SIZE
