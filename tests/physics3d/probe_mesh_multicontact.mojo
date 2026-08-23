@@ -265,7 +265,7 @@ def main() raises:
         # flip; the narrow phase passes `True` on the leg where it sorted the
         # operands to `type1 <= type2`. See `native_multicontact_contacts`.
         False,
-        contacts_v, nc,
+        contacts_v, ws.lt["cpu", L_CCD_WS1](), 0, nc,
     )
     print("  OURS: multicontact wrote", got, "rows")
     for k in range(got):

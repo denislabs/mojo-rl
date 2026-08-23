@@ -43,6 +43,25 @@ from layout import Layout
 comptime EPA_V_CAP: Int = 36
 comptime EPA_F_CAP: Int = 64
 
+# ---- the multi-contact caps ------------------------------------------------
+# MuJoCo's `npolygonmax` / `nmeshdegmax`, which are RUNTIME model fields there
+# — sized per model, so the reference has no cap at all. Ours are comptime
+# because the offsets above have to be.
+#
+# `MC_MAX_POLYVERT` is the largest number of vertices in one face polygon;
+# `MC_MAX_DEG` the most polygons meeting at one vertex. They live HERE, beside
+# the row they size, rather than in `native_multicontact` — a constant and the
+# buffer it dimensions drifting apart is exactly how the old "checked at model
+# build" comment came to be false.
+# ⚠ 144 IS MENAGERIE'S MEASURED WORST, not a round number: robotiq_2f85's
+# base_mount carries a 144-vertex face, and 21 scenes have one wider than the
+# 56 this used to be. 48 covers every vertex degree in the tree (the worst is
+# flexiv_rizon4's 47). A model wider than 144 still degrades — and still says
+# so at load — but nothing in the tree is.
+comptime MC_MAX_POLYVERT: Int = 144
+comptime MC_MAX_DEG: Int = 48
+comptime MC_CLIP_CAP: Int = 2 * MC_MAX_POLYVERT
+
 # ---- row layout ------------------------------------------------------------
 # `ev` — polytope vertices, 9 floats each: the Minkowski point (0..2) and the
 # two witness points (3..5, 6..8). EPA carries the witnesses through expansion,
@@ -56,7 +75,47 @@ comptime CCD_WS_EF: Int = CCD_WS_EV + EPA_V_CAP * 9
 comptime CCD_WS_VIS: Int = CCD_WS_EF + EPA_F_CAP * 3
 # `hor` — the horizon, two vertex indices per edge.
 comptime CCD_WS_HOR: Int = CCD_WS_VIS + EPA_F_CAP
-comptime CCD_WS_SIZE: Int = CCD_WS_HOR + EPA_F_CAP * 6
+comptime EPA_WS_SIZE: Int = CCD_WS_HOR + EPA_F_CAP * 6
+
+
+
+
+# ---- the multi-contact region ----------------------------------------------
+# `native_multicontact`'s polygon buffers, for the same reason and by the same
+# mechanism. MuJoCo sizes its equivalents from `npolygonmax` / `nmeshdegmax`,
+# which are RUNTIME MODEL FIELDS — it has no cap at all.
+#
+# ⚠ ONLY THE `MC_MAX_POLYVERT`-SIZED ARRAYS MOVE. The `MC_MAX_DEG` ones
+# (`n1`/`n2`/`idx1`/`idx2`/`endverts`, ~4.2 KB together) stay on the stack
+# because 48 already covers every vertex degree in Menagerie — the worst is
+# flexiv_rizon4's 47 — so that axis was never the one that needed unlocking.
+# The width axis is: the tree's worst face is robotiq_2f85's 144 vertices, and
+# 21 scenes carry a polygon wider than 56.
+#
+# ⚠ THE CAP DEGRADES SILENTLY WHEN IT BITES. `_mesh_face` returns 0 past it,
+# which is the routine's own "the features do not line up" answer, so the
+# caller emits the single EPA point — the reference's own fallback, reached
+# for a reason the reference does not have. It is a LOST MANIFOLD.
+comptime MC_WS_FACE1: Int = EPA_WS_SIZE
+comptime MC_WS_FACE2: Int = MC_WS_FACE1 + MC_MAX_POLYVERT * 3
+# The clipped ring. A clip can reach the sum of the two input sizes, hence
+# `MC_CLIP_CAP = 2 * MC_MAX_POLYVERT` rather than `MC_MAX_POLYVERT`.
+comptime MC_WS_OUT: Int = MC_WS_FACE2 + MC_MAX_POLYVERT * 3
+# `_polygon_clip`'s two working rings and its per-edge plane cache.
+comptime MC_WS_POLY: Int = MC_WS_OUT + MC_CLIP_CAP * 3
+comptime MC_WS_CLIPPED: Int = MC_WS_POLY + MC_CLIP_CAP * 3
+comptime MC_WS_PN: Int = MC_WS_CLIPPED + MC_CLIP_CAP * 3
+comptime MC_WS_PD: Int = MC_WS_PN + MC_MAX_POLYVERT * 3
+
+# ⚠ ONE TENSOR, TWO REGIONS, AND THE WHOLE ROW IS ALWAYS ALLOCATED. EPA's
+# polytope and the multi-contact polygons are live at DIFFERENT times within
+# one collision — the manifold routine runs after `gjk_epa_witness` returns —
+# so they could have overlapped. They do not, deliberately: an aliasing bug
+# between two regions that are "obviously" disjoint in time is invisible in a
+# diff and fires only on the pose where the assumption breaks.
+#
+# EPA's 964 floats plus 28 * MC_MAX_POLYVERT.
+comptime CCD_WS_SIZE: Int = MC_WS_PD + MC_MAX_POLYVERT
 
 # The single-row spelling, for host callers that collide one pair at a time
 # (every gate and probe in `tests/physics3d`). The engine binds

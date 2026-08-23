@@ -3313,7 +3313,7 @@ def _detect_contacts_env[
                                 contact_friction_roll,
                                 contact_condim,
                                 True,
-                                contacts, num_contacts,
+                                contacts, ws, env, num_contacts,
                             )
                         else:
                             mcn = native_multicontact_contacts[
@@ -3336,7 +3336,7 @@ def _detect_contacts_env[
                                 contact_friction_roll,
                                 contact_condim,
                                 False,
-                                contacts, num_contacts,
+                                contacts, ws, env, num_contacts,
                             )
                         # ⚠ THE MANIFOLD REPLACES THE POINT, it does not extend
                         # it — the reference overwrites `status->nx`. Falling

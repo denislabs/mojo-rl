@@ -2078,10 +2078,10 @@ def build_model_fields_from_flat[
             " merge is wrong, not that the budget is too small."
         )
     # ⚠⚠ AND THE NARROW PHASE'S OWN TWO CAPS, SAID OUT LOUD. `MC_MAX_POLYVERT`
-    # and `MC_MAX_DEG` size the InlineArrays inside `native_multicontact`, and
-    # neither is a capacity of THIS tensor — they are comptime because a Metal
-    # kernel cannot size a local array from a model field, where MuJoCo carries
-    # `npolygonmax` / `nmeshdegmax` as runtime model fields with no cap at all.
+    # and `MC_MAX_DEG` size the multi-contact region of the CCD workspace row,
+    # and neither is a capacity of THIS tensor — they are comptime because the
+    # row's offsets are, where MuJoCo carries `npolygonmax` / `nmeshdegmax` as
+    # runtime model fields with no cap at all.
     #
     # Exceeding either is NOT fatal: `_mesh_face` returns 0 and the caller
     # emits the single EPA point, which is exactly the reference's own
@@ -2090,9 +2090,10 @@ def build_model_fields_from_flat[
     #
     # ⚠ IT USED TO BE SILENT, AND THAT COST A REAL DEFECT. At the old cap of
     # 16, 47 of Menagerie's 59 mesh-bearing scenes had at least one polygon it
-    # could not hold (the worst is robotiq_2f85's 144) and 39 had a vertex with
-    # more polygons than `MC_MAX_DEG` — so those pairs quietly fell back to one
-    # point. kinova_gen3, whose reset pose interpenetrates two 31-vertex-face
+    # could not hold and 39 had a vertex with more polygons than `MC_MAX_DEG`
+    # — so those pairs quietly fell back to one point. At 56 it was still 21
+    # scenes on the width axis; at today's 144 it is none, and this print
+    # fires for no model in the tree. kinova_gen3, whose reset pose interpenetrates two 31-vertex-face
     # hulls, was 4.4e-02 from MuJoCo at step one and 5.7e-12 once the faces
     # fit. Print what was dropped; a bound nobody can see is a bound nobody
     # raises.
@@ -2113,9 +2114,9 @@ def build_model_fields_from_flat[
             " a SINGLE contact point where MuJoCo would clip a face manifold"
             " of up to four. Matching the reference here needs at least",
             _mc_worst_pv, "and", _mc_worst_deg,
-            "— but the constants are already at the largest pair a Metal"
-            " collision kernel compiles with, so going higher means moving"
-            " those buffers off the per-thread stack.",
+            "— raise them in `collision/ccd_workspace.mojo`, which sizes the"
+            " workspace row they live in. Nothing in Menagerie needs more"
+            " than 144 and 47.",
         )
     for p in range(len(poly_vertadr)):
         var o = p * MODEL_MESH_POLY_SIZE

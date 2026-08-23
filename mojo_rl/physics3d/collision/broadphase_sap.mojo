@@ -1829,7 +1829,7 @@ def _detect_contacts_sap_env[
                                 wf2, wf1, wxs,
                                 dist, cm, cf, cfs, cfr, cdim,
                                 True,
-                                contacts, num_contacts,
+                                contacts, ws, env, num_contacts,
                             )
                         else:
                             mcn = native_multicontact_contacts[
@@ -1847,7 +1847,7 @@ def _detect_contacts_sap_env[
                                 wf1, wf2, wxx,
                                 dist, cm, cf, cfs, cfr, cdim,
                                 False,
-                                contacts, num_contacts,
+                                contacts, ws, env, num_contacts,
                             )
                         # The manifold REPLACES the single point.
                         if mcn > 0:

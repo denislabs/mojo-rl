@@ -71,6 +71,18 @@ from ..gpu.constants import (
     MESH_POLY_IDX_NZ,
 )
 from ..fields import DimsLike
+from .ccd_workspace import (
+    MC_MAX_POLYVERT,
+    MC_MAX_DEG,
+    MC_CLIP_CAP,
+    MC_WS_FACE1,
+    MC_WS_FACE2,
+    MC_WS_OUT,
+    MC_WS_POLY,
+    MC_WS_CLIPPED,
+    MC_WS_PN,
+    MC_WS_PD,
+)
 
 # `mjFACE_TOL` / `mjEDGE_TOL` (`engine_collision_gjk.h:40`). FACE_TOL is a
 # cosine — two face normals count as opposed when their dot is below
@@ -79,12 +91,10 @@ from ..fields import DimsLike
 comptime MC_FACE_TOL: Float64 = 0.99999872
 comptime MC_EDGE_TOL: Float64 = 0.00159999931
 
-# MuJoCo's `npolygonmax` / `nmeshdegmax`, which are RUNTIME model fields there
-# — sized per model, so the reference has no cap at all. Ours have to be
-# compile-time: a Metal kernel cannot size a local array from a model field.
-# `MC_MAX_POLYVERT` is the largest number of vertices in one face polygon;
-# `MC_MAX_DEG` the most polygons meeting at one vertex. A clipped polygon can
-# reach the sum of the two input sizes, hence the separate `MC_CLIP_CAP`.
+# ⚠ `MC_MAX_POLYVERT` / `MC_MAX_DEG` / `MC_CLIP_CAP` NOW LIVE IN
+# `ccd_workspace.mojo`, beside the workspace row they size. MuJoCo carries the
+# equivalents (`npolygonmax` / `nmeshdegmax`) as RUNTIME MODEL FIELDS and has
+# no cap at all; ours are comptime because the row offsets have to be.
 #
 # ⚠⚠ EXCEEDING EITHER IS A LOST MANIFOLD, AND IT USED TO BE SILENT. `_mesh_face`
 # returns 0 past the cap, which is this routine's own "the features do not line
@@ -96,15 +106,13 @@ comptime MC_EDGE_TOL: Float64 = 0.00159999931
 # interpenetrates two 31- and 29-vertex faces at its own keyframe, was
 # 4.4e-02 from MuJoCo at step one and 5.7e-12 once they fit.
 #
-# ⚠⚠ AND METAL SETS THE CEILING. These arrays are per-thread stack in the
-# collision kernel. Bisected on this machine, `test_plane_mesh_fields` compiles
-# at (56, 48) and dies at (64, 48) and (56, 64) with "Compute function exceeds
-# available stack space". So 56/48 is the largest pair that keeps the GPU path
-# alive, and the CPU takes the same numbers rather than quietly computing a
-# manifold the GPU cannot. That covers EVERY vertex degree in the tree and 36
-# of 59 scenes outright, against 12 before; the widest faces (robotiq_2f85's
-# 144) still degrade. Raising further means moving these buffers off the stack
-# into a scratch tensor — a signature change, not a constant change.
+# ⚠ METAL USED TO SET THE CEILING AND NO LONGER DOES. These arrays were
+# per-thread stack in the collision kernel, and bisection put the largest
+# compiling pair at (56, 48). The `MC_MAX_POLYVERT`-sized ones now live in
+# `d.ccd_ws` — MuJoCo's own storage class for exactly this — so the width axis
+# is free. The `MC_MAX_DEG`-sized ones (`n1`/`n2`/`idx1`/`idx2`/`endverts`,
+# ~4.2 KB) stay on the stack: 48 already covers every vertex degree in the
+# tree, so that axis never needed unlocking.
 #
 # ⚠ THE COST IS THE WORK, NOT THE BUFFERS. A pair that never reaches the
 # manifold path never touches them: measured across a 10x raise, barkour
@@ -118,9 +126,6 @@ comptime MC_EDGE_TOL: Float64 = 0.00159999931
 # because unlike a missing hull this degrades to a working simulation and
 # refusing to load a third-party model over it would be worse.
 # See `tests/physics3d/test_multicontact_polygon_caps_vs_mujoco.mojo`.
-comptime MC_MAX_POLYVERT: Int = 56
-comptime MC_MAX_DEG: Int = 48
-comptime MC_CLIP_CAP: Int = 2 * MC_MAX_POLYVERT
 
 # ⚠⚠ OFF: THIS PATH IS NOT CORRECT YET AND MUST NOT DRIVE THE ENGINE.
 #
@@ -169,6 +174,36 @@ comptime MC_DEBUG: Bool = False
 # different four of them. Leave it here — the ring is the only thing that
 # distinguishes "we clipped differently" from "we pruned differently".
 comptime MC_DEBUG_RING: Bool = False
+
+
+@always_inline
+def _wr[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, i: Int
+) -> Scalar[DTYPE]:
+    """One slot of the CCD workspace row.
+
+    `rebind` because a `LayoutTensor`'s element type is only provably
+    `Scalar[DTYPE]` once its layout is concrete, and `L_WS` is a parameter
+    here. Reads go through this; writes stay spelled out at the site so the
+    slot being written is visible. See `ccd_workspace.mojo`.
+    """
+    return rebind[Scalar[DTYPE]](ws[wrow, i])
+
+
+@always_inline
+def _wv[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    off: Int,
+    i: Int,
+    k: Int,
+) -> Scalar[DTYPE]:
+    """Component `k` of vertex `i` of the polygon buffer at `off`."""
+    return rebind[Scalar[DTYPE]](ws[wrow, off + i * 3 + k])
 
 
 @always_inline
@@ -351,9 +386,10 @@ def _plane_normal[
 
 @always_inline
 def _polygon_quad[
-    DTYPE: DType
+    DTYPE: DType, L_WS: Layout
 ](
-    poly: InlineArray[Scalar[DTYPE], MC_CLIP_CAP * 3],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     nvert: Int,
     mut r0: Int, mut r1: Int, mut r2: Int, mut r3: Int,
 ):
@@ -374,19 +410,19 @@ def _polygon_quad[
     r2 = c
     r3 = d
     var m = _area4[DTYPE](
-        poly[a * 3 + 0], poly[a * 3 + 1], poly[a * 3 + 2],
-        poly[b * 3 + 0], poly[b * 3 + 1], poly[b * 3 + 2],
-        poly[c * 3 + 0], poly[c * 3 + 1], poly[c * 3 + 2],
-        poly[d * 3 + 0], poly[d * 3 + 1], poly[d * 3 + 2],
+        _wv(ws, wrow, MC_WS_POLY, a, 0), _wv(ws, wrow, MC_WS_POLY, a, 1), _wv(ws, wrow, MC_WS_POLY, a, 2),
+        _wv(ws, wrow, MC_WS_POLY, b, 0), _wv(ws, wrow, MC_WS_POLY, b, 1), _wv(ws, wrow, MC_WS_POLY, b, 2),
+        _wv(ws, wrow, MC_WS_POLY, c, 0), _wv(ws, wrow, MC_WS_POLY, c, 1), _wv(ws, wrow, MC_WS_POLY, c, 2),
+        _wv(ws, wrow, MC_WS_POLY, d, 0), _wv(ws, wrow, MC_WS_POLY, d, 1), _wv(ws, wrow, MC_WS_POLY, d, 2),
     )
     for _a in range(nvert):
         while True:
             var dn = (d + 1) % nvert
             var mn = _area4[DTYPE](
-                poly[a * 3 + 0], poly[a * 3 + 1], poly[a * 3 + 2],
-                poly[b * 3 + 0], poly[b * 3 + 1], poly[b * 3 + 2],
-                poly[c * 3 + 0], poly[c * 3 + 1], poly[c * 3 + 2],
-                poly[dn * 3 + 0], poly[dn * 3 + 1], poly[dn * 3 + 2],
+                _wv(ws, wrow, MC_WS_POLY, a, 0), _wv(ws, wrow, MC_WS_POLY, a, 1), _wv(ws, wrow, MC_WS_POLY, a, 2),
+                _wv(ws, wrow, MC_WS_POLY, b, 0), _wv(ws, wrow, MC_WS_POLY, b, 1), _wv(ws, wrow, MC_WS_POLY, b, 2),
+                _wv(ws, wrow, MC_WS_POLY, c, 0), _wv(ws, wrow, MC_WS_POLY, c, 1), _wv(ws, wrow, MC_WS_POLY, c, 2),
+                _wv(ws, wrow, MC_WS_POLY, dn, 0), _wv(ws, wrow, MC_WS_POLY, dn, 1), _wv(ws, wrow, MC_WS_POLY, dn, 2),
             )
             if mn <= m:
                 break
@@ -399,10 +435,10 @@ def _polygon_quad[
             while True:
                 var cn = (c + 1) % nvert
                 var mc = _area4[DTYPE](
-                    poly[a * 3 + 0], poly[a * 3 + 1], poly[a * 3 + 2],
-                    poly[b * 3 + 0], poly[b * 3 + 1], poly[b * 3 + 2],
-                    poly[cn * 3 + 0], poly[cn * 3 + 1], poly[cn * 3 + 2],
-                    poly[d * 3 + 0], poly[d * 3 + 1], poly[d * 3 + 2],
+                    _wv(ws, wrow, MC_WS_POLY, a, 0), _wv(ws, wrow, MC_WS_POLY, a, 1), _wv(ws, wrow, MC_WS_POLY, a, 2),
+                    _wv(ws, wrow, MC_WS_POLY, b, 0), _wv(ws, wrow, MC_WS_POLY, b, 1), _wv(ws, wrow, MC_WS_POLY, b, 2),
+                    _wv(ws, wrow, MC_WS_POLY, cn, 0), _wv(ws, wrow, MC_WS_POLY, cn, 1), _wv(ws, wrow, MC_WS_POLY, cn, 2),
+                    _wv(ws, wrow, MC_WS_POLY, d, 0), _wv(ws, wrow, MC_WS_POLY, d, 1), _wv(ws, wrow, MC_WS_POLY, d, 2),
                 )
                 if mc <= m:
                     break
@@ -415,10 +451,10 @@ def _polygon_quad[
             while True:
                 var bn = (b + 1) % nvert
                 var mb = _area4[DTYPE](
-                    poly[a * 3 + 0], poly[a * 3 + 1], poly[a * 3 + 2],
-                    poly[bn * 3 + 0], poly[bn * 3 + 1], poly[bn * 3 + 2],
-                    poly[c * 3 + 0], poly[c * 3 + 1], poly[c * 3 + 2],
-                    poly[d * 3 + 0], poly[d * 3 + 1], poly[d * 3 + 2],
+                    _wv(ws, wrow, MC_WS_POLY, a, 0), _wv(ws, wrow, MC_WS_POLY, a, 1), _wv(ws, wrow, MC_WS_POLY, a, 2),
+                    _wv(ws, wrow, MC_WS_POLY, bn, 0), _wv(ws, wrow, MC_WS_POLY, bn, 1), _wv(ws, wrow, MC_WS_POLY, bn, 2),
+                    _wv(ws, wrow, MC_WS_POLY, c, 0), _wv(ws, wrow, MC_WS_POLY, c, 1), _wv(ws, wrow, MC_WS_POLY, c, 2),
+                    _wv(ws, wrow, MC_WS_POLY, d, 0), _wv(ws, wrow, MC_WS_POLY, d, 1), _wv(ws, wrow, MC_WS_POLY, d, 2),
                 )
                 if mb <= m:
                     break
@@ -441,15 +477,20 @@ def _polygon_quad[
 
 @always_inline
 def _polygon_clip[
-    DTYPE: DType
+    DTYPE: DType, L_WS: Layout
 ](
-    face1: InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    # ⚠ THE TWO FACES ARRIVE AS OFFSETS, NOT AS FIXED REGIONS, because the
+    # caller swaps their roles: the edge/face branches clip face1 against
+    # face2 and the face/face branch the other way round. Pinning each to its
+    # own region would need a copy at one of the call sites.
+    o_face1: Int,
     nface1: Int,
-    face2: InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3],
+    o_face2: Int,
     nface2: Int,
     nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
     max_contacts: Int,
-    mut out: InlineArray[Scalar[DTYPE], MC_CLIP_CAP * 3],
 ) -> Int:
     """`polygonClip` — Sutherland-Hodgman clip of face2 against face1.
 
@@ -467,54 +508,49 @@ def _polygon_clip[
     if nface1 < 3:
         return 0
 
-    var poly = InlineArray[Scalar[DTYPE], MC_CLIP_CAP * 3](
-        fill=Scalar[DTYPE](0)
-    )
-    var clipped = InlineArray[Scalar[DTYPE], MC_CLIP_CAP * 3](
-        fill=Scalar[DTYPE](0)
-    )
-    var pn = InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3](
-        fill=Scalar[DTYPE](0)
-    )
-    var pd = InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT](fill=Scalar[DTYPE](0))
+    # `poly`, `clipped`, `pn` and `pd` are REGIONS OF THE CALLER'S WORKSPACE
+    # ROW, not locals — together with `face1`/`face2`/`out` they are 28 floats
+    # per `MC_MAX_POLYVERT`, and a per-thread stack that size is what pinned
+    # the cap at 56. Every slot is written before it is read within one call,
+    # so nothing has to clear them. See `ccd_workspace.mojo`.
 
     # One clipping plane per edge of face1.
     for i in range(nface1):
         var j = 0 if i == nface1 - 1 else i + 1
         var r = _plane_normal[DTYPE](
-            face1[i * 3 + 0], face1[i * 3 + 1], face1[i * 3 + 2],
-            face1[j * 3 + 0], face1[j * 3 + 1], face1[j * 3 + 2],
+            _wv(ws, wrow, o_face1, i, 0), _wv(ws, wrow, o_face1, i, 1), _wv(ws, wrow, o_face1, i, 2),
+            _wv(ws, wrow, o_face1, j, 0), _wv(ws, wrow, o_face1, j, 1), _wv(ws, wrow, o_face1, j, 2),
             nx, ny, nz,
         )
-        pn[i * 3 + 0] = r[0]
-        pn[i * 3 + 1] = r[1]
-        pn[i * 3 + 2] = r[2]
-        pd[i] = r[3]
+        ws[wrow, MC_WS_PN + i * 3 + 0] = r[0]
+        ws[wrow, MC_WS_PN + i * 3 + 1] = r[1]
+        ws[wrow, MC_WS_PN + i * 3 + 2] = r[2]
+        ws[wrow, MC_WS_PD + i] = r[3]
 
     var npolygon = nface2
     for i in range(nface2):
-        poly[i * 3 + 0] = face2[i * 3 + 0]
-        poly[i * 3 + 1] = face2[i * 3 + 1]
-        poly[i * 3 + 2] = face2[i * 3 + 2]
+        ws[wrow, MC_WS_POLY + i * 3 + 0] = _wv(ws, wrow, o_face2, i, 0)
+        ws[wrow, MC_WS_POLY + i * 3 + 1] = _wv(ws, wrow, o_face2, i, 1)
+        ws[wrow, MC_WS_POLY + i * 3 + 2] = _wv(ws, wrow, o_face2, i, 2)
 
     for e in range(nface1):
         var nclipped = 0
         for i in range(npolygon):
             var iq = i + 1 if i < npolygon - 1 else 0
-            var px = poly[i * 3 + 0]
-            var py = poly[i * 3 + 1]
-            var pz = poly[i * 3 + 2]
-            var qx = poly[iq * 3 + 0]
-            var qy = poly[iq * 3 + 1]
-            var qz = poly[iq * 3 + 2]
+            var px = _wv(ws, wrow, MC_WS_POLY, i, 0)
+            var py = _wv(ws, wrow, MC_WS_POLY, i, 1)
+            var pz = _wv(ws, wrow, MC_WS_POLY, i, 2)
+            var qx = _wv(ws, wrow, MC_WS_POLY, iq, 0)
+            var qy = _wv(ws, wrow, MC_WS_POLY, iq, 1)
+            var qz = _wv(ws, wrow, MC_WS_POLY, iq, 2)
 
             # `halfspace`: is the point on the inner side of this edge plane?
-            var ax = face1[e * 3 + 0]
-            var ay = face1[e * 3 + 1]
-            var az = face1[e * 3 + 2]
-            var enx = pn[e * 3 + 0]
-            var eny = pn[e * 3 + 1]
-            var enz = pn[e * 3 + 2]
+            var ax = _wv(ws, wrow, o_face1, e, 0)
+            var ay = _wv(ws, wrow, o_face1, e, 1)
+            var az = _wv(ws, wrow, o_face1, e, 2)
+            var enx = _wv(ws, wrow, MC_WS_PN, e, 0)
+            var eny = _wv(ws, wrow, MC_WS_PN, e, 1)
+            var enz = _wv(ws, wrow, MC_WS_PN, e, 2)
             var in1 = _dot3[DTYPE](
                 px - ax, py - ay, pz - az, enx, eny, enz
             ) > Scalar[DTYPE](-1e-15)
@@ -527,9 +563,9 @@ def _polygon_clip[
 
             if in1 and in2:
                 if nclipped < MC_CLIP_CAP:
-                    clipped[nclipped * 3 + 0] = qx
-                    clipped[nclipped * 3 + 1] = qy
-                    clipped[nclipped * 3 + 2] = qz
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 0] = qx
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 1] = qy
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 2] = qz
                     nclipped += 1
                 continue
 
@@ -540,24 +576,24 @@ def _polygon_clip[
             var den = _dot3[DTYPE](enx, eny, enz, abx, aby, abz)
             if den != Scalar[DTYPE](0):
                 var t = (
-                    pd[e] - _dot3[DTYPE](enx, eny, enz, px, py, pz)
+                    _wr(ws, wrow, MC_WS_PD + e) - _dot3[DTYPE](enx, eny, enz, px, py, pz)
                 ) / den
                 if t >= Scalar[DTYPE](0) and t <= Scalar[DTYPE](1):
                     if nclipped < MC_CLIP_CAP:
-                        clipped[nclipped * 3 + 0] = px + t * abx
-                        clipped[nclipped * 3 + 1] = py + t * aby
-                        clipped[nclipped * 3 + 2] = pz + t * abz
+                        ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 0] = px + t * abx
+                        ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 1] = py + t * aby
+                        ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 2] = pz + t * abz
                         nclipped += 1
 
             if in2:
                 if nclipped < MC_CLIP_CAP:
-                    clipped[nclipped * 3 + 0] = qx
-                    clipped[nclipped * 3 + 1] = qy
-                    clipped[nclipped * 3 + 2] = qz
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 0] = qx
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 1] = qy
+                    ws[wrow, MC_WS_CLIPPED + nclipped * 3 + 2] = qz
                     nclipped += 1
 
         for k in range(nclipped * 3):
-            poly[k] = clipped[k]
+            ws[wrow, MC_WS_POLY + k] = _wr(ws, wrow, MC_WS_CLIPPED + k)
         npolygon = nclipped
 
     if npolygon < 1:
@@ -567,8 +603,8 @@ def _polygon_clip[
         print("  [ring] npolygon =", npolygon, " nface1 =", nface1,
               " nface2 =", nface2)
         for i in range(npolygon):
-            print("    [ring] v", i, "=", poly[i * 3 + 0],
-                  poly[i * 3 + 1], poly[i * 3 + 2])
+            print("    [ring] v", i, "=", _wv(ws, wrow, MC_WS_POLY, i, 0),
+                  _wv(ws, wrow, MC_WS_POLY, i, 1), _wv(ws, wrow, MC_WS_POLY, i, 2))
 
     # More than a quad, and only four rows are wanted: keep the largest quad.
     if max_contacts < 5 and npolygon > 4:
@@ -576,19 +612,19 @@ def _polygon_clip[
         var r1 = 0
         var r2 = 0
         var r3 = 0
-        _polygon_quad[DTYPE](poly, npolygon, r0, r1, r2, r3)
-        out[0] = poly[r0 * 3 + 0]
-        out[1] = poly[r0 * 3 + 1]
-        out[2] = poly[r0 * 3 + 2]
-        out[3] = poly[r1 * 3 + 0]
-        out[4] = poly[r1 * 3 + 1]
-        out[5] = poly[r1 * 3 + 2]
-        out[6] = poly[r2 * 3 + 0]
-        out[7] = poly[r2 * 3 + 1]
-        out[8] = poly[r2 * 3 + 2]
-        out[9] = poly[r3 * 3 + 0]
-        out[10] = poly[r3 * 3 + 1]
-        out[11] = poly[r3 * 3 + 2]
+        _polygon_quad[DTYPE](ws, wrow, npolygon, r0, r1, r2, r3)
+        ws[wrow, MC_WS_OUT + 0] = _wv(ws, wrow, MC_WS_POLY, r0, 0)
+        ws[wrow, MC_WS_OUT + 1] = _wv(ws, wrow, MC_WS_POLY, r0, 1)
+        ws[wrow, MC_WS_OUT + 2] = _wv(ws, wrow, MC_WS_POLY, r0, 2)
+        ws[wrow, MC_WS_OUT + 3] = _wv(ws, wrow, MC_WS_POLY, r1, 0)
+        ws[wrow, MC_WS_OUT + 4] = _wv(ws, wrow, MC_WS_POLY, r1, 1)
+        ws[wrow, MC_WS_OUT + 5] = _wv(ws, wrow, MC_WS_POLY, r1, 2)
+        ws[wrow, MC_WS_OUT + 6] = _wv(ws, wrow, MC_WS_POLY, r2, 0)
+        ws[wrow, MC_WS_OUT + 7] = _wv(ws, wrow, MC_WS_POLY, r2, 1)
+        ws[wrow, MC_WS_OUT + 8] = _wv(ws, wrow, MC_WS_POLY, r2, 2)
+        ws[wrow, MC_WS_OUT + 9] = _wv(ws, wrow, MC_WS_POLY, r3, 0)
+        ws[wrow, MC_WS_OUT + 10] = _wv(ws, wrow, MC_WS_POLY, r3, 1)
+        ws[wrow, MC_WS_OUT + 11] = _wv(ws, wrow, MC_WS_POLY, r3, 2)
         return 4
 
     # A clipped EDGE keeps only its two extremes.
@@ -598,24 +634,24 @@ def _polygon_clip[
         var best = Scalar[DTYPE](0)
         for i in range(npolygon):
             for j in range(i + 1, npolygon):
-                var dx = poly[j * 3 + 0] - poly[i * 3 + 0]
-                var dy = poly[j * 3 + 1] - poly[i * 3 + 1]
-                var dz = poly[j * 3 + 2] - poly[i * 3 + 2]
+                var dx = _wv(ws, wrow, MC_WS_POLY, j, 0) - _wv(ws, wrow, MC_WS_POLY, i, 0)
+                var dy = _wv(ws, wrow, MC_WS_POLY, j, 1) - _wv(ws, wrow, MC_WS_POLY, i, 1)
+                var dz = _wv(ws, wrow, MC_WS_POLY, j, 2) - _wv(ws, wrow, MC_WS_POLY, i, 2)
                 var d2 = dx * dx + dy * dy + dz * dz
                 if d2 > best:
                     best = d2
                     b1 = i
                     b2 = j
-        out[0] = poly[b1 * 3 + 0]
-        out[1] = poly[b1 * 3 + 1]
-        out[2] = poly[b1 * 3 + 2]
-        out[3] = poly[b2 * 3 + 0]
-        out[4] = poly[b2 * 3 + 1]
-        out[5] = poly[b2 * 3 + 2]
+        ws[wrow, MC_WS_OUT + 0] = _wv(ws, wrow, MC_WS_POLY, b1, 0)
+        ws[wrow, MC_WS_OUT + 1] = _wv(ws, wrow, MC_WS_POLY, b1, 1)
+        ws[wrow, MC_WS_OUT + 2] = _wv(ws, wrow, MC_WS_POLY, b1, 2)
+        ws[wrow, MC_WS_OUT + 3] = _wv(ws, wrow, MC_WS_POLY, b2, 0)
+        ws[wrow, MC_WS_OUT + 4] = _wv(ws, wrow, MC_WS_POLY, b2, 1)
+        ws[wrow, MC_WS_OUT + 5] = _wv(ws, wrow, MC_WS_POLY, b2, 2)
         return 2
 
     for k in range(npolygon * 3):
-        out[k] = poly[k]
+        ws[wrow, MC_WS_OUT + k] = _wr(ws, wrow, MC_WS_POLY + k)
     return npolygon
 
 
@@ -865,13 +901,15 @@ def _box_edge_normals[
 
 @always_inline
 def _box_face[
-    DTYPE: DType
+    DTYPE: DType, L_WS: Layout
 ](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    o_face: Int,
     face_id: Int,
     gx: Scalar[DTYPE], gy: Scalar[DTYPE], gz: Scalar[DTYPE],
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
-    mut face: InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3],
 ) -> Int:
     """`boxFace` — the four corners of a box face, in the reference's order.
 
@@ -918,9 +956,9 @@ def _box_face[
         return 0
     for k in range(4):
         var w = quat_rotate[DTYPE](qx, qy, qz, qw, sx[k], sy[k], sz[k])
-        face[k * 3 + 0] = gx + w[0]
-        face[k * 3 + 1] = gy + w[1]
-        face[k * 3 + 2] = gz + w[2]
+        ws[wrow, o_face + k * 3 + 0] = gx + w[0]
+        ws[wrow, o_face + k * 3 + 1] = gy + w[1]
+        ws[wrow, o_face + k * 3 + 2] = gz + w[2]
     return 4
 
 
@@ -1155,7 +1193,11 @@ def _mesh_face[
     DTYPE: DType,
     L_MESH_VERTS: Layout,
     L_MESH_POLYS: Layout,
-    L_MESH_POLYVERT: Layout](
+    L_MESH_POLYVERT: Layout,
+    L_WS: Layout](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    o_face: Int,
     face_id: Int,
     gx: Scalar[DTYPE], gy: Scalar[DTYPE], gz: Scalar[DTYPE],
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
@@ -1169,7 +1211,6 @@ def _mesh_face[
     mesh_polyvert: LayoutTensor[
         DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
-    mut face: InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3],
 ) -> Int:
     """`meshFace` — one polygon in world coordinates, REVERSED.
 
@@ -1191,9 +1232,9 @@ def _mesh_face[
             rebind[Scalar[DTYPE]](mesh_verts[vert_adr + vi, 1]),
             rebind[Scalar[DTYPE]](mesh_verts[vert_adr + vi, 2]),
         )
-        face[j * 3 + 0] = gx + w[0]
-        face[j * 3 + 1] = gy + w[1]
-        face[j * 3 + 2] = gz + w[2]
+        ws[wrow, o_face + j * 3 + 0] = gx + w[0]
+        ws[wrow, o_face + j * 3 + 1] = gy + w[1]
+        ws[wrow, o_face + j * 3 + 2] = gz + w[2]
         j += 1
     return num
 
@@ -1255,6 +1296,7 @@ def native_multicontact_contacts[
     L_MESH_POLYVERT: Layout,
     L_MESH_VERT_POLYMAP: Layout,
     L_CONTACTS: Layout,
+    L_WS: Layout,
 ](
     env: Int, body_a: Int, body_b: Int,
     gi_type: Int,
@@ -1299,6 +1341,10 @@ def native_multicontact_contacts[
         DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
+    # The polygon buffers, one row per env — see `ccd_workspace.mojo`. This
+    # routine shares `d.ccd_ws` with EPA and uses a DISJOINT region of it.
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     mut num_contacts: Int,
 ) -> Int:
     """`multicontact` — emit the clipped face manifold, or 0 if there is none.
@@ -1507,59 +1553,58 @@ def native_multicontact_contacts[
             return 0
 
     # ---- recover each geom's matching face (or edge) ------------------------
-    var face1 = InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3](
-        fill=Scalar[DTYPE](0)
-    )
-    var face2 = InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3](
-        fill=Scalar[DTYPE](0)
-    )
+    # `face1` / `face2` are `MC_WS_FACE1` / `MC_WS_FACE2` in the workspace row.
     var nf1 = 0
     var nf2 = 0
 
     if edgecon1:
-        face1[0] = a1x
-        face1[1] = a1y
-        face1[2] = a1z
-        face1[3] = endverts[ri * 3 + 0]
-        face1[4] = endverts[ri * 3 + 1]
-        face1[5] = endverts[ri * 3 + 2]
+        ws[wrow, MC_WS_FACE1 + 0] = a1x
+        ws[wrow, MC_WS_FACE1 + 1] = a1y
+        ws[wrow, MC_WS_FACE1 + 2] = a1z
+        ws[wrow, MC_WS_FACE1 + 3] = endverts[ri * 3 + 0]
+        ws[wrow, MC_WS_FACE1 + 4] = endverts[ri * 3 + 1]
+        ws[wrow, MC_WS_FACE1 + 5] = endverts[ri * 3 + 2]
         nf1 = 2
     else:
         var ind = idx1[rj] if edgecon2 else idx1[ri]
         if gi_type == GEOM_BOX:
             nf1 = _box_face[DTYPE](
-                ind, pix, piy, piz, qix, qiy, qiz, qiw, hxi, hyi, hzi, face1
+                ws, wrow, MC_WS_FACE1,
+                ind, pix, piy, piz, qix, qiy, qiz, qiw, hxi, hyi, hzi,
             )
         elif gi_type == GEOM_MESH:
             nf1 = _mesh_face[DTYPE](
+                ws, wrow, MC_WS_FACE1,
                 ind, pix, piy, piz, qix, qiy, qiz, qiw, va1, pa1,
-                mesh_verts, mesh_polys, mesh_polyvert, face1,
+                mesh_verts, mesh_polys, mesh_polyvert,
             )
 
     if edgecon2:
-        face2[0] = a2x
-        face2[1] = a2y
-        face2[2] = a2z
-        face2[3] = endverts[ri * 3 + 0]
-        face2[4] = endverts[ri * 3 + 1]
-        face2[5] = endverts[ri * 3 + 2]
+        ws[wrow, MC_WS_FACE2 + 0] = a2x
+        ws[wrow, MC_WS_FACE2 + 1] = a2y
+        ws[wrow, MC_WS_FACE2 + 2] = a2z
+        ws[wrow, MC_WS_FACE2 + 3] = endverts[ri * 3 + 0]
+        ws[wrow, MC_WS_FACE2 + 4] = endverts[ri * 3 + 1]
+        ws[wrow, MC_WS_FACE2 + 5] = endverts[ri * 3 + 2]
         nf2 = 2
     else:
         if gj_type == GEOM_BOX:
             nf2 = _box_face[DTYPE](
+                ws, wrow, MC_WS_FACE2,
                 idx2[rj], pjx, pjy, pjz, qjx, qjy, qjz, qjw,
-                hxj, hyj, hzj, face2,
+                hxj, hyj, hzj,
             )
         elif gj_type == GEOM_MESH:
             nf2 = _mesh_face[DTYPE](
+                ws, wrow, MC_WS_FACE2,
                 idx2[rj], pjx, pjy, pjz, qjx, qjy, qjz, qjw, va2, pa2,
-                mesh_verts, mesh_polys, mesh_polyvert, face2,
+                mesh_verts, mesh_polys, mesh_polyvert,
             )
     if nf1 == 0 or nf2 == 0:
         return 0
 
     # ---- clip -------------------------------------------------------------
-    var out = InlineArray[Scalar[DTYPE], MC_CLIP_CAP * 3](fill=Scalar[DTYPE](0))
+    # The clipped ring lands in `MC_WS_OUT`.
     var nx_out = 0
     var adx = Scalar[DTYPE](0)
     var ady = Scalar[DTYPE](0)
@@ -1571,8 +1616,8 @@ def native_multicontact_contacts[
         ady = -n2[rj * 3 + 1] * dirlen
         adz = -n2[rj * 3 + 2] * dirlen
         nx_out = _polygon_clip[DTYPE](
-            face2, nf2, face1, nf1,
-            n2[rj * 3 + 0], n2[rj * 3 + 1], n2[rj * 3 + 2], 4, out,
+            ws, wrow, MC_WS_FACE2, nf2, MC_WS_FACE1, nf1,
+            n2[rj * 3 + 0], n2[rj * 3 + 1], n2[rj * 3 + 2], 4,
         )
         swap = True
     elif edgecon2:
@@ -1580,16 +1625,16 @@ def native_multicontact_contacts[
         ady = -n1[rj * 3 + 1] * dirlen
         adz = -n1[rj * 3 + 2] * dirlen
         nx_out = _polygon_clip[DTYPE](
-            face1, nf1, face2, nf2,
-            n1[rj * 3 + 0], n1[rj * 3 + 1], n1[rj * 3 + 2], 4, out,
+            ws, wrow, MC_WS_FACE1, nf1, MC_WS_FACE2, nf2,
+            n1[rj * 3 + 0], n1[rj * 3 + 1], n1[rj * 3 + 2], 4,
         )
     else:
         adx = n2[rj * 3 + 0] * dirlen
         ady = n2[rj * 3 + 1] * dirlen
         adz = n2[rj * 3 + 2] * dirlen
         nx_out = _polygon_clip[DTYPE](
-            face1, nf1, face2, nf2,
-            n1[ri * 3 + 0], n1[ri * 3 + 1], n1[ri * 3 + 2], 4, out,
+            ws, wrow, MC_WS_FACE1, nf1, MC_WS_FACE2, nf2,
+            n1[ri * 3 + 0], n1[ri * 3 + 1], n1[ri * 3 + 2], 4,
         )
 
     comptime if MC_DEBUG:
@@ -1631,13 +1676,13 @@ def native_multicontact_contacts[
         contacts[env, off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
         contacts[env, off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
         contacts[env, off + CONTACT_IDX_POS_X] = (
-            out[k * 3 + 0] - Scalar[DTYPE](0.5) * adx
+            _wv(ws, wrow, MC_WS_OUT, k, 0) - Scalar[DTYPE](0.5) * adx
         )
         contacts[env, off + CONTACT_IDX_POS_Y] = (
-            out[k * 3 + 1] - Scalar[DTYPE](0.5) * ady
+            _wv(ws, wrow, MC_WS_OUT, k, 1) - Scalar[DTYPE](0.5) * ady
         )
         contacts[env, off + CONTACT_IDX_POS_Z] = (
-            out[k * 3 + 2] - Scalar[DTYPE](0.5) * adz
+            _wv(ws, wrow, MC_WS_OUT, k, 2) - Scalar[DTYPE](0.5) * adz
         )
         contacts[env, off + CONTACT_IDX_NX] = rnx
         contacts[env, off + CONTACT_IDX_NY] = rny
