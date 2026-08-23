@@ -48,7 +48,7 @@ from .hull_cache import (
     hull_cache_path,
     hull_cache_store,
 )
-from .mesh_polygons import build_mesh_polygons
+from .mesh_polygons import build_mesh_polygons, polygon_normal
 from .robust_predicates import orient3d_dd
 from ..model.mesh_inertia import (
     MeshInertia,
@@ -975,31 +975,21 @@ def load_mesh_hull[
         transform_verts_to_principal_frame[DTYPE](lvert, nh, mi)
 
         # `MakePolygonNormals` (user_mesh.cc:2661) — recomputed from the FINAL
-        # vertices, over the first three vertices of each stored path. The
-        # normals `build_mesh_polygons` returned are the file frame's and are
-        # discarded.
+        # vertices. The normals `build_mesh_polygons` returned are the file
+        # frame's and are discarded.
+        #
+        # ⚠⚠ THIS LOOP USED TO SPELL THE RULE OUT AGAIN, AND THAT IS WHY THE
+        # DEGENERATE CASE SURVIVED A FIX. `mesh_polygons` had the same eight
+        # lines; this copy is the one that survives, so correcting the other
+        # one changed nothing measurable and looked like the fix had failed.
+        # One callee now, and it is the module that owns the rule.
         for pi in range(np_local):
-            var adr = p.poly_vertadr[pi]
-            var a = p.poly_vert[adr + 0] * 3
-            var b = p.poly_vert[adr + 1] * 3
-            var c = p.poly_vert[adr + 2] * 3
-            var ux = lvert[b + 0] - lvert[a + 0]
-            var uy = lvert[b + 1] - lvert[a + 1]
-            var uz = lvert[b + 2] - lvert[a + 2]
-            var vx = lvert[c + 0] - lvert[a + 0]
-            var vy = lvert[c + 1] - lvert[a + 1]
-            var vz = lvert[c + 2] - lvert[a + 2]
-            var wx = uy * vz - uz * vy
-            var wy = uz * vx - ux * vz
-            var wz = ux * vy - uy * vx
-            var wn = sqrt(wx * wx + wy * wy + wz * wz)
-            if wn > Scalar[DTYPE](0):
-                wx /= wn
-                wy /= wn
-                wz /= wn
-            lnormal[pi * 3 + 0] = wx
-            lnormal[pi * 3 + 1] = wy
-            lnormal[pi * 3 + 2] = wz
+            var wn = polygon_normal[DTYPE](
+                lvert, 0, p.poly_vert, p.poly_vertadr[pi], p.poly_vertnum[pi],
+            )
+            lnormal[pi * 3 + 0] = wn[0]
+            lnormal[pi * 3 + 1] = wn[1]
+            lnormal[pi * 3 + 2] = wn[2]
 
         p.num_hull = nh
         p.npoly = np_local

@@ -46,17 +46,66 @@ from std.math import sqrt, atan2, acos, cos, sin, abs, round
 from ..constants import MESH_POLY_ANGLE_TOL
 
 
+# `mjEPS` (`user_util.h:31`) — the compiler-side "this is zero" threshold that
+# `mjuu_makenormal` tests the CROSS PRODUCT LENGTH against. Ours used to test
+# `norm <= 0`, which is a different question: a cross product of 1e-20 passes
+# it and yields a normalised direction made entirely of rounding noise.
+comptime _MJEPS: Float64 = 1e-14
+
+
 @always_inline
-def _normalize3[
+def polygon_normal[
     DTYPE: DType
 ](
-    x: Scalar[DTYPE], y: Scalar[DTYPE], z: Scalar[DTYPE]
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
-    """Returns (nx, ny, nz, norm); the vector is untouched when norm is 0."""
-    var n = sqrt(x * x + y * y + z * z)
-    if n <= Scalar[DTYPE](0):
-        return (x, y, z, n)
-    return (x / n, y / n, z / n, n)
+    verts: List[Scalar[DTYPE]],
+    vert_float_offset: Int,
+    poly_vert: List[Int],
+    adr: Int,
+    num: Int,
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`MakePolygonNormals` + `mjuu_makenormal`, with ONE deliberate extension.
+
+    MuJoCo takes the first THREE path vertices (`user_mesh.cc:2660`) and hands
+    them to `mjuu_makenormal` (`user_util.cc:366`), which substitutes `(1, 0, 0)`
+    when the cross product is shorter than `mjEPS`. The first iteration here is
+    exactly that call, so on every polygon where the reference's answer is
+    defined this is BIT-IDENTICAL to it.
+
+    ⚠⚠ THE EXTENSION IS THE `k` LOOP, AND IT EXISTS BECAUSE THE REFERENCE'S
+    FALLBACK IS ACTIVELY WRONG WHEN OUR PARTITION REACHES IT. `(1, 0, 0)` is a
+    PLACEHOLDER — a unit vector so nothing downstream divides by zero — not the
+    polygon's plane. A polygon whose first three path vertices happen to be
+    collinear still has a perfectly good plane, and handing `alignedFaces` a
+    normal that is not it is worse than handing it nothing: the pair can now
+    MATCH a face it is not parallel to, and the manifold gets clipped against
+    the wrong plane. Advancing to the first non-collinear third vertex returns
+    the polygon's ACTUAL normal. Only a polygon with no valid triple at all —
+    genuinely degenerate — reaches the reference's `(1, 0, 0)`.
+
+    ⚠⚠ PUBLIC, AND THAT IS THE POINT. This rule was written out TWICE — here
+    and again in `convex_hull.load_mesh_hull`, which recomputes every normal
+    after the principal-frame transform and so is the copy that actually
+    SURVIVES. Fixing the discarded one changes nothing measurable, which is
+    exactly what the first attempt at this defect did.
+    """
+    var a = vert_float_offset + poly_vert[adr + 0] * 3
+    var b = vert_float_offset + poly_vert[adr + 1] * 3
+    for k in range(2, num):
+        var c = vert_float_offset + poly_vert[adr + k] * 3
+        var ux = verts[b + 0] - verts[a + 0]
+        var uy = verts[b + 1] - verts[a + 1]
+        var uz = verts[b + 2] - verts[a + 2]
+        var vx = verts[c + 0] - verts[a + 0]
+        var vy = verts[c + 1] - verts[a + 1]
+        var vz = verts[c + 2] - verts[a + 2]
+        var cx = uy * vz - uz * vy
+        var cy = uz * vx - ux * vz
+        var cz = ux * vy - uy * vx
+        var nrm = sqrt(cx * cx + cy * cy + cz * cz)
+        if Float64(nrm) >= _MJEPS:
+            return (cx / nrm, cy / nrm, cz / nrm)
+    # `mjuu_makenormal`'s own answer for a triangle with no area.
+    return (Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0))
 
 
 def _polygon_key[
@@ -345,25 +394,15 @@ def build_mesh_polygons[
             poly_vertnum.append(len(path))
             for k in range(len(path)):
                 poly_vert.append(path[k])
-            # `MakePolygonNormals`: from the first THREE path vertices, not the
-            # bucket's quantised direction. The bucket is only a grouping key —
-            # rounding it to 0.01 rad would put a visible error into every
-            # non-axis-aligned face normal. Measured on the hex fixture: the
-            # exact side normal is (0.9333, 0.3592, 0) and the quantised one is
+            # `MakePolygonNormals`: from the PATH's vertices, not the bucket's
+            # quantised direction. The bucket is only a grouping key — rounding
+            # it to 0.01 rad would put a visible error into every non-axis-
+            # aligned face normal. Measured on the hex fixture: the exact side
+            # normal is (0.9333, 0.3592, 0) and the quantised one is
             # (0.9323, 0.3616, 0).
-            var a = vert_float_offset + path[0] * 3
-            var b = vert_float_offset + path[1] * 3
-            var c = vert_float_offset + path[2] * 3
-            var ux = verts[b + 0] - verts[a + 0]
-            var uy = verts[b + 1] - verts[a + 1]
-            var uz = verts[b + 2] - verts[a + 2]
-            var vx = verts[c + 0] - verts[a + 0]
-            var vy = verts[c + 1] - verts[a + 1]
-            var vz = verts[c + 2] - verts[a + 2]
-            var n = _normalize3[DTYPE](
-                uy * vz - uz * vy,
-                uz * vx - ux * vz,
-                ux * vy - uy * vx,
+            var n = polygon_normal[DTYPE](
+                verts, vert_float_offset, poly_vert,
+                poly_vertadr[len(poly_vertadr) - 1], len(path),
             )
             poly_normal.append(n[0])
             poly_normal.append(n[1])

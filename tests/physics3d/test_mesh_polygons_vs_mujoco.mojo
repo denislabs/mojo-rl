@@ -27,6 +27,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
+from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
+from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
@@ -303,6 +305,125 @@ def test_a_fixture_has_a_non_identity_mesh_frame() raises:
         String("every fixture mesh has an (almost) identity principal"
                " rotation — worst is ") + String(worst_ang) + " deg, so this"
         " file cannot see a frame defect in the polygon partition at all",
+    )
+
+
+def _normals_are_unit(name: String, path: String) raises -> Int:
+    """Load one real mesh and check every stored polygon normal is a UNIT
+    vector. Returns how many polygons the REFERENCE's rule could not answer.
+
+    ⚠⚠ THE RETURN VALUE IS THE NON-VACUITY COUNT, not a diagnostic. A mesh
+    whose first-three-path-vertices rule never hits a degenerate triple cannot
+    fail this assertion however broken the fallback is, so a caller that gets
+    0 back has proved nothing and says so.
+    """
+    var mesh_vert = List[Scalar[DTYPE]]()
+    var mesh_vertadr = List[Int]()
+    var mesh_vertnum = List[Int]()
+    var num_meshes = 0
+    var mesh_polyadr = List[Int]()
+    var mesh_polynum = List[Int]()
+    var poly_vert = List[Int]()
+    var poly_vertadr = List[Int]()
+    var poly_vertnum = List[Int]()
+    var poly_normal = List[Scalar[DTYPE]]()
+    var polymap = List[Int]()
+    var polymap_adr = List[Int]()
+    var polymap_num = List[Int]()
+    var edge_adr = List[Int]()
+    var edge_list = List[Int]()
+    var mi = MeshInertia[DTYPE]()
+    _ = load_mesh_hull[DTYPE](
+        path, mesh_vert, mesh_vertadr, mesh_vertnum, num_meshes,
+        mesh_polyadr, mesh_polynum, poly_vert, poly_vertadr, poly_vertnum,
+        poly_normal, polymap, polymap_adr, polymap_num, edge_adr, edge_list,
+        mi,
+    )
+    var npoly = len(poly_vertnum)
+    var worst = Float64(1e30)
+    var degenerate = 0
+    for p in range(npoly):
+        var nx = Float64(poly_normal[p * 3 + 0])
+        var ny = Float64(poly_normal[p * 3 + 1])
+        var nz = Float64(poly_normal[p * 3 + 2])
+        var l2 = nx * nx + ny * ny + nz * nz
+        if l2 < worst:
+            worst = l2
+        # how many polygons the reference's own rule cannot answer: the cross
+        # product of the FIRST THREE path vertices is shorter than `mjEPS`.
+        var adr = poly_vertadr[p]
+        var a = poly_vert[adr + 0] * 3
+        var b = poly_vert[adr + 1] * 3
+        var c = poly_vert[adr + 2] * 3
+        var ux = Float64(mesh_vert[b + 0] - mesh_vert[a + 0])
+        var uy = Float64(mesh_vert[b + 1] - mesh_vert[a + 1])
+        var uz = Float64(mesh_vert[b + 2] - mesh_vert[a + 2])
+        var vx = Float64(mesh_vert[c + 0] - mesh_vert[a + 0])
+        var vy = Float64(mesh_vert[c + 1] - mesh_vert[a + 1])
+        var vz = Float64(mesh_vert[c + 2] - mesh_vert[a + 2])
+        var cx = uy * vz - uz * vy
+        var cy = uz * vx - ux * vz
+        var cz = ux * vy - uy * vx
+        if sqrt(cx * cx + cy * cy + cz * cz) < 1e-14:
+            degenerate += 1
+    print("  ", name, " polygons", npoly, " worst |n|^2", worst,
+          " first-triple degenerate", degenerate)
+    assert_true(
+        abs(worst - 1.0) < 1e-9,
+        name + ": a stored polygon normal has |n|^2 = " + String(worst)
+        + ", so it is not a unit vector. Zero means the face can never match"
+        " anything in `alignedFaces` and is silently unreachable; anything"
+        " else means the direction is rounding noise that WILL match"
+        " something, and the manifold gets clipped against a plane that is"
+        " not the polygon's.",
+    )
+    return degenerate
+
+
+def test_polygon_normals_are_unit_on_cad_meshes() raises:
+    """Every stored polygon normal is a unit vector, on real CAD hulls.
+
+    ⚠⚠ THE FIXTURES ABOVE CANNOT SEE THIS. `mc_cube`, `mc_hex` and the ankle
+    mesh are small and well conditioned, so the first three vertices of every
+    polygon path span a real triangle and the degenerate branch is never
+    reached. The defect this pins lives on machined parts: a polygon whose
+    boundary opens with a straight run of vertices makes
+    `cross(p1 - p0, p2 - p0)` vanish, and the rule MuJoCo uses —
+    `MakePolygonNormals` over the first three path vertices — has no answer.
+
+    What shipped before was worse than no answer in BOTH directions. An exact
+    zero was left un-normalised and stored as (0, 0, 0): `alignedFaces` dots it
+    against every candidate, gets 0, and that face can never be chosen — a
+    silently unreachable polygon, 1 of 907 on `sts3215_03a_v1` and 2 of 878 on
+    `sts3215_03a_no_horn_v1`. A cross product merely SHORTER than `mjEPS` was
+    normalised anyway, turning pure rounding noise into a confident unit
+    vector — 2 of 682 on `Wrist_Pitch_Roll`, which is the one this file would
+    have called clean.
+
+    Swept over 198 meshes and 118 082 polygons, 431 polygons hit the
+    degenerate branch, so it is not a corner case.
+    """
+    print("=== polygon normals are unit vectors ===")
+    var total = 0
+    total += _normals_are_unit(
+        "sts3215_03a_v1     ",
+        "mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_v1.stl",
+    )
+    total += _normals_are_unit(
+        "sts3215_03a_no_horn",
+        "mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_no_horn_v1.stl",
+    )
+    total += _normals_are_unit(
+        "Wrist_Pitch_Roll   ",
+        "mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
+    )
+    print("   polygons whose first triple is degenerate, in total:", total)
+    assert_true(
+        total >= 5,
+        "only " + String(total) + " polygons across the three fixtures have a"
+        " degenerate first triple, so this row is testing nothing. It passed"
+        " with 5 when it was written (1 + 2 + 2); a drop means the hull or the"
+        " polygon merge moved and the fixtures need re-choosing.",
     )
 
 
