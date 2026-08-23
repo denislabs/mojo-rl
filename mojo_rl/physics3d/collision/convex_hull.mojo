@@ -200,6 +200,345 @@ def _hull_dot[
     return ax * bx + ay * by + az * bz
 
 
+# ⚠ MEASURED, NOT CHOSEN. This is the plane tolerance the facet merge below
+# groups by, and it was fitted against qhull's OWN answer rather than picked:
+# over 81 Menagerie and in-repo meshes it reproduces qhull's vertex SET exactly
+# on 93.8% of them, never drops a vertex qhull keeps, and leaves the worst
+# input point 6.168e-15 * scale outside the reduced hull — the SAME figure
+# qhull's own reduced hull gives, i.e. roundoff. 1e-9 and above start dropping
+# vertices qhull keeps; below 1e-10 nothing changes.
+comptime _HULL_REDUCE_TAU: Float64 = 3e-10
+
+
+def _reduce_hull_f64(
+    hv: List[Float64],
+    nh: Int,
+    faces: List[Int],
+) -> List[Int]:
+    """qhull's VERTEX REDUCTION, by its effect rather than by its machinery.
+
+    Returns the hull vertices worth keeping, in ascending order.
+
+    ⚠⚠ WHY THIS EXISTS AT ALL. `_convex_hull_f64` builds the EXACT convex hull
+    of the point set. qhull, which MuJoCo runs, builds a MERGED one: it fuses
+    facets that are coplanar within roundoff and deletes the vertices that stop
+    being corners. The two solids agree to roundoff, and their VERTEX SETS do
+    not — 1031 against 798 on so_arm101's servo, 766 against 552 on
+    hello_robot_stretch_3's base. That difference is invisible to a support
+    query and decisive for the CONTACT MANIFOLD, because
+    `mesh_polygons.build_mesh_polygons` merges the hull's triangles into the
+    faces `native_multicontact` clips, and extra vertices redraw those faces.
+    Measured on the board's worst scene: our face contained the whole of the
+    other geom's 26-gon and MuJoCo's cut it to a 2-point sliver.
+
+    ⚠ IT IS NOT A PORT OF `merge_r.c`, AND DOES NOT CLAIM TO BE. qhull's
+    pre-merge is thousands of lines of merge sets, ridges and vertex
+    reduction. This reproduces its OUTPUT: grow maximal planar facets over the
+    triangulation, then keep only the corners of each facet's own 2D hull.
+
+    ⚠ THE ONE INVARIANT THAT MAY NOT BREAK is that the solid must not SHRINK —
+    a hull missing a genuine extreme point is a smaller shape, and that is an
+    error with one sign that no gate downstream can see. Two things guard it:
+    a group is only reduced if ALL its vertices really are coplanar within
+    `tau` (the check below refuses otherwise), and a group whose 2D hull comes
+    back degenerate keeps every vertex it had.
+    """
+    var nf = len(faces) // 3
+    if nf < 4 or nh < 4:
+        var all_v = List[Int]()
+        for i in range(nh):
+            all_v.append(i)
+        return all_v^
+
+    var scale = Float64(0)
+    for i in range(nh * 3):
+        var a = abs(hv[i])
+        if a > scale:
+            scale = a
+    if scale <= Float64(0):
+        scale = Float64(1)
+    var tau = scale * _HULL_REDUCE_TAU
+
+    # ---- per-face RAW normal (area-weighted by construction) --------------
+    var fcx = List[Float64](capacity=nf * 3)
+    for f in range(nf):
+        var a = faces[f * 3 + 0]
+        var b = faces[f * 3 + 1]
+        var c = faces[f * 3 + 2]
+        var ux = hv[b * 3 + 0] - hv[a * 3 + 0]
+        var uy = hv[b * 3 + 1] - hv[a * 3 + 1]
+        var uz = hv[b * 3 + 2] - hv[a * 3 + 2]
+        var vx = hv[c * 3 + 0] - hv[a * 3 + 0]
+        var vy = hv[c * 3 + 1] - hv[a * 3 + 1]
+        var vz = hv[c * 3 + 2] - hv[a * 3 + 2]
+        fcx.append(uy * vz - uz * vy)
+        fcx.append(uz * vx - ux * vz)
+        fcx.append(ux * vy - uy * vx)
+
+    # ---- twin table over the 3*nf half-edges ------------------------------
+    # ⚠ ONE SORT, NOT AN O(E^2) SCAN. The previous session's horizon walk could
+    # afford a quadratic search because it only ever ran over the VISIBLE
+    # faces; this runs over every face of a hull that reaches 6 500 vertices,
+    # where quadratic is 4e8 comparisons per mesh.
+    var nhe = nf * 3
+    var codes = List[Int](capacity=nhe)
+    for f in range(nf):
+        for e in range(3):
+            var u = faces[f * 3 + e]
+            var v = faces[f * 3 + (e + 1) % 3]
+            var lo_v = u if u < v else v
+            var hi_v = v if u < v else u
+            codes.append((lo_v * nh + hi_v) * nhe + (f * 3 + e))
+    sort(codes)
+    var twin = List[Int](length=nhe, fill=-1)
+    var i = 0
+    while i < nhe:
+        var k0 = codes[i] // nhe
+        var j = i
+        while j < nhe and codes[j] // nhe == k0:
+            j += 1
+        if j - i == 2:
+            var ha = codes[i] % nhe
+            var hb = codes[i + 1] % nhe
+            twin[ha] = hb
+            twin[hb] = ha
+        i = j
+
+    # ---- grow maximal planar facets ---------------------------------------
+    var group = List[Int](length=nf, fill=-1)
+    var keep = List[Bool](length=nh, fill=False)
+    var stamp = List[Int](length=nh, fill=-1)
+    var stack = List[Int]()
+    var gverts = List[Int]()
+    var gid = 0
+    for seed in range(nf):
+        if group[seed] >= 0:
+            continue
+        group[seed] = gid
+        var ax = fcx[seed * 3 + 0]
+        var ay = fcx[seed * 3 + 1]
+        var az = fcx[seed * 3 + 2]
+        gverts.clear()
+        for e in range(3):
+            var v = faces[seed * 3 + e]
+            if stamp[v] != gid:
+                stamp[v] = gid
+                gverts.append(v)
+        var seedv = faces[seed * 3 + 0]
+        stack.clear()
+        stack.append(seed)
+        while len(stack) > 0:
+            var f = stack.pop()
+            for e in range(3):
+                var t = twin[f * 3 + e]
+                if t < 0:
+                    continue
+                var g = t // 3
+                if group[g] >= 0:
+                    continue
+                var al = sqrt(ax * ax + ay * ay + az * az)
+                if al <= Float64(0):
+                    continue
+                var nx = ax / al
+                var ny = ay / al
+                var nz = az / al
+                # ⚠ THE TEST IS OVER THE CANDIDATE'S OWN VERTICES PLUS THE
+                # SEED, NOT OVER THE WHOLE GROUP. Testing the accumulated set
+                # every step is O(group^2) and — measured over 81 meshes —
+                # gives a WORSE answer: 91.4% exact against 93.8%, and it is
+                # the variant that loses vertices qhull keeps. The final check
+                # below is what makes the cheap test safe.
+                var mx = hv[seedv * 3 + 0]
+                var my = hv[seedv * 3 + 1]
+                var mz = hv[seedv * 3 + 2]
+                for e2 in range(3):
+                    var w = faces[g * 3 + e2]
+                    mx += hv[w * 3 + 0]
+                    my += hv[w * 3 + 1]
+                    mz += hv[w * 3 + 2]
+                mx *= Float64(0.25)
+                my *= Float64(0.25)
+                mz *= Float64(0.25)
+                var dmax = abs(
+                    (hv[seedv * 3 + 0] - mx) * nx
+                    + (hv[seedv * 3 + 1] - my) * ny
+                    + (hv[seedv * 3 + 2] - mz) * nz
+                )
+                for e2 in range(3):
+                    var w = faces[g * 3 + e2]
+                    var d = abs(
+                        (hv[w * 3 + 0] - mx) * nx
+                        + (hv[w * 3 + 1] - my) * ny
+                        + (hv[w * 3 + 2] - mz) * nz
+                    )
+                    if d > dmax:
+                        dmax = d
+                if dmax > tau:
+                    continue
+                group[g] = gid
+                ax += fcx[g * 3 + 0]
+                ay += fcx[g * 3 + 1]
+                az += fcx[g * 3 + 2]
+                for e2 in range(3):
+                    var w = faces[g * 3 + e2]
+                    if stamp[w] != gid:
+                        stamp[w] = gid
+                        gverts.append(w)
+                stack.append(g)
+
+        _reduce_one_group(hv, gverts, ax, ay, az, tau, keep)
+        gid += 1
+
+    var kept = List[Int]()
+    for v in range(nh):
+        if keep[v]:
+            kept.append(v)
+    return kept^
+
+
+def _reduce_one_group(
+    hv: List[Float64],
+    gverts: List[Int],
+    ax: Float64,
+    ay: Float64,
+    az: Float64,
+    tau: Float64,
+    mut keep: List[Bool],
+):
+    """Mark the CORNERS of one planar facet, or the whole of it if it is not
+    planar enough to reduce safely."""
+    var ng = len(gverts)
+    if ng < 3:
+        for k in range(ng):
+            keep[gverts[k]] = True
+        return
+
+    var al = sqrt(ax * ax + ay * ay + az * az)
+    if al <= Float64(0):
+        for k in range(ng):
+            keep[gverts[k]] = True
+        return
+    var nx = ax / al
+    var ny = ay / al
+    var nz = az / al
+
+    var cx = Float64(0)
+    var cy = Float64(0)
+    var cz = Float64(0)
+    for k in range(ng):
+        var v = gverts[k]
+        cx += hv[v * 3 + 0]
+        cy += hv[v * 3 + 1]
+        cz += hv[v * 3 + 2]
+    cx /= Float64(ng)
+    cy /= Float64(ng)
+    cz /= Float64(ng)
+
+    # ⚠⚠ THE SAFETY CHECK, AND IT IS THE WHOLE REASON THE CHEAP GROWTH TEST IS
+    # ALLOWED. Growth only ever compared a candidate against the running
+    # normal; nothing so far has verified that the ACCUMULATED group really is
+    # planar. If it is not, dropping its interior vertices would cut a corner
+    # off the solid — so the group keeps everything and this mesh simply stays
+    # at our exact hull, which is never wrong, only finer.
+    var worst = Float64(0)
+    for k in range(ng):
+        var v = gverts[k]
+        var d = abs(
+            (hv[v * 3 + 0] - cx) * nx
+            + (hv[v * 3 + 1] - cy) * ny
+            + (hv[v * 3 + 2] - cz) * nz
+        )
+        if d > worst:
+            worst = d
+    if worst > tau:
+        for k in range(ng):
+            keep[gverts[k]] = True
+        return
+
+    # in-plane basis
+    var t1x = Float64(1)
+    var t1y = Float64(0)
+    var t1z = Float64(0)
+    if abs(nx) > Float64(0.9):
+        t1x = Float64(0)
+        t1y = Float64(1)
+        t1z = Float64(0)
+    var dt = t1x * nx + t1y * ny + t1z * nz
+    t1x -= nx * dt
+    t1y -= ny * dt
+    t1z -= nz * dt
+    var t1l = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+    t1x /= t1l
+    t1y /= t1l
+    t1z /= t1l
+    var t2x = ny * t1z - nz * t1y
+    var t2y = nz * t1x - nx * t1z
+    var t2z = nx * t1y - ny * t1x
+
+    var px = List[Float64](capacity=ng)
+    var py = List[Float64](capacity=ng)
+    for k in range(ng):
+        var v = gverts[k]
+        var rx = hv[v * 3 + 0] - cx
+        var ry = hv[v * 3 + 1] - cy
+        var rz = hv[v * 3 + 2] - cz
+        px.append(rx * t1x + ry * t1y + rz * t1z)
+        py.append(rx * t2x + ry * t2y + rz * t2z)
+
+    # lexicographic order by (x, y) — insertion sort, because a facet's vertex
+    # count is small and this avoids a comparator on a float key.
+    var ord = List[Int](capacity=ng)
+    for k in range(ng):
+        ord.append(k)
+    for a2 in range(1, ng):
+        var cur = ord[a2]
+        var b2 = a2 - 1
+        while b2 >= 0 and (
+            px[ord[b2]] > px[cur]
+            or (px[ord[b2]] == px[cur] and py[ord[b2]] > py[cur])
+        ):
+            ord[b2 + 1] = ord[b2]
+            b2 -= 1
+        ord[b2 + 1] = cur
+
+    @parameter
+    def _cross(o: Int, a3: Int, b3: Int) -> Float64:
+        return (px[a3] - px[o]) * (py[b3] - py[o]) - (py[a3] - py[o]) * (
+            px[b3] - px[o]
+        )
+
+    # monotone chain. `<= 0` pops, so COLLINEAR points are dropped — which is
+    # the point: they are on the facet's edge, not a corner of it.
+    var lower = List[Int]()
+    for k in range(ng):
+        var idx = ord[k]
+        while len(lower) >= 2 and _cross(
+            lower[len(lower) - 2], lower[len(lower) - 1], idx
+        ) <= Float64(0):
+            _ = lower.pop()
+        lower.append(idx)
+    var upper = List[Int]()
+    for k in range(ng - 1, -1, -1):
+        var idx = ord[k]
+        while len(upper) >= 2 and _cross(
+            upper[len(upper) - 2], upper[len(upper) - 1], idx
+        ) <= Float64(0):
+            _ = upper.pop()
+        upper.append(idx)
+
+    var ncorner = len(lower) - 1 + len(upper) - 1
+    if ncorner < 3:
+        # a degenerate in-plane hull says nothing useful about which vertices
+        # are corners; keep them all rather than guess.
+        for k in range(ng):
+            keep[gverts[k]] = True
+        return
+    for k in range(len(lower) - 1):
+        keep[gverts[lower[k]]] = True
+    for k in range(len(upper) - 1):
+        keep[gverts[upper[k]]] = True
+
+
 def _convex_hull_f64(
     verts: List[Float64],
     num_verts: Int,
@@ -742,7 +1081,43 @@ def compute_convex_hull[
     for i in range(num_verts * 3):
         w.append(Float64(verts[i]))
     var hw = List[Float64]()
-    var n = _convex_hull_f64(w, num_verts, hw, hull_faces)
+    var hf = List[Int]()
+    var n = _convex_hull_f64(w, num_verts, hw, hf)
+
+    # ---- qhull's vertex reduction, then rebuild -----------------------------
+    #
+    # ⚠⚠ TWO HULL BUILDS, AND THE SECOND IS THE CHEAP ONE. `_reduce_hull_f64`
+    # says WHICH vertices survive; it does not produce a triangulation, and
+    # deleting vertices from an existing one by hand would mean re-stitching
+    # the holes — the exact operation whose float-error corner cases the
+    # previous commit spent a session removing. Re-running the builder on the
+    # surviving points instead gives every invariant back by construction
+    # (`E == 3V - 6`, manifold, no support-walk stall) for the price of a hull
+    # over a SMALLER set: 766 points instead of 40 324 on
+    # hello_robot_stretch_3's base, i.e. the second build is noise beside the
+    # first.
+    #
+    # ⚠ EVERY FALLBACK HERE KEEPS THE EXACT HULL. If the reduction returns
+    # nothing to drop, or drops so much that the rebuild degenerates, the
+    # unreduced hull is used. It is never WRONG — only finer than MuJoCo's.
+    if n >= 4 and len(hf) > 0:
+        var kept = _reduce_hull_f64(hw, n, hf)
+        if len(kept) >= 4 and len(kept) < n:
+            var k = List[Float64](capacity=len(kept) * 3)
+            for t in range(len(kept)):
+                k.append(hw[kept[t] * 3 + 0])
+                k.append(hw[kept[t] * 3 + 1])
+                k.append(hw[kept[t] * 3 + 2])
+            var hw2 = List[Float64]()
+            var hf2 = List[Int]()
+            var n2 = _convex_hull_f64(k, len(kept), hw2, hf2)
+            if n2 >= 4 and len(hf2) > 0:
+                hw = hw2^
+                hf = hf2^
+                n = n2
+
+    for i in range(len(hf)):
+        hull_faces.append(hf[i])
     for i in range(len(hw)):
         hull_verts.append(Scalar[DTYPE](hw[i]))
     return n

@@ -394,36 +394,46 @@ def test_polygon_normals_are_unit_on_cad_meshes() raises:
     What shipped before was worse than no answer in BOTH directions. An exact
     zero was left un-normalised and stored as (0, 0, 0): `alignedFaces` dots it
     against every candidate, gets 0, and that face can never be chosen — a
-    silently unreachable polygon, 1 of 907 on `sts3215_03a_v1` and 2 of 878 on
-    `sts3215_03a_no_horn_v1`. A cross product merely SHORTER than `mjEPS` was
-    normalised anyway, turning pure rounding noise into a confident unit
-    vector — 2 of 682 on `Wrist_Pitch_Roll`, which is the one this file would
-    have called clean.
+    silently unreachable polygon. A cross product merely SHORTER than `mjEPS`
+    was normalised anyway, turning pure rounding noise into a confident unit
+    vector.
 
-    Swept over 198 meshes and 118 082 polygons, 431 polygons hit the
-    degenerate branch, so it is not a corner case.
+    ⚠⚠ THE FIXTURES MOVED ONCE ALREADY, AND THE NON-VACUITY ROW IS WHY THAT
+    WAS NOTICED. When this was written the population was 2 759 polygons over
+    the whole tree and the three so_arm fixtures carried 5 of them. The hull
+    VERTEX REDUCTION then removed most of the collinear boundary runs that
+    caused it: 36 polygons over 596 041 now, and those three fixtures carry
+    ZERO. The assertion below caught that immediately rather than going quietly
+    green on nothing. Today's fixtures are the survivors.
     """
     print("=== polygon normals are unit vectors ===")
     var total = 0
     total += _normals_are_unit(
+        "berkeley ll_hr     ",
+        "references/mujoco_menagerie-main/berkeley_humanoid/assets/ll_hr.stl",
+    )
+    total += _normals_are_unit(
+        "berkeley lr_hr     ",
+        "references/mujoco_menagerie-main/berkeley_humanoid/assets/lr_hr.stl",
+    )
+    total += _normals_are_unit(
+        "allegro link_15_tip",
+        "references/mujoco_menagerie-main/wonik_allegro/assets/"
+        "link_15.0_tip.stl",
+    )
+    total += _normals_are_unit(
         "sts3215_03a_v1     ",
         "mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_v1.stl",
     )
-    total += _normals_are_unit(
-        "sts3215_03a_no_horn",
-        "mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_no_horn_v1.stl",
-    )
-    total += _normals_are_unit(
-        "Wrist_Pitch_Roll   ",
-        "mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
-    )
     print("   polygons whose first triple is degenerate, in total:", total)
     assert_true(
-        total >= 5,
-        "only " + String(total) + " polygons across the three fixtures have a"
+        total >= 8,
+        "only " + String(total) + " polygons across the fixtures have a"
         " degenerate first triple, so this row is testing nothing. It passed"
-        " with 5 when it was written (1 + 2 + 2); a drop means the hull or the"
-        " polygon merge moved and the fixtures need re-choosing.",
+        " with 11 when the fixtures were re-chosen (5 + 4 + 2 + 0); a drop"
+        " means the hull or the polygon merge moved and they need re-choosing"
+        " again — which is exactly what happened when the vertex reduction"
+        " landed and took the corpus population from 2 759 polygons to 36.",
     )
 
 

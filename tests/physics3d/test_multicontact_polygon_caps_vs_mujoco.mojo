@@ -165,10 +165,11 @@ comptime MENAGERIE_MAX_DEG = 47        # flexiv_rizon4
 # ⚠⚠ AND THE OTHER HALF OF THE CORPUS. `MC_MAX_DEG` sat at 48 — Menagerie's
 # worst plus one — for as long as the census only ever ran on the reference
 # tree, while a model this repo SHIPS needs 50. Same method, all 57 in-repo
-# `*.xml`: `envs/robots/assets/so_arm101.xml` peaks at 82 / 50, its STS3215
+# `*.xml`: `envs/robots/assets/so_arm101.xml` peaks at 80 / 50, its STS3215
 # servo hulls each carrying a vertex with 50 incident polygons and its mirror
 # with 49. Everything else in the repo is at or under 50 / 34.
-comptime REPO_MAX_POLYVERT = 82        # so_arm101
+comptime REPO_MAX_POLYVERT = 80        # so_arm101 (82 before the hull
+                                       # vertex reduction narrowed its faces)
 comptime REPO_MAX_DEG = 50             # so_arm101, sts3215_03a_v1
 
 comptime _IMPFAST = ImplicitIntegrator[
