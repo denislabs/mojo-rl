@@ -127,6 +127,50 @@ def _check(name: String, path: String) raises:
         nbuf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
 
+    # ================================================================
+    # THE GRAPH IS A CONVEX POLYTOPE'S 1-SKELETON, OR THE WALK BELOW IS
+    # MEANINGLESS.
+    # ================================================================
+    # A greedy walk provably has no local maximum on the 1-skeleton of a convex
+    # polytope, so every direction assertion further down is really an
+    # assertion ABOUT THIS GRAPH. Checking the graph directly is what turns a
+    # stall from "the walk got unlucky on 13 of 512 directions" into "the hull
+    # is not a polytope", which is the statement that names the defect.
+    #
+    # For a triangulated polytope Euler gives `E = 3V - 6` exactly, and every
+    # vertex of a 3-polytope has degree at least 3. ⚠ THESE ARE COMPUTED FROM
+    # `edge_adr`/`edge_list`, i.e. from the adjacency the narrow phase actually
+    # walks — not from the face list it was derived from, which could satisfy
+    # them while the adjacency did not.
+    var deg_sum = 0
+    var deg_min = 1 << 30
+    for v in range(nverts):
+        var e0 = edge_adr[v]
+        var deg = 0
+        while edge_list[e0 + deg] >= 0:
+            deg += 1
+        deg_sum += deg
+        if deg < deg_min:
+            deg_min = deg
+    var nedge = deg_sum // 2
+    assert_true(
+        nedge == 3 * nverts - 6,
+        name + ": the hull's adjacency has " + String(nedge) + " edges over "
+        + String(nverts) + " vertices, and a triangulated convex polytope has"
+        " exactly 3V - 6 = " + String(3 * nverts - 6) + ". More means faces"
+        " sharing an edge with a third face — a non-manifold stitch; fewer"
+        " means a hole. Either way the surface is not a polytope and a greedy"
+        " support walk can strand on it",
+    )
+    assert_true(
+        deg_min >= 3,
+        name + ": a hull vertex has degree " + String(deg_min) + ". Every"
+        " vertex of a 3-polytope meets at least three edges; a lower degree is"
+        " a vertex the walk can enter and not leave",
+    )
+    print("   ", name, " V", nverts, " E", nedge, " 3V-6", 3 * nverts - 6,
+          " min degree", deg_min)
+
     # A non-trivial pose, so the quaternion rotation is exercised too rather
     # than cancelling out of both arms identically.
     var qx = Scalar[D](0.1830127)
@@ -349,6 +393,63 @@ def test_long_thin_hull() raises:
     _check(
         "under_arm_so101_v1",
         "mojo_rl/envs/robots/assets/so_arm101/under_arm_so101_v1.stl",
+    )
+
+
+# =============================================================================
+# THE MESHES THAT USED TO STALL
+# =============================================================================
+# ⚠⚠ EVERY FIXTURE BELOW IS RED ON THE HULL THIS REPLACED, and that is the only
+# reason they are here — the four above passed both before and after, so they
+# could not have caught the defect. Measured on the shipped build (one shared
+# 1e-9 tolerance for mesh degeneracy AND face visibility, an UNDIRECTED
+# horizon, and winding repaired at the end from an interior point), over 256
+# directions with a cold seed:
+#
+#   robotiq_2f85 base_mount              630 V   18 non-manifold edges  13 stalls
+#   robotiq_2f85_v4 fts300_base         3161 V  826 non-manifold edges  15 stalls
+#   ms_human_700 waterbottle             615 V   30 non-manifold edges 124 stalls
+#   low_cost_robot_arm elbow_to_wrist    638 V   19 non-manifold edges  71 stalls
+#
+# They are CAD parts, which is the whole point: a machined boss meshed at 0.1 mm
+# on a 100 mm body produces sliver triangles by the thousand, and a sliver has
+# no reliable normal. Hand-authored fixtures do not have them.
+
+
+def test_sliver_heavy_gripper_mount() raises:
+    """The robotiq_2f85 base mount — 10 899 input vertices, ~620 on the hull.
+
+    MuJoCo's own qhull graph for this mesh is 620 vertices and 1236 faces,
+    which is `2V - 4` exactly; ours came out with two extra edges and a walk
+    that lost 28.9 mm of support depth on 13 directions."""
+    _check(
+        "base_mount        ",
+        "references/mujoco_menagerie-main/robotiq_2f85/assets/base_mount.stl",
+    )
+
+
+def test_force_torque_sensor_shell() raises:
+    """The worst manifoldness case in Menagerie: 826 malformed edges.
+
+    A thin cylindrical shell meshed at CAD resolution, so nearly every triangle
+    on the rim is a sliver."""
+    _check(
+        "fts300_base       ",
+        "references/mujoco_menagerie-main/robotiq_2f85_v4/assets/"
+        "robotiq_fts300_base.stl",
+    )
+
+
+def test_revolved_surface_waterbottle() raises:
+    """The worst STALL case: 124 of 256 directions lost the support vertex.
+
+    A surface of revolution — every ring of the lathe is a band of near-coplanar
+    triangles, which is exactly the configuration a shared visibility tolerance
+    splits into disconnected visible sets."""
+    _check(
+        "waterbottle       ",
+        "references/mujoco_menagerie-main/ms_human_700/assets/geometry/"
+        "waterbottle/waterbottle.stl",
     )
 
 

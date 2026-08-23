@@ -104,7 +104,7 @@ from ..model.mesh_inertia import MeshInertia
 # entries are not detectable from their contents; the version is the only
 # thing standing between a hull-algorithm fix and a cache that keeps serving
 # the old geometry.
-comptime HULL_CACHE_VERSION: Int = 2
+comptime HULL_CACHE_VERSION: Int = 3
 
 comptime _MAGIC: UInt64 = 0x4D4A48554C4C3031  # "MJHULL01"
 comptime _FNV_OFFSET: UInt64 = 14695981039346656037

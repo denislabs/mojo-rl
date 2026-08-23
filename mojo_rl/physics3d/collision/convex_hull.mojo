@@ -3,12 +3,44 @@
 Loads STL mesh vertices, deduplicates them, computes the 3D convex hull,
 and stores hull vertices for GJK/EPA collision detection.
 
-Algorithm: Incremental convex hull (add points one by one, remove visible
-faces, add new faces from horizon edges). O(n*h) where h is hull size.
-Runs once at model load time.
+Algorithm: incremental convex hull — add points one by one, delete the faces
+the point can SEE, and cone it to the boundary of that region. O(n*h) where h
+is hull size. Runs once at model load time.
+
+⚠⚠ THE OUTPUT IS NOT JUST A SET OF VERTICES, IT IS A GRAPH THE NARROW PHASE
+WALKS. `build_hull_edge_graph` turns these faces into the vertex adjacency
+`_support_mesh` hill-climbs, and a greedy walk is only guaranteed to reach the
+extreme vertex if that adjacency is a CONVEX POLYTOPE'S 1-SKELETON. It is
+therefore not enough for the hull to contain the right points: the surface has
+to be a closed, consistently wound, convex triangulation, which shows up as
+`E == 3V - 6`, `F == 2V - 4`, and every undirected edge shared by exactly two
+faces. Three things together are what make that hold, and NONE of them is
+optional — each was measured on Menagerie's 944 sweepable STL meshes:
+
+  1. `robust_predicates.orient3d_dd` decides visibility whenever float64
+     cannot. A plane test that shares one tolerance with the mesh-degeneracy
+     check answered inconsistently on slivers: 93 non-manifold hulls, and on
+     19 of them the support walk stalled, worst deficit 28.9 mm.
+  2. Only the CONNECTED COMPONENT of the visible set is deleted. Coning two
+     disjoint patches to one apex builds a pinched surface the next insertions
+     chase; measured, one mesh's face count ran away 701 -> 53 227.
+  3. Faces are wound outward from the SEED and every stitch inherits its
+     direction. Re-deriving winding from an interior point at the end let a
+     sliver's unreliable normal flip a face.
+
+MuJoCo gets the same object from qhull (`mjCMesh::MakeGraph`, `qhull Qt` then
+`qh_triangulate`), which is why `mesh_graph[graphadr+1] == 2*numvert - 4` holds
+for every mesh in its models.
 """
 
 from std.math import sqrt, abs
+
+# The float64 unit roundoff, and the safety factor on the visibility error
+# bound. `K` is not tuned: it is a generous constant so the bound stays an
+# UPPER bound on the float64 error, and a bound that is too large only sends
+# more pairs to `orient3d_dd`, which is always right.
+comptime _DBL_EPS: Float64 = 1.1102230246251565e-16
+comptime _HULL_ERR_K: Float64 = 16.0
 
 from .hull_cache import (
     HullPayload,
@@ -17,6 +49,7 @@ from .hull_cache import (
     hull_cache_store,
 )
 from .mesh_polygons import build_mesh_polygons
+from .robust_predicates import orient3d_dd
 from ..model.mesh_inertia import (
     MeshInertia,
     transform_verts_to_principal_frame,
@@ -188,9 +221,12 @@ def _convex_hull_f64(
             scale = av
     if scale <= Float64(0):
         scale = Float64(1)
-    # ⚠ A SINGLE 1e-9, because this routine is always float64 now. It was
-    # briefly dtype-aware (1e-5 for float32) to stop float32 hanging
-    # outright; building in float64 removes the reason for that.
+    # ⚠⚠ THIS EPSILON ANSWERS "IS THE MESH DEGENERATE?", AND NOTHING ELSE. It
+    # guards the seed-tetrahedron rejections below — all-collinear,
+    # all-coplanar — which are questions about the SHAPE and want a coarse
+    # threshold. VISIBILITY DOES NOT USE IT: see `_face_err` for the per-face
+    # bound that replaced it, and the module header for why one shared number
+    # was the bug.
     var eps = scale * 1e-9
 
     # ---- seed tetrahedron ------------------------------------------------
@@ -262,24 +298,33 @@ def _convex_hull_f64(
             hull_verts.append(verts[i])
         return num_verts
 
-    # interior reference point: the seed centroid stays inside the hull for the
-    # whole construction, so it fixes every face's outward orientation.
-    var rx = (
-        verts[i0 * 3 + 0] + verts[i1 * 3 + 0] + verts[i2 * 3 + 0]
-        + verts[i3 * 3 + 0]
-    ) * Float64(0.25)
-    var ry = (
-        verts[i0 * 3 + 1] + verts[i1 * 3 + 1] + verts[i2 * 3 + 1]
-        + verts[i3 * 3 + 1]
-    ) * Float64(0.25)
-    var rz = (
-        verts[i0 * 3 + 2] + verts[i1 * 3 + 2] + verts[i2 * 3 + 2]
-        + verts[i3 * 3 + 2]
-    ) * Float64(0.25)
+    # ⚠⚠ THE SEED IS WOUND OUTWARD HERE AND STAYS WOUND FOR THE WHOLE BUILD.
+    # This used to carry an INTERIOR REFERENCE POINT — the seed centroid — and
+    # re-derive every face's outward direction from it on every visibility
+    # test. That is the one thing a sliver breaks: the direction comes from a
+    # normalised cross product, and a triangle whose vertices are within
+    # roundoff of a line has no reliable normal, so its orientation could come
+    # back FLIPPED and the face would report every point on the wrong side.
+    # Orientation is COMBINATORIAL instead: order the seed so `i3` is below
+    # `(i0, i1, i2)`, take the four faces that follow, and let every later face
+    # inherit its winding from the horizon edge it is built on.
+    if orient3d_dd(
+        verts[i0 * 3 + 0], verts[i0 * 3 + 1], verts[i0 * 3 + 2],
+        verts[i1 * 3 + 0], verts[i1 * 3 + 1], verts[i1 * 3 + 2],
+        verts[i2 * 3 + 0], verts[i2 * 3 + 1], verts[i2 * 3 + 2],
+        verts[i3 * 3 + 0], verts[i3 * 3 + 1], verts[i3 * 3 + 2],
+    ) > Float64(0):
+        var t = i1
+        i1 = i2
+        i2 = t
 
     var faces = List[Int]()
+    # (a, b, c), (a, c, d), (a, d, b), (b, d, c) — the outward winding of a
+    # tetrahedron whose fourth vertex `d` lies below face (a, b, c). Each of
+    # the six edges appears once in each direction, which is the invariant the
+    # horizon walk below relies on.
     var seed: InlineArray[Int, 12] = [
-        i0, i1, i2, i0, i1, i3, i0, i2, i3, i1, i2, i3
+        i0, i1, i2, i0, i2, i3, i0, i3, i1, i1, i3, i2
     ]
     for f in range(4):
         faces.append(seed[f * 3 + 0])
@@ -297,7 +342,7 @@ def _convex_hull_f64(
     # ---- insertion ORDER: extremes first ----------------------------------
     # ⚠ ORDER IS A PERFORMANCE PROPERTY, NOT A COSMETIC ONE. Inserting points in
     # array order makes the early insertions see most of the polytope, and both
-    # the horizon count (quadratic in the visible-edge count) and the face-list
+    # the horizon count (quadratic in the visible-face count) and the face-list
     # rebuild are paid at that size, for thousands of points. Measured: sawyer's
     # model build did not finish in TEN MINUTES.
     #
@@ -352,17 +397,28 @@ def _convex_hull_f64(
     # `init_fields` did not finish in 250 s with 100% of the samples in here.
     # Cached, each face costs one dot product.
     #
-    # ⚠ BIT-IDENTICAL BY CONSTRUCTION: the same expression over the same
-    # inputs, evaluated once per face instead of once per (face, point). The
-    # mesh goldens are the gate — nothing about the hull may move.
-    var fplane = List[Float64]()
+    # ⚠ THE CACHE NO LONGER NORMALISES. Seven slots per face: the RAW outward
+    # normal `(b - a) x (c - a)`, the anchor `a`, and `cf`, the constant of the
+    # per-face error bound. Dropping the normalise removes the `sqrt` AND the
+    # division that used to amplify a sliver's noise into the visibility test;
+    # `det` is now exactly the quantity `orient3d_dd` refines when the bound
+    # says the float64 sign cannot be trusted.
+    var fcache = List[Float64]()
 
     @parameter
-    def _rebuild_planes():
-        """(nx, ny, nz, offset) per face, outward-oriented. Degenerate faces
-        get a zero plane, which is never visible — matching the old `fl > 0`
-        guard exactly."""
-        fplane.clear()
+    def _rebuild_faces():
+        """(nx, ny, nz, ax, ay, az, cf) per face, wound outward by construction.
+
+        `cf` is the per-face half of the error bound on `det = n . (p - a)`
+        evaluated in float64. Two roundings contribute: the cross product,
+        whose absolute error goes as `|u| |v|`, and the dot product, whose
+        error goes as `|n|`. Both are multiplied by `|p - a|` at the call site,
+        so the face-side constant is `K * DBL_EPSILON * (|u|_1 |v|_1 + |n|_1)`.
+        1-norms, not 2-norms: they are upper bounds on the 2-norms, which makes
+        the bound CONSERVATIVE — the only direction that is safe — and costs no
+        `sqrt`.
+        """
+        fcache.clear()
         var nfc = len(faces) // 3
         for f in range(nfc):
             var a = faces[f * 3 + 0]
@@ -377,38 +433,26 @@ def _convex_hull_f64(
             var fx = uy * vz - uz * vy
             var fy = uz * vx - ux * vz
             var fz = ux * vy - uy * vx
-            var fl = sqrt(fx * fx + fy * fy + fz * fz)
-            if fl > Float64(0):
-                fx /= fl
-                fy /= fl
-                fz /= fl
-                var inward = (
-                    fx * (rx - verts[a * 3 + 0])
-                    + fy * (ry - verts[a * 3 + 1])
-                    + fz * (rz - verts[a * 3 + 2])
-                )
-                if inward > Float64(0):
-                    fx = -fx
-                    fy = -fy
-                    fz = -fz
-                fplane.append(fx)
-                fplane.append(fy)
-                fplane.append(fz)
-                fplane.append(
-                    fx * verts[a * 3 + 0]
-                    + fy * verts[a * 3 + 1]
-                    + fz * verts[a * 3 + 2]
-                )
-            else:
-                fplane.append(Float64(0))
-                fplane.append(Float64(0))
-                fplane.append(Float64(0))
-                fplane.append(Float64(0))
+            var u1 = abs(ux) + abs(uy) + abs(uz)
+            var v1 = abs(vx) + abs(vy) + abs(vz)
+            var n1 = abs(fx) + abs(fy) + abs(fz)
+            fcache.append(fx)
+            fcache.append(fy)
+            fcache.append(fz)
+            fcache.append(verts[a * 3 + 0])
+            fcache.append(verts[a * 3 + 1])
+            fcache.append(verts[a * 3 + 2])
+            fcache.append(_HULL_ERR_K * _DBL_EPS * (u1 * v1 + n1))
 
-    _rebuild_planes()
+    _rebuild_faces()
 
     var vis = List[Bool]()
-    var edges = List[Int]()
+    var vidx = List[Int]()
+    var comp = List[Bool]()
+    var stack = List[Int]()
+    var heu = List[Int]()
+    var hev = List[Int]()
+    var twin = List[Int]()
     for oi in range(len(order)):
         var p = order[oi]
         if on_hull[p]:
@@ -419,34 +463,134 @@ def _convex_hull_f64(
 
         var nf = len(faces) // 3
         vis.clear()
-        var nvis = 0
+        vidx.clear()
+        var bestf = -1
+        var bestd2 = Float64(0)
         for f in range(nf):
-            # ⚠ The zero plane of a degenerate face gives side == 0, which is
-            # never > eps — the old `fl > 0` guard, preserved.
-            var side = (
-                fplane[f * 4 + 0] * px
-                + fplane[f * 4 + 1] * py
-                + fplane[f * 4 + 2] * pz
-                - fplane[f * 4 + 3]
+            var wx = px - fcache[f * 7 + 3]
+            var wy = py - fcache[f * 7 + 4]
+            var wz = pz - fcache[f * 7 + 5]
+            var det = (
+                fcache[f * 7 + 0] * wx
+                + fcache[f * 7 + 1] * wy
+                + fcache[f * 7 + 2] * wz
             )
-            var seen = side > eps
+            var wm = abs(wx)
+            if abs(wy) > wm:
+                wm = abs(wy)
+            if abs(wz) > wm:
+                wm = abs(wz)
+            var eb = fcache[f * 7 + 6] * wm
+            var seen: Bool
+            if det > eb:
+                seen = True
+            elif det < -eb:
+                seen = False
+            else:
+                # ⚠ THE BAND IS WHERE FLOAT64 CANNOT ANSWER, so nothing here
+                # guesses: `orient3d_dd` re-evaluates the same determinant at
+                # ~106 bits and returns the sign it really has. Measured on
+                # Menagerie, the band is entered for a few tens of thousands of
+                # (face, point) pairs per mesh against tens of millions tested,
+                # so the cost sits under the noise of the scan itself.
+                var a = faces[f * 3 + 0]
+                var b = faces[f * 3 + 1]
+                var c = faces[f * 3 + 2]
+                seen = orient3d_dd(
+                    verts[a * 3 + 0], verts[a * 3 + 1], verts[a * 3 + 2],
+                    verts[b * 3 + 0], verts[b * 3 + 1], verts[b * 3 + 2],
+                    verts[c * 3 + 0], verts[c * 3 + 1], verts[c * 3 + 2],
+                    px, py, pz,
+                ) > Float64(0)
             vis.append(seen)
             if seen:
-                nvis += 1
+                vidx.append(f)
+                if bestf < 0 or det > bestd2:
+                    bestd2 = det
+                    bestf = f
+        var nvis = len(vidx)
         if nvis == 0:
             continue
 
-        # horizon: edges of visible faces that exactly ONE visible face owns
-        edges.clear()
-        for f in range(nf):
-            if not vis[f]:
-                continue
+        # ⚠⚠ ONLY THE CONNECTED COMPONENT OF THE VISIBLE SET IS DELETED, and
+        # that is not a safety net, it is the algorithm. Deleting a set of
+        # faces and coning the point to its boundary is only well defined if
+        # that boundary is ONE closed loop. Two disjoint visible patches give
+        # two loops, and coning both to a single apex builds a pinched surface
+        # the next insertions then chase — MEASURED, the face count of
+        # `low_cost_robot_arm/elbow_to_wrist_extension_motor` ran away from 701
+        # to 53 227 in four hundred insertions. qhull's `qh_findhorizon` grows
+        # the visible set by breadth-first search from the facet the point was
+        # assigned to for exactly this reason.
+        #
+        # With `orient3d_dd` deciding the band the visible set is connected
+        # anyway, so on a well-conditioned mesh this walk marks every visible
+        # face and changes nothing. It is what keeps a pathological one BOUNDED.
+        # ⚠ THE TWIN TABLE IS BUILT ONCE, AND THAT IS A COMPLEXITY FIX. The
+        # component walk and the horizon both need "which visible face owns the
+        # reverse of this directed edge?"; asking that question inline made each
+        # of them O(nvis^2) with a nine-way inner test, i.e. SIX TIMES the work
+        # the old undirected horizon did, and it showed — 152 ms to 706 ms on
+        # so_arm100's Wrist_Pitch_Roll. Answering it once for all 3*nvis
+        # half-edges costs one O(nvis^2) pass, after which both walks are
+        # linear.
+        var nhe = nvis * 3
+        heu.clear()
+        hev.clear()
+        for i in range(nvis):
+            var f = vidx[i]
             for e in range(3):
-                var a0 = faces[f * 3 + e]
-                var a1 = faces[f * 3 + (e + 1) % 3]
-                edges.append(a0 if a0 < a1 else a1)
-                edges.append(a1 if a0 < a1 else a0)
-        var ne = len(edges) // 2
+                heu.append(faces[f * 3 + e])
+                hev.append(faces[f * 3 + (e + 1) % 3])
+        twin.clear()
+        for _ in range(nhe):
+            twin.append(-1)
+        for k in range(nhe):
+            if twin[k] >= 0:
+                continue
+            for m in range(k + 1, nhe):
+                if twin[m] < 0 and heu[m] == hev[k] and hev[m] == heu[k]:
+                    twin[k] = m
+                    twin[m] = k
+                    break
+
+        comp.clear()
+        for _ in range(nvis):
+            comp.append(False)
+        var startpos = 0
+        for i in range(nvis):
+            if vidx[i] == bestf:
+                startpos = i
+                break
+        comp[startpos] = True
+        stack.clear()
+        stack.append(startpos)
+        while len(stack) > 0:
+            var ii = stack.pop()
+            for e in range(3):
+                var t = twin[ii * 3 + e]
+                if t < 0:
+                    continue
+                var j = t // 3
+                if not comp[j]:
+                    comp[j] = True
+                    stack.append(j)
+
+        # ---- horizon: DIRECTED edges of the component with no twin inside it
+        #
+        # ⚠ DIRECTED, WHERE THIS USED TO BE UNDIRECTED. The old rule — "an edge
+        # exactly one visible face owns" — cannot say which way round the new
+        # triangle goes, so it appended `(lo, hi, p)` in whatever order the edge
+        # happened to be stored and left the winding to be repaired at the end
+        # from an interior point. Taking the edge in the direction the DELETED
+        # face traverses it makes the new face `(u, v, p)` agree with the
+        # neighbour that kept the reverse direction, and the whole surface stays
+        # consistently wound with nothing to repair.
+        #
+        # `vis` is recycled as the per-face "this one dies" flag: a visible face
+        # outside the component is KEPT, so the two are not the same set.
+        for i in range(nvis):
+            vis[vidx[i]] = comp[i]
 
         var kept = List[Int]()
         for f in range(nf):
@@ -455,23 +599,29 @@ def _convex_hull_f64(
             kept.append(faces[f * 3 + 0])
             kept.append(faces[f * 3 + 1])
             kept.append(faces[f * 3 + 2])
-        for e in range(ne):
-            var lo_e = edges[e * 2 + 0]
-            var hi_e = edges[e * 2 + 1]
-            var count = 0
-            for g in range(ne):
-                if edges[g * 2 + 0] == lo_e and edges[g * 2 + 1] == hi_e:
-                    count += 1
-            if count == 1:
-                kept.append(lo_e)
-                kept.append(hi_e)
+        var added = 0
+        for i in range(nvis):
+            if not comp[i]:
+                continue
+            for e in range(3):
+                var t = twin[i * 3 + e]
+                if t >= 0 and comp[t // 3]:
+                    continue
+                kept.append(heu[i * 3 + e])
+                kept.append(hev[i * 3 + e])
                 kept.append(p)
+                added += 1
+        # A component with no boundary would be the WHOLE closed surface, which
+        # a point outside a convex solid cannot see. Leaving the hull untouched
+        # is the only answer that cannot destroy it.
+        if added == 0:
+            continue
         faces = kept^
-        # The face set changed, so the cached planes must follow it. ⚠ This is
-        # the ONLY place `faces` is reassigned; if that stops being true, this
-        # call has to move with it or the visibility test reads stale planes —
-        # which would not crash, it would quietly build a different hull.
-        _rebuild_planes()
+        # The face set changed, so the cache must follow it. ⚠ This is the ONLY
+        # place `faces` is reassigned; if that stops being true, this call has
+        # to move with it or the visibility test reads stale faces — which
+        # would not crash, it would quietly build a different hull.
+        _rebuild_faces()
         on_hull[p] = True
 
     # ---- collect the vertices the surviving faces actually use ------------
@@ -494,46 +644,25 @@ def _convex_hull_f64(
             remap[i] = num_hull
             num_hull += 1
 
-    # ---- emit the faces, WOUND OUTWARD ------------------------------------
+    # ---- emit the faces, ALREADY WOUND OUTWARD ---------------------------
     #
-    # ⚠ THE WINDING IS NOT COSMETIC AND THIS LOOP IS WHERE IT IS ESTABLISHED.
-    # The construction above never fixes an orientation: the visibility test
-    # re-derives each face's outward normal from the interior reference point
-    # every time it is used, and the horizon stitch appends `(lo, hi, p)` in
-    # whatever order the edge happened to be stored. That is fine for a hull
-    # whose faces are only ever tested one at a time, and it is FATAL to
-    # `mesh_polygons.build_mesh_polygons`, which merges two triangles by
-    # cancelling a shared edge traversed in OPPOSITE directions. With mixed
-    # winding the cancellation silently fails, no edges are removed, and every
-    # face stays its own polygon — a cube would come back as 12 triangles
-    # instead of 6 quads, which is exactly the bug this whole path exists to
-    # avoid. So orient here, once, against the same interior point.
+    # ⚠⚠ THE WINDING IS NOT COSMETIC, AND IT IS NO LONGER REPAIRED HERE. This
+    # loop used to re-derive each face's orientation from the seed centroid,
+    # because the construction did not maintain one. It does now — the seed is
+    # wound outward and every horizon stitch inherits its direction — so
+    # re-deriving would only give a SLIVER the chance to be flipped by its own
+    # unreliable normal, which is the failure this whole change removes.
+    #
+    # Winding matters to `mesh_polygons.build_mesh_polygons`, which merges two
+    # triangles by cancelling a shared edge traversed in OPPOSITE directions.
+    # With mixed winding the cancellation silently fails, no edges are removed,
+    # and every face stays its own polygon — a cube would come back as 12
+    # triangles instead of 6 quads, which is exactly the bug that path exists
+    # to avoid.
     for f in range(len(faces) // 3):
-        var a = faces[f * 3 + 0]
-        var b = faces[f * 3 + 1]
-        var c = faces[f * 3 + 2]
-        var ux = verts[b * 3 + 0] - verts[a * 3 + 0]
-        var uy = verts[b * 3 + 1] - verts[a * 3 + 1]
-        var uz = verts[b * 3 + 2] - verts[a * 3 + 2]
-        var vx = verts[c * 3 + 0] - verts[a * 3 + 0]
-        var vy = verts[c * 3 + 1] - verts[a * 3 + 1]
-        var vz = verts[c * 3 + 2] - verts[a * 3 + 2]
-        var fx = uy * vz - uz * vy
-        var fy = uz * vx - ux * vz
-        var fz = ux * vy - uy * vx
-        # Outward means pointing AWAY from the interior reference point.
-        var outward = (
-            fx * (verts[a * 3 + 0] - rx)
-            + fy * (verts[a * 3 + 1] - ry)
-            + fz * (verts[a * 3 + 2] - rz)
-        )
-        hull_faces.append(remap[a])
-        if outward >= Float64(0):
-            hull_faces.append(remap[b])
-            hull_faces.append(remap[c])
-        else:
-            hull_faces.append(remap[c])
-            hull_faces.append(remap[b])
+        hull_faces.append(remap[faces[f * 3 + 0]])
+        hull_faces.append(remap[faces[f * 3 + 1]])
+        hull_faces.append(remap[faces[f * 3 + 2]])
 
     return num_hull
 
