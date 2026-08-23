@@ -1989,20 +1989,17 @@ def build_model_fields_from_flat[
             + ". Raise it in gpu/constants.mojo — it sizes one small table"
             " and nothing else."
         )
-    if len(fmd.hfield_names) > 0:
-        # ⚠⚠ SAID OUT LOUD BECAUSE THE GPU PATH IS DIFFERENT, and a silent
-        # difference between targets is the failure mode this engine has paid
-        # for repeatedly. `_detect_contacts_env` compiles its heightfield
-        # branch out when it is instantiated for a Metal kernel: the prism is
-        # a sixth shape type for GJK, and a second instantiation of EPA's
-        # polytope arrays in one kernel exceeds the per-thread stack — the
-        # same ceiling that pins `MC_MAX_POLYVERT` at 56.
-        print(
-            "physics3d:", len(fmd.hfield_names), "heightfield(s) —"
-            " `<geom type=\"hfield\">` collides on the CPU path only. The GPU"
-            " BATCHED path reports NO contacts against a heightfield (a Metal"
-            " per-thread stack limit, not a missing routine).",
-        )
+    # ⚠ THE "CPU PATH ONLY" WARNING THAT USED TO BE HERE IS GONE, and its
+    # absence is the load-bearing part. It said the GPU batched path reported
+    # NO contacts against a heightfield, because `_detect_contacts_env`
+    # compiled its heightfield branch out for Metal: the prism is a sixth
+    # shape type for GJK, and a second instantiation of EPA's polytope on the
+    # per-thread stack exceeded the limit. EPA's polytope now lives in
+    # `d.ccd_ws` (`collision/ccd_workspace.mojo`), which is where MuJoCo has
+    # always kept it, so both targets collide heightfields and there is
+    # nothing left to warn about. Restore the print if that ever regresses —
+    # a silent difference between targets is the failure mode this engine has
+    # paid for repeatedly.
     for h in range(len(fmd.hfield_names)):
         var ho = h * MODEL_HFIELD_META_SIZE
         mf.hfield_meta.data[ho + HFIELD_META_IDX_ADR] = Scalar[DTYPE](

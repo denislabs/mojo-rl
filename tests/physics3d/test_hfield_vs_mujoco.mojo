@@ -43,10 +43,15 @@ from std.math import abs, sqrt
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
+from max.gpu.host import DeviceContext
+
+from mojo_rl.physics3d.fields import Data, Model, Dims, DynDims
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
+)
+from mojo_rl.physics3d.parser.fields_build import (
+    build_model_fields_from_flat,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
@@ -90,6 +95,26 @@ comptime MJ_NCON = 15
 comptime MJ_DEEPEST_SPHERE = -1.711941200041e-02
 comptime MJ_DEEPEST_BOX = -2.257956678194e-02
 comptime MJ_DEEPEST_CAPSULE = -4.346283494086e-02
+
+# The same model, spelled statically, because the GPU leg needs comptime
+# dimensions — a `DynDims` model's members are `DIM_POISON` and would size the
+# kernel layouts with a negative length. Three free bodies over one hfield
+# geom: nq 3*7, nv 3*6, nbody 1 + 3, ngeom 1 + 3, and `nhfield_data` is the
+# 8x8 grid. `test_the_gpu_path_agrees_with_the_cpu_path` asserts these against
+# what the parser actually produced rather than trusting the arithmetic.
+# ⚠ FLOAT32: Metal rejects `double` outright, so the GPU leg cannot use the
+# `DT` the rest of this file compares against MuJoCo with.
+comptime GT = DType.float32
+comptime GD = Dims[
+    nq=21,
+    nv=18,
+    nbody=4,
+    njoint=3,
+    ngeom=4,
+    max_contacts=64,
+    nmesh_verts=64,
+    nhfield_data=64,
+]
 
 
 struct Built(Movable):
@@ -264,6 +289,158 @@ def test_the_contact_set_matches_mujoco() raises:
         + String(worst_dist) + " from MuJoCo's",
     )
     _ = b^
+    print("  PASS")
+
+
+def test_the_gpu_path_agrees_with_the_cpu_path() raises:
+    """The Metal/CUDA collision kernel finds the SAME heightfield contacts.
+
+    ⚠ THIS ROW EXISTS BECAUSE THERE USED TO BE NO GPU PATH AT ALL. The prism
+    is a sixth shape type for GJK, so a heightfield-enabled kernel carries a
+    SECOND instantiation of the whole GJK/EPA stack; with EPA's polytope on
+    the per-thread stack that was ~7.5 KB twice and the Metal compile failed
+    with "Compute function exceeds available stack space", so
+    `_detect_contacts_env` was instantiated `HFIELD_ENABLED=False` for both
+    kernels and the GPU silently reported ZERO contacts against a heightfield.
+    The polytope now lives in `d.ccd_ws` — MuJoCo's `config->buffer`, see
+    `collision/ccd_workspace.mojo` — and both instantiations fit.
+
+    ⚠ BOTH LEGS ARE FLOAT32, and that is not a weakening of the gate — it is
+    the only way to compare the two targets at all. Metal rejects `double`
+    outright ("function's return type 'double' is not supported"), so the
+    float64 build the rest of this file uses cannot be a GPU leg. Running the
+    CPU side at the same precision keeps this an EQUALITY check between two
+    implementations of one routine rather than a precision negotiation; the
+    float64 rows above are what pin us to MuJoCo.
+
+    ⚠ IT ASSERTS THE COUNT IS NON-ZERO AND EQUAL TO MuJoCo'S FIRST. The
+    failure this replaces was "no contacts", which every set comparison passes
+    vacuously.
+    """
+    print("=== hfield contact set, GPU vs CPU ===")
+    var ctx = DeviceContext()
+
+    # The parse the static dims are checked against.
+    var b = Built()
+    forward_kinematics["cpu", DT, DynDims, 1](b.d, b.m)
+    detect_contacts["cpu", DT, DynDims, 1](b.d, b.m)
+    assert_true(
+        b.dims.get_nq() == GD.NQ
+        and b.dims.get_nv() == GD.NV
+        and b.dims.get_nbody() == GD.NBODY
+        and b.dims.get_ngeom() == GD.NGEOM
+        and b.dims.get_nhfield_data() == GD.NHFIELD_DATA,
+        "the static dims this leg binds no longer match the parse: parsed nq="
+        + String(b.dims.get_nq()) + " nv=" + String(b.dims.get_nv())
+        + " nbody=" + String(b.dims.get_nbody())
+        + " ngeom=" + String(b.dims.get_ngeom())
+        + " nhfield_data=" + String(b.dims.get_nhfield_data()),
+    )
+
+    var fmd = parse_xml_full(HF_XML, String("."))
+    var mg = Model[GT, GD]()
+    build_model_fields_from_flat[GT](fmd, mg)
+
+    var d_cpu = Data[GT, GD, 1]()
+    var d_gpu = Data[GT, GD, 1]()
+    for i in range(GD.NQ):
+        d_cpu.qpos.data[i] = Scalar[GT](b.d.qpos.data[i])
+        d_gpu.qpos.data[i] = Scalar[GT](b.d.qpos.data[i])
+
+    forward_kinematics["cpu", GT, GD, 1](d_cpu, mg)
+    detect_contacts["cpu", GT, GD, 1](d_cpu, mg)
+    var ncon_cpu = Int(d_cpu.meta.data[META_IDX_NUM_CONTACTS])
+
+    mg.upload_all(ctx)
+    d_gpu.upload_all(ctx)
+    forward_kinematics["gpu", GT, GD, 1](d_gpu, mg, ctx)
+    detect_contacts["gpu", GT, GD, 1](d_gpu, mg, ctx)
+    d_gpu.contacts.download(ctx)
+    d_gpu.meta.download(ctx)
+    var ncon_gpu = Int(d_gpu.meta.data[META_IDX_NUM_CONTACTS])
+
+    print("  ncon cpu", ncon_cpu, " gpu", ncon_gpu, " MuJoCo", MJ_NCON)
+    assert_true(
+        ncon_cpu == MJ_NCON,
+        "the float32 CPU leg reports " + String(ncon_cpu) + " contacts, not "
+        + String(MJ_NCON) + " — the comparison below would be against a "
+        "moved baseline",
+    )
+    assert_true(
+        ncon_gpu == ncon_cpu,
+        "the GPU collision kernel reports " + String(ncon_gpu)
+        + " heightfield contacts against the CPU path's " + String(ncon_cpu)
+        + ". Zero means the heightfield branch was compiled out again —"
+        " check `HFIELD_ENABLED` and the per-thread stack.",
+    )
+
+    # ⚠ THE POSITION BOUND IS CALIBRATED, NOT CHOSEN. Eight of these fifteen
+    # records are BIT-IDENTICAL across the two targets, and every row that
+    # moves by more than 1e-7 belongs to the SPHERE — whose witness point is
+    # ill-conditioned at float32. A smooth Minkowski surface leaves EPA's
+    # closest face decided by rounding, so the witness slides along the surface
+    # while the DEPTH stays put (it agrees to 6.3e-08 on every row).
+    #
+    # The control that says so is the same CPU records at float64: the worst
+    # row is already 6.56e-04 away from its own float64 answer before the GPU
+    # is involved, against 7.12e-04 here. So the assert is "the GPU costs no
+    # more than twice what float32 already costs", which fails on a
+    # target-specific defect and passes on conditioning.
+    var worst_pos = Float64(0)
+    var worst_dist = Float64(0)
+    var worst_prec = Float64(0)
+    var identical = 0
+    for k in range(ncon_cpu):
+        var o = k * CONTACT_SIZE
+        var e = Float64(0)
+        var prec = Float64(0)
+        for c in range(3):
+            var cpu32 = Float64(d_cpu.contacts.data[o + CONTACT_IDX_POS_X + c])
+            var gpu32 = Float64(d_gpu.contacts.data[o + CONTACT_IDX_POS_X + c])
+            var cpu64 = Float64(b.d.contacts.data[o + CONTACT_IDX_POS_X + c])
+            e += abs(cpu32 - gpu32)
+            prec += abs(cpu32 - cpu64)
+        var dd = abs(
+            Float64(d_cpu.contacts.data[o + CONTACT_IDX_DIST])
+            - Float64(d_gpu.contacts.data[o + CONTACT_IDX_DIST])
+        )
+        if e == 0.0:
+            identical += 1
+        if e > worst_pos:
+            worst_pos = e
+        if dd > worst_dist:
+            worst_dist = dd
+        if prec > worst_prec:
+            worst_prec = prec
+    print(
+        "  rows compared", ncon_cpu, " bit-identical", identical,
+        " worst |d pos| =", worst_pos, " worst |d dist| =", worst_dist,
+    )
+    print("  float32-vs-float64 on the CPU alone:", worst_prec)
+    assert_true(
+        ncon_cpu > 0, "nothing was compared — the CPU leg found no contacts"
+    )
+    assert_true(
+        identical > 0,
+        "not one record matched bit-for-bit across targets, which is not what"
+        " two builds of one routine look like",
+    )
+    assert_true(
+        worst_dist < 1e-6,
+        "GPU and CPU disagree on contact DEPTH by " + String(worst_dist)
+        + " — depth is the well-conditioned half and has no excuse",
+    )
+    assert_true(
+        worst_pos < 2.0 * worst_prec + 1e-6,
+        "GPU contact positions are " + String(worst_pos)
+        + " from the CPU's, more than twice the " + String(worst_prec)
+        + " float32 alone already costs — that is a target-specific defect,"
+        " not conditioning",
+    )
+    _ = b^
+    _ = d_cpu^
+    _ = d_gpu^
+    _ = mg^
     print("  PASS")
 
 

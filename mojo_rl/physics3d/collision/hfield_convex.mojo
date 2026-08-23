@@ -138,6 +138,7 @@ def hfield_convex_contacts[
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
     L_CONTACTS: Layout,
+    L_WS: Layout,
 ](
     hfield_id: Int,
     p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
@@ -167,6 +168,7 @@ def hfield_convex_contacts[
     ],
     mesh_edges: LayoutTensor[DTYPE, L_MESH_EDGES, MutAnyOrigin],
     contacts: LayoutTensor[DTYPE, L_CONTACTS, MutAnyOrigin],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
     mut num_contacts: Int,
     max_contacts: Int,
     env: Int,
@@ -335,6 +337,7 @@ def hfield_convex_contacts[
                     lp[0], lp[1], lp[2], lq[0], lq[1], lq[2], lq[3],
                     r2, hl2, hx2, hy2, hz2,
                     va2, mnv2,
+                    ws, env,
                     Scalar[DTYPE](MJ_CCD_TOLERANCE),
                     MJ_CCD_ITERATIONS,
                     Scalar[DTYPE](0),

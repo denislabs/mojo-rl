@@ -22,6 +22,8 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims, AsStatic
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa_witness
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.collision.native_multicontact import (
@@ -219,6 +221,7 @@ def main() raises:
     var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     var wxx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
+    var ws = ccd_ws_alloc[DTYPE]()
     var z = Scalar[DTYPE](0)
     var one = Scalar[DTYPE](1)
     var r = gjk_epa_witness[DTYPE](
@@ -233,6 +236,7 @@ def main() raises:
         z, z, z, z, z,
         va2, mnv2,
         wf1, wf2, wxx, wf_ok,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  EPA: dist", r[0], " n(gi->gj)", r[4], r[5], r[6], " ok", wf_ok)
     print("   x1", wxx[0], wxx[1], wxx[2], "  x2", wxx[3], wxx[4], wxx[5])
@@ -256,6 +260,11 @@ def main() raises:
         r[0],
         Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0.005),
         Scalar[DTYPE](0.0001), 3,
+        # ⚠ THE OPERANDS ARE IN GEOM ORDER HERE, NOT MuJoCo'S. This probe
+        # queries the pair as the model declares it, so the normal needs no
+        # flip; the narrow phase passes `True` on the leg where it sorted the
+        # operands to `type1 <= type2`. See `native_multicontact_contacts`.
+        False,
         contacts_v, nc,
     )
     print("  OURS: multicontact wrote", got, "rows")

@@ -28,6 +28,8 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_gjk_simplex.mojo
 from std.math import abs, sqrt
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import _closest_point_on_simplex
 from mojo_rl.physics3d.gpu.constants import mesh_max_edge
@@ -199,6 +201,7 @@ def test_flat_face_query_reports_exact_gap() raises:
     var mv = _plate(0.0)
     var _ng = _no_graph_G()
     var _ne = _no_edges_G()
+    var ws = ccd_ws_alloc[DT]()
     var result = gjk_epa[DT](
         GEOM_CYLINDER,
         0.0, 0.0, 0.72,
@@ -212,6 +215,7 @@ def test_flat_face_query_reports_exact_gap() raises:
         0.0, 0.0,
         0.0, 0.0, 0.0,
         0, 4,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     var dist = Float64(result[0])
     print("  dist =", dist, "(expected 0.7)")

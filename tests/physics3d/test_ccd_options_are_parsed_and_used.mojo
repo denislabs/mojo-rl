@@ -38,6 +38,8 @@ from std.testing import assert_true, TestSuite
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
 from mojo_rl.physics3d.model.model_dims import ModelDims
@@ -235,6 +237,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
     var mv = TensorImpl[DTYPE].alloc(NMV_EPA * 3)
     var _ng = _no_graph_epa()
     var _ne = _no_edges_epa()
+    var ws = ccd_ws_alloc[DTYPE]()
     var out = InlineArray[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
@@ -253,6 +256,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
             Scalar[DTYPE](0.03), Scalar[DTYPE](0.02),
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             0, 0,
+            ws.lt["cpu", L_CCD_WS1](), 0,
             Scalar[DTYPE](tol), MJ_CCD_ITERATIONS,
         )
         out[i * 4 + 0] = Float64(r[0])

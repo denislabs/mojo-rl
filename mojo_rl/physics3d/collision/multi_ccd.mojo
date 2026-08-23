@@ -196,7 +196,8 @@ def _convex_pair_single[
     DTYPE: DType,
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
-    L_MESH_EDGES: Layout](
+    L_MESH_EDGES: Layout,
+    L_WS: Layout](
     gi_type: Int,
     pi_x: Scalar[DTYPE], pi_y: Scalar[DTYPE], pi_z: Scalar[DTYPE],
     qi_x: Scalar[DTYPE], qi_y: Scalar[DTYPE], qi_z: Scalar[DTYPE],
@@ -220,6 +221,8 @@ def _convex_pair_single[
     rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
@@ -274,6 +277,7 @@ def _convex_pair_single[
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
             va2, mnv2,
+            ws, wrow,
             ccd_tol, ccd_iter, ccd_margin,
         )
         out[0] = r[0]
@@ -299,6 +303,7 @@ def _convex_pair_single[
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
             va2, mnv2,
+            ws, wrow,
             ccd_tol, ccd_iter, ccd_margin,
         )
         out[0] = r[0]
@@ -421,7 +426,8 @@ def multi_ccd_extra_contacts[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
-    L_CONTACTS: Layout](
+    L_CONTACTS: Layout,
+    L_WS: Layout](
     env: Int,
     body_a: Int,
     body_b: Int,
@@ -465,6 +471,8 @@ def multi_ccd_extra_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
@@ -541,6 +549,7 @@ def multi_ccd_extra_contacts[
                 pj[0], pj[1], pj[2], pj[3], pj[4], pj[5], pj[6],
                 rj, hlj, hxj, hyj, hzj,
                 va2, mnv2,
+                ws, wrow,
                 ccd_tol, ccd_iter, ccd_margin,
             )
             if not (r[0] < contact_margin):

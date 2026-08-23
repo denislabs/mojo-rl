@@ -74,6 +74,8 @@ them poses a convex pair separated by less than 10 microns.
 from std.math import abs
 from layout import Layout, LayoutTensor
 
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
 
@@ -104,6 +106,7 @@ def probe(
     mv: LayoutTensor[DT, LV, MutAnyOrigin],
     ma: LayoutTensor[DT, LA, MutAnyOrigin],
     me: LayoutTensor[DT, LA, MutAnyOrigin],
+    ws: LayoutTensor[DT, L_CCD_WS1, MutAnyOrigin],
 ) -> Float64:
     """Signed distance our narrow phase reports for a stud/flange pair whose
     true face-to-surface gap is `gap`."""
@@ -121,6 +124,7 @@ def probe(
         Scalar[DT](0), Scalar[DT](0),
         Scalar[DT](HX_FLANGE), Scalar[DT](HY_FLANGE), Scalar[DT](HZ_FLANGE),
         0, 0,
+        ws, 0,
         Scalar[DT](CCD_TOL), CCD_ITER, Scalar[DT](MARGIN),
     )
     return Float64(res[0])
@@ -154,10 +158,11 @@ def main() raises:
     gaps.append(5.0e-05); tols.append(1e-5)   # control + open residual (#81)
 
     print("  true gap        reported          error    tol")
+    var wst = ccd_ws_alloc[DT]()
     var failures = 0
     for i in range(len(gaps)):
         var g = gaps[i]
-        var got = probe(g, mv, ma, me)
+        var got = probe(g, mv, ma, me, wst.lt["cpu", L_CCD_WS1]())
         var err = got - g
         var ok = got > 0.0 and abs(err) <= tols[i]
         print(

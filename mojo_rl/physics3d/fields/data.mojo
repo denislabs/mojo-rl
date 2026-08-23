@@ -31,6 +31,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from .dims import DimsLike
 
 from ..gpu.constants import CONTACT_SIZE, METADATA_SIZE
+from ..collision.ccd_workspace import CCD_WS_SIZE
 
 
 struct Data[
@@ -62,6 +63,7 @@ struct Data[
         Self.BATCH, Self.MAX_CONTACTS * CONTACT_SIZE
     )
     comptime L_META = Layout.row_major(Self.BATCH, METADATA_SIZE)
+    comptime L_CCD_WS = Layout.row_major(Self.BATCH, CCD_WS_SIZE)
     comptime L_SITE = Layout.row_major(Self.BATCH, Self.NSITE * 3)
 
     # Joint space
@@ -93,6 +95,14 @@ struct Data[
     # Contacts (packed record columns = CONTACT_IDX_*) + per-env metadata
     var contacts: TensorImpl[Self.DTYPE]  # [BATCH, MAX_CONTACTS*CONTACT_SIZE]
     var meta: TensorImpl[Self.DTYPE]  # [BATCH, METADATA_SIZE]
+    # ⚠ EPA'S POLYTOPE, AND IT IS DATA RATHER THAN A LOCAL BECAUSE MUJOCO'S IS.
+    # `mjc_penetration` hands EPA a `config->buffer` carved out of mjData's
+    # arena (or the thread-local `ccd_buffer`), never the C stack; ours used
+    # the stack and the ~7.5 KB frame is what kept heightfield collision off
+    # the GPU. One row per env, so it is thread-local in the collision kernels
+    # by the same argument that makes `contacts` thread-local. Nothing reads it
+    # across calls — it is pure scratch, never uploaded or downloaded.
+    var ccd_ws: TensorImpl[Self.DTYPE]  # [BATCH, CCD_WS_SIZE]
     # Derived / auxiliary
     var site_xpos: TensorImpl[Self.DTYPE]  # [BATCH, NSITE*3]
     var cfrc_ext: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
@@ -192,6 +202,7 @@ struct Data[
             B * dims.get_max_contacts() * CONTACT_SIZE
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(B * METADATA_SIZE)
+        self.ccd_ws = TensorImpl[Self.DTYPE].alloc(B * CCD_WS_SIZE)
         self.site_xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nsite() * 3)
         self.cfrc_ext = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
         self.cvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
@@ -224,6 +235,11 @@ struct Data[
         self.xangvel.upload(ctx)
         self.contacts.upload(ctx)
         self.meta.upload(ctx)
+        # Scratch: the device buffer has to EXIST (the collision kernel binds
+        # it), but its contents are written before they are read on every
+        # call, so the host copy is never meaningful in either direction —
+        # hence no matching `download`.
+        self.ccd_ws.upload(ctx)
         if Self.NSITE > 0:
             self.site_xpos.upload(ctx)
         self.cfrc_ext.upload(ctx)

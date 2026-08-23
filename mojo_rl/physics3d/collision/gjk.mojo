@@ -10,6 +10,15 @@ vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
+from .ccd_workspace import (
+    EPA_V_CAP,
+    EPA_F_CAP,
+    CCD_WS_EV,
+    CCD_WS_EF,
+    CCD_WS_VIS,
+    CCD_WS_HOR,
+    CCD_WS_SIZE,
+)
 from .gjk_support import _closest_point_on_simplex
 from .gjk_support import (
     support_sphere,
@@ -191,16 +200,65 @@ def _dot3[
 # estimate. Porting `polytope2/3/4` is what closes that, and until it lands
 # this is an improvement with a documented hole, not a finished collider.
 #
-# ⚠ THE CAPS ARE MEASURED, NOT INHERITED. `EPA_MAX_FACES = 384` /
-# `EPA_MAX_VERTS = 69` above are MuJoCo's generous allocation. A reference EPA
-# run over the pairs this engine actually collides — cylinder/box, box/box and
-# capsule/box across penetrations from 1e-4 to 0.05, plus sawyer's obj against
-# the 883-vertex eGripperBase hull — peaks at **32 faces and 18 verts**, so
-# these are set to 2x that. Overflow is REPORTED (the routine bails to its best
-# face so far) rather than silently truncating the polytope, which would return
-# a plausible wrong depth. Re-measure if hfields or much larger hulls arrive.
-comptime EPA_V_CAP: Int = 36
-comptime EPA_F_CAP: Int = 64
+# ⚠ THE CAPS ARE MEASURED, NOT INHERITED, and they live in `ccd_workspace`
+# with the row layout they size — `EPA_V_CAP` / `EPA_F_CAP`. `EPA_MAX_FACES =
+# 384` / `EPA_MAX_VERTS = 69` above are MuJoCo's generous allocation. Overflow
+# is REPORTED (the routine bails to its best face so far) rather than silently
+# truncating the polytope, which would return a plausible wrong depth.
+#
+# ⚠ THE POLYTOPE ITSELF IS NOT A LOCAL. It lives in a `[BATCH, CCD_WS_SIZE]`
+# tensor row, one row per env, handed in as `(ws, wrow)` — MuJoCo's
+# `config->buffer`. See `ccd_workspace.mojo` for why that is the reference's
+# storage class and not a workaround.
+
+
+# ---- CCD workspace accessors ------------------------------------------------
+# `rebind` because a `LayoutTensor`'s element type is only provably
+# `Scalar[DTYPE]` once its layout is concrete, and `L_WS` is a parameter here
+# (the engine binds `[BATCH, CCD_WS_SIZE]`, a gate binds `[1, CCD_WS_SIZE]`).
+# Reads go through these; writes stay spelled out at the site so the slot being
+# written is visible.
+
+
+@always_inline
+def _ev[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, i: Int, k: Int
+) -> Scalar[DTYPE]:
+    """Component `k` of polytope vertex `i` — 0..2 Minkowski, 3..5 and 6..8 the
+    two witness points."""
+    return rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_EV + i * 9 + k])
+
+
+@always_inline
+def _ef[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, f: Int, c: Int
+) -> Int:
+    """Corner `c` of face `f`, as a polytope vertex index."""
+    return Int(rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_EF + f * 3 + c]))
+
+
+@always_inline
+def _hor[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, h: Int, c: Int
+) -> Int:
+    """End `c` of horizon edge `h`, as a polytope vertex index."""
+    return Int(rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_HOR + h * 2 + c]))
+
+
+@always_inline
+def _vis[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, f: Int
+) -> Bool:
+    """Can the new support point see face `f`."""
+    return rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_VIS + f]) != Scalar[DTYPE](0)
 
 
 @always_inline
@@ -244,8 +302,10 @@ def _gjk_signed_distance[
 @always_inline
 def _epa_face_normal[
     DTYPE: DType,
+    L_WS: Layout,
 ](
-    ev: InlineArray[Scalar[DTYPE], EPA_V_CAP * 9],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     i: Int,
     j: Int,
     k: Int,
@@ -257,16 +317,18 @@ def _epa_face_normal[
     "Outward" means away from the origin, which is inside the polytope
     throughout EPA, so the sign is fixed by `n . a >= 0` rather than by winding.
     A zero-area face returns a zero normal and the caller skips it.
+
+    Reads the polytope vertices out of the CCD workspace row (`ccd_workspace`).
     """
-    var ax = ev[i * 9 + 0]
-    var ay = ev[i * 9 + 1]
-    var az = ev[i * 9 + 2]
-    var bx = ev[j * 9 + 0] - ax
-    var by = ev[j * 9 + 1] - ay
-    var bz = ev[j * 9 + 2] - az
-    var cx = ev[k * 9 + 0] - ax
-    var cy = ev[k * 9 + 1] - ay
-    var cz = ev[k * 9 + 2] - az
+    var ax = _ev(ws, wrow, i, 0)
+    var ay = _ev(ws, wrow, i, 1)
+    var az = _ev(ws, wrow, i, 2)
+    var bx = _ev(ws, wrow, j, 0) - ax
+    var by = _ev(ws, wrow, j, 1) - ay
+    var bz = _ev(ws, wrow, j, 2) - az
+    var cx = _ev(ws, wrow, k, 0) - ax
+    var cy = _ev(ws, wrow, k, 1) - ay
+    var cz = _ev(ws, wrow, k, 2) - az
     var nx = by * cz - bz * cy
     var ny = bz * cx - bx * cz
     var nz = bx * cy - by * cx
@@ -289,9 +351,10 @@ def _epa_face_normal[
 @always_inline
 def _epa_seed_contains_origin[
     DTYPE: DType,
+    L_WS: Layout,
 ](
-    ev: InlineArray[Scalar[DTYPE], EPA_V_CAP * 9],
-    ef: InlineArray[Int, EPA_F_CAP * 3],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     nef: Int,
 ) -> Int:
     """Seed classification: 1 contains the origin, 0 touching, -1 degenerate.
@@ -315,8 +378,12 @@ def _epa_seed_contains_origin[
         return -1
     var touching = False
     for f in range(nef):
-        var fnm = _epa_face_normal[DTYPE](
-            ev, ef[f * 3 + 0], ef[f * 3 + 1], ef[f * 3 + 2]
+        var fnm = _epa_face_normal[DTYPE, L_WS](
+            ws,
+            wrow,
+            _ef(ws, wrow, f, 0),
+            _ef(ws, wrow, f, 1),
+            _ef(ws, wrow, f, 2),
         )
         if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
             return -1
@@ -619,11 +686,13 @@ def _support[
     mut warm: Int,
     # ⚠ THE HEIGHTFIELD PRISM, and it rides on the STACK rather than in a
     # tensor on purpose. `mjc_ConvexHField` rebuilds these six vertices for
-    # every grid cell it walks, so they are per-CALL data, not model data — a
-    # scratch tensor would be a write into shared memory that every GPU thread
-    # in the collision kernel races on. Eighteen floats in an `InlineArray`
-    # cost nothing and are thread-local by construction. Ignored unless
-    # `geom_type == GEOM_HFIELD`.
+    # every grid cell it walks, so they are per-CALL data — they change many
+    # times within one `hfield_convex_contacts`, which nothing outside that
+    # loop ever reads. Eighteen floats in an `InlineArray` cost nothing.
+    # (EPA's polytope went the other way, into `ws`; it is per-CALL too but
+    # 7.5 KB of it. The dividing line is size, not lifetime — and `ws` is
+    # race-free because it is indexed per ENV, not shared. See
+    # `ccd_workspace`.) Ignored unless `geom_type == GEOM_HFIELD`.
     prism: InlineArray[Scalar[DTYPE], NPRISM],
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Unified support function — reads mesh verts from the record tensor.
@@ -1076,6 +1145,7 @@ def gjk_epa_witness[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    L_WS: Layout,
     NPRISM: Int = 1,
 ](
     type1: Int,
@@ -1121,6 +1191,12 @@ def gjk_epa_witness[
     mut wf2: InlineArray[Scalar[DTYPE], 9],
     mut wx: InlineArray[Scalar[DTYPE], 6],
     mut wf_ok: Int,
+    # ⚠ EPA'S POLYTOPE — MuJoCo's `config->buffer`. `ws[wrow, ...]` is the
+    # caller's scratch row and is written unconditionally; nothing in it is
+    # read across calls, so no caller has to clear it. One row per ENV is what
+    # keeps it thread-local in the collision kernels. See `ccd_workspace`.
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
@@ -1543,8 +1619,10 @@ def gjk_epa_witness[
     # `simplex` holds `nsimplex` vertices of 9 floats — the Minkowski point
     # (0..2) and the two witness points (3..5, 6..8). EPA needs the witnesses
     # carried through expansion, which is why the vertex stride stays 9.
-    var ev = InlineArray[Scalar[DTYPE], EPA_V_CAP * 9](fill=Scalar[DTYPE](0))
-    var ef = InlineArray[Int, EPA_F_CAP * 3](fill=0)
+    # `ev` and `ef` are SLICES OF THE CALLER'S WORKSPACE ROW, not locals —
+    # `ws[wrow, CCD_WS_EV + ...]` and `ws[wrow, CCD_WS_EF + ...]`. They are
+    # 7.5 KB together and a per-thread stack that size is what kept the
+    # heightfield prism off the GPU.
     var nev = 0
     var nef = 0
 
@@ -1560,20 +1638,20 @@ def gjk_epa_witness[
     if nsimplex == 4:
         for i in range(4):
             for k in range(9):
-                ev[i * 9 + k] = simplex[i * 9 + k]
+                ws[wrow, CCD_WS_EV + i * 9 + k] = simplex[i * 9 + k]
         nev = 4
-        ef[0] = 0
-        ef[1] = 1
-        ef[2] = 2
-        ef[3] = 0
-        ef[4] = 1
-        ef[5] = 3
-        ef[6] = 0
-        ef[7] = 2
-        ef[8] = 3
-        ef[9] = 1
-        ef[10] = 2
-        ef[11] = 3
+        ws[wrow, CCD_WS_EF + 0] = Scalar[DTYPE](0)
+        ws[wrow, CCD_WS_EF + 1] = Scalar[DTYPE](1)
+        ws[wrow, CCD_WS_EF + 2] = Scalar[DTYPE](2)
+        ws[wrow, CCD_WS_EF + 3] = Scalar[DTYPE](0)
+        ws[wrow, CCD_WS_EF + 4] = Scalar[DTYPE](1)
+        ws[wrow, CCD_WS_EF + 5] = Scalar[DTYPE](3)
+        ws[wrow, CCD_WS_EF + 6] = Scalar[DTYPE](0)
+        ws[wrow, CCD_WS_EF + 7] = Scalar[DTYPE](2)
+        ws[wrow, CCD_WS_EF + 8] = Scalar[DTYPE](3)
+        ws[wrow, CCD_WS_EF + 9] = Scalar[DTYPE](1)
+        ws[wrow, CCD_WS_EF + 10] = Scalar[DTYPE](2)
+        ws[wrow, CCD_WS_EF + 11] = Scalar[DTYPE](3)
         nef = 4
 
     # Attempt 1b — GJK ended on a TRIANGLE: MuJoCo's `polytope3`.
@@ -1588,13 +1666,13 @@ def gjk_epa_witness[
     elif nsimplex == 3:
         for i in range(3):
             for k in range(9):
-                ev[i * 9 + k] = simplex[i * 9 + k]
-        var e1x = ev[9 + 0] - ev[0]
-        var e1y = ev[9 + 1] - ev[1]
-        var e1z = ev[9 + 2] - ev[2]
-        var e2x = ev[18 + 0] - ev[0]
-        var e2y = ev[18 + 1] - ev[1]
-        var e2z = ev[18 + 2] - ev[2]
+                ws[wrow, CCD_WS_EV + i * 9 + k] = simplex[i * 9 + k]
+        var e1x = _ev(ws, wrow, 1, 0) - _ev(ws, wrow, 0, 0)
+        var e1y = _ev(ws, wrow, 1, 1) - _ev(ws, wrow, 0, 1)
+        var e1z = _ev(ws, wrow, 1, 2) - _ev(ws, wrow, 0, 2)
+        var e2x = _ev(ws, wrow, 2, 0) - _ev(ws, wrow, 0, 0)
+        var e2y = _ev(ws, wrow, 2, 1) - _ev(ws, wrow, 0, 1)
+        var e2z = _ev(ws, wrow, 2, 2) - _ev(ws, wrow, 0, 2)
         var tnx = e1y * e2z - e1z * e2y
         var tny = e1z * e2x - e1x * e2z
         var tnz = e1x * e2y - e1y * e2x
@@ -1621,33 +1699,33 @@ def gjk_epa_witness[
                 warm1, warm2,
                 prism,
             )
-            ev[27 + 0] = sp4[0]
-            ev[27 + 1] = sp4[1]
-            ev[27 + 2] = sp4[2]
-            ev[27 + 3] = sp4[3]
-            ev[27 + 4] = sp4[4]
-            ev[27 + 5] = sp4[5]
-            ev[27 + 6] = sp4[6]
-            ev[27 + 7] = sp4[7]
-            ev[27 + 8] = sp4[8]
-            ev[36 + 0] = sp5[0]
-            ev[36 + 1] = sp5[1]
-            ev[36 + 2] = sp5[2]
-            ev[36 + 3] = sp5[3]
-            ev[36 + 4] = sp5[4]
-            ev[36 + 5] = sp5[5]
-            ev[36 + 6] = sp5[6]
-            ev[36 + 7] = sp5[7]
-            ev[36 + 8] = sp5[8]
+            ws[wrow, CCD_WS_EV + 27 + 0] = sp4[0]
+            ws[wrow, CCD_WS_EV + 27 + 1] = sp4[1]
+            ws[wrow, CCD_WS_EV + 27 + 2] = sp4[2]
+            ws[wrow, CCD_WS_EV + 27 + 3] = sp4[3]
+            ws[wrow, CCD_WS_EV + 27 + 4] = sp4[4]
+            ws[wrow, CCD_WS_EV + 27 + 5] = sp4[5]
+            ws[wrow, CCD_WS_EV + 27 + 6] = sp4[6]
+            ws[wrow, CCD_WS_EV + 27 + 7] = sp4[7]
+            ws[wrow, CCD_WS_EV + 27 + 8] = sp4[8]
+            ws[wrow, CCD_WS_EV + 36 + 0] = sp5[0]
+            ws[wrow, CCD_WS_EV + 36 + 1] = sp5[1]
+            ws[wrow, CCD_WS_EV + 36 + 2] = sp5[2]
+            ws[wrow, CCD_WS_EV + 36 + 3] = sp5[3]
+            ws[wrow, CCD_WS_EV + 36 + 4] = sp5[4]
+            ws[wrow, CCD_WS_EV + 36 + 5] = sp5[5]
+            ws[wrow, CCD_WS_EV + 36 + 6] = sp5[6]
+            ws[wrow, CCD_WS_EV + 36 + 7] = sp5[7]
+            ws[wrow, CCD_WS_EV + 36 + 8] = sp5[8]
             nev = 5
             var hex_f: InlineArray[Int, 18] = [
                 3, 0, 1, 3, 2, 0, 3, 1, 2, 4, 1, 0, 4, 0, 2, 4, 2, 1,
             ]
             for k in range(18):
-                ef[k] = hex_f[k]
+                ws[wrow, CCD_WS_EF + k] = Scalar[DTYPE](hex_f[k])
             nef = 6
 
-    var seed_code = _epa_seed_contains_origin[DTYPE](ev, ef, nef)
+    var seed_code = _epa_seed_contains_origin[DTYPE, L_WS](ws, wrow, nef)
 
     # Attempt 2 — the six AXIS supports as an octahedron.
     #
@@ -1685,24 +1763,24 @@ def gjk_epa_witness[
                 warm1, warm2,
                 prism,
             )
-            ev[a * 9 + 0] = sp[0]
-            ev[a * 9 + 1] = sp[1]
-            ev[a * 9 + 2] = sp[2]
-            ev[a * 9 + 3] = sp[3]
-            ev[a * 9 + 4] = sp[4]
-            ev[a * 9 + 5] = sp[5]
-            ev[a * 9 + 6] = sp[6]
-            ev[a * 9 + 7] = sp[7]
-            ev[a * 9 + 8] = sp[8]
+            ws[wrow, CCD_WS_EV + a * 9 + 0] = sp[0]
+            ws[wrow, CCD_WS_EV + a * 9 + 1] = sp[1]
+            ws[wrow, CCD_WS_EV + a * 9 + 2] = sp[2]
+            ws[wrow, CCD_WS_EV + a * 9 + 3] = sp[3]
+            ws[wrow, CCD_WS_EV + a * 9 + 4] = sp[4]
+            ws[wrow, CCD_WS_EV + a * 9 + 5] = sp[5]
+            ws[wrow, CCD_WS_EV + a * 9 + 6] = sp[6]
+            ws[wrow, CCD_WS_EV + a * 9 + 7] = sp[7]
+            ws[wrow, CCD_WS_EV + a * 9 + 8] = sp[8]
         nev = 6
         var oct_f: InlineArray[Int, 24] = [
             0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
             2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
         ]
         for k in range(24):
-            ef[k] = oct_f[k]
+            ws[wrow, CCD_WS_EF + k] = Scalar[DTYPE](oct_f[k])
         nef = 8
-        seed_code = _epa_seed_contains_origin[DTYPE](ev, ef, nef)
+        seed_code = _epa_seed_contains_origin[DTYPE, L_WS](ws, wrow, nef)
 
     # ---- expand ------------------------------------------------------------
     var best_nx = Scalar[DTYPE](0)
@@ -1728,8 +1806,12 @@ def gjk_epa_witness[
         best_face = -1
         best_d = Scalar[DTYPE](1e30)
         for f in range(nef):
-            var fnm = _epa_face_normal[DTYPE](
-                ev, ef[f * 3 + 0], ef[f * 3 + 1], ef[f * 3 + 2]
+            var fnm = _epa_face_normal[DTYPE, L_WS](
+                ws,
+                wrow,
+                _ef(ws, wrow, f, 0),
+                _ef(ws, wrow, f, 1),
+                _ef(ws, wrow, f, 2),
             )
             if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
                 continue
@@ -1765,20 +1847,20 @@ def gjk_epa_witness[
             break
 
         # mark faces the new point can see
-        var vis = InlineArray[Bool, EPA_F_CAP](fill=False)
         var nvis = 0
         for f in range(nef):
-            var i0 = ef[f * 3 + 0]
-            var fnm = _epa_face_normal[DTYPE](
-                ev, i0, ef[f * 3 + 1], ef[f * 3 + 2]
+            ws[wrow, CCD_WS_VIS + f] = Scalar[DTYPE](0)
+            var i0 = _ef(ws, wrow, f, 0)
+            var fnm = _epa_face_normal[DTYPE, L_WS](
+                ws, wrow, i0, _ef(ws, wrow, f, 1), _ef(ws, wrow, f, 2)
             )
             if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
                 continue
-            var rx = w[0] - ev[i0 * 9 + 0]
-            var ry = w[1] - ev[i0 * 9 + 1]
-            var rz = w[2] - ev[i0 * 9 + 2]
+            var rx = w[0] - _ev(ws, wrow, i0, 0)
+            var ry = w[1] - _ev(ws, wrow, i0, 1)
+            var rz = w[2] - _ev(ws, wrow, i0, 2)
             if fnm[0] * rx + fnm[1] * ry + fnm[2] * rz > Scalar[DTYPE](1e-14):
-                vis[f] = True
+                ws[wrow, CCD_WS_VIS + f] = Scalar[DTYPE](1)
                 nvis += 1
         if nvis == 0:
             converged = True
@@ -1797,30 +1879,29 @@ def gjk_epa_witness[
         # LOW depth, because face distance climbs monotonically toward the true
         # one. Measured on sawyer's mesh pair: 0.0148582 from the directed rule
         # against 0.0260234 for a correct EPA over the same 81 hull vertices.
-        var hor = InlineArray[Int, EPA_F_CAP * 6](fill=0)
         var nhor = 0
         for f in range(nef):
-            if not vis[f]:
+            if not _vis(ws, wrow, f):
                 continue
             for e in range(3):
-                var a0 = ef[f * 3 + e]
-                var a1 = ef[f * 3 + (e + 1) % 3]
+                var a0 = _ef(ws, wrow, f, e)
+                var a1 = _ef(ws, wrow, f, (e + 1) % 3)
                 var lo = a0 if a0 < a1 else a1
                 var hi = a1 if a0 < a1 else a0
                 var count = 0
                 for g in range(nef):
-                    if not vis[g]:
+                    if not _vis(ws, wrow, g):
                         continue
                     for e2 in range(3):
-                        var b0 = ef[g * 3 + e2]
-                        var b1 = ef[g * 3 + (e2 + 1) % 3]
+                        var b0 = _ef(ws, wrow, g, e2)
+                        var b1 = _ef(ws, wrow, g, (e2 + 1) % 3)
                         var blo = b0 if b0 < b1 else b1
                         var bhi = b1 if b0 < b1 else b0
                         if blo == lo and bhi == hi:
                             count += 1
                 if count == 1 and nhor * 2 + 1 < EPA_F_CAP * 6:
-                    hor[nhor * 2 + 0] = lo
-                    hor[nhor * 2 + 1] = hi
+                    ws[wrow, CCD_WS_HOR + nhor * 2 + 0] = Scalar[DTYPE](lo)
+                    ws[wrow, CCD_WS_HOR + nhor * 2 + 1] = Scalar[DTYPE](hi)
                     nhor += 1
         if nhor < 3 or nef - nvis + nhor > EPA_F_CAP:
             break
@@ -1828,30 +1909,35 @@ def gjk_epa_witness[
         # drop visible faces, keeping the rest compact
         var keep = 0
         for f in range(nef):
-            if vis[f]:
+            if _vis(ws, wrow, f):
                 continue
-            ef[keep * 3 + 0] = ef[f * 3 + 0]
-            ef[keep * 3 + 1] = ef[f * 3 + 1]
-            ef[keep * 3 + 2] = ef[f * 3 + 2]
+            for c in range(3):
+                ws[wrow, CCD_WS_EF + keep * 3 + c] = Scalar[DTYPE](
+                    _ef(ws, wrow, f, c)
+                )
             keep += 1
         nef = keep
 
         # add w and stitch the horizon to it
-        ev[nev * 9 + 0] = w[0]
-        ev[nev * 9 + 1] = w[1]
-        ev[nev * 9 + 2] = w[2]
-        ev[nev * 9 + 3] = w[3]
-        ev[nev * 9 + 4] = w[4]
-        ev[nev * 9 + 5] = w[5]
-        ev[nev * 9 + 6] = w[6]
-        ev[nev * 9 + 7] = w[7]
-        ev[nev * 9 + 8] = w[8]
+        ws[wrow, CCD_WS_EV + nev * 9 + 0] = w[0]
+        ws[wrow, CCD_WS_EV + nev * 9 + 1] = w[1]
+        ws[wrow, CCD_WS_EV + nev * 9 + 2] = w[2]
+        ws[wrow, CCD_WS_EV + nev * 9 + 3] = w[3]
+        ws[wrow, CCD_WS_EV + nev * 9 + 4] = w[4]
+        ws[wrow, CCD_WS_EV + nev * 9 + 5] = w[5]
+        ws[wrow, CCD_WS_EV + nev * 9 + 6] = w[6]
+        ws[wrow, CCD_WS_EV + nev * 9 + 7] = w[7]
+        ws[wrow, CCD_WS_EV + nev * 9 + 8] = w[8]
         var wi = nev
         nev += 1
         for h in range(nhor):
-            ef[nef * 3 + 0] = hor[h * 2 + 0]
-            ef[nef * 3 + 1] = hor[h * 2 + 1]
-            ef[nef * 3 + 2] = wi
+            ws[wrow, CCD_WS_EF + nef * 3 + 0] = Scalar[DTYPE](
+                _hor(ws, wrow, h, 0)
+            )
+            ws[wrow, CCD_WS_EF + nef * 3 + 1] = Scalar[DTYPE](
+                _hor(ws, wrow, h, 1)
+            )
+            ws[wrow, CCD_WS_EF + nef * 3 + 2] = Scalar[DTYPE](wi)
             nef += 1
 
     # ---- UPPER-BOUND CHECK on the depth ------------------------------------
@@ -1915,21 +2001,21 @@ def gjk_epa_witness[
     # fall back to the face centroid, which is what the barycentric solve
     # converges to as the triangle collapses.
     if best_face >= 0 and (converged or best_d < Scalar[DTYPE](1e29)):
-        var i0 = ef[best_face * 3 + 0]
-        var i1 = ef[best_face * 3 + 1]
-        var i2 = ef[best_face * 3 + 2]
+        var i0 = _ef(ws, wrow, best_face, 0)
+        var i1 = _ef(ws, wrow, best_face, 1)
+        var i2 = _ef(ws, wrow, best_face, 2)
         var px = best_nx * best_d
         var py = best_ny * best_d
         var pz = best_nz * best_d
-        var v0x = ev[i1 * 9 + 0] - ev[i0 * 9 + 0]
-        var v0y = ev[i1 * 9 + 1] - ev[i0 * 9 + 1]
-        var v0z = ev[i1 * 9 + 2] - ev[i0 * 9 + 2]
-        var v1x = ev[i2 * 9 + 0] - ev[i0 * 9 + 0]
-        var v1y = ev[i2 * 9 + 1] - ev[i0 * 9 + 1]
-        var v1z = ev[i2 * 9 + 2] - ev[i0 * 9 + 2]
-        var v2x = px - ev[i0 * 9 + 0]
-        var v2y = py - ev[i0 * 9 + 1]
-        var v2z = pz - ev[i0 * 9 + 2]
+        var v0x = _ev(ws, wrow, i1, 0) - _ev(ws, wrow, i0, 0)
+        var v0y = _ev(ws, wrow, i1, 1) - _ev(ws, wrow, i0, 1)
+        var v0z = _ev(ws, wrow, i1, 2) - _ev(ws, wrow, i0, 2)
+        var v1x = _ev(ws, wrow, i2, 0) - _ev(ws, wrow, i0, 0)
+        var v1y = _ev(ws, wrow, i2, 1) - _ev(ws, wrow, i0, 1)
+        var v1z = _ev(ws, wrow, i2, 2) - _ev(ws, wrow, i0, 2)
+        var v2x = px - _ev(ws, wrow, i0, 0)
+        var v2y = py - _ev(ws, wrow, i0, 1)
+        var v2z = pz - _ev(ws, wrow, i0, 2)
         var d00 = v0x * v0x + v0y * v0y + v0z * v0z
         var d01 = v0x * v1x + v0y * v1y + v0z * v1z
         var d11 = v1x * v1x + v1y * v1y + v1z * v1z
@@ -1944,22 +2030,34 @@ def gjk_epa_witness[
             l2 = (d00 * d21 - d01 * d20) / den
             l0 = Scalar[DTYPE](1) - l1 - l2
         var w1x = (
-            l0 * ev[i0 * 9 + 3] + l1 * ev[i1 * 9 + 3] + l2 * ev[i2 * 9 + 3]
+            l0 * _ev(ws, wrow, i0, 3)
+            + l1 * _ev(ws, wrow, i1, 3)
+            + l2 * _ev(ws, wrow, i2, 3)
         )
         var w1y = (
-            l0 * ev[i0 * 9 + 4] + l1 * ev[i1 * 9 + 4] + l2 * ev[i2 * 9 + 4]
+            l0 * _ev(ws, wrow, i0, 4)
+            + l1 * _ev(ws, wrow, i1, 4)
+            + l2 * _ev(ws, wrow, i2, 4)
         )
         var w1z = (
-            l0 * ev[i0 * 9 + 5] + l1 * ev[i1 * 9 + 5] + l2 * ev[i2 * 9 + 5]
+            l0 * _ev(ws, wrow, i0, 5)
+            + l1 * _ev(ws, wrow, i1, 5)
+            + l2 * _ev(ws, wrow, i2, 5)
         )
         var w2x = (
-            l0 * ev[i0 * 9 + 6] + l1 * ev[i1 * 9 + 6] + l2 * ev[i2 * 9 + 6]
+            l0 * _ev(ws, wrow, i0, 6)
+            + l1 * _ev(ws, wrow, i1, 6)
+            + l2 * _ev(ws, wrow, i2, 6)
         )
         var w2y = (
-            l0 * ev[i0 * 9 + 7] + l1 * ev[i1 * 9 + 7] + l2 * ev[i2 * 9 + 7]
+            l0 * _ev(ws, wrow, i0, 7)
+            + l1 * _ev(ws, wrow, i1, 7)
+            + l2 * _ev(ws, wrow, i2, 7)
         )
         var w2z = (
-            l0 * ev[i0 * 9 + 8] + l1 * ev[i1 * 9 + 8] + l2 * ev[i2 * 9 + 8]
+            l0 * _ev(ws, wrow, i0, 8)
+            + l1 * _ev(ws, wrow, i1, 8)
+            + l2 * _ev(ws, wrow, i2, 8)
         )
 
         # The winning face's three vertices, as support points on each geom.
@@ -1967,24 +2065,24 @@ def gjk_epa_witness[
         # vertex id varying, so no per-thread array is indexed by a runtime
         # value on the way out — see
         # `feedback_metal_wide_per_thread_inlinearray_miscompute`.
-        wf1[0] = ev[i0 * 9 + 3]
-        wf1[1] = ev[i0 * 9 + 4]
-        wf1[2] = ev[i0 * 9 + 5]
-        wf1[3] = ev[i1 * 9 + 3]
-        wf1[4] = ev[i1 * 9 + 4]
-        wf1[5] = ev[i1 * 9 + 5]
-        wf1[6] = ev[i2 * 9 + 3]
-        wf1[7] = ev[i2 * 9 + 4]
-        wf1[8] = ev[i2 * 9 + 5]
-        wf2[0] = ev[i0 * 9 + 6]
-        wf2[1] = ev[i0 * 9 + 7]
-        wf2[2] = ev[i0 * 9 + 8]
-        wf2[3] = ev[i1 * 9 + 6]
-        wf2[4] = ev[i1 * 9 + 7]
-        wf2[5] = ev[i1 * 9 + 8]
-        wf2[6] = ev[i2 * 9 + 6]
-        wf2[7] = ev[i2 * 9 + 7]
-        wf2[8] = ev[i2 * 9 + 8]
+        wf1[0] = _ev(ws, wrow, i0, 3)
+        wf1[1] = _ev(ws, wrow, i0, 4)
+        wf1[2] = _ev(ws, wrow, i0, 5)
+        wf1[3] = _ev(ws, wrow, i1, 3)
+        wf1[4] = _ev(ws, wrow, i1, 4)
+        wf1[5] = _ev(ws, wrow, i1, 5)
+        wf1[6] = _ev(ws, wrow, i2, 3)
+        wf1[7] = _ev(ws, wrow, i2, 4)
+        wf1[8] = _ev(ws, wrow, i2, 5)
+        wf2[0] = _ev(ws, wrow, i0, 6)
+        wf2[1] = _ev(ws, wrow, i0, 7)
+        wf2[2] = _ev(ws, wrow, i0, 8)
+        wf2[3] = _ev(ws, wrow, i1, 6)
+        wf2[4] = _ev(ws, wrow, i1, 7)
+        wf2[5] = _ev(ws, wrow, i1, 8)
+        wf2[6] = _ev(ws, wrow, i2, 6)
+        wf2[7] = _ev(ws, wrow, i2, 7)
+        wf2[8] = _ev(ws, wrow, i2, 8)
         wx[0] = w1x
         wx[1] = w1y
         wx[2] = w1z
@@ -2126,6 +2224,7 @@ def gjk_epa[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    L_WS: Layout,
     NPRISM: Int = 1,
 ](
     type1: Int,
@@ -2151,6 +2250,8 @@ def gjk_epa[
     r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
     hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
@@ -2188,6 +2289,7 @@ def gjk_epa[
         r2, hl2, hx2, hy2, hz2,
         va2, mnv2,
         wf1, wf2, wx, wf_ok,
+        ws, wrow,
         ccd_tol, ccd_iter, ccd_margin,
         Scalar[DTYPE](-1),
         prism,

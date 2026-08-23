@@ -13,6 +13,8 @@ broadphase_sap).
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import (
     support_sphere,
@@ -63,6 +65,7 @@ def test_box_box_separated() raises:
     var mv = _mv_tensor(List[Float64]())
     var _ng = _no_graph()
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 2.0,  # box1 at z=2
@@ -76,6 +79,7 @@ def test_box_box_separated() raises:
         0.0, 0.0,
         0.5, 0.5, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~1.0)")
     if result[0] < 0:
@@ -90,6 +94,7 @@ def test_box_box_overlapping() raises:
     var mv = _mv_tensor(List[Float64]())
     var _ng = _no_graph()
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 0.3,  # box1 at z=0.3
@@ -103,6 +108,7 @@ def test_box_box_overlapping() raises:
         0.0, 0.0,
         0.5, 0.5, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~-0.7)")
     if result[0] >= 0:
@@ -129,6 +135,7 @@ def test_sphere_mesh_separated() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     var result = gjk_epa[DType.float64](
         GEOM_SPHERE,
         0.0, 0.0, 3.0,  # sphere at z=3
@@ -142,6 +149,7 @@ def test_sphere_mesh_separated() raises:
         0.0, 0.0,
         0.0, 0.0, 0.0,
         0, 8,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~2.4)")
     if result[0] < 0:
@@ -169,6 +177,7 @@ def test_mesh_box_sawyer_case() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh geom: body_pos = (0, 0.6, 0.2), geom_local_offset = (0, 0, 0.03)
     # World pos ≈ (0, 0.6, 0.23)
     var result = gjk_epa[DType.float64](
@@ -184,6 +193,7 @@ def test_mesh_box_sawyer_case() raises:
         0.0, 0.0,
         0.7, 0.4, 0.46,  # half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "contact_z=", Float64(result[3]),
@@ -215,6 +225,7 @@ def test_mesh_box_touching() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh at z=0.02 (bottom at z=0.0 = box top)
     var result = gjk_epa[DType.float64](
         GEOM_MESH,
@@ -229,6 +240,7 @@ def test_mesh_box_touching() raises:
         0.0, 0.0,
         1.0, 1.0, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~0.0)")
     if result[0] < -0.01:
@@ -256,6 +268,7 @@ def test_mesh_box_rotated() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh at z=0.23 with 90° rotation (quat = [0.707, 0, 0, 0.707])
     var sq2 = 0.7071067811865476
     var result = gjk_epa[DType.float64](
@@ -271,6 +284,7 @@ def test_mesh_box_rotated() raises:
         0.0, 0.0,
         0.7, 0.4, 0.46,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.2, mesh at z=0.23±0.03, box top at z=0.0)")
@@ -298,6 +312,7 @@ def test_mesh_box_asymmetric() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Very large box (table: 1.4m × 0.8m × 0.92m)
     var result = gjk_epa[DType.float64](
         GEOM_MESH,
@@ -312,6 +327,7 @@ def test_mesh_box_asymmetric() raises:
         0.0, 0.0,
         0.7, 0.4, 0.46,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.205)")
@@ -342,6 +358,7 @@ def test_mesh_box_actual_sawyer() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Body 23 at (0, 0.6, 0.2), quat (0.707, 0, 0, 0.707)
     # Geom local offset (0, 0, 0.03) → world pos via quat_rotate + body_pos
     # With 90° X rotation: local (0,0,0.03) → world (0, -0.03, 0) + body → (0, 0.57, 0.2)
@@ -361,6 +378,7 @@ def test_mesh_box_actual_sawyer() raises:
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     # After 90° X rotation: mesh local z becomes world y, local y becomes world -z
     # Hull z-range [-0.003, 0.051] → world y offset
@@ -451,6 +469,7 @@ def test_exact_sawyer_runtime() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
 
     # Body 23 runtime values:
     # xpos: (0.0053, 0.6013, 0.3151)
@@ -482,6 +501,7 @@ def test_exact_sawyer_runtime() raises:
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "normal=", Float64(result[4]), Float64(result[5]), Float64(result[6]))

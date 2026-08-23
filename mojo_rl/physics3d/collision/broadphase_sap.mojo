@@ -161,6 +161,7 @@ def _hf_len(n: Int) -> Int:
     return n if n > 0 else 1
 
 
+from .ccd_workspace import CCD_WS_SIZE
 from .gjk import gjk_epa, gjk_epa_witness
 from .multi_ccd import multi_ccd_pair_supported, multi_ccd_extra_contacts
 from .native_multicontact import (
@@ -350,14 +351,10 @@ def _detect_contacts_sap_env[
     L_HF_DATA: Layout,
     L_CONTACTS: Layout,
     L_SMETA: Layout,
-    # ⚠⚠ HEIGHTFIELD COLLISION IS COMPILED OUT ON THE GPU, AND THAT IS A METAL
-    # STACK LIMIT, NOT A DESIGN CHOICE. `hfield_convex_contacts` needs its own
-    # instantiation of the whole GJK/EPA stack (the prism is a sixth shape
-    # type), and a second copy of EPA's polytope arrays in the same kernel
-    # pushes it past "Compute function exceeds available stack space" — the
-    # same ceiling that pins `MC_MAX_POLYVERT` at 56. The CPU path is
-    # unaffected. `init_fields` says so at load for any model that has a
-    # heightfield.
+    L_WS: Layout,
+    # Compiled on both targets — see the twin note in `contact_detection`.
+    # EPA's polytope lives in `d.ccd_ws`, not on the per-thread stack, which
+    # is what let the second GJK/EPA instantiation into the Metal kernel.
     HFIELD_ENABLED: Bool = True,
 ](
     env: Int,
@@ -423,6 +420,11 @@ def _detect_contacts_sap_env[
     ],
     smeta: LayoutTensor[
         DTYPE, L_SMETA, MutAnyOrigin
+    ],
+    # EPA's polytope, one row per env — MuJoCo's `config->buffer`. See
+    # `ccd_workspace`.
+    ws: LayoutTensor[
+        DTYPE, L_WS, MutAnyOrigin
     ],
 ):
     """AABB/SAP broadphase contact detection for one env (verbatim from
@@ -1368,7 +1370,7 @@ def _detect_contacts_sap_env[
                     nsg,
                     hfield_meta, hfield_data,
                     mesh_verts, mesh_vert_edgeadr, mesh_edges,
-                    dims, contacts, num_contacts,
+                    dims, contacts, ws, num_contacts,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -1686,6 +1688,7 @@ def _detect_contacts_sap_env[
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                     rj, hlj, hxj, hyj, hzj,
                     0, 0,
+                    ws, env,
                     ccd_tol, ccd_iter, cm,
                 )
                 dist = r[0]
@@ -1748,6 +1751,7 @@ def _detect_contacts_sap_env[
                         rj, hlj, hxj, hyj, hzj,
                         va2, mnv2,
                         wf1, wf2, wxx, wf_ok,
+                        ws, env,
                         ccd_tol, ccd_iter, cm,
                         # Opt in to the cutoff exit: `dist` below is read ONLY
                         # by `if dist < cm`, and everything that consumes the
@@ -1943,6 +1947,7 @@ def _detect_contacts_sap_env[
                         dist,
                         cm, cf, cfs, cfr, cdim,
                         contacts, num_contacts,
+                        ws, env,
                         ccd_tol, ccd_iter, cm,
                     )
 
@@ -2032,15 +2037,18 @@ def _detect_contacts_sap_fields_kernel[
     smeta: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
     ],
+    ccd_ws: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, CCD_WS_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _detect_contacts_sap_env[DTYPE, BATCH, HFIELD_ENABLED=False](
+    _detect_contacts_sap_env[DTYPE, BATCH](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR](), xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
         mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges,
-        hfield_meta, hfield_data, contacts, smeta,
+        hfield_meta, hfield_data, contacts, smeta, ccd_ws,
     )
 
 
@@ -2081,6 +2089,7 @@ def detect_contacts_sap[
     comptime L_HF_DATA = Layout.row_major(_hf_len(D.NHFIELD_DATA))
     comptime L_CONTACTS = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
+    comptime L_CCD_WS = Layout.row_major(BATCH, CCD_WS_SIZE)
 
     comptime if target == "cpu":
         var dm = d.dims
@@ -2102,6 +2111,7 @@ def detect_contacts_sap[
         var rl_HF_DATA = rl1(_hf_len(dm.get_nhfield_data()))
         var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
         var rl_SMETA = rl2(BATCH, METADATA_SIZE)
+        var rl_CCD_WS = rl2(BATCH, CCD_WS_SIZE)
         var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
         var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
         var geoms_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM)
@@ -2123,6 +2133,7 @@ def detect_contacts_sap[
         var hfield_data_v = m.hfield_data.lt_dyn["cpu", DYN1](rl_HF_DATA)
         var contacts_v = d.contacts.lt_dyn["cpu", DYN2](rl_CONTACTS)
         var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
+        var ccd_ws_v = d.ccd_ws.lt_dyn["cpu", DYN2](rl_CCD_WS)
         for e in range(BATCH):
             _detect_contacts_sap_env[DTYPE, BATCH](
                 e, dm, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
@@ -2130,7 +2141,7 @@ def detect_contacts_sap[
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 mesh_vert_edgeadr_v, mesh_edges_v,
                 hfield_meta_v, hfield_data_v,
-                contacts_v, smeta_v,
+                contacts_v, smeta_v, ccd_ws_v,
             )
     else:
         var c = ctx.value()
@@ -2161,6 +2172,7 @@ def detect_contacts_sap[
             m.hfield_data.lt["gpu", L_HF_DATA](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
+            d.ccd_ws.lt["gpu", L_CCD_WS](),
             grid_dim=(BLOCKS,),
             block_dim=(SAP_TPB,),
         )

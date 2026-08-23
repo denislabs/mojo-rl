@@ -47,6 +47,8 @@ from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_MESH
 from mojo_rl.physics3d.gpu.constants import mesh_max_edge
@@ -114,6 +116,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
         edges[k] = Scalar[D](el[k])
 
     var out = List[Float64]()
+    var ws = ccd_ws_alloc[D]()
     var one = Scalar[D](1)
     var z = Scalar[D](0)
     for k in range(NP):
@@ -128,6 +131,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
             GEOM_MESH, gx, Scalar[D](0.01), Scalar[D](-0.02), z, z, qz, qw,
             z, z, z, z, z,
             mva[1], mvn[1],
+            ws.lt["cpu", L_CCD_WS1](), 0,
         )
         out.append(Float64(r[0]))
     _ = vbuf^

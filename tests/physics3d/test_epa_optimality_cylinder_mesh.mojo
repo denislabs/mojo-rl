@@ -95,6 +95,8 @@ from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import (
     support_cylinder,
@@ -604,6 +606,7 @@ def _epa() raises -> Tuple[Float64, Float64, Float64, Float64]:
     var mv = _hull()
     var _ng = _no_graph_H()
     var _ne = _no_edges_H()
+    var ws = ccd_ws_alloc[DT]()
     var r = gjk_epa[DT](
         GEOM_CYLINDER,
         Scalar[DT](CYL_PX), Scalar[DT](CYL_PY), Scalar[DT](CYL_PZ),
@@ -618,6 +621,7 @@ def _epa() raises -> Tuple[Float64, Float64, Float64, Float64]:
         Scalar[DT](0), Scalar[DT](0),
         Scalar[DT](0), Scalar[DT](0), Scalar[DT](0),
         0, NV_HULL,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     return (Float64(r[0]), Float64(r[4]), Float64(r[5]), Float64(r[6]))
 
