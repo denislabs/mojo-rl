@@ -242,6 +242,15 @@ comptime TOL_DIST_APPROX: Float64 = 1e-6
 # 1.943426397588155e-08, so this is set at the float32 rounding scale (~1 ulp
 # at unit magnitude) rather than at that number, to leave room for ordinary
 # device noise without ever readmitting a branch-level divergence.
+#
+# ⚠ RE-MEASURED 2026-08-24: it is now **0.0** — every closed-form record is
+# bit-identical between CPU and Metal. The 1.94e-08 above, and the 4.17e-07
+# that later tripped this assert, were both `mjc_Convex` rows the group
+# classification was miscounting as closed-form (see `_group_is_convex()`).
+# LEFT AT 1e-7 DELIBERATELY: the headroom above was reasoned for float32
+# device noise and only ONE device has ever been measured, so tightening to 0
+# would be pinning a bound harder than the evidence behind it. The exactness
+# CLAIM is enforced where it is strongest — `worst_first == 0.0` below.
 comptime TOL_GPU_MANIFOLD: Float64 = 1e-7
 # Groups 10/11 (box/cylinder, cylinder/box) only. Their two multi-CCD
 # perturbation rows mirror about the primary contact plane between CPU and
@@ -281,6 +290,42 @@ def _group_names() -> List[String]:
     ]
 
 
+def _group_is_convex() -> List[Bool]:
+    """Which groups MuJoCo solves with `mjc_Convex` — GJK + EPA — rather than a
+    closed form. Aligned index-for-index with `_group_names()`.
+
+    Read straight off `mjCOLLISIONFUNC` (`engine_collision_driver.c:52`), which
+    is the ONLY authority on this and disagrees with intuition in one place:
+
+        [SPHERE ][CAPSULE ]  mjc_SphereCapsule   closed form
+        [SPHERE ][BOX     ]  mjc_SphereBox       closed form
+        [SPHERE ][CYLINDER]  mjc_SphereCylinder  closed form
+        [CAPSULE][BOX     ]  mjc_CapsuleBox      closed form
+        [CAPSULE][CYLINDER]  mjc_Convex          ITERATIVE
+        [BOX    ][CYLINDER]  mjc_Convex          ITERATIVE
+
+    ⚠⚠ THIS WAS `g == 10 or g == 11` SPELLED OUT IN THREE PLACES, AND IT WENT
+    STALE. It named box/cylinder and cylinder/box — correct when the only
+    iterative groups were the ones whose primitive "reduces the cylinder to a
+    capsule". CAPSULE x CYLINDER was re-routed to `mjc_Convex` later, for the
+    same reason and in the same commit family, and none of the three copies
+    followed. The result was this file demanding FLOAT64 EXACTNESS of an EPA
+    answer: `capsule/cylinder` red at 2.093e-07 against MuJoCo, and red again
+    CPU-vs-GPU at 3.638e-12, with both numbers being what "iterative" means
+    rather than a defect. One table now, cited, and the length assert below
+    stops a name being added without a verdict.
+    """
+    return [
+        False, False,   # sphere/capsule, capsule/sphere
+        False, False,   # sphere/box, box/sphere
+        False, False,   # sphere/cylinder, cylinder/sphere
+        False, False,   # capsule/box, box/capsule
+        True, True,     # capsule/cylinder, cylinder/capsule   mjc_Convex
+        True, True,     # box/cylinder, cylinder/box           mjc_Convex
+        False, False,   # the two WORLD-first/second sphere/capsule rows
+    ]
+
+
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
@@ -308,6 +353,12 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
     mujoco.mj_forward(m, dat)
 
     var names = _group_names()
+    assert_true(
+        len(_group_is_convex()) == len(names),
+        "_group_is_convex() has " + String(len(_group_is_convex()))
+        + " verdicts for " + String(len(names)) + " groups — a group was"
+        " added without saying whether MuJoCo solves it with mjc_Convex",
+    )
     var n_ours = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     var n_mj = Int(py=dat.ncon)
     print("  contacts: ours", n_ours, " MuJoCo", n_mj)
@@ -426,7 +477,7 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         # residual is bounded by the algorithm's own stopping rule, not by
         # float64. 1e-6 sits two orders above the measured 1.09e-07 and six
         # orders below the millimetre scale this file is testing.
-        var iterative = (g == 10 or g == 11)
+        var iterative = _group_is_convex()[g]
         var approx = iterative
         var tol_d = TOL_DIST_APPROX if approx else TOL_DIST
         var tol_n = TOL_DIR_APPROX if approx else TOL_DIR
@@ -520,12 +571,9 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
     var deficit = 0
     for g in range(NGROUPS):
         deficit += mj_multi[g] - seen[g]
-        # Groups 10 and 11 are box/cylinder and cylinder/box — the pair whose
-        # primitive reduces the cylinder to a capsule. Same two groups the
-        # tolerance block above calls `approx`.
-        # Label kept for the two GJK/EPA groups, but they are no longer
-        # APPROXIMATE — they are ITERATIVE. See the tolerance note above.
-        var approx_group = (g == 10 or g == 11)
+        # The GJK/EPA groups, from `_group_is_convex()` — the same verdict
+        # the tolerance block above uses. Not APPROXIMATE, ITERATIVE.
+        var approx_group = _group_is_convex()[g]
         print(
             "   ", names[g], "  ours", seen[g],
             " mj_nomulti", mj_nomulti[g], " mj_default", mj_multi[g],
@@ -664,7 +712,11 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     for c in range(n_cpu):
         var gpx0 = Float64(dc.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_POS_X])
         var gg0 = Int(gpx0 + 0.5)
-        var iter0 = (gg0 == 10 or gg0 == 11)
+        # ⚠ THE FOURTH COPY OF THE SAME VERDICT, and the last one to be found:
+        # it keys off the group tag carried in POS_X rather than off `g`, which
+        # is why a grep for the old spelling missed it twice.
+        var conv = _group_is_convex()
+        var iter0 = gg0 >= 0 and gg0 < len(conv) and conv[gg0]
         if iter0:
             n_iter_rows += 1
         else:
@@ -765,7 +817,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # something.
     # ⚠⚠ THE BIT-EXACT CLAIM HOLDS FOR CLOSED-FORM BRANCHES ONLY, AND THIS
     # SPLIT IS THE SAME EXEMPTION THE MuJoCo LEG ALREADY MAKES 250 LINES UP.
-    # `iterative = (g == 10 or g == 11)` — box/cylinder and cylinder/box — run
+    # `_group_is_convex()` — the four cylinder-vs-capsule/box groups — run
     # GJK+EPA rather than a closed form, so their normal is whichever boundary
     # FACE the expansion stops on, decided by float comparisons inside a
     # data-dependent loop. FMA contraction differs between the Mojo CPU path
@@ -806,7 +858,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
         # Same group rule as the MuJoCo leg: groups sit 1 m apart along x.
         var gpx = Float64(dc.contacts.data[bc + CONTACT_IDX_POS_X])
         var gg = Int(gpx + 0.5)
-        var iterative = (gg == 10 or gg == 11)
+        var iterative = _group_is_convex()[gg]
         if iterative:
             n_iter_pairs += 1
         else:
