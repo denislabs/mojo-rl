@@ -66,11 +66,12 @@ from mojo_rl.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
 )
 from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
-from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.types import ConeType, IntegratorType
 from mojo_rl.physics3d.studio.stepping import (
     StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
     studio_condim_warning,
     StudioImpFastPyr, StudioImpFastEll, studio_uses_implicit,
+    StudioRk4Pyr, studio_integrator_of,
     studio_integrator_warning,
 )
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
@@ -189,6 +190,14 @@ struct Loaded(Movable):
     var integ_ell: StudioIntegEll
     var imp_pyr: StudioImpFastPyr
     var imp_ell: StudioImpFastEll
+    var rk4_pyr: StudioRk4Pyr
+    """⚠⚠ AND THE MODEL ASKED FOR `RK4` AND WE WERE RUNNING EULER — 14 of the
+    131 models in this tree, including ant, hopper, walker2d, swimmer, both
+    humanoids and both inverted pendulums. It was warned about and it was
+    still wrong: on `bitcraze_crazyflie_2` the substitution is worth 9.200e-06
+    after ONE step against MuJoCo, and stepping RK4 takes that to 3.314e-13.
+    In free flight the two differ by a clean factor of two — Euler moves
+    `a*dt^2`, RK4 moves half of it — which is what the residual measured."""
     var use_implicit: Bool
     """⚠⚠ THE MODEL ASKED FOR `implicitfast` AND WE WERE RUNNING EULER.
     `spot` and `g1` both declare it, and both have `dof_damping` 0 — their
@@ -198,6 +207,10 @@ struct Loaded(Movable):
     robot the file describes and a different one."""
     var cone_used: Int
     """`ConeType.PYRAMIDAL` / `ELLIPTIC` — which of the two is stepping."""
+    var integ_used: Int
+    """`IntegratorType.EULER` / `IMPLICITFAST` / `RK4` — which one is stepping.
+    ⚠ FROM `studio_integrator_of`, never re-derived here: the selection and
+    the branch that acts on it have to come from one place."""
     var rf: RenderFields
     var flat: String
     var base_dir: String
@@ -319,7 +332,9 @@ struct Loaded(Movable):
         self.integ_ell = StudioIntegEll(self.dims)
         self.imp_pyr = StudioImpFastPyr(self.dims)
         self.imp_ell = StudioImpFastEll(self.dims)
+        self.rk4_pyr = StudioRk4Pyr(self.dims)
         self.cone_used = studio_cone_of(self.fmd)
+        self.integ_used = studio_integrator_of(self.fmd)
         self.use_implicit = studio_uses_implicit(self.fmd)
         var solver_note = studio_solver_warning(self.fmd)
         if solver_note.byte_length() > 0:
@@ -1539,7 +1554,12 @@ def run_studio(
             # combinations, and the studio must pick the one the MJCF
             # declares — a model stepped with a different integrator is not
             # the model the user opened.
-            if L.use_implicit:
+            if L.integ_used == IntegratorType.RK4:
+                # ⚠ ONE CONE ON THIS ARM. All 14 RK4 models in the tree are
+                # pyramidal; `studio_integrator_warning` names the swap if an
+                # elliptic one ever appears.
+                L.rk4_pyr.step["cpu"](L.d, L.m)
+            elif L.use_implicit:
                 if L.cone_used == ConeType.ELLIPTIC:
                     L.imp_ell.step["cpu"](L.d, L.m)
                 else:

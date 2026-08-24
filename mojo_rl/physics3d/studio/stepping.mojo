@@ -15,9 +15,15 @@ because they say nothing.
 ⚠ CONE IS WHAT VARIES; SOLVER DOES NOT. Measured across 114 models — all 57
 Menagerie scenes and all 57 loadable in-repo ones — the solver is NEWTON in
 112 and PGS in 2, while the cone splits 67 pyramidal / 45 elliptic. So the
-studio builds TWO integrators and picks by the model's declared cone, and a
-model asking for a solver we did not build gets a warning naming what it asked
-for rather than a silent substitution.
+studio builds a cone PAIR per integrator and picks by the model's declared
+cone, and a model asking for a solver we did not build gets a warning naming
+what it asked for rather than a silent substitution.
+
+⚠⚠ AND `integrator` VARIES THREE WAYS, NOT TWO. Re-measured over 131 loadable
+models (85 Menagerie scenes + 46 in-repo): 67 EULER, 50 IMPLICITFAST, **14
+RK4**. The RK4 arm was the one the studio did not build, so it went to Euler
+with a warning — see `StudioRk4Pyr` for what that cost. `studio_integrator_of`
+is now the single selector and returns all three; the old boolean could not.
 
 ⚠ THIS LIVES IN THE PACKAGE, NOT IN `examples/physics_studio.mojo`, so the
 gate can import the SAME aliases the studio steps with. A test that spelled
@@ -32,6 +38,7 @@ Matching the reference is also the faster path here.
 from ..fields import DynDims
 from ..integrator.euler import EulerIntegrator
 from ..integrator.implicit import ImplicitIntegrator
+from ..integrator.rk4 import RK4Integrator
 from ..parser.flat_model import FlatModelDef
 from ..types import ConeType, SolverType, IntegratorType
 
@@ -98,6 +105,54 @@ comptime StudioImpFastEll = ImplicitIntegrator[
     MAX_CONDIM=STUDIO_MAX_CONDIM,
 ]
 
+# ⚠⚠ AND RK4, THE LAST SUBSTITUTION LEFT — AND IT WAS WORTH 9.200e-06.
+# `bitcraze_crazyflie_2` sat at #5 on the Menagerie board and the residual was
+# read as a defect in the SITE transmission (an actuator whose moment turns
+# with the body, frozen at RK4's stage 0). It was not. The scene ships
+# `<option integrator="RK4">`, the studio stepped it with Euler, and the
+# signature says so outright: in free flight the acceleration is very nearly
+# constant, semi-implicit Euler moves `a*dt^2` where RK4 moves `a*dt^2/2`, and
+# ours came out EXACTLY 2x the reference in every dof. Measured, one step from
+# the keyframe with the board's own random controls:
+#
+#     ours Euler   (as the studio stepped it)      9.2004e-06
+#     ours RK4     (this alias)                    3.3142e-13
+#     MuJoCo forced to Euler, model untouched      5.2940e-23
+#
+# The last line is the control: nothing but the integrator moves it.
+#
+# ⚠ 14 OF THE 131 MODELS IN THIS TREE ASK FOR RK4, NOT ONE. Menagerie has
+# exactly one (crazyflie), but the Gym locomotion suite is RK4 to a model —
+# ant, hopper, walker2d, swimmer, reacher, both humanoids and both inverted
+# pendulums — plus four dm_control models. Their ENVS were already stepping
+# RK4 (`*_config.mojo` sizes `rk4_extra_workspace_size`); it was the studio,
+# and the fidelity harness that mirrors it, that were not. On the in-repo
+# models the substitution is far bigger than crazyflie's, because they are in
+# CONTACT — hopper, 60 steps from qpos0 at a constant ctrl, two live contacts:
+#
+#     ours Euler                                   3.8885e-03
+#     ours RK4                                     1.2490e-16
+#
+# which is also the arm that proves the per-stage contact solve inside
+# `RK4Integrator.step` works: crazyflie flies and never touches anything.
+#
+# ⚠ ONE CONE, NOT TWO, AND THAT IS THE `studio_solver_warning` PRECEDENT
+# RATHER THAN AN OVERSIGHT. Measured over the same 131 models, ALL 14 RK4
+# models are PYRAMIDAL and none is elliptic — the cone varies on the Euler and
+# implicitfast axes (67/45 over the tree) and does not vary here. So an `RK4`
+# + `cone="elliptic"` model gets a WARNING naming what it asked for and what it
+# got, exactly as a model asking for PGS or CG does. Build the second one here
+# and add its branch below the day that census stops reading 14/0.
+#
+# ⚠ THIS ONE COSTS 12 s ON THE STUDIO'S BUILD — 135 -> 147 s, interleaved
+# old/new on one machine, first round only (Mojo's build cache takes the
+# second round of BOTH to 29 s and would report the difference as zero). The
+# cost of a second cone was NOT measured; do not assume it is another 12.
+comptime StudioRk4Pyr = RK4Integrator[
+    STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
+    MAX_CONDIM=STUDIO_MAX_CONDIM,
+]
+
 
 def studio_cone_of(fmd: FlatModelDef) -> Int:
     """The cone the studio will step this model with.
@@ -158,19 +213,44 @@ def studio_condim_warning(fmd: FlatModelDef) -> String:
     )
 
 
+def studio_integrator_of(fmd: FlatModelDef) -> Int:
+    """The `IntegratorType` the studio will actually STEP this model with.
+
+    ⚠ ONE FUNCTION, for the same reason `studio_cone_of` is one: the studio's
+    dispatch, the fidelity harness that mirrors it and the gate must not be
+    able to disagree about which integrator a model gets. It returns what is
+    STEPPED, not what the file said — `implicit` maps to `IMPLICITFAST` here,
+    and `studio_integrator_warning` is where the user is told so.
+
+    ⚠⚠ IT RETURNS THREE VALUES NOW AND IT USED TO RETURN TWO. The predicate
+    below (`studio_uses_implicit`) was the whole of the dispatch, so every
+    caller was written as `if implicit: ... else: EULER` — and RK4, which is
+    not implicit, fell out of that `else` into Euler. A boolean cannot carry a
+    third case; that is why this replaced it rather than gaining a sibling.
+    """
+    if fmd.integrator == IntegratorType.RK4:
+        return IntegratorType.RK4
+    if (
+        fmd.integrator == IntegratorType.IMPLICITFAST
+        or fmd.integrator == IntegratorType.IMPLICIT
+    ):
+        return IntegratorType.IMPLICITFAST
+    return IntegratorType.EULER
+
+
 def studio_uses_implicit(fmd: FlatModelDef) -> Bool:
     """True when this model must be stepped by the implicit pair.
 
-    ⚠ ONE FUNCTION, for the same reason `studio_cone_of` is one: the studio's
-    dispatch and the gate must not be able to disagree about which integrator
-    a model gets.
-
-    `implicit` maps here too — see `studio_integrator_warning`.
+    Kept as a name over `studio_integrator_of` — NOT as a second rule. A
+    caller that still branches on this alone silently steps an RK4 model with
+    Euler, which is the defect this trio was split to end.
     """
-    return (
-        fmd.integrator == IntegratorType.IMPLICITFAST
-        or fmd.integrator == IntegratorType.IMPLICIT
-    )
+    return studio_integrator_of(fmd) == IntegratorType.IMPLICITFAST
+
+
+def studio_uses_rk4(fmd: FlatModelDef) -> Bool:
+    """True when this model must be stepped by `StudioRk4Pyr`."""
+    return studio_integrator_of(fmd) == IntegratorType.RK4
 
 
 def studio_integrator_warning(fmd: FlatModelDef) -> String:
@@ -179,9 +259,18 @@ def studio_integrator_warning(fmd: FlatModelDef) -> String:
     ⚠ TWO SUBSTITUTIONS ARE POSSIBLE AND BOTH ARE NAMED. `implicit` gets the
     IMPLICITFAST pair — the same M_hat minus the dense RNE velocity
     derivative, so it is damped correctly and merely less exact in the
-    Coriolis terms. `RK4` gets Euler, which is a real difference in accuracy
-    rather than in stability. Neither is silent; a substitution nobody is told
-    about is how a tool ends up disagreeing with the file it is displaying.
+    Coriolis terms. `RK4` + `cone="elliptic"` gets RK4 with the PYRAMIDAL cone,
+    because that is the only RK4 instantiation built (see `StudioRk4Pyr`: the
+    combination occurs in 0 of the tree's 131 models). Neither is silent; a
+    substitution nobody is told about is how a tool ends up disagreeing with
+    the file it is displaying.
+
+    ⚠⚠ `RK4` ITSELF NO LONGER WARNS, AND THE WARNING IS NOT WHAT WAS WRONG.
+    This function named the substitution correctly for as long as it existed —
+    "Expect a less accurate trajectory" — and the substitution still put
+    crazyflie at #5 on the Menagerie board with a residual that was filed
+    against the site transmission instead. A warning is not a substitute for
+    stepping the file.
     """
     if fmd.integrator == IntegratorType.EULER:
         return String("")
@@ -194,11 +283,13 @@ def studio_integrator_warning(fmd: FlatModelDef) -> String:
             " damping, without the dense RNE velocity derivative."
         )
     if fmd.integrator == IntegratorType.RK4:
-        return String(
-            "Warning: this model asks for <option integrator='RK4'>; the"
-            " studio builds Euler and implicitfast only and is stepping with"
-            " EULER. Expect a less accurate trajectory, not an unstable one."
-        )
+        if fmd.cone == ConeType.ELLIPTIC:
+            return String(
+                "Warning: this model asks for <option integrator='RK4'"
+                " cone='elliptic'>; the studio builds RK4 with the PYRAMIDAL"
+                " cone only and is stepping with that."
+            )
+        return String("")
     return (
         "Warning: unknown <option integrator> #" + String(fmd.integrator)
         + "; stepping with EULER."

@@ -60,17 +60,27 @@ transmission at each — while ours stays frozen at the stage-0 moment. The
 error is the rotation of the site (or the stretch of the tendon) across one
 step, so it is small but real:
 
-    bitcraze_crazyflie_2, one step, worst |d(qpos)| vs MuJoCo
-        as shipped (`integrator="RK4"`)            9.200e-06
-        the same model rewritten to Euler          5.294e-23
+    bitcraze_crazyflie_2, one step from qpos0, worst |d(qpos)| vs MuJoCo
+        with the integrator the file asks for      3.314e-13
 
-That is the whole of that scene's residual — ablating `density`/`viscosity`
-changes nothing, and its `qfrc_actuator` matches MuJoCo to 0.0 exactly at
-stage 0. A pose-INDEPENDENT transmission does not care: a `<motor joint=>`
-has the same force at all four stages, which is why RK4 models have been
-exact until a transmission started depending on the pose. Fixing it means
-evaluating actuation inside the RK4 stage loop, i.e. giving the integrator
-`sf` and the controls — the refactor this file was written to avoid.
+⚠⚠ AND THAT NUMBER USED TO READ 9.200e-06, WHICH WAS A DIFFERENT DEFECT
+ENTIRELY. This header claimed crazyflie's whole board residual for the frozen
+transmission. It was not: `studio/stepping.mojo` selected between Euler and
+implicitfast with a BOOLEAN, so `<option integrator="RK4">` fell out of the
+`else` and the scene was driven with EULER — worth 9.200e-06 on its own, four
+orders above anything this file does. The tell was in the numbers all along:
+ours was EXACTLY 2x the reference in every dof, which is `a*dt^2` against
+`a*dt^2/2`, an integrator ratio and not a moment-arm drift. Stepping RK4 (and
+nothing else) takes the scene to the 3.314e-13 above.
+
+What is left there IS this file: at 3.314e-13 the z and quaternion dofs are
+bit-identical to MuJoCo and only x/y differ, ours coming out ~1.5e6 times too
+SMALL — exactly what a thrust frozen along the stage-0 site axis does, since
+a body that never tilts acquires no horizontal component. A pose-INDEPENDENT
+transmission does not care: a `<motor joint=>` has the same force at all four
+stages. Fixing it still means evaluating actuation inside the RK4 stage loop,
+i.e. giving the integrator `sf` and the controls — the refactor this file was
+written to avoid, now correctly priced at 3.3e-13 rather than 9.2e-06.
 
 ⚠ CPU ONLY, AND THE GPU PATH IS NOT SILENTLY WRONG. `actions` is a host
 `List`, so there is nothing to launch; `apply_actions_kernel_gpu` keeps the

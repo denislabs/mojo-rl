@@ -283,10 +283,17 @@ def test_crazyflie_has_thrust() raises:
     times per step at four different poses and recomputes the transmission at
     each; `apply_pose_transmission` runs once per control substep and stays
     frozen at the stage-0 moment. So the FORCE is exact (0.0 here) while the
-    one-step pose is 9.200e-06 out. Rewriting the same model to Euler gives
-    5.294e-23 — that ablation is the whole diagnosis, and it is recorded in
-    `dynamics/pose_transmission.mojo`'s header. Gating the trajectory here
-    would pin a number that belongs to the integrator, not to this feature.
+    one-step pose is 3.314e-13 out — a number that belongs to the integrator
+    seam, not to this feature.
+
+    ⚠⚠ AND THAT SENTENCE USED TO SAY 9.200e-06, WHICH WAS NOT THIS AT ALL.
+    "Rewriting the model to Euler gives 5.294e-23" was read as proof that the
+    frozen transmission owned crazyflie's whole board residual. It proved only
+    that the residual was an INTEGRATOR difference — and the integrator
+    difference was that the studio's dispatch never built RK4 and stepped the
+    scene with Euler. `test_studio_honours_option_rk4` is the gate for that;
+    it is fixed, and what is left here is the 3.314e-13. An ablation that
+    moves a residual to zero names an AXIS, not a mechanism on that axis.
     """
     print("=== bitcraze_crazyflie_2, keyframe 0 ===")
     var want = _mj_crazyflie()
