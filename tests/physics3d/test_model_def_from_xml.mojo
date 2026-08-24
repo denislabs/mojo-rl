@@ -160,6 +160,13 @@ def test_model_def_from_xml() raises:
         ntendon=XmlModel.MAX_TENDON,
         nexclude=XmlModel.NEXCLUDE,
         nmesh_verts=0,
+        # ⚠ A HAND-SPELLED `Dims` MUST DECLARE EVERY DIMENSION IT USES. This
+        # omitted `nact`, so it defaulted to 0, `d.actdamp_act` allocated one
+        # float, and the first step asserted "index 1 is out of bounds" from
+        # `dynamics/actuation.mojo` — a file with nothing to do with actuator
+        # counts. `fields_build` now raises a named error instead, but the
+        # dimension still has to be right.
+        nact=pm.NACT,
     ]
 
     print("=== ModelDefFromXML comptime constants ===")

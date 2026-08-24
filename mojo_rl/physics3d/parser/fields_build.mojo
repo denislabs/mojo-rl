@@ -914,6 +914,20 @@ def build_actuator_damping[
     comptime _MINVAL = 1e-15
     var nv = mf.dims.get_nv()
     var nact = len(fmd.actuators)
+    # ⚠ SAME RULE AS THE MESH AND HEIGHTFIELD BUDGETS: a capacity that is too
+    # small is announced HERE, at model build, naming the knob. Without this
+    # an under-declared `nact` surfaces as a bounds assert inside
+    # `dynamics/actuation.mojo` on the first step — a per-step hot path that
+    # cannot afford a check and should never have been the one to notice.
+    # `test_model_def_from_xml` spelled a `Dims[...]` by hand, omitted `nact`,
+    # and got exactly that: "index 1 is out of bounds" from a file that has
+    # nothing to do with actuator COUNTS.
+    if nact > mf.dims.get_nact():
+        raise Error(
+            String("actuator capacity exceeded — nact = ")
+            + String(mf.dims.get_nact()) + " but this model declares "
+            + String(nact) + " actuators. Set `nact` on this model's dims."
+        )
     for i in range(nact):
         var dr = fmd.actuators[i].dampratio
         if dr <= 0.0:
@@ -2000,10 +2014,64 @@ def build_model_fields_from_flat[
     # nothing left to warn about. Restore the print if that ever regresses —
     # a silent difference between targets is the failure mode this engine has
     # paid for repeatedly.
+    # ⚠⚠ ONLY THE HEIGHTFIELDS A GEOM ACTUALLY NAMES ARE MATERIALISED, and that
+    # is the same rule the mesh loop below already follows for the same reason.
+    # `<asset>` may DECLARE a heightfield no geom uses: dm_control's quadruped
+    # carries a 201x201 `terrain` — 40 401 samples — that only the `escape`
+    # task ever puts a geom on, so `walk`, `run` and `fetch` were being asked
+    # for 40 401 floats of capacity to store a field they never touch. Every
+    # test building those models through `ModelDims[...]`, whose
+    # `nhfield_data` defaults to 0, died on the unguarded write below —
+    # `test_cfrc_ext_batched_vs_cpu`, `test_jac_site_vs_mujoco` and
+    # `test_rne_post_sensors_vs_mujoco`, all with an "index 1 is out of bounds"
+    # that names neither heightfields nor the dimension to raise.
+    #
+    # ⚠ REFERENCED FIELDS ARE COMPACTED, so `hfield_adr` is rebuilt here and is
+    # NOT `fmd.hfield_adr`. The meta ROW INDEX is what a geom stores in
+    # `GEOM_IDX_HFIELD_ID`, so rows keep their positions and only the data
+    # offset moves; an unreferenced row is zeroed, which reads as `nrow == 0`
+    # and is what `_hfield_contacts` already treats as "no field".
+    var hf_used = List[Bool](length=len(fmd.hfield_names), fill=False)
+    for i in range(len(fmd.geoms)):
+        var hid = fmd.geoms[i].hfield_id
+        if hid >= 0 and hid < len(hf_used):
+            hf_used[hid] = True
+
+    var hf_adr = List[Int](length=len(fmd.hfield_names), fill=-1)
+    var hf_need = 0
+    for h in range(len(fmd.hfield_names)):
+        if hf_used[h]:
+            hf_adr[h] = hf_need
+            hf_need += fmd.hfield_nrow[h] * fmd.hfield_ncol[h]
+
+    # ⚠ ANNOUNCED, NOT ASSERTED. The write used to run straight into the
+    # tensor, so an under-sized budget surfaced as a bounds assert inside
+    # `fields_build` with no mention of the feature or the knob. Say both.
+    if hf_need > mf.dims.get_nhfield_data():
+        raise Error(
+            String("heightfield capacity exceeded — nhfield_data = ")
+            + String(mf.dims.get_nhfield_data())
+            + " but the heightfields a GEOM references need "
+            + String(hf_need)
+            + " samples. Raise `nhfield_data` on this model's dims (for"
+            " `ModelDims[...]` it is the second parameter and defaults to 0)."
+        )
+    if len(fmd.hfield_names) > MAX_GPU_HFIELDS:
+        raise Error(
+            String("this model declares ") + String(len(fmd.hfield_names))
+            + " heightfields and MAX_GPU_HFIELDS is " + String(MAX_GPU_HFIELDS)
+            + ". The meta rows are comptime-sized; raise it in"
+            " `gpu/constants.mojo`."
+        )
+
     for h in range(len(fmd.hfield_names)):
         var ho = h * MODEL_HFIELD_META_SIZE
+        if not hf_used[h]:
+            for f in range(MODEL_HFIELD_META_SIZE):
+                mf.hfield_meta.data[ho + f] = Scalar[DTYPE](0)
+            continue
         mf.hfield_meta.data[ho + HFIELD_META_IDX_ADR] = Scalar[DTYPE](
-            fmd.hfield_adr[h]
+            hf_adr[h]
         )
         mf.hfield_meta.data[ho + HFIELD_META_IDX_NROW] = Scalar[DTYPE](
             fmd.hfield_nrow[h]
@@ -2023,8 +2091,12 @@ def build_model_fields_from_flat[
         mf.hfield_meta.data[ho + HFIELD_META_IDX_SIZE_BASE] = Scalar[DTYPE](
             fmd.hfield_size[h * 4 + 3]
         )
-    for k in range(len(fmd.hfield_data)):
-        mf.hfield_data.data[k] = Scalar[DTYPE](fmd.hfield_data[k])
+        var src = fmd.hfield_adr[h]
+        var n = fmd.hfield_nrow[h] * fmd.hfield_ncol[h]
+        for k in range(n):
+            mf.hfield_data.data[hf_adr[h] + k] = Scalar[DTYPE](
+                fmd.hfield_data[src + k]
+            )
     # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just
     # `break` at the cap, which drops hull vertices from the LAST meshes and
     # shrinks their collision shape — an error with one sign, invisible to
