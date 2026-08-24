@@ -62,6 +62,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
+    META_IDX_SIM_TIME,
 )
 from mojo_rl.nn.core.tensor import TensorImpl
 
@@ -299,6 +300,13 @@ struct Phyics3dEnv[
         # MuJoCo's mj_resetData zeroes `act` along with qpos/qvel.
         for _i in range(len(self.act)):
             self.act[_i] = Scalar[Self.DTYPE](0)
+        # ⚠⚠ AND `d->time`, WHICH `mj_resetData` ALSO ZEROES. A zeroed `act`
+        # is not enough on its own: `mujoco.pid`'s slew limiter asks
+        # `d->time > 0` to decide whether the previous-control slot holds a
+        # real control, and a zero there IS a legal control. Left running, the
+        # first step of every episode after the first would be clamped to
+        # `slewmax*dt` around a stale command.
+        self.d.meta.data[META_IDX_SIM_TIME] = Scalar[Self.DTYPE](0)
         Self.MODEL_DEF.reset_data(self.sf, self.d)
         var noise_scale = Self.CONFIG.get_reset_noise()
         if noise_scale > 0.0:

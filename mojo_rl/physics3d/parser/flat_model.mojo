@@ -486,6 +486,11 @@ comptime ACT_KIND_MOTOR: Int = 0
 comptime ACT_KIND_POSITION: Int = 1
 comptime ACT_KIND_VELOCITY: Int = 2
 comptime ACT_KIND_GENERAL: Int = 3
+# ⚠ `<plugin plugin="mujoco.pid">`. A FIFTH LAW, not a variant of the other
+# four: its gains live in `mjModel.plugin_attr` as TEXT and its `gainprm` /
+# `biasprm` stay at the defaults, so an actuator carrying this kind must NOT
+# be run through `actuator_scalar_force`. See `ACT_IDX_PID_KI`.
+comptime ACT_KIND_PID: Int = 4
 
 
 def act_kind_name(kind: Int) -> String:
@@ -494,6 +499,8 @@ def act_kind_name(kind: Int) -> String:
         return "<position>"
     if kind == ACT_KIND_VELOCITY:
         return "<velocity>"
+    if kind == ACT_KIND_PID:
+        return String("plugin plugin=\"mujoco.pid\"")
     if kind == ACT_KIND_GENERAL:
         return "<general>"
     return "<motor>"
@@ -600,6 +607,16 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     `<general gainprm="0.0157" biasprm="0 -100 -10">` (panda's gripper) got
     100 where MuJoCo reads it and 0.0157 where we did — 1/6375 of the force.
     See `ACT_IDX_BIAS1`."""
+    var pid_ki: Float64
+    """`mujoco.pid`'s `ki`, 0 when the actuator is not a PID plugin."""
+    var pid_kd: Float64
+    """`mujoco.pid`'s `kd`. ⚠ `kp` reuses `ActuatorData.kp` — it IS the
+    proportional gain and the record already has a slot for one."""
+    var pid_imax: Float64
+    """`imax / ki`, ALREADY DIVIDED (`PidConfig::FromModel`), or **-1** when
+    the config omits `imax`. ⚠ -1 is "no clamp"; 0 is "clamp to zero"."""
+    var pid_slew: Float64
+    """`slewmax`, or **-1** when the config omits it. Same sentinel rule."""
     var dampratio: Float64
     """`<position dampratio="X">` — a kv MuJoCo DERIVES, 0 when absent.
 
@@ -656,6 +673,12 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.kv = 0.0
         self.bias0 = 0.0
         self.bias1 = 0.0
+        self.pid_ki = 0.0
+        self.pid_kd = 0.0
+        # ⚠ -1, NOT 0. Both are `std::optional` in `pid.cc` and 0 is a legal
+        # value of each; see `ACT_IDX_PID_IMAX`.
+        self.pid_imax = -1.0
+        self.pid_slew = -1.0
         self.dampratio = 0.0
 
 
@@ -1991,6 +2014,27 @@ struct FlatModelDef(Movable):
     # sizes the `act` tensor); this field is what that parameter gets asserted
     # against at construction so a wrong value is loud instead of silent.
     var na: Int
+    # ── `<extension><plugin><instance>` — the actuator-plugin config table ──
+    #
+    # ⚠ ONE ENTRY PER *INSTANCE*, NOT PER ACTUATOR. shadow_dexee declares four
+    # `mujoco.pid` instances and twelve actuators; three fingers share each
+    # instance's gains by name, exactly as `m->actuator_plugin[i]` indexes
+    # `m->plugin_attradr[]`. Resolving the name at the ACTUATOR (which is what
+    # a per-actuator table would force) would silently accept an `instance=`
+    # nothing declares.
+    #
+    # ⚠ PARSED BEFORE `_fill_actuators`, because the actuator scan resolves
+    # `instance=` against it. `<extension>` is a top-level section like
+    # `<asset>`, and MJCF does not require it to come first in the file.
+    var plugin_inst_names: List[String]
+    var plugin_inst_kp: List[Float64]
+    var plugin_inst_ki: List[Float64]
+    var plugin_inst_kd: List[Float64]
+    var plugin_inst_imax: List[Float64]
+    """`imax` AS WRITTEN — a force bound. `_fill_actuators` divides by `ki`.
+    -1 when the instance omits it."""
+    var plugin_inst_slew: List[Float64]
+    """`slewmax` as written; -1 when the instance omits it."""
     # Actuator transmission wraps, `ai * TENDON_MAX_WRAPS + k`. Sized by
     # `_fill_actuator_transmission` once the actuator count is known.
     # First actuator whose gaintype/biastype shape we do not model, and why.
@@ -2178,6 +2222,12 @@ struct FlatModelDef(Movable):
         self.geoms = List[GeomData]()
         self.actuators = List[ActuatorData]()
         self.na = 0
+        self.plugin_inst_names = List[String]()
+        self.plugin_inst_kp = List[Float64]()
+        self.plugin_inst_ki = List[Float64]()
+        self.plugin_inst_kd = List[Float64]()
+        self.plugin_inst_imax = List[Float64]()
+        self.plugin_inst_slew = List[Float64]()
         self.bad_actuator = -1
         self.bad_actuator_code = -1
         self.unmodelled_actuators = 0

@@ -121,8 +121,9 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 17
-"""Per-env metadata words: 4 fixed slots plus `META_IDX_TASK_PARAM_0..11`.
+comptime METADATA_SIZE: Int = 18
+"""Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
+`META_IDX_ACTDAMP_LIVE` and `META_IDX_SIM_TIME`.
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
 five-entry orders — `desired_order` and `initial_order`, the second because its
@@ -201,6 +202,19 @@ comptime META_IDX_TASK_PARAM_11: Int = 15
 # back to `Model.dof_actdamp`, which is the right answer there — an unactuated
 # model saturates nothing.
 comptime META_IDX_ACTDAMP_LIVE: Int = 16
+
+# ⚠⚠ MuJoCo HAS `d->time` AND WE DID NOT. Nothing in the smooth dynamics reads
+# it, which is why it was never missed — but `mujoco.pid`'s slew-rate limiter
+# does: `Pid::GetState` sets `previous_ctrl_exists = d->time > 0`, so on the
+# FIRST step the stored previous control is not a control at all and must not
+# clamp anything. A zero in the slot cannot say that; zero is a legal control.
+#
+# Advanced by `apply_actions_fields` at the END of its body, which runs once
+# per control substep — the same cadence `mj_advance` advances `d->time` at.
+# ⚠ A CALLER THAT RESETS MUST ZERO IT. `Phyics3dEnv._reset_state` does, beside
+# the `act` vector it already clears; a caller that zeroes `act` and not this
+# would start the next episode with a previous control of 0 treated as real.
+comptime META_IDX_SIM_TIME: Int = 17
 
 
 # =============================================================================
@@ -900,7 +914,7 @@ comptime PAIR_IDX_MARGIN: Int = 13
 # already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
 # with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
 # Anything diffing the two must convert; the equivalence gate does.
-comptime MODEL_ACTUATOR_SIZE: Int = 24 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACTUATOR_SIZE: Int = 28 + 3 * TENDON_MAX_WRAPS
 
 comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
 comptime ACT_IDX_GEAR: Int = 1
@@ -979,6 +993,38 @@ comptime ACT_IDX_GEAR_5: Int = ACT_IDX_SITE_ID + 5
 # `SITE_ID + 0..5` all keep their meaning.
 comptime ACT_IDX_BIAS0: Int = ACT_IDX_SITE_ID + 6
 comptime ACT_IDX_BIAS1: Int = ACT_IDX_SITE_ID + 7
+
+# ── `<plugin plugin="mujoco.pid">` — a force law with no gainprm at all ───
+#
+# ⚠⚠ THE PLUGIN'S GAINS ARE NOT IN `gainprm`/`biasprm`. `mjModel` stores an
+# actuator plugin's parameters as NUL-separated TEXT in `plugin_attr`, keyed by
+# `plugin_attradr[instance]`, and `gaintype`/`biastype` stay at their defaults
+# (FIXED / NONE) — so an engine reading only the gain/bias record computes
+# `force = 1 * ctrl` for a PID servo. shadow_dexee's twelve actuators are all
+# of this shape; we parsed none of them and its `nu` read 0 against MuJoCo's
+# 12, which is a MISALIGNED CONTROL VECTOR, not a small force error.
+#
+# `plugin/actuator/pid.cc` (3.10.0), for `dyntype="none"`:
+#
+#     ctrl  = clip(d->ctrl[i], ctrlrange)                   [ctrllimited]
+#     ctrl  = clip(ctrl, prev +- slewmax*dt)                [if slew AND t>0]
+#     err   = ctrl - actuator_length[i]
+#     integ = clip(act[adr] + err*dt, +- imax/ki)           [if ki != 0]
+#     force = kp*err + kd*(0 - actuator_velocity[i]) + ki*integ
+#
+# ⚠ `imax` IS A FORCE BOUND IN THE XML AND AN INTEGRAL BOUND HERE.
+# `PidConfig::FromModel` divides it by `i_gain` on the way in ("Clamps in the
+# XML are specified in terms of maximum forces"), so what is STORED in this
+# slot is the already-divided value and a reader must not divide again.
+#
+# ⚠ `-1` IS "ABSENT", NOT "ZERO", ON BOTH OPTIONAL SLOTS. `imax` and `slewmax`
+# are `std::optional` in the reference: absent means NO clamp, and an explicit
+# 0 means clamp to zero. Both are validated non-negative by `Pid::Create`, so a
+# negative is free to mean absent — see `feedback_a_sentinel_beats_a_default`.
+comptime ACT_IDX_PID_KI: Int = ACT_IDX_SITE_ID + 8
+comptime ACT_IDX_PID_KD: Int = ACT_IDX_SITE_ID + 9
+comptime ACT_IDX_PID_IMAX: Int = ACT_IDX_SITE_ID + 10
+comptime ACT_IDX_PID_SLEW: Int = ACT_IDX_SITE_ID + 11
 
 # The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
 # record rather than folded into `MODEL_TENDON_SIZE`.

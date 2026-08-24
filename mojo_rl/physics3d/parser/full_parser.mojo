@@ -63,6 +63,7 @@ from .flat_model import (
     ACT_KIND_POSITION,
     ACT_KIND_VELOCITY,
     ACT_KIND_GENERAL,
+    ACT_KIND_PID,
     TextureData,
     MaterialData,
     LightData,
@@ -3434,6 +3435,100 @@ def _stable_group_by_body_sites(mut items: List[SiteData]):
         items[i] = out[i]
 
 
+def _fill_plugin_instances(xml: String, mut result: FlatModelDef) raises:
+    """`<extension><plugin plugin="mujoco.pid"><instance name=..><config ..>`.
+
+    MuJoCo keeps these as NUL-separated TEXT in `mjModel.plugin_attr`, keyed by
+    `plugin_attradr[instance]`, and hands them to the plugin as strings. There
+    is no numeric model field to compare against, which is part of why this
+    whole family went unparsed: nothing in a `mjModel` diff shows a gap.
+
+    ⚠⚠ THE INSTANCE IS THE UNIT OF CONFIGURATION AND THE ACTUATOR IS NOT.
+    shadow_dexee declares FOUR instances and TWELVE actuators — the three
+    fingers share one set of gains per joint index. An `instance=` that names
+    nothing declared here is a typo the actuator scan must refuse, the same
+    call `joint=` makes (`_an_unresolved_name_reference_fails_silently`).
+
+    ⚠ ONLY `mujoco.pid` IS READ. MuJoCo ships sensor, passive and composite
+    plugins too; an actuator plugin we do not implement must keep counting as
+    unmodelled rather than being silently run as a PID.
+    """
+    var ext = _extract_section_all(xml, "extension")
+    if ext.byte_length() == 0:
+        return
+    var pos = 0
+    while True:
+        var pg = ext.find("<plugin", pos)
+        if pg == -1:
+            break
+        var ptag = _extract_opening_tag(ext, pg)
+        var pname = _trim(_extract_attr(ptag, "plugin"))
+        # The `<instance>` children of THIS `<plugin>` block: everything up to
+        # the next `<plugin` (or the end).
+        var nxt = ext.find("<plugin", pg + 1)
+        var blk_end = nxt if nxt != -1 else ext.byte_length()
+        if pname != "mujoco.pid":
+            pos = pg + 1
+            continue
+        var ipos = pg
+        while True:
+            var ig = ext.find("<instance", ipos)
+            if ig == -1 or ig >= blk_end:
+                break
+            var itag = _extract_opening_tag(ext, ig)
+            var iname = _trim(_extract_attr(itag, "name"))
+            # `<config key=".." value=".."/>` children, up to the next
+            # `<instance` or the end of this plugin block.
+            var inxt = ext.find("<instance", ig + 1)
+            var iend = inxt if (inxt != -1 and inxt < blk_end) else blk_end
+            var kp = 0.0
+            var ki = 0.0
+            var kd = 0.0
+            # ⚠ -1 = ABSENT. `pid.cc` reads `imax`/`slewmax` as
+            # `std::optional`; 0 is a legal value of each and means "clamp to
+            # zero", which is not the same as no clamp at all.
+            var imax = -1.0
+            var slew = -1.0
+            var cpos = ig
+            while True:
+                var cg = ext.find("<config", cpos)
+                if cg == -1 or cg >= iend:
+                    break
+                var ctag = _extract_opening_tag(ext, cg)
+                var key = _trim(_extract_attr(ctag, "key"))
+                var valt = _trim(_extract_attr(ctag, "value"))
+                if valt.byte_length() > 0:
+                    var v = _parse_float(valt)
+                    if key == "kp":
+                        kp = v
+                    elif key == "ki":
+                        ki = v
+                    elif key == "kd":
+                        kd = v
+                    elif key == "imax":
+                        imax = v
+                    elif key == "slewmax":
+                        slew = v
+                cpos = cg + 1
+            if iname.byte_length() > 0:
+                result.plugin_inst_names.append(iname)
+                result.plugin_inst_kp.append(kp)
+                result.plugin_inst_ki.append(ki)
+                result.plugin_inst_kd.append(kd)
+                result.plugin_inst_imax.append(imax)
+                result.plugin_inst_slew.append(slew)
+            ipos = ig + 1
+        pos = pg + 1
+
+
+def _plugin_instance_index(result: FlatModelDef, name: String) -> Int:
+    """Index into `result.plugin_inst_*`, or -1."""
+    for i in range(len(result.plugin_inst_names)):
+        if result.plugin_inst_names[i] == name:
+            return i
+    return -1
+
+
 def _fill_actuators(
 
     actuator_sec: String,
@@ -3476,9 +3571,13 @@ def _fill_actuators(
     # refusing to load flybody over eight adhesion pads would be worse than
     # loading it with seventy working servos. The count is what matters: a
     # caller comparing `nact` against its policy's action size sees the gap.
+    # ⚠ `<plugin` IS NOT ON THIS LIST ANY MORE. `mujoco.pid` is modelled, and
+    # a plugin that is NOT reports itself from the scan below, where the
+    # `plugin=` attribute is in hand — a blind count here would file every
+    # `mujoco.pid` actuator as missing while it is being applied.
     var _unmodelled: List[String] = [
         String("<intvelocity"), String("<damper"), String("<cylinder"),
-        String("<muscle"), String("<adhesion"), String("<plugin"),
+        String("<muscle"), String("<adhesion"),
     ]
     for _u in range(len(_unmodelled)):
         var _n = 0
@@ -3505,8 +3604,17 @@ def _fill_actuators(
         var np_ = actuator_sec.find("<position", scan_pos)
         var nv_ = actuator_sec.find("<velocity", scan_pos)
         var ng = actuator_sec.find("<general", scan_pos)
+        # ⚠⚠ THE FIFTH SPELLING, AND IT USED TO SHORTEN `nu` IN SILENCE.
+        # `<plugin>` inside `<actuator>` is an actuator element like the other
+        # four; shadow_dexee is twelve of them and reported `nact` 0 against
+        # MuJoCo's 12 — every index of a control vector sized for MuJoCo
+        # landing on nothing. Only `mujoco.pid` is modelled; any other
+        # `plugin=` still falls through to the `_unmodelled` count below.
+        var npl = actuator_sec.find("<plugin", scan_pos)
 
-        var earliest = _min_valid(_min_valid(nm, np_), _min_valid(nv_, ng))
+        var earliest = _min_valid(
+            _min_valid(_min_valid(nm, np_), _min_valid(nv_, ng)), npl
+        )
         if earliest == -1:
             break
 
@@ -3516,6 +3624,38 @@ def _fill_actuators(
         var is_position = earliest == np_
         var is_velocity = earliest == nv_
         var is_general = earliest == ng
+        var is_plugin = earliest == npl
+        # A `<plugin>` naming a plugin we do not implement is NOT an actuator
+        # we can build: it has no force law here. Skip the tag and let the
+        # `_unmodelled` scan above keep reporting it.
+        if is_plugin:
+            var _pn = _trim(_extract_attr(tag, "plugin"))
+            if _pn != "mujoco.pid":
+                result.unmodelled_actuators += 1
+                print(
+                    "physics3d: <actuator><plugin plugin='", _pn,
+                    "'> is not modelled — it is SKIPPED, so `nact` is short"
+                    " by one and a control vector sized for MuJoCo's `nu`"
+                    " is misaligned from here onwards.",
+                )
+                var _te = actuator_sec.find(">", earliest)
+                scan_pos = _te + 1 if _te != -1 else alen
+                continue
+            # ⚠ `dyntype` OTHER THAN "none" CHANGES THE SETPOINT, NOT A GAIN.
+            # `Pid::GetCtrl` reads the LAST activation variable instead of
+            # `ctrl` when `dyntype != mjDYN_NONE` (an integrated-velocity or
+            # filtered command), and `Pid::Create` then demands one more
+            # activation slot. Running such an actuator through the
+            # `dyntype="none"` branch would track the wrong setpoint silently.
+            var _dt = _trim(_extract_attr(tag, "dyntype"))
+            if _dt.byte_length() > 0 and _dt != "none":
+                raise Error(
+                    "physics3d: <plugin plugin=\"mujoco.pid\" dyntype=\""
+                    + _dt + "\"> — only dyntype=\"none\" is modelled. The"
+                    " other dyntypes make the PID setpoint an ACTIVATION"
+                    " rather than the control, which this force law does not"
+                    " read."
+                )
 
         # Effective defaults: the actuator's own class="..." wins, else the
         # top-level block. Same precedence geoms/joints/sites already use.
@@ -3546,12 +3686,54 @@ def _fill_actuators(
         # different robot — while dog happened to survive because its
         # bias-free `<general>` is a motor anyway. That accidental agreement on
         # the LARGER model is why the tag encoding looked fine.
-        if is_velocity:
+        if is_plugin:
+            ad.kind = ACT_KIND_PID
+        elif is_velocity:
             ad.kind = ACT_KIND_VELOCITY
         elif is_position or is_general:
             ad.kind = ACT_KIND_POSITION
         else:
             ad.kind = ACT_KIND_MOTOR
+
+        # ── `mujoco.pid`: gains from the INSTANCE, activation slots here ──
+        if is_plugin:
+            var inst_name = _trim(_extract_attr(tag, "instance"))
+            var pi = _plugin_instance_index(result, inst_name)
+            if pi < 0:
+                # Same call `joint=` makes: an unresolved name would leave a
+                # zero-gain PID, i.e. a slot in `nact` that consumes a control
+                # and applies nothing — indistinguishable from a plugin whose
+                # config really is all zeros.
+                raise Error(
+                    "physics3d: <plugin plugin=\"mujoco.pid\"> names"
+                    " instance='" + inst_name + "', which no"
+                    " <extension><plugin><instance> declares. That would be a"
+                    " ZERO-GAIN actuator holding a live slot in `nact`."
+                )
+            ad.kp = result.plugin_inst_kp[pi]
+            ad.pid_ki = result.plugin_inst_ki[pi]
+            ad.pid_kd = result.plugin_inst_kd[pi]
+            # ⚠ `imax` IS A FORCE BOUND IN THE XML. `PidConfig::FromModel`
+            # divides by `i_gain` to get the bound on the INTEGRAL, and only
+            # when `i_gain` is non-zero — otherwise the clamp is dropped.
+            var _im = result.plugin_inst_imax[pi]
+            if _im >= 0.0 and ad.pid_ki != 0.0:
+                ad.pid_imax = _im / ad.pid_ki
+            else:
+                ad.pid_imax = -1.0
+            ad.pid_slew = result.plugin_inst_slew[pi]
+            # ⚠ `Pid::ActDim` — the activation COUNT is derived from the
+            # config, not from `actdim=`. `actdim` in the XML is an assertion
+            # MuJoCo checks against this same derivation and warns on; the
+            # slots themselves are (ki != 0) + (slewmax present).
+            var _nact_vars = 0
+            if ad.pid_ki != 0.0:
+                _nact_vars += 1
+            if ad.pid_slew >= 0.0:
+                _nact_vars += 1
+            if _nact_vars > 0:
+                ad.act_adr = result.na
+                result.na += _nact_vars
 
         # gear (element attribute wins, else the <default><motor> class)
         #
@@ -6284,6 +6466,9 @@ def parse_xml_full(
     # BELOW it, so `<flag constraint="disable"/>` left every one of them
     # generating rows. See that function for what each flag actually means.
 
+
+    # ⚠ BEFORE THE ACTUATORS, which resolve `instance=` against this table.
+    _fill_plugin_instances(xml, result)
 
     # Actuators
     _fill_actuators(

@@ -325,6 +325,10 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
     ACT_IDX_ACT_ADR,
+    ACT_IDX_PID_KI,
+    ACT_IDX_PID_KD,
+    ACT_IDX_PID_IMAX,
+    ACT_IDX_PID_SLEW,
     ACT_IDX_TRN_N,
     ACT_IDX_DOF_ADR,
     ACT_IDX_TENDON_ID,
@@ -2651,6 +2655,14 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         # told from an absent attribute.
         sf.actuators.data[o + ACT_IDX_BIAS0] = Scalar[DTYPE](a.bias0)
         sf.actuators.data[o + ACT_IDX_BIAS1] = Scalar[DTYPE](a.bias1)
+        # `mujoco.pid`. ⚠ `IMAX` AND `SLEW` CARRY -1 FOR "ABSENT", so these
+        # must be written for EVERY actuator — a zeroed slot would read as
+        # "clamp the integral to zero" on every non-plugin actuator the day
+        # something else looked at them.
+        sf.actuators.data[o + ACT_IDX_PID_KI] = Scalar[DTYPE](a.pid_ki)
+        sf.actuators.data[o + ACT_IDX_PID_KD] = Scalar[DTYPE](a.pid_kd)
+        sf.actuators.data[o + ACT_IDX_PID_IMAX] = Scalar[DTYPE](a.pid_imax)
+        sf.actuators.data[o + ACT_IDX_PID_SLEW] = Scalar[DTYPE](a.pid_slew)
         sf.actuators.data[o + ACT_IDX_DYN_TAU] = Scalar[DTYPE](a.dyn_tau)
         sf.actuators.data[o + ACT_IDX_ACT_ADR] = Scalar[DTYPE](a.act_adr)
         sf.actuators.data[o + ACT_IDX_TRN_N] = Scalar[DTYPE](a.trn_n)

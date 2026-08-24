@@ -18,6 +18,7 @@ from mojo_rl.physics3d.fields import Data, DimsLike, SpecFields
 from mojo_rl.physics3d.parser.flat_model import (
     ACT_KIND_POSITION,
     ACT_KIND_VELOCITY,
+    ACT_KIND_PID,
 )
 from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_SPRING_HI,
@@ -28,6 +29,11 @@ from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_TRN_N,
     ACTTEN_IDX_TRN_QADR_0,
     ACT_IDX_ACT_ADR,
+    ACT_IDX_PID_KI,
+    ACT_IDX_PID_KD,
+    ACT_IDX_PID_IMAX,
+    ACT_IDX_PID_SLEW,
+    META_IDX_SIM_TIME,
     ACT_IDX_CTRL_LIMITED,
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
@@ -173,6 +179,37 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
     # instantiated this at float32 would otherwise silently drop the gains
     # to float32 and move every force. Widening at the load keeps the
     # chain identical to the `_acd` version term for term.
+    # ⚠⚠ `act` IS SIZED BY THE CALLER AND `<plugin plugin="mujoco.pid">` NEEDS
+    # MORE THAN ONE SLOT PER ACTUATOR. Every caller in this tree allocates
+    # `List(length=nact)`, which was exactly right while the only activation
+    # was `mjDYN_FILTER`'s single lag variable. A PID actuator owns TWO (the
+    # error integral and the previous control), so shadow_dexee's twelve want
+    # 24 and the loop below would have silently skipped every one of them on
+    # the `adr < len(act)` guard — a zero-gain PID, which is the same failure
+    # mode as the unresolved `instance=` the parser now refuses.
+    #
+    # ⚠ GROWN HERE RATHER THAN PLUMBED THROUGH `Dims`. `na` is not a
+    # dimension of any tensor the kernels bind; it sizes ONE host list, and
+    # this is the only function that knows what each actuator's kind spends.
+    # Growth is zero-filled, which is what `mj_resetData` leaves in `d->act`.
+    var need = 0
+    for i in range(n_act):
+        var oo = i * MODEL_ACTUATOR_SIZE
+        var aa = Int(sf.actuators.data[oo + ACT_IDX_ACT_ADR])
+        if aa < 0:
+            continue
+        var slots = 1
+        if Int(sf.actuators.data[oo + ACT_IDX_KIND]) == ACT_KIND_PID:
+            slots = 0
+            if Float64(sf.actuators.data[oo + ACT_IDX_PID_KI]) != 0.0:
+                slots += 1
+            if Float64(sf.actuators.data[oo + ACT_IDX_PID_SLEW]) >= 0.0:
+                slots += 1
+        if aa + slots > need:
+            need = aa + slots
+    while len(act) < need:
+        act.append(Scalar[DTYPE](0))
+
     for i in range(nv):
         d.qfrc.data[i] = Scalar[DTYPE](0)
     # ── THIS STEP's actuator damping diagonal ────────────────────────────
@@ -240,8 +277,14 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         # ONCE PER SUBSTEP, which is the same cadence, so the two agree
         # step for step.
         var adr = Int(sf.actuators.data[o + ACT_IDX_ACT_ADR])
+        # ⚠⚠ READ BEFORE THE ACTIVATION, BECAUSE PID'S SLOTS ARE NOT A `u`.
+        # `mjDYN_FILTER`'s single activation IS the value the gain multiplies;
+        # a `mujoco.pid` actuator's first slot is its ERROR INTEGRAL, and
+        # feeding that to `force = kp * u` would multiply the wrong quantity
+        # by the wrong gain. `kind` used to be read forty lines further down.
+        var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
         var u = ctrl
-        if adr >= 0 and adr < len(act):
+        if kind != ACT_KIND_PID and adr >= 0 and adr < len(act):
             u = Float64(act[adr])
 
         # `motor_kp` is MuJoCo's `gainprm[0]`, whose default is 1 — so a
@@ -252,7 +295,6 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         var force = kp * u
         comptime _POS = ACT_KIND_POSITION
         comptime _VEL = ACT_KIND_VELOCITY
-        var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
         # ⚠ `kind != MOTOR` IS `biastype != mjBIAS_NONE`. The parser sets
         # MOTOR exactly when `<general>` has no bias block and for every
         # `<motor>` element, so this branch is the bias, not a heuristic.
@@ -297,6 +339,123 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
                 length,
                 vel,
             )
+
+        # ── `<plugin plugin="mujoco.pid">` ───────────────────────────────
+        #
+        # `plugin/actuator/pid.cc` (MuJoCo 3.10.0), `Pid::Compute`, for
+        # `dyntype="none"` — the only dyntype the parser admits:
+        #
+        #     ctrl  = clip(d->ctrl[i], ctrlrange)                [ctrllimited]
+        #     ctrl  = clip(ctrl, prev +- slewmax*dt)          [slew AND t > 0]
+        #     err   = ctrl - actuator_length[i]
+        #     integ = clip(act[adr] + err*dt, +- imax)     [ki != 0; imax/ki]
+        #     force = kp*err + kd*(0 - actuator_velocity[i]) + ki*integ
+        #
+        # ⚠ NOT `actuator_scalar_force`. That function is `gain*u + affine
+        # bias`, which is every OTHER law in this engine; a plugin's
+        # `gaintype`/`biastype` stay at their defaults and its gains are not
+        # in `gainprm`/`biasprm` at all. Routing PID through it would compute
+        # `1 * ctrl`.
+        #
+        # ⚠ THE ERROR DERIVATIVE IS `-velocity`, NOT `d(err)/dt`. `ctrl_dot`
+        # is 0 for `dyntype="none"` (there is no activation behind the
+        # setpoint), so the whole of it is the transmission velocity, and the
+        # sign matters: `kd` DAMPS.
+        #
+        # ⚠⚠ AND IT CONTRIBUTES NOTHING TO `qDeriv`, DELIBERATELY.
+        # `mjd_actuator_vel` branches on `biastype`/`gaintype` only
+        # (engine_derivative.c:1245), so MuJoCo does not differentiate a
+        # plugin's force either — `kd` is invisible to the implicit
+        # integrator on BOTH sides. The `dof_actdamp` block below is guarded
+        # on `_POS`/`_VEL` and so already does the right thing; this note is
+        # here because "we have a velocity gain, so we must damp implicitly"
+        # is the obvious wrong move.
+        var pid_integral = Float64(0)
+        var pid_ctrl = Float64(0)
+        if kind == ACT_KIND_PID:
+            var length_p = Float64(0)
+            var vel_p = Float64(0)
+            for k in range(n):
+                var qadr_p = Int(
+                    sf.actuators.data[o + ACT_IDX_TRN_QADR_0 + k]
+                )
+                var dadr_p = Int(
+                    sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k]
+                )
+                var coef_p = Float64(
+                    sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+                )
+                if qadr_p >= 0 and qadr_p < nq:
+                    length_p += coef_p * Float64(d.qpos.data[qadr_p])
+                if dadr_p >= 0 and dadr_p < nv:
+                    vel_p += coef_p * Float64(d.qvel.data[dadr_p])
+            length_p *= gear
+            vel_p *= gear
+
+            var ki = Float64(sf.actuators.data[o + ACT_IDX_PID_KI])
+            var kd = Float64(sf.actuators.data[o + ACT_IDX_PID_KD])
+            var imax = Float64(sf.actuators.data[o + ACT_IDX_PID_IMAX])
+            var slew = Float64(sf.actuators.data[o + ACT_IDX_PID_SLEW])
+
+            # The two activation slots, in `Pid::GetState`'s order: the
+            # integral first (present iff ki != 0), then the previous
+            # control (present iff slewmax was configured).
+            var i_slot = adr if ki != 0.0 else -1
+            var s_slot = -1
+            if slew >= 0.0:
+                s_slot = adr + (1 if ki != 0.0 else 0)
+
+            pid_ctrl = ctrl
+            # ⚠⚠ `previous_ctrl_exists = d->time > 0`. On the FIRST step the
+            # slot holds a zero that is not a control, and clamping to
+            # `0 +- slewmax*dt` would cap every actuator at a few
+            # milliradians of command. This is the whole reason
+            # `META_IDX_SIM_TIME` exists.
+            if (
+                s_slot >= 0
+                and s_slot < len(act)
+                and Float64(d.meta.data[META_IDX_SIM_TIME]) > 0.0
+            ):
+                var prev = Float64(act[s_slot])
+                var lo_s = prev - slew * timestep
+                var hi_s = prev + slew * timestep
+                if pid_ctrl > hi_s:
+                    pid_ctrl = hi_s
+                elif pid_ctrl < lo_s:
+                    pid_ctrl = lo_s
+
+            var err = pid_ctrl - length_p
+            var err_dot = -vel_p
+            if i_slot >= 0 and i_slot < len(act):
+                pid_integral = Float64(act[i_slot]) + err * timestep
+                # ⚠ `imax` IS ALREADY DIVIDED BY `ki` — see `ACT_IDX_PID_IMAX`.
+                if imax >= 0.0:
+                    if pid_integral > imax:
+                        pid_integral = imax
+                    elif pid_integral < -imax:
+                        pid_integral = -imax
+            # ⚠⚠ AN EXPLICIT `fma` ON THE **FIRST** PRODUCT, AND THAT IS THE
+            # DIFFERENCE BETWEEN 0.0 AND 1 ulp. `pid.cc` writes
+            #
+            #     p_gain*error + d_gain*error_dot + i_gain*integral
+            #
+            # and the shipped build contracts `p_gain*error` into the add,
+            # evaluating `fma(kp, err, kd*err_dot) + ki*integral`. Measured by
+            # enumerating every association and every contraction of that
+            # expression against MuJoCo 3.10.0's own `actuator_force` at four
+            # states: of 24 candidates, ONLY the two that fuse the p-term hit
+            # it exactly, and the plain left-to-right sum is 3.469e-18 low.
+            #
+            # ⚠ FUSING THE d-TERM INSTEAD DOES NOT WORK — that was the first
+            # guess here and it measured no change at all. The two products
+            # are not interchangeable.
+            #
+            # ⚠ IT IS INVISIBLE UNTIL THE JOINT MOVES. At step 0 `err_dot` is
+            # 0, so the fused and unfused forms agree bit for bit; a gate that
+            # only compared the first step would have called the plain sum
+            # exact.
+            var d_term = kd * err_dot
+            force = kp.fma(err, d_term) + ki * pid_integral
 
         # `forcerange` (mj_fwdActuation). ⚠ THE CLAMP IS HERE — on the
         # SCALAR force, BEFORE the moment loop below multiplies by
@@ -357,13 +516,35 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         #     act_dot = (ctrl - act) / tau ;  act += act_dot * timestep
         # `ctrl` here is already ctrlrange-clamped, matching MuJoCo, which
         # clamps `d->ctrl` before computing act_dot.
-        if adr >= 0 and adr < len(act):
+        if kind != ACT_KIND_PID and adr >= 0 and adr < len(act):
             var tau = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
             if tau < 1e-10:
                 tau = 1e-10  # mjMINVAL guard, as MuJoCo applies
             act[adr] = Scalar[DTYPE](
                 u + (ctrl - u) / tau * timestep
             )
+
+        # The PID plugin's activations. `Pid::ActDot` writes
+        # `act_dot = (target - act) / dt` for both slots and MuJoCo then
+        # integrates `act += act_dot * dt`, so the slot simply BECOMES the
+        # target — exactly, not to within a timestep. Writing the target is
+        # the same number without the round trip through a division.
+        #
+        # ⚠ AFTER THE FORCE AND AFTER THE `forcerange` CLAMP, matching
+        # `mj_fwdActuation` -> `mj_advance`: the integral that was clamped
+        # into the force above is the one stored, and a saturated actuator
+        # still integrates its error (which is what makes PID wind-up real
+        # and `imax` necessary).
+        if kind == ACT_KIND_PID and adr >= 0:
+            var ki_w = Float64(sf.actuators.data[o + ACT_IDX_PID_KI])
+            var slew_w = Float64(sf.actuators.data[o + ACT_IDX_PID_SLEW])
+            var w = adr
+            if ki_w != 0.0:
+                if w < len(act):
+                    act[w] = Scalar[DTYPE](pid_integral)
+                w += 1
+            if slew_w >= 0.0 and w < len(act):
+                act[w] = Scalar[DTYPE](pid_ctrl)
 
     # ── `jnt_actfrcrange` — MuJoCo's SECOND force clamp ──────────────────
     #
@@ -453,6 +634,27 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
                 )
                 * frc
             )
+
+    # ── `d->time`, advanced where MuJoCo advances it ─────────────────────
+    #
+    # ⚠⚠ NOTHING ELSE IN THIS ENGINE HAS EVER NEEDED IT, which is why there
+    # was no clock at all. `mujoco.pid`'s slew limiter does: its
+    # `previous_ctrl_exists` is literally `d->time > 0`, and a zero in the
+    # previous-control slot is a legal control, so no value in `act` can
+    # answer the question. See `META_IDX_SIM_TIME`.
+    #
+    # ⚠ LAST, NOT FIRST. `mj_advance` runs at the END of `mj_step`, after
+    # `mj_fwdActuation` has read the time — so a step-0 call must see 0. This
+    # function's cadence is one call per control substep, the same as one
+    # `mj_step`.
+    #
+    # ⚠ THIS IS NOT A GENERAL-PURPOSE CLOCK YET. A caller that steps the
+    # integrator without calling this function does not advance it, and a
+    # caller that calls this twice for one step advances it twice. Both are
+    # true of `META_IDX_ACTDAMP_LIVE` beside it for the same reason: these
+    # slots describe what THIS function did.
+    d.meta.data[META_IDX_SIM_TIME] += Scalar[DTYPE](timestep)
+
 
 # =========================================================================
 # Model build (spec-direct; G4)
