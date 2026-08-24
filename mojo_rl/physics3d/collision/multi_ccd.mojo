@@ -476,6 +476,12 @@ def multi_ccd_extra_contacts[
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY EXISTING
+    # CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase CUTOFF
+    # (`margin + gap`); what a contact STORES as its `includemargin` is
+    # `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Append the perturbed manifold points for one already-emitted contact.
 
@@ -588,7 +594,9 @@ def multi_ccd_extra_contacts[
             # ⚠ THE FIRST POINT'S DISTANCE, not the perturbed query's — see
             # the module docstring.
             contacts[env, off + CONTACT_IDX_DIST] = dist0
-            contacts[env, off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+            contacts[
+                env, off + CONTACT_IDX_INCLUDEMARGIN
+            ] = contact_margin - contact_gap
             contacts[env, off + CONTACT_IDX_FRICTION] = contact_friction
             contacts[
                 env, off + CONTACT_IDX_FRICTION_SPIN

@@ -700,6 +700,13 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var mg_s = _extract_attr(gtag, "margin")
         if mg_s.byte_length() > 0:
             d.geom_margin = _parse_float(mg_s)
+        # ⚠ `gap` IN THE CLASS TOO. flybody states BOTH in
+        # `<default class="adhesion-collision">`, and a class-only `gap` read
+        # as 0 puts every adhesion contact back outside the band — see
+        # `never_resolved_classes`.
+        var ggap_s = _extract_attr(gtag, "gap")
+        if ggap_s.byte_length() > 0:
+            d.geom_gap = _parse_float(ggap_s)
 
         var rgba_s = _extract_attr(gtag, "rgba")
         if rgba_s.byte_length() > 0:
@@ -2564,6 +2571,14 @@ def _parse_one_geom(
     gd.margin = (
         _parse_float(mg_s) if mg_s.byte_length()
         > 0 else eff_defaults.geom_margin
+    )
+
+    # gap (see `GEOM_IDX_GAP`): contacts are DETECTED out to `margin + gap`
+    # and solved only inside `margin`.
+    var ggap_s = _extract_attr(tag, "gap")
+    gd.gap = (
+        _parse_float(ggap_s) if ggap_s.byte_length()
+        > 0 else eff_defaults.geom_gap
     )
 
     # density (per-geom overrides default; used when mass is absent)
@@ -5894,14 +5909,15 @@ def _fill_pairs(
         # same one the loops iterate in.
         var pd = PairData(g1, g2) if g1 <= g2 else PairData(g2, g1)
 
+        # ⚠ `gap` USED TO BE REFUSED HERE, and the reason was version drift:
+        # `includemargin` is `margin - gap` in 3.3.6/3.6.0/main, `margin` in
+        # 3.10.0 and something else again in 3.11.0. It is modelled now,
+        # against the RUNTIME's rule and measured on flybody — see
+        # `GEOM_IDX_GAP`. A pair's own `gap` overrides the geoms' sum exactly
+        # as its `margin` does (`getGap`).
         var gap_s = _trim(_extract_attr(tag, "gap"))
-        if gap_s.byte_length() > 0 and _parse_float(gap_s) != 0.0:
-            raise Error(
-                "physics3d: <contact><pair gap=> is not supported (this"
-                " engine models no contact gap, and MuJoCo 3.3.6/3.6.0,"
-                " 3.10.0 and 3.11.0 disagree about its meaning). Remove the"
-                " attribute or extend the contact record."
-            )
+        if gap_s.byte_length() > 0:
+            pd.gap = _parse_float(gap_s)
 
         var condim_s = _trim(_extract_attr(tag, "condim"))
         if condim_s.byte_length() > 0:

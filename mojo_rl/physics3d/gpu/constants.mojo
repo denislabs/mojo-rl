@@ -527,7 +527,7 @@ comptime MJ_CCD_ITERATIONS: Int = 35
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 32  # Per unified geom (+7 solref/solimp, +1 margin, +1 mesh_id, +1 priority, +1 hfield_id)
+comptime MODEL_GEOM_SIZE: Int = 33  # Per unified geom (+7 solref/solimp, +1 margin, +1 gap, +1 mesh_id, +1 priority, +1 hfield_id)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -558,6 +558,31 @@ comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
 comptime GEOM_IDX_SOLIMP_3: Int = 26  # Per-geom solimp midpoint
 comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
 comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
+# ⚠⚠ `<geom gap>` — DETECTED OUT TO `margin + gap`, SOLVED ONLY INSIDE
+# `margin`. MuJoCo 3.10.0 hands the narrowphase `margin + gap` as its cutoff
+# (`collisionTask`, engine_collision_driver.c:1871) and then passes `margin`
+# alone to `mj_setContact` as the contact's `includemargin`, which sets
+# `con->exclude = (con->dist >= includemargin)`. So a contact in the band
+# [margin, margin + gap) EXISTS — it is reported, it can be read — and
+# generates no constraint rows.
+#
+# ⚠ THAT BAND IS NOT COSMETIC: `<adhesion>` acts on those contacts. flybody's
+# eight claw/labrum pads all carry `margin="0.0005" gap="0.0005"`, and at its
+# keyframe one pad's ONLY contact sits in the band at dist 9.88e-04. Without
+# gap that pad has no contact at all and pulls on nothing.
+#
+# ⚠ BOTH ARE SUMS OVER THE PAIR, not maxima: `getMargin` returns
+# `geom_margin[g1] + geom_margin[g2]` and `getGap` returns
+# `geom_gap[g1] + geom_gap[g2]` (engine_collision_driver.c:161/170). An
+# explicit `<pair>` overrides BOTH with its own single value.
+#
+# ⚠⚠ THE REFERENCE TREES DISAGREE AND 3.10.0 IS THE RUNTIME. `includemargin`
+# is `margin - gap` in the 3.3.6/3.6.0/main trees and `margin` in 3.10.0 —
+# measured on flybody, whose labrum pair (both geoms margin 5e-04, gap 5e-04)
+# reports `includemargin` 1e-03, i.e. the SUM of the margins with the gaps
+# playing no part. Transcribing from the wrong tree here moves which contacts
+# the solver sees on every model with a margin.
+comptime GEOM_IDX_GAP: Int = 32  # Per-geom contact gap (see above)
 comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
 # `<geom priority="...">`, default 0. When two geoms differ, the HIGHER
 # priority one dictates condim, solref, solimp AND friction wholesale — no
@@ -870,14 +895,14 @@ comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
 # pairs carry `geom1`/`geom2` and nothing else, so this is the path that matters
 # and the error would have been invisible in the geometry.
 #
-# ⚠ `gap` IS NOT STORED. `mj_setContact` is called with `margin-gap` in every
-# reference tree here (3.3.6, 3.6.0, main), but the 3.10.0 runtime reports
-# `includemargin == margin` for a pair with `margin=.05 gap=.02`, and 3.11.0
-# filters on `margin + gap` instead — three different behaviours across the
-# versions. This engine models no gap anywhere (there is no `GEOM_IDX_GAP`), so
-# `full_parser` REJECTS a non-zero `gap` on a pair rather than pick one of the
-# three and silently drop it, the same way it rejects a non-default `solmix`.
-comptime MODEL_PAIR_SIZE: Int = 14
+# ⚠ `gap` IS STORED NOW, AND 3.10.0'S RULE IS THE ONE IMPLEMENTED.
+# `mj_setContact` is called with `margin-gap` in the 3.3.6, 3.6.0 and main
+# trees; the 3.10.0 RUNTIME passes `margin` alone and hands the narrowphase
+# `margin + gap` as its cutoff, and 3.11.0 differs again — three behaviours
+# across the versions, which is why this was rejected outright until the rule
+# was measured against the runtime rather than transcribed. See `GEOM_IDX_GAP`
+# for that measurement.
+comptime MODEL_PAIR_SIZE: Int = 15
 
 comptime PAIR_IDX_GEOM1: Int = 0  # Geom index (compiler-sorted, g1 < g2)
 comptime PAIR_IDX_GEOM2: Int = 1
@@ -893,6 +918,8 @@ comptime PAIR_IDX_SOLIMP_2: Int = 10
 comptime PAIR_IDX_SOLIMP_3: Int = 11
 comptime PAIR_IDX_SOLIMP_4: Int = 12
 comptime PAIR_IDX_MARGIN: Int = 13
+# `<pair gap>` — the pair's own, overriding the geom sum. See `GEOM_IDX_GAP`.
+comptime PAIR_IDX_GAP: Int = 14
 
 
 # =============================================================================

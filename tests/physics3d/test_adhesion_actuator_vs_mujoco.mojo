@@ -382,24 +382,38 @@ def main() raises:
     t.truth(want_ng[2] < 0.0, "MuJoCo's free-joint z force is NEGATIVE")
     t.truth(got_ng[2] < 0.0, "and so is ours — adhesion pulls, it does not push")
 
-    print("--- every pad at 1.0, including the gap-band one ---")
+    print("--- every pad at 1.0, including the one in the gap band ---")
     var got_all = _qfrc(sf, m, dims, fmd.timestep, False)
     var want_all = _mj_qfrc_all()
-    var e_all = _worst(got_all, want_all)
-    print("    worst |d qfrc_actuator| =", e_all)
-    # The missing pad's whole contribution to the free joint's z dof: its
-    # contact normal is the floor's (0, 0, 1) and the free joint's z Jacobian
-    # entry is 1, so the moment there is exactly -1 and the force exactly
-    # `gain * ctrl` = 0.985 * 1.0.
-    t.close(e_all, 0.985, 1e-12,
-            "the WHOLE difference is one pad's gain — `<geom gap>`, named")
-    t.close(got_all[2] - want_all[2], 0.985, 1e-12,
-            "and it sits on the free joint's z dof, the sign of a MISSING pull")
-    # ⚠ AND IT IS THE GAP PAD, not some other one: dropping exactly that
-    # actuator from the command restores an exact answer (arm above).
-    t.truth(e_ng < 1e-15 and e_all > 0.9,
-            "dropping THAT pad is what collapses the difference from 0.985"
-            " to float64 noise")
+    # ⚠⚠ THIS ARM USED TO ASSERT A DIFFERENCE OF EXACTLY 0.985. `<geom gap>`
+    # was unmodelled, so `adhere_claw_T1_left` — whose ONLY contact sits in
+    # the band at dist 9.88e-04 against an includemargin of 5.0e-04 — had no
+    # contact to pull on and read zero, and the whole discrepancy was that one
+    # pad's gain. Gap is modelled now (`test_geom_gap_vs_mujoco`), so the arm
+    # is the same shape as the one above: exact everywhere the ellipsoid pair
+    # does not reach. It was written as an EQUALITY rather than a tolerance so
+    # that closing gap would force this rewrite instead of passing quietly.
+    var e_all = 0.0
+    var e_all_lab = 0.0
+    for i in range(nv):
+        var e = abs(got_all[i] - want_all[i])
+        if i == LABRUM_A or i == LABRUM_B:
+            if e > e_all_lab:
+                e_all_lab = e
+        elif e > e_all:
+            e_all = e
+    print("    worst |d qfrc_actuator| over the other", nv - 2, "dofs =", e_all)
+    print("    the two labrum dofs                                =", e_all_lab)
+    t.truth(e_all < 1e-15,
+            "ALL EIGHT pads reproduce MuJoCo — the gap-band one included")
+    t.truth(e_all_lab < 2.0e-04,
+            "and the ellipsoid pair's inherited error is unchanged by it")
+    # ⚠ NON-VACUITY: the gap pad must actually be PULLING, or "exact" would be
+    # true of a build that still ignored it. Its whole contribution lands on
+    # the free joint's z dof, where its contact normal is the floor's.
+    t.truth(abs(want_all[2] - want_ng[2]) > 0.9,
+            "the gap-band pad is worth ~0.985 on the free joint's z dof —"
+            " so this arm and the one above are looking at different physics")
 
     # ── 5. an unresolved `body=` must raise ──────────────────────────────
     print("--- an `body=` naming nothing ---")

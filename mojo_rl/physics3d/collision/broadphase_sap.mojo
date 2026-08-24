@@ -69,6 +69,7 @@ from ..gpu.constants import (
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
     PAIR_IDX_MARGIN,
+    PAIR_IDX_GAP,
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
     META_IDX_NUM_CONTACTS,
@@ -105,6 +106,7 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_GAP,
     GEOM_IDX_PRIORITY,
     GEOM_IDX_SOLREF_0,
     GEOM_IDX_SOLREF_1,
@@ -505,7 +507,13 @@ def _detect_contacts_sap_env[
         # engine had nothing. Only the PAIR margin was folded in, below.
         # ⚠ Conservative by construction — a wider AABB offers the narrow
         # phase more candidates, it never invents a contact.
-        var gm = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MARGIN])
+        # ⚠ `+ gap` TOO. The narrowphase cutoff is `margin + gap`, so an AABB
+        # inflated by `margin` alone drops every contact in the gap band before
+        # it is ever tested — which is the whole band `<adhesion>` reaches.
+        var gm = (
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MARGIN])
+            + rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_GAP])
+        )
         if gm < Scalar[DTYPE](0):
             gm = Scalar[DTYPE](0)
         aabb_min_x[g] = wpx[g] - he[0] - gm
@@ -686,9 +694,22 @@ def _detect_contacts_sap_env[
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             # Sum of the two geoms' margins, or the PAIR's own — never both.
-            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            var cgp = (
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
+                + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
+            )
             if ipair >= 0:
-                cm = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+                cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+                cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
+            # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
+            # is what the contact stores as its `includemargin`; 3.10.0 passes
+            # `margin + gap` to the collision function and `margin` alone to
+            # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
+            # and then EXCLUDED from the solver by
+            # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
+            # two are equal and every line below is what it always was.
+            var cm = cim + cgp
 
             # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
             # branch arithmetic is the same as it always was.
@@ -770,7 +791,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -822,7 +843,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist1
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -857,7 +878,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist2
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -893,6 +914,7 @@ def _detect_contacts_sap_env[
                     dims,
                     contacts,
                     num_contacts,
+                    cgp,
                 )
 
             elif gj_type == GEOM_ELLIPSOID:
@@ -955,7 +977,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = diste
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -989,6 +1011,7 @@ def _detect_contacts_sap_env[
                     dims,
                     contacts,
                     num_contacts,
+                    cgp,
                 )
 
             elif gj_type == GEOM_MESH:
@@ -1029,6 +1052,7 @@ def _detect_contacts_sap_env[
                         mesh_edges,
                         contacts,
                         num_contacts,
+                        cgp,
                     )
 
             _fill_pair_solparams[DTYPE](
@@ -1150,9 +1174,22 @@ def _detect_contacts_sap_env[
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             # Sum of the two geoms' margins, or the PAIR's own — never both.
-            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            var cgp = (
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
+                + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
+            )
             if ipair >= 0:
-                cm = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+                cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+                cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
+            # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
+            # is what the contact stores as its `includemargin`; 3.10.0 passes
+            # `margin + gap` to the collision function and `margin` alone to
+            # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
+            # and then EXCLUDED from the solver by
+            # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
+            # two are equal and every line below is what it always was.
+            var cm = cim + cgp
 
             var pj_x = wpx[gj]
             var pj_y = wpy[gj]
@@ -1371,6 +1408,7 @@ def _detect_contacts_sap_env[
                     hfield_meta, hfield_data,
                     mesh_verts, mesh_vert_edgeadr, mesh_edges,
                     dims, contacts, ws, num_contacts,
+                    cgp,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -1445,6 +1483,7 @@ def _detect_contacts_sap_env[
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
                     cm, cf, cfs, cfr, cdim,
                     dims, contacts, num_contacts,
+                    cgp,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -1508,6 +1547,7 @@ def _detect_contacts_sap_env[
                     Scalar[DTYPE](-1),
                     cm, cf, cfs, cfr, cdim,
                     dims, contacts, num_contacts,
+                    cgp,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -1521,6 +1561,7 @@ def _detect_contacts_sap_env[
                     Scalar[DTYPE](1),
                     cm, cf, cfs, cfr, cdim,
                     dims, contacts, num_contacts,
+                    cgp,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -1545,6 +1586,7 @@ def _detect_contacts_sap_env[
                     dims,
                     contacts,
                     num_contacts,
+                    cgp,
                 )
                 if code >= 0:
                     _fill_pair_solparams[DTYPE](
@@ -1830,6 +1872,7 @@ def _detect_contacts_sap_env[
                                 dist, cm, cf, cfs, cfr, cdim,
                                 True,
                                 contacts, ws, env, num_contacts,
+                                cgp,
                             )
                         else:
                             mcn = native_multicontact_contacts[
@@ -1848,6 +1891,7 @@ def _detect_contacts_sap_env[
                                 dist, cm, cf, cfs, cfr, cdim,
                                 False,
                                 contacts, ws, env, num_contacts,
+                                cgp,
                             )
                         # The manifold REPLACES the single point.
                         if mcn > 0:
@@ -1899,7 +1943,7 @@ def _detect_contacts_sap_env[
                 contacts[env, c_off + CONTACT_IDX_NY] = ny
                 contacts[env, c_off + CONTACT_IDX_NZ] = nz
                 contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
+                contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
                 contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                 contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                 contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1949,6 +1993,7 @@ def _detect_contacts_sap_env[
                         contacts, num_contacts,
                         ws, env,
                         ccd_tol, ccd_iter, cm,
+                        cgp,
                     )
 
             _fill_pair_solparams[DTYPE](

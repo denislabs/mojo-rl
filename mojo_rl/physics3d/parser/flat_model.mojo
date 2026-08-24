@@ -295,6 +295,10 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_3: Float64
     var solimp_4: Float64
     var margin: Float64
+    var gap: Float64
+    """`<geom gap>`. Contacts are DETECTED out to `margin + gap` and solved
+    only inside `margin` — see `GEOM_IDX_GAP`. flybody's eight adhesion pads
+    are the only geoms in this tree that set it."""
     var density: Float64  # kg/m³; used when mass=-1 to compute mass from volume
     var mass: Float64  # -1.0 = use density (not specified explicitly)
     var rgba_r: Float64  # visual colour (r component, 0..1)
@@ -447,6 +451,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_3 = solimp_3
         self.solimp_4 = solimp_4
         self.margin = margin
+        self.gap = 0.0
         self.density = density
         self.mass = mass
         self.rgba_r = rgba_r
@@ -1381,6 +1386,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_solimp_3: Float64
     var geom_solimp_4: Float64
     var geom_margin: Float64
+    var geom_gap: Float64
     var geom_rgba_r: Float64  # default geom colour (r, 0..1); -1.0 = not set
     var geom_rgba_g: Float64
     var geom_rgba_b: Float64
@@ -1549,6 +1555,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         geom_solimp_3: Float64 = 0.5,
         geom_solimp_4: Float64 = 2.0,
         geom_margin: Float64 = 0.0,
+        geom_gap: Float64 = 0.0,
         geom_rgba_r: Float64 = -1.0,
         geom_rgba_g: Float64 = -1.0,
         geom_rgba_b: Float64 = -1.0,
@@ -1592,6 +1599,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_solimp_3 = geom_solimp_3
         self.geom_solimp_4 = geom_solimp_4
         self.geom_margin = geom_margin
+        self.geom_gap = geom_gap
         self.geom_rgba_r = geom_rgba_r
         self.geom_rgba_g = geom_rgba_g
         self.geom_rgba_b = geom_rgba_b
@@ -1801,6 +1809,10 @@ struct PairData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_3: Float64
     var solimp_4: Float64
     var margin: Float64
+    var gap: Float64
+    """`<pair gap>` — overrides the two geoms' gap SUM, exactly as
+    `pair_margin` overrides their margin sum (`getGap`,
+    engine_collision_driver.c:170). Nothing in this tree sets it."""
 
     def __init__(out self, geom1: Int = 0, geom2: Int = 0):
         self.geom1 = geom1
@@ -1817,6 +1829,7 @@ struct PairData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_3 = 0.5
         self.solimp_4 = 2.0
         self.margin = 0.0
+        self.gap = 0.0
 
 
 # =============================================================================

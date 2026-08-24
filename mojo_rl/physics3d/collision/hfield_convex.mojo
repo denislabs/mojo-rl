@@ -172,6 +172,12 @@ def hfield_convex_contacts[
     mut num_contacts: Int,
     max_contacts: Int,
     env: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `margin - gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Contacts between heightfield geom 1 and convex geom 2, written to the
     record tensor as they are found.
@@ -373,7 +379,7 @@ def hfield_convex_contacts[
                     contacts[env, o + CONTACT_IDX_NY] = nsign * wn[1]
                     contacts[env, o + CONTACT_IDX_NZ] = nsign * wn[2]
                     contacts[env, o + CONTACT_IDX_DIST] = res[0]
-                    contacts[env, o + CONTACT_IDX_INCLUDEMARGIN] = margin
+                    contacts[env, o + CONTACT_IDX_INCLUDEMARGIN] = margin - gap
                     contacts[env, o + CONTACT_IDX_FRICTION] = contact_friction
                     contacts[
                         env, o + CONTACT_IDX_FRICTION_SPIN

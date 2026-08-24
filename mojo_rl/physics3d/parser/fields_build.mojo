@@ -210,6 +210,7 @@ from mojo_rl.physics3d.gpu.constants import (
     PAIR_IDX_SOLIMP_3,
     PAIR_IDX_SOLIMP_4,
     PAIR_IDX_MARGIN,
+    PAIR_IDX_GAP,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
@@ -240,6 +241,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_SOLIMP_3,
     GEOM_IDX_SOLIMP_4,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_GAP,
     GEOM_IDX_MESH_ID,
     EQ_IDX_TYPE,
     EQ_IDX_OBJTYPE,
@@ -1671,6 +1673,7 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_SOLIMP_3] = Scalar[DTYPE](gd.solimp_3)
         mf.geoms.data[o + GEOM_IDX_SOLIMP_4] = Scalar[DTYPE](gd.solimp_4)
         mf.geoms.data[o + GEOM_IDX_MARGIN] = Scalar[DTYPE](gd.margin)
+        mf.geoms.data[o + GEOM_IDX_GAP] = Scalar[DTYPE](gd.gap)
         mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](gd.mesh_id)
         mf.geoms.data[o + GEOM_IDX_HFIELD_ID] = Scalar[DTYPE](gd.hfield_id)
         geom_mass[i] = Scalar[DTYPE](gd.mass)
@@ -2471,6 +2474,7 @@ def build_model_fields_from_flat[
         mf.pairs.data[o + PAIR_IDX_SOLIMP_3] = Scalar[DTYPE](pr.solimp_3)
         mf.pairs.data[o + PAIR_IDX_SOLIMP_4] = Scalar[DTYPE](pr.solimp_4)
         mf.pairs.data[o + PAIR_IDX_MARGIN] = Scalar[DTYPE](pr.margin)
+        mf.pairs.data[o + PAIR_IDX_GAP] = Scalar[DTYPE](pr.gap)
 
     # ── <compiler inertiafromgeom> + settotalmass (staging mutations) ─────
     var ifg_mode = fmd.inertiafromgeom

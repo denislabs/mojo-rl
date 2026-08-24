@@ -72,6 +72,7 @@ from ..gpu.constants import (
     PAIR_IDX_SOLIMP_3,
     PAIR_IDX_SOLIMP_4,
     PAIR_IDX_MARGIN,
+    PAIR_IDX_GAP,
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
     META_IDX_NUM_CONTACTS,
@@ -130,6 +131,7 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_GAP,
     GEOM_IDX_MESH_ID,
     GEOM_IDX_HFIELD_ID,
     MAX_GPU_MESHES,
@@ -335,6 +337,12 @@ def _plane_mesh_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ):
     """Plane-mesh, after `mjc_PlaneConvex` (`engine_collision_convex.c`).
 
@@ -597,14 +605,22 @@ def _plane_mesh_contacts[
         contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
         contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
         contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+        # ⚠⚠ TWO CONVENTIONS, ONE MEANING. `MARGIN_IN_DIST` folds the margin
+        # into the stored distance and leaves `INCLUDEMARGIN` untouched;
+        # `WRITE_INCLUDEMARGIN` stores the raw distance and the margin beside
+        # it. The solver reads `dist - includemargin` either way — so BOTH must
+        # subtract the INCLUDEMARGIN (`margin`), never the cutoff
+        # (`margin + gap`), or a gap-band contact reads as penetrating.
         comptime if MARGIN_IN_DIST:
-            contacts[env, c_off + CONTACT_IDX_DIST] = dist_v - contact_margin
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist_v - (
+                contact_margin - contact_gap
+            )
         else:
             contacts[env, c_off + CONTACT_IDX_DIST] = dist_v
         comptime if WRITE_INCLUDEMARGIN:
             contacts[
                 env, c_off + CONTACT_IDX_INCLUDEMARGIN
-            ] = contact_margin
+            ] = contact_margin - contact_gap
         contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[
             env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -940,6 +956,11 @@ def _plane_cylinder_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THREADED THROUGH, NOT RECOMPUTED. This function does not see the
+    # geom pair; it forwards the cutoff/includemargin split to the emit
+    # helper below. Defaulted to 0 so every existing call site is
+    # unchanged. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ):
     """Plane-cylinder: up to FOUR points — two rim, two triangle.
 
@@ -1041,6 +1062,7 @@ def _plane_cylinder_contacts[
         contact_margin, contact_friction, contact_friction_spin,
         contact_friction_roll, contact_condim, world_body,
         contacts, num_contacts,
+        contact_gap,
     )
 
     # Point 2 — far-cap rim, same radial direction.
@@ -1053,6 +1075,7 @@ def _plane_cylinder_contacts[
             contact_margin, contact_friction, contact_friction_spin,
             contact_friction_roll, contact_condim, world_body,
             contacts, num_contacts,
+            contact_gap,
         )
 
     # Points 3 and 4 — the triangle on the near cap.
@@ -1090,6 +1113,7 @@ def _plane_cylinder_contacts[
                 contact_margin, contact_friction, contact_friction_spin,
                 contact_friction_roll, contact_condim, world_body,
                 contacts, num_contacts,
+                contact_gap,
             )
         if num_contacts < max_contacts:
             _emit_plane_contact[DTYPE](
@@ -1098,6 +1122,7 @@ def _plane_cylinder_contacts[
                 contact_margin, contact_friction, contact_friction_spin,
                 contact_friction_roll, contact_condim, world_body,
                 contacts, num_contacts,
+                contact_gap,
             )
 
 
@@ -1130,6 +1155,12 @@ def _emit_plane_contact[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ):
     """Write one plane contact whose point is given IN THE PLANE FRAME.
 
@@ -1152,7 +1183,9 @@ def _emit_plane_contact[
     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
     contacts[env, c_off + CONTACT_IDX_DIST] = dist
-    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+    contacts[
+            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
     contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
@@ -1197,6 +1230,12 @@ def _plane_box_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ):
     """Plane-box: one contact per box CORNER below the plane, up to four.
 
@@ -1258,7 +1297,9 @@ def _plane_box_contacts[
         contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
         contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
         contacts[env, c_off + CONTACT_IDX_DIST] = cdist
-        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[
+            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
         contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[
             env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -1301,6 +1342,12 @@ def _capsule_capsule_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Capsule/capsule: up to TWO contacts, MuJoCo's manifold.
 
@@ -1350,7 +1397,9 @@ def _capsule_capsule_contacts[
         contacts[env, c_off + CONTACT_IDX_NY] = -cc_n[3 * c + 1]
         contacts[env, c_off + CONTACT_IDX_NZ] = -cc_n[3 * c + 2]
         contacts[env, c_off + CONTACT_IDX_DIST] = cc_dist[c]
-        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[
+            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
         contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[
             env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -1410,6 +1459,11 @@ def _hfield_contacts[
     contacts: LayoutTensor[DTYPE, L_CONTACTS, MutAnyOrigin],
     ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
     mut num_contacts: Int,
+    # ⚠ THREADED THROUGH, NOT RECOMPUTED. This function does not see the
+    # geom pair; it forwards the cutoff/includemargin split to the emit
+    # helper below. Defaulted to 0 so every existing call site is
+    # unchanged. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """HEIGHTFIELD x convex — one record per prism `mjc_ConvexHField` reports.
 
@@ -1447,6 +1501,7 @@ def _hfield_contacts[
         hfield_meta, hfield_data,
         mesh_verts, mesh_vert_edgeadr, mesh_edges,
         contacts, ws, num_contacts, dims.get_max_contacts(), env,
+        contact_gap,
     )
 
 
@@ -1490,6 +1545,12 @@ def _capsule_box_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Capsule/box: up to TWO contacts, MuJoCo's manifold.
 
@@ -1544,7 +1605,9 @@ def _capsule_box_contacts[
         contacts[env, c_off + CONTACT_IDX_NY] = nsgn * cb_n[3 * c + 1]
         contacts[env, c_off + CONTACT_IDX_NZ] = nsgn * cb_n[3 * c + 2]
         contacts[env, c_off + CONTACT_IDX_DIST] = cb_dist[c]
-        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[
+            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
         contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[
             env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -1600,6 +1663,12 @@ def _box_box_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Box/box: the whole manifold, on both the FACE and EDGE-EDGE axes.
 
@@ -1651,7 +1720,9 @@ def _box_box_contacts[
         contacts[env, c_off + CONTACT_IDX_NY] = -bb_n[1]
         contacts[env, c_off + CONTACT_IDX_NZ] = -bb_n[2]
         contacts[env, c_off + CONTACT_IDX_DIST] = bb_dist[c]
-        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[
+            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
         contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[
             env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -1908,13 +1979,36 @@ def _detect_contacts_env[
             # of the two geoms' — `mj_collideGeoms` picks one or the other and
             # never combines them. Hoisted above the bounding-sphere test
             # because MuJoCo's `mj_filterSphere` is called WITH it.
-            var contact_margin = rebind[Scalar[DTYPE]](
+            var contact_includemargin = rebind[Scalar[DTYPE]](
                 geoms[gi, GEOM_IDX_MARGIN]
             ) + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+            var contact_gap = rebind[Scalar[DTYPE]](
+                geoms[gi, GEOM_IDX_GAP]
+            ) + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
             if ipair >= 0:
-                contact_margin = rebind[Scalar[DTYPE]](
+                contact_includemargin = rebind[Scalar[DTYPE]](
                     pairs[ipair, PAIR_IDX_MARGIN]
                 )
+                contact_gap = rebind[Scalar[DTYPE]](
+                    pairs[ipair, PAIR_IDX_GAP]
+                )
+            # ⚠⚠ TWO VALUES, NOT ONE, and the CUTOFF is the wider of them.
+            # 3.10.0 hands the collision function `margin + gap` and
+            # `mj_setContact` `margin` alone, so a contact in
+            # [margin, margin+gap) is DETECTED and then excluded from the
+            # solver by `con->exclude = dist >= includemargin`. Every test
+            # below reads `contact_margin` and every `includemargin` WRITE
+            # reads `contact_margin - contact_gap`; with no `<geom gap>` they
+            # are the same number and nothing moves.
+            # ⚠⚠ EVERY `INCLUDEMARGIN` WRITE IN THIS FUNCTION READS
+            # `contact_includemargin`, NEVER `contact_margin`. There are NINE
+            # of them inline in the branches below plus six more inside the
+            # emit helpers, and the first pass at this feature caught only the
+            # helpers — a sphere held in the gap band because its record said
+            # the CUTOFF was its includemargin, which is the same rule written
+            # fifteen times. If you add a branch here, the value to store is
+            # this one.
+            var contact_margin = contact_includemargin + contact_gap
 
             var pi_x: Scalar[DTYPE] = 0
             var pi_y: Scalar[DTYPE] = 0
@@ -2154,7 +2248,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist1
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2204,7 +2298,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist2
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2250,6 +2344,7 @@ def _detect_contacts_env[
                         dims,
                         contacts,
                         num_contacts,
+                        contact_gap,
                     )
                 elif gj_type == GEOM_SPHERE:
                     var dist = fp_z - rj - ground_z
@@ -2275,7 +2370,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2324,7 +2419,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2359,6 +2454,7 @@ def _detect_contacts_env[
                         dims,
                         contacts,
                         num_contacts,
+                        contact_gap,
                     )
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
@@ -2392,6 +2488,7 @@ def _detect_contacts_env[
                             mesh_edges,
                             contacts,
                             num_contacts,
+                            contact_gap,
                         )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -2491,7 +2588,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist1
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2541,7 +2638,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist2
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2587,6 +2684,7 @@ def _detect_contacts_env[
                         dims,
                         contacts,
                         num_contacts,
+                        contact_gap,
                     )
                 elif gi_type == GEOM_SPHERE:
                     var dist = fp_z - ri - ground_z
@@ -2612,7 +2710,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2657,7 +2755,7 @@ def _detect_contacts_env[
                         contacts[env, c_off + CONTACT_IDX_DIST] = dist
                         contacts[
                             env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
+                        ] = contact_includemargin
                         contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2692,6 +2790,7 @@ def _detect_contacts_env[
                         dims,
                         contacts,
                         num_contacts,
+                        contact_gap,
                     )
                 elif gi_type == GEOM_MESH:
                     comptime if may_exist[D.NMESH_VERTS]():
@@ -2724,6 +2823,7 @@ def _detect_contacts_env[
                             mesh_edges,
                             contacts,
                             num_contacts,
+                            contact_gap,
                         )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -2828,6 +2928,7 @@ def _detect_contacts_env[
                     hfield_meta, hfield_data,
                     mesh_verts, mesh_vert_edgeadr, mesh_edges,
                     dims, contacts, ws, num_contacts,
+                    contact_gap,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -2905,6 +3006,7 @@ def _detect_contacts_env[
                     contact_friction_roll,
                     contact_condim,
                     dims, contacts, num_contacts,
+                    contact_gap,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -2972,6 +3074,7 @@ def _detect_contacts_env[
                     contact_friction_roll,
                     contact_condim,
                     dims, contacts, num_contacts,
+                    contact_gap,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -2989,6 +3092,7 @@ def _detect_contacts_env[
                     contact_friction_roll,
                     contact_condim,
                     dims, contacts, num_contacts,
+                    contact_gap,
                 )
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
@@ -3013,6 +3117,7 @@ def _detect_contacts_env[
                     dims,
                     contacts,
                     num_contacts,
+                    contact_gap,
                 )
                 if code >= 0:
                     _fill_pair_solparams[DTYPE](
@@ -3314,6 +3419,7 @@ def _detect_contacts_env[
                                 contact_condim,
                                 True,
                                 contacts, ws, env, num_contacts,
+                                contact_gap,
                             )
                         else:
                             mcn = native_multicontact_contacts[
@@ -3337,6 +3443,7 @@ def _detect_contacts_env[
                                 contact_condim,
                                 False,
                                 contacts, ws, env, num_contacts,
+                                contact_gap,
                             )
                         # ⚠ THE MANIFOLD REPLACES THE POINT, it does not extend
                         # it — the reference overwrites `status->nx`. Falling
@@ -3394,7 +3501,7 @@ def _detect_contacts_env[
                 contacts[env, c_off + CONTACT_IDX_DIST] = dist
                 contacts[
                     env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                ] = contact_margin
+                ] = contact_includemargin
                 contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
                 contacts[
                     env, c_off + CONTACT_IDX_FRICTION_SPIN
@@ -3449,6 +3556,7 @@ def _detect_contacts_env[
                         contacts, num_contacts,
                         ws, env,
                         ccd_tol, ccd_iter, contact_margin,
+                        contact_gap,
                     )
 
             _fill_pair_solparams[DTYPE](

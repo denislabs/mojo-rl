@@ -1346,6 +1346,12 @@ def native_multicontact_contacts[
     ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
     wrow: Int,
     mut num_contacts: Int,
+    # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
+    # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
+    # CUTOFF (`margin + gap`); what a contact STORES as its
+    # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
+    # `dist >= includemargin`. See `GEOM_IDX_GAP`.
+    contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """`multicontact` — emit the clipped face manifold, or 0 if there is none.
 
@@ -1688,7 +1694,9 @@ def native_multicontact_contacts[
         contacts[env, off + CONTACT_IDX_NY] = rny
         contacts[env, off + CONTACT_IDX_NZ] = rnz
         contacts[env, off + CONTACT_IDX_DIST] = dist0
-        contacts[env, off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[
+            env, off + CONTACT_IDX_INCLUDEMARGIN
+        ] = contact_margin - contact_gap
         contacts[env, off + CONTACT_IDX_FRICTION] = contact_friction
         contacts[env, off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
         contacts[env, off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
