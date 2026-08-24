@@ -15,6 +15,12 @@ from mojo_rl.core import EnvRenderer3D
 
 from . import ModelDefLike
 from ..parser.render_fields import RenderFields
+from ..kinematics.camera_frame import (
+    camera_world_pos,
+    camera_world_quat,
+    camera_look_dir,
+    camera_up_dir,
+)
 
 @fieldwise_init
 struct OverlayLine(Copyable, Movable):
@@ -61,6 +67,18 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1, CAM_TARGETBODY=2
     var camera_targets: List[Int]
     """Body each camera aims at for CAM_TARGETBODY, -1 otherwise."""
+
+    var camera_bodies: List[Int]
+    """Body each camera is ATTACHED to (`mjModel.cam_bodyid`); 0 = worldbody."""
+    var camera_local_pos: List[Vec3]
+    var camera_local_quat: List[Quat]
+    """The camera's pose IN ITS BODY'S FRAME, kept because `Camera3D` stores
+    only the derived eye/target/up and those have to be rebuilt every frame
+    once the body moves. All three lists are parallel to `cameras`, including
+    the synthesised default orbit camera (body 0, identity), so
+    `active_camera` indexes all four.
+    """
+
     var active_camera: Int
 
     var axes_offset: Float64
@@ -159,6 +177,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         var mode_list = Self.MODEL_DEF.setup_camera_modes(rf)
         self.cameras = List[Camera3D]()
         self.camera_modes = List[Int]()
+        self.camera_bodies = List[Int]()
+        self.camera_local_pos = List[Vec3]()
+        self.camera_local_quat = List[Quat]()
         if len(cam_list) == 0:
             # No cameras in XML — add a default orbit camera
             self.cameras.append(Camera3D(
@@ -173,6 +194,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 screen_height=height,
             ))
             self.camera_modes.append(1)  # CAM_FIXED
+            # Synthesised, so it belongs to no body and has no local pose.
+            self.camera_bodies.append(0)
+            self.camera_local_pos.append(Vec3(0.0, 0.0, 0.0))
+            self.camera_local_quat.append(Quat(1.0, 0.0, 0.0, 0.0))
         else:
             for i in range(len(cam_list)):
                 self.cameras.append(cam_list[i].copy())
@@ -180,6 +205,28 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                     self.camera_modes.append(mode_list[i])
                 else:
                     self.camera_modes.append(0)  # CAM_TRACKCOM fallback
+                # ⚠ Read straight off `rf` rather than through a `MODEL_DEF`
+                # static like `get_camera_target_bodies`: these are a verbatim
+                # copy of a column, and the trait has two implementers, so a
+                # new member there is a second place to keep in sync for no
+                # gain.
+                if i < len(rf.cam_body):
+                    self.camera_bodies.append(rf.cam_body[i])
+                    self.camera_local_pos.append(
+                        Vec3(rf.cam_pos_x[i], rf.cam_pos_y[i], rf.cam_pos_z[i])
+                    )
+                    self.camera_local_quat.append(
+                        Quat(
+                            rf.cam_quat_w[i],
+                            rf.cam_quat_x[i],
+                            rf.cam_quat_y[i],
+                            rf.cam_quat_z[i],
+                        )
+                    )
+                else:
+                    self.camera_bodies.append(0)
+                    self.camera_local_pos.append(Vec3(0.0, 0.0, 0.0))
+                    self.camera_local_quat.append(Quat(1.0, 0.0, 0.0, 0.0))
         self.active_camera = 0
         self.camera_targets = Self.MODEL_DEF.get_camera_target_bodies(rf)
 
@@ -314,6 +361,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
         self.camera_targets = move.camera_targets^
+        self.camera_bodies = move.camera_bodies^
+        self.camera_local_pos = move.camera_local_pos^
+        self.camera_local_quat = move.camera_local_quat^
         self.active_camera = move.active_camera
         self.axes_offset = move.axes_offset
         self.vel_arrow_height = move.vel_arrow_height
@@ -483,6 +533,52 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self.camera_modes
         ):
             cam_mode = self.camera_modes[self.active_camera]
+
+        # ── mj_camlight's default: take the camera into the world ─────────
+        # `mj_camlight` calls `mj_local2Global(cam_pos, cam_quat, cam_bodyid)`
+        # for EVERY mode before it dispatches, because `cam_pos`/`cam_quat` are
+        # stored in the parent BODY's frame. We never did, so a camera declared
+        # inside a body was drawn at its LOCAL pose read as a world pose: a
+        # wrist camera stayed welded to the origin while the wrist moved. The
+        # arithmetic is `xpos[b] + xmat[b]*cam_pos` / `xmat[b]*cam_quat`, here
+        # in quaternion form since `render` is handed `quaternions`, not mats.
+        #
+        # ⚠ GATED ON `body > 0`, WHICH IS A DELIBERATE DEVIATION and a
+        # deliberately EMPTY one. For the worldbody the transform is the
+        # identity, so the pose this would produce is bit-identical to the one
+        # `setup_cameras` already baked; skipping it only preserves today's
+        # behaviour that a world-fixed camera can still be dragged with the
+        # mouse. MuJoCo's own fixed cameras cannot be dragged — see the "STUCK"
+        # note above, which now applies to body-attached cameras too, on
+        # purpose.
+        if (
+            self.active_camera >= 0
+            and self.active_camera < len(self.camera_bodies)
+            and self.camera_bodies[self.active_camera] > 0
+            and self.camera_bodies[self.active_camera] < len(positions)
+            and (cam_mode == 1 or cam_mode == 2)
+        ):
+            var cb = self.camera_bodies[self.active_camera]
+            var bq = quaternions[cb]
+            var cam_xpos = camera_world_pos(
+                positions[cb], bq, self.camera_local_pos[self.active_camera]
+            )
+            var cam_xquat = camera_world_quat(
+                bq, self.camera_local_quat[self.active_camera]
+            )
+            self.renderer.camera.eye = cam_xpos
+            if cam_mode == 1:
+                # MuJoCo's camera frame looks down its own -Z with +Y up
+                # (`mjCCamera`) — the same convention `setup_cameras` resolves
+                # at load, applied here to the composed world orientation.
+                self.renderer.camera.target = cam_xpos + camera_look_dir(
+                    cam_xquat
+                )
+                self.renderer.camera.up = camera_up_dir(cam_xquat)
+            # cam_mode == 2 (targetbody) keeps only the POSITION from here and
+            # is re-aimed by the branch below, which is what `mj_camlight`
+            # does: the targetbody case overwrites the orientation and leaves
+            # `cam_xpos` from the local2Global default standing.
         if self.follow and cam_mode == 0:  # CAM_TRACKCOM
             # Preserve the current eye-to-target offset so mouse orbit is respected.
             # Each frame we only translate both eye and target to follow the torso.

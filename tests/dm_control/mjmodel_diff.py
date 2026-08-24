@@ -52,10 +52,21 @@ _TABLES = [
     "eq_solref", "eq_data",
     "sensor_type", "sensor_objid", "sensor_adr", "sensor_dim",
     "exclude_signature",
+    # ⚠ THE CAMERA COLUMN WAS ABSENT UNTIL 2026-08-24 — every `<camera>` in
+    # every ported model was ungated, on both this gate and `so_arm_ref.py`.
+    # It surfaced while fixing `mj_camlight` (a body-attached camera was never
+    # re-posed by its body); the fix needs `cam_bodyid` and `cam_pos`/`cam_quat`
+    # to be right, and nothing was checking them.
+    # `cam_pos0`/`cam_mat0`/`cam_poscom0` are the qpos0 world-frame values that
+    # `mjCAMLIGHT_TRACK`/`TRACKCOM` read instead of the body transform, so they
+    # are the ones that catch a mode confusion rather than a pose typo.
+    "cam_bodyid", "cam_mode", "cam_targetbodyid",
+    "cam_pos", "cam_quat", "cam_fovy", "cam_ipd",
+    "cam_pos0", "cam_mat0", "cam_poscom0",
 ]
 
 _COUNTS = ["nq", "nv", "nu", "na", "nbody", "njnt", "ngeom", "nsite",
-           "ntendon", "neq", "nsensor", "nmocap", "nexclude"]
+           "ntendon", "neq", "nsensor", "nmocap", "nexclude", "ncam"]
 
 _OPTS = ["timestep", "cone", "jacobian", "solver", "iterations", "integrator",
          "impratio", "tolerance"]

@@ -54,8 +54,15 @@ SO101_REF = os.path.join(
     REPO, "references", "SO-ARM100-main", "Simulation", "SO101"
 )
 
-SO100_MESHDIR = "mojo_rl/envs/robots/assets/so_arm100/"
-SO101_MESHDIR = "mojo_rl/envs/robots/assets/so_arm101/"
+# ⚠ RELATIVE TO THE MODEL FILE, not to the repo root. `7ec05572` made assets
+# resolve against the directory of the `.xml` that names them, and `53ac294b`
+# moved these models out of the `.mojo` string constants into
+# `mojo_rl/envs/robots/assets/<arm>.xml`. Neither commit updated this file, so
+# `extract()` looked for a constant that no longer existed and the layer-1 gate
+# has been raising `ValueError: substring not found` — DEAD, not passing —
+# ever since. Repaired 2026-08-24.
+SO100_MESHDIR = "so_arm100"
+SO101_MESHDIR = "so_arm101"
 
 
 def _f(x):
@@ -248,6 +255,43 @@ def bake_so_arm100():
     return src
 
 
+# ---------------------------------------------------------------------------
+# The wrist camera.
+#
+# ⚠⚠ THIS IS AN ADDITION, NOT A RE-SPELLING, and it is the only deviation in
+# this file that changes the MODEL rather than how a derived number is written.
+# Upstream's SO-101 carries no camera at all (`ncam == 0`). The other three
+# deviations compile to a bit-identical `mjModel`; this one does not, so it
+# cannot be justified the same way and gets its own treatment in
+# `so_arm_ref.py`: `extract()` strips it back out before the tolerance-0.0 diff
+# (so the robot is still gated against upstream exactly), and `check_camera()`
+# asserts every camera constant separately. Neither half is optional — dropping
+# the strip would gate nothing; dropping `check_camera` would leave the one
+# thing upstream cannot vouch for unchecked.
+#
+# PROVENANCE. Lifted verbatim from `so101-nexus`
+# (`src/so101_nexus/assets/SO101/so101_new_calib.xml:113`, Apache-2.0), which
+# vendors the SAME upstream file — `diff` shows the two agree on every body,
+# joint, inertial and geom of the wrist, so the placement transfers exactly.
+# Kept byte-identical ON PURPOSE rather than re-derived: their published
+# `MuJoCoPickLift-v1` / `MuJoCoPickAndPlace-v1` LeRobot datasets were recorded
+# through this camera, so an identical extrinsic is what makes their episodes
+# and ours comparable. Re-deriving a "nicer" pose would silently forfeit that.
+#
+# ⚠ `euler` IS IN RADIANS here — the model declares `<compiler angle="radian">`
+# — so this is a ~-28.6 deg tilt about x and a full turn about z, NOT a 6.28
+# degree yaw. Left in the authored spelling rather than baked to a `quat`
+# because the runtime parser resolves `euler` through the same
+# `_orientation_to_quat` the body and site paths use, and `check_camera` pins
+# the compiled `cam_quat` regardless of which spelling produced it.
+WRIST_CAM = (
+    '                <!-- ADDITION: wrist camera, see so_arm_bake.py'
+    " WRIST_CAM -->\n"
+    '                <camera name="wrist_cam" pos="0 0.04 -0.04"'
+    ' euler="-0.5 0.0 6.28" fovy="75"/>'
+)
+
+
 def bake_so_arm101(calib="new"):
     import mujoco
 
@@ -332,6 +376,13 @@ def bake_so_arm101(calib="new"):
 
     src = re.sub(r'<mesh file="([^"]*)"/>', _name_mesh, src)
 
+    # 4b. The wrist camera — an ADDITION, not a re-spelling. See WRIST_CAM.
+    anchor = '<site group="3" name="gripperframe"'
+    assert src.count(anchor) == 1, "expected exactly one gripperframe site"
+    a = src.index(anchor)
+    eol = src.index("\n", a)
+    src = src[:eol] + "\n" + WRIST_CAM + src[eol:]
+
     # 5. Inline scene.xml's floor.
     src = src.replace(
         "  </worldbody>",
@@ -403,53 +454,74 @@ BAKERS = {"so_arm100": bake_so_arm100, "so_arm101": bake_so_arm101}
 # The generated XML lives between these markers in `*_xml.mojo`. `--inject`
 # rewrites only that region, so the module's prose survives regeneration and
 # `so_arm_ref.py` can extract exactly what ships.
-BEGIN = "# --- BEGIN GENERATED XML (tests/robots/so_arm_bake.py) ---"
-END = "# --- END GENERATED XML ---"
-
-
-def module_path(which):
-    return os.path.join(REPO, "mojo_rl", "envs", "robots", which + "_xml.mojo")
-
-
-def extract(which):
-    """The XML string as it is CHECKED IN — what `so_arm_ref.py` gates."""
-    text = open(module_path(which)).read()
-    i = text.index(BEGIN) + len(BEGIN)
-    j = text.index(END)
-    body = text[i:j]
-    key = "_ROBOT_XML = \"\"\""
-    a = body.index(key) + len(key)
-    b = body.index('"""', a)
-    return body[a:b]
+def asset_path(which):
+    """The `.xml` that SHIPS and that `ModelDefFromXML[xml_path=...]` reads."""
+    return os.path.join(
+        REPO, "mojo_rl", "envs", "robots", "assets", which + ".xml"
+    )
 
 
 def extract_full(which):
-    """The FULL model string (robot + task) as checked in."""
-    text = open(module_path(which)).read()
-    i = text.index(BEGIN) + len(BEGIN)
-    j = text.index(END)
-    body = text[i:j]
-    key = "_XML = \"\"\""
-    # ⚠ `_ROBOT_XML` also ends in `_XML`; search past the robot constant.
-    a = body.index(key, body.index("_ROBOT_XML") + 10) + len(key)
-    b = body.index('"""', a)
-    return body[a:b]
+    """The FULL model (robot + task) exactly as it is CHECKED IN."""
+    return open(asset_path(which)).read()
+
+
+def extract(which):
+    """The ROBOT-ONLY model, derived from the shipped file — what the gate diffs.
+
+    ⚠ The robot-only variant is no longer an artifact. Before `53ac294b` the
+    module carried two constants (`_ROBOT_XML` and `_XML`) and this read the
+    first; now one file ships and it is the FULL model. Rather than bake a
+    second file whose only job is to be gated — which would gate the generator
+    against the reference and say nothing about what ships, the exact failure
+    the module docstring warns about — the task body is removed from the
+    shipped text by an EXACT match on the same constant `with_task` inserted.
+    `assert count == 1` is what keeps that from silently degrading into a
+    substring guess.
+    """
+    text = extract_full(which)
+    task = TASK_BODY.format(TARGET_POS[which])
+    assert text.count(task) == 1, (
+        "the shipped {}.xml does not contain exactly one copy of TASK_BODY —"
+        " re-run `so_arm_bake.py --inject {}`".format(which, which)
+    )
+    text = text.replace(task, "")
+    # ⚠ The wrist camera comes out too — upstream has none, so leaving it in
+    # would turn the tolerance-0.0 diff into `ncam 1 != 0` and the only way to
+    # keep the gate green would be to stop comparing cameras, which is what
+    # made this column invisible in the first place. It is asserted instead by
+    # `so_arm_ref.check_camera`. See WRIST_CAM.
+    if which == "so_arm101":
+        assert text.count(WRIST_CAM) == 1, (
+            "the shipped so_arm101.xml does not contain exactly one WRIST_CAM"
+            " — re-run `so_arm_bake.py --inject so_arm101`"
+        )
+        text = text.replace(WRIST_CAM + "\n", "")
+    return _string_meshdir(text, which)
+
+
+def _string_meshdir(src, which):
+    """Repoint `meshdir` from model-file-relative to repo-root-relative.
+
+    ⚠ ONLY for the strings handed to `from_xml_string`. A string has no
+    directory, so MuJoCo resolves `meshdir="so_arm101"` against the CWD and
+    every mesh fails to open — which surfaces as a model difference and reads
+    as a port defect. `so_arm_ref.py` chdirs to the repo root, so the
+    repo-root-relative spelling is the one that resolves there.
+    `extract_full`/`from_xml_path` need no such rewrite and get none.
+    """
+    d = {"so_arm100": SO100_MESHDIR, "so_arm101": SO101_MESHDIR}[which]
+    old = 'meshdir="{}"'.format(d)
+    assert src.count(old) == 1, "expected exactly one meshdir in " + which
+    return src.replace(
+        old, 'meshdir="mojo_rl/envs/robots/assets/{}/"'.format(d)
+    )
 
 
 def inject(which):
-    """Write BOTH generated constants: the gated robot, and the full model."""
-    path = module_path(which)
-    text = open(path).read()
-    i = text.index(BEGIN) + len(BEGIN)
-    j = text.index(END)
-    stem = which.upper().replace("SO_ARM", "SO_ARM")
-    robot = BAKERS[which]()
-    full = with_task(robot, which)
-    new = (
-        '\ncomptime {0}_ROBOT_XML = """{1}"""\n'
-        '\ncomptime {0}_XML = """{2}"""\n'
-    ).format(stem, robot, full)
-    open(path, "w").write(text[:i] + new + text[j:])
+    """Write the shipped model file: robot + task, as one document."""
+    path = asset_path(which)
+    open(path, "w").write(with_task(BAKERS[which](), which))
     return path
 
 

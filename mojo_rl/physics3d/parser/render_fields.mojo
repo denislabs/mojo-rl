@@ -110,6 +110,16 @@ struct RenderFields(Copyable, Movable):
     var cam_fovy: List[Float64]
     var cam_mode: List[Int]
     var cam_target_body: List[Int]
+    var cam_body: List[Int]
+    """Body each camera is ATTACHED to (`mjModel.cam_bodyid`); 0 = worldbody.
+
+    ⚠ `cam_pos`/`cam_quat` above are expressed in THIS body's frame, exactly as
+    MuJoCo stores them. Without this column the render path could not tell a
+    world-fixed camera from a wrist camera, so every camera was drawn at its
+    LOCAL pose read as a world pose — correct only for the worldbody, where the
+    transform is the identity. See `mj_camlight`, which calls `mj_local2Global`
+    with `cam_bodyid` for every mode before it dispatches on `cam_mode`.
+    """
     var tex_type: List[Int]
     var tex_builtin: List[Int]
     var tex_rgb1_r: List[Float64]
@@ -233,6 +243,7 @@ struct RenderFields(Copyable, Movable):
         self.cam_fovy = List[Float64]()
         self.cam_mode = List[Int]()
         self.cam_target_body = List[Int]()
+        self.cam_body = List[Int]()
         self.tex_type = List[Int]()
         self.tex_builtin = List[Int]()
         self.tex_rgb1_r = List[Float64]()
@@ -427,6 +438,7 @@ def build_render_fields(
         rf.cam_fovy.append(c.fovy)
         rf.cam_mode.append(c.mode)
         rf.cam_target_body.append(c.target_body)
+        rf.cam_body.append(c.body_id)
 
     # ── textures ──────────────────────────────────────────────────────────
     rf.ntex = len(fmd.textures)

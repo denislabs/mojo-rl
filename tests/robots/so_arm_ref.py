@@ -97,7 +97,11 @@ def check_full_model(which):
     import numpy as np
 
     r = ours(which)
-    f = mujoco.MjModel.from_xml_string(so_arm_bake.extract_full(which))
+    # ⚠ `from_xml_path`, not `from_xml_string`: the full model is a real file
+    # and its `meshdir` is relative to that file (`7ec05572`). Loading it by
+    # path is both the honest thing — this is the document the env loads — and
+    # the only spelling whose meshes resolve without a rewrite.
+    f = mujoco.MjModel.from_xml_path(so_arm_bake.asset_path(which))
     bad = []
     if f.nbody != r.nbody + 1:
         bad.append("nbody: robot {} -> full {} (expected +1)".format(
@@ -148,6 +152,79 @@ def _inertia_detail(which):
     return rows
 
 
+def check_camera(which):
+    """The wrist camera — the one deviation upstream cannot vouch for.
+
+    `extract()` strips `WRIST_CAM` before the tolerance-0.0 diff, because
+    upstream's SO-101 has `ncam == 0` and comparing against it otherwise means
+    either a permanent red or dropping the camera tables. That strip is only
+    honest if something else checks the camera, and this is it.
+
+    ⚠⚠ THE OPTICAL-AXIS CHECK IS THE NON-VACUOUS ONE. Pinning `cam_quat`
+    against the number MuJoCo just produced would assert that MuJoCo equals
+    itself. Instead the axis is predicted from the AUTHORED euler by hand:
+    `euler="-0.5 0 6.28"` in a `angle="radian"` model is a -0.5 rad tilt about
+    x plus a z-turn that is 2*pi to within `delta = 6.28 - 2*pi = -3.2e-3` rad,
+    so the camera's -Z must land on `(0, -sin 0.5, -cos 0.5)` to within delta.
+    That catches the three ways this actually breaks: degrees read as radians
+    (a 0.5 deg tilt puts the axis at `(0, -0.0087, -1.0)`), a changed
+    `eulerseq`, and `euler` being dropped on the floor again (axis `(0, 0, -1)`
+    — the bug the runtime parser's camera branch carries a warning about).
+
+    `cam_bodyid` is the load-bearing constant for `mj_camlight`: the whole
+    point of the camera is that it rides the wrist, and a camera that resolved
+    to the worldbody would render a perfectly stable, perfectly wrong view.
+    """
+    import math
+
+    import mujoco
+    import numpy as np
+
+    m = mujoco.MjModel.from_xml_path(so_arm_bake.asset_path(which))
+    bad = []
+    if which != "so_arm101":
+        if m.ncam != 0:
+            bad.append("{}: ncam {} (upstream has none and we add none)"
+                       .format(which, m.ncam))
+        return bad
+
+    if m.ncam != 1:
+        return ["ncam {} (expected 1 — the wrist camera)".format(m.ncam)]
+    name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_CAMERA, 0)
+    if name != "wrist_cam":
+        bad.append("camera 0 is named {!r}, expected 'wrist_cam'".format(name))
+
+    body = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(m.cam_bodyid[0]))
+    if body != "gripper":
+        bad.append("cam_bodyid -> {!r}, expected 'gripper' — a wrist camera"
+                   " that is not on the wrist does not move".format(body))
+    if int(m.cam_mode[0]) != int(mujoco.mjtCamLight.mjCAMLIGHT_FIXED):
+        bad.append("cam_mode {}, expected mjCAMLIGHT_FIXED"
+                   .format(int(m.cam_mode[0])))
+    if int(m.cam_targetbodyid[0]) != -1:
+        bad.append("cam_targetbodyid {}, expected -1"
+                   .format(int(m.cam_targetbodyid[0])))
+
+    want_pos = np.array([0.0, 0.04, -0.04])
+    if np.abs(np.asarray(m.cam_pos[0]) - want_pos).max() > 0.0:
+        bad.append("cam_pos {} != authored {}"
+                   .format(list(m.cam_pos[0]), list(want_pos)))
+    if float(m.cam_fovy[0]) != 75.0:
+        bad.append("cam_fovy {} != authored 75".format(float(m.cam_fovy[0])))
+
+    R = np.zeros(9)
+    mujoco.mju_quat2Mat(R, m.cam_quat[0])
+    axis = R.reshape(3, 3) @ np.array([0.0, 0.0, -1.0])
+    want_axis = np.array([0.0, -math.sin(0.5), -math.cos(0.5)])
+    delta = abs(6.28 - 2.0 * math.pi)
+    err = float(np.abs(axis - want_axis).max())
+    if err > delta:
+        bad.append("camera -Z is {} but euler=\"-0.5 0 6.28\" in radians"
+                   " predicts {} (err {:.3e} > delta {:.3e})"
+                   .format(list(axis), list(want_axis), err, delta))
+    return bad
+
+
 def main():
     os.chdir(REPO)
     rc = 0
@@ -169,6 +246,7 @@ def main():
                 print("    {:24s} |dquat| {:.3e}  |dinertia| {:.3e}"
                       "  |dmass| {:.3e}".format(name, dq, di, dm))
         bad += ["full-model: " + b for b in check_full_model(which)]
+        bad += ["camera: " + b for b in check_camera(which)]
         if bad:
             rc = 1
             print("  FAIL — {} mismatch(es):".format(len(bad)))
