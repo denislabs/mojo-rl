@@ -854,6 +854,23 @@ def _minkowski_support[
     mut warm2: Int,
     # The heightfield prism, for geom 1 only — see `_support`.
     prism: InlineArray[Scalar[DTYPE], NPRISM],
+    # ⚠⚠ EACH GEOM IS INFLATED BY HALF THE PAIR'S MARGIN, AND THAT IS THE WHOLE
+    # OF `mjc_Convex`. `support()` (engine_collision_gjk.c:332) adds
+    # `0.5 * obj->margin * dir` to each object's support point, so the
+    # Minkowski support gains `margin * dir` — and `mjc_Convex` then asks for
+    # the PENETRATION of the inflated pair and reports `margin + dist`
+    # (engine_collision_convex.c:104/115). It never runs a distance query at
+    # all: `config.dist_cutoff = 0`.
+    #
+    # ⚠ DEFAULTED TO 0 so the nine other call sites and every margin-free
+    # model are bit-identical; `discreteGeoms` already treats a non-zero
+    # margin as SMOOTH on both tolerance switches (`_gjk_min_norm2`,
+    # `_epa_tolerance`), which is the other half of the same rule.
+    #
+    # ⚠ `dir` MUST BE A UNIT VECTOR HERE. The GJK loop passes `-v/|v|` and EPA
+    # passes a normalised face normal, which is what makes the offset a true
+    # Minkowski sum with a ball of radius `margin/2`.
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -915,16 +932,23 @@ def _minkowski_support[
         warm2,
         prism,
     )
+    var hm = Scalar[DTYPE](0.5) * ccd_margin
+    var w1x = s1[0] + dir_x * hm
+    var w1y = s1[1] + dir_y * hm
+    var w1z = s1[2] + dir_z * hm
+    var w2x = s2[0] - dir_x * hm
+    var w2y = s2[1] - dir_y * hm
+    var w2z = s2[2] - dir_z * hm
     return (
-        s1[0] - s2[0],
-        s1[1] - s2[1],
-        s1[2] - s2[2],
-        s1[0],
-        s1[1],
-        s1[2],
-        s2[0],
-        s2[1],
-        s2[2],
+        w1x - w2x,
+        w1y - w2y,
+        w1z - w2z,
+        w1x,
+        w1y,
+        w1z,
+        w2x,
+        w2y,
+        w2z,
     )
 
 
@@ -962,6 +986,11 @@ def _gjk_intersect[
     mut warm1: Int, mut warm2: Int,
     # The heightfield prism, for geom 1 only — see `_support`.
     prism: InlineArray[Scalar[DTYPE], NPRISM],
+    # ⚠ FORWARDED, NOT RECOMPUTED — see `_minkowski_support`. This backup
+    # path builds its own tetrahedron from support points and must inflate
+    # them the same way, or it certifies separation on the UNINFLATED pair
+    # while the loop around it is working on the inflated one.
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
 
@@ -1115,6 +1144,7 @@ def _gjk_intersect[
             nx, ny, nz,
             warm1, warm2,
             prism,
+            ccd_margin,
         )
         var tgt = sidx[index]
         simplex[tgt * 9 + 0] = w[0]
@@ -1318,6 +1348,7 @@ def gjk_epa_witness[
         warm1,
         warm2,
         prism,
+        ccd_margin,
     )
     simplex[0] = s[0]
     simplex[1] = s[1]
@@ -1388,6 +1419,7 @@ def gjk_epa_witness[
             warm1,
             warm2,
             prism,
+            ccd_margin,
         )
 
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
@@ -1418,9 +1450,12 @@ def gjk_epa_witness[
         #
         # Measured, SO-ARM101: GJK runs ~15 iterations per call converging to a
         # distance nobody reads; its 4 pairs sit 0.9-7.6 cm apart with margin 0.
-        if dist_cutoff >= Scalar[DTYPE](0) and -w_dot >= dist_cutoff:
+        if (
+            dist_cutoff >= Scalar[DTYPE](0)
+            and ccd_margin - w_dot >= dist_cutoff
+        ):
             wf_ok = 0
-            return (-w_dot, Scalar[DTYPE](0), Scalar[DTYPE](0),
+            return (ccd_margin - w_dot, Scalar[DTYPE](0), Scalar[DTYPE](0),
                     Scalar[DTYPE](0), ndx, ndy, ndz)
         # ⚠⚠ THE FLOAT32 FLOOR IS NOT A LOOSENING, IT IS WHAT MAKES THE TEST
         # ABLE TO FIRE AT ALL. `w_dot - v_dot` is a difference of two dot
@@ -1481,6 +1516,7 @@ def gjk_epa_witness[
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 warm1, warm2,
                 prism,
+                ccd_margin,
             )
             if gi == 1:
                 # enclosed, and `simplex` now holds a valid tetrahedron
@@ -1600,7 +1636,13 @@ def gjk_epa_witness[
         var nx = -vx / dist
         var ny = -vy / dist
         var nz = -vz / dist
-        return (dist, cx, cy, cz, nx, ny, nz)
+        # ⚠⚠ `+ ccd_margin` — `mjc_Convex` REPORTS `margin + dist`. Every
+        # distance this function computes is now the INFLATED pair's (each geom
+        # grown by half the pair margin, see `_minkowski_support`), and MuJoCo
+        # adds the margin back before storing it
+        # (engine_collision_convex.c:115). With margin 0 the term vanishes and
+        # every margin-free model is bit-identical.
+        return (dist + ccd_margin, cx, cy, cz, nx, ny, nz)
 
     # ===== EPA Phase =====
     # Expanding Polytope Algorithm. Replaces a placeholder that took the
@@ -1689,6 +1731,7 @@ def gjk_epa_witness[
                 tnx, tny, tnz,
                 warm1, warm2,
                 prism,
+                ccd_margin,
             )
             var sp5 = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
@@ -1698,6 +1741,7 @@ def gjk_epa_witness[
                 -tnx, -tny, -tnz,
                 warm1, warm2,
                 prism,
+                ccd_margin,
             )
             ws[wrow, CCD_WS_EV + 27 + 0] = sp4[0]
             ws[wrow, CCD_WS_EV + 27 + 1] = sp4[1]
@@ -1762,6 +1806,7 @@ def gjk_epa_witness[
                 sdx, sdy, sdz,
                 warm1, warm2,
                 prism,
+                ccd_margin,
             )
             ws[wrow, CCD_WS_EV + a * 9 + 0] = sp[0]
             ws[wrow, CCD_WS_EV + a * 9 + 1] = sp[1]
@@ -1833,6 +1878,7 @@ def gjk_epa_witness[
             best_nx, best_ny, best_nz,
             warm1, warm2,
             prism,
+            ccd_margin,
         )
         var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
         if wd - best_d < _epa_tol:
@@ -1982,6 +2028,7 @@ def gjk_epa_witness[
                 dxx, dyy, dzz,
                 warm1, warm2,
                 prism,
+                ccd_margin,
             )
             var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
             if hh < ub:
@@ -2106,7 +2153,7 @@ def gjk_epa_witness[
         # expect. The previous code negated in the comment's direction but
         # against the wrong baseline.
         return (
-            -best_d,
+            -best_d + ccd_margin,
             (w1x + w2x) * Scalar[DTYPE](0.5),
             (w1y + w2y) * Scalar[DTYPE](0.5),
             (w1z + w2z) * Scalar[DTYPE](0.5),
@@ -2173,6 +2220,7 @@ def gjk_epa_witness[
             dxx, dyy, dzz,
             warm1, warm2,
             prism,
+            ccd_margin,
         )
         var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
         if hh < fb_ub:
@@ -2192,6 +2240,7 @@ def gjk_epa_witness[
             fallback_nx, fallback_ny, fallback_nz,
             warm1, warm2,
             prism,
+            ccd_margin,
         )
         pen_depth = _dot3[DTYPE](
             s_fwd[0], s_fwd[1], s_fwd[2],
@@ -2208,7 +2257,7 @@ def gjk_epa_witness[
     var contact_y = (p1y + p2y) * Scalar[DTYPE](0.5)
     var contact_z = (p1z + p2z) * Scalar[DTYPE](0.5)
     return (
-        pen_depth,
+        pen_depth + ccd_margin,
         contact_x,
         contact_y,
         contact_z,

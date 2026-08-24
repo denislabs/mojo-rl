@@ -339,18 +339,21 @@ def main() raises:
     print("--- every pad at 1.0 EXCEPT the gap-band one ---")
     var got_ng = _qfrc(sf, m, dims, fmd.timestep, True)
     var want_ng = _mj_qfrc_nogap()
-    # ⚠⚠ TWO DOFS ARE EXCLUDED AND THEY ARE NOT AN ADHESION DEFECT. `labrum_left`
-    # and `labrum_right` (dofs 12 and 13) are the only pair whose contact is
-    # between two ELLIPSOIDS, and our narrowphase puts that contact somewhere
-    # slightly different from MuJoCo's: dist 8.993e-06 against 5.106e-05, and a
-    # normal 1.8 degrees away (ours (-0.03205, -0.99945, 0.00846), MuJoCo's
-    # (-0.00147, -0.99999, 0.00232)). The adhesion moment READS that normal and
-    # that point, so it inherits the difference — 1.684e-04 on dof 12, 8.0e-05
-    # on dof 13. Every one of the other 106 dofs is exact.
+    # ⚠⚠ TWO DOFS ARE HELD TO A LOOSER BOUND AND THEY ARE NOT AN ADHESION
+    # DEFECT. `labrum_left` and `labrum_right` (dofs 12 and 13) are the only
+    # pair whose contact is between two ELLIPSOIDS. The adhesion moment READS
+    # that contact's normal and point, so it inherits whatever the narrowphase
+    # puts there, and the two are not separable from this end.
+    #
+    # ⚠ IT WAS 1.684e-04 AND IS NOW 1.233e-05 — the CCD now inflates each geom
+    # by half the pair margin and asks for the INFLATED pair's penetration,
+    # which is what `mjc_Convex` does; before that it ran a distance GJK that
+    # converged to 8.993e-06 where the true separation is 5.47e-05, with a
+    # normal 1.8 degrees out. What is left is `ccd_tolerance`-scale
+    # disagreement between two runs of the same algorithm.
     #
     # ⚠ SEPARATED RATHER THAN TOLERATED GLOBALLY: a single loose bound over all
-    # 108 would hide an adhesion regression behind an ellipsoid one. Fixing the
-    # ellipsoid pair should make these two arms mergeable.
+    # 108 would hide an adhesion regression behind an ellipsoid one.
     comptime LABRUM_A = 12
     comptime LABRUM_B = 13
     var e_ng = 0.0
@@ -367,9 +370,9 @@ def main() raises:
     t.truth(e_ng < 1e-15,
             "seven pads reproduce MuJoCo's qfrc_actuator to float64 noise"
             " on every dof but the two the ellipsoid pair reaches")
-    t.truth(e_lab < 2.0e-04,
+    t.truth(e_lab < 2.0e-05,
             "and the ellipsoid pair's inherited error stays where it was"
-            " measured (1.684e-04)")
+            " measured (1.233e-05)")
     # ⚠ NON-VACUITY for the arm above: the labrum dofs must actually CARRY a
     # force, or "within 2e-04" would be true of two zeros.
     t.truth(abs(want_ng[LABRUM_A]) > 1e-3,
@@ -406,7 +409,7 @@ def main() raises:
     print("    the two labrum dofs                                =", e_all_lab)
     t.truth(e_all < 1e-15,
             "ALL EIGHT pads reproduce MuJoCo — the gap-band one included")
-    t.truth(e_all_lab < 2.0e-04,
+    t.truth(e_all_lab < 2.0e-05,
             "and the ellipsoid pair's inherited error is unchanged by it")
     # ⚠ NON-VACUITY: the gap pad must actually be PULLING, or "exact" would be
     # true of a build that still ignored it. Its whole contribution lands on
