@@ -491,6 +491,10 @@ comptime ACT_KIND_GENERAL: Int = 3
 # `biasprm` stay at the defaults, so an actuator carrying this kind must NOT
 # be run through `actuator_scalar_force`. See `ACT_IDX_PID_KI`.
 comptime ACT_KIND_PID: Int = 4
+# ⚠ `<adhesion body=...>`. A SIXTH KIND because its TRANSMISSION is unlike the
+# others, not its force law: `force = gain*ctrl` is a plain motor, and the
+# moment is minus the average contact normal Jacobian over the named body.
+comptime ACT_KIND_ADHESION: Int = 5
 
 
 def act_kind_name(kind: Int) -> String:
@@ -499,6 +503,8 @@ def act_kind_name(kind: Int) -> String:
         return "<position>"
     if kind == ACT_KIND_VELOCITY:
         return "<velocity>"
+    if kind == ACT_KIND_ADHESION:
+        return String("adhesion")
     if kind == ACT_KIND_PID:
         return String("plugin plugin=\"mujoco.pid\"")
     if kind == ACT_KIND_GENERAL:
@@ -607,6 +613,9 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     `<general gainprm="0.0157" biasprm="0 -100 -10">` (panda's gripper) got
     100 where MuJoCo reads it and 0.0157 where we did — 1/6375 of the force.
     See `ACT_IDX_BIAS1`."""
+    var body_id: Int
+    """`<adhesion body=...>` (`mjTRN_BODY`), -1 otherwise. Like `site_id` this
+    leaves `trn_n = 0`: the moment is the contact set's, not a triple's."""
     var pid_ki: Float64
     """`mujoco.pid`'s `ki`, 0 when the actuator is not a PID plugin."""
     var pid_kd: Float64
@@ -673,6 +682,7 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.kv = 0.0
         self.bias0 = 0.0
         self.bias1 = 0.0
+        self.body_id = -1
         self.pid_ki = 0.0
         self.pid_kd = 0.0
         # ⚠ -1, NOT 0. Both are `std::optional` in `pid.cc` and 0 is a legal

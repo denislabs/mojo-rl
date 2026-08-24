@@ -64,6 +64,7 @@ from .flat_model import (
     ACT_KIND_VELOCITY,
     ACT_KIND_GENERAL,
     ACT_KIND_PID,
+    ACT_KIND_ADHESION,
     TextureData,
     MaterialData,
     LightData,
@@ -854,7 +855,19 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
     while True:
         var mpos = -1
         var _which = 0
-        for _k in range(4):
+        # ⚠⚠ FIVE, NOT FOUR — `<adhesion>` IS AN ACTUATOR TAG AND IT LIVES IN
+        # CLASSES. flybody states its adhesion gains ONLY in a class:
+        #
+        #     <default class="adhesion_claw">
+        #       <adhesion group="3" ctrlrange="0 1" gain="0.985"/>
+        #
+        # and every `<adhesion ... class="adhesion_claw" body="..."/>` element
+        # carries no `gain` and no `ctrlrange` at all. Left off this list the
+        # eight pads would take MuJoCo's bare defaults — gain 1 and an
+        # UNLIMITED control — which is the `<default>`-chain failure this file
+        # has now hit on geom type, material, actuator limits and equality
+        # solref. See `never_resolved_classes`.
+        for _k in range(5):
             var needle = "<motor"
             if _k == 1:
                 needle = "<general"
@@ -862,6 +875,8 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
                 needle = "<position"
             elif _k == 3:
                 needle = "<velocity"
+            elif _k == 4:
+                needle = "<adhesion"
             var hit = defaults_sec.find(String(needle), _mscan)
             if hit != -1 and (mpos == -1 or hit < mpos):
                 mpos = hit
@@ -889,6 +904,16 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var mg_s = _extract_attr(mtag, "gear")
         if mg_s.byte_length() > 0:
             d.motor_gear = _parse_float(mg_s)
+
+        # ⚠ `<adhesion gain>` IS `gainprm[0]`, THE SAME SLOT `<general
+        # gainprm>` WRITES (`mjs_setToAdhesion`, user_api.cc:1358). Layered
+        # onto the one record like every other actuator attribute here, so a
+        # class that states both an `<adhesion gain>` and a `<general
+        # gainprm>` resolves the way MuJoCo does: last one wins.
+        var adg_s = _extract_attr(mtag, "gain")
+        if adg_s.byte_length() > 0:
+            d.motor_gain = _parse_float(adg_s)
+            d.motor_gain_set = True
 
         # forcerange / forcelimited (phase 1a.1). `_apply_forcerange` holds the
         # shared "auto" rule so the block path and the element path cannot
@@ -3571,13 +3596,14 @@ def _fill_actuators(
     # refusing to load flybody over eight adhesion pads would be worse than
     # loading it with seventy working servos. The count is what matters: a
     # caller comparing `nact` against its policy's action size sees the gap.
-    # ⚠ `<plugin` IS NOT ON THIS LIST ANY MORE. `mujoco.pid` is modelled, and
+    # ⚠ `<plugin` AND `<adhesion` ARE NOT ON THIS LIST ANY MORE — both are
+    # modelled now. `mujoco.pid` is modelled, and
     # a plugin that is NOT reports itself from the scan below, where the
     # `plugin=` attribute is in hand — a blind count here would file every
     # `mujoco.pid` actuator as missing while it is being applied.
     var _unmodelled: List[String] = [
         String("<intvelocity"), String("<damper"), String("<cylinder"),
-        String("<muscle"), String("<adhesion"),
+        String("<muscle"),
     ]
     for _u in range(len(_unmodelled)):
         var _n = 0
@@ -3611,9 +3637,14 @@ def _fill_actuators(
         # landing on nothing. Only `mujoco.pid` is modelled; any other
         # `plugin=` still falls through to the `_unmodelled` count below.
         var npl = actuator_sec.find("<plugin", scan_pos)
+        # ⚠ AND `<adhesion>` — `mjTRN_BODY`. flybody is the only model in this
+        # tree with one, and it has eight, so its `nact` read 70 against
+        # MuJoCo's 78.
+        var nad = actuator_sec.find("<adhesion", scan_pos)
 
         var earliest = _min_valid(
-            _min_valid(_min_valid(nm, np_), _min_valid(nv_, ng)), npl
+            _min_valid(_min_valid(_min_valid(nm, np_), _min_valid(nv_, ng)), npl),
+            nad,
         )
         if earliest == -1:
             break
@@ -3625,6 +3656,7 @@ def _fill_actuators(
         var is_velocity = earliest == nv_
         var is_general = earliest == ng
         var is_plugin = earliest == npl
+        var is_adhesion = earliest == nad
         # A `<plugin>` naming a plugin we do not implement is NOT an actuator
         # we can build: it has no force law here. Skip the tag and let the
         # `_unmodelled` scan above keep reporting it.
@@ -3686,7 +3718,9 @@ def _fill_actuators(
         # different robot — while dog happened to survive because its
         # bias-free `<general>` is a motor anyway. That accidental agreement on
         # the LARGER model is why the tag encoding looked fine.
-        if is_plugin:
+        if is_adhesion:
+            ad.kind = ACT_KIND_ADHESION
+        elif is_plugin:
             ad.kind = ACT_KIND_PID
         elif is_velocity:
             ad.kind = ACT_KIND_VELOCITY
@@ -3831,10 +3865,18 @@ def _fill_actuators(
                 # indistinguishable from an actuator with no target at all —
                 # which MuJoCo REFUSES. Recording which case it is lets
                 # `studio.validate` say the true thing about each.
-                for a in ["site", "body", "cranksite", "slidersite",
-                          "refsite"]:
+                # ⚠ `body=` LEFT THIS LIST WHEN `<adhesion>` LANDED. It is
+                # still unsupported on any OTHER element — MJCF allows
+                # `<general body=...>` — so the test is on the tag, not on the
+                # attribute.
+                for a in ["site", "cranksite", "slidersite", "refsite"]:
                     if _trim(_extract_attr(tag, String(a))).byte_length() > 0:
                         ad.unsupported_transmission = True
+                if (
+                    not is_adhesion
+                    and _trim(_extract_attr(tag, "body")).byte_length() > 0
+                ):
+                    ad.unsupported_transmission = True
 
         # ctrlrange / ctrllimited — the "auto" rule lives in
         # `_apply_ctrlrange`, which the `<default>` block calls too.
@@ -3864,6 +3906,55 @@ def _fill_actuators(
             ad.ctrl_min,
             ad.ctrl_max,
         )
+
+        # ── `<adhesion body=... gain=...>` (`mjTRN_BODY`) ────────────────
+        if is_adhesion:
+            var bname = _trim(_extract_attr(tag, "body"))
+            if bname.byte_length() == 0:
+                raise Error(
+                    "physics3d: <adhesion> requires a `body` attribute — it"
+                    " is the whole transmission."
+                )
+            # ⚠ THE WORLDBODY SHARES INDEX 0 WITH NOT-FOUND, so a miss is
+            # checked by NAME rather than by the returned id. Adhering the
+            # world is meaningless anyway, and a typo resolving to it would
+            # be a silent zero-force pad.
+            ad.body_id = _find_body_index_by_name(worldbody, bname)
+            if ad.body_id <= 0:
+                raise Error(
+                    "physics3d: <adhesion body='" + bname + "'> names no"
+                    " body in <worldbody> (or names the worldbody). An"
+                    " unresolved adhesion transmission applies ZERO FORCE"
+                    " and nothing downstream could tell it from a pad that"
+                    " is simply not touching anything."
+                )
+            # `mjs_setToAdhesion` (user_api.cc:1358): gainprm[0] = gain,
+            # gaintype FIXED, biastype NONE, ctrllimited = 1.
+            var ag_s = _trim(_extract_attr(tag, "gain"))
+            if ag_s.byte_length() > 0:
+                ad.kp = _parse_float(ag_s)
+            elif eff.motor_gain_set:
+                ad.kp = eff.motor_gain
+            else:
+                # MuJoCo's `<adhesion gain>` default is 1.
+                ad.kp = 1.0
+            # ⚠⚠ ALWAYS LIMITED, WHATEVER THE RANGE SAYS. `mjs_setToAdhesion`
+            # sets `ctrllimited = 1` unconditionally, so an `<adhesion>` with
+            # no `ctrlrange` clamps to the stored (0, 0)... which is why the
+            # reference also REFUSES a negative range below: an adhesion
+            # control is a fraction of full suction and cannot be negative.
+            ad.is_ctrl_limited = True
+            if ad.kp < 0.0:
+                raise Error(
+                    "physics3d: <adhesion gain='" + String(ad.kp)
+                    + "'> — adhesion gain cannot be negative (MuJoCo"
+                    " refuses this model)."
+                )
+            if ad.ctrl_min < 0.0 or ad.ctrl_max < 0.0:
+                raise Error(
+                    "physics3d: <adhesion ctrlrange> cannot be negative"
+                    " (MuJoCo refuses this model)."
+                )
 
         # forcerange / forcelimited: start from the class-resolved defaults,
         # then let the element override. Same 3-way order `_acd` uses

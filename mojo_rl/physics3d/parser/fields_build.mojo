@@ -325,6 +325,7 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
     ACT_IDX_ACT_ADR,
+    ACT_IDX_BODY_ID,
     ACT_IDX_PID_KI,
     ACT_IDX_PID_KD,
     ACT_IDX_PID_IMAX,
@@ -2659,6 +2660,9 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         # must be written for EVERY actuator — a zeroed slot would read as
         # "clamp the integral to zero" on every non-plugin actuator the day
         # something else looked at them.
+        # `<adhesion body=>` (`mjTRN_BODY`). Written for every actuator so
+        # the -1 cannot be mistaken for an absent column.
+        sf.actuators.data[o + ACT_IDX_BODY_ID] = Scalar[DTYPE](a.body_id)
         sf.actuators.data[o + ACT_IDX_PID_KI] = Scalar[DTYPE](a.pid_ki)
         sf.actuators.data[o + ACT_IDX_PID_KD] = Scalar[DTYPE](a.pid_kd)
         sf.actuators.data[o + ACT_IDX_PID_IMAX] = Scalar[DTYPE](a.pid_imax)

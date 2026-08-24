@@ -109,7 +109,10 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 from ..dynamics.jac_point import jac_point
 from ..dynamics.actuation import actuator_scalar_force
 from ..kinematics.quat_math import gpu_quat_rotate
-from ..parser.flat_model import ACT_KIND_POSITION, ACT_KIND_VELOCITY
+from ..collision.broadphase_sap import detect_contacts_auto
+from ..parser.flat_model import (
+    ACT_KIND_POSITION, ACT_KIND_VELOCITY, ACT_KIND_ADHESION,
+)
 from ..gpu.constants import (
     ACTTEN_IDX_SPRING_HI,
     ACTTEN_IDX_SPRING_LO,
@@ -130,6 +133,18 @@ from ..gpu.constants import (
     ACT_IDX_BIAS1,
     ACT_IDX_TENDON_ID,
     ACT_IDX_SITE_ID,
+    ACT_IDX_BODY_ID,
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    METADATA_SIZE,
+    META_IDX_NUM_CONTACTS,
     ACT_IDX_GEAR_1,
     ACT_IDX_GEAR_2,
     ACT_IDX_GEAR_3,
@@ -168,6 +183,24 @@ def _is_spatial[
     )
 
 
+def model_has_adhesion[
+    DTYPE: DType, D: DimsLike
+](sf: SpecFields[DTYPE, D]) -> Bool:
+    """True when some actuator is an `<adhesion>` — the ONLY reason to pay
+    for a second contact-detection pass in this function.
+
+    ⚠ ONE MODEL IN 131 HAS ONE. flybody has eight pads; nothing else in the
+    tree declares `<adhesion>` at all, and nothing else declares `<geom gap>`
+    either (they are the same eight geoms). Gating on this keeps the extra
+    broadphase off every other model.
+    """
+    for i in range(sf.dims.get_nact()):
+        var o = i * MODEL_ACTUATOR_SIZE
+        if Int(sf.actuators.data[o + ACT_IDX_KIND]) == ACT_KIND_ADHESION:
+            return True
+    return False
+
+
 def model_has_pose_transmission[
     DTYPE: DType, D: DimsLike, D2: DimsLike
 ](sf: SpecFields[DTYPE, D], m: Model[DTYPE, D2]) -> Bool:
@@ -189,6 +222,11 @@ def model_has_pose_transmission[
         if Int(sf.actuators.data[o + ACT_IDX_TRN_N]) != 0:
             continue
         if Int(sf.actuators.data[o + ACT_IDX_SITE_ID]) >= 0:
+            return True
+        # ⚠ `<adhesion>` NEEDS THE POSE TOO — more of it than a site does.
+        # Its moment is built from the CONTACT SET, so `model_has_adhesion`
+        # below drives an extra detection pass on top of the FK refresh.
+        if Int(sf.actuators.data[o + ACT_IDX_KIND]) == ACT_KIND_ADHESION:
             return True
         var tid = Int(sf.actuators.data[o + ACT_IDX_TENDON_ID])
         if tid >= 0 and tid < n_ten and _is_spatial(m, tid):
@@ -229,6 +267,16 @@ def apply_pose_transmission[
     forward_kinematics["cpu", DTYPE, D2, BATCH](d, m)
     compute_subtree_com["cpu", DTYPE, D2, BATCH](d, m)
     compute_cdof["cpu", DTYPE, D2, BATCH](d, m, sc)
+    # ⚠⚠ AND THE CONTACT SET, WHICH IS AN `<adhesion>` ACTUATOR'S WHOLE
+    # TRANSMISSION. `d.contacts` at entry is detection at the pose the LAST
+    # substep started from — the off-by-one the fidelity harness was built
+    # around — and MuJoCo builds `mjTRN_BODY`'s moment inside `mj_transmission`,
+    # which runs after `mj_collision` and `mj_makeConstraint` at THIS pose.
+    # Re-detecting here costs one broadphase on the one model in this tree
+    # with an adhesion pad and nothing on the other 130; the integrator's own
+    # detection a moment later recomputes the same set from the same `qpos`.
+    if model_has_adhesion(sf):
+        detect_contacts_auto["cpu", DTYPE, BATCH=BATCH](d, m, None)
 
     var nv = d.dims.get_nv()
     var n_act = sf.dims.get_nact()
@@ -555,6 +603,152 @@ def apply_pose_transmission[
                     tau_s = 1e-10
                 act[adr_s] = Scalar[DTYPE](
                     u_s + (ctrl_s - u_s) / tau_s * timestep
+                )
+
+        # ── `<adhesion body=>` (`mjTRN_BODY`) ────────────────────────────
+        #
+        # `mj_transmission`'s body arm (engine_core_smooth.c:1623):
+        #
+        #     length[i] = 0
+        #     moment    = -(1/counter) * SUM over contacts touching this body
+        #                 of that contact's NORMAL Jacobian
+        #
+        # and the force law is a plain `gain * ctrl` (`mjs_setToAdhesion` sets
+        # gaintype FIXED, biastype NONE, ctrllimited 1). Everything that makes
+        # adhesion adhesion is the minus sign and the average.
+        #
+        # ⚠ THE REFERENCE READS THE ACTIVE CONTACTS' JACOBIANS OUT OF `efc_J`
+        # AND THE IN-GAP ONES DIRECTLY, AND THE TWO ROUTES AGREE. For a
+        # pyramidal cone it weights `2*(dim-1)` rows by `0.5/(dim-1)`, and each
+        # opposing pair is `n +- mu*t` so the tangents cancel to exactly `n`;
+        # for condim 1 and elliptic cones row 0 IS `n`. Building the normal
+        # Jacobian from `jac_point` is the same vector without an `efc` round
+        # trip — and it does not need the constraint rows to exist, which is
+        # what lets this run before the solver.
+        #
+        # ⚠⚠ THE CONTACT SET IS NOT MuJoCo'S ON flybody, AND THE GAP IS NAMED.
+        # Its eight adhesion geoms are the only ones in this tree with
+        # `<geom gap>`, and 3.10.0 DETECTS out to `margin + gap` while
+        # excluding from the solver at `dist >= margin`. This engine models no
+        # gap (`_fill_contact_pairs` refuses it outright, and the three
+        # reference trees disagree about its meaning), so a contact in that
+        # band is not detected here at all. Measured at flybody's keyframe:
+        # MuJoCo sees six contacts on adhesion bodies and one of them —
+        # floor/claw_T1_left at dist 9.88e-04 against an includemargin of
+        # 5e-04 — is in the gap. It is that pad's ONLY contact, so seven of
+        # the eight pads agree and `adhere_claw_T1_left` reads zero here and
+        # non-zero in MuJoCo. Closing it means splitting `contact_margin` into
+        # a cutoff and an includemargin through every narrowphase signature;
+        # that is `<geom gap>`'s own change, not this one.
+        for i in range(n_act):
+            if i >= len(actions):
+                break
+            var o = i * MODEL_ACTUATOR_SIZE
+            if Int(sf.actuators.data[o + ACT_IDX_KIND]) != ACT_KIND_ADHESION:
+                continue
+            var abody = Int(sf.actuators.data[o + ACT_IDX_BODY_ID])
+            if abody <= 0:
+                continue
+
+            for a in range(nv):
+                tJ[a] = Scalar[DTYPE](0)
+            var counter = 0
+            var ncon = Int(
+                Float64(
+                    d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
+                )
+            )
+            var cstride = dm.get_max_contacts() * CONTACT_SIZE
+            for c in range(ncon):
+                var co = e * cstride + c * CONTACT_SIZE
+                var b_a = Int(Float64(d.contacts.data[co + CONTACT_IDX_BODY_A]))
+                var b_b = Int(Float64(d.contacts.data[co + CONTACT_IDX_BODY_B]))
+                if b_a != abody and b_b != abody:
+                    continue
+                counter += 1
+                var cnx = Scalar[DTYPE](d.contacts.data[co + CONTACT_IDX_NX])
+                var cny = Scalar[DTYPE](d.contacts.data[co + CONTACT_IDX_NY])
+                var cnz = Scalar[DTYPE](d.contacts.data[co + CONTACT_IDX_NZ])
+                var cpx = Scalar[DTYPE](
+                    d.contacts.data[co + CONTACT_IDX_POS_X]
+                )
+                var cpy = Scalar[DTYPE](
+                    d.contacts.data[co + CONTACT_IDX_POS_Y]
+                )
+                var cpz = Scalar[DTYPE](
+                    d.contacts.data[co + CONTACT_IDX_POS_Z]
+                )
+                # `n . (J_a - J_b)`, THIS ENGINE'S OWN SIGN CONVENTION —
+                # `_compute_angular_jacobian_row` builds every contact row as
+                # `body_a - body_b`, and a second convention one file over is
+                # how a normal ends up carrying a decision. The overall sign
+                # against MuJoCo is settled by the gate, not by reading two
+                # frame definitions against each other.
+                # ⚠ BODY 0 IS THE WORLD and contributes nothing; `jac_point`
+                # would walk no joints for it anyway, but skipping the call
+                # also skips a full `3*nv` clear per ground contact.
+                if b_a > 0:
+                    jac_point[DTYPE, V_CAP](
+                        e, stcom_v, joints_v, bodies_v, mmeta_v, cdof_v,
+                        b_a, cpx, cpy, cpz, jacp, jacr, nv,
+                    )
+                    for a in range(nv):
+                        tJ[a] += (
+                            jacp[0 * nv + a] * cnx
+                            + jacp[1 * nv + a] * cny
+                            + jacp[2 * nv + a] * cnz
+                        )
+                if b_b > 0:
+                    jac_point[DTYPE, V_CAP](
+                        e, stcom_v, joints_v, bodies_v, mmeta_v, cdof_v,
+                        b_b, cpx, cpy, cpz, jacp, jacr, nv,
+                    )
+                    for a in range(nv):
+                        tJ[a] -= (
+                            jacp[0 * nv + a] * cnx
+                            + jacp[1 * nv + a] * cny
+                            + jacp[2 * nv + a] * cnz
+                        )
+
+            # ⚠ NO CONTACTS, NO MOMENT — and no force either. MuJoCo leaves
+            # `moment` all zero when `counter == 0`, so a pad in the air pulls
+            # on nothing however hard it is commanded.
+            if counter == 0:
+                continue
+            # ⚠⚠ THE MINUS SIGN IS WHAT MAKES IT ADHESION, and its place is
+            # MEASURED, not reasoned from two frame definitions. MuJoCo builds
+            # `n . (J_2 - J_1)` and negates; this engine's own contact rows are
+            # `n . (J_a - J_b)` (`_compute_angular_jacobian_row`), so the two
+            # conventions could have cancelled. Built without it first, on
+            # flybody's free joint: ours +4.534230e-01 against MuJoCo's
+            # -4.534230e-01 — an EXACT negation, which is what settled it.
+            var scale = Float64(-1.0) / Float64(counter)
+            for a in range(nv):
+                tJ[a] = Scalar[DTYPE](Float64(tJ[a]) * scale)
+
+            var ctrl_h = actions[i]
+            if sf.actuators.data[o + ACT_IDX_CTRL_LIMITED] != 0:
+                var chx = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MAX])
+                var chn = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MIN])
+                if ctrl_h > chx:
+                    ctrl_h = chx
+                elif ctrl_h < chn:
+                    ctrl_h = chn
+            # gaintype FIXED, biastype NONE: `force = gainprm[0] * ctrl`.
+            var force_h = Float64(sf.actuators.data[o + ACT_IDX_KP]) * ctrl_h
+            if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:
+                var fhh = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MAX])
+                var fhl = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MIN])
+                if force_h > fhh:
+                    force_h = fhh
+                elif force_h < fhl:
+                    force_h = fhl
+
+            for a in range(nv):
+                if tJ[a] == Scalar[DTYPE](0):
+                    continue
+                d.qfrc.data[e * nv + a] += Scalar[DTYPE](
+                    Float64(tJ[a]) * force_h
                 )
 
         # ── spatial-tendon SPRINGS (`qfrc_passive`) ──────────────────────

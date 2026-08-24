@@ -914,7 +914,7 @@ comptime PAIR_IDX_MARGIN: Int = 13
 # already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
 # with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
 # Anything diffing the two must convert; the equivalence gate does.
-comptime MODEL_ACTUATOR_SIZE: Int = 28 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACTUATOR_SIZE: Int = 29 + 3 * TENDON_MAX_WRAPS
 
 comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
 comptime ACT_IDX_GEAR: Int = 1
@@ -1025,6 +1025,29 @@ comptime ACT_IDX_PID_KI: Int = ACT_IDX_SITE_ID + 8
 comptime ACT_IDX_PID_KD: Int = ACT_IDX_SITE_ID + 9
 comptime ACT_IDX_PID_IMAX: Int = ACT_IDX_SITE_ID + 10
 comptime ACT_IDX_PID_SLEW: Int = ACT_IDX_SITE_ID + 11
+
+# ── `<adhesion body=...>` (`mjTRN_BODY`) ─────────────────────────────────
+#
+# ⚠⚠ THE TRANSMISSION IS THE CONTACT SET, WHICH IS WHY THERE IS NO TRIPLE.
+# `mj_transmission`'s `mjTRN_BODY` arm sets `length = 0` and builds the moment
+# as MINUS THE AVERAGE of the contact NORMAL Jacobians over every contact
+# involving this body (engine_core_smooth.c:1623). So an adhesion actuator's
+# moment changes with the contact set and cannot be baked into
+# `(qadr, dadr, coef)` — it belongs with the site transmission in
+# `dynamics/pose_transmission.mojo`, and `ACT_IDX_TRN_N` stays 0.
+#
+# ⚠ THE REFERENCE GETS THE ACTIVE CONTACTS' JACOBIANS OUT OF `efc_J` and the
+# in-gap ones directly, and the two routes give the SAME vector. For a
+# pyramidal cone it weights `2*(dim-1)` rows by `0.5/(dim-1)`, and each
+# opposing pair is `n +- mu*t`, so the tangents cancel and the sum is exactly
+# `n`; for condim 1 and for elliptic cones row 0 IS `n`. Computing the normal
+# Jacobian directly is therefore not an approximation of that path, it is the
+# same number without an `efc` round trip.
+#
+# The force law is ordinary: `mjs_setToAdhesion` sets `gainprm[0] = gain`,
+# gaintype FIXED, biastype NONE and `ctrllimited = 1`, so `force = gain*ctrl`
+# with `gain` in `ACT_IDX_KP`. Everything special is in the moment.
+comptime ACT_IDX_BODY_ID: Int = ACT_IDX_SITE_ID + 12
 
 # The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
 # record rather than folded into `MODEL_TENDON_SIZE`.
