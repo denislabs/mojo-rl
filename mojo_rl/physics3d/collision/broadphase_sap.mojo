@@ -37,6 +37,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
     GEOM_HFIELD,
+    mj_geom_type_rank,
 )
 from ..fields import (
     Data,
@@ -1161,7 +1162,10 @@ def _detect_contacts_sap_env[
             var hi_type = sj_type if si < sj else si_type
             var gi = lo
             var gj = hi
-            if lo_type > hi_type:
+            # ⚠ RANK, NOT THE RAW ID. `pushPairArena` sorts by `mjtGeom`, and
+            # this enum is not `mjtGeom` — comparing raw ids orders 10 of the
+            # 28 type pairs the OPPOSITE way. See `mj_geom_type_rank`.
+            if mj_geom_type_rank(lo_type) > mj_geom_type_rank(hi_type):
                 gi = hi
                 gj = lo
 

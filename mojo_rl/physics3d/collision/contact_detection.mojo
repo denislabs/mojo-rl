@@ -32,6 +32,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
     GEOM_HFIELD,
+    mj_geom_type_rank,
 )
 from ..fields import (
     Data,
@@ -1944,7 +1945,9 @@ def _detect_contacts_env[
             )
             var gi = sa
             var gj = sb
-            if sa_type > sb_type:
+            # ⚠ RANK, NOT THE RAW ID — see `mj_geom_type_rank`. This enum is
+            # not `mjtGeom`, and `pushPairArena` sorts by `mjtGeom`.
+            if mj_geom_type_rank(sa_type) > mj_geom_type_rank(sb_type):
                 gi = sb
                 gj = sa
 
