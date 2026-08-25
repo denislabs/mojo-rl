@@ -439,11 +439,17 @@ def test_support_with_180_quat() raises:
     print("  support(+Z) =", Float64(s2[0]), Float64(s2[1]), Float64(s2[2]))
 
     # Test box support for table along +Z (should be table top at z=0.0)
+    # ⚠ `corner` IS MuJoCo'S `obj->vertindex`, in and out. The reference uses
+    # that ONE field for both a mesh hull vertex and a box CORNER CODE, and
+    # EPA's discrete repeated-support-point break compares it, so `support_box`
+    # writes it. A caller that does not care still has to own the slot.
+    var box_corner = 0
     var b = support_box[DType.float64](
         0.0, 0.0, 1.0,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
-        0.7, 0.4, 0.46)
+        0.7, 0.4, 0.46,
+        box_corner)
     print("  box support(+Z) =", Float64(b[0]), Float64(b[1]), Float64(b[2]),
           "(expected z=0.0)")
 
