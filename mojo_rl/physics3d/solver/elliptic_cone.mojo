@@ -200,6 +200,58 @@ def ell_hessian_block[
         for j in range(k + 1, nt + 1):
             Hb[j * DIM + k] = Hb[k * DIM + j]
 
+    # ── PSD PROJECTION — `HessianCone` (engine_solver.c:2052) ───────────────
+    #
+    # ⚠⚠ THE CONE HESSIAN IS INDEFINITE AND MuJoCo NEVER ADDS IT RAW. Its
+    # middle-zone cost is `0.5*Dm*(N - mu*T)^2`, whose Hessian carries the term
+    # `Dm*(N - mu*T)*Hess(N - mu*T)` — and `N - mu*T < 0` is the very condition
+    # that DEFINES the middle zone, so that term is negative-curvature by
+    # construction. `HessianCone` factors the block with
+    # `mju_cholFactor(local, dim, mjMINVAL)`, whose diagonal CLAMP turns it
+    # into a PSD matrix, and then applies `dim` rank-1 `mju_cholUpdate`s of
+    # `L' J`. The Hessian the reference's Newton direction is computed against
+    # is therefore `J' (L L') J`, not `J' H J`.
+    #
+    # ⚠ THE SYMPTOM OF ADDING IT RAW IS A ZIG-ZAG, NOT A BLOW-UP. An indefinite
+    # Hessian gives a direction the linesearch has to cut, and the solver
+    # enters a period-2 cycle: measured on `unitree_go1` at `impratio="100"`,
+    # `alpha` alternated 0.0895 / 0.2317 for hundreds of iterations while
+    # `scale*|grad|` decayed ~5% per PAIR of steps. MuJoCo converges that pose
+    # in **6** iterations and we needed ~800 — the residual on board row
+    # `unitree_go1` was this, not the cone algebra.
+    #
+    # `L L'` is reconstructed here rather than threaded out as a factor,
+    # because the accumulation below already forms `J' Hb J` and the two are
+    # the same matrix.
+    var n = nt + 1
+    for j in range(n):
+        var tj = Hb[j * DIM + j]
+        for k in range(j):
+            tj -= Hb[j * DIM + k] * Hb[j * DIM + k]
+        # `mjMINVAL`, and the clamp IS the projection — a pivot at or below it
+        # is a direction of non-positive curvature, and MuJoCo keeps the
+        # matrix usable rather than declaring the factorization failed.
+        if tj < Scalar[DTYPE](1e-15):
+            tj = Scalar[DTYPE](1e-15)
+        Hb[j * DIM + j] = sqrt(tj)
+        var inv = ONE / Hb[j * DIM + j]
+        for i in range(j + 1, n):
+            var v = Hb[i * DIM + j]
+            for k in range(j):
+                v -= Hb[i * DIM + k] * Hb[j * DIM + k]
+            Hb[i * DIM + j] = v * inv
+    # `Hb <- L L'`, lower factor read in place. Walk k from the LAST column
+    # backwards so a row's own factor entries are still intact when read.
+    for i in range(n - 1, -1, -1):
+        for j in range(i, -1, -1):
+            var acc = ZERO
+            for k in range(j + 1):
+                acc += Hb[i * DIM + k] * Hb[j * DIM + k]
+            Hb[i * DIM + j] = acc
+    for k in range(n):
+        for j in range(k + 1, n):
+            Hb[k * DIM + j] = Hb[j * DIM + k]
+
 
 @always_inline
 def ell_add_contact_hessian[

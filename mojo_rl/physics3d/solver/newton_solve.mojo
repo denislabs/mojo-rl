@@ -2340,8 +2340,29 @@ def _newton_solve_env[
             for d in range(nv):
                 qfrc_c[d] += eq_J[e * nv + d] * eq_f[e]
 
-        # Hessian rebuild if states changed (using cached Jacobians — no workspace reads)
-        if state_changed:
+        # ── Hessian rebuild ──────────────────────────────────────────────
+        #
+        # ⚠⚠ A CONE BLOCK DEPENDS ON `jar`, NOT ONLY ON THE STATE, AND MuJoCo
+        # REBUILDS IT EVERY ITERATION. `HessianIncremental`
+        # (engine_solver.c:2118) does incremental cholUpdates for the rows that
+        # entered or left QUADRATIC — those carry a constant `D`, so a
+        # state-gated rebuild is right for them — and then calls
+        # `HessianCone` UNCONDITIONALLY whenever any cone row exists, which
+        # recomputes `con->H` from the CURRENT `jar` and re-applies it.
+        #
+        # Gating the whole rebuild on `state_changed` froze the cone blocks at
+        # iteration 0's `jar`, which turns Newton into a quasi-Newton with a
+        # stale Hessian. The symptom is not divergence but a PERIOD-2 ZIG-ZAG:
+        # measured on `unitree_go1` at `impratio="100"`, `alpha` alternated
+        # 0.0895 / 0.2317 while `scale*|grad|` fell ~5% per PAIR of steps —
+        # MuJoCo converged that pose in 6 iterations and we needed ~800.
+        # `unitree_go1` was board #4 at 3.256e-07 and it was this.
+        var cone_live = False
+        for c in range(nc):
+            if cs_arr[c] == ELL_CONE:
+                cone_live = True
+                break
+        if state_changed or cone_live:
             for k in range(nv * nv):
                 H[k] = M_local[k]
             for s in range(ns):
