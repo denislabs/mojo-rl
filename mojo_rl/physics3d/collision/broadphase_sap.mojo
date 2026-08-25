@@ -1405,7 +1405,7 @@ def _detect_contacts_sap_env[
                     cfr,
                     cdim,
                     nsg,
-                    hfield_meta, hfield_data,
+                    hfield_meta, hfield_data, dims.get_nhfield_data(),
                     mesh_verts, mesh_vert_edgeadr, mesh_edges,
                     dims, contacts, ws, num_contacts,
                     cgp,
@@ -2073,7 +2073,7 @@ def _detect_contacts_sap_fields_kernel[
         MutAnyOrigin,
     ],
     hfield_data: LayoutTensor[
-        DTYPE, Layout.row_major(NHFIELD_DATA), MutAnyOrigin
+        DTYPE, Layout.row_major(BATCH * NHFIELD_DATA), MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
@@ -2131,7 +2131,7 @@ def detect_contacts_sap[
     comptime L_HF_META = Layout.row_major(
         MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
     )
-    comptime L_HF_DATA = Layout.row_major(_hf_len(D.NHFIELD_DATA))
+    comptime L_HF_DATA = Layout.row_major(BATCH * _hf_len(D.NHFIELD_DATA))
     comptime L_CONTACTS = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
     comptime L_CCD_WS = Layout.row_major(BATCH, CCD_WS_SIZE)
@@ -2153,7 +2153,7 @@ def detect_contacts_sap[
         var rl_MESH_VEADR = rl1(dm.get_nmesh_verts())
         var rl_MESH_EDGE = rl1(mesh_max_edge(dm.get_nmesh_verts()))
         var rl_HF_META = rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
-        var rl_HF_DATA = rl1(_hf_len(dm.get_nhfield_data()))
+        var rl_HF_DATA = rl1(BATCH * _hf_len(dm.get_nhfield_data()))
         var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
         var rl_SMETA = rl2(BATCH, METADATA_SIZE)
         var rl_CCD_WS = rl2(BATCH, CCD_WS_SIZE)
@@ -2175,7 +2175,7 @@ def detect_contacts_sap[
         ](rl_MESH_VEADR)
         var mesh_edges_v = m.mesh_edges.lt_dyn["cpu", DYN1](rl_MESH_EDGE)
         var hfield_meta_v = m.hfield_meta.lt_dyn["cpu", DYN1](rl_HF_META)
-        var hfield_data_v = m.hfield_data.lt_dyn["cpu", DYN1](rl_HF_DATA)
+        var hfield_data_v = d.hfield_data.lt_dyn["cpu", DYN1](rl_HF_DATA)
         var contacts_v = d.contacts.lt_dyn["cpu", DYN2](rl_CONTACTS)
         var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
         var ccd_ws_v = d.ccd_ws.lt_dyn["cpu", DYN2](rl_CCD_WS)
@@ -2214,7 +2214,7 @@ def detect_contacts_sap[
             m.mesh_vert_edgeadr.lt["gpu", L_MESH_VEADR](),
             m.mesh_edges.lt["gpu", L_MESH_EDGE](),
             m.hfield_meta.lt["gpu", L_HF_META](),
-            m.hfield_data.lt["gpu", L_HF_DATA](),
+            d.hfield_data.lt["gpu", L_HF_DATA](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
             d.ccd_ws.lt["gpu", L_CCD_WS](),

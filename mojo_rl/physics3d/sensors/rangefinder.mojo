@@ -105,7 +105,7 @@ def rangefinder_site[
         m.mesh_meta.data,
         m.mesh_tris.data,
         m.hfield_meta.data,
-        m.hfield_data.data,
+        d.hfield_data.data,
         origin,
         rvec,
         body,

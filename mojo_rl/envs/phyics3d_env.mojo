@@ -48,7 +48,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike
+from mojo_rl.physics3d.fields import Data, Model, init_hfield_data, SpecFields, Dims, DimsLike
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
@@ -232,6 +232,11 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.init_spec_fields[Self.DTYPE](ctx, self.sf)
 
         self.d = type_of(self.d)()
+        # ⚠ THE HEIGHTFIELD GRID IS STATE NOW, so it has to be seeded from the
+        # model the way `qpos` is seeded from `qpos0`. Skipping this leaves a
+        # grid of ZEROS — a flat terrain that collides and rays perfectly
+        # happily and is simply not the surface the model declared.
+        init_hfield_data(self.d, self.mf)
         self.integ_rk4 = Self.IntegRK4()
         self.integ_euler = Self.IntegEuler()
 
@@ -504,7 +509,7 @@ struct Phyics3dEnv[
             self.mf.mesh_meta.data,
             self.mf.mesh_tris.data,
             self.mf.hfield_meta.data,
-            self.mf.hfield_data.data,
+            self.d.hfield_data.data,
             Self.MODEL_DEF.NGEOM,
             self.act,
             obs_list,

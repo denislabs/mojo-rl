@@ -45,7 +45,7 @@ from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims, DynDims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DynDims, init_hfield_data
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
@@ -130,6 +130,7 @@ struct Built(Movable):
         build_model_runtime[DT](fmd, dims, m)
         var sf = spec_fields_runtime[DT](fmd, dims, m)
         var d = Data[DT, DynDims, 1](dims)
+        init_hfield_data(d, m)
         for i in range(dims.get_nq()):
             d.qpos.data[i] = sf.qpos0.data[i]
         for i in range(dims.get_nv()):
@@ -200,7 +201,7 @@ def test_the_elevation_grid_matches_mjmodel() raises:
     var worst = Float64(0)
     for i in range(n):
         var mjv = Float64(py=m.hfield_data[i])
-        var got = Float64(b.m.hfield_data.data[i])
+        var got = Float64(b.d.hfield_data.data[i])
         var e = abs(got - mjv)
         if e > worst:
             worst = e
@@ -343,6 +344,12 @@ def test_the_gpu_path_agrees_with_the_cpu_path() raises:
 
     var d_cpu = Data[GT, GD, 1]()
     var d_gpu = Data[GT, GD, 1]()
+    # ⚠ THE GRID IS `Data` NOW, so BOTH legs must be seeded from the model.
+    # Missing it gave "the float32 CPU leg reports 0 contacts, not 15" — a
+    # flat terrain the robot never touches, which reads as a collision
+    # regression rather than an uninitialised buffer.
+    init_hfield_data(d_cpu, mg)
+    init_hfield_data(d_gpu, mg)
     for i in range(GD.NQ):
         d_cpu.qpos.data[i] = Scalar[GT](b.d.qpos.data[i])
         d_gpu.qpos.data[i] = Scalar[GT](b.d.qpos.data[i])

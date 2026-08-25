@@ -115,9 +115,12 @@ def ray_model[
     bodyexclude: Int = -1,
     flg_static: Bool = True,
     use_group: Bool = False,
-    group_mask: InlineArray[Bool, RAY_NGROUP] = InlineArray[Bool, RAY_NGROUP](
-        fill=True
-    ),
+    # ⚠ A BITMASK, NOT AN ARRAY. `geomgroup` is six booleans and the geom's
+    # group indexes them at RUNTIME — which is the per-thread-array read that
+    # is silently wrong on Metal (`87960e10`, the fourth instance in this
+    # engine). Six bits in an `Int` is the same information with no thread
+    # storage: bit `g` set means group `g` is visible.
+    group_mask: Int = 0x3F,
 ) -> RayHit[DTYPE] where DTYPE.is_floating_point():
     """Nearest intersection of `pnt + x*vec` with the model.
 
@@ -158,7 +161,7 @@ def ray_model[
                 gid = 0
             if gid > RAY_NGROUP - 1:
                 gid = RAY_NGROUP - 1
-            if not group_mask[gid]:
+            if (group_mask >> gid) & 1 == 0:
                 continue
 
         var gtype = Int(geoms[base + GEOM_IDX_TYPE])

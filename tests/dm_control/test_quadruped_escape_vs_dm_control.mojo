@@ -126,16 +126,16 @@ def test_the_terrain_is_a_bowl() raises:
     var lo = 1e30
     var hi = -1e30
     for i in range(RES * RES):
-        var v = Float64(env.mf.hfield_data.data[adr + i])
+        var v = Float64(env.d.hfield_data.data[adr + i])
         lo = min(lo, v)
         hi = max(hi, v)
     # The bowl peaks at radius 0.5 of the half-extent, i.e. a RIM, and the
     # centre is nearly flat (radius clipped to .04).
     var centre = Float64(
-        env.mf.hfield_data.data[adr + (RES // 2) * RES + RES // 2]
+        env.d.hfield_data.data[adr + (RES // 2) * RES + RES // 2]
     )
     var rim = Float64(
-        env.mf.hfield_data.data[adr + (RES // 2) * RES + (RES * 3) // 4]
+        env.d.hfield_data.data[adr + (RES // 2) * RES + (RES * 3) // 4]
     )
     print("  terrain lo", lo, " hi", hi, " centre", centre, " rim", rim)
     assert_true(lo >= 0.0 and hi <= 1.0, "terrain outside [0, 1]")
@@ -164,7 +164,7 @@ def test_the_rangefinders_actually_hit() raises:
     var grid = Python.list()
     var adr = Int(env.mf.hfield_meta.data[HFIELD_META_IDX_ADR])
     for i in range(RES * RES):
-        _ = grid.append(Float64(env.mf.hfield_data.data[adr + i]))
+        _ = grid.append(Float64(env.d.hfield_data.data[adr + i]))
     _ = R.set_terrain(m, grid)
 
     var n_hit = 0
@@ -202,7 +202,7 @@ def test_escape_obs_and_reward_vs_dm_control() raises:
     var grid = Python.list()
     var adr = Int(env.mf.hfield_meta.data[HFIELD_META_IDX_ADR])
     for i in range(RES * RES):
-        _ = grid.append(Float64(env.mf.hfield_data.data[adr + i]))
+        _ = grid.append(Float64(env.d.hfield_data.data[adr + i]))
     _ = R.set_terrain(m, grid)
 
     var worst_origin = 0.0

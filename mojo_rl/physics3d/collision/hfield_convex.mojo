@@ -162,6 +162,13 @@ def hfield_convex_contacts[
     contact_condim: Int,
     hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
     hfield_data: LayoutTensor[DTYPE, L_HF_DATA, MutAnyOrigin],
+    # ⚠ THE PER-ENVIRONMENT STRIDE OF `hfield_data`, i.e. `NHFIELD_DATA`.
+    # The grid moved from `Model` to `Data` when `quadruped escape` needed a
+    # terrain per episode, so the tensor is now `[BATCH * NHFIELD_DATA]` and
+    # `hfield_adr` addresses ONE environment's block. Without this every lane
+    # would read environment 0's terrain — which on a batch that resets at
+    # different times looks like correlated policy behaviour, not a bug.
+    hf_stride: Int,
     mesh_verts: LayoutTensor[DTYPE, L_MESH_VERTS, MutAnyOrigin],
     mesh_vert_edgeadr: LayoutTensor[
         DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
@@ -186,7 +193,9 @@ def hfield_convex_contacts[
     record's `body_b -> body_a` (see `_hfield_contacts`' caller).
     """
     var mo = hfield_id * MODEL_HFIELD_META_SIZE
-    var adr = Int(rebind[Scalar[DTYPE]](hfield_meta[mo + HFIELD_META_IDX_ADR]))
+    var adr = env * hf_stride + Int(
+        rebind[Scalar[DTYPE]](hfield_meta[mo + HFIELD_META_IDX_ADR])
+    )
     var nrow = Int(
         rebind[Scalar[DTYPE]](hfield_meta[mo + HFIELD_META_IDX_NROW])
     )

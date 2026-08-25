@@ -28,6 +28,7 @@ from layout import Layout
 from mojo_rl.nn.core.tensor import TensorImpl
 
 from .dims import DimsLike
+from .data import Data
 
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
@@ -185,9 +186,32 @@ struct Model[
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
     var pairs: TensorImpl[Self.DTYPE]  # [NPAIR, MODEL_PAIR_SIZE]
     var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
-    # [MAX_GPU_HFIELDS, 7] and [NHFIELD_DATA] — `mjModel.hfield_*`.
-    var hfield_meta: TensorImpl[Self.DTYPE]
-    var hfield_data: TensorImpl[Self.DTYPE]
+    var hfield_data0: TensorImpl[Self.DTYPE]  # [NHFIELD_DATA]
+    """The heightfield grids AS PARSED — the reset value, not the live one.
+
+    ⚠⚠ THE LIVE GRID IS `Data.hfield_data`, ONE PER ENVIRONMENT. This is the
+    same relationship `SpecFields.qpos0` has to `Data.qpos`: the model carries
+    the pose a reset restores, the state carries what is actually being
+    simulated. `quadruped escape` rewrites its terrain every episode and the
+    lanes of a batch reset at different times, so a shared live grid would
+    hand every environment whichever terrain reset last.
+
+    ⚠ `init_hfield_data` is what copies this into every lane, and a `Data`
+    that never had it called has a grid of ZEROS — i.e. a flat terrain, which
+    collides and rays perfectly happily and is simply the wrong shape.
+    """
+
+    var hfield_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_HFIELDS, 7]
+    """`mjModel.hfield_*` minus the grid — adr, nrow, ncol and the four sizes.
+
+    ⚠⚠ THE GRID ITSELF LIVES IN `Data.hfield_data`, NOT HERE, and that is the
+    one place this engine deliberately disagrees with MuJoCo's split.
+    `mjModel.hfield_data` is model data because MuJoCo simulates one world;
+    `quadruped escape` rewrites the terrain on EVERY EPISODE, and in a batch
+    the lanes reset at different times, so a shared grid would give every
+    environment whichever terrain reset last. The metadata is genuinely
+    per-asset and stays.
+    """
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
     var mesh_tris: TensorImpl[Self.DTYPE]  # [NMESH_TRI, 9]
     """The meshes' ORIGINAL triangles, nine floats each, principal frame.
@@ -278,12 +302,13 @@ struct Model[
         # HEIGHTFIELDS. The META table is capped (448 bytes) and the grid is
         # not — see `MAX_GPU_HFIELDS`. A model with no hfield allocates one
         # float, like every other `_at_least_one` here.
+        self.hfield_data0 = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nhfield_data())
+        )
         self.hfield_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
         )
-        self.hfield_data = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(dims.get_nhfield_data())
-        )
+
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
         self.mesh_tris = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(dims.get_nmesh_tri() * 9)
@@ -341,8 +366,8 @@ struct Model[
         self.excludes.upload(ctx)
         self.pairs.upload(ctx)
         self.mesh_meta.upload(ctx)
+        self.hfield_data0.upload(ctx)
         self.hfield_meta.upload(ctx)
-        self.hfield_data.upload(ctx)
         self.mesh_verts.upload(ctx)
         self.mesh_tris.upload(ctx)
         self.mesh_polys.upload(ctx)
@@ -355,3 +380,25 @@ struct Model[
     # `load_from_model` (CPU `Model` -> record fill) was deleted at the G4
     # fields sunset — the spec-direct build is
     # `fields_build.build_model_fields_from_flat`.
+
+
+def init_hfield_data[
+    DTYPE: DType, D: DimsLike, BATCH: Int
+](mut d: Data[DTYPE, D, BATCH], m: Model[DTYPE, D]):
+    """Copy `Model.hfield_data0` into every lane of `Data.hfield_data`.
+
+    The heightfield's `qpos0 -> qpos`. Called once after both exist; a task
+    that rewrites its terrain per episode (`quadruped escape`) overwrites the
+    lane it owns afterwards.
+
+    ⚠ NOT CALLING IT LEAVES A FLAT TERRAIN, silently. A grid of zeros is a
+    perfectly valid heightfield — it collides, it rays, it just is not the
+    surface the model declared. There is no error to raise, which is why this
+    is a named step rather than something a caller might reasonably forget.
+    """
+    var n = d.dims.get_nhfield_data()
+    if n < 1:
+        return
+    for e in range(BATCH):
+        for k in range(n):
+            d.hfield_data.data[e * n + k] = m.hfield_data0.data[k]

@@ -104,6 +104,24 @@ struct Data[
     # across calls — it is pure scratch, never uploaded or downloaded.
     var ccd_ws: TensorImpl[Self.DTYPE]  # [BATCH, CCD_WS_SIZE]
     # Derived / auxiliary
+    var hfield_data: TensorImpl[Self.DTYPE]  # [BATCH, NHFIELD_DATA]
+    """The heightfield elevation grids, PER ENVIRONMENT.
+
+    ⚠⚠ IN `Data` AND NOT IN `Model`, which is where MuJoCo keeps it. The grid
+    is STATE for `quadruped escape`: `initialize_episode` rewrites the terrain
+    on every reset, and in a batch the lanes reset at different times, so one
+    shared grid would hand every environment whichever terrain reset last —
+    silently, and in a way that looks like a correlated policy rather than a
+    bug. `hfield_meta` (adr, nrow, ncol, sizes) is genuinely per-asset and
+    stays in `Model`.
+
+    ⚠ EVERY LANE IS FILLED AT BUILD TIME from the parsed asset, so a model
+    whose terrain is a FILE behaves exactly as before and a model whose
+    terrain is generated starts from the same zeros MuJoCo would.
+
+    Indexed `[env * NHFIELD_DATA + hfield_adr + r * ncol + c]`. ⚠ `hfield_adr`
+    is an offset within ONE environment's block, not a global one.
+    """
     var site_xpos: TensorImpl[Self.DTYPE]  # [BATCH, NSITE*3]
     var cfrc_ext: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var cvel: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
@@ -203,6 +221,13 @@ struct Data[
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(B * METADATA_SIZE)
         self.ccd_ws = TensorImpl[Self.DTYPE].alloc(B * CCD_WS_SIZE)
+        # ⚠ `_at_least_one`: a model with no heightfield must still allocate,
+        # because `alloc(0)` is not a valid buffer and every kernel binds this
+        # tensor whether the model uses it or not.
+        var _hfn = dims.get_nhfield_data()
+        if _hfn < 1:
+            _hfn = 1
+        self.hfield_data = TensorImpl[Self.DTYPE].alloc(B * _hfn)
         self.site_xpos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nsite() * 3)
         self.cfrc_ext = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
         self.cvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
@@ -222,6 +247,7 @@ struct Data[
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every field (creates/replaces device buffers;
         NOT capture-safe — use per-field `upload_resident` under capture)."""
+        self.hfield_data.upload(ctx)
         self.qpos.upload(ctx)
         self.qvel.upload(ctx)
         self.qacc.upload(ctx)
@@ -280,4 +306,5 @@ struct Data[
         self.qfrc_actuator.download(ctx)
         self.mocap_pos.download(ctx)
         self.mocap_quat.download(ctx)
+
 

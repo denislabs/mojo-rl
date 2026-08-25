@@ -304,7 +304,7 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
                 # parity gate before this cast, from an elevation difference
                 # of ~5e-08 m amplified by shallow incidence. Same rule as
                 # `load_mesh_hull`'s hull vertices.
-                mf.hfield_data.data[adr + r * res + c] = Scalar[DTYPE](
+                d.hfield_data.data[adr + r * res + c] = Scalar[DTYPE](
                     Float64(bowl * smooth).cast[DType.float32]()
                 )
 

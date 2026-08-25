@@ -52,7 +52,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Data, Model, DynDims
+from mojo_rl.physics3d.fields import Data, Model, DynDims, init_hfield_data
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat,
@@ -149,6 +149,7 @@ struct Built(Movable):
         build_model_runtime[DT](fmd, dims, m)
         var sf = spec_fields_runtime[DT](fmd, dims, m)
         var d = Data[DT, DynDims, 1](dims)
+        init_hfield_data(d, m)
         for i in range(dims.get_nq()):
             d.qpos.data[i] = sf.qpos0.data[i]
         for i in range(dims.get_nv()):

@@ -2129,7 +2129,7 @@ def build_model_fields_from_flat[
         var src = fmd.hfield_adr[h]
         var n = fmd.hfield_nrow[h] * fmd.hfield_ncol[h]
         for k in range(n):
-            mf.hfield_data.data[hf_adr[h] + k] = Scalar[DTYPE](
+            mf.hfield_data0.data[hf_adr[h] + k] = Scalar[DTYPE](
                 fmd.hfield_data[src + k]
             )
     # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just

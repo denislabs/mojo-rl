@@ -53,7 +53,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Data, Model, DynDims
+from mojo_rl.physics3d.fields import Data, Model, DynDims, init_hfield_data
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat,
@@ -129,6 +129,11 @@ struct Lcg(Copyable, Movable):
 
 struct Built(Movable):
     var m: Model[DT, DynDims]
+    # ⚠ THE GRID LIVES IN `Data` NOW, one per environment — see
+    # `fields/model.mojo::hfield_data0`. A `Data` whose `init_hfield_data`
+    # never ran holds ZEROS, i.e. a flat terrain, so this file would compare
+    # two engines over different surfaces and call it a ray defect.
+    var d: Data[DT, DynDims, 1]
     var dims: DynDims
 
     def __init__(out self) raises:
@@ -137,7 +142,10 @@ struct Built(Movable):
         var m = Model[DT, DynDims](dims)
         build_model_runtime[DT](fmd, dims, m)
         _ = spec_fields_runtime[DT](fmd, dims, m)
+        var d = Data[DT, DynDims, 1](dims)
+        init_hfield_data(d, m)
         self.m = m^
+        self.d = d^
         self.dims = dims
 
 
@@ -209,7 +217,7 @@ def test_our_grid_is_mujocos_grid() raises:
         worst = max(
             worst,
             abs(
-                Float64(b.m.hfield_data.data[adr + i])
+                Float64(b.d.hfield_data.data[adr + i])
                 - Float64(py=m.hfield_data[i])
             ),
         )
@@ -320,7 +328,7 @@ def test_ray_hfield_vs_mujoco() raises:
         var ours = ray_hfield[DT](
             pos, quat, nrow, ncol,
             Scalar[DT](sx), Scalar[DT](sy), Scalar[DT](sz), Scalar[DT](sb),
-            b.m.hfield_data.data, adr, eye, vec,
+            b.d.hfield_data.data, adr, eye, vec,
         )
 
         a_pnt[0] = eye.x

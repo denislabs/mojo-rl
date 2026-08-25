@@ -430,7 +430,39 @@ struct RayBoxHit[DTYPE: DType](Copyable, Movable):
 
     var t: Scalar[Self.DTYPE]
     var normal: Vec3Generic[Self.DTYPE]
-    var all: InlineArray[Scalar[Self.DTYPE], 6]
+    # ⚠⚠ SIX NAMED SCALARS, NOT AN `InlineArray`, AND THAT IS A GPU
+    # REQUIREMENT RATHER THAN A STYLE CHOICE. A per-thread array indexed by a
+    # RUNTIME value reads back the WRONG VALUE on Metal, silently — four times
+    # in this engine now (`87960e10` is the most recent, and its message says
+    # "the fix is the storage class, not the algorithm"). This table is
+    # written at `2*axis + side` and read at `all[i]` in two loops, both
+    # runtime indices, so as an array it would be wrong on the first
+    # heightfield ray a kernel casts. `face()` is the if-chain that replaces
+    # the subscript; the compiler folds it and no thread-local array exists.
+    var a0: Scalar[Self.DTYPE]
+    var a1: Scalar[Self.DTYPE]
+    var a2: Scalar[Self.DTYPE]
+    var a3: Scalar[Self.DTYPE]
+    var a4: Scalar[Self.DTYPE]
+    var a5: Scalar[Self.DTYPE]
+
+    @always_inline
+    def face(self, i: Int) -> Scalar[Self.DTYPE]:
+        """`all[i]` — the distance at which face `i` is crossed, or -1.
+
+        `i` is `2*axis + (side+1)/2`: 0/1 are -x/+x, 2/3 are -y/+y, 4/5 -z/+z.
+        """
+        if i == 0:
+            return self.a0
+        if i == 1:
+            return self.a1
+        if i == 2:
+            return self.a2
+        if i == 3:
+            return self.a3
+        if i == 4:
+            return self.a4
+        return self.a5
 
 
 @always_inline
@@ -452,12 +484,11 @@ def ray_box_all[
     """
     var zero = Vec3Generic[DTYPE](0, 0, 0)
     var none = Scalar[DTYPE](RAY_NO_HIT)
-    var all = InlineArray[Scalar[DTYPE], 6](fill=none)
 
     var ssz = size.x * size.x + size.y * size.y + size.z * size.z
     var bs = ray_sphere[DTYPE](pos, ssz, pnt, vec)
     if bs[0] < 0:
-        return RayBoxHit[DTYPE](none, zero, all.copy())
+        return RayBoxHit[DTYPE](none, zero, none, none, none, none, none, none)
 
     var m = ray_map[DTYPE](pos, quat, pnt, vec)
     var lpnt = m[0]
@@ -466,6 +497,12 @@ def ray_box_all[
     var x = none
     var face_axis: Int = -1
     var face_side: Int = 0
+    var a0 = none
+    var a1 = none
+    var a2 = none
+    var a3 = none
+    var a4 = none
+    var a5 = none
 
     for i in range(3):
         var li = lvec.x if i == 0 else (lvec.y if i == 1 else lvec.z)
@@ -495,17 +532,33 @@ def ray_box_all[
                     x = sol
                     face_axis = i
                     face_side = side
-                all[2 * i + (side + 1) // 2] = sol
+                # ⚠ `2*i + (side+1)/2` as an IF-CHAIN, for the same reason
+                # the fields are scalars — see `RayBoxHit`.
+                var slot = 2 * i + (side + 1) // 2
+                if slot == 0:
+                    a0 = sol
+                elif slot == 1:
+                    a1 = sol
+                elif slot == 2:
+                    a2 = sol
+                elif slot == 3:
+                    a3 = sol
+                elif slot == 4:
+                    a4 = sol
+                else:
+                    a5 = sol
 
     if x < 0:
-        return RayBoxHit[DTYPE](none, zero, all.copy())
+        return RayBoxHit[DTYPE](none, zero, none, none, none, none, none, none)
 
     var n = Vec3Generic[DTYPE](
         Scalar[DTYPE](face_side) if face_axis == 0 else Scalar[DTYPE](0),
         Scalar[DTYPE](face_side) if face_axis == 1 else Scalar[DTYPE](0),
         Scalar[DTYPE](face_side) if face_axis == 2 else Scalar[DTYPE](0),
     )
-    return RayBoxHit[DTYPE](x, quat.rotate_vec(n), all.copy())
+    return RayBoxHit[DTYPE](
+        x, quat.rotate_vec(n), a0, a1, a2, a3, a4, a5
+    )
 
 
 @always_inline

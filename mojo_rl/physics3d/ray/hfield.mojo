@@ -113,9 +113,10 @@ def ray_hfield[
     var seg0 = Scalar[DTYPE](0)
     var seg1 = top_intersect
     for i in range(6):
-        if top.all[i] > seg1:
+        var ai6 = top.face(i)
+        if ai6 > seg1:
             seg0 = top_intersect
-            seg1 = top.all[i]
+            seg1 = ai6
 
     var dx = (size_x + size_x) / Scalar[DTYPE](ncol - 1)
     var dy = (size_y + size_y) / Scalar[DTYPE](nrow - 1)
@@ -187,7 +188,7 @@ def ray_hfield[
     # ── the four vertical sides of the top box ──────────────────────────
     # Faces 0..3 are -x, +x, -y, +y in `all`'s packing (`2*axis + side`).
     for i in range(4):
-        var ai = top.all[i]
+        var ai = top.face(i)
         if ai < 0 or not (ai < x or x < 0):
             continue
         # Height of the crossing, normalised the way the grid is stored.

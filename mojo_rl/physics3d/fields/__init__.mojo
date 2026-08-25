@@ -13,7 +13,7 @@ from .dims import DimsLike, Dims, DynDims, AsStatic, DIM_POISON, may_exist
 from .scratch import Scratch, cap
 from .rt_layout import DYN1, DYN2, rl1, rl2
 from .data import Data
-from .model import Model
+from .model import Model, init_hfield_data
 from .spec_fields import (
     SpecFields,
     actuator_column,
