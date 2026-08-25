@@ -414,8 +414,27 @@ def ray_cylinder[
     return (x, quat.rotate_vec(n))
 
 
+@fieldwise_init
+struct RayBoxHit[DTYPE: DType](Copyable, Movable):
+    """`ray_box`'s full answer, including the reference's optional `all[6]`.
+
+    `all[2*i + (side+1)/2]` is the distance at which the ray crosses the face
+    on axis `i`, side `-1`/`+1`, or -1 where that face is not hit. It exists
+    for `mj_rayHfield`, which uses it twice: to clip the ray to the segment
+    inside the field's top box, and to test the four vertical SIDES of that box
+    against the elevation profile at the crossing.
+
+    ⚠ A face can be recorded in `all` and still not be the winner — `all` is
+    every accepted face, `t` is the nearest.
+    """
+
+    var t: Scalar[Self.DTYPE]
+    var normal: Vec3Generic[Self.DTYPE]
+    var all: InlineArray[Scalar[Self.DTYPE], 6]
+
+
 @always_inline
-def ray_box[
+def ray_box_all[
     DTYPE: DType
 ](
     pos: Vec3Generic[DTYPE],
@@ -423,31 +442,28 @@ def ray_box[
     size: Vec3Generic[DTYPE],
     pnt: Vec3Generic[DTYPE],
     vec: Vec3Generic[DTYPE],
-) -> Tuple[Scalar[DTYPE], Vec3Generic[DTYPE]] where DTYPE.is_floating_point():
-    """`ray_box` — six slabs, nearest accepted face.
+) -> RayBoxHit[DTYPE] where DTYPE.is_floating_point():
+    """`ray_box` — six slabs, nearest accepted face, plus the per-face table.
 
-    The reference also fills an optional `all[6]` with the hit distance per
-    face, used by `mj_rayHfield` to walk a prism. That output is dropped here
-    and comes back when the hfield slice needs it, rather than being carried
-    unused by every caller.
-
-    ⚠ The face normal is `+-1` on the winning AXIS in the LOCAL frame, so the
+    ⚠ THE FACE NORMAL IS `+-1` ON THE WINNING AXIS IN THE LOCAL FRAME, so the
     axis and the side must both survive out of the loop. Keeping only the
     distance and recomputing the face afterwards from the hit point is the
     tempting simplification and it is ambiguous exactly on an edge.
     """
     var zero = Vec3Generic[DTYPE](0, 0, 0)
+    var none = Scalar[DTYPE](RAY_NO_HIT)
+    var all = InlineArray[Scalar[DTYPE], 6](fill=none)
 
     var ssz = size.x * size.x + size.y * size.y + size.z * size.z
     var bs = ray_sphere[DTYPE](pos, ssz, pnt, vec)
     if bs[0] < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return RayBoxHit[DTYPE](none, zero, all.copy())
 
     var m = ray_map[DTYPE](pos, quat, pnt, vec)
     var lpnt = m[0]
     var lvec = m[1]
 
-    var x = Scalar[DTYPE](RAY_NO_HIT)
+    var x = none
     var face_axis: Int = -1
     var face_side: Int = 0
 
@@ -479,16 +495,39 @@ def ray_box[
                     x = sol
                     face_axis = i
                     face_side = side
+                all[2 * i + (side + 1) // 2] = sol
 
     if x < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return RayBoxHit[DTYPE](none, zero, all.copy())
 
     var n = Vec3Generic[DTYPE](
         Scalar[DTYPE](face_side) if face_axis == 0 else Scalar[DTYPE](0),
         Scalar[DTYPE](face_side) if face_axis == 1 else Scalar[DTYPE](0),
         Scalar[DTYPE](face_side) if face_axis == 2 else Scalar[DTYPE](0),
     )
-    return (x, quat.rotate_vec(n))
+    return RayBoxHit[DTYPE](x, quat.rotate_vec(n), all.copy())
+
+
+@always_inline
+def ray_box[
+    DTYPE: DType
+](
+    pos: Vec3Generic[DTYPE],
+    quat: QuatGeneric[DTYPE],
+    size: Vec3Generic[DTYPE],
+    pnt: Vec3Generic[DTYPE],
+    vec: Vec3Generic[DTYPE],
+) -> Tuple[Scalar[DTYPE], Vec3Generic[DTYPE]] where DTYPE.is_floating_point():
+    """`ray_box` without the per-face table — the `mju_rayGeom` entry point.
+
+    A wrapper rather than a second copy of the slab loop: the `all` writes do
+    not participate in `x`, so discarding them cannot change the answer, and
+    two hand-maintained copies of this loop is precisely how a fix crosses to
+    one of them. The `mju_rayGeom` sweep re-run after this refactor is what
+    says the rounding did not move.
+    """
+    var h = ray_box_all[DTYPE](pos, quat, size, pnt, vec)
+    return (h.t, h.normal)
 
 
 @always_inline

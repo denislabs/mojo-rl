@@ -9,6 +9,7 @@ what lets this package stay free of `Model`, `Data` and `LayoutTensor`.
 """
 
 from .geom import (
+    RayBoxHit,
     RAY_MINVAL,
     RAY_NO_HIT,
     ray_map,
@@ -19,5 +20,8 @@ from .geom import (
     ray_ellipsoid,
     ray_cylinder,
     ray_box,
+    ray_box_all,
     ray_geom,
 )
+from .triangle import ray_basis, ray_triangle
+from .hfield import ray_hfield
