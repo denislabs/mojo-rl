@@ -1982,8 +1982,23 @@ def build_model_fields_from_flat[
                     )
                     mf.geoms.data[o + GEOM_IDX_RBOUND] = result[1]
                     loaded_mesh_ids[gd.mesh_id] = mesh_id
-                except:
-                    print("Warning: failed to load mesh:", gd.mesh_filename)
+                except e:
+                    # ⚠⚠ UNUSABLE, NOT WHATEVER WAS THERE. This used to print a
+                    # bare warning and carry on, leaving `GEOM_IDX_MESH_ID`
+                    # holding a stale value — so the geom collided against a
+                    # DIFFERENT mesh's hull. Measured when a hull change made
+                    # this path fire on barkour's `lower_leg_1to1`: four legs
+                    # silently took `upper_right_1`'s shape, the mesh count
+                    # went 18 -> 17, and the board row moved five orders. Same
+                    # rule as the `mesh_collidable` branch above — a geom with
+                    # NO collision geometry is recoverable, a geom with the
+                    # WRONG collision geometry is not.
+                    print(
+                        "Warning: failed to load mesh:", gd.mesh_filename,
+                        "--", String(e),
+                        "-- this geom will have NO collision geometry",
+                    )
+                    mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](-1)
 
     # ⚠ THE SECOND SILENT TRUNCATION OF THE SAME KIND. A collidable mesh past
     # `MAX_GPU_MESHES` gets a hull built and an id assigned above, then no

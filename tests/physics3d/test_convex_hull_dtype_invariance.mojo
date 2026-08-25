@@ -57,11 +57,19 @@ def _hull_size[DTYPE: DType](path: String) raises -> Int:
     var polymap_num = List[Int]()
     var edge_adr = List[Int]()
     var edge_list = List[Int]()
+    # ⚠ THE TRIANGLE SOUP, added when `mj_rayMesh` needed the mesh's ORIGINAL
+    # faces (the hull has no holes). This file did not compile from that change
+    # until now — a gate that cannot parse is not a gate, and this is the one
+    # watching for a dtype-dependent hull.
+    var mesh_tri = List[Scalar[DTYPE]]()
+    var mesh_triadr = List[Int]()
+    var mesh_trinum = List[Int]()
     var mi = MeshInertia[DTYPE]()
     _ = load_mesh_hull[DTYPE](
         path, mesh_vert, mesh_vertadr, mesh_vertnum, num_meshes,
         mesh_polyadr, mesh_polynum, poly_vert, poly_vertadr, poly_vertnum,
         poly_normal, polymap, polymap_adr, polymap_num, edge_adr, edge_list,
+        mesh_tri, mesh_triadr, mesh_trinum,
         mi,
     )
     return mesh_vertnum[0]

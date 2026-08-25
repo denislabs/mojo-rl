@@ -62,6 +62,7 @@ def polygon_normal[
     poly_vert: List[Int],
     adr: Int,
     num: Int,
+    first_three: Bool = False,
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`MakePolygonNormals` + `mjuu_makenormal`, with ONE deliberate extension.
 
@@ -113,6 +114,20 @@ def polygon_normal[
     #
     # Costs one board scene: `unitree_g1/scene_with_hands` 2.170e-07 ->
     # 2.749e-07. The other 84 are bit-identical and csweep does not move.
+    # ⚠⚠ `first_three` IS MuJoCo'S RULE AND IT IS ONLY CORRECT WITH qhull's
+    # CYCLE START. `MakePolygonNormals` reads the first three PATH vertices;
+    # which three those are depends on where `MeshPolygon::Paths` started the
+    # cycle, which depends on the order `MakePolygons` inserted faces, which is
+    # qhull's facet order. With that order (the `qhull_native` shim) this
+    # reproduces `mesh_polynormal` to ~1e-3 deg. WITHOUT it, our own face order
+    # puts the start somewhere else and first-three is measurably WORSE than
+    # the cyclic sum below — 260 of 2574 polygon normals beyond `MC_FACE_TOL`
+    # against 227. That is why this is a parameter and not a rewrite.
+    if first_three:
+        return _first_three_normal[DTYPE](
+            verts, vert_float_offset, poly_vert, adr, num, True
+        )
+
     var gx = Float64(0)
     var gy = Float64(0)
     var gz = Float64(0)
@@ -138,9 +153,47 @@ def polygon_normal[
 
     # A polygon with no area at all falls through to the reference's own rule
     # and then to its `(1, 0, 0)`: see below.
+    return _first_three_normal[DTYPE](
+        verts, vert_float_offset, poly_vert, adr, num
+    )
+
+
+def _first_three_normal[
+    DTYPE: DType
+](
+    verts: List[Scalar[DTYPE]],
+    vert_float_offset: Int,
+    poly_vert: List[Int],
+    adr: Int,
+    num: Int,
+    faithful: Bool = False,
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`MakePolygonNormals` -> `mjuu_makenormal(path[0], path[1], path[2])`.
+
+    ⚠ WITH ONE DELIBERATE EXTENSION, kept from the version this was lifted
+    out of: `mjuu_makenormal` substitutes `(1, 0, 0)` when its cross product is
+    shorter than `mjEPS`, and `(1, 0, 0)` is a PLACEHOLDER, not the polygon's
+    plane. A polygon whose first three path vertices are collinear still has a
+    perfectly good plane, and handing `alignedFaces` a normal that is not it is
+    worse than handing it nothing — the pair can MATCH a face it is not
+    parallel to. Advancing to the first non-collinear third vertex returns the
+    polygon's actual normal; only a polygon with no valid triple at all reaches
+    the reference's `(1, 0, 0)`.
+    """
     var a = vert_float_offset + poly_vert[adr + 0] * 3
     var b = vert_float_offset + poly_vert[adr + 1] * 3
-    for k in range(2, num):
+    # ⚠⚠ `faithful` STOPS AT THE REFERENCE'S OWN ANSWER, PLACEHOLDER AND ALL.
+    # `mjuu_makenormal` substitutes `(1, 0, 0)` the moment its FIRST cross
+    # product is degenerate, and it really does end up in the model: 88
+    # polygons across 37 Menagerie scenes carry exactly that normal in
+    # `mesh_polynormal` (aloha's extrusions, crazyflie's collision hull). Once
+    # the cycle start is qhull's we are reproducing `MakePolygonNormals`, and
+    # `alignedFaces` compares against the reference's stored value — so
+    # "improving" on the placeholder puts us further from MuJoCo, not closer.
+    # The advancing loop below stays for the NON-qhull path, where the start is
+    # ours and there is nothing to be faithful to.
+    var kmax = 3 if faithful else num
+    for k in range(2, kmax):
         var c = vert_float_offset + poly_vert[adr + k] * 3
         var ux = verts[b + 0] - verts[a + 0]
         var uy = verts[b + 1] - verts[a + 1]

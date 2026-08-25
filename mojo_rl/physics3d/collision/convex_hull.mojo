@@ -34,6 +34,11 @@ for every mesh in its models.
 """
 
 from std.math import sqrt, abs
+from std.memory import bitcast
+
+from .qhull_native import (
+    qhull_faces, qhull_max_faces, qhull_shim_available,
+)
 
 # The float64 unit roundoff, and the safety factor on the visibility error
 # bound. `K` is not tuned: it is a generous constant so the bound stays an
@@ -69,7 +74,17 @@ def deduplicate_vertices[
 
     Appends unique vertices to out_verts, returns num_unique.
     """
-    comptime EPS_SQ: Scalar[DTYPE] = 1e-12
+    # ⚠⚠ EXACT, NOT A TOLERANCE — MuJoCo's rule, and the hull depends on it.
+    # This used to merge anything within `EPS_SQ = 1e-12` (one micron). MuJoCo
+    # dedupes on exact equality, confirmed from the other side: an exact-bytes
+    # dedup reproduces `mesh_vertnum` on every mesh checked (4131 on
+    # shadow_dexee's mid link, 2632 on barkour's head), and the tolerant rule
+    # does not. That matters far more than it looks: the deduped array is what
+    # `MakeGraph` hulls, so merging a vertex MuJoCo keeps hands qhull a
+    # DIFFERENT POINT SET and every facet, polygon and normal downstream is
+    # then computed for a different solid. Measured on barkour's head with the
+    # tolerant rule: 23 merged polygons beyond `MC_FACE_TOL`, worst normal
+    # 81.25 deg out. Exact: 0 bad, worst 0.000000 deg.
     var start = len(out_verts)
     var num_unique = 0
 
@@ -84,7 +99,7 @@ def deduplicate_vertices[
             var dx = vx - out_verts[off + 0]
             var dy = vy - out_verts[off + 1]
             var dz = vz - out_verts[off + 2]
-            if dx * dx + dy * dy + dz * dz < EPS_SQ:
+            if dx == 0 and dy == 0 and dz == 0:
                 found = True
                 break
 
@@ -1206,6 +1221,94 @@ def build_hull_edge_graph(
         edge_list.append(-1)
 
 
+@always_inline
+def _pos_key3(x: Float64, y: Float64, z: Float64) -> String:
+    """An EXACT key for a vertex position — its bits, not its value.
+
+    ⚠ NOT A ROUNDED KEY. The two arrays being matched hold literal copies of
+    the same doubles, so equality is exact and a tolerance would only invent
+    collisions between genuinely distinct vertices of a fine mesh.
+    """
+    return (
+        String(bitcast[DType.uint64](x)) + ","
+        + String(bitcast[DType.uint64](y)) + ","
+        + String(bitcast[DType.uint64](z))
+    )
+
+
+def _qhull_hull[
+    DTYPE: DType
+](
+    unique: List[Scalar[DTYPE]],
+    num_unique: Int,
+    maxhullvert: Int,
+    mut hull_verts: List[Scalar[DTYPE]],
+    mut hull_faces: List[Int],
+) raises -> Int:
+    """The hull MuJoCo actually has: qhull's, vertices and face ORDER both.
+
+    ⚠⚠ THIS REPLACES `compute_convex_hull` ON THIS PATH RATHER THAN CORRECTING
+    IT, and that is the point. `mjCMesh::MakeGraph` does not implement a hull —
+    it calls qhull — so the faithful answer is qhull's whole output, not our
+    incremental hull's vertices with qhull's face order laid over them. The
+    first version of this did exactly that and it FAILED LOUDLY, which is how
+    the disagreement below was found: on barkour's `lower_leg_1to1` our hull
+    drops global vertex 3960 of 5223 and qhull keeps it, so no renumbering of
+    qhull's faces into our vertex set exists at all.
+
+    ⚠ THE ORDER OF `hull_verts` IS FIRST APPEARANCE ACROSS qhull's FACES, which
+    is OURS and not MuJoCo's — `mjModel.mesh_polyvert` indexes the full mesh
+    array and we store only the hull. Nothing downstream depends on it: every
+    consumer reads `poly_vert` / `polymap` / `edge_list`, which are built from
+    these same local ids in the same pass. What must NOT change is the face
+    ORDER, and that is qhull's exactly.
+
+    Returns the hull vertex count, or 0 when the shim is absent or qhull
+    declines the input (fewer than four points, collinear, coplanar) — the
+    caller then falls back to `compute_convex_hull`, which has its own handling
+    for those and is what a tree without the dylib uses throughout.
+    """
+    if not qhull_shim_available():
+        return 0
+    var cap = qhull_max_faces(num_unique)
+    if cap < 1:
+        return 0
+
+    # ⚠ DOUBLES OF THE STORED VALUES, which is what `dvert` is: `Process`
+    # builds it as `std::vector<double>(vert_.begin(), vert_.end())` from a
+    # float32 array. At DTYPE=float32 this widens the same bits; at float64 the
+    # values already came through a float32 loader, so both match MuJoCo.
+    var dv = List[Float64](capacity=num_unique * 3)
+    for i in range(num_unique * 3):
+        dv.append(Float64(unique[i]))
+
+    var qf = List[Int32](length=cap * 3, fill=Int32(0))
+    var nf = qhull_faces(
+        dv.unsafe_ptr(), num_unique, maxhullvert, qf.unsafe_ptr(), cap
+    )
+    if nf < 1:
+        return 0
+
+    # Compact: global id -> local, in first-appearance order.
+    var local = List[Int](length=num_unique, fill=-1)
+    var nh = 0
+    hull_verts.clear()
+    hull_faces.clear()
+    for i in range(nf * 3):
+        var g = Int(qf[i])
+        if local[g] < 0:
+            local[g] = nh
+            hull_verts.append(unique[g * 3 + 0])
+            hull_verts.append(unique[g * 3 + 1])
+            hull_verts.append(unique[g * 3 + 2])
+            nh += 1
+        hull_faces.append(local[g])
+    _ = dv^
+    _ = qf^
+    _ = local^
+    return nh
+
+
 def load_mesh_hull[
     DTYPE: DType,
 ](
@@ -1325,7 +1428,21 @@ def load_mesh_hull[
         # always applied.
         var lvert = List[Scalar[DTYPE]]()
         var lfaces = List[Int]()
-        var nh = compute_convex_hull[DTYPE](unique, num_unique, lvert, lfaces)
+        # ⚠⚠ qhull FIRST, AND ITS WHOLE ANSWER. `MakeGraph` calls qhull; the
+        # face ORDER it returns is what decides every merged polygon's normal
+        # (`build_mesh_polygons` inserts in this sequence, `Paths` starts each
+        # cycle at the first surviving edge of the first face inserted, and
+        # `MakePolygonNormals` reads that cycle's first three vertices).
+        # `compute_convex_hull` is the fallback for a tree without the dylib.
+        var nh = _qhull_hull[DTYPE](
+            unique, num_unique, -1, lvert, lfaces
+        )
+        var qhull_order = nh > 0
+        if not qhull_order:
+            nh = compute_convex_hull[DTYPE](
+                unique, num_unique, lvert, lfaces
+            )
+
         var lnormal = List[Scalar[DTYPE]]()
         var np_local = build_mesh_polygons[DTYPE](
             lvert,
@@ -1362,8 +1479,13 @@ def load_mesh_hull[
         # one changed nothing measurable and looked like the fix had failed.
         # One callee now, and it is the module that owns the rule.
         for pi in range(np_local):
+            # ⚠ MuJoCo's FIRST-THREE rule ONLY when the cycle start is
+            # MuJoCo's. Without the shim the start is ours, and first-three on
+            # the wrong start is measurably worse than the cyclic sum — see
+            # `polygon_normal`.
             var wn = polygon_normal[DTYPE](
                 lvert, 0, p.poly_vert, p.poly_vertadr[pi], p.poly_vertnum[pi],
+                qhull_order,
             )
             lnormal[pi * 3 + 0] = wn[0]
             lnormal[pi * 3 + 1] = wn[1]

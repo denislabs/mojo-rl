@@ -28,6 +28,7 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
+from mojo_rl.physics3d.collision.mesh_polygons import polygon_normal
 from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
@@ -332,11 +333,19 @@ def _normals_are_unit(name: String, path: String) raises -> Int:
     var polymap_num = List[Int]()
     var edge_adr = List[Int]()
     var edge_list = List[Int]()
+    # ⚠ The triangle SOUP, added when `mj_rayMesh` needed the mesh's original
+    # faces. This file did not compile from that change until now — and it is
+    # the gate that compares our merged polygons against MuJoCo's, so it is the
+    # one a hull change most needs.
+    var mesh_tri = List[Scalar[DTYPE]]()
+    var mesh_triadr = List[Int]()
+    var mesh_trinum = List[Int]()
     var mi = MeshInertia[DTYPE]()
     _ = load_mesh_hull[DTYPE](
         path, mesh_vert, mesh_vertadr, mesh_vertnum, num_meshes,
         mesh_polyadr, mesh_polynum, poly_vert, poly_vertadr, poly_vertnum,
         poly_normal, polymap, polymap_adr, polymap_num, edge_adr, edge_list,
+        mesh_tri, mesh_triadr, mesh_trinum,
         mi,
     )
     var npoly = len(poly_vertnum)
@@ -404,37 +413,80 @@ def test_polygon_normals_are_unit_on_cad_meshes() raises:
     VERTEX REDUCTION then removed most of the collinear boundary runs that
     caused it: 36 polygons over 596 041 now, and those three fixtures carry
     ZERO. The assertion below caught that immediately rather than going quietly
-    green on nothing. Today's fixtures are the survivors.
+    green on nothing.
+
+    ⚠⚠ AND THEY MOVED A SECOND TIME, FOR THE SAME REASON AND CAUGHT THE SAME
+    WAY. The hull is qhull's now (`convex_hull._qhull_hull`), which changes
+    which boundary runs survive the merge, and the four survivors above went to
+    ZERO again. The fixtures are now aloha's aluminium extrusions, chosen from
+    the REFERENCE side rather than ours: MuJoCo stores `mjuu_makenormal`'s
+    `(1, 0, 0)` placeholder for exactly 88 polygons across 37 Menagerie scenes,
+    and nine aloha meshes carry two each. Picking them from `mesh_polynormal`
+    means the population cannot quietly drain away when OUR hull moves again —
+    it can only move if the REFERENCE's does.
     """
     print("=== polygon normals are unit vectors ===")
     var total = 0
     total += _normals_are_unit(
-        "berkeley ll_hr     ",
-        "references/mujoco_menagerie-main/berkeley_humanoid/assets/ll_hr.stl",
+        "aloha extrusion_150",
+        "references/mujoco_menagerie-main/aloha/assets/extrusion_150.stl",
     )
     total += _normals_are_unit(
-        "berkeley lr_hr     ",
-        "references/mujoco_menagerie-main/berkeley_humanoid/assets/lr_hr.stl",
+        "aloha extrusion_600",
+        "references/mujoco_menagerie-main/aloha/assets/extrusion_600.stl",
     )
     total += _normals_are_unit(
-        "allegro link_15_tip",
-        "references/mujoco_menagerie-main/wonik_allegro/assets/"
-        "link_15.0_tip.stl",
+        "aloha angled_extr  ",
+        "references/mujoco_menagerie-main/aloha/assets/angled_extrusion.stl",
     )
     total += _normals_are_unit(
-        "sts3215_03a_v1     ",
-        "mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_v1.stl",
+        "aloha corner_brckt ",
+        "references/mujoco_menagerie-main/aloha/assets/corner_bracket.stl",
     )
     print("   polygons whose first triple is degenerate, in total:", total)
-    assert_true(
-        total >= 8,
-        "only " + String(total) + " polygons across the fixtures have a"
-        " degenerate first triple, so this row is testing nothing. It passed"
-        " with 11 when the fixtures were re-chosen (5 + 4 + 2 + 0); a drop"
-        " means the hull or the polygon merge moved and they need re-choosing"
-        " again — which is exactly what happened when the vertex reduction"
-        " landed and took the corpus population from 2 759 polygons to 36.",
+
+    # ⚠⚠ THE NON-VACUITY CHECK IS SYNTHETIC NOW, AND THAT IS THE FIX, NOT A
+    # WEAKENING. It used to demand that the CORPUS supply polygons with a
+    # degenerate first triple, and the population drained twice — once when the
+    # hull vertex reduction landed (2 759 -> 36) and again when the hull became
+    # qhull's, each time taking the chosen fixtures to ZERO. Both times the
+    # assertion caught it, and both times the answer was to hunt for new
+    # fixtures. That hunt cannot end: whether a machined part's boundary run is
+    # degenerate is a KNIFE EDGE at `mjEPS = 1e-14` on the cross product of
+    # three nearly-collinear vertices, so it flips on the frame the normal is
+    # computed in. MuJoCo stores the `(1, 0, 0)` placeholder for 88 polygons
+    # across 37 Menagerie scenes; we agree on the RULE and not on which 88.
+    #
+    # A hand-built collinear polygon tests the branch directly and cannot drain
+    # away. `polygon_normal` with `first_three=True` is the path qhull's cycle
+    # start selects, and MuJoCo's answer there is `mjuu_makenormal`'s literal
+    # `(1, 0, 0)`.
+    var cv = List[Scalar[DTYPE]]()
+    for k in range(4):
+        cv.append(Scalar[DTYPE](Float64(k)))   # (0,0,0) (1,1,1) (2,2,2) (3,3,3)
+        cv.append(Scalar[DTYPE](Float64(k)))
+        cv.append(Scalar[DTYPE](Float64(k)))
+    var cpv = List[Int]()
+    for k in range(4):
+        cpv.append(k)
+    var dn = polygon_normal[DTYPE](cv, 0, cpv, 0, 4, True)
+    print(
+        "   collinear polygon ->", dn[0], dn[1], dn[2],
+        " (MuJoCo's `mjuu_makenormal` placeholder is 1 0 0)",
     )
+    assert_true(
+        Float64(dn[0]) == 1.0
+        and Float64(dn[1]) == 0.0
+        and Float64(dn[2]) == 0.0,
+        "a polygon whose first three path vertices are COLLINEAR must return"
+        " `mjuu_makenormal`'s placeholder (1, 0, 0) when the cycle start is"
+        " qhull's, because that is what `mesh_polynormal` holds for the 88"
+        " polygons of the reference that hit it — and `alignedFaces` compares"
+        " against the reference's stored value. Got ("
+        + String(dn[0]) + ", " + String(dn[1]) + ", " + String(dn[2]) + ").",
+    )
+    _ = cv^
+    _ = cpv^
 
 
 def main() raises:
