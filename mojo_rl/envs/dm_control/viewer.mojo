@@ -1,4 +1,4 @@
-"""Interactive dm_control viewer — the TASK REGISTRY and the 47-arm dispatch.
+"""Interactive dm_control viewer — the TASK REGISTRY and the 48-arm dispatch.
 
     from mojo_rl.envs.dm_control.viewer import run_viewer, task_index
     run_viewer(task, drive, scale)
@@ -17,16 +17,16 @@ THE OTHER HALF IS `viewer_core.mojo` — state, sidebar and the per-task run
 loop, none of which names a task. Everything task-agnostic belongs there.
 
 COMPILE COST LIVES IN `dispatch`. Each task is a distinct compile-time
-`Phyics3dEnv[MODEL, CONFIG]`, and `dispatch` is the one place all 47 are
+`Phyics3dEnv[MODEL, CONFIG]`, and `dispatch` is the one place all 48 are
 named — so build time is roughly proportional to its arm count and to how
 much code `run_view` carries PER ARM. Two consequences, both load-bearing:
 
   · `build_sidebar` is NOT generic. It takes plain data in and returns
-    requests out, so 47 instantiations share one copy of the widget code
-    instead of stamping out 47. Keep it that way when adding features —
+    requests out, so 48 instantiations share one copy of the widget code
+    instead of stamping out 48. Keep it that way when adding features —
     anything that can be phrased over plain values belongs in `viewer_core`.
 
-  · IMPORTING THIS MODULE COSTS ALL 47, whether or not you call `dispatch`.
+  · IMPORTING THIS MODULE COSTS ALL 48, whether or not you call `dispatch`.
     That is why the split exists: a front end that wants two tasks imports
     `viewer_core` and writes its own two-arm dispatch, and compiles in
     seconds. `examples/dm_control/dm_viewer_imgui_two.mojo` is that front
@@ -134,12 +134,16 @@ from mojo_rl.envs.dm_control.point_mass.point_mass_hard_config import (
 )
 from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel, DMQuadrupedRunModel, DMQuadrupedFetchModel,
+    DMQuadrupedEscapeModel,
 )
 from mojo_rl.envs.dm_control.quadruped.quadruped_config import (
     DMQuadrupedWalkConfig, DMQuadrupedRunConfig,
 )
 from mojo_rl.envs.dm_control.quadruped.quadruped_fetch_config import (
     DMQuadrupedFetchConfig,
+)
+from mojo_rl.envs.dm_control.quadruped.quadruped_escape_config import (
+    DMQuadrupedEscapeConfig,
 )
 from mojo_rl.envs.dm_control.reacher.reacher_xml import (
     DMReacherModel, DMReacherHardModel,
@@ -160,7 +164,7 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 def task_names() -> List[String]:
-    """The 47 tasks, in the order `dispatch` indexes them.
+    """The 48 tasks, in the order `dispatch` indexes them.
 
     ⚠ THIS LIST AND `dispatch` ARE POSITIONALLY COUPLED. Index i here must be
     the arm `st.task == i` there; a mismatch shows up as clicking one robot and
@@ -207,6 +211,7 @@ def task_names() -> List[String]:
     t.append(String("quadruped_walk"))
     t.append(String("quadruped_run"))
     t.append(String("quadruped_fetch"))
+    t.append(String("quadruped_escape"))
     t.append(String("reacher_easy"))
     t.append(String("reacher_hard"))
     t.append(String("stacker_stack_2"))
@@ -275,8 +280,8 @@ def task_domain() -> List[Int]:
     t.append(11)      # pendulum
     for _ in range(2):
         t.append(12)  # point_mass
-    for _ in range(3):
-        t.append(13)  # quadruped  (walk, run, fetch)
+    for _ in range(4):
+        t.append(13)  # quadruped  (walk, run, fetch, escape)
     for _ in range(2):
         t.append(14)  # reacher
     for _ in range(2):
@@ -291,7 +296,7 @@ def task_domain() -> List[Int]:
 def dispatch(mut st: ViewerState) raises:
     """Run whichever task `st.task` names, and return when it wants another.
 
-    ⚠ INDEX ORDER MUST MATCH `task_names`. This is the one place all 47
+    ⚠ INDEX ORDER MUST MATCH `task_names`. This is the one place all 48
     compile-time instantiations are named, and what the build time is
     proportional to.
     """
@@ -389,22 +394,24 @@ def dispatch(mut st: ViewerState) raises:
     elif st.task == 37:
         run_view[DMQuadrupedFetchModel, DMQuadrupedFetchConfig](name, st)
     elif st.task == 38:
-        run_view[DMReacherModel, DMReacherConfig[0.05]](name, st)
+        run_view[DMQuadrupedEscapeModel, DMQuadrupedEscapeConfig](name, st)
     elif st.task == 39:
-        run_view[DMReacherHardModel, DMReacherConfig[0.015]](name, st)
+        run_view[DMReacherModel, DMReacherConfig[0.05]](name, st)
     elif st.task == 40:
-        run_view[DMStacker2Model, DMStacker2Config](name, st)
+        run_view[DMReacherHardModel, DMReacherConfig[0.015]](name, st)
     elif st.task == 41:
-        run_view[DMStacker4Model, DMStacker4Config](name, st)
+        run_view[DMStacker2Model, DMStacker2Config](name, st)
     elif st.task == 42:
-        run_view[DMSwimmer6Model, DMSwimmerConfig](name, st)
+        run_view[DMStacker4Model, DMStacker4Config](name, st)
     elif st.task == 43:
-        run_view[DMSwimmer15Model, DMSwimmerConfig](name, st)
+        run_view[DMSwimmer6Model, DMSwimmerConfig](name, st)
     elif st.task == 44:
-        run_view[DMWalkerModel, DMWalkerConfig[0.0]](name, st)
+        run_view[DMSwimmer15Model, DMSwimmerConfig](name, st)
     elif st.task == 45:
-        run_view[DMWalkerModel, DMWalkerConfig[1.0]](name, st)
+        run_view[DMWalkerModel, DMWalkerConfig[0.0]](name, st)
     elif st.task == 46:
+        run_view[DMWalkerModel, DMWalkerConfig[1.0]](name, st)
+    elif st.task == 47:
         run_view[DMWalkerModel, DMWalkerConfig[8.0]](name, st)
     else:
         print("unknown task index:", st.task)
@@ -443,7 +450,7 @@ def run_viewer(start_task: Int, drive: Int, scale: Float64) raises:
 
 
 def task_index(name: String) -> Int:
-    """Task id for one of the 47 registered names, or -1.
+    """Task id for one of the 48 registered names, or -1.
 
     The registry's own lookup; `viewer_core.task_index` is the same search over
     an arbitrary table, since that module is not allowed to know this one.

@@ -1,10 +1,10 @@
 """Task-agnostic half of the dm_control viewer — state, sidebar, run loop.
 
-`viewer.mojo` is the other half: the 47-arm `dispatch` that names every task's
+`viewer.mojo` is the other half: the 48-arm `dispatch` that names every task's
 compile-time `Phyics3dEnv[MODEL, CONFIG]`, plus `run_viewer` around it.
 
 ⚠ THE SPLIT IS A BUILD-TIME LEVER, not tidiness. `dispatch` instantiates
-`run_view` 47 times, and importing the module that holds it pays for all 47
+`run_view` 48 times, and importing the module that holds it pays for all 48
 even if the importer only wants two. Keeping everything task-agnostic HERE lets
 a front end with its own short task list — `examples/dm_control/
 dm_viewer_imgui_two.mojo`, which exists so this code can be exercised in
@@ -18,7 +18,7 @@ THE SAME RULE COVERS POLICIES. `DRIVE_POLICY` drives the actuators from an
 `ActionSource` — a four-method trait over HOST LISTS — and the conformer, its
 weights and its checkpoint paths all live in the front end
 (`examples/dm_control/dm_walker_policy_viewer.mojo` is the first one). So this
-module still depends on nothing from `nn` / `deep_agents`, and the 47-task
+module still depends on nothing from `nn` / `deep_agents`, and the 48-task
 viewer compiles no policy code at all: `POLICY` defaults to `NoPolicy`.
 
 Read `viewer.mojo`'s header for the controls, the drive modes, and what the
@@ -142,7 +142,7 @@ trait ActionSource:
     ⚠ HOST LISTS, NOT TENSORS, AND DELIBERATELY SO. One env at 60 Hz makes the
     per-step copy free, and the list interface is what keeps this trait — and
     therefore `viewer_core` — free of any dependency on `nn` / `deep_agents`.
-    The 47-task viewer must stay compilable without them.
+    The 48-task viewer must stay compilable without them.
 
     ⚠ THE DIMS ARE RUNTIME, so a mismatch cannot be a compile error. Report the
     policy's own dims here and `run_view` refuses to drive a model they do not
@@ -189,7 +189,7 @@ trait ActionSource:
 struct NoPolicy(ActionSource, Copyable, Movable):
     """The default `ActionSource`: there isn't one.
 
-    Exists so `run_view`'s policy parameter can have a default and the 47
+    Exists so `run_view`'s policy parameter can have a default and the 48
     existing call sites stay untouched. Every method is trivial, so the arm is
     dead code the moment `policy=None`.
     """
@@ -431,7 +431,7 @@ def ui_task_tree(
     _ = ig_input_text(String("##filter"), st.filter, String("filter tasks..."))
     var query = st.filter.value()
 
-    # The child is what makes 47 tasks a non-problem: it SCROLLS. The
+    # The child is what makes 48 tasks a non-problem: it SCROLLS. The
     # hand-rolled sidebar had to cap the row count and print
     # "+N more — narrow the filter" instead.
     if ig_begin_child(String("tasks"), 0.0, height, True):
@@ -608,7 +608,7 @@ def build_sidebar(
     """The whole panel, in one NON-GENERIC function.
 
     ⚠ KEEP IT NON-GENERIC. `run_view` is instantiated once per task, so every
-    line inside it is compiled 47 times; every line here is compiled once.
+    line inside it is compiled 48 times; every line here is compiled once.
     Taking the env's state as plain arguments and returning requests is what
     buys that, and it is the difference between the sidebar being free and it
     dominating the build.
@@ -661,13 +661,13 @@ def run_view[
     ⚠ `policy` IS OWNED BY THE FRONT END, and must be, for two reasons: it holds
     network weights that would be reloaded on every task switch if it died with
     the env, and it is the only part of the viewer that depends on
-    `deep_agents` — keeping it outside means the 47-task `dispatch` never
+    `deep_agents` — keeping it outside means the 48-task `dispatch` never
     compiles a policy at all (`POLICY` defaults to the no-op `NoPolicy`).
 
     Returns through `st`: either `st.quit`, or `st.task` now naming a DIFFERENT
     task, which `run_viewer` then launches. It cannot call itself with the new
     task — each task is a separate compile-time instantiation, so recursion
-    would try to instantiate all 47 inside all 47.
+    would try to instantiate all 48 inside all 48.
 
     ⚠ PARAMETERISED ON MODEL+CONFIG, NOT ON THE ENV TYPE. The obvious
     factoring — `def run_view[E: BoxContinuousActionEnv & RenderableEnv](mut

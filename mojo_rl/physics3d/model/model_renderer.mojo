@@ -15,6 +15,22 @@ from mojo_rl.core import EnvRenderer3D
 
 from . import ModelDefLike
 from ..parser.render_fields import RenderFields
+from ..gpu.constants import (
+    MODEL_HFIELD_META_SIZE,
+    HFIELD_META_IDX_ADR,
+    HFIELD_META_IDX_NROW,
+    HFIELD_META_IDX_NCOL,
+    HFIELD_META_IDX_SIZE_X,
+    HFIELD_META_IDX_SIZE_Y,
+    HFIELD_META_IDX_SIZE_Z,
+    HFIELD_META_IDX_SIZE_BASE,
+)
+
+comptime _RGEOM_HFIELD: Int = 7
+"""`flat_model._GEOM_HFIELD`. ⚠ NOT MuJoCo's `mjGEOM_HFIELD` (1) — this engine
+numbers its geom types differently, and the two are easy to confuse because
+both enums start at PLANE = 0."""
+
 from ..kinematics.camera_frame import (
     camera_world_pos,
     camera_world_quat,
@@ -67,6 +83,25 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1, CAM_TARGETBODY=2
     var camera_targets: List[Int]
     """Body each camera aims at for CAM_TARGETBODY, -1 otherwise."""
+
+    var hfield_grid: List[Float64]
+    """The live elevation grid, NORMALISED TO [0, 1], or empty.
+
+    ⚠ RUNTIME STATE IN A COMPTIME-BUILT RENDERER, and it has to be. `RenderFields`
+    is produced by the comptime interpreter and knows the model's SHAPE; a
+    `<hfield nrow ncol>` with no `file` is a grid of zeros the TASK rewrites on
+    every reset, so its contents are `Data`, not model. `set_heightfield` is
+    how the env pushes them across.
+    """
+    var hfield_meta: List[Float64]
+    """Per-field `(adr, nrow, ncol, size_x, size_y, size_z, size_base)`, in
+    `MODEL_HFIELD_META_SIZE`-sized blocks — the same packing `Model.hfield_meta`
+    uses, copied rather than re-derived so the surface drawn and the surface
+    the rays hit come from ONE description."""
+    var hfield_rev: Int
+    """Bumped by the env when it rewrites the grid. ⚠ THE REASON THE RENDERER
+    DOES NOT DIFF THE GRID ITSELF: escape's is 40,401 samples and comparing them
+    every frame costs more than the draw does."""
 
     var camera_bodies: List[Int]
     """Body each camera is ATTACHED to (`mjModel.cam_bodyid`); 0 = worldbody."""
@@ -177,6 +212,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         var mode_list = Self.MODEL_DEF.setup_camera_modes(rf)
         self.cameras = List[Camera3D]()
         self.camera_modes = List[Int]()
+        self.hfield_grid = List[Float64]()
+        self.hfield_meta = List[Float64]()
+        self.hfield_rev = -1
         self.camera_bodies = List[Int]()
         self.camera_local_pos = List[Vec3]()
         self.camera_local_quat = List[Quat]()
@@ -361,6 +399,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
         self.camera_targets = move.camera_targets^
+        self.hfield_grid = move.hfield_grid^
+        self.hfield_meta = move.hfield_meta^
+        self.hfield_rev = move.hfield_rev
         self.camera_bodies = move.camera_bodies^
         self.camera_local_pos = move.camera_local_pos^
         self.camera_local_quat = move.camera_local_quat^
@@ -647,6 +688,11 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+        # ⚠ AFTER THE GEOMS AND BEFORE THE SKIN, for the depth reason the skin
+        # note below gives: the terrain is opaque ground, and the robot standing
+        # on it must be drawn against it, not through it.
+        self._draw_heightfields(positions, quaternions)
+
         # Deformable skin (dog's envelope). Unconditional for the same reason
         # as the tendons — `render_skin` compiles to nothing on a model with no
         # `<skin>`, since `has_skin` is comptime.
@@ -709,6 +755,120 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self.renderer.end_frame()
         except:
             pass
+
+    def set_heightfield(
+        mut self,
+        grid: List[Float64],
+        meta: List[Float64],
+        revision: Int,
+    ):
+        """Hand the renderer the live elevation grid.
+
+        Args:
+            grid: Elevations, NORMALISED TO [0, 1], all fields concatenated.
+            meta: `MODEL_HFIELD_META_SIZE` floats per field — see `hfield_meta`.
+            revision: Bump when `grid` changes; the surface is rebuilt only then.
+
+        ⚠ COPIES, AND DELIBERATELY. The alternative is holding a borrow of
+        `Data.hfield_data` across frames, which Mojo will not let a struct field
+        do (`AnyOrigin`) — the same constraint that put the `mut` on
+        `Env.get_state`. The copy costs 40,401 doubles ONCE PER RESET, not per
+        frame, because the caller only calls this when `revision` moves.
+        """
+        if revision == self.hfield_rev:
+            return
+        self.hfield_rev = revision
+        self.hfield_grid = grid.copy()
+        self.hfield_meta = meta.copy()
+
+    def _draw_heightfields(mut self, positions: List[Vec3], quats: List[Quat]):
+        """Draw every `type="hfield"` geom, surface and base.
+
+        ⚠ NOT IN `render_body_geoms`, WHICH IS WHERE EVERY OTHER GEOM TYPE IS
+        DRAWN. That routine is a static method on `MODEL_DEF` taking only
+        `RenderFields` — comptime model shape — and a heightfield's elevations
+        are runtime `Data`. Widening its signature would push a runtime grid
+        through the comptime path for all fifty models to carry; this reads the
+        geom's pose and colour from `rf` exactly as that routine does, and the
+        heights from the state the env pushed.
+        """
+        if len(self.hfield_grid) == 0 or len(self.hfield_meta) == 0:
+            return
+        for g in range(len(self.rf.geom_type)):
+            if self.rf.geom_type[g] != _RGEOM_HFIELD:
+                continue
+            if g >= len(self.rf.geom_hfield_id):
+                continue
+            var hid = self.rf.geom_hfield_id[g]
+            if hid < 0:
+                continue
+            var b = hid * MODEL_HFIELD_META_SIZE
+            if b + MODEL_HFIELD_META_SIZE > len(self.hfield_meta):
+                continue
+            var adr = Int(self.hfield_meta[b + HFIELD_META_IDX_ADR])
+            var nrow = Int(self.hfield_meta[b + HFIELD_META_IDX_NROW])
+            var ncol = Int(self.hfield_meta[b + HFIELD_META_IDX_NCOL])
+            var sx = self.hfield_meta[b + HFIELD_META_IDX_SIZE_X]
+            var sy = self.hfield_meta[b + HFIELD_META_IDX_SIZE_Y]
+            var sz = self.hfield_meta[b + HFIELD_META_IDX_SIZE_Z]
+            var sb = self.hfield_meta[b + HFIELD_META_IDX_SIZE_BASE]
+
+            # The geom's world pose, composed the way `render_body_geoms`
+            # composes every other geom's.
+            var bid = self.rf.geom_body_id[g]
+            if bid >= len(positions):
+                continue
+            var lpos = Vec3(
+                self.rf.geom_pos_x[g],
+                self.rf.geom_pos_y[g],
+                self.rf.geom_pos_z[g],
+            )
+            var lq = Quat(
+                self.rf.geom_quat_w[g],
+                self.rf.geom_quat_x[g],
+                self.rf.geom_quat_y[g],
+                self.rf.geom_quat_z[g],
+            )
+            var wq = quats[bid] * lq
+            var wpos = positions[bid] + quats[bid].rotate_vec(lpos)
+
+            var col = Color(
+                UInt8(Int(self.rf.geom_rgba_r[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_g[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_b[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_a[g] * 255.0)),
+            )
+
+            try:
+                self.renderer.draw_heightfield(
+                    name=String("hfield_") + String(hid),
+                    center=wpos,
+                    orientation=wq,
+                    nrow=nrow,
+                    ncol=ncol,
+                    size_x=sx,
+                    size_y=sy,
+                    size_z=sz,
+                    grid=self.hfield_grid,
+                    adr=adr,
+                    revision=self.hfield_rev,
+                    color=col,
+                )
+                # ⚠ THE BASE, WITHOUT WHICH THE TERRAIN IS A SHEET. A
+                # `<hfield>` sits on a solid box `size[3]` deep — the same box
+                # `mj_rayHfield` intersects first — and drawing only the
+                # surface makes the rim read as infinitely thin from below.
+                # Skipped when it is degenerate rather than drawn zero-thick.
+                if sb > 1e-9:
+                    self.renderer.draw_box(
+                        center=wpos
+                        + wq.rotate_vec(Vec3(0.0, 0.0, -0.5 * sb)),
+                        orientation=wq,
+                        half_extents=Vec3(sx, sy, 0.5 * sb),
+                        color=col,
+                    )
+            except:
+                pass
 
     def set_hud_extra(mut self, lines: List[String]):
         """Replace the application-owned HUD lines."""

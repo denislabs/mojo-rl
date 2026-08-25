@@ -182,6 +182,17 @@ struct Phyics3dEnv[
         Pointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
     ]
     var _renderer_initialized: Bool
+    var _hfield_pushed_rev: Int
+    """The `_hfield_rev` the renderer has already been handed; -1 = never."""
+    var _hfield_rev: Int
+    """Bumped whenever `custom_reset_full_cpu` may have rewritten the terrain.
+
+    ⚠ A COUNTER, NOT A DIFF. `quadruped escape` redraws a 201x201 grid on every
+    reset and nothing else in the suite touches one; comparing 40,401 samples
+    per frame to notice would cost more than drawing the surface does. Bumping
+    unconditionally at reset over-reports for a model whose hook leaves the
+    grid alone, which costs one rebuild per episode and no correctness.
+    """
     # Owned device context: the model-record tensors upload to it once at build
     # (init_fields). Kept for the env's lifetime so the mf device buffers stay
     # valid (the CPU step path never reads them). The no-arg ctor creates one so
@@ -221,6 +232,8 @@ struct Phyics3dEnv[
             self.act.append(Scalar[Self.DTYPE](0))
         self._renderer = None
         self._renderer_initialized = False
+        self._hfield_rev = 0
+        self._hfield_pushed_rev = -1
 
         # Build the model record tensors offset-free (P6 fields-native build):
         # no flat slab, no cross-family offset tables. `init_fields` writes
@@ -366,6 +379,10 @@ struct Phyics3dEnv[
             Self.CONFIG.custom_reset_full_cpu(self.d, self.mf)
         except e:
             print("Phyics3dEnv: custom_reset_full_cpu FAILED —", e)
+        # ⚠ AFTER THE HOOK, NOT BEFORE. That is the one call that can rewrite
+        # the heightfield, and the renderer rebuilds its surface when this
+        # moves — bumping first would mark the OLD grid as fresh.
+        self._hfield_rev += 1
         comptime if Self.CONFIG.RESET_FIND_HEIGHT:
             self._find_non_contacting_height()
         self._sync_mocap_to_fields()
@@ -724,6 +741,31 @@ struct Phyics3dEnv[
             xpos[i] = self.get_xpos(i)
         for i in range(Self.MODEL_DEF.NBODY * 4):
             xquat[i] = self.get_xquat(i)
+        # ⚠ THE TERRAIN, BEFORE THE BODIES. `set_heightfield` returns
+        # immediately unless `_hfield_rev` moved, so the copy below is paid once
+        # per episode and not once per frame — see its docstring for why the
+        # renderer takes a copy rather than a borrow.
+        # ⚠ THE GATE IS HERE, NOT INSIDE `set_heightfield`. That method
+        # returns early on an unchanged revision, but the two `List` copies
+        # below are built by the CALLER — gating only inside would pay 40,401
+        # doubles every frame to then throw them away.
+        if (
+            self.mf.dims.get_nhfield_data() > 0
+            and self._hfield_pushed_rev != self._hfield_rev
+        ):
+            self._hfield_pushed_rev = self._hfield_rev
+            var grid = List[Float64](
+                capacity=len(self.d.hfield_data.data)
+            )
+            for i in range(len(self.d.hfield_data.data)):
+                grid.append(Float64(self.d.hfield_data.data[i]))
+            var meta = List[Float64](capacity=len(self.mf.hfield_meta.data))
+            for i in range(len(self.mf.hfield_meta.data)):
+                meta.append(Float64(self.mf.hfield_meta.data[i]))
+            self._renderer.value()[].set_heightfield(
+                grid, meta, self._hfield_rev
+            )
+
         self._renderer.value()[].render_from_body_state(
             xpos,
             xquat,

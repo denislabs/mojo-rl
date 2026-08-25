@@ -70,6 +70,15 @@ struct RenderFields(Copyable, Movable):
     var geom_rgba_b: List[Float64]
     var geom_rgba_a: List[Float64]
     var geom_material_id: List[Int]
+    var geom_hfield_id: List[Int]
+    """Index into the model's `<hfield>` assets, -1 for a non-hfield geom.
+
+    ⚠ CARRIED BECAUSE THE RENDERER CANNOT GUESS IT. A `type="hfield"` geom's
+    SHAPE lives in the asset — nrow/ncol and the `size` 4-vector — not in the
+    geom's own record, so a renderer holding only `geom_half_*` has no way to
+    draw one. This is the same gap `cam_body` was: a field the parser resolved
+    and then DROPPED at the `GeomData` -> `RenderFields` boundary.
+    """
     var geom_mesh_id: List[Int]
     var geom_mesh_scale: List[Float64]
     """`<mesh scale>` per GEOM, three each — 1,1,1 for a non-mesh geom.
@@ -212,6 +221,7 @@ struct RenderFields(Copyable, Movable):
         self.geom_rgba_b = List[Float64]()
         self.geom_rgba_a = List[Float64]()
         self.geom_material_id = List[Int]()
+        self.geom_hfield_id = List[Int]()
         self.geom_mesh_id = List[Int]()
         self.geom_mesh_scale = List[Float64]()
         self.geom_group = List[Int]()
@@ -395,6 +405,11 @@ def build_render_fields(
                 if fmd.mesh_asset_files[k] == g.mesh_filename:
                     mid = k
                     break
+        # ⚠ MAPPING 2 — HFIELD IDENTITY IS BY INDEX, UNLIKE THE MESH ABOVE.
+        # `GeomData.hfield_id` already indexes the `<asset><hfield>` table by
+        # the order the parser read them, which is the same table the renderer
+        # reads its sizes from; there is no second space to translate between.
+        rf.geom_hfield_id.append(g.hfield_id)
         rf.geom_mesh_id.append(mid)
         rf.geom_mesh_scale.append(g.mesh_scale_x)
         rf.geom_mesh_scale.append(g.mesh_scale_y)

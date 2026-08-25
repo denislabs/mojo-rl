@@ -1,4 +1,4 @@
-"""Interactive dm_control viewer with a Dear ImGui sidebar — all 47 tasks.
+"""Interactive dm_control viewer with a Dear ImGui sidebar — all 48 tasks.
 
     pixi run build-imgui                                   # ONCE
     pixi run mojo run -I . examples/dm_control/dm_viewer_imgui.mojo
@@ -25,7 +25,15 @@ difference is a Dear ImGui sidebar instead of the hand-rolled
 `mojo_rl/render/ui.mojo` widgets. Keeping both means the ImGui dependency
 stays optional.
 
-⚠ DOG IS NOT REGISTERED YET — it is still being ported.
+⚠ TWO TASKS ARE ABSENT, AND FOR THE SAME REASON: `dog_fetch` and the dog-sized
+sibling of `quadruped_fetch` both keep a ball and a target, which adds a free
+joint and a second free-jointed object to collide. The other four dog tasks ARE
+registered — an older note here said dog was not, which stopped being true.
+
+⚠ `quadruped_escape` DRAWS ITS TERRAIN, and it is the only task here that does.
+Its heightfield is rewritten on every reset, so what you see is that episode's
+bowl and not a fixed asset — see `physics3d/model/hfield_surface.mojo` for why
+the drawn surface and the one the rangefinders hit come from one description.
 
 ⚠ RUN THIS ON THE LAPTOP, not a headless box — it opens an SDL3 window and
 blocks on it. CPU physics on purpose: one env at 60 Hz needs no GPU.
@@ -47,7 +55,7 @@ def main() raises:
     var start = String(args[1]) if len(args) > 1 else String("quadruped_walk")
     var task = task_index(start)
     if task < 0:
-        print("unknown task:", start, "— the 47 registered tasks are:")
+        print("unknown task:", start, "— the 48 registered tasks are:")
         print_task_list()
         return
 

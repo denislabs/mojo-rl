@@ -12,6 +12,12 @@ from mojo_rl.math3d import (
     Quat as QuatGeneric,
     Mat4 as Mat4Generic,
 )
+# ⚠ THE ONE PLACE THE HFIELD SAMPLE POSITIONS ARE SPELLED. `mj_rayHfield`
+# builds the same surface for the physics; see that module's header for why a
+# second copy here would be a silent divergence.
+from mojo_rl.physics3d.model.hfield_surface import (
+    hfield_node_x, hfield_node_y, hfield_node_z,
+)
 from std.ffi import _get_dylib_function
 from std.sys import CompilationTarget
 from std.sys.info import size_of
@@ -272,6 +278,77 @@ struct LineColorEntry(Copyable, Movable):
         return out^
 
 
+struct HfieldCacheEntry(Movable):
+    """A `<hfield>` surface: its GPU home and the revision it was built from.
+
+    ⚠ THE GPU SIDE LIVES IN `mesh_cache`, exactly as `SkinCacheEntry`'s does —
+    a heightfield is an ordinary indexed triangle mesh once its vertices are
+    computed, so it is drawn by the existing mesh path and released by the
+    existing `_release_model_caches`. What this entry adds is the state that
+    tells a re-upload from a redraw.
+
+    ⚠ THE TOPOLOGY NEVER CHANGES, ONLY THE HEIGHTS. `nrow`/`ncol` are fixed by
+    the asset, so the INDEX buffer is uploaded once and only the vertex buffer
+    is rewritten. That is what makes a per-episode terrain affordable: escape's
+    grid is 80,000 triangles, and re-deriving its 240,000 indices every reset
+    would cost far more than the elevations do.
+
+    ⚠ `revision` IS THE WHOLE REASON THIS IS NOT `draw_skin`. A skin deforms
+    every frame and re-uploads unconditionally; a heightfield changes only when
+    the task rewrites it — once per episode for `quadruped escape`, never for a
+    terrain loaded from a PNG. Uploading 1.3 MB at 60 Hz for a surface that is
+    not moving is the shape this field exists to avoid.
+    """
+
+    var name: String
+    var mesh_idx: Int
+    var revision: Int
+    var nrow: Int
+    var ncol: Int
+
+    var transfer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+    """Persistent upload staging. ⚠ ALLOCATED ONCE — see `SkinCacheEntry`."""
+    var vbuf_bytes: Int
+
+    var verts: List[GPUVertex]
+    """Scratch for the rebuild. A field rather than a local for the same reason
+    the skin's is, even though this runs per RESET and not per frame: 40,401
+    vertices is not an allocation to make casually."""
+
+    def __init__[
+        tb_o: MutOrigin, //
+    ](
+        out self,
+        var name: String,
+        mesh_idx: Int,
+        nrow: Int,
+        ncol: Int,
+        transfer: Ptr[GPUTransferBuffer, tb_o],
+        vbuf_bytes: Int,
+    ):
+        self.name = name^
+        self.mesh_idx = mesh_idx
+        # ⚠ NOT 0. `revision` 0 is a legitimate value a caller can pass on the
+        # very first frame, and starting equal to it would skip the initial
+        # upload and draw a FLAT sheet until the first reset.
+        self.revision = -1
+        self.nrow = nrow
+        self.ncol = ncol
+        self.transfer = untracked(transfer)
+        self.vbuf_bytes = vbuf_bytes
+        self.verts = List[GPUVertex]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.mesh_idx = move.mesh_idx
+        self.revision = move.revision
+        self.nrow = move.nrow
+        self.ncol = move.ncol
+        self.transfer = move.transfer
+        self.vbuf_bytes = move.vbuf_bytes
+        self.verts = move.verts^
+
+
 struct SkinCacheEntry(Movable):
     """A loaded skin: its rest data, its bone->body map, and its GPU home.
 
@@ -470,6 +547,7 @@ struct Renderer3D(Movable):
     parse, the asset table and the kinematics can all be verified correct
     while the picture stays wrong. Printing per frame would be 60 lines a
     second, so the name is recorded here and reported once."""
+    var hfield_cache: List[HfieldCacheEntry]
     var skin_cache: List[SkinCacheEntry]
     """Deformable skins. Separate from `mesh_cache` because a skin carries CPU
     state a rigid mesh never needs; its GPU buffers still live in `mesh_cache`.
@@ -711,6 +789,7 @@ struct Renderer3D(Movable):
         self.cylinder_cache = List[CapsuleCacheEntry]()
         self.mesh_cache = List[MeshCacheEntry]()
         self.mesh_failed = List[String]()
+        self.hfield_cache = List[HfieldCacheEntry]()
         self.skin_cache = List[SkinCacheEntry]()
 
         # Texture cache
@@ -795,6 +874,7 @@ struct Renderer3D(Movable):
         self.cylinder_cache = move.cylinder_cache^
         self.mesh_cache = move.mesh_cache^
         self.mesh_failed = move.mesh_failed^
+        self.hfield_cache = move.hfield_cache^
         self.skin_cache = move.skin_cache^
         self.texture_cache = move.texture_cache^
         self.default_texture = move.default_texture^
@@ -1191,6 +1271,14 @@ struct Renderer3D(Movable):
                 self.device.value(), self.skin_cache[i].transfer
             )
         self.skin_cache.clear()
+        # Same argument as the skins above: the mesh buffers are already gone,
+        # what is left is staging this list alone owns, and `mesh_idx` must not
+        # outlive the `mesh_cache` it points into.
+        for i in range(len(self.hfield_cache)):
+            release_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[i].transfer
+            )
+        self.hfield_cache.clear()
 
     def _create_shader_msl(
         self,
@@ -3434,6 +3522,228 @@ struct Renderer3D(Movable):
                 is_mesh=True,
                 mesh_cache_idx=cache_idx,
                 texture_cache_idx=tex_idx,
+            )
+        )
+
+    def draw_heightfield(
+        mut self,
+        name: String,
+        center: Vec3,
+        orientation: Quat,
+        nrow: Int,
+        ncol: Int,
+        size_x: Float64,
+        size_y: Float64,
+        size_z: Float64,
+        grid: List[Float64],
+        adr: Int,
+        revision: Int,
+        color: Color = Color(80, 110, 140, 255),
+        shininess: Float32 = 0.2,
+        specular: Float32 = 0.15,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a MuJoCo `<hfield>` elevation surface.
+
+        Args:
+            name: Cache key.
+            center: The geom's world position.
+            orientation: The geom's world orientation.
+            nrow: Grid rows (the y axis).
+            ncol: Grid columns (the x axis).
+            size_x: Half-extent along local x, `hfield_size[0]`.
+            size_y: Half-extent along local y, `hfield_size[1]`.
+            size_z: Elevation scale, `hfield_size[2]`.
+            grid: The elevation grid, NORMALISED TO [0, 1].
+            adr: Offset of this field's first sample within `grid`.
+            revision: Bump to force a rebuild; see `HfieldCacheEntry`.
+            color: Surface colour.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+
+        ⚠ THE VERTEX CONVENTION IS `mj_rayHfield`'s, COPIED RATHER THAN
+        RE-DERIVED. Sample (r, c) sits at
+        `x = 2*size_x*c/(ncol-1) - size_x`, `y = 2*size_y*r/(nrow-1) - size_y`,
+        `z = grid[adr + r*ncol + c] * size_z`, and each cell is split
+        `(r,c)-(r,c+1)-(r+1,c+1)` then `(r,c)-(r+1,c+1)-(r+1,c)`. Getting the
+        split or the winding wrong draws a surface that looks plausible and does
+        not match the one the rangefinders hit — which is the single thing this
+        view exists to check.
+
+        ⚠ THE VERTICES ARE LOCAL, NOT WORLD, unlike `draw_skin`'s. The geom's
+        pose goes in the model matrix, so a terrain on a moving body follows it
+        for free and the cached buffer stays valid when it does.
+
+        ⚠ THE BASE IS NOT DRAWN HERE. A `<hfield>` is a surface on a box that
+        extends `size[3]` below z=0; this draws the surface only, and the caller
+        adds the base with `draw_box` if it wants one. Keeping them apart means
+        a caller can suppress a base that is 0.1 m thick under a 60 m field
+        without losing the terrain.
+        """
+        if nrow < 2 or ncol < 2:
+            return
+        var need = adr + nrow * ncol
+        if need > len(grid):
+            # ⚠ REPORTED ONCE, THEN DRAWN AS NOTHING — `draw_mesh`'s rule. A
+            # short grid is a wiring fault upstream, and a per-frame print
+            # would bury it under itself.
+            var seen = False
+            for k in range(len(self.mesh_failed)):
+                if self.mesh_failed[k] == name:
+                    seen = True
+            if not seen:
+                self.mesh_failed.append(name)
+                print(
+                    "Warning: heightfield '", name, "' needs", need,
+                    "samples and the grid holds", len(grid),
+                    "— DRAWN AS NOTHING.",
+                )
+            return
+
+        var idx = -1
+        for i in range(len(self.hfield_cache)):
+            if self.hfield_cache[i].name == name:
+                idx = i
+                break
+
+        var nv = nrow * ncol
+        if idx < 0:
+            # ── first sight: topology, buffers, staging ──────────────────
+            var seed = MeshData()
+            seed.vertices.reserve(nv)
+            seed.indices.reserve(6 * (nrow - 1) * (ncol - 1))
+            for _ in range(nv):
+                seed.vertices.append(GPUVertex(px=0, py=0, pz=0, nz=Float32(1)))
+            for r in range(nrow - 1):
+                for c in range(ncol - 1):
+                    var i00 = UInt32(r * ncol + c)
+                    var i01 = UInt32(r * ncol + c + 1)
+                    var i11 = UInt32((r + 1) * ncol + c + 1)
+                    var i10 = UInt32((r + 1) * ncol + c)
+                    seed.indices.append(i00)
+                    seed.indices.append(i01)
+                    seed.indices.append(i11)
+                    seed.indices.append(i00)
+                    seed.indices.append(i11)
+                    seed.indices.append(i10)
+
+            var vb_bytes = seed.vertex_byte_size()
+            var handle = self._upload_mesh(seed)
+            self.mesh_cache.append(MeshCacheEntry(name, handle^))
+            var mesh_idx = len(self.mesh_cache) - 1
+
+            var tb_info = GPUTransferBufferCreateInfo(
+                usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                size=UInt32(vb_bytes),
+                props=PropertiesID(0),
+            )
+            var transfer = untracked(
+                create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info))
+            )
+
+            var entry = HfieldCacheEntry(
+                name, mesh_idx, nrow, ncol, transfer, vb_bytes
+            )
+            for _ in range(nv):
+                entry.verts.append(GPUVertex(px=0, py=0, pz=0))
+            self.hfield_cache.append(entry^)
+            idx = len(self.hfield_cache) - 1
+            print(
+                "Built heightfield '", name, "':", nrow, "x", ncol, "=",
+                2 * (nrow - 1) * (ncol - 1), "triangles",
+            )
+
+        # ── rebuild the elevations, only when they moved ──────────────────
+        if self.hfield_cache[idx].revision != revision:
+            self.hfield_cache[idx].revision = revision
+            var dx = 2.0 * size_x / Float64(ncol - 1)
+            var dy = 2.0 * size_y / Float64(nrow - 1)
+            for r in range(nrow):
+                for c in range(ncol):
+                    var v = r * ncol + c
+                    var z = hfield_node_z(grid, adr, ncol, r, c, size_z)
+                    # ⚠ NORMALS BY CENTRAL DIFFERENCE ON THE GRID, not by
+                    # averaging the two triangles a vertex belongs to. The
+                    # difference is visible: per-face normals on a bump field
+                    # give the faceted look that makes a smooth bowl read as a
+                    # tessellation artefact, which is exactly the wrong thing
+                    # for a view whose job is judging the terrain's SHAPE.
+                    var cm = c - 1 if c > 0 else c
+                    var cp = c + 1 if c < ncol - 1 else c
+                    var rm = r - 1 if r > 0 else r
+                    var rp = r + 1 if r < nrow - 1 else r
+                    var zdx = (
+                        grid[adr + r * ncol + cp] - grid[adr + r * ncol + cm]
+                    ) * size_z
+                    var zdy = (
+                        grid[adr + rp * ncol + c] - grid[adr + rm * ncol + c]
+                    ) * size_z
+                    var wx = dx * Float64(cp - cm)
+                    var wy = dy * Float64(rp - rm)
+                    # The surface is z = f(x, y), so the (unnormalised) normal
+                    # is (-df/dx, -df/dy, 1). `wx`/`wy` are never 0 because
+                    # nrow and ncol are both at least 2.
+                    var n = Vec3(-zdx / wx, -zdy / wy, 1.0).normalized()
+                    self.hfield_cache[idx].verts[v] = GPUVertex(
+                        px=Float32(hfield_node_x(c, ncol, size_x)),
+                        py=Float32(hfield_node_y(r, nrow, size_y)),
+                        pz=Float32(z),
+                        nx=Float32(n.x),
+                        ny=Float32(n.y),
+                        nz=Float32(n.z),
+                        u=Float32(Float64(c) / Float64(ncol - 1)),
+                        v=Float32(Float64(r) / Float64(nrow - 1)),
+                    )
+
+            var vb_size = UInt32(self.hfield_cache[idx].vbuf_bytes)
+            var mapped = map_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[idx].transfer, True
+            )
+            unsafe_memcpy(
+                dest=mapped.unsafe_bitcast[UInt8](),
+                src=Pointer(
+                    to=self.hfield_cache[idx].verts[0]
+                ).unsafe_bitcast[UInt8](),
+                count=Int(vb_size),
+            )
+            unmap_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[idx].transfer
+            )
+
+            var mi = self.hfield_cache[idx].mesh_idx
+            var cmd_buf = acquire_gpu_command_buffer(self.device.value())
+            var copy_pass = begin_gpu_copy_pass(cmd_buf)
+            var src = GPUTransferBufferLocation(
+                transfer_buffer=untracked(self.hfield_cache[idx].transfer),
+                offset=0,
+            )
+            var dst = GPUBufferRegion(
+                buffer=untracked(self.mesh_cache[mi].mesh.vertex_buffer),
+                offset=0,
+                size=vb_size,
+            )
+            upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), True)
+            end_gpu_copy_pass(copy_pass)
+            submit_gpu_command_buffer(cmd_buf)
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(Mat4.from_quat(orientation, center))
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=self.hfield_cache[idx].mesh_idx,
+                texture_cache_idx=-1,
             )
         )
 
