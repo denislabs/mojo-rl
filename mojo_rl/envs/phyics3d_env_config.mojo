@@ -14,6 +14,10 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
+    MAX_GPU_HFIELDS,
+    MODEL_HFIELD_META_SIZE,
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     MODEL_GEOM_SIZE,
@@ -770,6 +774,43 @@ trait Phyics3dEnvConfig:
     # === GPU inline: initial ACTUATOR ACTIVATION (2026-08-12) ===
     @always_inline
     @staticmethod
+    def init_hfield_gpu[
+        DTYPE: DType, BATCH_SIZE: Int, NHFIELD_DATA: Int
+    ](
+        hfield_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE),
+            MutAnyOrigin,
+        ],
+        hfield_data: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE * NHFIELD_DATA),
+            MutAnyOrigin,
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """Rewrite THIS LANE's heightfield grid. Default: leave it alone.
+
+        ⚠⚠ PER LANE, AND THAT IS THE WHOLE REASON THE GRID MOVED INTO `Data`.
+        A batched env resets lanes INDEPENDENTLY (`_reset_mask`), so a task
+        whose terrain is per-episode — `quadruped escape` — must regenerate
+        only the lanes that reset. A shared grid would hand every environment
+        whichever terrain reset last, which reads as correlated policy
+        behaviour rather than as a bug.
+
+        ⚠ RUNS BEFORE THE NON-CONTACTING-HEIGHT SEARCH, and the order is
+        load-bearing: that search raises the body in 1 cm steps until nothing
+        touches, so it has to see the terrain it will stand on. Generating
+        afterwards spawns the robot inside a hill.
+
+        ⚠ THE DEFAULT IS A NO-OP, NOT A ZERO-FILL. A model whose terrain came
+        from a FILE has it in every lane already (`init_hfield_data` at
+        construction); zeroing here would flatten it on the first reset.
+        """
+        pass
+
+    @staticmethod
     def init_act_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
@@ -805,6 +846,146 @@ trait Phyics3dEnvConfig:
         pass
 
     # === GPU inline: Custom observation extraction (per-field; G5) ===
+    # === GPU: Custom observation extraction, WITH the ray tables ===
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_ray_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+        NMESH_TRI_F: Int,
+        NHFIELD_DATA: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        mesh_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_MESHES * MODEL_MESH_META_SIZE),
+            MutAnyOrigin,
+        ],
+        mesh_tris: LayoutTensor[
+            DTYPE, Layout.row_major(NMESH_TRI_F * 9), MutAnyOrigin
+        ],
+        hfield_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE),
+            MutAnyOrigin,
+        ],
+        hfield_data: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE * NHFIELD_DATA),
+            MutAnyOrigin,
+        ],
+        env: Int,
+    ) -> Bool:
+        """`custom_extract_obs_gpu` plus the four tables `mj_ray` reads.
+
+        The GPU twin of `custom_extract_obs_ray_cpu`, and a SECOND hook for the
+        same arithmetic reason: fifty types implement this trait, and widening
+        the existing signature would edit all fifty to give one of them four
+        more arguments. This DEFAULTS to forwarding, so a config that does not
+        cast rays is untouched and unaware.
+
+        Override THIS one for a `<rangefinder>`, a lidar, or a line-of-sight
+        test on the batched path. `dm_control`'s `quadruped escape` is the
+        first: twenty rangefinders per lane.
+
+        ⚠ THE FOUR EXTRA TABLES ARE EXACTLY `ray_model`'s TAIL, in its order —
+        `mesh_meta`, `mesh_tris`, `hfield_meta`, `hfield_data`. `hfield_data`
+        is FLAT with an `env * NHFIELD_DATA` base, which is the offset form
+        `ray_model` takes; it is the same buffer `init_hfield_gpu` writes.
+
+        ⚠ COST, BECAUSE IT IS NOT SMALL. `ray_model` is a linear scan over
+        every geom and one lane owns one ray, so N rangefinders on G geoms is
+        N*G geom queries PER LANE PER STEP, plus the whole triangle soup for
+        every mesh geom. Escape's 20 x 18 is fine; a mesh-heavy scene needs the
+        BVH this engine does not have yet.
+
+        Returns:
+            True if custom extraction was performed (skip model default).
+            False to fall back to `custom_extract_obs_gpu`, then to the model
+            default.
+        """
+        return Self.custom_extract_obs_gpu[
+            DTYPE, BATCH_SIZE, NQ, NV, NBODY, OBS_DIM, SITE_DIM, MC_F,
+            NSITE_F, NGEOM_F, NA_F,
+        ](
+            qpos, qvel, xpos, xquat, xvel, bodies, site_xpos, contacts,
+            sites, geoms, meta, obs, xipos, xangvel, cvel, cacc, cfrc_int,
+            subtree_com, site_xpos_acc, xquat_acc, act, env,
+        )
+
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[

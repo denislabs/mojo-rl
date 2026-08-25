@@ -55,6 +55,10 @@ from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
+    MAX_GPU_HFIELDS,
+    MODEL_HFIELD_META_SIZE,
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
@@ -127,7 +131,17 @@ struct Phyics3dBatchedEnv[
     # ⚠ ONE PROVIDER. `nmesh_verts` stays 0 — the batched path has never run
     # mesh collision, and `ModelDims` defaults it to 0, so this is the same
     # model it always built.
-    comptime MD = ModelDims[Self.MODEL_DEF]
+    #
+    # ⚠⚠ `nhfield_data` DOES NOT. It defaulted to 0 here, and `Data.hfield_data`
+    # is `_at_least_one(BATCH * nhfield_data)` — so a config declaring a
+    # 201x201 terrain got a ONE-ELEMENT buffer on the batched path while its
+    # single-env twin got 40401. Nothing caught it because no batched model had
+    # a heightfield until escape: the grid stayed one element wide and the
+    # terrain collided as a flat plane, silently, exactly as
+    # `DMQuadrupedEscapeConfig.NHFIELD_DATA` warns for the single-env path.
+    comptime MD = ModelDims[
+        Self.MODEL_DEF, nhfield_data = Self.CONFIG.NHFIELD_DATA
+    ]
     comptime NV: Int = Self.MODEL_DEF.NV
     comptime NBODY: Int = Self.MODEL_DEF.NBODY
     comptime NJOINT: Int = Self.MODEL_DEF.NJOINT
@@ -164,6 +178,18 @@ struct Phyics3dBatchedEnv[
     comptime L_GEOMS_HOOK = Layout.row_major(
         Self.NGEOM_F, MODEL_GEOM_SIZE
     )
+    # `Model.mesh_tris` is `_at_least_one`'d too — layout only. Zero today:
+    # `ModelDims` does not forward `nmesh_tri`, so the batched path carries no
+    # triangle soup and a MESH geom is invisible to `ray_model` here. Stated
+    # rather than assumed — escape's terrain is a heightfield and its robot is
+    # primitives, so nothing it casts a ray at is a mesh.
+    comptime NMESH_TRI_F: Int = (
+        Self.MD.NMESH_TRI if Self.MD.NMESH_TRI > 0 else 1
+    )
+    comptime L_MESH_META_HOOK = Layout.row_major(
+        MAX_GPU_MESHES * MODEL_MESH_META_SIZE
+    )
+    comptime L_MESH_TRIS_HOOK = Layout.row_major(Self.NMESH_TRI_F * 9)
     # `Model.tendons` is `_at_least_one`'d too — layout only.
     comptime NTENDON_F: Int = (
         Self.MODEL_DEF.MAX_TENDON if Self.MODEL_DEF.MAX_TENDON > 0 else 1
@@ -233,6 +259,23 @@ struct Phyics3dBatchedEnv[
     # force is computed from the wrong quantity entirely. quadruped and
     # dog are the models that have one. Floored at 1 like the CPU side.
     comptime NA_F: Int = Self.MODEL_DEF.NA_F
+    comptime L_HF_META_HOOK = Layout.row_major(
+        MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
+    )
+    comptime L_HF_DATA_HOOK = Layout.row_major(
+        Self.N_ENVS * Self.NHFIELD_DATA_F
+    )
+    """⚠ FLAT, NOT `[N_ENVS, NHFIELD_DATA]`. `ray_model` takes the grid as a
+    1-D tensor plus an `env * hf_stride` base offset, and the CPU path builds
+    exactly that view. One layout then serves BOTH hooks — the terrain writer
+    and the ray reader — instead of two views of one buffer that must be kept
+    in step."""
+    comptime NHFIELD_DATA_F = Self.CONFIG.NHFIELD_DATA if (
+        Self.CONFIG.NHFIELD_DATA > 0
+    ) else 1
+    """⚠ `_at_least_one`. Every kernel binds `hfield_data` whether the model
+    has a heightfield or not, and a zero-extent layout is not a buffer."""
+
     comptime L_ACT_HOOK = Layout.row_major(Self.N_ENVS, Self.NA_F)
     var _act: DeviceBuffer[DT]
     # 1.0 for a lane the last reset touched, 0.0 otherwise. Written by BOTH
@@ -835,19 +878,34 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            mesh_meta: LayoutTensor[
+                DT, Self.L_MESH_META_HOOK, MutAnyOrigin
+            ],
+            mesh_tris: LayoutTensor[
+                DT, Self.L_MESH_TRIS_HOOK, MutAnyOrigin
+            ],
+            hfield_meta: LayoutTensor[DT, Self.L_HF_META_HOOK, MutAnyOrigin],
+            hfield_data: LayoutTensor[DT, Self.L_HF_DATA_HOOK, MutAnyOrigin],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
                 return
-            if not Self.CONFIG.custom_extract_obs_gpu[
+            # ⚠ THE RAY-CAPABLE HOOK, WHICH DEFAULTS TO FORWARDING to
+            # `custom_extract_obs_gpu` — see `Phyics3dEnvConfig`. Calling the
+            # narrow one here too would give a config that overrode the ray
+            # hook two chances to write the observation. Same shape as
+            # `Phyics3dEnv._get_obs` on the single-env path.
+            if not Self.CONFIG.custom_extract_obs_ray_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
-                Self.NGEOM_F, Self.NA_F,
+                Self.NGEOM_F, Self.NA_F, Self.NMESH_TRI_F,
+                Self.NHFIELD_DATA_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
                 contacts, sites, geoms, meta, obs,
                 xipos, xangvel, cvel, cacc, cfrc_int, subtree_com,
-                site_xpos_acc, xquat_acc, act, env,
+                site_xpos_acc, xquat_acc, act,
+                mesh_meta, mesh_tris, hfield_meta, hfield_data, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -878,6 +936,10 @@ struct Phyics3dBatchedEnv[
             self._site_xpos_acc_operand(),
             self.d.xquat_acc.lt["gpu", type_of(self.d).L_B4](),
             self._act_operand(),
+            self.mf.mesh_meta.lt["gpu", Self.L_MESH_META_HOOK](),
+            self.mf.mesh_tris.lt["gpu", Self.L_MESH_TRIS_HOOK](),
+            self.mf.hfield_meta.lt["gpu", Self.L_HF_META_HOOK](),
+            self.d.hfield_data.lt["gpu", Self.L_HF_DATA_HOOK](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1180,6 +1242,8 @@ struct Phyics3dBatchedEnv[
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            hfield_meta: LayoutTensor[DT, Self.L_HF_META_HOOK, MutAnyOrigin],
+            hfield_data: LayoutTensor[DT, Self.L_HF_DATA_HOOK, MutAnyOrigin],
             seed_arg: Int64,
             qpos0: LayoutTensor[
                 DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
@@ -1196,7 +1260,8 @@ struct Phyics3dBatchedEnv[
                 return
             Self._reset_env_lane(
                 qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
-                mocap_quat, bodies, geoms, act, qpos0, pose_meta, i, seed,
+                mocap_quat, bodies, geoms, act, hfield_meta, hfield_data,
+                qpos0, pose_meta, i, seed,
             )
             reset_mask[i] = Scalar[DT](1)
 
@@ -1213,6 +1278,8 @@ struct Phyics3dBatchedEnv[
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self._act_operand(),
+            self.mf.hfield_meta.lt["gpu", Self.L_HF_META_HOOK](),
+            self.d.hfield_data.lt["gpu", Self.L_HF_DATA_HOOK](),
             Int64(rng_seed),
             self.sf.qpos0.lt[
                 "gpu", Layout.row_major(Self.MODEL_DEF.NQ_F)
@@ -1543,6 +1610,8 @@ struct Phyics3dBatchedEnv[
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            hfield_meta: LayoutTensor[DT, Self.L_HF_META_HOOK, MutAnyOrigin],
+            hfield_data: LayoutTensor[DT, Self.L_HF_DATA_HOOK, MutAnyOrigin],
             qpos0: LayoutTensor[
                 DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
             ],
@@ -1567,6 +1636,8 @@ struct Phyics3dBatchedEnv[
                     bodies,
                     geoms,
                     act,
+                    hfield_meta,
+                    hfield_data,
                     qpos0,
                     pose_meta,
                     i,
@@ -1593,6 +1664,8 @@ struct Phyics3dBatchedEnv[
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self._act_operand(),
+            self.mf.hfield_meta.lt["gpu", Self.L_HF_META_HOOK](),
+            self.d.hfield_data.lt["gpu", Self.L_HF_DATA_HOOK](),
             self.sf.qpos0.lt[
                 "gpu", Layout.row_major(Self.MODEL_DEF.NQ_F)
             ](),
@@ -1646,6 +1719,8 @@ struct Phyics3dBatchedEnv[
         ],
         geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
         act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+        hfield_meta: LayoutTensor[DT, Self.L_HF_META_HOOK, MutAnyOrigin],
+        hfield_data: LayoutTensor[DT, Self.L_HF_DATA_HOOK, MutAnyOrigin],
         qpos0: LayoutTensor[
             DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
         ],
@@ -1674,6 +1749,15 @@ struct Phyics3dBatchedEnv[
         ](
             qpos, qvel, joints, mocap_pos, mocap_quat, bodies, geoms,
             meta, env, seed,
+        )
+
+        # ⚠ THE TERRAIN, BEFORE THE HEIGHT SEARCH. `raise_kernel` /
+        # `settle_kernel` lift this lane until nothing touches, so the surface
+        # it will stand on has to exist first. Default is a NO-OP, so a model
+        # whose grid came from a file keeps the one `init_hfield_data` wrote
+        # at construction.
+        Self.CONFIG.init_hfield_gpu[DT, Self.N_ENVS, Self.NHFIELD_DATA_F](
+            hfield_meta, hfield_data, env, seed
         )
 
         # ⚠⚠ `mj_resetData` ZEROES `act`, AND THIS PATH DID NOT — a real bug,

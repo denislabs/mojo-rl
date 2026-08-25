@@ -34,6 +34,8 @@ the workspace site is `hfield_size[0]` metres out.
 
 from std.math import sqrt, tanh, inf, cos, pi
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.fields.dims import DimsLike
@@ -52,6 +54,9 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_SITE_SIZE,
     SITE_IDX_BODY,
 )
+from mojo_rl.physics3d.gpu.constants import MAX_GPU_HFIELDS
+from ..gpu_reset import reset_seed
+from ..dtype_math import sqrt_dt, cos_dt
 from ..rewards import tolerance, SIGMOID_LINEAR
 from .quadruped_config import (
     _upright_reward_at,
@@ -89,6 +94,29 @@ comptime ESCAPE_UPRIGHT_DEVIATION: Float64 = 0.9396926207859084
 comptime ESCAPE_HFIELD_ID: Int = 0
 comptime ESCAPE_TERRAIN_SMOOTHNESS: Float64 = 0.15
 comptime ESCAPE_TERRAIN_BUMP_SCALE: Float64 = 2.0
+
+# ⚠ A SALT, so the terrain stream is independent of the ORIENTATION stream.
+# `custom_reset_cpu`/`init_qpos_gpu` already draw from `reset_seed(env, seed)`;
+# reusing that key unsalted would tie which way the quadruped faces to which
+# bumps it faces, and the reference draws the two independently.
+comptime ESCAPE_TERRAIN_PHILOX_SALT: UInt64 = 0x9E3779B97F4A7C15
+
+
+def _escape_bump[
+    DTYPE: DType
+](
+    key: UInt64, k: Int, lo: Scalar[DTYPE], span: Scalar[DTYPE]
+) -> Scalar[DTYPE]:
+    """Bump `k` of the terrain grid: `uniform(smoothness, 1)`.
+
+    Counter-addressed rather than sequential — `offset=k` names the draw, so
+    any lane can evaluate any bump with no state. Only lane 0 of the returned
+    quad is used; taking `[k % 4]` would be a runtime index into a SIMD to save
+    three quarters of the Philox work, and this runs once per episode.
+    """
+    var rng = PhiloxRandom(seed=key, offset=UInt64(k))
+    var v = rng.step_uniform()
+    return lo + Scalar[DTYPE](v[0]) * span
 
 
 struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
@@ -300,6 +328,146 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
                 d.hfield_data.data[adr + r * res + c] = Scalar[DTYPE](
                     Float64(bowl * smooth).cast[DType.float32]()
                 )
+
+    @staticmethod
+    def init_hfield_gpu[
+        DTYPE: DType, BATCH_SIZE: Int, NHFIELD_DATA: Int
+    ](
+        hfield_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE),
+            MutAnyOrigin,
+        ],
+        hfield_data: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE * NHFIELD_DATA),
+            MutAnyOrigin,
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`custom_reset_full_cpu`'s terrain, per lane, on device.
+
+        Same bowl, same bump distribution, same bilinear upsample — see the
+        CPU docstring for the reference formula and for the one labelled
+        deviation (scipy's cubic `zoom` vs bilinear).
+
+        TWO GPU-ONLY DEVIATIONS, both stated rather than buried:
+
+        ⚠ THE ARITHMETIC IS `DTYPE`, NOT `Float64`. Float64 is banned on this
+        engine's device path, so the bowl, the radius and the bilinear blend
+        are computed in float32 where the CPU computes them in double and
+        rounds once at the end. The stored grid therefore differs from the CPU
+        one in the last few ulps for the SAME seed. This costs nothing that is
+        gated: the terrain is redrawn every episode from a per-lane stream that
+        does not match the CPU's anyway (below), and
+        `test_quadruped_escape_vs_dm_control` injects a SHARED grid rather than
+        comparing two generated ones.
+
+        ⚠ THE BUMP STREAM IS PER-LANE PHILOX, ADDRESSED BY BUMP INDEX. The CPU
+        draws `bump_res^2` values in order from host `random_float64`; here bump
+        `k` is `Random(seed=key, offset=k).step_uniform()[0]`, so a lane can
+        evaluate any bump without holding the grid. That matters twice over:
+        a 900-entry per-thread `InlineArray` would be 3.6 KB of stack per lane,
+        AND indexing one by a runtime value is the Metal miscompute class this
+        engine has now hit four times. No array, no index, no exposure.
+
+        The four corners are refetched only when `x0` moves — `res / bump_res`
+        is about 7, so this is ~4 draws per 7 columns rather than per column.
+        """
+        comptime if not DTYPE.is_floating_point():
+            return
+
+        var base = ESCAPE_HFIELD_ID * MODEL_HFIELD_META_SIZE
+        var adr = Int(hfield_meta[base + HFIELD_META_IDX_ADR])
+        var nrow = Int(hfield_meta[base + HFIELD_META_IDX_NROW])
+        var ncol = Int(hfield_meta[base + HFIELD_META_IDX_NCOL])
+        # ⚠ NO `raise` HERE — a kernel cannot. The CPU hook rejects a
+        # non-square grid; this one leaves the terrain untouched, which is the
+        # flat plane the model already had rather than a half-written grid.
+        if nrow != ncol or nrow < 2:
+            return
+        var res = nrow
+        if res * res > NHFIELD_DATA:
+            return
+
+        var sx = Scalar[DTYPE](hfield_meta[base + HFIELD_META_IDX_SIZE_X])
+        var bump_res = Int(
+            (Scalar[DTYPE](2.0) * sx)
+            / Scalar[DTYPE](ESCAPE_TERRAIN_BUMP_SCALE)
+        )
+        if bump_res < 2:
+            bump_res = 2
+
+        var key = reset_seed(env, seed) ^ ESCAPE_TERRAIN_PHILOX_SALT
+        var smooth_lo = Scalar[DTYPE](ESCAPE_TERRAIN_SMOOTHNESS)
+        var smooth_span = Scalar[DTYPE](1.0 - ESCAPE_TERRAIN_SMOOTHNESS)
+
+        var step = Scalar[DTYPE](2.0) / Scalar[DTYPE](res - 1)
+        var scale = Scalar[DTYPE](bump_res - 1) / Scalar[DTYPE](res - 1)
+        var two_pi = Scalar[DTYPE](2.0 * pi)
+
+        for r in range(res):
+            var ry = Scalar[DTYPE](-1.0) + Scalar[DTYPE](r) * step
+            var fy = Scalar[DTYPE](r) * scale
+            var y0 = Int(fy)
+            if y0 > bump_res - 1:
+                y0 = bump_res - 1
+            var y1 = y0 + 1 if y0 + 1 < bump_res else y0
+            var ty = fy - Scalar[DTYPE](y0)
+
+            # Corner cache, valid while `x0` holds. Plain scalars — see the
+            # docstring on why this is deliberately not an array.
+            var cached_x0 = -1
+            var b00 = Scalar[DTYPE](0)
+            var b01 = Scalar[DTYPE](0)
+            var b10 = Scalar[DTYPE](0)
+            var b11 = Scalar[DTYPE](0)
+
+            for c in range(res):
+                var cx = Scalar[DTYPE](-1.0) + Scalar[DTYPE](c) * step
+                var rad = sqrt_dt[DTYPE](cx * cx + ry * ry)
+                if rad < Scalar[DTYPE](0.04):
+                    rad = Scalar[DTYPE](0.04)
+                if rad > Scalar[DTYPE](1.0):
+                    rad = Scalar[DTYPE](1.0)
+                var bowl = (
+                    Scalar[DTYPE](0.5)
+                    - cos_dt[DTYPE](two_pi * rad) / Scalar[DTYPE](2.0)
+                )
+
+                var fx = Scalar[DTYPE](c) * scale
+                var x0 = Int(fx)
+                if x0 > bump_res - 1:
+                    x0 = bump_res - 1
+                var x1 = x0 + 1 if x0 + 1 < bump_res else x0
+                var tx = fx - Scalar[DTYPE](x0)
+
+                if x0 != cached_x0:
+                    cached_x0 = x0
+                    b00 = _escape_bump[DTYPE](
+                        key, y0 * bump_res + x0, smooth_lo, smooth_span
+                    )
+                    b01 = _escape_bump[DTYPE](
+                        key, y0 * bump_res + x1, smooth_lo, smooth_span
+                    )
+                    b10 = _escape_bump[DTYPE](
+                        key, y1 * bump_res + x0, smooth_lo, smooth_span
+                    )
+                    b11 = _escape_bump[DTYPE](
+                        key, y1 * bump_res + x1, smooth_lo, smooth_span
+                    )
+
+                var one = Scalar[DTYPE](1.0)
+                var smooth = (
+                    b00 * (one - tx) * (one - ty)
+                    + b01 * tx * (one - ty)
+                    + b10 * (one - tx) * ty
+                    + b11 * tx * ty
+                )
+                hfield_data[
+                    env * NHFIELD_DATA + adr + r * res + c
+                ] = bowl * smooth
 
     @staticmethod
     def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](

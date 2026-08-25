@@ -500,10 +500,6 @@ struct Phyics3dEnv[
         # `custom_extract_obs_cpu` — see `Phyics3dEnvConfig`. Calling the
         # narrow one here too would give a config that overrode the ray hook
         # two chances to write the observation.
-        # ⚠ The RAY-capable hook, which DEFAULTS to forwarding to
-        # `custom_extract_obs_cpu` — see `Phyics3dEnvConfig`. Calling the
-        # narrow one here too would give a config that overrode the ray hook
-        # two chances to write the observation.
         var custom = False
         try:
             custom = Self.CONFIG.custom_extract_obs_ray_cpu(
