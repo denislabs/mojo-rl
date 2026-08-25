@@ -79,3 +79,17 @@ comptime DMQuadrupedRunBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
     DMQuadrupedRunModel, DMQuadrupedRunConfig, N_ENVS,
     TERMINATE_ON_UNHEALTHY=False,
 ]
+
+comptime DMQuadrupedEscapeBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMQuadrupedEscapeModel, DMQuadrupedEscapeConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+"""⚠ THE ONLY BATCHED SUITE MODEL WITH A HEIGHTFIELD, and the first to use
+all three of `init_hfield_gpu`, `custom_extract_obs_ray_gpu` and
+`compute_reward_and_done_gpu`. Each lane draws its OWN bowl at reset — that is
+the point of the per-lane hook, and it is why the terrain lives in `Data`.
+
+⚠ COST. Twenty rangefinders over eighteen geoms is 360 geom queries per lane
+per step on top of the physics, and `ray_model` is a linear scan. It is worth
+having because those 360 are embarrassingly parallel across the batch, not
+because any one of them is cheap."""

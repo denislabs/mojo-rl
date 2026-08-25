@@ -277,6 +277,7 @@ def _common_obs_gpu[
     NA_F: Int,
     TORSO_SITE: Int,
     TOE_SITE_0_P: Int,
+    COMMON_DIM: Int = OBS_DIM,
 ](
     qpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -343,12 +344,20 @@ def _common_obs_gpu[
     observation, not a crash. The assert below is what makes a mis-sized
     block a compile error.
     """
+    # ⚠ AGAINST `COMMON_DIM`, WHICH DEFAULTS TO `OBS_DIM`. walk/run/fetch
+    # observe nothing beyond these five blocks, so for them the two are the
+    # same number and the check is what it always was. `escape` appends an
+    # origin and twenty rangefinders AFTER them, so it passes the common
+    # width explicitly and the exact check survives for both.
     comptime assert (
-        2 * N_HINGE + NA_F + 3 + 1 + 6 + 24 == OBS_DIM
+        2 * N_HINGE + NA_F + 3 + 1 + 6 + 24 == COMMON_DIM
     ), (
-        "quadruped._common_obs_gpu: the five blocks do not sum to OBS_DIM."
+        "quadruped._common_obs_gpu: the five blocks do not sum to COMMON_DIM."
         " egocentric_state(2*N_HINGE + NA_F) + torso_velocity(3) +"
         " torso_upright(1) + imu(6) + force_torque(24) must equal it exactly."
+    )
+    comptime assert COMMON_DIM <= OBS_DIM, (
+        "quadruped._common_obs_gpu: COMMON_DIM exceeds the observation buffer."
     )
 
     var k = 0

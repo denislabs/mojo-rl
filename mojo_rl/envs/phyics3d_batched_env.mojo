@@ -1062,6 +1062,14 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            mesh_meta: LayoutTensor[
+                DT, Self.L_MESH_META_HOOK, MutAnyOrigin
+            ],
+            mesh_tris: LayoutTensor[
+                DT, Self.L_MESH_TRIS_HOOK, MutAnyOrigin
+            ],
+            hfield_meta: LayoutTensor[DT, Self.L_HF_META_HOOK, MutAnyOrigin],
+            hfield_data: LayoutTensor[DT, Self.L_HF_DATA_HOOK, MutAnyOrigin],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
@@ -1073,15 +1081,25 @@ struct Phyics3dBatchedEnv[
             step_count += 1
             meta[env, META_IDX_STEP_COUNT] = Scalar[DT](step_count)
 
-            if not Self.CONFIG.custom_extract_obs_gpu[
+            # ⚠⚠ THE RAY-CAPABLE HOOK, AND THIS IS THE CALL SITE THAT
+            # MATTERS. There are TWO obs dispatches in this file — `obs_kernel`
+            # runs at reset, and THIS one runs every step. Wiring only the
+            # first one silently gave escape the MODEL DEFAULT observation
+            # (raw qpos from index 0) on every step while its reward hook,
+            # dispatched four lines below, ran correctly — a config that looks
+            # half-connected because it is. Both dispatch through the ray hook
+            # now; see `Phyics3dEnvConfig` for why it defaults to forwarding.
+            if not Self.CONFIG.custom_extract_obs_ray_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
-                Self.NGEOM_F, Self.NA_F,
+                Self.NGEOM_F, Self.NA_F, Self.NMESH_TRI_F,
+                Self.NHFIELD_DATA_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
                 contacts, sites, geoms, meta, obs,
                 xipos, xangvel, cvel, cacc, cfrc_int, subtree_com,
-                site_xpos_acc, xquat_acc, act, env,
+                site_xpos_acc, xquat_acc, act,
+                mesh_meta, mesh_tris, hfield_meta, hfield_data, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -1180,6 +1198,10 @@ struct Phyics3dBatchedEnv[
             self._site_xpos_acc_operand(),
             self.d.xquat_acc.lt["gpu", type_of(self.d).L_B4](),
             self._act_operand(),
+            self.mf.mesh_meta.lt["gpu", Self.L_MESH_META_HOOK](),
+            self.mf.mesh_tris.lt["gpu", Self.L_MESH_TRIS_HOOK](),
+            self.mf.hfield_meta.lt["gpu", Self.L_HF_META_HOOK](),
+            self.d.hfield_data.lt["gpu", Self.L_HF_DATA_HOOK](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )

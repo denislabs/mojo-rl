@@ -18,7 +18,7 @@ See `feedback_where_clause_cannot_cross_trait_boundary`. Add shims here as
 hooks need them; do NOT widen a trait signature to satisfy `std.math`.
 """
 
-from std.math import log, sin, cos, sqrt, inf, abs, atanh
+from std.math import log, sin, cos, sqrt, inf, abs, atanh, tanh
 
 
 @always_inline
@@ -356,3 +356,25 @@ def inf_dt[DTYPE: DType]() -> Scalar[DTYPE]:
 @always_inline
 def _inf_impl[DTYPE: DType]() -> Scalar[DTYPE] where DTYPE.is_floating_point():
     return inf[DTYPE]()
+
+
+@always_inline
+def tanh_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`tanh(x)`, callable from a GPU hook. See the module docstring."""
+    comptime if DTYPE == DType.float32:
+        return rebind[Scalar[DTYPE]](
+            _tanh_impl[DType.float32](rebind[Float32](x))
+        )
+    elif DTYPE == DType.float64:
+        return rebind[Scalar[DTYPE]](
+            _tanh_impl[DType.float64](rebind[Float64](x))
+        )
+    else:
+        comptime assert False, "dtype_math.tanh_dt: float32 / float64 only."
+
+
+@always_inline
+def _tanh_impl[
+    DTYPE: DType
+](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    return tanh(x)

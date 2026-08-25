@@ -40,11 +40,18 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.fields.dims import DimsLike
 from mojo_rl.physics3d.ray.model import ray_model
-from mojo_rl.physics3d.kinematics.site_frame import site_world_quat_list
+from mojo_rl.physics3d.kinematics.site_frame import (
+    site_world_quat_list,
+    site_world_quat,
+)
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from mojo_rl.physics3d.sensors.rangefinder import rangefinder_site
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ
+from mojo_rl.physics3d.kinematics.xmat import (
+    xmat_elem,
+    xmat_elem_gpu,
+    XMAT_ZZ,
+)
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     HFIELD_META_IDX_ADR,
@@ -53,14 +60,24 @@ from mojo_rl.physics3d.gpu.constants import (
     HFIELD_META_IDX_SIZE_X,
     MODEL_SITE_SIZE,
     SITE_IDX_BODY,
+    MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.physics3d.gpu.constants import MAX_GPU_HFIELDS
+from mojo_rl.physics3d.gpu.constants import (
+    MAX_GPU_HFIELDS,
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_GEOM_SIZE,
+    METADATA_SIZE,
+    CONTACT_SIZE,
+)
 from ..gpu_reset import reset_seed
-from ..dtype_math import sqrt_dt, cos_dt
+from ..dtype_math import sqrt_dt, cos_dt, tanh_dt, inf_dt
 from ..rewards import tolerance, SIGMOID_LINEAR
 from .quadruped_config import (
     _upright_reward_at,
     _common_obs_cpu,
+    _common_obs_gpu,
     _random_root_orientation,
     QUADRUPED_FRAME_SKIP,
     QUADRUPED_MAX_STEPS,
@@ -129,11 +146,13 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
     comptime SYNC_FK_AFTER_STEP: Bool = True
     comptime RNE_POST: Bool = True
     comptime RESET_FIND_HEIGHT: Bool = True
-    # ⚠ NO GPU HOOKS. `ray_model` is a host-side linear scan over every geom,
-    # and the terrain rewrite is a CPU write followed by an upload — neither
-    # has a batched form yet. Claiming `True` here would silently run the
-    # batched path with a zero observation for the last 23 dims.
-    comptime HAS_GPU_HOOKS: Bool = False
+    # ⚠ THE THREE GPU HOOKS ARE ALL PRESENT, and all three are required —
+    # claiming `True` with any one missing runs the batched path with a zero
+    # observation for the last 23 dims, or a flat terrain, or no reward.
+    #   · `init_hfield_gpu`          — the per-lane bowl, at reset
+    #   · `custom_extract_obs_ray_gpu` — 78 common + origin + 20 rangefinders
+    #   · `compute_reward_and_done_gpu` — upright(20 deg) x escape
+    comptime HAS_GPU_HOOKS: Bool = True
 
     # ⚠ THE HEIGHTFIELD GRID IS 201x201 AND MUST BE ALLOCATED EXACTLY.
     # `<hfield nrow ncol>` with NO `file` is a grid of zeros that
@@ -329,6 +348,206 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
                     Float64(bowl * smooth).cast[DType.float32]()
                 )
 
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_ray_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+        NMESH_TRI_F: Int,
+        NHFIELD_DATA: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        mesh_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_MESHES * MODEL_MESH_META_SIZE),
+            MutAnyOrigin,
+        ],
+        mesh_tris: LayoutTensor[
+            DTYPE, Layout.row_major(NMESH_TRI_F * 9), MutAnyOrigin
+        ],
+        hfield_meta: LayoutTensor[
+            DTYPE,
+            Layout.row_major(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE),
+            MutAnyOrigin,
+        ],
+        hfield_data: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE * NHFIELD_DATA),
+            MutAnyOrigin,
+        ],
+        env: Int,
+    ) -> Bool:
+        """`custom_extract_obs_ray_cpu` against the batched field tensors.
+
+        Block for block the same three pieces — `_common_observations`, the
+        origin in the torso frame, twenty rangefinders — reading the same
+        indices. The CPU twin is the one to read for WHY each block is what it
+        is; this one only says what differs.
+
+        ⚠ `comptime if` RATHER THAN A CONSTRAINT ON THE HOOK, exactly as on the
+        CPU side: the trait declares this over an unconstrained `DTYPE` and
+        `ray_model` needs floating-point evidence, and putting
+        `where DTYPE.is_floating_point()` on the trait member would impose it
+        on all fifty implementers.
+
+        ⚠ THE COST IS PER LANE. Twenty rays over eighteen geoms is 360 geom
+        queries per lane per step on top of the physics — the reason
+        `HAS_GPU_HOOKS` is worth having at all is that those 360 are
+        embarrassingly parallel across the batch, not that any one is cheap.
+        """
+        # ── `_common_observations` (78) ───────────────────────────────────
+        # ⚠ `COMMON_DIM` PASSED EXPLICITLY. The default is `OBS_DIM`, and
+        # escape's is 23 wider; without this the size assert inside would
+        # reject the very block it is meant to protect.
+        if not _common_obs_gpu[
+            DTYPE, BATCH_SIZE, NQ, NV, NBODY, OBS_DIM, SITE_DIM, NSITE_F,
+            NA_F, TORSO_SITE_IDX, TOE_SITE_0,
+            OBS_DIM - 3 - ESCAPE_N_RF,
+        ](
+            qpos, qvel, xipos, xquat, xvel, xangvel, bodies, site_xpos,
+            sites, cvel, cacc, cfrc_int, subtree_com, site_xpos_acc,
+            xquat_acc, act, obs, env,
+        ):
+            return False
+
+        var k = OBS_DIM - 3 - ESCAPE_N_RF
+
+        # ── origin, in the torso frame (3) ────────────────────────────────
+        var bq = QuatGeneric[DTYPE](
+            rebind[Scalar[DTYPE]](xquat[env, TORSO_BODY_IDX * 4 + 3]),
+            rebind[Scalar[DTYPE]](xquat[env, TORSO_BODY_IDX * 4 + 0]),
+            rebind[Scalar[DTYPE]](xquat[env, TORSO_BODY_IDX * 4 + 1]),
+            rebind[Scalar[DTYPE]](xquat[env, TORSO_BODY_IDX * 4 + 2]),
+        )
+        var org = bq.rotate_vec_inverse(
+            Vec3Generic[DTYPE](
+                -rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 0]),
+                -rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 1]),
+                -rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 2]),
+            )
+        )
+        obs[env, k] = org.x
+        obs[env, k + 1] = org.y
+        obs[env, k + 2] = org.z
+        k += 3
+
+        # ── the twenty rangefinders (20) ──────────────────────────────────
+        # ⚠ THE POSITIVE BRANCH, NOT AN EARLY RETURN. `comptime if not
+        # is_floating_point(): return False` does NOT carry the evidence
+        # `ray_model` needs into the code after it — the compiler rejects the
+        # call with "lacking evidence to prove correctness". Wrapping the
+        # users of that evidence is what supplies it, and it is the shape the
+        # CPU twin already uses.
+        comptime if DTYPE.is_floating_point():
+            for i in range(ESCAPE_N_RF):
+                var site = ESCAPE_RF_SITE_0 + i
+                var sbody = Int(
+                    rebind[Scalar[DTYPE]](sites[site, SITE_IDX_BODY])
+                )
+                var origin = Vec3Generic[DTYPE](
+                    rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 0]),
+                    rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 1]),
+                    rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2]),
+                )
+                var q4 = site_world_quat[DTYPE](env, site, sites, xquat)
+                var sq = QuatGeneric[DTYPE](q4[3], q4[0], q4[1], q4[2])
+                # ⚠ +Z. A rangefinder fires along the site's own +Z; a CAMERA
+                # looks down its -Z. See `sensors/rangefinder.mojo`.
+                var rvec = sq.rotate_vec(Vec3Generic[DTYPE](0, 0, 1))
+
+                var hit = ray_model[DTYPE](
+                    geoms, NGEOM_F, bodies, xpos, xquat, env,
+                    mesh_meta, mesh_tris, hfield_meta, hfield_data,
+                    NHFIELD_DATA, origin, rvec, sbody,
+                )
+                # `np.where(rf == -1.0, 1.0, np.tanh(rf))` — A MISS IS 1.0.
+                obs[env, k] = (
+                    Scalar[DTYPE](1.0) if hit.t == Scalar[DTYPE](-1.0)
+                    else tanh_dt[DTYPE](hit.t)
+                )
+                k += 1
+
+            return True
+        else:
+            # An integer-typed physics model is not a thing this engine
+            # builds; returning False falls back to a DIFFERENT
+            # observation of the wrong length, so say so rather than
+            # leave the last 23 dims at whatever the buffer last held.
+            return False
+
     @staticmethod
     def init_hfield_gpu[
         DTYPE: DType, BATCH_SIZE: Int, NHFIELD_DATA: Int
@@ -379,9 +598,9 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
             return
 
         var base = ESCAPE_HFIELD_ID * MODEL_HFIELD_META_SIZE
-        var adr = Int(hfield_meta[base + HFIELD_META_IDX_ADR])
-        var nrow = Int(hfield_meta[base + HFIELD_META_IDX_NROW])
-        var ncol = Int(hfield_meta[base + HFIELD_META_IDX_NCOL])
+        var adr = Int(rebind[Scalar[DTYPE]](hfield_meta[base + HFIELD_META_IDX_ADR]))
+        var nrow = Int(rebind[Scalar[DTYPE]](hfield_meta[base + HFIELD_META_IDX_NROW]))
+        var ncol = Int(rebind[Scalar[DTYPE]](hfield_meta[base + HFIELD_META_IDX_NCOL]))
         # ⚠ NO `raise` HERE — a kernel cannot. The CPU hook rejects a
         # non-square grid; this one leaves the terrain untouched, which is the
         # flat plane the model already had rather than a half-written grid.
@@ -391,7 +610,9 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
         if res * res > NHFIELD_DATA:
             return
 
-        var sx = Scalar[DTYPE](hfield_meta[base + HFIELD_META_IDX_SIZE_X])
+        var sx = rebind[Scalar[DTYPE]](
+            hfield_meta[base + HFIELD_META_IDX_SIZE_X]
+        )
         var bump_res = Int(
             (Scalar[DTYPE](2.0) * sx)
             / Scalar[DTYPE](ESCAPE_TERRAIN_BUMP_SCALE)
@@ -468,6 +689,135 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
                 hfield_data[
                     env * NHFIELD_DATA + adr + r * res + c
                 ] = bowl * smooth
+
+    @staticmethod
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`_upright_reward(deviation_angle=20) * escape_reward`, per lane.
+
+        The CPU twin block for block; see it for what each term means. The two
+        deviations from `Move`'s GPU reward are the ones the CPU docstring
+        already names — the upright bound is `cos(20 deg)` rather than 1, and
+        the second term is distance from the origin rather than forward speed.
+
+        ⚠ `origin_distance()` IS THE FULL 3-VECTOR NORM of the workspace
+        site's world position, not a horizontal one. On a bowl the robot
+        climbs as it escapes, so dropping z would under-report the distance
+        exactly where the reward is meant to be rising.
+        """
+        var zz = xmat_elem_gpu[DTYPE](xquat, env, TORSO_BODY_IDX, XMAT_ZZ)
+        var dev = Scalar[DTYPE](ESCAPE_UPRIGHT_DEVIATION)
+        var upright = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+            zz, dev, inf_dt[DTYPE](), Scalar[DTYPE](1.0) + dev
+        )
+
+        var wx = rebind[Scalar[DTYPE]](
+            site_xpos[env, ESCAPE_WORKSPACE_SITE * 3 + 0]
+        )
+        var wy = rebind[Scalar[DTYPE]](
+            site_xpos[env, ESCAPE_WORKSPACE_SITE * 3 + 1]
+        )
+        var wz = rebind[Scalar[DTYPE]](
+            site_xpos[env, ESCAPE_WORKSPACE_SITE * 3 + 2]
+        )
+        var dist = sqrt_dt[DTYPE](wx * wx + wy * wy + wz * wz)
+
+        var escape = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+            dist,
+            Scalar[DTYPE](ESCAPE_TERRAIN_RADIUS),
+            inf_dt[DTYPE](),
+            Scalar[DTYPE](ESCAPE_TERRAIN_RADIUS),
+        )
+        return (upright * escape, False)
 
     @staticmethod
     def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
