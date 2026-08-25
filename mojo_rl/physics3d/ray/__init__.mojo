@@ -26,4 +26,4 @@ from .geom import (
 from .triangle import ray_basis, ray_triangle
 from .hfield import ray_hfield
 from .mesh import ray_mesh
-from .model import RayHit, RAY_NGROUP, ray_model
+from .model import RayHit, RAY_NGROUP, ray_model, geom_world_poses

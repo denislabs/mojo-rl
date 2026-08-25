@@ -52,6 +52,11 @@ from ..gpu.constants import (
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
     GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_POS_Y,
     GEOM_IDX_RADIUS,
     GEOM_IDX_HALF_LENGTH,
     GEOM_IDX_HALF_X,
@@ -260,3 +265,60 @@ def ray_model[
             best_normal = n
 
     return RayHit[DTYPE](best, best_geom, best_normal)
+
+
+def geom_world_poses[
+    DTYPE: DType
+](
+    ref geoms: List[Scalar[DTYPE]],
+    ngeom: Int,
+    ref xpos: List[Scalar[DTYPE]],
+    ref xquat: List[Scalar[DTYPE]],
+) -> Tuple[List[Vec3Generic[DTYPE]], List[QuatGeneric[DTYPE]]]:
+    """Every geom's WORLD pose, composed once.
+
+    The same composition `contact_detection._geom_world_pos` makes, hoisted so
+    a caller with N rangefinders pays one pass over the geom table instead of
+    N. ⚠ `Data.xquat` is packed (x, y, z, w) and `math3d.Quat` takes
+    (w, x, y, z) — the one place the two conventions meet.
+
+    ⚠ `body <= 0` RETURNS THE LOCAL POSE UNCHANGED, which is right for the
+    worldbody (identity transform) and is also what the record holds for a
+    static geom marked -1. Composing against `xpos[0]`/`xquat[0]` would give
+    the same answer; skipping it keeps a static geom bit-identical to the
+    number the parser wrote rather than putting it through a rotation.
+    """
+    var ps = List[Vec3Generic[DTYPE]](capacity=ngeom)
+    var qs = List[QuatGeneric[DTYPE]](capacity=ngeom)
+    for g in range(ngeom):
+        var o = g * MODEL_GEOM_SIZE
+        var body = Int(geoms[o + GEOM_IDX_BODY])
+        var lp = Vec3Generic[DTYPE](
+            geoms[o + GEOM_IDX_POS_X],
+            geoms[o + GEOM_IDX_POS_Y],
+            geoms[o + GEOM_IDX_POS_Z],
+        )
+        var lq = QuatGeneric[DTYPE](
+            geoms[o + GEOM_IDX_QUAT_W],
+            geoms[o + GEOM_IDX_QUAT_X],
+            geoms[o + GEOM_IDX_QUAT_Y],
+            geoms[o + GEOM_IDX_QUAT_Z],
+        )
+        if body <= 0:
+            ps.append(lp)
+            qs.append(lq)
+            continue
+        var bq = QuatGeneric[DTYPE](
+            xquat[body * 4 + 3],
+            xquat[body * 4 + 0],
+            xquat[body * 4 + 1],
+            xquat[body * 4 + 2],
+        )
+        var bp = Vec3Generic[DTYPE](
+            xpos[body * 3 + 0],
+            xpos[body * 3 + 1],
+            xpos[body * 3 + 2],
+        )
+        ps.append(bp + bq.rotate_vec(lp))
+        qs.append(bq * lq)
+    return (ps^, qs^)
