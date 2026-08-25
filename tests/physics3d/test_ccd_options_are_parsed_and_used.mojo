@@ -85,7 +85,77 @@ def _no_edges_epa() raises -> TensorImpl[DTYPE]:
 # MuJoCo 3.10.0 on the same cylinder/box pose, `mj_forward`: 3 contacts, all at
 # this depth. Frozen so the "does the tolerance change anything" check cannot
 # be satisfied by two equally wrong answers.
+#
+# Reproduce it with:
+#
+#     <geom name="g_box" type="box" size="0.05 0.04 0.03"/>
+#     <body pos="0.030 0.020 0.038" quat="0.83 0.29 0.41 0.24">
+#       <freejoint/><geom type="cylinder" size="0.03 0.02" mass="1"/>
+#     </body>
+#
+# ⚠⚠ AND NOTE THE TWO THINGS MuJoCo DOES TO THAT FILE BEFORE EPA SEES IT,
+# BECAUSE THIS TEST HAND-BUILDS THE CALL AND SO HAS TO DO THEM ITSELF:
+#
+#   1. IT NORMALIZES THE QUATERNION. `0.83 0.29 0.41 0.24` has norm 0.9993498,
+#      and `mjCModel` stores the unit version in `geom_quat`. A non-unit
+#      quaternion is not a rotation — it builds a SCALED matrix — so passing
+#      the literal poses a different cylinder than the one this number
+#      describes. In production `gjk_epa` never sees one: the world quaternion
+#      it is given comes out of `forward_kinematics`, which normalizes (see
+#      `gpu_quat_normalize`), which is exactly why the routine does not
+#      normalize defensively on a per-call hot path.
+#
+#   2. IT ORDERS THE PAIR (CYLINDER, BOX), NOT (BOX, CYLINDER). `mj_forward`
+#      reports `geom1 = 1` (the cylinder, `mjGEOM_CYLINDER` = 5) and
+#      `geom2 = 0` (the box, `mjGEOM_BOX` = 6): `pushPairArena` sorts by
+#      `mjtGeom` id, which is what `mj_geom_type_rank` mirrors. Our EPA is not
+#      symmetric under the swap either — see the measurements below.
+#
+# ⚠⚠ THIS TEST PASSED FOR TWELVE DAYS WITH BOTH OF THEM WRONG, ON A
+# COINCIDENCE. Measured against this constant, `ccd_tolerance` 1e-6:
+#
+#     tree         order     quat          |d - mj|
+#     353696b4     BOX,CYL   raw           7.610e-06   <- passed, budget 1e-5
+#     353696b4     BOX,CYL   normalized    1.363e-07
+#     HEAD         BOX,CYL   raw           4.673e-05   <- the red
+#     HEAD         BOX,CYL   normalized    2.544e-08
+#     HEAD         CYL,BOX   normalized    0.0         <- what we assert now
+#
+# (The last row is 0.0 computing the unit quaternion at run time; from the
+# rounded decimal literals below it lands ONE ULP away, 3.5e-18.)
+#
+# ⚠ THE NORMAL CAME ALONG WITH THE ORDER, WHICH IS THE CORROBORATION. `gjk_epa`
+# returns geom1 -> geom2, so asking (CYLINDER, BOX) asks MuJoCo's question:
+# ours is now (-2.711e-06, -3.378e-06, -0.99999999999) against MuJoCo's
+# `contact.frame[0:3]` = (-0.000003, -0.000003, -1.000000), SIGN INCLUDED,
+# where the (BOX, CYLINDER) call returned it pointing the other way. That is
+# about the argument order at THIS call, not about
+# `_our_contact_normal_is_the_negation_of_mjcontacts`, which is a separate open
+# item about how the `Contact` RECORD is built (`body_b -> body_a`).
+#
+# Read the middle column: with the RIGHT inputs the engine went 1.363e-07 ->
+# 0.0 over that span, i.e. the EPA work (`fee37034`, `d67673df`) moved it ONTO
+# the reference. What it also did was move our answer for the SKEWED pose to
+# that pose's own correct answer, which is 4.7e-05 from the answer for a
+# different pose — so the fixture's error stopped being masked. The failure
+# was the gate asking one question and comparing against another's answer, and
+# a budget loose enough to hide the difference.
 comptime MJ_CYLBOX_DIST: Float64 = -0.027966478744914335
+
+# `0.83 0.29 0.41 0.24` (w,x,y,z) normalized, spelled (x,y,z,w) — the order
+# every geom argument in this tree uses. Written out rather than computed so
+# the call site shows the values EPA actually receives.
+comptime QX: Float64 = 0.29018868398682984
+comptime QY: Float64 = 0.4102667601193112
+comptime QZ: Float64 = 0.24015615226496265
+comptime QW: Float64 = 0.8305400265829957
+
+# ⚠ 0.0 IS THE MEASURED ANSWER AND THIS IS STILL A BUDGET. Both engines run
+# float64 over the same arithmetic, so the agreement is exact today on this
+# machine; 1e-12 leaves room for a compiler reassociating the support function
+# without leaving room for a real defect — it is seven orders tighter than the
+# 1e-5 that let the fixture's own error through.
+comptime TOL_VS_MJ: Float64 = 1e-12
 
 
 # A cylinder driven obliquely into a BOX corner.
@@ -234,6 +304,20 @@ def test_epa_actually_consumes_the_tolerance() raises:
     `discreteGeoms` was added.
     """
     print("=== EPA consumes ccd_tolerance ===")
+    # ⚠⚠ THE PRECONDITION, ASSERTED RATHER THAN COMMENTED. The literal
+    # `0.29 0.41 0.24 0.83` sat in this call for twelve days and cost 4.7e-05
+    # — more than four times the budget it was checked against — because a
+    # non-unit quaternion poses a SCALED cylinder and nothing here said so.
+    # `forward_kinematics` supplies a unit quaternion in production; a
+    # hand-built call has to supply one too.
+    var qn = sqrt(QX * QX + QY * QY + QZ * QZ + QW * QW)
+    print("  |q| =", qn)
+    assert_true(
+        abs(qn - 1.0) <= 1e-15,
+        "the fixture quaternion is not UNIT (|q| = " + String(qn) + "), so it"
+        " is a scaled matrix rather than a rotation and the pose it builds is"
+        " not the one MJ_CYLBOX_DIST was measured on",
+    )
     var mv = TensorImpl[DTYPE].alloc(NMV_EPA * 3)
     var _ng = _no_graph_epa()
     var _ne = _no_edges_epa()
@@ -241,20 +325,26 @@ def test_epa_actually_consumes_the_tolerance() raises:
     var out = InlineArray[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
+        # ⚠⚠ CYLINDER FIRST, AND THE MESH OPERAND MOVES WITH IT. `gjk_epa`
+        # takes the mesh arrays between the FIRST geom's dimensions and the
+        # second geom's type, so swapping the pair is not swapping two blocks
+        # — the `mv` / graph / edges triple stays where it is and now sits
+        # after the cylinder. Both geoms are primitives here so nothing reads
+        # it, but a future mesh arm has to bind it to geom 1.
         var r = gjk_epa[DTYPE](
+            GEOM_CYLINDER,
+            Scalar[DTYPE](0.030), Scalar[DTYPE](0.020), Scalar[DTYPE](0.038),
+            Scalar[DTYPE](QX), Scalar[DTYPE](QY), Scalar[DTYPE](QZ),
+            Scalar[DTYPE](QW),
+            Scalar[DTYPE](0.03), Scalar[DTYPE](0.02),
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
+            mv.lt["cpu", L_MV_EPA](), _ng.lt["cpu", L_VEADR_EPA](), _ne.lt["cpu", L_EDGES_EPA](), 0, 0,
             GEOM_BOX,
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](1),
             Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0.05), Scalar[DTYPE](0.04), Scalar[DTYPE](0.03),
-            mv.lt["cpu", L_MV_EPA](), _ng.lt["cpu", L_VEADR_EPA](), _ne.lt["cpu", L_EDGES_EPA](), 0, 0,
-            GEOM_CYLINDER,
-            Scalar[DTYPE](0.030), Scalar[DTYPE](0.020), Scalar[DTYPE](0.038),
-            Scalar[DTYPE](0.29), Scalar[DTYPE](0.41), Scalar[DTYPE](0.24),
-            Scalar[DTYPE](0.83),
-            Scalar[DTYPE](0.03), Scalar[DTYPE](0.02),
-            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             0, 0,
             ws.lt["cpu", L_CCD_WS1](), 0,
             Scalar[DTYPE](tol), MJ_CCD_ITERATIONS,
@@ -277,9 +367,15 @@ def test_epa_actually_consumes_the_tolerance() raises:
     # And it must agree with MuJoCo at MuJoCo's own tolerance — otherwise this
     # would happily gate two flavours of wrong.
     assert_true(
-        abs(out[0] - MJ_CYLBOX_DIST) <= 1e-5,
+        abs(out[0] - MJ_CYLBOX_DIST) <= TOL_VS_MJ,
         "at MuJoCo's own ccd_tolerance our depth is " + String(out[0])
-        + " against MuJoCo's " + String(MJ_CYLBOX_DIST),
+        + " against MuJoCo's " + String(MJ_CYLBOX_DIST) + " (budget "
+        + String(TOL_VS_MJ) + "). BEFORE HUNTING IN EPA, CHECK THE FIXTURE:"
+        " this call hand-builds what the model pipeline normally supplies, and"
+        " it has been wrong here before — the quaternion must be UNIT (see QX"
+        " above; a raw `0.29 0.41 0.24 0.83` costs 4.7e-05) and the pair must"
+        " be ordered (CYLINDER, BOX) as `mj_geom_type_rank` orders it (the"
+        " swap costs 2.5e-08). With both right this has been EXACT.",
     )
 
     var d_dist = abs(out[0] - out[4])
