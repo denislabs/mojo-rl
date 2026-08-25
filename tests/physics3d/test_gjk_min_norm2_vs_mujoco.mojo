@@ -48,20 +48,46 @@ that is `0.00465 - 0.004647` = **3.0 microns** — a fifth of the old floor.
 MuJoCo reports +3.02e-06 there; we reported -6.33e-06 on all 48 such pairs,
 penetration where there is a gap.
 
-⚠ THE CONTROL IS IN THE TABLE. The two widest gaps are asserted to be what
-they already were: 2e-5 and 5e-5 sit ABOVE the old 1e-5 floor and are
-bit-identical before and after the fix. A change that perturbed GJK globally
-rather than under the floor would move them.
+⚠ THE CONTROLS ARE IN THE TABLE, AND THERE ARE TWO OF THEM.
 
-⚠⚠ THIS DOES NOT ASSERT THAT THE SEPARATED BRANCH IS ACCURATE, BECAUSE IT IS
-NOT. Over 200 gaps in 5e-7..1e-4 the fixed code still exceeds 1e-6 of error on
-153 of them (worst 5.2e-5, near gap 5.2e-5) and still returns `-0.0` at 8.5e-6
-and 5.2e-5. That residual is a DIFFERENT mechanism — it is insensitive to
-`ccd_tolerance` (1e-6..1e-14) and to the iteration cap (100..1000), and
-disabling `_gjk_intersect` makes it worse, so it lives in the distance
-subalgorithm. It is tracked as the open half of task #81; the `5.0e-05` row
-below is left in the table with a loose bound precisely so this file records
-it rather than hiding it.
+(a) **The reference's own answer, per row.** `mjc_penetration`
+(`engine_collision_convex.c`) is what the pipeline runs, and it does NOT ask
+for a distance:
+
+    config.dist_cutoff = 0;  // no geom distances needed
+    if ((dist = mjc_ccd(&config, &status, obj1, obj2)) < 0) {
+      for (int i = 0; i < nwitness; i++) {
+        con[i].dist = margin + dist;
+
+Both geoms are inflated by half the margin in `mjc_initCCDObj`, EPA returns a
+penetration, and `margin + dist` is the number reported. Every witness of the
+manifold gets the SAME one. That is the question `gjk_epa` implements here, so
+that is the number to compare against — measured on MuJoCo 3.10.0 with
+`/tmp/gjkref.py`, reproduced in the table below.
+
+(b) **The tolerance is the residual, and tightening it converges.** At
+`ccd_tolerance = 1e-14` this fixture lands within 5e-15 of the ANALYTIC gap on
+every row. That is the control which says the offset at 1e-6 is EPA's stopping
+rule and not an algorithmic error — the same rule, and the same offset, that
+the reference is subject to.
+
+⚠⚠ THE OLD `2.0e-05 / tol 1e-9` ROW WAS A FROZEN BASELINE AND `d67673df`
+INVALIDATED IT. That row asserted "a change confined to the sub-floor band does
+not move a row above the band", against the value the engine produced when this
+file was written: measured at `d67673df^`, 2.027e-13. `d67673df` — `mjc_Convex`
+INFLATES both geoms by the margin and asks PENETRATION, it never runs a
+distance query — deliberately changed the arithmetic for EVERY row, and the row
+went to 2.445e-09 (and to 4.104e-09 at `fee37034`, the 1:1 GJK/EPA port). The
+constant outlived the thing it was pinning. It is replaced above by (a) and
+(b), both of which name a reference instead of a remembered number.
+
+⚠⚠ AND THIS CLOSES THE SECOND HALF OF TASK #81, WHICH THE DOC STILL LISTS AS
+OPEN. It was filed as "insensitive to `ccd_tolerance` (1e-6..1e-14) ... it
+lives in the distance subalgorithm / `_closest_point_on_simplex`". Today it is
+ENTIRELY sensitive to `ccd_tolerance` — the widest row goes 3.482e-07 (1e-6) ->
+8.217e-10 (1e-8) -> 2.878e-12 (1e-10) -> 2.584e-15 (1e-14) — and
+`_closest_point_on_simplex` no longer exists; `fee37034` replaced it with the
+reference's `subdistance`. The measurement that filed it predates both.
 
 ⚠ EVERY OTHER COLLISION GATE PASSED WITH THE BUG IN. `test_gjk_simplex`,
 `test_gjk_float32_no_phantom_contacts`, `test_within_margin_convex_contacts`,
@@ -103,6 +129,7 @@ comptime CCD_ITER = 35
 
 def probe(
     gap: Float64,
+    ccd_tol: Float64,
     mv: LayoutTensor[DT, LV, MutAnyOrigin],
     ma: LayoutTensor[DT, LA, MutAnyOrigin],
     me: LayoutTensor[DT, LA, MutAnyOrigin],
@@ -125,7 +152,7 @@ def probe(
         Scalar[DT](HX_FLANGE), Scalar[DT](HY_FLANGE), Scalar[DT](HZ_FLANGE),
         0, 0,
         ws, 0,
-        Scalar[DT](CCD_TOL), CCD_ITER, Scalar[DT](MARGIN),
+        Scalar[DT](ccd_tol), CCD_ITER, Scalar[DT](MARGIN),
     )
     return Float64(res[0])
 
@@ -144,31 +171,39 @@ def main() raises:
         ebuf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
 
-    # (true gap, tolerance on |reported - true|). Every gap here is UNDER the
-    # old 1e-5 floor except the last two, which are the control.
+    # (true gap, MuJoCo 3.10.0's `contact.dist` for the same pair). Every gap
+    # here is UNDER the old 1e-5 floor except the last two.
+    #
+    # ⚠ THE REFERENCE COLUMN IS NOT THE TRUE GAP AND IS NOT MEANT TO BE. It is
+    # `margin + mjc_ccd(inflated pair)` at `ccd_tolerance = 1e-6`, which sits
+    # 2.5e-07 to 7.9e-07 ABOVE the analytic gap — the reference's own stopping
+    # rule. Reproduce with `mj_forward` on two bodies holding this cylinder and
+    # this box at `dx = gap + HX_FLANGE + R_STUD`, `margin = 1e-4`; all five
+    # witnesses of the manifold carry the same number.
     var gaps = List[Float64]()
-    var tols = List[Float64]()
-    gaps.append(2.0e-06); tols.append(1e-6)
-    gaps.append(3.0e-06); tols.append(1e-6)   # <- the model's own separation
-    gaps.append(4.0e-06); tols.append(1e-6)
-    gaps.append(5.0e-06); tols.append(1e-6)
-    gaps.append(7.0e-06); tols.append(1e-6)
-    gaps.append(1.0e-05); tols.append(1e-6)
-    gaps.append(2.0e-05); tols.append(1e-9)   # control: above the old floor
-    gaps.append(5.0e-05); tols.append(1e-5)   # control + open residual (#81)
+    var mjref = List[Float64]()
+    gaps.append(2.0e-06); mjref.append(2.2505889437604055e-06)
+    gaps.append(3.0e-06); mjref.append(3.2541808316072902e-06)  # the model's own
+    gaps.append(4.0e-06); mjref.append(4.2577998470886235e-06)
+    gaps.append(5.0e-06); mjref.append(5.7863508672476656e-06)
+    gaps.append(7.0e-06); mjref.append(7.7735065488386090e-06)
+    gaps.append(1.0e-05); mjref.append(1.0755194628279301e-05)
+    gaps.append(2.0e-05); mjref.append(2.0702430974776909e-05)
+    gaps.append(5.0e-05); mjref.append(5.0619944637577617e-05)
 
-    print("  true gap        reported          error    tol")
     var wst = ccd_ws_alloc[DT]()
     var failures = 0
+
+    # ---- (1) no phantom contacts, and (2) inside the reference's tolerance --
+    print("  true gap          ours              MuJoCo 3.10.0     |ours-mj|")
     for i in range(len(gaps)):
         var g = gaps[i]
-        var got = probe(g, mv, ma, me, wst.lt["cpu", L_CCD_WS1]())
-        var err = got - g
-        var ok = got > 0.0 and abs(err) <= tols[i]
-        print(
-            "  ", g, " ", got, " ", err, " ", tols[i], " ",
-            "ok" if ok else "FAIL",
-        )
+        var got = probe(g, CCD_TOL, mv, ma, me, wst.lt["cpu", L_CCD_WS1]())
+        var dref = abs(got - mjref[i])
+        # A gap is a gap: anything <= 0 here is the defect this file exists for.
+        var ok = got > 0.0 and dref <= CCD_TOL
+        print("  ", g, " ", got, " ", mjref[i], " ", dref, " ",
+              "ok" if ok else "FAIL")
         if not ok:
             failures += 1
             if got <= 0.0:
@@ -176,6 +211,27 @@ def main() raises:
                     "     ^ a PHANTOM CONTACT: a pair", g,
                     "m apart reported as touching/penetrating",
                 )
+            else:
+                print(
+                    "     ^ further from `mjc_penetration` than the",
+                    "`ccd_tolerance` both engines are run at",
+                )
+
+    # ---- (3) the residual IS the tolerance: tighten it and it converges -----
+    print("")
+    print("  control: ccd_tolerance 1e-14, error against the ANALYTIC gap")
+    for i in range(len(gaps)):
+        var g = gaps[i]
+        var tight = probe(g, 1e-14, mv, ma, me, wst.lt["cpu", L_CCD_WS1]())
+        var err = abs(tight - g)
+        var ok = err <= 1e-12
+        print("  ", g, " ", tight, " ", err, " ", "ok" if ok else "FAIL")
+        if not ok:
+            failures += 1
+            print(
+                "     ^ tightening `ccd_tolerance` did NOT converge, so this",
+                "residual is NOT the stopping rule — see task #81",
+            )
 
     _ = mbuf^
     _ = abuf^
@@ -185,8 +241,8 @@ def main() raises:
         raise Error(
             String(failures)
             + " of "
-            + String(len(gaps))
-            + " separations wrong — GJK's floor is a threshold on |v| SQUARED;"
+            + String(2 * len(gaps))
+            + " rows wrong — GJK's floor is a threshold on |v| SQUARED;"
             + " see `_gjk_min_norm2` in physics3d/collision/gjk.mojo"
         )
-    print("PASS: all", len(gaps), "separations correct")
+    print("PASS: all", len(gaps), "separations match MuJoCo, all converge")

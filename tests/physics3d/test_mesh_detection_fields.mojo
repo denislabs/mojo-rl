@@ -161,7 +161,7 @@ comptime GOLD_RTOL = 1e-3
 # the failure mode a self-frozen golden has and a MuJoCo-anchored assert does
 # not — which is why the depth / normal / span checks below are the real gate
 # and this number is bookkeeping.
-comptime GOLD_NCON = 4  # total contacts across both envs
+comptime GOLD_NCON = 5  # total contacts across both envs (08-13, below)
 # ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
 # and neither re-recorded blind. Both changes are narrow-phase CONTACT
 # DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
@@ -279,8 +279,33 @@ comptime GOLD_NCON = 4  # total contacts across both envs
 #     manifold span ours 0.0392871  MuJoCo 0.03867       (0.62 mm)
 # and `test_sawyer_settle_vs_mujoco` reports 5 contacts at rest against
 # MuJoCo's 5. The golden of 4 was frozen from the engine WITH the rbound bug.
-comptime GOLD_CON = 3361.6499817769654  # geometry columns (k < 23)
-comptime GOLD_SOL = 3015.4800115525723  # solparam columns (k >= 23)
+#
+# ⚠⚠ 2026-08-25: THAT REFRESH WAS WRITTEN INTO THE COMMENT AND NEVER APPLIED.
+# The three constants below still held 4 / 3361.6499817769654 /
+# 3015.4800115525723 twelve days later, so this gate has been RED since, on a
+# count the block above had already justified against MuJoCo. `GOLD_SOL` is the
+# proof: the value measured today, 4523.220017328858, is the one that block
+# names, to the last digit — the solparam columns have not moved since 08-13.
+#
+# --- 2026-08-25: `c43517db`, the pair reaches GJK in MuJoCo's order ---------
+# GOLD_CON 5042.516301484706 -> 5222.468882602276, and it is ACCOUNTED, not
+# pasted. `pushPairArena` sorts a pair by (geom type, geom index); this pair is
+# obj CYLINDER (type 5) vs eGripperBase MESH (type 7), so MuJoCo's `geom1` is
+# the obj and ours was the gripper. Making the pair canonical relabels env1's
+# five rows and negates their normal with them:
+#
+#     body_a/body_b relabel 23 <-> 33   -300.000000   = 300*(k_A - k_B), exact
+#     normal sign flip (nx, ny, nz)     +479.740543
+#     dist                              +0.000004
+#     witness positions (POS_X/Y/Z)       +0.212034   sub-mm, other operand order
+#     -------------------------------------------
+#     total                             +179.952581   = the observed delta
+#
+# The CONTACT IS THE SAME ONE: same depth to 1.4e-05 mm of MuJoCo, same
+# manifold span, and all five witnesses now carry ONE shared `dist` exactly as
+# `con[i].dist = margin + dist` does in `mjc_penetration`.
+comptime GOLD_CON = 5222.468882602276  # geometry columns (k < 23)
+comptime GOLD_SOL = 4523.220017328858  # solparam columns (k >= 23)
 
 # MuJoCo's manifold at this pose spans 3.867e-02 between its two contact
 # FEATURES: a tight cluster on one face and a single row 3.9 cm away. Matching
@@ -471,9 +496,37 @@ def main() raises:
     # `dir err 1.9999999999976286`, a full reversal, on an anchored pair.
     #
     # MuJoCo at this pose: geom1 = 36 (obj), geom2 = 27 (gripper), normal
-    # geom1 -> geom2 = (-8.6e-05, 1.13e-03, -0.999999). Our record stores
+    # geom1 -> geom2 = (-8.6e-05, 1.13e-03, -0.999999).
+    #
+    # ⚠⚠ THE SIGN RELATION BETWEEN THE TWO ENGINES IS A CONVENTION, AND IT WAS
+    # PINNED TO A BUG. This comment used to read "our record stores
     # `body_b -> body_a` with body_a = 23 (gripper) and body_b = 33 (obj),
-    # which is the SAME direction, so the two compare without a sign flip.
+    # which is the SAME direction, so the two compare without a sign flip" —
+    # true only because our pair order was NOT MuJoCo's. `c43517db` made the
+    # pair canonical, so `body_a` is now 33, the obj, i.e. MuJoCo's `geom1`
+    # (measured: the record reads `body_a 33 body_b 23` where it read
+    # `body_a 23 body_b 33`). With the labels agreeing, the two conventions no
+    # longer cancel:
+    #
+    #     MuJoCo   `mji_sub3(con[i].normal, status.x1, status.x2)` in
+    #              `mjc_penetration`, and `mj_forward` on a sphere/box fixture
+    #              confirms it: dot(frame[0:3], centre(g1)->centre(g2)) = +1.
+    #              MuJoCo's normal is geom1 -> geom2 = body_a -> body_b.
+    #     ours     `contact_detection.mojo`, at the emit: "The record's normal
+    #              points `body_b -> body_a` ... negated here — UNCONDITIONALLY".
+    #
+    # So OUR record is the NEGATION of `mjContact.frame[0:3]`, uniformly, and
+    # this check negates the reference to compare. It is a REPRESENTATION
+    # mismatch, not a physics one — the solver reads the normal together with
+    # (body_a, body_b) and is self-consistent, which is why the Menagerie board
+    # is unmoved by `c43517db` and why `csweep.py` cannot see this at all: it
+    # scores normals as `abs(np.dot(n, n2))`.
+    #
+    # ⚠ Before `c43517db` the mismatch was PAIR-DEPENDENT — our `body_a` was
+    # whichever geom the loop reached first, so roughly half of all contacts
+    # agreed with `mjContact`'s sign and half did not. It is at least uniform
+    # now. Normalising the record onto MuJoCo's sign is a separate change: it
+    # touches every consumer of the normal, so it wants its own sweep.
     comptime MJ_NX = -8.6e-05
     comptime MJ_NY = 1.13e-03
     comptime MJ_NZ = -0.999999
@@ -495,8 +548,13 @@ def main() raises:
                 onz = Float64(d.contacts.data[b + CONTACT_IDX_NZ])
                 found_norm = True
                 break
-    var dotn = onx * MJ_NX + ony * MJ_NY + onz * MJ_NZ
-    print("  mesh normal", onx, ony, onz, " dot(MuJoCo) =", dotn)
+    # `-MJ_N*` is MuJoCo's normal expressed in OUR `body_b -> body_a`
+    # convention; see the block above for why the negation is here.
+    var dotn = onx * (-MJ_NX) + ony * (-MJ_NY) + onz * (-MJ_NZ)
+    print(
+        "  mesh normal", onx, ony, onz,
+        " dot(-MuJoCo, our convention) =", dotn,
+    )
     # A reversal reads as dot = -1, which is what this is here to catch. The
     # bound allows ~0.8 degrees, which is loose against the per-row tilt a
     # perturbed manifold carries by construction (MuJoCo's own extra rows sit
