@@ -9,15 +9,15 @@
  * Everything else in the serial layer is Mojo. Keep it that way: this file
  * exists for calls that are variadic in C, and for nothing else.
  *
- * Built two ways by scripts/build_serial.sh:
- *   - libmrl_serial.dylib  -> found at runtime, works under `mojo run`
- *   - mrl_serial.o         -> `mojo build ... -Xlinker <path>
- *                              -Xlinker -u -Xlinker _mrl_serial_set_speed`
- *                              = ONE binary. The `-u` is required: nothing
- *                              references this at link time, so it would
- *                              otherwise be dead-stripped.
- * `mrl_serial_set_speed` is resolved RTLD_DEFAULT-first, so a statically
- * linked build never opens the dylib.
+ * Built by scripts/build_serial.sh into libmrl_serial.dylib, which is
+ * dlopen'd at runtime through `_get_dylib_function` — the same path
+ * `render/imgui` uses.
+ *
+ * ⚠ An earlier design linked mrl_serial.o straight into the binary and
+ * resolved the symbol with a hand-rolled dlsym, for ONE self-contained
+ * executable. That died on two Mojo constraints: `external_call` collides
+ * with the stdlib's own declaration of `dlsym` at LLVM lowering, and
+ * `mojo run`'s JIT ignores -Xlinker entirely. See native.mojo.
  */
 
 #include <sys/ioctl.h>

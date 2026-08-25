@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Build the serial shim for `mojo_rl/io/serial/`.
 #
-# Produces BOTH artifacts, because the two Mojo entry points need different
-# ones and they are cheap:
-#   mojo_rl/io/serial/libmrl_serial.dylib  — dlopen'd; what `mojo run` uses
-#   mojo_rl/io/serial/mrl_serial.o         — `mojo build ... -Xlinker <it>`
-#                                            for a self-contained binary
-# Neither is tracked in git. Re-run after editing native/mrl_serial.c.
+# The dylib is what the Mojo side dlopen's (`mojo_rl/io/serial/native.mojo`);
+# the object file is kept because it costs one extra compiler invocation and
+# is what a future self-contained build would need if Mojo ever grows a way to
+# express it — today it is unused. Neither is tracked in git. Re-run after
+# editing native/mrl_serial.c.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

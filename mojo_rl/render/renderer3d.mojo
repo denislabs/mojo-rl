@@ -5388,7 +5388,11 @@ struct Renderer3D(Movable):
                     continue
                 var wheel = event[MouseWheelEvent]
                 # Scroll up (positive y) = zoom in (move eye closer)
-                self.camera.zoom(-Float64(wheel.y) * 0.5)
+                # ⚠ FRACTIONAL, not a fixed 0.5 m step. A fixed step is
+                # unusable at both ends: invisible when far out, and a jump
+                # straight through a 30 cm robot when close in. 12 % per
+                # notch is roughly one comfortable "step" at any scale.
+                self.camera.zoom_fraction(-Float64(wheel.y) * 0.12)
                 if self.has_ground:
                     self.camera.clamp_above_ground(self.ground_z)
 

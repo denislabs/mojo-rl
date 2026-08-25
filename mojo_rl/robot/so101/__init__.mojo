@@ -11,6 +11,7 @@ a policy has to speak at both ends of sim-to-real.
 ⚠ Needs the serial shim: `pixi run build-serial`.
 """
 
+from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.robot.so101.arm import (
     SO101Arm,
     SO101Calibration,

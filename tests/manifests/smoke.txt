@@ -59,3 +59,8 @@ tests/robot/test_serial_termios_layout.mojo
 # string-slice truncation aborted a live SO-101 teleop loop mid-motion and
 # left the arm holding torque (an abort does not run `finally`).
 tests/utils/test_fmt.mojo
+# Real->sim joint mapping. Gates the CONVENTIONS (midpoint->0, gripper maps by
+# fraction, sign flip inverts) and the measured range disagreement between the
+# arms' calibration and so_arm101.xml. ⚠ ~25 s: it builds the SO-101 model to
+# read its ctrlrange rather than transcribing the limits.
+tests/robot/test_so101_sim_map.mojo

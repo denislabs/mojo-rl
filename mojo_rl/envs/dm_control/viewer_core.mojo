@@ -68,6 +68,12 @@ comptime DRIVE_POLICY: Int = 3
 comptime HOLD_STEPS: Int = 25
 comptime SWEEP_PERIOD: Float64 = 120.0
 comptime EPISODE_STEPS: Int = 1000
+"""Default viewer-side episode length. Override per front end with
+`ViewerState.episode_steps`; 0 disables it."""
+
+comptime KEY_N: Int = 110
+"""`n` — force a new episode. Free because the renderer's own bindings claim
+ESC, SPACE, R, S, V and 1-9 and forward everything else (`take_key`)."""
 comptime FRAME_TARGET_MS: Int = 16
 """Target frame PERIOD, honoured as a LIMITER — not a flat sleep.
 
@@ -269,6 +275,14 @@ struct ViewerState(Copyable, Movable):
     """True = the deterministic action (the actor's mean). The default, because
     a viewer is for reading the LEARNED GAIT; SAC's stochastic action adds the
     entropy-calibrated jitter that is dataset coverage, not behaviour."""
+    var episode_steps: Int
+    """Steps before the viewer forces a new episode. **0 means never**, which
+    is what a teleoperated front end wants — there is no task to time out, and
+    a reset mid-motion is a jolt with no meaning behind it. Defaults to
+    `EPISODE_STEPS`, so every existing front end is unchanged.
+
+    ⚠ This is only the VIEWER's limit. A task that returns `done` still ends
+    its episode; see `CONFIG.MAX_STEPS`."""
 
     var tasks: List[String]
     var domains: List[String]
@@ -318,6 +332,7 @@ struct ViewerState(Copyable, Movable):
         self.show_plot = True
         self.policy_variant = 0
         self.policy_greedy = True
+        self.episode_steps = EPISODE_STEPS
         self.tasks = tasks^
         self.domains = domains^
         self.domain_of = domain_of^
@@ -918,10 +933,18 @@ def run_view[
             cursor = (cursor + 1) % PLOT_N
             step_i += 1
 
-            if out[2] or step_i >= EPISODE_STEPS:
+            # `N` for a new episode. The renderer claims ESC/SPACE/R/S/V/1-9
+            # for its own bindings and forwards the rest, so this is a free
+            # key — and a manual reset is the only kind that makes sense when
+            # a human, not a policy, is driving.
+            var manual_reset = env.renderer_take_key() == KEY_N
+
+            var timed_out = st.episode_steps > 0 and step_i >= st.episode_steps
+            if out[2] or timed_out or manual_reset:
                 episode += 1
                 print("  episode", episode, "ended after", step_i,
-                      "steps, return =", ep_return)
+                      "steps, return =", ep_return,
+                      "(manual)" if manual_reset else "")
                 var sr = env.reset()
                 for i in range(E.OBS_DIM):
                     obs_l[i] = Scalar[DT](sr.data[i])

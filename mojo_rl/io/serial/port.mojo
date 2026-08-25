@@ -30,6 +30,7 @@ from mojo_rl.io.serial.native import set_speed
 # libc constants — Darwin/arm64
 # ═══════════════════════════════════════════════════════════════════════════
 
+comptime AT_FDCWD = -2
 comptime O_RDWR = 2
 comptime O_NOCTTY = 131072
 comptime O_NONBLOCK = 4
@@ -96,13 +97,26 @@ struct SerialPort(Movable):
 
         self._path = path^
         self.baud = baud
-        # NOTE: C `open` is variadic (`int open(const char*, int, ...)`), but
-        # only its FIXED parameters are used here and those still travel in
-        # registers on Apple arm64. Passing a mode would NOT work — see
-        # `native.mojo`.
-        self.fd = external_call["open", Int32](
+        # ⚠ `openat`, NOT `open`, and the reason is a Mojo linking trap.
+        # `external_call` re-declares a C symbol per module, and a SECOND
+        # declaration of the same symbol with a different signature fails at
+        # LLVM lowering — "existing function with conflicting signature". The
+        # stdlib already declares `open` (`std/io/file.mojo:141`), and this
+        # module lands in the same binary as it whenever anything touches the
+        # filesystem, which the viewer does. Matching its signature exactly
+        # did NOT resolve it. `openat` is the same call with an explicit
+        # directory fd, nothing else declares it, and AT_FDCWD makes it
+        # identical to `open` for an absolute path.
+        #
+        # The mode argument is harmless whichever way it travels: C `openat`
+        # is variadic, so on Apple arm64 it lands in a register the callee
+        # will not read — and the kernel only reads `mode` under O_CREAT,
+        # which is never set here.
+        self.fd = external_call["openat", Int32](
+            Int32(AT_FDCWD),
             self._path.as_c_string_slice().unsafe_ptr(),
             Int32(O_RDWR | O_NOCTTY | O_NONBLOCK),
+            Int32(0),
         )
         if self.fd < 0:
             var e = errno()
@@ -216,8 +230,12 @@ struct SerialPort(Movable):
         var deadline = perf_counter_ns() + timeout_ms * 1_000_000
         var got = 0
         while got < want:
+            # ⚠ `Int(self.fd)`, not `self.fd` — same collision as `write`
+            # above: the stdlib declares `read` with an `index` fd
+            # (`std/io/file_descriptor.mojo:117`) and a second declaration
+            # with `si32` fails at LLVM lowering, not at parse.
             var n = external_call["read", Int](
-                self.fd, buf.unsafe_ptr().unsafe_offset(got), want - got
+                Int(self.fd), buf.unsafe_ptr().unsafe_offset(got), want - got
             )
             if n > 0:
                 got += n

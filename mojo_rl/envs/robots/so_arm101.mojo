@@ -57,6 +57,42 @@ comptime SoArm101ReachConfig = SoArmReachConfig[
     HOME_5=SO_ARM101_HOME_5,
 ]
 
+# ── teleoperation ──────────────────────────────────────────────────────────
+# The same arm and the same reward, with the two things a HUMAN driving the
+# arm does not want:
+#
+#   RESET_NOISE = 0    a random shove at reset is exploration for a policy and
+#                      a jolt for a person; there is nothing to explore when
+#                      the leader decides the pose.
+#   MAX_STEPS_P        no timeout. A reach episode ends after 500 control
+#                      steps (~10 s) because a policy has to be scored on
+#                      something; teleoperation has no score and no end. The
+#                      viewer's own limit is separate — set
+#                      `ViewerState.episode_steps = 0` too.
+#
+# ⚠ The reset pose is still HOME (all zeros), NOT the leader's current pose,
+# so the first step after a reset swings the arm from folded to wherever the
+# leader is. Fixing that needs `custom_reset_cpu` to see the leader, which it
+# cannot — the hook is static and has no route to a serial port.
+comptime SO_ARM101_TELEOP_MAX_STEPS: Int = 1_000_000_000
+
+comptime SoArm101TeleopConfig = SoArmReachConfig[
+    NMESHVERT=SO_ARM101_NMESH_VERTS,
+    EE_BODY=MOVING_JAW_BODY_IDX,
+    TARGET_BODY=TARGET_BODY_IDX,
+    TIMESTEP=0.002,
+    AZ_CENTER=SO_ARM101_AZ_CENTER,
+    HOME_0=SO_ARM101_HOME_0,
+    HOME_1=SO_ARM101_HOME_1,
+    HOME_2=SO_ARM101_HOME_2,
+    HOME_3=SO_ARM101_HOME_3,
+    HOME_4=SO_ARM101_HOME_4,
+    HOME_5=SO_ARM101_HOME_5,
+    RESET_NOISE=0.0,
+    MAX_STEPS_P=SO_ARM101_TELEOP_MAX_STEPS,
+]
+
+
 comptime SoArm101Reach[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,

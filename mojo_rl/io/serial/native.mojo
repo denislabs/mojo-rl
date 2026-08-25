@@ -13,30 +13,38 @@ therefore returns `-1` with `errno == EFAULT`, silently, at runtime.
 way — measured 2026-08-25. `std/ffi` says as much itself: *"Mojo function type
 syntax has no variadic parameter form"* (MOCO-3692).
 
-The shim is resolved **RTLD_DEFAULT first**, so:
+## The shim is a dylib, and it has to be
 
-* `mojo build ... -Xlinker mojo_rl/io/serial/mrl_serial.o -Xlinker -u
-  -Xlinker _mrl_serial_set_speed` produces a single self-contained binary that
-  never opens a dylib — which is the point, since the deployable artifact for
-  the arm is supposed to be one native binary. ⚠ The `-u` is REQUIRED: nothing
-  references the symbol at link time (that is the whole idea), so without it
-  the linker dead-strips the object and the binary quietly falls back to the
-  dylib;
-* `mojo run`, whose JIT does not honour `-Xlinker` for objects, falls back to
-  `libmrl_serial.dylib` beside this file.
+An earlier version resolved the symbol with a hand-rolled `dlopen`/`dlsym`,
+which let `mojo build … -Xlinker mrl_serial.o -Xlinker -u -Xlinker
+_mrl_serial_set_speed` produce ONE self-contained binary. That worked for the
+hardware teleop and **stopped working the moment the renderer shared the
+binary**, for two compounding reasons:
 
-Build both with `pixi run build-serial`.
+* ⚠ **`external_call` re-declares a C symbol per module, and two declarations
+  of one symbol with different signatures fail at LLVM LOWERING** — "existing
+  function with conflicting signature", not a parse error. The stdlib already
+  declares `dlsym` (`std/sys/_libc`), and the viewer pulls it in. The same
+  trap hit `write`, `read` and `open`; `port.mojo` records how each was
+  matched or side-stepped.
+* ⚠ **`mojo run`'s JIT does not honour `-Xlinker` at all** — object or dylib,
+  the symbol simply fails to materialise. So a direct
+  `external_call["mrl_serial_set_speed"]` makes the module un-runnable under
+  `mojo run` whether or not the call is ever reached.
+
+Together those rule out every combination but this one: resolve through
+`_get_dylib_function`, the same path `render/imgui` uses. It calls the
+stdlib's own `dlsym`, so it declares nothing and collides with nothing.
+
+**Consequence, stated plainly: a built binary needs `libmrl_serial.dylib`
+beside it** (or at `MOJO_RL_SERIAL_LIB`), exactly as the imgui viewers need
+`libmojo_imgui.dylib`. Build it with `pixi run build-serial`.
 """
 
-from std.ffi import external_call
-from std.os import getenv
+from std.ffi import OwnedDLHandle, _Global, _get_dylib_function
+from std.os import abort, getenv
 from std.pathlib import Path
 from std.sys import CompilationTarget
-
-comptime _RTLD_NOW = Int32(2)
-# dlsym(RTLD_DEFAULT, ...) searches every image already loaded, the main
-# executable included. That is what makes the statically linked build work.
-comptime _RTLD_DEFAULT = -2
 
 
 def _lib_name() -> String:
@@ -63,63 +71,53 @@ def _candidates() -> List[String]:
     return out^
 
 
-def _dlsym(handle: Int, mut name: String) -> Int:
-    return Int(
-        external_call["dlsym", OpaquePointer[MutAnyOrigin]](
-            handle, name.as_c_string_slice().unsafe_ptr()
-        )
-    )
+def serial_shim_available() -> Bool:
+    """True when the shim can be found WITHOUT dlopening it.
 
-
-def _resolve_handle() raises -> Int:
-    """A dl handle whose `dlsym` finds `mrl_serial_set_speed`.
-
-    ⚠ Deliberately NOT `OwnedDLHandle.check_symbol` — that returns `False` for
-    symbols `dlsym` and `ctypes` both resolve, and `DLHandle.call` asserts on
-    it, so a working shim aborts the process. Measured 2026-08-25.
+    `_Global` aborts the process on a missing library — right for a hard
+    dependency, wrong as a first impression. Call this before opening a port
+    to print "run `pixi run build-serial`" instead of dying in the loader.
     """
-    var name = String("mrl_serial_set_speed")
-
-    # 1. Already in the process? (a `-Xlinker …/mrl_serial.o` build)
-    if _dlsym(_RTLD_DEFAULT, name) != 0:
-        return _RTLD_DEFAULT
-
-    # 2. Otherwise the dylib beside this package.
     var candidates = _candidates()
     for i in range(len(candidates)):
-        var path = candidates[i]
-        if not Path(path).exists():
-            continue
-        var h = Int(
-            external_call["dlopen", OpaquePointer[MutAnyOrigin]](
-                path.as_c_string_slice().unsafe_ptr(), _RTLD_NOW
-            )
-        )
-        if h != 0 and _dlsym(h, name) != 0:
-            return h
+        if Path(candidates[i]).exists():
+            return True
+    return False
+
+
+def _init_serial_handle() -> OwnedDLHandle:
+    """Non-raising, as `_Global` demands; aborts with the paths it tried."""
+    var candidates = _candidates()
+    for i in range(len(candidates)):
+        try:
+            return OwnedDLHandle(candidates[i])
+        except:
+            pass
 
     var tried = String("")
     for i in range(len(candidates)):
         tried += "\n  - " + candidates[i]
-    raise Error(
-        "serial shim not found (mrl_serial_set_speed). Tried RTLD_DEFAULT,"
-        " then:"
+    abort(
+        "serial shim not found. Tried:"
         + tried
-        + "\nBuild it with `pixi run build-serial`, or set MOJO_RL_SERIAL_LIB."
+        + "\nBuild it with `pixi run build-serial`, or set"
+        + " MOJO_RL_SERIAL_LIB=/path/to/"
+        + _lib_name()
     )
+
+
+comptime lib = _Global["MOJO_RL_SERIAL", _init_serial_handle]()
 
 
 def set_speed(fd: Int32, baud: Int) raises -> Int32:
     """`ioctl(fd, IOSSIOSPEED, &baud)` on macOS; a no-op elsewhere.
 
-    Resolved on every call: this runs once per port at open time, never in a
-    control loop, so caching it would buy nothing and add a global.
+    Runs once per port at open time, never in a control loop, so the lookup's
+    cost is irrelevant — and `_get_dylib_function` caches it anyway.
     """
     comptime if not CompilationTarget.is_macos():
         return 0
 
-    var name = String("mrl_serial_set_speed")
-    var f = external_call["dlsym", def (Int32, UInt64) thin -> Int32](
-        _resolve_handle(), name.as_c_string_slice().unsafe_ptr()
-    )
-    return f(fd, UInt64(baud))
+    return _get_dylib_function[
+        lib, "mrl_serial_set_speed", def (Int32, UInt64) thin -> Int32
+    ]()(fd, UInt64(baud))
