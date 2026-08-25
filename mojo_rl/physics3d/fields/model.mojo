@@ -189,6 +189,20 @@ struct Model[
     var hfield_meta: TensorImpl[Self.DTYPE]
     var hfield_data: TensorImpl[Self.DTYPE]
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
+    var mesh_tris: TensorImpl[Self.DTYPE]  # [NMESH_TRI, 9]
+    """The meshes' ORIGINAL triangles, nine floats each, principal frame.
+
+    ⚠ A DIFFERENT SURFACE FROM `mesh_verts`, which is the convex HULL. The
+    hull is what collision wants and what MuJoCo collides too; it cannot
+    answer a RAY, because a ray aimed into a bracket's cutout must find the
+    hole and the hull has none. `mj_rayMesh` walks `mesh_face` for exactly
+    that reason. Rounded to float32 on the way in, like the hull, because
+    `mjModel.mesh_vert` is `float*` and a double copy puts our surface a few
+    hundred picometres from the one the reference intersects.
+
+    Sized by `nmesh_tri`, which is 0 unless something asked for it, so a model
+    nobody rays pays nothing.
+    """
     var mesh_polys: TensorImpl[Self.DTYPE]  # [NMESH_POLY, 5]
     var mesh_polyvert: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
     var mesh_polymap: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
@@ -271,6 +285,9 @@ struct Model[
             _at_least_one(dims.get_nhfield_data())
         )
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
+        self.mesh_tris = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nmesh_tri() * 9)
+        )
         self.mesh_polys = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(mesh_max_poly(dims.get_nmesh_verts()) * MODEL_MESH_POLY_SIZE)
         )
@@ -327,6 +344,7 @@ struct Model[
         self.hfield_meta.upload(ctx)
         self.hfield_data.upload(ctx)
         self.mesh_verts.upload(ctx)
+        self.mesh_tris.upload(ctx)
         self.mesh_polys.upload(ctx)
         self.mesh_polyvert.upload(ctx)
         self.mesh_polymap.upload(ctx)

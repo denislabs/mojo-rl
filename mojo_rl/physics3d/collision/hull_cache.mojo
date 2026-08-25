@@ -104,7 +104,7 @@ from ..model.mesh_inertia import MeshInertia
 # entries are not detectable from their contents; the version is the only
 # thing standing between a hull-algorithm fix and a cache that keeps serving
 # the old geometry.
-comptime HULL_CACHE_VERSION: Int = 6
+comptime HULL_CACHE_VERSION: Int = 7  # 7: + the mesh's TRIANGLE SOUP
 
 comptime _MAGIC: UInt64 = 0x4D4A48554C4C3031  # "MJHULL01"
 comptime _FNV_OFFSET: UInt64 = 14695981039346656037
@@ -135,6 +135,29 @@ struct HullPayload(Copyable, Movable):
     var num_hull: Int
     var npoly: Int
 
+    var tri_vert: List[Float64]
+    """The mesh's ORIGINAL triangles, 9 floats each, in the principal frame.
+
+    ⚠⚠ THE HULL CANNOT ANSWER A RAY. `mj_rayMesh` walks `mesh_face`, the
+    original triangle list, and the hull is a different surface: a ray aimed
+    into a bracket's cutout hits hull where the real part has a hole. That is
+    fine for collision — MuJoCo collides convex hulls too — and wrong for a
+    rangefinder, a picker or a camera, which are the three consumers of
+    `physics3d/ray/`.
+
+    ⚠ A SOUP, NOT VERTICES-PLUS-INDICES, and the choice is deliberate. MuJoCo
+    stores `mesh_vert` + `mesh_face` and this could too, at 1/3 the bytes. It
+    does not, because our `deduplicate_vertices` runs at a different epsilon
+    and in a different order from the loader MuJoCo uses, so our index arrays
+    would not match `mjModel.mesh_face` element for element anyway — the
+    structural resemblance would be cosmetic while costing an index map
+    threaded through the dedup, and the RAY ANSWER, which is what is actually
+    gated, is identical either way. The cost is ~3.3 MB on the largest robot
+    in the tree (SO-101) against ~1.1 MB, once, in a CPU-side model.
+    """
+
+    var num_tri: Int
+
     def __init__(out self):
         self.hull_vert = List[Float64]()
         self.poly_vertadr = List[Int]()
@@ -149,6 +172,8 @@ struct HullPayload(Copyable, Movable):
         self.rbound = Float64(0)
         self.num_hull = 0
         self.npoly = 0
+        self.tri_vert = List[Float64]()
+        self.num_tri = 0
 
 
 @always_inline
@@ -333,11 +358,11 @@ def hull_cache_load(cache_path: String, mut out: HullPayload) -> Bool:
     var n_polymap = _u2i(w[5])
     var n_edge_list = _u2i(w[6])
     var rbound = _u2f(w[7])
-    # w[8] is reserved; written as 0.
+    var num_tri = _u2i(w[8])
 
     if num_hull < 0 or npoly < 0 or n_poly_vert < 0 or n_polymap < 0 or (
         n_edge_list < 0
-    ):
+    ) or num_tri < 0:
         return False
 
     var want = (
@@ -350,6 +375,7 @@ def hull_cache_load(cache_path: String, mut out: HullPayload) -> Bool:
         + n_polymap
         + num_hull
         + n_edge_list
+        + num_tri * 9
     )
     if nwords != want:
         return False
@@ -358,6 +384,7 @@ def hull_cache_load(cache_path: String, mut out: HullPayload) -> Bool:
     out.num_hull = num_hull
     out.npoly = npoly
     out.rbound = rbound
+    out.num_tri = num_tri
 
     var o = _HEADER_WORDS
     for i in range(num_hull * 3):
@@ -389,6 +416,9 @@ def hull_cache_load(cache_path: String, mut out: HullPayload) -> Bool:
     o += num_hull
     for i in range(n_edge_list):
         out.edge_list.append(_u2i(w[o + i]))
+    o += n_edge_list
+    for i in range(num_tri * 9):
+        out.tri_vert.append(_u2f(w[o + i]))
 
     return True
 
@@ -418,7 +448,9 @@ def hull_cache_store(cache_path: String, p: HullPayload):
     w.append(_i2u(len(p.polymap)))
     w.append(_i2u(len(p.edge_list)))
     w.append(_f2u(p.rbound))
-    w.append(UInt64(0))
+    # w[8] was reserved and written as 0; version 7 spends it on the triangle
+    # count, which is why the version bumped rather than the header growing.
+    w.append(_i2u(p.num_tri))
 
     for i in range(len(p.hull_vert)):
         w.append(_f2u(p.hull_vert[i]))
@@ -440,6 +472,8 @@ def hull_cache_store(cache_path: String, p: HullPayload):
         w.append(_i2u(p.edge_adr[i]))
     for i in range(len(p.edge_list)):
         w.append(_i2u(p.edge_list[i]))
+    for i in range(len(p.tri_vert)):
+        w.append(_f2u(p.tri_vert[i]))
 
     var bytes = List[UInt8](length=len(w) * 8, fill=UInt8(0))
     for i in range(len(w)):

@@ -134,6 +134,7 @@ def dims_from_flat(
     fmd: FlatModelDef,
     max_contacts: Int = 50,
     nmesh_verts: Int = 0,
+    nmesh_tri: Int = 0,
 ) raises -> DynDims:
     """The model's dimensions, read off the parse.
 
@@ -161,6 +162,12 @@ def dims_from_flat(
       right for a mesh-free model; for a mesh model pass the budget and let
       the builder's capacity check raise if it is short. It raises with the
       required number, so the failure tells you the answer.
+    * `nmesh_tri` is the TRIANGLE SOUP budget, and it is a BUDGET for the same
+      reason `nmesh_verts` is: the triangle count is only known once the
+      meshes are loaded, which happens after this. **It defaults to 0, which
+      means the soup is not carried at all** — a model nobody rays pays
+      nothing for `ray/mesh.mojo`. Pass a budget to enable it; the builder
+      raises with the exact requirement if it is short.
     """
     var nq = 0
     var nv = 0
@@ -179,6 +186,7 @@ def dims_from_flat(
         ntendon=len(fmd.tendons),
         nexclude=len(fmd.excludes),
         nmesh_verts=nmesh_verts,
+        nmesh_tri=nmesh_tri,
         npair=len(fmd.pairs),
         nact=len(fmd.actuators),
         nten=len(fmd.tendons),

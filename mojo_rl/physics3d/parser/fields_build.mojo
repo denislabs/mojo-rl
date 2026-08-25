@@ -83,6 +83,8 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_MESH_POLY_SIZE,
     MESH_META_IDX_POLYADR,
     MESH_META_IDX_POLYNUM,
+    MESH_META_IDX_TRIADR,
+    MESH_META_IDX_TRINUM,
     MESH_POLY_IDX_VERTADR,
     MESH_POLY_IDX_VERTNUM,
     MESH_POLY_IDX_NX,
@@ -1872,6 +1874,11 @@ def build_model_fields_from_flat[
     # Hull vertex adjacency (MuJoCo's `mesh_graph`), for the plane-mesh path.
     var edge_adr = List[Int]()
     var edge_list = List[Int]()
+    # The mesh's ORIGINAL triangles, 9 floats each — what `ray/mesh.mojo`
+    # walks. The hull above cannot answer a ray against a non-convex part.
+    var mesh_tri = List[Scalar[DTYPE]]()
+    var mesh_triadr = List[Int]()
+    var mesh_trinum = List[Int]()
     var loaded_mesh_ids = List[Int](length=fmd.num_mesh_assets, fill=-1)
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
@@ -1937,6 +1944,9 @@ def build_model_fields_from_flat[
                         polymap_num,
                         edge_adr,
                         edge_list,
+                        mesh_tri,
+                        mesh_triadr,
+                        mesh_trinum,
                         mesh_inertia_cache[gd.mesh_id],
                         gd.mesh_scale_x,
                         gd.mesh_scale_y,
@@ -2136,6 +2146,47 @@ def build_model_fields_from_flat[
         if i >= mf.dims.get_nmesh_verts() * 3:
             break
         mf.mesh_verts.data[i] = mesh_vert[i]
+
+    # ── the mesh TRIANGLE SOUP ───────────────────────────────────────────
+    #
+    # ⚠⚠ SILENT WHEN OFF, BY DESIGN AND SAID OUT LOUD. `nmesh_tri` defaults to
+    # 0, so a model whose meshes nothing rays allocates nothing and this loop
+    # writes nothing — `ray/mesh.mojo` then reports NO HIT on every mesh. That
+    # is a capacity of zero being read as "no geometry", the exact shape of
+    # `feedback_a_capacity_answer_read_as_a_feature_gate`, so it is stated
+    # here and the ray entry point takes `ntri` explicitly rather than
+    # inferring it.
+    #
+    # ⚠ The capacity check RAISES rather than truncating, like the hull's
+    # above: a half-written soup is a mesh with holes in it, and a ray through
+    # the missing part reports the geometry behind it.
+    if mf.dims.get_nmesh_tri() > 0 and len(mesh_tri) > (
+        mf.dims.get_nmesh_tri() * 9
+    ):
+        raise Error(
+            String("physics3d: nmesh_tri holds ")
+            + String(mf.dims.get_nmesh_tri())
+            + " triangles but the collidable meshes carry "
+            + String(len(mesh_tri) // 9)
+            + ". Truncating would put holes in a surface a ray reads through,"
+            " so this is fatal. Pass nmesh_tri=" + String(len(mesh_tri) // 9)
+            + " to dims_from_flat."
+        )
+    for i in range(len(mesh_tri)):
+        if i >= mf.dims.get_nmesh_tri() * 9:
+            break
+        mf.mesh_tris.data[i] = mesh_tri[i]
+
+    # `mesh_meta` gains the soup's per-mesh window, parallel to the hull's.
+    for m in range(num_meshes):
+        if m >= MAX_GPU_MESHES or m >= len(mesh_triadr):
+            break
+        mf.mesh_meta.data[
+            m * MODEL_MESH_META_SIZE + MESH_META_IDX_TRIADR
+        ] = Scalar[DTYPE](mesh_triadr[m])
+        mf.mesh_meta.data[
+            m * MODEL_MESH_META_SIZE + MESH_META_IDX_TRINUM
+        ] = Scalar[DTYPE](mesh_trinum[m])
 
     # ── mesh polygon topology ────────────────────────────────────────────
     #

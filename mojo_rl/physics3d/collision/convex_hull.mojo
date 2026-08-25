@@ -1225,6 +1225,9 @@ def load_mesh_hull[
     mut polymap_num: List[Int],
     mut edge_adr: List[Int],
     mut edge_list: List[Int],
+    mut mesh_tri: List[Scalar[DTYPE]],
+    mut mesh_triadr: List[Int],
+    mut mesh_trinum: List[Int],
     mi: MeshInertia[DTYPE],
     sx: Float64 = 1.0,
     sy: Float64 = 1.0,
@@ -1366,6 +1369,35 @@ def load_mesh_hull[
             lnormal[pi * 3 + 1] = wn[1]
             lnormal[pi * 3 + 2] = wn[2]
 
+        # ── THE TRIANGLE SOUP ────────────────────────────────────────────
+        # The mesh's ORIGINAL triangles, which the hull is not. `mj_rayMesh`
+        # walks `mesh_face`; a ray into a bracket's cutout must find the hole,
+        # and the hull has none. Built HERE, inside the cached block, because
+        # the frame below is the expensive, cache-worthy part and the soup has
+        # to share it exactly: a triangle in the file's frame and a hull in the
+        # principal frame describe two different objects.
+        #
+        # ⚠ `load_stl` returns a SOUP ALREADY — three vertices per triangle in
+        # order, undeduplicated — so this is a copy, not a rebuild, and it
+        # deliberately does not go through `deduplicate_vertices`. See
+        # `HullPayload.tri_vert` for why indices were not worth their map.
+        var tri = List[Scalar[DTYPE]]()
+        for i in range(num_raw):
+            tri.append(Scalar[DTYPE](mesh_data.vertices[i].px))
+            tri.append(Scalar[DTYPE](mesh_data.vertices[i].py))
+            tri.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
+        # ⚠ THE SAME TWO CALLS THE HULL GETS, IN THE SAME ORDER. Getting this
+        # wrong is silent: the ray answer stays plausible and is wrong by the
+        # mesh's centre-of-mass shift and principal rotation, which is exactly
+        # the offset a "roughly right but drifting" rangefinder would show.
+        apply_mesh_ref_transform[DTYPE](
+            tri, num_raw, rpx, rpy, rpz, rqw, rqx, rqy, rqz, sx, sy, sz
+        )
+        transform_verts_to_principal_frame[DTYPE](tri, num_raw, mi)
+        p.num_tri = num_raw // 3
+        for i in range(len(tri)):
+            p.tri_vert.append(Float64(tri[i]))
+
         p.num_hull = nh
         p.npoly = np_local
         p.rbound = Float64(compute_mesh_rbound_at[DTYPE](lvert, 0, nh))
@@ -1429,6 +1461,17 @@ def load_mesh_hull[
         )
     var num_hull = p.num_hull
     mesh_vertnum.append(num_hull)
+
+    # The soup, rounded to float32 for the same reason the hull is: MuJoCo's
+    # `mesh_vert` is `float*` and `ray_triangle` reads those floats. A double
+    # copy would put our surface a few hundred picometres from the one the
+    # reference intersects, which on a grazing ray is the difference between a
+    # hit and a miss.
+    mesh_triadr.append(len(mesh_tri) // 9)
+    for i in range(len(p.tri_vert)):
+        mesh_tri.append(Scalar[DTYPE](p.tri_vert[i].cast[DType.float32]()))
+    mesh_trinum.append(p.num_tri)
+
     num_meshes += 1
 
     # Polygons for the native multi-contact path. `polymap_adr` / `polymap_num`

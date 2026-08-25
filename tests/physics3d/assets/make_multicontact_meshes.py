@@ -122,3 +122,63 @@ def hex_prism(rx=0.04, ry=0.06, hz=0.08):
 if __name__ == "__main__":
     write_stl(HERE / "mc_cube.stl", cube())
     write_stl(HERE / "mc_hex.stl", hex_prism())
+
+
+# ---------------------------------------------------------------------------
+# notch.stl — a NON-CONVEX solid, added 2026-08-25 for `ray/mesh.mojo`.
+#
+# ⚠⚠ EVERY OTHER FIXTURE HERE IS CONVEX, AND A CONVEX FIXTURE CANNOT GATE A
+# TRIANGLE STORE. The store exists because `Model.mesh_verts` is the convex
+# HULL and a ray aimed into a cutout must find the hole; on a cube or a hex
+# prism the hull IS the mesh, so a `ray_mesh` that quietly walked hull
+# triangles would agree with MuJoCo on every ray and the gate would prove
+# nothing.
+#
+# The shape is a box with a rectangular slot cut into its +z face, deep enough
+# and wide enough that a ray straight down the slot passes through the hull's
+# lid and out the other side of the notch — the discriminating ray.
+def notch(hx=0.05, hy=0.05, hz=0.04, sw=0.02, sd=0.05):
+    """Box [-hx,hx]x[-hy,hy]x[-hz,hz] with a slot of half-width `sw` in x,
+    running the full y extent, cut `sd` down from the top face."""
+    zt, zb = hz, -hz
+    zs = hz - sd  # floor of the slot
+    quads = []
+
+    def q(a, b, c, d):
+        quads.append((a, b, c, d))
+
+    # Bottom (one full face) and the four outer walls.
+    q((-hx, -hy, zb), (hx, -hy, zb), (hx, hy, zb), (-hx, hy, zb))
+    q((-hx, -hy, zb), (-hx, hy, zb), (-hx, hy, zt), (-hx, -hy, zt))
+    q((hx, -hy, zb), (hx, -hy, zt), (hx, hy, zt), (hx, hy, zb))
+    # The two y-facing walls are each an L, cut into three quads by the slot.
+    for sy, yy in ((-1, -hy), (1, hy)):
+        for x0, x1, z0, z1 in (
+            (-hx, -sw, zb, zt),
+            (sw, hx, zb, zt),
+            (-sw, sw, zb, zs),
+        ):
+            a = (x0, yy, z0)
+            b = (x1, yy, z0)
+            c = (x1, yy, z1)
+            d = (x0, yy, z1)
+            q(a, b, c, d) if sy > 0 else q(a, d, c, b)
+    # Top face: two strips either side of the slot.
+    q((-hx, -hy, zt), (-sw, -hy, zt), (-sw, hy, zt), (-hx, hy, zt))
+    q((sw, -hy, zt), (hx, -hy, zt), (hx, hy, zt), (sw, hy, zt))
+    # The slot itself: floor plus two side walls.
+    q((-sw, -hy, zs), (sw, -hy, zs), (sw, hy, zs), (-sw, hy, zs))
+    q((-sw, -hy, zs), (-sw, hy, zs), (-sw, hy, zt), (-sw, -hy, zt))
+    q((sw, -hy, zs), (sw, -hy, zt), (sw, hy, zt), (sw, hy, zs))
+
+    tris = []
+    for a, b, c, d in quads:
+        tris.append((a, b, c))
+        tris.append((a, c, d))
+    return tris
+
+
+if __name__ == "__main__":
+    here = Path(__file__).parent
+    write_stl(here / "notch.stl", notch())
+    print("wrote notch.stl", len(notch()), "triangles")

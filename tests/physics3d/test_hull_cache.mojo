@@ -77,6 +77,13 @@ struct Built[DTYPE: DType](Copyable, Movable):
     var polymap_num: List[Int]
     var edge_adr: List[Int]
     var edge_list: List[Int]
+    # The mesh TRIANGLE SOUP (`ray/mesh.mojo`). It rides in the same payload,
+    # so a cold build and a warm one must agree on it too — and it is the one
+    # array here that is NOT rebased, since a triangle carries coordinates
+    # rather than vertex ids.
+    var mesh_tri: List[Scalar[Self.DTYPE]]
+    var mesh_triadr: List[Int]
+    var mesh_trinum: List[Int]
     var rbound: List[Scalar[Self.DTYPE]]
 
     def __init__(out self):
@@ -94,6 +101,9 @@ struct Built[DTYPE: DType](Copyable, Movable):
         self.polymap_num = List[Int]()
         self.edge_adr = List[Int]()
         self.edge_list = List[Int]()
+        self.mesh_tri = List[Scalar[Self.DTYPE]]()
+        self.mesh_triadr = List[Int]()
+        self.mesh_trinum = List[Int]()
         self.rbound = List[Scalar[Self.DTYPE]]()
 
 
@@ -112,7 +122,8 @@ def _build[DTYPE: DType](enabled: Bool) raises -> Built[DTYPE]:
             b.mesh_vert, b.mesh_vertadr, b.mesh_vertnum, num_meshes,
             b.mesh_polyadr, b.mesh_polynum, b.poly_vert, b.poly_vertadr,
             b.poly_vertnum, b.poly_normal, b.polymap, b.polymap_adr,
-            b.polymap_num, b.edge_adr, b.edge_list, mi,
+            b.polymap_num, b.edge_adr, b.edge_list,
+            b.mesh_tri, b.mesh_triadr, b.mesh_trinum, mi,
         )
         b.rbound.append(r[1])
     return b^
@@ -163,6 +174,13 @@ def _compare[DTYPE: DType](cold: Built[DTYPE], warm: Built[DTYPE]) raises:
     _same_floats[DTYPE]("poly_normal", cold.poly_normal, warm.poly_normal)
     _same_ints("polymap", cold.polymap, warm.polymap)
     _same_ints("polymap_adr", cold.polymap_adr, warm.polymap_adr)
+    # ⚠ The triangle soup rides the SAME cache payload, so a cold/warm
+    # difference here is a serialisation bug in the version-7 format and not a
+    # hull one. Compared byte-for-byte like `mesh_vert`: the coordinates are
+    # float32-rounded on both paths, so equality is exact, not approximate.
+    _same_floats[DTYPE]("mesh_tri", cold.mesh_tri, warm.mesh_tri)
+    _same_ints("mesh_triadr", cold.mesh_triadr, warm.mesh_triadr)
+    _same_ints("mesh_trinum", cold.mesh_trinum, warm.mesh_trinum)
     _same_ints("polymap_num", cold.polymap_num, warm.polymap_num)
     _same_ints("edge_adr", cold.edge_adr, warm.edge_adr)
     _same_ints("edge_list", cold.edge_list, warm.edge_list)

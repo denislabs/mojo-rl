@@ -1257,11 +1257,18 @@ mesh-heaviest models in or near this tree. See
 `tests/physics3d/test_mesh_cap_is_loud.mojo`."""
 # vertadr, vertnum, polyadr, polynum per mesh — the last two added with the
 # native multi-contact path, mirroring `mesh_polyadr` / `mesh_polynum`.
-comptime MODEL_MESH_META_SIZE: Int = 4
+comptime MODEL_MESH_META_SIZE: Int = 6
 comptime MESH_META_IDX_VERTADR: Int = 0
 comptime MESH_META_IDX_VERTNUM: Int = 1
 comptime MESH_META_IDX_POLYADR: Int = 2
 comptime MESH_META_IDX_POLYNUM: Int = 3
+# The mesh's window into `Model.mesh_tris` — the ORIGINAL triangle soup that
+# `ray/mesh.mojo` walks, which is NOT the hull `VERTADR`/`VERTNUM` describe.
+# ⚠ `TRINUM` is 0 on every mesh when the model was built without a triangle
+# budget (`nmesh_tri`), which is the default. A reader must treat 0 as "not
+# carried" and not as "this mesh has no geometry".
+comptime MESH_META_IDX_TRIADR: Int = 4
+comptime MESH_META_IDX_TRINUM: Int = 5
 
 # ---- HEIGHTFIELDS -----------------------------------------------------------
 #

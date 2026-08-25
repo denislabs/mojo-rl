@@ -128,6 +128,7 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     comptime NTENDON: Int
     comptime NEXCLUDE: Int
     comptime NMESH_VERTS: Int
+    comptime NMESH_TRI: Int
     comptime NHFIELD_DATA: Int
     comptime NPAIR: Int
     comptime NACT: Int
@@ -206,6 +207,17 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     def get_nmesh_verts(self) -> Int:
         ...
 
+    def get_nmesh_tri(self) -> Int:
+        """Triangles in the mesh TRIANGLE SOUP, across every collidable mesh.
+
+        ⚠ NOT `nmesh_verts`. That counts CONVEX HULL vertices, which is a
+        different surface: `physics3d/ray/mesh.mojo` needs the mesh's original
+        triangles, because a ray aimed into a bracket's cutout must find the
+        hole and the hull has none. Zero on a model whose meshes nothing rays.
+        """
+        ...
+
+
     def get_nhfield_data(self) -> Int:
         ...
 
@@ -234,6 +246,7 @@ struct Dims[
     ntendon: Int = 0,
     nexclude: Int = 0,
     nmesh_verts: Int = 0,
+    nmesh_tri: Int = 0,
     npair: Int = 0,
     nact: Int = 0,
     nten: Int = 0,
@@ -265,6 +278,7 @@ struct Dims[
     comptime NTENDON = Self.ntendon
     comptime NEXCLUDE = Self.nexclude
     comptime NMESH_VERTS = Self.nmesh_verts
+    comptime NMESH_TRI = Self.nmesh_tri
     comptime NHFIELD_DATA = Self.nhfield_data
     comptime NPAIR = Self.npair
     comptime NACT = Self.nact
@@ -346,6 +360,10 @@ struct Dims[
         return Self.nmesh_verts
 
     @always_inline
+    def get_nmesh_tri(self) -> Int:
+        return Self.nmesh_tri
+
+    @always_inline
     def get_nhfield_data(self) -> Int:
         return Self.nhfield_data
 
@@ -378,6 +396,7 @@ comptime AsStatic[D: DimsLike] = Dims[
     ntendon=D.NTENDON,
     nexclude=D.NEXCLUDE,
     nmesh_verts=D.NMESH_VERTS,
+    nmesh_tri=D.NMESH_TRI,
     npair=D.NPAIR,
     nact=D.NACT,
     nten=D.NTEN,
@@ -495,6 +514,7 @@ struct DynDims(DimsLike):
     var _ntendon: Int
     var _nexclude: Int
     var _nmesh_verts: Int
+    var _nmesh_tri: Int
     var _nhfield_data: Int
     var _npair: Int
     var _nact: Int
@@ -512,6 +532,7 @@ struct DynDims(DimsLike):
     comptime NTENDON = DIM_POISON
     comptime NEXCLUDE = DIM_POISON
     comptime NMESH_VERTS = DIM_POISON
+    comptime NMESH_TRI = DIM_POISON
     comptime NHFIELD_DATA = DIM_POISON
     comptime NPAIR = DIM_POISON
     comptime NACT = DIM_POISON
@@ -549,6 +570,7 @@ struct DynDims(DimsLike):
         ntendon: Int = 0,
         nexclude: Int = 0,
         nmesh_verts: Int = 0,
+        nmesh_tri: Int = 0,
         npair: Int = 0,
         nact: Int = 0,
         nten: Int = 0,
@@ -568,6 +590,7 @@ struct DynDims(DimsLike):
         self._ntendon = ntendon
         self._nexclude = nexclude
         self._nmesh_verts = nmesh_verts
+        self._nmesh_tri = nmesh_tri
         self._nhfield_data = nhfield_data
         self._npair = npair
         self._nact = nact
@@ -629,6 +652,10 @@ struct DynDims(DimsLike):
     @always_inline
     def get_nmesh_verts(self) -> Int:
         return self._nmesh_verts
+
+    @always_inline
+    def get_nmesh_tri(self) -> Int:
+        return self._nmesh_tri
 
     @always_inline
     def get_nhfield_data(self) -> Int:

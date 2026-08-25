@@ -25,3 +25,4 @@ from .geom import (
 )
 from .triangle import ray_basis, ray_triangle
 from .hfield import ray_hfield
+from .mesh import ray_mesh
