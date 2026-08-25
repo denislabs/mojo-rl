@@ -51,9 +51,17 @@ from ..gpu.constants import (
     mesh_max_edge,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_SOLVER_ITERATIONS,
+    MODEL_META_IDX_SOLVER_TOLERANCE,
+    MODEL_META_IDX_LS_ITERATIONS,
+    MODEL_META_IDX_LS_TOLERANCE,
     MODEL_META_IDX_NOSLIP_ITERATIONS,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
+    MJ_SOLVER_ITERATIONS,
+    MJ_SOLVER_TOLERANCE,
+    MJ_LS_ITERATIONS,
+    MJ_LS_TOLERANCE,
 )
 
 @always_inline
@@ -276,6 +284,24 @@ struct Model[
         )
         self.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[Self.DTYPE](
             MJ_CCD_ITERATIONS
+        )
+        # ⚠⚠ `alloc` DOES NOT ZERO, AND `iterations` IS A LOOP BOUND. A hand-
+        # built `Data` — the board, the GPU env specs, every fixture that skips
+        # the parser — would otherwise solve an arbitrary number of times, or
+        # zero. Seeded with MuJoCo's defaults so a `Model` built without a
+        # parser behaves like the reference. Same reasoning as
+        # `MODEL_META_IDX_NOSLIP_ITERATIONS` below.
+        self.meta.data[
+            MODEL_META_IDX_SOLVER_ITERATIONS
+        ] = Scalar[Self.DTYPE](MJ_SOLVER_ITERATIONS)
+        self.meta.data[
+            MODEL_META_IDX_SOLVER_TOLERANCE
+        ] = Scalar[Self.DTYPE](MJ_SOLVER_TOLERANCE)
+        self.meta.data[MODEL_META_IDX_LS_ITERATIONS] = Scalar[Self.DTYPE](
+            MJ_LS_ITERATIONS
+        )
+        self.meta.data[MODEL_META_IDX_LS_TOLERANCE] = Scalar[Self.DTYPE](
+            MJ_LS_TOLERANCE
         )
         # ⚠ SEEDED FOR THE SAME REASON, AND THE SAFE VALUE HERE IS 0. `alloc`
         # does not zero, and this slot is a LOOP BOUND — `mj_solNoSlip` runs

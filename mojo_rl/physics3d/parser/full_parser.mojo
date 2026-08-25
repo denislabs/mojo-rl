@@ -124,6 +124,10 @@ from mojo_rl.physics3d.gpu.constants import (
     WRAP_CYLINDER,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
+    MJ_SOLVER_ITERATIONS,
+    MJ_SOLVER_TOLERANCE,
+    MJ_LS_ITERATIONS,
+    MJ_LS_TOLERANCE,
 )
 from mojo_rl.physics3d.gpu.constants import JOINT_RANGE_UNLIMITED
 from mojo_rl.physics3d.joint_types import (
@@ -190,11 +194,12 @@ def _parse_option(
     xml: String,
 ) -> Tuple[
     Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,
-    Int, Float64, Int, Int, Int, Int
+    Int, Float64, Int, Int, Int, Int, Int, Float64, Int, Float64
 ]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
     noslip_tolerance, ccd_tolerance, ccd_iterations, impratio, cone, solver,
-    integrator, noslip_iterations) from <option .../>.
+    integrator, noslip_iterations, iterations, tolerance, ls_iterations,
+    ls_tolerance) from <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
     noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35,
@@ -277,11 +282,23 @@ def _parse_option(
     var cone = ConeType.PYRAMIDAL
     var solver = SolverType.NEWTON
     var integrator = IntegratorType.EULER
+    # ⚠⚠ THE CONSTRAINT SOLVER'S OWN BUDGET, WHICH THIS FUNCTION ALSO DID NOT
+    # READ. `newton_solve` hardcoded 200 / 1e-8 / 50 / 0.01, so a model
+    # shipping `<option iterations="4">` was run to convergence instead — and
+    # MuJoCo's answer for that model IS the 4-iteration one. `apptronik_apollo`
+    # is exactly that model and is board #2. Same shape as `noslip_iterations`
+    # directly above: a per-model count that reached the solver only as a
+    # compile-time constant.
+    var siter = MJ_SOLVER_ITERATIONS
+    var stol = Float64(MJ_SOLVER_TOLERANCE)
+    var lsiter = MJ_LS_ITERATIONS
+    var lstol = Float64(MJ_LS_TOLERANCE)
 
     var pos = xml.find("<option")
     if pos == -1:
         return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
-                impratio, cone, solver, integrator, nsiter)
+                impratio, cone, solver, integrator, nsiter,
+                siter, stol, lsiter, lstol)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -337,6 +354,46 @@ def _parse_option(
         var vi = Int(_parse_float(ccdi_str))
         if vi > 0:
             ccditer = vi
+
+    # ── the CONSTRAINT SOLVER's budget and stopping rule ──────────────────
+    #
+    # ⚠ A NON-POSITIVE `iterations` FALLS BACK TO THE DEFAULT rather than being
+    # copied. MuJoCo's own loop is `for (iter=0; iter < m->opt.iterations;
+    # iter++)`, so a 0 there means "never solve" — the model is then simulated
+    # with NO constraint forces, which is not a stopping rule but a broken
+    # file, and MuJoCo's compiler rejects it (`iterations` must be positive).
+    #
+    # ⚠ `tolerance = 0` IS DIFFERENT AND IS COPIED. It is a threshold, and 0
+    # means "never stop early" — the same reading `noslip_tolerance="0"` gets
+    # above, and the same one `convsweep.py` uses to run the reference to
+    # convergence. `byte_length() > 0` is the presence test.
+    var siter_str = _extract_attr(tag, "iterations")
+    if siter_str.byte_length() > 0:
+        var vsi = Int(_parse_float(siter_str))
+        if vsi > 0:
+            siter = vsi
+
+    var stol_str = _extract_attr(tag, "tolerance")
+    if stol_str.byte_length() > 0:
+        var vst = _parse_float(stol_str)
+        if vst >= 0.0:
+            stol = vst
+
+    var lsi_str = _extract_attr(tag, "ls_iterations")
+    if lsi_str.byte_length() > 0:
+        var vli = Int(_parse_float(lsi_str))
+        if vli > 0:
+            lsiter = vli
+
+    # ⚠ `ls_tolerance` MULTIPLIES `tolerance`, IT DOES NOT REPLACE IT.
+    # `mj_solPrimal` calls `PrimalSearch(&ctx, m->opt.tolerance *
+    # m->opt.ls_tolerance, ...)`. Stored raw here; the product is formed where
+    # the search reads it.
+    var lstol_str = _extract_attr(tag, "ls_tolerance")
+    if lstol_str.byte_length() > 0:
+        var vlt = _parse_float(lstol_str)
+        if vlt > 0.0:
+            lstol = vlt
 
     # ⚠⚠ `impratio` — READ BY FIVE SOLVERS AND WRITTEN BY NOBODY until now.
     # `fields_build` hardcoded `1.0` into `MODEL_META_IDX_IMPRATIO` while
@@ -402,7 +459,8 @@ def _parse_option(
         integrator = IntegratorType.EULER
 
     return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
-            impratio, cone, solver, integrator, nsiter)
+            impratio, cone, solver, integrator, nsiter,
+            siter, stol, lsiter, lstol)
 
 
 # =============================================================================
@@ -6263,6 +6321,10 @@ def parse_xml_full(
     result.solver = opt[11]
     result.integrator = opt[12]
     result.noslip_iterations = opt[13]
+    result.solver_iterations = opt[14]
+    result.solver_tolerance = opt[15]
+    result.ls_iterations = opt[16]
+    result.ls_tolerance = opt[17]
 
     # <flag multiccd="disable" nativeccd="disable"/> — `mjDSBL_MULTICCD` and
     # `mjDSBL_NATIVECCD`.

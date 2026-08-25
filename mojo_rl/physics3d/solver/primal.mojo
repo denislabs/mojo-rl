@@ -100,6 +100,12 @@ def pyramidal_linesearch[
     qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
     jar: Scratch[Scalar[DTYPE], E_CAP],
     nv: Int,
+    # `<option ls_iterations>`. ⚠ THE COMPTIME `LINESEARCH_ITER` IS THE CEILING
+    # A `range()` NEEDS, NOT THE BUDGET — a model asking for fewer halvings
+    # (apollo asks for 10, so101 for 20) must get them. A non-positive value
+    # means "use the ceiling", which is what every caller passed implicitly
+    # before this parameter existed.
+    max_ls: Int = -1,
 ) -> Scalar[DTYPE]:
     """Analytical Newton/CG line-search for the pyramidal primal cost (matching
     CPU `primal_linesearch_with_D`).
@@ -169,7 +175,9 @@ def pyramidal_linesearch[
             )
 
         # Try alpha, halve if cost doesn't decrease
-        for _ in range(LINESEARCH_ITER):
+        for _ls in range(LINESEARCH_ITER):
+            if max_ls > 0 and _ls >= max_ls:
+                break
             var trial_cost: Scalar[DTYPE] = 0
             for i in range(nv):
                 var qa_t = qacc[i] + alpha * search[i]

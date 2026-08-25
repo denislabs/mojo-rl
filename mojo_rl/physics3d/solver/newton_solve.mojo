@@ -1,9 +1,16 @@
 """Newton contact solve over per-field tensors (migration P4, single-source).
 
 Per-field port of `NewtonSolver.solve_gpu` (solver/newton_solver.mojo:1127)
-— arithmetic, iteration order, constants (NEWTON_ITER_GPU=200,
-NEWTON_TOL_GPU=1e-8, LINESEARCH_ITER=20, PRIMAL_MINVAL_GPU=1e-12) and
-branch structure verbatim. Standalone solver entry only — NOT wired into
+— arithmetic, iteration order and branch structure verbatim.
+
+⚠ THE SOLVER'S BUDGET IS THE MODEL'S, NOT A CONSTANT. `iterations`,
+`tolerance`, `ls_iterations` and `ls_tolerance` come off `<option>` through
+`MODEL_META_IDX_SOLVER_*`; `NEWTON_ITER_GPU` (1000) and `LINESEARCH_ITER` (50)
+survive only as the CEILINGS a `range()` needs, and `NEWTON_TOL_GPU` only as
+the float32 floor under the model's tolerance. They were 200 / 1e-8 / 50 and
+were the whole budget until 2026-08-26, so a model shipping
+`<option iterations="4">` was run to convergence — a DIFFERENT answer, not a
+better one. Standalone solver entry only — NOT wired into
 the fields integrators (later slice).
 
 Structural transformation (the only deviation, identical to
@@ -199,6 +206,10 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_3,
     MODEL_META_IDX_SOLIMP_CONTACT_4,
     MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_SOLVER_ITERATIONS,
+    MODEL_META_IDX_SOLVER_TOLERANCE,
+    MODEL_META_IDX_LS_ITERATIONS,
+    MODEL_META_IDX_LS_TOLERANCE,
     MODEL_META_IDX_SOLREF_LIMIT_0,
     MODEL_META_IDX_SOLREF_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_0,
@@ -242,7 +253,24 @@ comptime NS_TPB: Int = 1
 # =============================================================================
 
 
+# Per-iteration trace of the ELLIPTIC Newton — `scale*|grad|`, how many contacts
+# sit in the CONE zone, and the accepted `alpha`. CPU only (a Metal kernel
+# cannot `print`), and off in every committed state.
+#
+# ⚠ THE SHAPE OF THE TRACE IS THE DIAGNOSIS. A stale Hessian does not diverge
+# and does not fail a tolerance — it makes `alpha` alternate between two values
+# while the gradient creeps down a few percent per PAIR of iterations. No
+# aggregate (final `qacc`, a residual, an iteration count) shows that; the
+# per-iteration `alpha` column shows it immediately. Board row `unitree_go1`
+# was mis-attributed to the elliptic cone's algebra for want of these numbers.
+comptime _ELL_TRACE: Bool = False
+
+
+# =============================================================================
+
+
 @no_inline
+
 def _chol_factor_coop[
     DTYPE: DType,
     D: DimsLike,
@@ -775,7 +803,11 @@ def _newton_solve_env[
         )
 
     # === SEQUENTIAL: primal Newton (legacy: thread 0) ===
-    comptime NEWTON_ITER_GPU: Int = 200
+    # ⚠ A CEILING, NOT THE BUDGET — the model's `<option iterations>` is read
+    # below and the loops break on it. Raised from 200 when it stopped being
+    # the budget: it now only has to be above any count a model can ask for,
+    # and a `range()` needs a bound the compiler can see.
+    comptime NEWTON_ITER_GPU: Int = 1000
     # ⚠⚠ THE TOLERANCE IS DTYPE-AWARE, AND AT FLOAT32 IT HAS TO BE. Both exit
     # tests — `scale * ||grad||` and `scale * improvement` — are differences of
     # same-magnitude terms, so at float32 their rounding floor sits ORDERS OF
@@ -800,7 +832,9 @@ def _newton_solve_env[
     comptime NEWTON_TOL_GPU: Float64 = (
         1e-8 if DTYPE == DType.float64 else 1e-6
     )
-    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`).
+    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`) —
+    # and it is the DEFAULT of a model field, not a constant. A ceiling here;
+    # `lsiter_rt` below is the count. apollo asks for 10, so101 for 20.
     comptime LINESEARCH_ITER: Int = 50
     # ⚠⚠ AND ITS LINESEARCH TOLERANCE IS `opt.tolerance * opt.ls_tolerance`,
     # NOT `opt.tolerance` alone. `mj_solPrimal` calls
@@ -822,6 +856,50 @@ def _newton_solve_env[
     comptime LS_TOLERANCE: Float64 = 0.01
     comptime ARMIJO: Float64 = 1e-4
     comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
+
+    # ── the model's SOLVER BUDGET, from meta ────────────────────────────────
+    #
+    # ⚠⚠ THESE WERE THE COMPTIME CONSTANTS BELOW AND THE MODEL WAS IGNORED.
+    # `apptronik_apollo` ships `<option iterations="4" ls_iterations="10">` and
+    # we ran it to convergence — a DIFFERENT answer, not a better one, because
+    # MuJoCo's answer for that model is its 4-iteration iterate. Five
+    # Menagerie models set `iterations`, four set `ls_iterations` and rby1's
+    # five scenes set `tolerance="1e-6"`.
+    #
+    # ⚠ THE COMPTIME CONSTANTS SURVIVE AS CAPS, not as the budget. A `range()`
+    # needs a bound the compiler can see for the GPU path, so the loops still
+    # run to `NEWTON_ITER_GPU` / `LINESEARCH_ITER` and break at the model's
+    # count; a model asking for MORE than the cap is truncated at it.
+    var niter_rt = Int(
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLVER_ITERATIONS])
+    )
+    if niter_rt <= 0:
+        niter_rt = NEWTON_ITER_GPU
+    var lsiter_rt = Int(
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_LS_ITERATIONS])
+    )
+    if lsiter_rt <= 0:
+        lsiter_rt = LINESEARCH_ITER
+    # ⚠ THE FLOOR IS THE DTYPE'S, NOT THE MODEL'S, AND IT ONLY RAISES.
+    # `NEWTON_TOL_GPU` is 1e-8 at float64 (MuJoCo's own default, so this is a
+    # no-op there) and 1e-6 at float32, where both exit tests are differences
+    # of same-magnitude terms whose rounding floor sits above 1e-8 — a model
+    # asking for 1e-8 at float32 would never converge and would burn its whole
+    # budget on rounding error. A model asking for something LOOSER keeps it.
+    var tol_rt = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_SOLVER_TOLERANCE]
+    )
+    comptime if DTYPE != DType.float64:
+        if tol_rt < Scalar[DTYPE](NEWTON_TOL_GPU):
+            tol_rt = Scalar[DTYPE](NEWTON_TOL_GPU)
+    # ⚠ A MULTIPLIER, NOT A THRESHOLD — `mj_solPrimal` passes
+    # `opt.tolerance * opt.ls_tolerance` to `PrimalSearch`.
+    var lstol_rt = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_LS_TOLERANCE]
+    )
+    if lstol_rt <= Scalar[DTYPE](0):
+        lstol_rt = Scalar[DTYPE](LS_TOLERANCE)
+
 
     comptime if CONE_TYPE == ConeType.PYRAMIDAL:
         # =================================================================
@@ -1313,13 +1391,17 @@ def _newton_solve_env[
 
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
+            # ⚠ THE MODEL'S BUDGET, checked before any work — the comptime
+            # bound above is only the ceiling a `range()` needs.
+            if iter_n >= niter_rt:
+                break
             # Gradient
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(nv):
                 grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
                 grad_norm += grad[i] * grad[i]
 
-            if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
+            if scale * sqrt(grad_norm) < tol_rt:
                 break
 
             # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
@@ -1362,6 +1444,7 @@ def _newton_solve_env[
                 num_edges, Je, De, kind_e, R_e, floss_e, search, Mv, Ma,
                 f_smooth, qacc, qacc_smooth, jar,
                 nv,
+                lsiter_rt,
             )
 
             if alpha < Scalar[DTYPE](1e-10):
@@ -1421,7 +1504,7 @@ def _newton_solve_env[
                 )
 
             var improvement = scale * (old_cost - new_cost)
-            if improvement < Scalar[DTYPE](NEWTON_TOL_GPU) and iter_n > 0:
+            if improvement < tol_rt and iter_n > 0:
                 if improvement < Scalar[DTYPE](0):
                     # Cost increased — revert to old state
                     for i in range(nv):
@@ -1989,6 +2072,8 @@ def _newton_solve_env[
 
     # === Step 5: Newton iteration loop ===
     for _iter in range(NEWTON_ITER_GPU):
+        if _iter >= niter_rt:
+            break
         # Gradient = Ma - qfrc_sm - qfrc_c (pure InlineArray reads — no workspace access)
         var grad_norm_sq: Scalar[DTYPE] = 0
         for i in range(nv):
@@ -1996,8 +2081,15 @@ def _newton_solve_env[
             grad_norm_sq += grad[i] * grad[i]
 
         # Convergence check
-        if scale * sqrt(grad_norm_sq) < Scalar[DTYPE](NEWTON_TOL_GPU):
+        if scale * sqrt(grad_norm_sq) < tol_rt:
             break
+        comptime if _ELL_TRACE:
+            var _nst = 0
+            for _c in range(nc):
+                if cs_arr[_c] == ELL_CONE:
+                    _nst += 1
+            print("  [ell]", _iter, "g", scale * sqrt(grad_norm_sq),
+                  "cone", _nst, "of", nc)
 
         # Newton direction: search = -H^{-1} * grad
         chol_solve_inline[DTYPE, M_CAP, V_CAP](L_chol, grad, search, nv)
@@ -2085,7 +2177,7 @@ def _newton_solve_env[
             for i in range(nv):
                 snorm_sq += search[i] * search[i]
             var gtol = (
-                Scalar[DTYPE](NEWTON_TOL_GPU * LS_TOLERANCE)
+                tol_rt * lstol_rt
                 * sqrt(snorm_sq)
                 / scale
             )
@@ -2139,7 +2231,9 @@ def _newton_solve_env[
                 var p2_alpha: Scalar[DTYPE] = 0
                 var p2_d1 = p0_d1
                 var bracket = False
-                for _ in range(LINESEARCH_ITER):
+                for _ls in range(LINESEARCH_ITER):
+                    if _ls >= lsiter_rt:
+                        break
                     p2_alpha = p1_alpha
                     p2_d1 = p1_d1
                     if p1_d2_v > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
@@ -2195,7 +2289,9 @@ def _newton_solve_env[
                         break
                 if bracket:
                     # Phase 3: bracketed bisection
-                    for _ in range(LINESEARCH_ITER):
+                    for _ls in range(LINESEARCH_ITER):
+                        if _ls >= lsiter_rt:
+                            break
                         var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
                         var mid_d1 = ga * mid + gb
                         # `mid_d2` is written and discarded — the bisection
@@ -2258,6 +2354,8 @@ def _newton_solve_env[
                 elif p1_d1 * p1_d1 >= gtol_sq:
                     alpha = p1_alpha
 
+        comptime if _ELL_TRACE:
+            print("       alpha", alpha)
         # If alpha is negligible, stop
         if alpha < Scalar[DTYPE](1e-12):
             break
@@ -2965,7 +3063,7 @@ def _newton_blocked_fields_kernel[
 
     barrier()
 
-    comptime NEWTON_ITER_GPU: Int = 200
+    comptime NEWTON_ITER_GPU: Int = 1000
     # ⚠⚠ THE TOLERANCE IS DTYPE-AWARE, AND AT FLOAT32 IT HAS TO BE. Both exit
     # tests — `scale * ||grad||` and `scale * improvement` — are differences of
     # same-magnitude terms, so at float32 their rounding floor sits ORDERS OF
@@ -2990,7 +3088,9 @@ def _newton_blocked_fields_kernel[
     comptime NEWTON_TOL_GPU: Float64 = (
         1e-8 if DTYPE == DType.float64 else 1e-6
     )
-    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`).
+    # ⚠⚠ MuJoCo'S LINESEARCH BUDGET IS 50, NOT 20 (`m->opt.ls_iterations`) —
+    # and it is the DEFAULT of a model field, not a constant. A ceiling here;
+    # `lsiter_rt` below is the count. apollo asks for 10, so101 for 20.
     comptime LINESEARCH_ITER: Int = 50
     # ⚠⚠ AND ITS LINESEARCH TOLERANCE IS `opt.tolerance * opt.ls_tolerance`,
     # NOT `opt.tolerance` alone. `mj_solPrimal` calls
@@ -3011,6 +3111,50 @@ def _newton_blocked_fields_kernel[
     # flipping at iteration 4, so the accepted alpha is what is wrong.
     comptime LS_TOLERANCE: Float64 = 0.01
     comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
+
+    # ── the model's SOLVER BUDGET, from meta ────────────────────────────────
+    #
+    # ⚠⚠ THESE WERE THE COMPTIME CONSTANTS BELOW AND THE MODEL WAS IGNORED.
+    # `apptronik_apollo` ships `<option iterations="4" ls_iterations="10">` and
+    # we ran it to convergence — a DIFFERENT answer, not a better one, because
+    # MuJoCo's answer for that model is its 4-iteration iterate. Five
+    # Menagerie models set `iterations`, four set `ls_iterations` and rby1's
+    # five scenes set `tolerance="1e-6"`.
+    #
+    # ⚠ THE COMPTIME CONSTANTS SURVIVE AS CAPS, not as the budget. A `range()`
+    # needs a bound the compiler can see for the GPU path, so the loops still
+    # run to `NEWTON_ITER_GPU` / `LINESEARCH_ITER` and break at the model's
+    # count; a model asking for MORE than the cap is truncated at it.
+    var niter_rt = Int(
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLVER_ITERATIONS])
+    )
+    if niter_rt <= 0:
+        niter_rt = NEWTON_ITER_GPU
+    var lsiter_rt = Int(
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_LS_ITERATIONS])
+    )
+    if lsiter_rt <= 0:
+        lsiter_rt = LINESEARCH_ITER
+    # ⚠ THE FLOOR IS THE DTYPE'S, NOT THE MODEL'S, AND IT ONLY RAISES.
+    # `NEWTON_TOL_GPU` is 1e-8 at float64 (MuJoCo's own default, so this is a
+    # no-op there) and 1e-6 at float32, where both exit tests are differences
+    # of same-magnitude terms whose rounding floor sits above 1e-8 — a model
+    # asking for 1e-8 at float32 would never converge and would burn its whole
+    # budget on rounding error. A model asking for something LOOSER keeps it.
+    var tol_rt = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_SOLVER_TOLERANCE]
+    )
+    comptime if DTYPE != DType.float64:
+        if tol_rt < Scalar[DTYPE](NEWTON_TOL_GPU):
+            tol_rt = Scalar[DTYPE](NEWTON_TOL_GPU)
+    # ⚠ A MULTIPLIER, NOT A THRESHOLD — `mj_solPrimal` passes
+    # `opt.tolerance * opt.ls_tolerance` to `PrimalSearch`.
+    var lstol_rt = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_LS_TOLERANCE]
+    )
+    if lstol_rt <= Scalar[DTYPE](0):
+        lstol_rt = Scalar[DTYPE](LS_TOLERANCE)
+
 
     # PYRAMIDAL-only blocked solver. (Non-PYRAMIDAL never routes here.)
     # 2*(dim-1) edges per contact; see the per-env path for the layout note.
@@ -3701,13 +3845,15 @@ def _newton_blocked_fields_kernel[
 
     # === Newton iterations — ALL threads execute the loop ===
     for iter_n in range(NEWTON_ITER_GPU):
+        if iter_n >= niter_rt:
+            break
         # --- Thread 0: gradient + convergence check ---
         if valid_env and tid == 0:
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(NV):
                 grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
                 grad_norm += grad[i] * grad[i]
-            if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
+            if scale * sqrt(grad_norm) < tol_rt:
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done
             else:
                 ctrl_sh[1] = Scalar[DTYPE](0)
@@ -3818,7 +3964,9 @@ def _newton_blocked_fields_kernel[
                         rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                     )
 
-                for _ in range(LINESEARCH_ITER):
+                for _ls in range(LINESEARCH_ITER):
+                    if _ls >= lsiter_rt:
+                        break
                     var trial_cost: Scalar[DTYPE] = 0
                     for i in range(NV):
                         var qa_t = qacc[i] + alpha * search[i]
@@ -3922,7 +4070,7 @@ def _newton_blocked_fields_kernel[
 
                 var improvement = scale * (old_cost - new_cost)
                 if (
-                    improvement < Scalar[DTYPE](NEWTON_TOL_GPU)
+                    improvement < tol_rt
                     and iter_n > 0
                 ):
                     if improvement < Scalar[DTYPE](0):

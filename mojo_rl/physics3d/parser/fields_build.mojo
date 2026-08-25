@@ -195,6 +195,10 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NOSLIP_ITERATIONS,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_SOLVER_ITERATIONS,
+    MODEL_META_IDX_SOLVER_TOLERANCE,
+    MODEL_META_IDX_LS_ITERATIONS,
+    MODEL_META_IDX_LS_TOLERANCE,
     MODEL_META_IDX_CTRL_MIN,
     MODEL_META_IDX_CTRL_MAX,
     MODEL_META_IDX_MULTICCD_DISABLED,
@@ -1267,6 +1271,21 @@ def build_model_fields_from_flat[
     )
     mf.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[DTYPE](
         fmd.ccd_iterations
+    )
+    # The constraint solver's budget — see `MODEL_META_IDX_SOLVER_ITERATIONS`.
+    # Written unconditionally beside the CCD pair for the same reason: an
+    # absent attribute is MuJoCo's default, which the parser already resolved.
+    mf.meta.data[MODEL_META_IDX_SOLVER_ITERATIONS] = Scalar[DTYPE](
+        fmd.solver_iterations
+    )
+    mf.meta.data[MODEL_META_IDX_SOLVER_TOLERANCE] = Scalar[DTYPE](
+        fmd.solver_tolerance
+    )
+    mf.meta.data[MODEL_META_IDX_LS_ITERATIONS] = Scalar[DTYPE](
+        fmd.ls_iterations
+    )
+    mf.meta.data[MODEL_META_IDX_LS_TOLERANCE] = Scalar[DTYPE](
+        fmd.ls_tolerance
     )
     # `<flag multiccd="disable"/>`. Written unconditionally for the same reason
     # the two above are: the slot has to differ between a model that sets the

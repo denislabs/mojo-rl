@@ -20,7 +20,8 @@ Model buffer (static, same for all environments):
   Metadata (MODEL_META_SIZE): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality,
     ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations,
-    ctrl_min, ctrl_max, multiccd_disabled]
+    ctrl_min, ctrl_max, multiccd_disabled, noslip_iterations,
+    solver_iterations, solver_tolerance, ls_iterations, ls_tolerance]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
@@ -353,7 +354,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 41
+comptime MODEL_META_SIZE: Int = 45
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -547,6 +548,33 @@ comptime MODEL_META_IDX_MULTICCD_DISABLED: Int = 33
 # rather than like whatever the old constants happened to be.
 comptime MJ_CCD_TOLERANCE: Float64 = 1e-6
 comptime MJ_CCD_ITERATIONS: Int = 35
+
+# `mjModel.opt.iterations` / `.tolerance` / `.ls_iterations` / `.ls_tolerance`
+# — the CONSTRAINT SOLVER's budget and stopping rule. Confirmed against the
+# 3.10.0 runtime: 100, 1e-8, 50, 0.01.
+#
+# ⚠⚠ THESE WERE HARDCODED IN `newton_solve.mojo` (200 / 1e-8 / 50 / 0.01) AND
+# A MODEL THAT SET THEM WAS IGNORED. That is not conservatism: MuJoCo's answer
+# for a model shipping `<option iterations="4">` IS the 4-iteration answer, and
+# running to convergence is a DIFFERENT answer, not a better one.
+# `apptronik_apollo` ships exactly that and sits at 1.247e-04 on the board,
+# where `convsweep.py` measured MuJoCo's own 4-iteration result 1.1667e-04 away
+# from where it lands at 1000 while ours matched the CONVERGED one to 2.2e-16.
+# Same shape as `noslip_iterations` (`b6be5c48`): a per-model count that only
+# ever reached the solver as a compile-time constant.
+#
+# ⚠ `iterations` IS A LOOP BOUND AND `Model.__init__` MUST SEED IT.
+# `TensorImpl.alloc` does not zero, and a 0 here is "never solve" — a
+# hand-built `Data` would step with no constraint forces at all.
+comptime MODEL_META_IDX_SOLVER_ITERATIONS: Int = 41
+comptime MODEL_META_IDX_SOLVER_TOLERANCE: Int = 42
+comptime MODEL_META_IDX_LS_ITERATIONS: Int = 43
+comptime MODEL_META_IDX_LS_TOLERANCE: Int = 44
+
+comptime MJ_SOLVER_ITERATIONS: Int = 100
+comptime MJ_SOLVER_TOLERANCE: Float64 = 1e-8
+comptime MJ_LS_ITERATIONS: Int = 50
+comptime MJ_LS_TOLERANCE: Float64 = 0.01
 
 
 # =============================================================================

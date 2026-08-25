@@ -21,6 +21,10 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_MAX_SPATIAL_WRAPS,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
+    MJ_SOLVER_ITERATIONS,
+    MJ_SOLVER_TOLERANCE,
+    MJ_LS_ITERATIONS,
+    MJ_LS_TOLERANCE,
 )
 
 
@@ -1976,6 +1980,22 @@ struct FlatModelDef(Movable):
     # Carried into `MODEL_META_IDX_NOSLIP_ITERATIONS` by `fields_build`, where
     # the solver reads it next to MEANINERTIA and NOSLIP_TOLERANCE.
     var noslip_iterations: Int
+    var solver_iterations: Int
+    var solver_tolerance: Float64
+    var ls_iterations: Int
+    var ls_tolerance: Float64
+    """`<option iterations / tolerance / ls_iterations / ls_tolerance>` — the
+    CONSTRAINT SOLVER's budget and stopping rule, MuJoCo 3.10.0 defaults 100 /
+    1e-8 / 50 / 0.01.
+
+    ⚠⚠ `newton_solve` HARDCODED 200 / 1e-8 / 50 / 0.01 AND READ NONE OF THEM.
+    Running longer than the reference is not safer — MuJoCo's answer for a
+    model shipping `<option iterations="4">` IS the 4-iteration answer.
+    `apptronik_apollo` ships that.
+
+    ⚠ `ls_tolerance` MULTIPLIES `solver_tolerance` where the linesearch reads
+    it (`mj_solPrimal` passes `opt.tolerance * opt.ls_tolerance`); it is stored
+    raw."""
     # `<option ccd_tolerance= ccd_iterations=>` — EPA's stopping rule. MuJoCo's
     # defaults are 1e-6 and 35; ours were hardcoded at 1e-8 and 64 and a model
     # setting either was ignored. See `_scan_ccd_tolerance` in `xml_parser` for
@@ -2333,6 +2353,10 @@ struct FlatModelDef(Movable):
         self.opt_viscosity = Float64(0)
         self.noslip_tolerance = Float64(1e-6)
         self.noslip_iterations = 0
+        self.solver_iterations = MJ_SOLVER_ITERATIONS
+        self.solver_tolerance = MJ_SOLVER_TOLERANCE
+        self.ls_iterations = MJ_LS_ITERATIONS
+        self.ls_tolerance = MJ_LS_TOLERANCE
         self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
         self.ccd_iterations = MJ_CCD_ITERATIONS
         self.impratio = 1.0
