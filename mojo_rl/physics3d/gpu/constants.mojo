@@ -527,7 +527,7 @@ comptime MJ_CCD_ITERATIONS: Int = 35
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 33  # Per unified geom (+7 solref/solimp, +1 margin, +1 gap, +1 mesh_id, +1 priority, +1 hfield_id)
+comptime MODEL_GEOM_SIZE: Int = 35  # Per unified geom (+7 solref/solimp, +1 margin, +1 gap, +1 mesh_id, +1 priority, +1 hfield_id)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -596,6 +596,23 @@ comptime GEOM_IDX_PRIORITY: Int = 30
 # `mesh_id >= 0` test — which nine collision branches make — cannot pick up an
 # hfield.
 comptime GEOM_IDX_HFIELD_ID: Int = 31
+# ---- what `ray_eliminate` needs (`physics3d/ray/model.mojo`) ---------------
+#
+# `mj_ray` skips a geom on four rules. Two are runtime arguments (a body to
+# exclude, a group mask); the other two are static properties of the model and
+# are precomputed into these slots at build time.
+#
+# `RAY_VISIBLE` is 1 unless the geom is INVISIBLE, which `ray_eliminate`
+# spells as two cases that collapse to one boolean because both are fixed at
+# compile time: no material and `rgba[3] == 0`, or a material whose
+# `rgba[3] == 0`. ⚠ IT IS NOT A RENDER FLAG. A rangefinder passes
+# `geomgroup = NULL` and `flg_static = 1`, so this is the ONLY exclusion left
+# besides the sensor's own body — an alpha-0 geom is one a ray passes straight
+# through, and getting it wrong makes a sensor read a decoration.
+comptime GEOM_IDX_RAY_VISIBLE: Int = 33
+# `<geom group>`, 0-5. Carried so the group mask can be honoured; the physics
+# never reads it.
+comptime GEOM_IDX_GROUP: Int = 34
 
 
 # =============================================================================

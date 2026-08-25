@@ -235,6 +235,8 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
     GEOM_IDX_PRIORITY,
+    GEOM_IDX_RAY_VISIBLE,
+    GEOM_IDX_GROUP,
     GEOM_IDX_SOLREF_0,
     GEOM_IDX_SOLREF_1,
     GEOM_IDX_SOLIMP_0,
@@ -1667,6 +1669,21 @@ def build_model_fields_from_flat[
             gd.friction_roll
         )
         mf.geoms.data[o + GEOM_IDX_PRIORITY] = Scalar[DTYPE](gd.priority)
+        # `ray_eliminate`'s two STATIC rules, collapsed to one flag. MuJoCo:
+        #   matid <  0 and rgba[3] == 0        -> invisible
+        #   matid >= 0 and mat_rgba[3] == 0    -> invisible
+        # Neither can change after the model is built, so a ray never has to
+        # look at a colour. ⚠ THE MATERIAL WINS WHEN THERE IS ONE — a geom
+        # with `rgba` opaque and an alpha-0 MATERIAL is invisible, and reading
+        # only `rgba` would leave a decoration in front of every rangefinder.
+        var _ray_vis = 1.0
+        if gd.material_id >= 0 and gd.material_id < len(fmd.materials):
+            if fmd.materials[gd.material_id].rgba_a == 0.0:
+                _ray_vis = 0.0
+        elif gd.rgba_a == 0.0:
+            _ray_vis = 0.0
+        mf.geoms.data[o + GEOM_IDX_RAY_VISIBLE] = Scalar[DTYPE](_ray_vis)
+        mf.geoms.data[o + GEOM_IDX_GROUP] = Scalar[DTYPE](gd.group)
         mf.geoms.data[o + GEOM_IDX_SOLREF_0] = Scalar[DTYPE](gd.solref_0)
         mf.geoms.data[o + GEOM_IDX_SOLREF_1] = Scalar[DTYPE](gd.solref_1)
         mf.geoms.data[o + GEOM_IDX_SOLIMP_0] = Scalar[DTYPE](gd.solimp_0)
