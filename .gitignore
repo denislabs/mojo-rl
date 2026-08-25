@@ -276,3 +276,7 @@ third_party/
 mojo_rl/io/serial/*.so
 mojo_rl/io/serial/*.o
 fb_walker_d128.ckpt
+
+# qhull shim (built by `pixi run build-qhull`, not tracked)
+mojo_rl/physics3d/collision/libmrl_qhull.dylib
+mojo_rl/physics3d/collision/libmrl_qhull.so

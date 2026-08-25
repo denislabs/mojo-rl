@@ -56,6 +56,12 @@ python = ">=3.13.14,<3.14"
 mojo = "==1.0.0rc2"
 max = "==26.5.0rc2"
 gymnasium = ">=1.3.0,<2"
+# ⚠ DECLARED, NOT TRANSITIVE. `mojo_rl/physics3d/collision/native/mrl_qhull.c`
+# links libqhull_r to reproduce `mjCMesh::MakeGraph`'s facet ORDER, which is
+# what decides every merged polygon's normal (see `collision/qhull_native.mojo`).
+# qhull was already present as a transitive dep of another package; relying on
+# that would break the mesh pipeline the day that package moved.
+qhull = ">=2020.2,<2021"
 # Atari ROM support. ale-py ships without ROMs; `pixi run setup-roms` downloads
 # the canonical Farama ROM bundle (see scripts/setup_roms.py) and symlinks them.
 ale-py = ">=0.12.0,<0.13"           # Arcade Learning Environment (requires ROMs)
@@ -141,6 +147,10 @@ build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the De
 # arm64 variadic args go on the stack while `external_call` puts them in
 # registers -> silent EFAULT. Prerequisite of anything under `mojo_rl/robot/`.
 build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the serial shim (mojo_rl/io/serial/)" }
+# qhull shim for `mojo_rl/physics3d/collision/`. MuJoCo does not implement a
+# convex hull — `MakeGraph` CALLS qhull and walks `FORALLfacets`, and that
+# order decides every polygon normal. Prerequisite of any MESH model.
+build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (mojo_rl/physics3d/collision/)" }
 # The SO-101 hardware gate: dump both arms from Mojo, diff against
 # `tools/soarm/so101_diag.py` (Python + lerobot). Read-only — writes no
 # register and never touches torque. Needs the arms plugged in.
