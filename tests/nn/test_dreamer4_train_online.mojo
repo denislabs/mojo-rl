@@ -99,7 +99,7 @@ struct StubPixelEnv[OBS: Int, NACT: Int](BoxDiscreteActionEnv):
         var res = self.step_obs(action.a)
         return (StubState(self.t), res[1], res[2])
 
-    def get_state(self) -> StubState:
+    def get_state(mut self) -> StubState:
         return StubState(self.t)
 
     def close(mut self):

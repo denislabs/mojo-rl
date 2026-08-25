@@ -37,11 +37,11 @@ from std.random import random_float64
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.fields.dims import DimsLike
-from mojo_rl.physics3d.ray import geom_world_poses
 from mojo_rl.physics3d.ray.model import ray_model
 from mojo_rl.physics3d.kinematics.site_frame import site_world_quat_list
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
+from mojo_rl.physics3d.sensors.rangefinder import rangefinder_site
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
@@ -125,22 +125,15 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
 
     @staticmethod
     def custom_extract_obs_ray_cpu[DTYPE: DType, D: DimsLike](
-        d: Data[DTYPE, D, 1],
-        m_bodies: List[Scalar[DTYPE]],
-        m_joints: List[Scalar[DTYPE]],
-        m_geoms: List[Scalar[DTYPE]],
-        m_sites: List[Scalar[DTYPE]],
-        m_mesh_meta: List[Scalar[DTYPE]],
-        m_mesh_tris: List[Scalar[DTYPE]],
-        m_hfield_meta: List[Scalar[DTYPE]],
-        m_hfield_data: List[Scalar[DTYPE]],
-        ngeom: Int,
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
         act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
-    ) -> Bool:
+    ) raises -> Bool:
         """`_common_observations` + `origin` + `rangefinder`."""
         if not _common_obs_cpu[DTYPE, TORSO_SITE_IDX, TOE_SITE_0](
-            d, m_bodies, m_joints, m_geoms, m_sites, act, obs
+            d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
+            act, obs,
         ):
             return False
 
@@ -167,24 +160,24 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
 
         # ── the twenty rangefinders ───────────────────────────────────────
         # ⚠ `comptime if` RATHER THAN A CONSTRAINT ON THE HOOK. The trait
-        # declares `custom_extract_obs_ray_cpu` over an unconstrained `DTYPE`,
-        # and `ray_model` needs floating-point evidence; adding
-        # `where DTYPE.is_floating_point()` to the trait member would impose
-        # it on all fifty implementers. Branching here supplies the evidence
-        # inside the branch and leaves the trait alone.
+        # declares this over an unconstrained `DTYPE` and `ray_model` needs
+        # floating-point evidence; putting `where DTYPE.is_floating_point()`
+        # on the trait member would impose it on all fifty implementers.
         comptime if DTYPE.is_floating_point():
-            try:
-                _append_rangefinders[DTYPE, D](
-                    d, m_bodies, m_geoms, m_sites, m_mesh_meta, m_mesh_tris,
-                    m_hfield_meta, m_hfield_data, ngeom, obs,
+            for i in range(ESCAPE_N_RF):
+                var raw = rangefinder_site[DTYPE, D, 1](
+                    d, mf, ESCAPE_RF_SITE_0 + i
                 )
-            except:
-                return False
+                # `np.where(rf == -1.0, 1.0, np.tanh(rf))` — A MISS IS 1.0.
+                obs.append(
+                    Scalar[DTYPE](1.0) if raw == -1.0
+                    else Scalar[DTYPE](tanh(raw))
+                )
             return True
         else:
             # An integer-typed physics model is not a thing this engine
-            # builds; returning False here would silently fall back to the
-            # default observation, which is the WRONG LENGTH.
+            # builds; returning False would silently fall back to the default
+            # observation, which is the WRONG LENGTH.
             return False
 
     @staticmethod
@@ -340,60 +333,3 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
         # dm_control tasks never terminate early.
         return (Scalar[DTYPE](upright * escape), False)
 
-
-def _append_rangefinders[
-    DTYPE: DType, D: DimsLike
-](
-    d: Data[DTYPE, D, 1],
-    m_bodies: List[Scalar[DTYPE]],
-    m_geoms: List[Scalar[DTYPE]],
-    m_sites: List[Scalar[DTYPE]],
-    m_mesh_meta: List[Scalar[DTYPE]],
-    m_mesh_tris: List[Scalar[DTYPE]],
-    m_hfield_meta: List[Scalar[DTYPE]],
-    m_hfield_data: List[Scalar[DTYPE]],
-    ngeom: Int,
-    mut obs: List[Scalar[DTYPE]],
-) raises where DTYPE.is_floating_point():
-    """The twenty readings, appended in site order.
-
-    ⚠ ONE `geom_world_poses` FOR ALL TWENTY. `ray_model` scans every geom, so
-    composing the poses per sensor would make twenty passes over a table that
-    does not change between them.
-
-    A local adapter rather than twenty calls to `sensors.rangefinder`: that
-    module takes `Data` and `Model`, and a config hook is handed the record
-    `List`s. Same arithmetic, and `test_rangefinder_vs_mujoco` is what pins it.
-    """
-    var w = geom_world_poses[DTYPE](
-        m_geoms, ngeom, d.xpos.data, d.xquat.data
-    )
-    ref gpos = w[0]
-    ref gquat = w[1]
-    for i in range(ESCAPE_N_RF):
-        var site = ESCAPE_RF_SITE_0 + i
-        var body = Int(m_sites[site * MODEL_SITE_SIZE + SITE_IDX_BODY])
-        var origin = Vec3Generic[DTYPE](
-            d.site_xpos.data[site * 3 + 0],
-            d.site_xpos.data[site * 3 + 1],
-            d.site_xpos.data[site * 3 + 2],
-        )
-        var q4 = site_world_quat_list[DTYPE](m_sites, d.xquat.data, body, site)
-        var sq = QuatGeneric[DTYPE](
-            Scalar[DTYPE](q4[3]),
-            Scalar[DTYPE](q4[0]),
-            Scalar[DTYPE](q4[1]),
-            Scalar[DTYPE](q4[2]),
-        )
-        # A rangefinder fires along the site's own +Z.
-        var rvec = sq.rotate_vec(Vec3Generic[DTYPE](0, 0, 1))
-        var hit = ray_model[DTYPE](
-            m_geoms, ngeom, m_bodies, gpos, gquat,
-            m_mesh_meta, m_mesh_tris, m_hfield_meta, m_hfield_data,
-            origin, rvec, body,
-        )
-        var raw = Float64(hit.t)
-        # `np.where(rf == -1.0, 1.0, np.tanh(rf))` — A MISS IS 1.0.
-        obs.append(
-            Scalar[DTYPE](1.0) if raw == -1.0 else Scalar[DTYPE](tanh(raw))
-        )

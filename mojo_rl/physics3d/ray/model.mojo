@@ -36,6 +36,8 @@ filter for the sensor this was built for — which is why 2 is not optional and
 why it is precomputed rather than skipped.
 """
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from ..constants import (
@@ -100,16 +102,26 @@ struct RayHit[DTYPE: DType](Copyable, Movable):
 
 def ray_model[
     DTYPE: DType,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_MESH_META: Layout,
+    L_TRI: Layout,
+    L_HF_META: Layout,
+    L_HF: Layout,
 ](
-    ref geoms: List[Scalar[DTYPE]],
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
     ngeom: Int,
-    ref bodies: List[Scalar[DTYPE]],
-    geom_xpos: List[Vec3Generic[DTYPE]],
-    geom_xquat: List[QuatGeneric[DTYPE]],
-    ref mesh_meta: List[Scalar[DTYPE]],
-    ref mesh_tris: List[Scalar[DTYPE]],
-    ref hfield_meta: List[Scalar[DTYPE]],
-    ref hfield_data: List[Scalar[DTYPE]],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    env: Int,
+    mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    hf_stride: Int,
     pnt: Vec3Generic[DTYPE],
     vec: Vec3Generic[DTYPE],
     bodyexclude: Int = -1,
@@ -138,25 +150,24 @@ def ray_model[
     var best_normal = Vec3Generic[DTYPE](0, 0, 0)
 
     for g in range(ngeom):
-        var base = g * MODEL_GEOM_SIZE
 
         # ── ray_eliminate ────────────────────────────────────────────────
-        var body = Int(geoms[base + GEOM_IDX_BODY])
+        var body = Int(rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_BODY])))
         if body == bodyexclude:
             continue
-        if geoms[base + GEOM_IDX_RAY_VISIBLE] == 0:
+        if rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RAY_VISIBLE]) == 0:
             continue
         if not flg_static:
             # ⚠ weldid, not the body id — see the module docstring.
             var wb = body
             if body >= 0:
                 wb = Int(
-                    bodies[body * MODEL_BODY_SIZE + BODY_IDX_WELDID]
+                    rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_WELDID])
                 )
             if wb == 0:
                 continue
         if use_group:
-            var gid = Int(geoms[base + GEOM_IDX_GROUP])
+            var gid = Int(rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_GROUP])))
             if gid < 0:
                 gid = 0
             if gid > RAY_NGROUP - 1:
@@ -164,32 +175,63 @@ def ray_model[
             if (group_mask >> gid) & 1 == 0:
                 continue
 
-        var gtype = Int(geoms[base + GEOM_IDX_TYPE])
-        var pos = geom_xpos[g]
-        var quat = geom_xquat[g]
+        var gtype = Int(rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_TYPE])))
+        # ⚠ COMPOSED HERE RATHER THAN HOISTED. An earlier form took
+        # precomputed pose arrays, which a kernel cannot hold: a thread owns
+        # one RAY, not a scene. Recomputing costs one quaternion rotate and
+        # one multiply per (ray, geom) — ~30 flops against a narrow-phase
+        # query — and it is what makes ONE implementation serve both targets.
+        var lp = Vec3Generic[DTYPE](
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_POS_X])),
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_POS_Y])),
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_POS_Z])),
+        )
+        var lq = QuatGeneric[DTYPE](
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_QUAT_W])),
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_QUAT_X])),
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_QUAT_Y])),
+            rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_QUAT_Z])),
+        )
+        var pos = lp
+        var quat = lq
+        if body > 0:
+            # `Data.xquat` is packed (x, y, z, w); `Quat` takes (w, x, y, z).
+            var bq = QuatGeneric[DTYPE](
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2]),
+            )
+            var bp = Vec3Generic[DTYPE](
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 0]),
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 1]),
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 2]),
+            )
+            pos = bp + bq.rotate_vec(lp)
+            quat = bq * lq
         var t = Scalar[DTYPE](RAY_NO_HIT)
         var n = Vec3Generic[DTYPE](0, 0, 0)
 
         if gtype == GEOM_MESH:
             var mid = Int(
-                geoms[base + GEOM_IDX_MESH_ID]
+                rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID])
             )
             if mid >= 0:
                 var mb = mid * MODEL_MESH_META_SIZE
-                var r = ray_mesh[DTYPE](
+                var r = ray_mesh[DTYPE, L_TRI](
                     pos,
                     quat,
                     Vec3Generic[DTYPE](
-                        geoms[base + GEOM_IDX_HALF_X],
-                        geoms[base + GEOM_IDX_HALF_Y],
-                        geoms[base + GEOM_IDX_HALF_Z],
+                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X]),
+                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y]),
+                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z]),
                     ),
                     mesh_tris,
                     Int(
-                        mesh_meta[mb + MESH_META_IDX_TRIADR]
+                        rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRIADR])
                     ),
                     Int(
-                        mesh_meta[mb + MESH_META_IDX_TRINUM]
+                        rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRINUM])
                     ),
                     pnt,
                     vec,
@@ -198,26 +240,29 @@ def ray_model[
                 n = r[1]
         elif gtype == GEOM_HFIELD:
             var hid = Int(
-                geoms[base + GEOM_IDX_HFIELD_ID]
+                rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HFIELD_ID])
             )
             if hid >= 0:
                 var hb = hid * MODEL_HFIELD_META_SIZE
-                var r = ray_hfield[DTYPE](
+                var r = ray_hfield[DTYPE, L_HF](
                     pos,
                     quat,
                     Int(
-                        hfield_meta[hb + HFIELD_META_IDX_NROW]
+                        rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_NROW])
                     ),
                     Int(
-                        hfield_meta[hb + HFIELD_META_IDX_NCOL]
+                        rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_NCOL])
                     ),
-                    hfield_meta[hb + HFIELD_META_IDX_SIZE_X],
-                    hfield_meta[hb + HFIELD_META_IDX_SIZE_Y],
-                    hfield_meta[hb + HFIELD_META_IDX_SIZE_Z],
-                    hfield_meta[hb + HFIELD_META_IDX_SIZE_BASE],
+                    rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_SIZE_X]),
+                    rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_SIZE_Y]),
+                    rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_SIZE_Z]),
+                    rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_SIZE_BASE]),
                     hfield_data,
-                    Int(
-                        hfield_meta[hb + HFIELD_META_IDX_ADR]
+                    env * hf_stride
+                    + Int(
+                        rebind[Scalar[DTYPE]](
+                            rebind[Scalar[DTYPE]](hfield_meta[hb + HFIELD_META_IDX_ADR])
+                        )
                     ),
                     pnt,
                     vec,
@@ -231,11 +276,11 @@ def ray_model[
             # half-length is `HALF_LENGTH`, a box's extents are `HALF_*` —
             # feeding `HALF_*` to a capsule would silently make it a different
             # capsule, which is why this is spelled per type and not hoisted.
-            var hx = geoms[base + GEOM_IDX_HALF_X]
-            var hy = geoms[base + GEOM_IDX_HALF_Y]
-            var hz = geoms[base + GEOM_IDX_HALF_Z]
-            var rad = geoms[base + GEOM_IDX_RADIUS]
-            var hl = geoms[base + GEOM_IDX_HALF_LENGTH]
+            var hx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X])
+            var hy = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y])
+            var hz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z])
+            var rad = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RADIUS])
+            var hl = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_LENGTH])
             # Read from `full_parser`'s per-type assignment, not guessed:
             #   SPHERE     radius = s0, and half_* = s0 as well
             #   CAPSULE    radius = s0, half_length = s1
@@ -269,59 +314,3 @@ def ray_model[
 
     return RayHit[DTYPE](best, best_geom, best_normal)
 
-
-def geom_world_poses[
-    DTYPE: DType
-](
-    ref geoms: List[Scalar[DTYPE]],
-    ngeom: Int,
-    ref xpos: List[Scalar[DTYPE]],
-    ref xquat: List[Scalar[DTYPE]],
-) -> Tuple[List[Vec3Generic[DTYPE]], List[QuatGeneric[DTYPE]]]:
-    """Every geom's WORLD pose, composed once.
-
-    The same composition `contact_detection._geom_world_pos` makes, hoisted so
-    a caller with N rangefinders pays one pass over the geom table instead of
-    N. ⚠ `Data.xquat` is packed (x, y, z, w) and `math3d.Quat` takes
-    (w, x, y, z) — the one place the two conventions meet.
-
-    ⚠ `body <= 0` RETURNS THE LOCAL POSE UNCHANGED, which is right for the
-    worldbody (identity transform) and is also what the record holds for a
-    static geom marked -1. Composing against `xpos[0]`/`xquat[0]` would give
-    the same answer; skipping it keeps a static geom bit-identical to the
-    number the parser wrote rather than putting it through a rotation.
-    """
-    var ps = List[Vec3Generic[DTYPE]](capacity=ngeom)
-    var qs = List[QuatGeneric[DTYPE]](capacity=ngeom)
-    for g in range(ngeom):
-        var o = g * MODEL_GEOM_SIZE
-        var body = Int(geoms[o + GEOM_IDX_BODY])
-        var lp = Vec3Generic[DTYPE](
-            geoms[o + GEOM_IDX_POS_X],
-            geoms[o + GEOM_IDX_POS_Y],
-            geoms[o + GEOM_IDX_POS_Z],
-        )
-        var lq = QuatGeneric[DTYPE](
-            geoms[o + GEOM_IDX_QUAT_W],
-            geoms[o + GEOM_IDX_QUAT_X],
-            geoms[o + GEOM_IDX_QUAT_Y],
-            geoms[o + GEOM_IDX_QUAT_Z],
-        )
-        if body <= 0:
-            ps.append(lp)
-            qs.append(lq)
-            continue
-        var bq = QuatGeneric[DTYPE](
-            xquat[body * 4 + 3],
-            xquat[body * 4 + 0],
-            xquat[body * 4 + 1],
-            xquat[body * 4 + 2],
-        )
-        var bp = Vec3Generic[DTYPE](
-            xpos[body * 3 + 0],
-            xpos[body * 3 + 1],
-            xpos[body * 3 + 2],
-        )
-        ps.append(bp + bq.rotate_vec(lp))
-        qs.append(bq * lq)
-    return (ps^, qs^)

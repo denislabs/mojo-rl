@@ -51,7 +51,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Model, DynDims
+from mojo_rl.physics3d.fields import Model, DynDims, DYN1, rl1
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat,
@@ -283,6 +283,9 @@ def test_ray_mesh_vs_mujoco() raises:
     var a_vec = np.zeros(3)
     var a_nrm = np.zeros(3)
 
+    # ⚠ Built ONCE: `lt_dyn` needs `mut` and the soup does not move.
+    var tri_view = b.m.mesh_tris.lt_dyn["cpu", DYN1](rl1(64 * 9))
+
     var rng = Lcg(0x5EED11)
     var hits = 0
     var split = 0
@@ -317,8 +320,8 @@ def test_ray_mesh_vs_mujoco() raises:
             aim = pos + Vec3(rng.sym(1.0), rng.sym(1.0), rng.sym(1.0)).normalized() * 0.055
 
         var vec = aim - eye
-        var ours = ray_mesh[DT](
-            pos, quat, half, b.m.mesh_tris.data, triadr, ntri, eye, vec
+        var ours = ray_mesh[DT, DYN1](
+            pos, quat, half, tri_view, triadr, ntri, eye, vec
         )
 
         a_pnt[0] = eye.x

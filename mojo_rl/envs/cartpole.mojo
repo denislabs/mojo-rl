@@ -332,7 +332,7 @@ struct CartPoleEnv[DTYPE: DType](
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
 
-    def get_state(self) -> CartPoleState:
+    def get_state(mut self) -> CartPoleState:
         """Return current discretized state."""
         return CartPoleState(index=self._discretize_obs())
 

@@ -475,7 +475,7 @@ struct AcrobotEnv[DTYPE: DType](
 
         return (AcrobotState(index=self._discretize_obs()), reward, self.done)
 
-    def get_state(self) -> AcrobotState:
+    def get_state(mut self) -> AcrobotState:
         """Return current discretized state."""
         return AcrobotState(index=self._discretize_obs())
 

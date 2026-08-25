@@ -255,7 +255,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         )
         return self.state
 
-    def get_state(self) -> TaxiState:
+    def get_state(mut self) -> TaxiState:
         """Return current state."""
         return self.state
 

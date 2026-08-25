@@ -752,7 +752,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
     ) -> Tuple[CraftaxFullState, Scalar[Self.DTYPE], Bool]:
         return self.inner.step(action, verbose)
 
-    def get_state(self) -> CraftaxFullState:
+    def get_state(mut self) -> CraftaxFullState:
         return self.inner.get_state()
 
     def close(mut self):

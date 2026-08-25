@@ -316,7 +316,7 @@ struct SpaceInvadersEnv[DTYPE: DType](
     # Trait methods
     # ========================================================================
 
-    def get_state(self) -> ArcadeGameState:
+    def get_state(mut self) -> ArcadeGameState:
         return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     def close(mut self):

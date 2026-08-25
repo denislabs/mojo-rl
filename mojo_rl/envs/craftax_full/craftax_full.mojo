@@ -355,7 +355,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     # Env trait methods
     # ------------------------------------------------------------------
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         return CraftaxFullState(index=Int(self.state[S_TIMESTEP]))
 
     def close(mut self):

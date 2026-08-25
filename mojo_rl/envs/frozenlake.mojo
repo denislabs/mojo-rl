@@ -171,7 +171,7 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
         self.state = FrozenState(0)
         return self.state
 
-    def get_state(self) -> FrozenState:
+    def get_state(mut self) -> FrozenState:
         """Return current state."""
         return self.state
 

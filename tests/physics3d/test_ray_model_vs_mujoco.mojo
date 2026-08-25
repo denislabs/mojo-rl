@@ -55,7 +55,9 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Data, Model, DynDims, init_hfield_data
+from mojo_rl.physics3d.fields import (
+    Data, Model, DynDims, init_hfield_data, DYN1, DYN2, rl1, rl2,
+)
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat,
@@ -74,6 +76,11 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_QUAT_Z,
     GEOM_IDX_QUAT_W,
     GEOM_IDX_RAY_VISIBLE,
+    MODEL_BODY_SIZE,
+    MODEL_MESH_META_SIZE,
+    MAX_GPU_MESHES,
+    MODEL_HFIELD_META_SIZE,
+    MAX_GPU_HFIELDS,
 )
 from mojo_rl.physics3d.ray import ray_model
 
@@ -152,44 +159,6 @@ struct Built(Movable):
         self.m = m^
         self.d = d^
         self.dims = dims
-
-
-def _geom_world(b: Built) -> Tuple[List[Vec3], List[Quat]]:
-    """Compose every geom's world pose, the way `_geom_world_pos` does."""
-    var ps = List[Vec3]()
-    var qs = List[Quat]()
-    for g in range(b.dims.get_ngeom()):
-        var o = g * MODEL_GEOM_SIZE
-        var body = Int(Float64(b.m.geoms.data[o + GEOM_IDX_BODY]))
-        var lp = Vec3(
-            Float64(b.m.geoms.data[o + GEOM_IDX_POS_X]),
-            Float64(b.m.geoms.data[o + GEOM_IDX_POS_Y]),
-            Float64(b.m.geoms.data[o + GEOM_IDX_POS_Z]),
-        )
-        var lq = Quat(
-            Float64(b.m.geoms.data[o + GEOM_IDX_QUAT_W]),
-            Float64(b.m.geoms.data[o + GEOM_IDX_QUAT_X]),
-            Float64(b.m.geoms.data[o + GEOM_IDX_QUAT_Y]),
-            Float64(b.m.geoms.data[o + GEOM_IDX_QUAT_Z]),
-        )
-        if body <= 0:
-            ps.append(lp)
-            qs.append(lq)
-            continue
-        var bq = Quat(
-            Float64(b.d.xquat.data[body * 4 + 3]),
-            Float64(b.d.xquat.data[body * 4 + 0]),
-            Float64(b.d.xquat.data[body * 4 + 1]),
-            Float64(b.d.xquat.data[body * 4 + 2]),
-        )
-        var bp = Vec3(
-            Float64(b.d.xpos.data[body * 3 + 0]),
-            Float64(b.d.xpos.data[body * 3 + 1]),
-            Float64(b.d.xpos.data[body * 3 + 2]),
-        )
-        ps.append(bp + bq.rotate_vec(lp))
-        qs.append(bq * lq)
-    return (ps^, qs^)
 
 
 def _gid(mujoco: PythonObject, m: PythonObject, name: String) raises -> Int:
@@ -272,10 +241,6 @@ def test_ray_model_vs_mujoco() raises:
     _ = mujoco.mj_forward(m, d)
 
     var b = Built()
-    var w = _geom_world(b)
-    ref gpos = w[0]
-    ref gquat = w[1]
-
     var excl_body = Int(
         py=m.geom_bodyid[_gid(mujoco, m, String("exclude_me"))]
     )
@@ -284,6 +249,27 @@ def test_ray_model_vs_mujoco() raises:
     var a_vec = np.zeros(3)
     var a_gid = np.zeros(1, np.int32)
     var a_nrm = np.zeros(3)
+
+    # ⚠ The eight views, built ONCE — `lt_dyn` needs `mut` and none of them
+    # move between rays. `ray_model` composes each geom's world pose itself
+    # from `xpos`/`xquat`, which is what lets one implementation serve a
+    # kernel where a thread owns one ray and cannot hold a scene.
+    var ng = b.dims.get_ngeom()
+    var nb = b.dims.get_nbody()
+    var geoms_v = b.m.geoms.lt_dyn["cpu", DYN2](rl2(ng, MODEL_GEOM_SIZE))
+    var bodies_v = b.m.bodies.lt_dyn["cpu", DYN2](rl2(nb, MODEL_BODY_SIZE))
+    var xpos_v = b.d.xpos.lt_dyn["cpu", DYN2](rl2(1, nb * 3))
+    var xquat_v = b.d.xquat.lt_dyn["cpu", DYN2](rl2(1, nb * 4))
+    var mesh_meta_v = b.m.mesh_meta.lt_dyn["cpu", DYN1](
+        rl1(MAX_GPU_MESHES * MODEL_MESH_META_SIZE)
+    )
+    var mesh_tris_v = b.m.mesh_tris.lt_dyn["cpu", DYN1](rl1(64 * 9))
+    var hf_meta_v = b.m.hfield_meta.lt_dyn["cpu", DYN1](
+        rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
+    )
+    var hf_data_v = b.d.hfield_data.lt_dyn["cpu", DYN1](
+        rl1(b.dims.get_nhfield_data())
+    )
 
     var rng = Lcg(0xBEEF77)
     var hits = 0
@@ -331,18 +317,10 @@ def test_ray_model_vs_mujoco() raises:
         var vec = aim - eye
 
         var ours = ray_model[DT](
-            b.m.geoms.data,
-            b.dims.get_ngeom(),
-            b.m.bodies.data,
-            gpos,
-            gquat,
-            b.m.mesh_meta.data,
-            b.m.mesh_tris.data,
-            b.m.hfield_meta.data,
-            b.d.hfield_data.data,
-            eye,
-            vec,
-            bex,
+            geoms_v, ng, bodies_v, xpos_v, xquat_v, 0,
+            mesh_meta_v, mesh_tris_v, hf_meta_v, hf_data_v,
+            b.dims.get_nhfield_data(),
+            eye, vec, bex,
         )
 
         a_pnt[0] = eye.x

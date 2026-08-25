@@ -331,7 +331,7 @@ struct PendulumEnv[DTYPE: DType](
 
         return (PendulumState(index=self._discretize_obs()), reward, self.done)
 
-    def get_state(self) -> PendulumState:
+    def get_state(mut self) -> PendulumState:
         """Return current discretized state."""
         return PendulumState(index=self._discretize_obs())
 

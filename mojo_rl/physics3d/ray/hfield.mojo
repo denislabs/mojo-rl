@@ -39,6 +39,8 @@ not for float64 exactness. [[feedback_match_the_references_storage_type]]
 
 from std.math import floor, ceil
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from .geom import RAY_NO_HIT, ray_map, ray_box, ray_box_all
@@ -47,15 +49,19 @@ from .triangle import ray_basis, ray_triangle
 
 @always_inline
 def _elev[
-    DTYPE: DType
+    DTYPE: DType, L_HF: Layout
 ](
-    ref data: List[Scalar[DTYPE]], adr: Int, ncol: Int, r: Int, c: Int
+    data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    adr: Int,
+    ncol: Int,
+    r: Int,
+    c: Int,
 ) -> Scalar[DTYPE]:
-    return data[adr + r * ncol + c]
+    return rebind[Scalar[DTYPE]](data[adr + r * ncol + c])
 
 
 def ray_hfield[
-    DTYPE: DType
+    DTYPE: DType, L_HF: Layout
 ](
     xpos: Vec3Generic[DTYPE],
     xquat: QuatGeneric[DTYPE],
@@ -65,7 +71,7 @@ def ray_hfield[
     size_y: Scalar[DTYPE],
     size_z: Scalar[DTYPE],
     size_base: Scalar[DTYPE],
-    ref data: List[Scalar[DTYPE]],
+    data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
     adr: Int,
     pnt: Vec3Generic[DTYPE],
     vec: Vec3Generic[DTYPE],
@@ -155,10 +161,10 @@ def ray_hfield[
             var x1 = dx * Scalar[DTYPE](c + 1) - size_x
             var y0 = dy * Scalar[DTYPE](r) - size_y
             var y1 = dy * Scalar[DTYPE](r + 1) - size_y
-            var z00 = _elev[DTYPE](data, adr, ncol, r, c) * size_z
-            var z01 = _elev[DTYPE](data, adr, ncol, r, c + 1) * size_z
-            var z11 = _elev[DTYPE](data, adr, ncol, r + 1, c + 1) * size_z
-            var z10 = _elev[DTYPE](data, adr, ncol, r + 1, c) * size_z
+            var z00 = _elev[DTYPE, L_HF](data, adr, ncol, r, c) * size_z
+            var z01 = _elev[DTYPE, L_HF](data, adr, ncol, r, c + 1) * size_z
+            var z11 = _elev[DTYPE, L_HF](data, adr, ncol, r + 1, c + 1) * size_z
+            var z10 = _elev[DTYPE, L_HF](data, adr, ncol, r + 1, c) * size_z
 
             # ⚠ Vertex ORDER is the reference's, and it is not the obvious one
             # — its own comment says "swap v1 and v2 for consistent CCW
@@ -206,8 +212,8 @@ def ray_hfield[
             if y0f > Scalar[DTYPE](nrow - 2):
                 y0f = Scalar[DTYPE](nrow - 2)
             var col = ncol - 1 if i == 1 else 0
-            e0 = _elev[DTYPE](data, adr, ncol, Int(round(y0f)), col)
-            e1 = _elev[DTYPE](data, adr, ncol, Int(round(y0f)) + 1, col)
+            e0 = _elev[DTYPE, L_HF](data, adr, ncol, Int(round(y0f)), col)
+            e1 = _elev[DTYPE, L_HF](data, adr, ncol, Int(round(y0f)) + 1, col)
         else:
             # Wall normal to y: walk in COLUMNS along the far row.
             y = (lpnt.x + ai * lvec.x + size_x) / dx
@@ -217,8 +223,8 @@ def ray_hfield[
             if y0f > Scalar[DTYPE](ncol - 2):
                 y0f = Scalar[DTYPE](ncol - 2)
             var row = nrow - 1 if i == 3 else 0
-            e0 = _elev[DTYPE](data, adr, ncol, row, Int(round(y0f)))
-            e1 = _elev[DTYPE](data, adr, ncol, row, Int(round(y0f)) + 1)
+            e0 = _elev[DTYPE, L_HF](data, adr, ncol, row, Int(round(y0f)))
+            e1 = _elev[DTYPE, L_HF](data, adr, ncol, row, Int(round(y0f)) + 1)
 
         # Below the linearly interpolated profile means the ray goes INTO the
         # solid wall here rather than over the top of it.

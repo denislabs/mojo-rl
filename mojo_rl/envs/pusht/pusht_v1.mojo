@@ -492,7 +492,7 @@ struct PushTEnv[DTYPE: DType](
             self.done,
         )
 
-    def get_state(self) -> PushTState[Self.dtype]:
+    def get_state(mut self) -> PushTState[Self.dtype]:
         var out = PushTState[Self.dtype]()
         for i in range(PConstants.KEYPOINTS_DIM):
             out.keypoints[i] = rebind[Scalar[Self.dtype]](

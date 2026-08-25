@@ -996,7 +996,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    def get_state(self) -> BoardGameState:
+    def get_state(mut self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[S_FULLMOVE]))
 
     def close(mut self):

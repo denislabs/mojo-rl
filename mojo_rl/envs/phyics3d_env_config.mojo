@@ -340,20 +340,12 @@ trait Phyics3dEnvConfig:
     # === CPU: Custom observation extraction, WITH the ray tables ===
     @staticmethod
     def custom_extract_obs_ray_cpu[DTYPE: DType, D: DimsLike](
-        d: Data[DTYPE, D, 1],
-        m_bodies: List[Scalar[DTYPE]],
-        m_joints: List[Scalar[DTYPE]],
-        m_geoms: List[Scalar[DTYPE]],
-        m_sites: List[Scalar[DTYPE]],
-        m_mesh_meta: List[Scalar[DTYPE]],
-        m_mesh_tris: List[Scalar[DTYPE]],
-        m_hfield_meta: List[Scalar[DTYPE]],
-        m_hfield_data: List[Scalar[DTYPE]],
-        ngeom: Int,
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
         act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
-    ) -> Bool:
-        """`custom_extract_obs_cpu` plus everything a RAY needs.
+    ) raises -> Bool:
+        """`custom_extract_obs_cpu` plus `Data` and `Model` themselves.
 
         ⚠⚠ A SECOND HOOK RATHER THAN A WIDER FIRST ONE, and the reason is
         arithmetic: fifty types implement `Phyics3dEnvConfig`, and widening
@@ -366,13 +358,21 @@ trait Phyics3dEnvConfig:
         `quadruped escape` is the first: twenty rangefinders, which need the
         mesh and heightfield tables the four record lists above do not carry.
 
-        ⚠ `ngeom` is passed EXPLICITLY. `len(m_geoms) / MODEL_GEOM_SIZE` is
-        the geom COUNT only when the tensor is exactly sized, and a caller
-        that derived it that way would silently ray a padded model's zero
-        rows — a geom of type PLANE at the origin, which occludes everything.
+        ⚠ IT TAKES THE CONTAINERS, NOT MORE RECORD LISTS. `ray_model` reads
+        eight tensors and composes geom world poses itself; handing over eight
+        more `List`s would have put a second copy of that composition in every
+        config that casts a ray. `mut` is what `TensorImpl.lt_dyn` needs to
+        produce a view, and it is why `Env.get_state` carries the marker —
+        see `core/env.mojo`.
         """
+        # ⚠ THE RECORD LISTS COME OFF `mf` HERE, not from four more
+        # parameters. Passing `mf` mutably AND `mf.bodies.data` immutably in
+        # ONE call is an alias Mojo rejects; reading them inside is a separate
+        # call with no mutable argument, so it is fine. They were redundant
+        # once the container was in hand anyway.
         return Self.custom_extract_obs_cpu[DTYPE, D](
-            d, m_bodies, m_joints, m_geoms, m_sites, act, obs
+            d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
+            act, obs,
         )
 
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===

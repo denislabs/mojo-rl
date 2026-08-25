@@ -925,7 +925,7 @@ struct PendulumV2[DTYPE: DType](
         var result = self._step_with_torque(torque)
         return (self.get_state(), result[1], result[2])
 
-    def get_state(self) -> PendulumV2State[Self.dtype]:
+    def get_state(mut self) -> PendulumV2State[Self.dtype]:
         """Return current observation state."""
         return PendulumV2State[Self.dtype].from_theta(
             self.theta, self.theta_dot

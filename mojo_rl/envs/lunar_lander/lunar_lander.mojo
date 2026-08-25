@@ -1260,7 +1260,7 @@ struct LunarLander[
 
         return (reward, terminated)
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         """Return current state representation (from cache)."""
         return self.cached_state
 

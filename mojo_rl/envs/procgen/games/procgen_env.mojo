@@ -272,7 +272,7 @@ struct ProcgenGymEnv[G: ProcgenGame, DTYPE: DType = DT](
         var res = self.step_obs(action.value)
         return (ProcgenState(0), res[1], res[2])
 
-    def get_state(self) -> ProcgenState:
+    def get_state(mut self) -> ProcgenState:
         return ProcgenState(0)
 
     def close(mut self):

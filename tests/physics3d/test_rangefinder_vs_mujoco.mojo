@@ -60,7 +60,6 @@ from mojo_rl.physics3d.parser.runtime_load import (
     spec_fields_runtime,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.ray import geom_world_poses
 from mojo_rl.physics3d.sensors.rangefinder import rangefinder_site
 
 comptime DT = DType.float64
@@ -251,11 +250,6 @@ def test_rangefinder_vs_mujoco_sensordata() raises:
     var d = r[1]
     var b = Built()
 
-    var w = geom_world_poses[DT](
-        b.m.geoms.data, b.dims.get_ngeom(), b.d.xpos.data, b.d.xquat.data
-    )
-    ref gpos = w[0]
-    ref gquat = w[1]
 
     var names = _names()
     var worst = 0.0
@@ -266,9 +260,7 @@ def test_rangefinder_vs_mujoco_sensordata() raises:
         var sid = Int(
             py=mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, names[i])
         )
-        var ours = rangefinder_site[DT, DynDims](
-            b.d, b.m, b.m.sites.data, sid, gpos, gquat
-        )
+        var ours = rangefinder_site[DT, DynDims, 1](b.d, b.m, sid)
         # ⚠ MuJoCo's OWN sensor output, not a second `mj_ray` call.
         var theirs = Float64(py=d.sensordata[i])
         var e = abs(ours - theirs)

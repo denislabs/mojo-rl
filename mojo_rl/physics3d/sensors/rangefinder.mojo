@@ -41,71 +41,96 @@ the substitution possible; returning a large number would make it impossible.
 
 COST. `ray_model` is a linear scan over every geom, so N rangefinders on a
 model of G geoms cost N*G ray/geom queries per step — and any geom that is a
-MESH costs its whole triangle soup on top. `geom_world_poses` is therefore
-hoisted out: composing it once per step rather than once per sensor is the
-difference between 1 and N passes over the geom table.
+MESH costs its whole triangle soup on top. ⚠ An earlier form hoisted the geom
+world poses into a `List` shared by all N sensors; `ray_model` composes them
+inline now, because a GPU thread owns one RAY and cannot hold a scene.
+
+⚠ `mut d` / `mut m` AND THE `mut` ON `Env.get_state` ARE THE SAME REQUIREMENT.
+`TensorImpl.lt_dyn` needs a mutable container to hand out a `LayoutTensor`,
+Mojo forbids caching one in a struct field (`AnyOrigin`), and there is no
+non-mutating constructor. Nothing here writes; see `core/env.mojo` on why the
+trait carries the marker anyway.
 """
 
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
-from ..fields import Data, Model
+from ..fields import Data, Model, DYN1, DYN2, rl1, rl2
 from ..fields.dims import DimsLike
 from ..gpu.constants import (
     MODEL_SITE_SIZE,
     SITE_IDX_BODY,
+    MODEL_GEOM_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_MESH_META_SIZE,
+    MAX_GPU_MESHES,
+    MODEL_HFIELD_META_SIZE,
+    MAX_GPU_HFIELDS,
 )
 from ..kinematics.site_frame import site_world_quat_list
 from ..ray.model import ray_model
 
+@always_inline
+def _pos(n: Int) -> Int:
+    """`_at_least_one` — every tensor allocates one element even when unused."""
+    return n if n > 0 else 1
+
+
 def rangefinder_site[
-    DTYPE: DType, D: DimsLike
+    DTYPE: DType, D: DimsLike, BATCH: Int = 1
 ](
-    d: Data[DTYPE, D, 1],
-    m: Model[DTYPE, D],
-    m_sites: List[Scalar[DTYPE]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     site: Int,
-    geom_xpos: List[Vec3Generic[DTYPE]],
-    geom_xquat: List[QuatGeneric[DTYPE]],
+    env: Int = 0,
 ) raises -> Float64 where DTYPE.is_floating_point():
-    """`sensordata` for one site-attached `<rangefinder>`, single-env CPU.
+    """`sensordata` for one site-attached `<rangefinder>`, in METRES.
 
-    `geom_xpos`/`geom_xquat` come from `geom_world_poses(d, m)`, called ONCE
-    per step by the caller — see the module docstring on cost.
-
-    Returns the distance in METRES, because the direction handed to `ray_model`
-    is a unit vector and `t` is in units of `|vec|`. -1.0 means the ray hit
-    nothing.
+    -1.0 means the ray hit nothing. ⚠ A SENTINEL, not a distance:
+    `dm_control`'s `Physics.rangefinder` replaces it with 1.0 BEFORE the
+    `tanh`, so a miss reads as MAXIMUM range. Applying that is the caller's
+    job — returning -1 is what makes it possible.
     """
     var sb = site * MODEL_SITE_SIZE
-    var body = Int(m_sites[sb + SITE_IDX_BODY])
-
+    var body = Int(m.sites.data[sb + SITE_IDX_BODY])
+    var nb = m.dims.get_nbody()
     var origin = Vec3Generic[DTYPE](
-        d.site_xpos.data[site * 3 + 0],
-        d.site_xpos.data[site * 3 + 1],
-        d.site_xpos.data[site * 3 + 2],
+        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 0],
+        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 1],
+        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 2],
     )
-
-    # `site_world_quat_list` returns (x, y, z, w); `Quat` takes (w, x, y, z).
-    var q4 = site_world_quat_list[DTYPE](m_sites, d.xquat.data, body, site)
+    var q4 = site_world_quat_list[DTYPE](
+        m.sites.data, d.xquat.data, body, site
+    )
     var sq = QuatGeneric[DTYPE](
         Scalar[DTYPE](q4[3]),
         Scalar[DTYPE](q4[0]),
         Scalar[DTYPE](q4[1]),
         Scalar[DTYPE](q4[2]),
     )
-    # `site_xmat` column 2 == the site frame's +Z taken to world.
+    # ⚠ +Z. A rangefinder fires along the site's own +Z; a CAMERA looks down
+    # its -Z. See the module docstring.
     var rvec = sq.rotate_vec(Vec3Generic[DTYPE](0, 0, 1))
 
+    var ng = m.dims.get_ngeom()
+    var hfn = _pos(m.dims.get_nhfield_data())
     var hit = ray_model[DTYPE](
-        m.geoms.data,
-        m.dims.get_ngeom(),
-        m.bodies.data,
-        geom_xpos,
-        geom_xquat,
-        m.mesh_meta.data,
-        m.mesh_tris.data,
-        m.hfield_meta.data,
-        d.hfield_data.data,
+        m.geoms.lt_dyn["cpu", DYN2](rl2(ng, MODEL_GEOM_SIZE)),
+        ng,
+        m.bodies.lt_dyn["cpu", DYN2](rl2(nb, MODEL_BODY_SIZE)),
+        d.xpos.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 3)),
+        d.xquat.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 4)),
+        env,
+        m.mesh_meta.lt_dyn["cpu", DYN1](
+            rl1(MAX_GPU_MESHES * MODEL_MESH_META_SIZE)
+        ),
+        m.mesh_tris.lt_dyn["cpu", DYN1](
+            rl1(_pos(m.dims.get_nmesh_tri() * 9))
+        ),
+        m.hfield_meta.lt_dyn["cpu", DYN1](
+            rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
+        ),
+        d.hfield_data.lt_dyn["cpu", DYN1](rl1(BATCH * hfn)),
+        m.dims.get_nhfield_data(),
         origin,
         rvec,
         body,

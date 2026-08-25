@@ -22,19 +22,35 @@ from a table: a caller that forgets it gets an obviously empty answer at the
 call site rather than a silently invisible mesh.
 """
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from .geom import RAY_NO_HIT, ray_map, ray_box
 from .triangle import ray_basis, ray_triangle
 
 
+@always_inline
+def _v3[
+    DTYPE: DType, L_TRI: Layout
+](
+    tri: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin], o: Int
+) -> Vec3Generic[DTYPE]:
+    """Three consecutive floats as a vertex."""
+    return Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](tri[o + 0]),
+        rebind[Scalar[DTYPE]](tri[o + 1]),
+        rebind[Scalar[DTYPE]](tri[o + 2]),
+    )
+
+
 def ray_mesh[
-    DTYPE: DType
+    DTYPE: DType, L_TRI: Layout
 ](
     pos: Vec3Generic[DTYPE],
     quat: QuatGeneric[DTYPE],
     half_extents: Vec3Generic[DTYPE],
-    ref tri: List[Scalar[DTYPE]],
+    tri: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
     triadr: Int,
     ntri: Int,
     pnt: Vec3Generic[DTYPE],
@@ -75,9 +91,9 @@ def ray_mesh[
     for t in range(ntri):
         var o = (triadr + t) * 9
         var r = ray_triangle[DTYPE](
-            Vec3Generic[DTYPE](tri[o + 0], tri[o + 1], tri[o + 2]),
-            Vec3Generic[DTYPE](tri[o + 3], tri[o + 4], tri[o + 5]),
-            Vec3Generic[DTYPE](tri[o + 6], tri[o + 7], tri[o + 8]),
+            _v3[DTYPE, L_TRI](tri, o + 0),
+            _v3[DTYPE, L_TRI](tri, o + 3),
+            _v3[DTYPE, L_TRI](tri, o + 6),
             lpnt, lvec, b0, b1,
         )
         # ⚠ `>= 0` AND `< x`, in that order, matching the reference. A

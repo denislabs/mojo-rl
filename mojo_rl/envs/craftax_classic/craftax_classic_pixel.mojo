@@ -489,7 +489,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
     ) -> Tuple[CraftaxState, Scalar[Self.DTYPE], Bool]:
         return self.inner.step(action, verbose)
 
-    def get_state(self) -> CraftaxState:
+    def get_state(mut self) -> CraftaxState:
         return self.inner.get_state()
 
     def close(mut self):

@@ -494,26 +494,23 @@ struct Phyics3dEnv[
         self.set_state(qpos, qvel)
         return self._get_obs()
 
-    def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
+    def _get_obs(mut self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
         # ⚠ The RAY-capable hook, which DEFAULTS to forwarding to
         # `custom_extract_obs_cpu` — see `Phyics3dEnvConfig`. Calling the
         # narrow one here too would give a config that overrode the ray hook
         # two chances to write the observation.
-        var custom = Self.CONFIG.custom_extract_obs_ray_cpu(
-            self.d,
-            self.mf.bodies.data,
-            self.mf.joints.data,
-            self.mf.geoms.data,
-            self.mf.sites.data,
-            self.mf.mesh_meta.data,
-            self.mf.mesh_tris.data,
-            self.mf.hfield_meta.data,
-            self.d.hfield_data.data,
-            Self.MODEL_DEF.NGEOM,
-            self.act,
-            obs_list,
-        )
+        # ⚠ The RAY-capable hook, which DEFAULTS to forwarding to
+        # `custom_extract_obs_cpu` — see `Phyics3dEnvConfig`. Calling the
+        # narrow one here too would give a config that overrode the ray hook
+        # two chances to write the observation.
+        var custom = False
+        try:
+            custom = Self.CONFIG.custom_extract_obs_ray_cpu(
+                self.d, self.mf, self.act, obs_list
+            )
+        except e:
+            print("Phyics3dEnv: custom_extract_obs_ray_cpu FAILED —", e)
         if not custom:
             Self.MODEL_DEF.extract_obs(self.d, obs_list)
         var obs = ObsState[Self.MODEL_DEF.OBS_DIM]()
@@ -651,7 +648,7 @@ struct Phyics3dEnv[
     def was_terminated(self) -> Bool:
         return self._last_terminated
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         return self._get_obs()
 
     def close(mut self):

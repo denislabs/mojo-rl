@@ -322,7 +322,7 @@ struct CarRacing[DTYPE: DType](
         self._update_cached_state()
         return (self.cached_state, Scalar[Self.dtype](step_reward), self.done)
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         """Get current state."""
         return self.cached_state
 

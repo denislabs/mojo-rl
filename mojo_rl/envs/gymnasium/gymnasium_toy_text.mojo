@@ -335,7 +335,7 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
 
         return (GymFrozenLakeState(index=self.current_state), reward, self.done)
 
-    def get_state(self) -> GymFrozenLakeState:
+    def get_state(mut self) -> GymFrozenLakeState:
         """Return current state."""
         return GymFrozenLakeState(index=self.current_state)
 
@@ -517,7 +517,7 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
 
         return (GymTaxiState(index=self.current_state), reward, self.done)
 
-    def get_state(self) -> GymTaxiState:
+    def get_state(mut self) -> GymTaxiState:
         """Return current state."""
         return GymTaxiState(index=self.current_state)
 
@@ -725,7 +725,7 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
 
         return (GymBlackjackState(index=self.current_state), reward, self.done)
 
-    def get_state(self) -> GymBlackjackState:
+    def get_state(mut self) -> GymBlackjackState:
         """Return current state."""
         return GymBlackjackState(index=self.current_state)
 
@@ -926,7 +926,7 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymCliffWalkingState:
+    def get_state(mut self) -> GymCliffWalkingState:
         """Return current state."""
         return GymCliffWalkingState(index=self.current_state)
 

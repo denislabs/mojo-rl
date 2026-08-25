@@ -334,7 +334,7 @@ struct MountainCarEnv[DTYPE: DType](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    def get_state(self) -> MountainCarState:
+    def get_state(mut self) -> MountainCarState:
         """Return current discretized state."""
         return MountainCarState(index=self._discretize_obs())
 

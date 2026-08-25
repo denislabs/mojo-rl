@@ -835,7 +835,7 @@ struct AtariEnv[
             result[2],
         )
 
-    def get_state(self) -> AtariEnvState:
+    def get_state(mut self) -> AtariEnvState:
         return AtariEnvState(index=self._steps)
 
     def was_terminated(self) -> Bool:

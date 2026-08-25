@@ -319,7 +319,7 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
     # Env trait methods
     # ========================================================================
 
-    def get_state(self) -> ArcadeGameState:
+    def get_state(mut self) -> ArcadeGameState:
         return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     def close(mut self):

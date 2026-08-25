@@ -365,7 +365,7 @@ struct PongPixelEnv[
         self._push_frame()
         return (state, total_reward, done)
 
-    def get_state(self) -> ArcadeGameState:
+    def get_state(mut self) -> ArcadeGameState:
         return self.inner.get_state()
 
     def close(mut self):

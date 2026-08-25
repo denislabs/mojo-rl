@@ -564,7 +564,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         )
         return (Self.StateType(), Scalar[Self.dtype](r[1]), r[2])
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         return Self.StateType()
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
