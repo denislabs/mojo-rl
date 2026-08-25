@@ -45,3 +45,17 @@ tests/physics3d/test_model_dims_vs_mujoco.mojo
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
+
+# --- mojo_rl/robot: the SO-101 hardware stack, gated WITHOUT hardware ------
+# The packet codec is pure bytes-to-bytes and its expected byte strings were
+# captured from the reference `scservo_sdk` (regenerate with
+# tools/soarm/dump_feetech_vectors.py), so it runs anywhere.
+tests/robot/test_feetech_packet.mojo
+# The termios layout gate opens a pty rather than a serial device, and no-ops
+# off macOS (the Darwin offsets are the only ones filled in). ⚠ ~5 s: pty
+# tcsetattr is slow; it buys a check that a SILENT offset error cannot pass.
+tests/robot/test_serial_termios_layout.mojo
+# Fixed-width formatting. Its short-value cases are a regression gate: a
+# string-slice truncation aborted a live SO-101 teleop loop mid-motion and
+# left the arm holding torque (an abort does not run `finally`).
+tests/utils/test_fmt.mojo

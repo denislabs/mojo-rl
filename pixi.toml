@@ -136,6 +136,19 @@ format = { cmd = "mojo format -l 80 ." }
 # Neither the clone nor the built dylib is tracked, so this is a prerequisite
 # of examples/dm_control/dm_viewer_imgui.mojo on a fresh checkout.
 build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the Dear ImGui shim (mojo_rl/render/imgui/)" }
+# Serial shim for `mojo_rl/io/serial/` (the SO-101 Feetech bus). Six lines of
+# C for ONE call Mojo's FFI cannot make: `ioctl` is C-variadic, and on Apple
+# arm64 variadic args go on the stack while `external_call` puts them in
+# registers -> silent EFAULT. Prerequisite of anything under `mojo_rl/robot/`.
+build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the serial shim (mojo_rl/io/serial/)" }
+# The SO-101 hardware gate: dump both arms from Mojo, diff against
+# `tools/soarm/so101_diag.py` (Python + lerobot). Read-only — writes no
+# register and never touches torque. Needs the arms plugged in.
+soarm-diag = { cmd = "mojo run -I . tools/soarm/so101_mojo_diag.mojo", depends-on = ["build-serial"], description = "Dump both SO-101 arms (read-only hardware gate)" }
+# Recovery: release torque on both arms after a control loop died without
+# running its cleanup (a kill, a crash). A follower left holding a pose
+# resists being moved and heats up.
+soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", depends-on = ["build-serial"], description = "Release torque on both SO-101 arms" }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
 

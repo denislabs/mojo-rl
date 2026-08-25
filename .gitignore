@@ -270,4 +270,9 @@ third_party/
 # .cpp IS tracked; the binary is per-platform and rebuilt by
 # `pixi run build-imgui`.
 *.dylib
+# The serial shim built from mojo_rl/io/serial/native/mrl_serial.c. The .c IS
+# tracked; both binaries are per-platform and rebuilt by
+# `pixi run build-serial`.
+mojo_rl/io/serial/*.so
+mojo_rl/io/serial/*.o
 fb_walker_d128.ckpt
