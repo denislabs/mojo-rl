@@ -1946,6 +1946,21 @@ struct FlatModelDef(Movable):
     # dm_control's manipulation models set 0 ("run every iteration"). See
     # `_parse_option` for the measurement that made this worth parsing.
     var noslip_tolerance: Float64
+    # `<option noslip_iterations>` — how many friction-only sweeps
+    # `mj_solNoSlip` runs after the primal solve. MuJoCo's default is 0 (no
+    # pass).
+    #
+    # ⚠⚠ THE FIELD DID NOT EXIST, SO THE RUNTIME PATH NEVER RAN THE PASS. The
+    # count reached the solver only as `solve_newton`'s comptime `NOSLIP_ITER`,
+    # which `ModelDefFromXML` supplies from `xml_parser._scan_noslip_iterations`
+    # — a path a runtime `FlatModelDef` load does not go through. So the studio
+    # and the fidelity harnesses that mirror it stepped every model with noslip
+    # off, whatever its `<option>` said. On `robot_soccer_kit` that IS the whole
+    # residual: ours against MuJoCo with the pass disabled agrees to 8.674e-19.
+    #
+    # Carried into `MODEL_META_IDX_NOSLIP_ITERATIONS` by `fields_build`, where
+    # the solver reads it next to MEANINERTIA and NOSLIP_TOLERANCE.
+    var noslip_iterations: Int
     # `<option ccd_tolerance= ccd_iterations=>` — EPA's stopping rule. MuJoCo's
     # defaults are 1e-6 and 35; ours were hardcoded at 1e-8 and 64 and a model
     # setting either was ignored. See `_scan_ccd_tolerance` in `xml_parser` for
@@ -2293,6 +2308,7 @@ struct FlatModelDef(Movable):
         self.opt_density = Float64(0)
         self.opt_viscosity = Float64(0)
         self.noslip_tolerance = Float64(1e-6)
+        self.noslip_iterations = 0
         self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
         self.ccd_iterations = MJ_CCD_ITERATIONS
         self.impratio = 1.0

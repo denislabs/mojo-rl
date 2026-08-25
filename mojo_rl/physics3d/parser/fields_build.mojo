@@ -192,6 +192,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_NPAIR,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
+    MODEL_META_IDX_NOSLIP_ITERATIONS,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
     MODEL_META_IDX_CTRL_MIN,
@@ -1244,6 +1245,18 @@ def build_model_fields_from_flat[
     # attribute is absent, so a 0 that arrives here was WRITTEN by the model.
     mf.meta.data[MODEL_META_IDX_NOSLIP_TOLERANCE] = Scalar[DTYPE](
         fmd.noslip_tolerance
+    )
+    # ⚠⚠ THE COUNT, AND WITHOUT IT THE TOLERANCE ABOVE HAD NOTHING TO TRIM.
+    # `mj_solNoSlip` runs `opt.noslip_iterations` friction-only sweeps; that
+    # number reached the solver only as `solve_newton`'s comptime
+    # `NOSLIP_ITER`, so every model built through this function at RUNTIME —
+    # the studio's, and the fidelity harnesses' — stepped with the pass off no
+    # matter what its `<option>` said. Written unconditionally for the same
+    # reason the two below are: the slot has to differ between a model that
+    # sets the attribute and one that does not, and 0 is the value MuJoCo
+    # gives the second.
+    mf.meta.data[MODEL_META_IDX_NOSLIP_ITERATIONS] = Scalar[DTYPE](
+        fmd.noslip_iterations
     )
     # EPA's stopping rule. `Model.__init__` already seeded MuJoCo's defaults,
     # so this only ever OVERWRITES with what `<option>` actually said — but it

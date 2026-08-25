@@ -353,7 +353,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 40
+comptime MODEL_META_SIZE: Int = 41
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -419,6 +419,32 @@ comptime MODEL_META_IDX_EULERDAMP_DISABLED: Int = 38
 # `mj_gravcomp`, and it is stored rather than recounted so the pass costs one
 # load on the ~77 of 85 scenes that have none.
 comptime MODEL_META_IDX_NGRAVCOMP: Int = 39
+# `mjModel.opt.noslip_iterations` — how many friction-only Gauss-Seidel
+# sweeps `mj_solNoSlip` runs after the primal solve. 0 (MuJoCo's default)
+# means the pass does not run at all.
+#
+# ⚠⚠ THIS SLOT IS WHY THE PASS RUNS AT ALL ON THE RUNTIME PATH. The count
+# used to reach the solver ONLY as `solve_newton`'s comptime `NOSLIP_ITER`,
+# threaded from `ModelDefFromXML.NOSLIP_ITER` — so every caller that builds a
+# `Model` from a `FlatModelDef` at runtime (the studio, and the fidelity
+# harnesses that mirror it) stepped with the pass silently off no matter what
+# the file said. `FlatModelDef` had no such field to carry, either.
+#
+# The comptime parameter still exists and still gates whether the code is
+# EMITTED — a model that will never want the pass reserves nothing for it —
+# but it is now an ENABLE, not the count. The count is this slot, read next to
+# MEANINERTIA and NOSLIP_TOLERANCE, the two other numbers the same convergence
+# test needs. That keeps the studio's integrator instantiations at five rather
+# than ten; `stepping.mojo` already rejected a third comptime dispatch axis
+# for `MAX_CONDIM` on exactly these grounds.
+#
+# ⚠ A 0 HERE REALLY MEANS "NO PASS", and a builder that leaves the slot
+# unwritten gets it. That is MuJoCo's default and the right one for a
+# hand-made fixture, but it also means a model whose `<option>` sets the
+# attribute MUST reach the solver through `build_model_fields_from_flat` —
+# `model_def_from_xml` raises when its comptime `NOSLIP_ITER` and this slot
+# disagree, so the two parsers cannot drift apart in silence.
+comptime MODEL_META_IDX_NOSLIP_ITERATIONS: Int = 40
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons

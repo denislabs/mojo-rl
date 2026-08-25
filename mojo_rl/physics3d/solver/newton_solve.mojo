@@ -190,6 +190,7 @@ from ..gpu.constants import (
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
+    MODEL_META_IDX_NOSLIP_ITERATIONS,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -1445,6 +1446,14 @@ def _newton_solve_env[
         # NOT call it, so an elliptic model with `noslip_iterations` set gets
         # the pass silently skipped — which is exactly why `ModelDefFromXML`
         # makes `noslip_iter > 0` a build error unless the model opts in.
+        #
+        # ⚠⚠ `NOSLIP_ITER` IS AN ENABLE, NOT THE COUNT — it was the count until
+        # 2026-08-25. The number of sweeps is `opt.noslip_iterations`, read
+        # from meta at the call below; this guard only decides whether the
+        # block is EMITTED, so a model that will never want the pass reserves
+        # no `kind_dt` and pays no code for it. The split is what lets a model
+        # loaded at RUNTIME run the pass at all: the studio builds its five
+        # integrators before it knows which file it will open.
         comptime if NOSLIP_ITER > 0:
             # `max(1, nv)` folded at compile time — see the note on the
             # `scale` argument below for why this must not be an int->float
@@ -1463,7 +1472,7 @@ def _newton_solve_env[
                 kind_dt[e_k] = Scalar[DTYPE](kind_e[e_k])
             noslip_pyramidal[
                 DTYPE, E_CAP, V_CAP, MC_CAP, D.CAP_MAX_CONTACTS,
-                MAX_CONDIM, NOSLIP_ITER,
+                MAX_CONDIM,
             ](
                 env,
                 nc,
@@ -1502,6 +1511,23 @@ def _newton_solve_env[
                 rebind[Scalar[DTYPE]](
                     mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]
                 ),
+                # ⚠⚠ THE COUNT COMES FROM THE MODEL, NOT FROM `NOSLIP_ITER`.
+                # The comptime parameter is an ENABLE — it decides whether this
+                # block is emitted and whether `kind_dt` is reserved — and the
+                # number of sweeps is `opt.noslip_iterations`, read from meta
+                # beside the tolerance that trims it. Splitting the two is what
+                # lets a RUNTIME-loaded model run the pass: the studio and the
+                # fidelity harnesses build their integrator long before they
+                # know which file they will open, so a comptime count meant the
+                # pass was off for every one of them.
+                #
+                # ⚠ `min` WOULD BE WRONG HERE and there is deliberately none:
+                # `NOSLIP_ITER` is not a capacity, nothing is sized by it, and
+                # capping the model's count at whatever the caller happened to
+                # build would be a silent truncation of the reference's loop.
+                # `model_def_from_xml` raises instead when the comptime enable
+                # and this slot disagree.
+                Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_ITERATIONS])),
                 qacc,
                 jar,
                 force.unsafe_ptr(),
@@ -2363,7 +2389,7 @@ def _newton_solve_env[
     # so there is no runtime test to get wrong.
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
-            DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP, NOSLIP_ITER
+            DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
         ](
             env,
             nc,
@@ -2384,6 +2410,9 @@ def _newton_solve_env[
             # ⚠ FROM META, NOT `NOSLIP_TOLERANCE`. dm_control's manipulation
             # models set 0; the constant is only the absent-attribute default.
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]),
+            # ⚠ FROM META TOO — see the per-env pyramidal call for why the
+            # comptime `NOSLIP_ITER` is an enable and not the count.
+            Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_ITERATIONS])),
             qacc,
             fn_arr, ft_arr,
             jar_n_arr, jar_t_arr,
@@ -3924,7 +3953,6 @@ def _newton_blocked_fields_kernel[
     comptime if NOSLIP_ITER > 0:
         noslip_pyramidal[
             DTYPE, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
-            NOSLIP_ITER,
             # `Je` is SHARED or GLOBAL depending on whether it fit (see
             # `JE_IN_SHARED`); the other rows are always threadgroup memory.
             # ⚠ BY KEYWORD: the inferred `L_*` layout parameters now sit
@@ -3953,6 +3981,10 @@ def _newton_blocked_fields_kernel[
             # ⚠ FROM META, NOT the `NOSLIP_TOLERANCE` constant — that constant
             # is only the absent-attribute default. See the per-env path.
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]),
+            # ⚠ FROM META TOO — see the per-env pyramidal call. On this path
+            # the read is uniform across the threadgroup (every thread loads
+            # the same model slot), so it costs no divergence.
+            Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_ITERATIONS])),
             qacc,
             jar,
             force_sh.ptr,

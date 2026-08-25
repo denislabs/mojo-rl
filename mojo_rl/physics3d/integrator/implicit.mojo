@@ -522,6 +522,18 @@ struct ImplicitIntegrator[
     # 1.856e-03, against 5.551e-17 for the same model with its pairs edited
     # down to condim 3 — i.e. the entire divergence was the dropped rows.
     MAX_CONDIM: Int = 3,
+    # ⚠⚠ AND NEITHER DID THIS ONE, WITH THE SAME SHAPE OF SILENCE. `mj_solNoSlip`
+    # runs behind `solve_newton`'s `NOSLIP_ITER`, which defaults to 0 — so an
+    # implicitfast model asking for `<option noslip_iterations>` had the pass
+    # dropped and nothing said so. `EulerIntegrator` and `RK4Integrator` have
+    # both carried the parameter since the pass was ported; this twin did not,
+    # exactly as it did not carry `MAX_CONDIM` above. 50 of the 131 loadable
+    # models in this tree are implicitfast.
+    #
+    # ⚠ IT IS AN ENABLE, NOT A COUNT (2026-08-25). > 0 emits the pass; the
+    # number of sweeps is `opt.noslip_iterations` from model meta. So passing
+    # 1 here is "build it in", not "run one sweep".
+    NOSLIP_ITER: Int = 0,
 ](Movable):
     """Owns its scratch (dynamics + contact + implicit); steps full-implicit
     dynamics on either target. See module docstring for the algorithm and
@@ -722,7 +734,7 @@ struct ImplicitIntegrator[
                 " 'cg', or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, NOSLIP_ITER=Self.NOSLIP_ITER, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
                     solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)

@@ -190,15 +190,15 @@ def _parse_option(
     xml: String,
 ) -> Tuple[
     Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,
-    Int, Float64, Int, Int, Int
+    Int, Float64, Int, Int, Int, Int
 ]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
     noslip_tolerance, ccd_tolerance, ccd_iterations, impratio, cone, solver,
-    integrator) from <option .../>.
+    integrator, noslip_iterations) from <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
     noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35,
-    impratio=1.
+    impratio=1, noslip_iterations=0.
 
     ⚠ `ccd_tolerance` / `ccd_iterations` ARE EXERCISED, unlike
     `noslip_tolerance` below. They set EPA's stopping rule, which decides which
@@ -217,6 +217,20 @@ def _parse_option(
     `noslip_tolerance` is not the solver's `tolerance`. It is the threshold
     `mj_solNoSlip` compares its scaled per-iteration improvement against, so it
     decides how many of the `noslip_iterations` sweeps actually run.
+
+    ⚠⚠ AND `noslip_iterations` ITSELF WAS THE ATTRIBUTE THIS FUNCTION DID NOT
+    READ — the count, next to the tolerance that trims it. It reached the
+    solver only as a compile-time parameter (`ModelDefFromXML.NOSLIP_ITER`,
+    from the OTHER parser's `_scan_noslip_iterations`), so a `FlatModelDef`
+    loaded at runtime carried the threshold for a pass that could never run.
+    Parsing the tolerance and not the count is the shape of defect this file
+    has hit before: a number recorded for an algorithm nothing dispatches to.
+
+    ⚠ THE TWO PARSERS MUST AGREE ON THIS ONE. `xml_parser._scan_noslip_
+    iterations` reads the same attribute for the comptime path, and
+    `model_def_from_xml` now raises when the two answers differ rather than
+    letting a model run a different number of sweeps depending on which door
+    it came through.
     dm_control's manipulation models set it to **0**, meaning "never stop
     early" — the loop then runs the full count unless improvement goes
     negative. We hardcoded MuJoCo's 1e-6 default until 2026-08-13.
@@ -256,6 +270,7 @@ def _parse_option(
     var dens = Float64(0)
     var visc = Float64(0)
     var nstol = Float64(1e-6)
+    var nsiter = 0
     var ccdtol = Float64(MJ_CCD_TOLERANCE)
     var ccditer = MJ_CCD_ITERATIONS
     var impratio = 1.0
@@ -266,7 +281,7 @@ def _parse_option(
     var pos = xml.find("<option")
     if pos == -1:
         return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
-                impratio, cone, solver, integrator)
+                impratio, cone, solver, integrator, nsiter)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -296,6 +311,15 @@ def _parse_option(
     var nstol_str = _extract_attr(tag, "noslip_tolerance")
     if nstol_str.byte_length() > 0:
         nstol = _parse_float(nstol_str)
+
+    # ⚠ `Int(_parse_float(...))`, not a digit scan, and NEGATIVES ARE CLAMPED
+    # TO 0. MuJoCo stores this as an `int` and loops `for (i = 0; i <
+    # m->opt.noslip_iterations; i++)`, so any value <= 0 means "no pass" — the
+    # clamp is the loop's own behaviour written down, not a policy of ours.
+    var nsiter_str = _extract_attr(tag, "noslip_iterations")
+    if nsiter_str.byte_length() > 0:
+        var vni = Int(_parse_float(nsiter_str))
+        nsiter = vni if vni > 0 else 0
 
     # `ccd_tolerance` / `ccd_iterations` — EPA's stopping rule. Unlike
     # `noslip_tolerance` a 0 is NOT a meaningful setting for either (it would
@@ -378,7 +402,7 @@ def _parse_option(
         integrator = IntegratorType.EULER
 
     return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer,
-            impratio, cone, solver, integrator)
+            impratio, cone, solver, integrator, nsiter)
 
 
 # =============================================================================
@@ -6199,6 +6223,7 @@ def parse_xml_full(
     result.cone = opt[10]
     result.solver = opt[11]
     result.integrator = opt[12]
+    result.noslip_iterations = opt[13]
 
     # <flag multiccd="disable" nativeccd="disable"/> — `mjDSBL_MULTICCD` and
     # `mjDSBL_NATIVECCD`.

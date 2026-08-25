@@ -51,6 +51,7 @@ from ..gpu.constants import (
     mesh_max_edge,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_NOSLIP_ITERATIONS,
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
 )
@@ -275,6 +276,19 @@ struct Model[
         )
         self.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[Self.DTYPE](
             MJ_CCD_ITERATIONS
+        )
+        # ⚠ SEEDED FOR THE SAME REASON, AND THE SAFE VALUE HERE IS 0. `alloc`
+        # does not zero, and this slot is a LOOP BOUND — `mj_solNoSlip` runs
+        # `opt.noslip_iterations` friction-only sweeps — so uninitialized
+        # memory would mean an arbitrary number of them on any hand-built
+        # Model whose caller enabled the pass. 0 is MuJoCo's default and means
+        # "no pass at all"; `fields_build` overwrites it from `<option>`.
+        #
+        # ⚠ THE COMPTIME `NOSLIP_ITER` CANNOT BE READ FROM HERE — `Model` is
+        # parameterized on `DimsLike`, not on the model def — which is exactly
+        # why the count travels in meta rather than only as a parameter.
+        self.meta.data[MODEL_META_IDX_NOSLIP_ITERATIONS] = Scalar[Self.DTYPE](
+            0
         )
         self.curriculum = TensorImpl[Self.DTYPE].alloc(MODEL_CURRICULUM_SIZE)
         self.geoms = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_ngeom() * MODEL_GEOM_SIZE))

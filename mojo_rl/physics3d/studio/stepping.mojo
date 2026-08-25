@@ -73,13 +73,62 @@ comptime STUDIO_DT = DType.float64
 # own `fmd.max_condim` and pay nothing.
 comptime STUDIO_MAX_CONDIM = 6
 
+# ⚠⚠ AN ENABLE, NOT A COUNT — AND WITHOUT IT THE STUDIO NEVER RAN
+# `mj_solNoSlip`. `solve_newton`'s `NOSLIP_ITER` used to BE the number of
+# friction-only sweeps, which meant the number had to be known when the
+# integrator was instantiated. The studio instantiates its five integrators at
+# compile time and learns which file it is opening at run time, so there was no
+# value it could pass: it defaulted to 0 and the pass was off for every model,
+# whatever `<option noslip_iterations>` said.
+#
+# The count now travels in `MODEL_META_IDX_NOSLIP_ITERATIONS`, written by
+# `fields_build` from the model's own `<option>`, and this parameter only
+# decides whether the code is EMITTED. So 1 here means "build the pass in", not
+# "run one sweep": a model that asks for 5 runs 5, and a model that asks for
+# nothing still runs none.
+#
+# ⚠ NOT A SIXTH AND SEVENTH INTEGRATOR. This is the axis `MAX_CONDIM` above
+# argued its way out of doubling, for the same reason — an enable that is
+# always on costs one instantiation, a count would have cost a pair per
+# distinct value in the tree.
+#
+# Measured across the SEVEN Menagerie scenes that set `<option
+# noslip_iterations>`, as how far the pass moves qpos in one step in each
+# engine — the quantity that is well-posed whatever else the model disagrees
+# about:
+#
+#     robot_soccer_kit     ours 7.062e-08   MuJoCo 7.062e-08   ratio 1.0
+#     shadow_dexee         ours 1.442e-14   MuJoCo 1.409e-14   ratio 1.0
+#     flybody              ours 1.927e-15   MuJoCo 1.926e-15   ratio 1.0
+#     hello_robot_stretch  ours 0           MuJoCo 0
+#     umi_gripper          ours 0           MuJoCo 0
+#     dynamixel_2r         ours 0           MuJoCo 1.735e-18
+#     hello_robot_stretch_3 ours 2.244e-03  MuJoCo 9.765e-05   ratio 23
+#
+# `robot_soccer_kit`'s whole board residual was this pass: it went 7.062e-08 ->
+# 7.589e-19 against MuJoCo, and it covers the PYRAMIDAL branch while dexee and
+# flybody cover the ELLIPTIC one.
+#
+# ⚠⚠ AND `hello_robot_stretch_3` GOT WORSE — 4.419e-03 -> 6.649e-03 — WHICH IS
+# NOT THIS PASS BEING WRONG. It is the tree's #1 board row already, at
+# 4.4e-03 with the pass off, and `mj_solNoSlip` redistributes friction WITHIN
+# the contact set it is handed. Hand it a set whose normals are 156-of-12850
+# different and it redistributes to different places; the ratio-1.0 rows above
+# are the control that says the routine agrees when its inputs do. The residual
+# also grows monotonically with the iteration count (1 -> 6.383e-03, 10 ->
+# 7.117e-03) and is IDENTICAL at `noslip_tolerance` 1e-6 and 0, so neither the
+# stopping rule nor a convergence failure is in it. Enabling the pass makes
+# that scene a 23x AMPLIFIER of its own upstream defect, which is a better
+# probe than the quiet 4.4e-03 was.
+comptime STUDIO_NOSLIP = 1
+
 comptime StudioIntegPyr = EulerIntegrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
 ]
 comptime StudioIntegEll = EulerIntegrator[
     STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
 ]
 
 # ⚠⚠ AND THE IMPLICIT PAIR, BECAUSE THE FILE ASKS FOR IT. `integrator` was
@@ -98,11 +147,11 @@ comptime StudioIntegEll = EulerIntegrator[
 # with Euler anyway, spot leaves the ground and passes 18 m.
 comptime StudioImpFastPyr = ImplicitIntegrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True,
-    MAX_CONDIM=STUDIO_MAX_CONDIM,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
 ]
 comptime StudioImpFastEll = ImplicitIntegrator[
     STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", SKIP_RNE_DERIV=True,
-    MAX_CONDIM=STUDIO_MAX_CONDIM,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
 ]
 
 # ⚠⚠ AND RK4, THE LAST SUBSTITUTION LEFT — AND IT WAS WORTH 9.200e-06.
@@ -150,7 +199,7 @@ comptime StudioImpFastEll = ImplicitIntegrator[
 # cost of a second cone was NOT measured; do not assume it is another 12.
 comptime StudioRk4Pyr = RK4Integrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
 ]
 
 

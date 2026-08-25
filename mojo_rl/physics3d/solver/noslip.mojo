@@ -344,7 +344,6 @@ def noslip_pyramidal[
     MC_CAP: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
-    MAX_ITER: Int,
     L_CONTACTS: Layout,
     L_M_INV: Layout,
     # GENERIC/GENERIC is the per-env caller (per-thread `InlineArray`s); the
@@ -390,6 +389,15 @@ def noslip_pyramidal[
     # a DTYPE tensor read, with `max(1,nv)` folded to a comptime constant.
     scale: Scalar[DTYPE],
     tolerance: Scalar[DTYPE],
+    # ⚠⚠ RUNTIME, NOT A COMPILE-TIME PARAMETER — it was `MAX_ITER` until
+    # 2026-08-25. `m->opt.noslip_iterations` is a plain `int` MuJoCo loops to,
+    # and this routine only ever used it as `range(...)`; making it comptime
+    # meant the COUNT had to be known when the integrator was instantiated, so
+    # every caller that loads a model at runtime (the studio, and the fidelity
+    # harnesses that mirror it) had no way to ask for the pass at all. It now
+    # arrives beside `scale` and `tolerance`, the two other numbers the same
+    # convergence test needs, all three read from model meta by the caller.
+    max_iter: Int,
     mut qacc: Scratch[Scalar[DTYPE], V_CAP],
     mut jar: Scratch[Scalar[DTYPE], E_CAP],
     # The one array this routine WRITES through — hence a real `MutOrigin`
@@ -398,7 +406,7 @@ def noslip_pyramidal[
     mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
     nv: Int,
 ):
-    """One `mj_solNoSlip` call: up to `MAX_ITER` friction-only sweeps.
+    """One `mj_solNoSlip` call: up to `max_iter` friction-only sweeps.
 
     On entry `qacc`, `jar` and `force` are the primal solver's converged
     output. On exit `force` has been redistributed within each friction pair,
@@ -418,7 +426,7 @@ def noslip_pyramidal[
     comptime DIAG_FLOOR = Scalar[DTYPE](_DIAG_FLOOR)
     comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
 
-    for it in range(MAX_ITER):
+    for it in range(max_iter):
         var improvement = ZERO
 
         # `iter == 0` correction: MuJoCo folds in the R-weighted force energy
@@ -781,7 +789,6 @@ def noslip_elliptic[
     V_CAP: Int,
     S_CAP: Int,
     EQ_CAP: Int,
-    MAX_ITER: Int,
     D: DimsLike,
     L_M_INV: Layout,
 ](
@@ -814,6 +821,8 @@ def noslip_elliptic[
     qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
     scale: Scalar[DTYPE],
     tolerance: Scalar[DTYPE],
+    # ⚠ RUNTIME, for the reason `noslip_pyramidal`'s copy of this note gives.
+    max_iter: Int,
     mut qacc: Scratch[Scalar[DTYPE], V_CAP],
     mut fn_a: Scratch[Scalar[DTYPE], MC_CAP],
     mut ft_a: Scratch[Scalar[DTYPE], T_CAP],
@@ -825,7 +834,7 @@ def noslip_elliptic[
     mut eq_jar: Scratch[Scalar[DTYPE], EQ_CAP],
     mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
 ):
-    """One `mj_solNoSlip` call on the ELLIPTIC cone: up to `MAX_ITER` sweeps.
+    """One `mj_solNoSlip` call on the ELLIPTIC cone: up to `max_iter` sweeps.
 
     Transcribed from the `mjCNSTR_CONTACT_ELLIPTIC` branch of MuJoCo's
     `mj_solNoSlip` (`engine_solver.c:653` in 3.6.0, `solveQCQP` in 3.11.0).
@@ -898,7 +907,7 @@ def noslip_elliptic[
     # This contact's tangential residuals, recomputed at the point of use.
     var jt_cur = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
 
-    for it in range(MAX_ITER):
+    for it in range(max_iter):
         var improvement = ZERO
 
         # `iter == 0` correction: MuJoCo folds in the R-weighted force energy
