@@ -115,6 +115,24 @@ struct SimJointMap(Copyable, Movable):
         var v = self.to_sim_unclamped(cal, i, raw)
         return min(self.sim_hi[i], max(self.sim_lo[i], v))
 
+    def from_sim(
+        self, cal: SO101Calibration, i: Int, value: Float64
+    ) -> Int32:
+        """Model radians back to servo ticks — the inverse of `to_sim`.
+
+        What a POLICY's action has to go through to reach the hardware: the
+        net was trained in the model's joint space, and the bus speaks ticks.
+        Exact inverse of `to_sim_unclamped`, gripper fraction included, so a
+        round trip through both is the identity up to tick quantisation.
+        """
+        if i == GRIPPER:
+            var span = self.sim_hi[i] - self.sim_lo[i]
+            var frac = (value - self.sim_lo[i]) / span if span != 0.0 else 0.0
+            if self.sign[i] < 0.0:
+                frac = 1.0 - frac
+            return cal.raw_from_degrees(i, frac * 100.0)
+        return cal.raw_from_radians(i, (value - self.offset_rad[i]) / self.sign[i])
+
     def clamped_by(
         self, cal: SO101Calibration, i: Int, raw: Int32
     ) -> Float64:

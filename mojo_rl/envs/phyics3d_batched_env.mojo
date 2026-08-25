@@ -139,8 +139,18 @@ struct Phyics3dBatchedEnv[
     # a heightfield until escape: the grid stayed one element wide and the
     # terrain collided as a flat plane, silently, exactly as
     # `DMQuadrupedEscapeConfig.NHFIELD_DATA` warns for the single-env path.
+    #
+    # ⚠⚠ AND THE SAME BUG, ONE FIELD OVER: `nmesh_verts` was left at its
+    # default 0 too, so NO BATCHED MODEL HAS EVER CARRIED A COLLIDABLE MESH.
+    # It surfaced on SO-ARM101 (26 179 hull vertices) as a hard raise from
+    # `fields_build`, not silently — that assert was added for exactly this —
+    # but every mesh-collidable model was unreachable on this path until now.
+    # Threaded from the config for the same reason `nhfield_data` is: the
+    # comptime parser cannot read an STL, so the count is hand-supplied.
     comptime MD = ModelDims[
-        Self.MODEL_DEF, nhfield_data = Self.CONFIG.NHFIELD_DATA
+        Self.MODEL_DEF,
+        nmesh_verts = Self.CONFIG.NMESH_VERTS,
+        nhfield_data = Self.CONFIG.NHFIELD_DATA,
     ]
     comptime NV: Int = Self.MODEL_DEF.NV
     comptime NBODY: Int = Self.MODEL_DEF.NBODY
