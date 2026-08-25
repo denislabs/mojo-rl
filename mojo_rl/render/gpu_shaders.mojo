@@ -119,7 +119,7 @@ struct VertexOut {
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
-    float4 params;  // x=shadow_intensity, y=bias
+    float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
 };
 
 float compute_shadow(float3 world_pos,
@@ -143,7 +143,13 @@ float compute_shadow(float3 world_pos,
 
     // 3x3 PCF for soft shadows
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 4096.0;
+    // ⚠ THE REAL MAP SIZE, from `<visual quality shadowsize=>`. This was
+    // hardcoded to 4096 while `quadruped escape` asks for 2048, so every PCF
+    // tap landed half a texel from where it meant to. Zero means "not set" —
+    // fall back rather than divide by it.
+    float smap = shadow.params.z > 0.5 ? shadow.params.z : 4096.0;
+    float texel_size = 1.0 / smap;
+
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -292,7 +298,7 @@ struct VertexOut {
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
-    float4 params;  // x=shadow_intensity, y=bias
+    float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
 };
 
 float compute_shadow_ground(float3 world_pos,
@@ -315,7 +321,13 @@ float compute_shadow_ground(float3 world_pos,
 
     // 3x3 PCF
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 4096.0;
+    // ⚠ THE REAL MAP SIZE, from `<visual quality shadowsize=>`. This was
+    // hardcoded to 4096 while `quadruped escape` asks for 2048, so every PCF
+    // tap landed half a texel from where it meant to. Zero means "not set" —
+    // fall back rather than divide by it.
+    float smap = shadow.params.z > 0.5 ? shadow.params.z : 4096.0;
+    float texel_size = 1.0 / smap;
+
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;

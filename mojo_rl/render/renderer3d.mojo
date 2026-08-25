@@ -5183,9 +5183,27 @@ struct Renderer3D(Movable):
                 light_dir = Vec3(lx / ll, ly / ll, lz / ll)
                 break
 
-        # Light position: offset from camera target along negative light direction
+        # ⚠ THE FRUSTUM IS FITTED TO THE VIEW, NOT HARDCODED. It used to be a
+        # fixed 16 m box 15 m from the target with a 0.1..30 depth range —
+        # sized for a 2 m robot on a flat plane, which is every suite model
+        # except one. `quadruped escape`'s terrain is 60 m across with 5 m of
+        # relief, so that box covered a quarter of its width: shadows existed
+        # in a patch around the camera target and nowhere else, with a visible
+        # straight edge where the box ended.
+        #
+        # The camera distance is the scale signal available here — it is set
+        # per model by `setup_cameras` and by the user's zoom, so it tracks
+        # what is actually on screen. ⚠ FLOORED AT THE OLD VALUES so every
+        # model that looked right before still gets exactly the old frustum;
+        # this only ever loosens.
         var target = self.camera.target
+        var cam_dist = (self.camera.eye - target).length()
+        var ortho_size = 8.0
+        if 0.75 * cam_dist > ortho_size:
+            ortho_size = 0.75 * cam_dist
         var light_distance = 15.0
+        if 2.5 * ortho_size > light_distance:
+            light_distance = 2.5 * ortho_size
         var light_pos = target - light_dir * light_distance
 
         # Build look-at view matrix for the light using Mat4.look_at
@@ -5200,19 +5218,28 @@ struct Renderer3D(Movable):
 
         var light_view = Mat4.look_at(light_pos, target, up)
 
-        # Orthographic projection covering the scene
-        var ortho_size = 8.0
+        # ⚠ FAR REACHES PAST THE LIGHT, BY THE BOX'S OWN SIZE. An occluder can
+        # sit anywhere in the box, including well below the target; a far plane
+        # that only just reaches the target clips the ground out of the map.
+        var light_far = light_distance + 2.0 * ortho_size
         var light_proj = ortho_projection(
             -ortho_size,
             ortho_size,
             -ortho_size,
             ortho_size,
             0.1,
-            30.0,
+            light_far,
         )
 
         var light_vp = light_proj @ light_view
         self.shadow_uniforms.light_view_proj = mat4_to_gpu_f32(light_vp)
+
+        # ⚠ PUBLISHED HERE, NOT AT RESOURCE CREATION. `shadow_size` comes from
+        # `<visual quality shadowsize=>` and the map is re-created on a task
+        # switch when the two models disagree; setting it once at init leaves
+        # the shader dividing by the PREVIOUS model's resolution. This runs
+        # every frame, so it cannot go stale.
+        self.shadow_uniforms.params[2] = Float32(self.shadow_size)
 
     # --- Event Handling ---
 

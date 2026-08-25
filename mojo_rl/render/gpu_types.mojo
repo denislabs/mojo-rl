@@ -256,7 +256,8 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
 
     Layout (std140):
       light_view_proj: mat4 (64 bytes) - light's orthographic VP matrix
-      params: vec4 (16 bytes) - x=shadow_intensity, y=bias, z=unused, w=unused
+      params: vec4 (16 bytes) - x=shadow_intensity, y=bias,
+                                z=shadow map resolution, w=unused
     """
 
     var light_view_proj: InlineArray[Float32, 16]
@@ -265,9 +266,13 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
     def __init__(out self):
         self.light_view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.params = InlineArray[Float32, 4](fill=Float32(0))
-        # Defaults: intensity=0.5, bias=0.005
+        # Defaults: intensity=0.5, bias=0.005, map size 4096.
+        # ⚠ `bias` IS THE HEAD-ON VALUE ONLY. The shader scales it by the
+        # receiver's slope; see `compute_shadow` for why a constant is wrong on
+        # a steep surface.
         self.params[0] = 0.5
         self.params[1] = 0.005
+        self.params[2] = 4096.0
 
     def __init__(out self, *, copy: Self):
         self.light_view_proj = copy.light_view_proj.copy()
