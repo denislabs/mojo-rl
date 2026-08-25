@@ -1083,36 +1083,18 @@ def _detect_contacts_sap_env[
         sap_idx[j + 1] = key
 
     # 4c. Sweep.
+    #
+    # ⚠⚠ `si`/`sj` ARE THE SWEEP'S ORDER AND `gi`/`gj` ARE MuJoCo'S. They are
+    # not the same pair order and the difference is a real defect, not a
+    # cosmetic one — see the canonicalisation inside the `j` loop. Only the
+    # AABB tests and the `break` may read `si`/`sj`; everything downstream of
+    # them reads `gi`/`gj`.
     for i in range(sap_n):
-        var gi = sap_idx[i]
-        var gi_max_x = aabb_max_x[gi]
-        var gi_type = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+        var si = sap_idx[i]
+        var si_max_x = aabb_max_x[si]
+        var si_type = Int(
+            rebind[Scalar[DTYPE]](geoms[si, GEOM_IDX_TYPE])
         )
-        var gi_body = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
-        )
-        var gi_contype = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
-        )
-        var gi_conaffinity = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
-        )
-        var pi_x = wpx[gi]
-        var pi_y = wpy[gi]
-        var pi_z = wpz[gi]
-        var qi_x = wqx[gi]
-        var qi_y = wqy[gi]
-        var qi_z = wqz[gi]
-        var qi_w = wqw[gi]
-        var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
-        var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
-        var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
-        var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
-        var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
-        # Multi-CCD scales its distinctness tolerance by the smaller bounding
-        # radius (`mjc_Convex`).
-        var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
 
         for j in range(i + 1, sap_n):
             if num_contacts >= max_contacts:
@@ -1120,21 +1102,96 @@ def _detect_contacts_sap_env[
                     num_contacts
                 )
                 return
-            var gj = sap_idx[j]
+            var sj = sap_idx[j]
 
-            if aabb_min_x[gj] > gi_max_x:
+            if aabb_min_x[sj] > si_max_x:
                 break
 
             if (
-                aabb_min_y[gj] > aabb_max_y[gi]
-                or aabb_min_y[gi] > aabb_max_y[gj]
+                aabb_min_y[sj] > aabb_max_y[si]
+                or aabb_min_y[si] > aabb_max_y[sj]
             ):
                 continue
             if (
-                aabb_min_z[gj] > aabb_max_z[gi]
-                or aabb_min_z[gi] > aabb_max_z[gj]
+                aabb_min_z[sj] > aabb_max_z[si]
+                or aabb_min_z[si] > aabb_max_z[sj]
             ):
                 continue
+
+            # ── THE PAIR IN MuJoCo'S ORDER — `pushPairArena` ──────────────
+            #
+            # ⚠⚠ THE NARROW PHASE IS NOT SYMMETRIC IN ITS OPERANDS, so which
+            # geom is `obj1` is part of the answer, not a convention. MuJoCo
+            # fixes it in `pushPairArena` (`engine_collision_driver.c:489`):
+            #
+            #     if (m->geom_type[g1] > m->geom_type[g2]) { swap(g1, g2); }
+            #
+            # on a pair that arrives in ASCENDING GEOM INDEX — `add_pair`
+            # stores the bodyflex pair as `(min<<16) + max`, and the geom loops
+            # under it run `for g1 in body bf1: for g2 in body bf2` with
+            # `bf1 < bf2`, so `g1 < g2` always. (A `<contact><pair>` is swapped
+            # by `mjCPair::ResolveReferences` on BODY id, which gives the same
+            # thing for the cross-body pairs that can actually collide.) Net
+            # rule: **sort by (type, geom index)** — which is exactly the
+            # predicate `native_multicontact`'s caller already spelled out for
+            # the manifold routine, and which nothing had applied to GJK/EPA.
+            #
+            # ⚠ THIS SWEEP EMITS PAIRS IN AABB-SORT ORDER, so roughly half of
+            # them reached GJK the wrong way round on every model at or above
+            # `SAP_THRESHOLD` — which is every dm_control and Menagerie scene.
+            # Measured: `test_ellipsoid_convex_vs_mujoco`'s pair reproduces
+            # MuJoCo BIT-FOR-BIT in index order (-0.005577960335) and lands
+            # 2.0e-07 away in the other, and `test_mesh_manifold_gpu_parity`
+            # had SAP and the O(N^2) loop reporting DIFFERENT CONTACT COUNTS
+            # on the same pose.
+            #
+            # ⚠ WHY IT IS DONE HERE AND NOT AT THE CALL SITES. Every `gi_*`
+            # local below is read by ~800 lines of narrow-phase dispatch; doing
+            # it once, where the pair is named, keeps all of that untouched and
+            # makes the invariant checkable in one place. The cost is that the
+            # `gi_*` reads move from once-per-sweep-column to once-per-pair —
+            # the `gj_*` ones already were, and both sit AFTER the AABB tests
+            # that reject most candidates.
+            var sj_type = Int(
+                rebind[Scalar[DTYPE]](geoms[sj, GEOM_IDX_TYPE])
+            )
+            var lo = si if si < sj else sj
+            var hi = sj if si < sj else si
+            var lo_type = si_type if si < sj else sj_type
+            var hi_type = sj_type if si < sj else si_type
+            var gi = lo
+            var gj = hi
+            if lo_type > hi_type:
+                gi = hi
+                gj = lo
+
+            var gi_type = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+            )
+            var gi_body = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
+            )
+            var gi_contype = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
+            )
+            var gi_conaffinity = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
+            )
+            var pi_x = wpx[gi]
+            var pi_y = wpy[gi]
+            var pi_z = wpz[gi]
+            var qi_x = wqx[gi]
+            var qi_y = wqy[gi]
+            var qi_z = wqz[gi]
+            var qi_w = wqw[gi]
+            var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
+            var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
+            var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
+            var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
+            var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
+            # Multi-CCD scales its distinctness tolerance by the smaller
+            # bounding radius (`mjc_Convex`).
+            var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
 
             var gj_type = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
@@ -1834,65 +1891,39 @@ def _detect_contacts_sap_env[
                             pn2 = Int(rebind[Scalar[DTYPE]](
                                 mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
                             ))
-                        # Operands in MuJoCo's order (lower geom type first),
-                        # and the witness pair swaps with them — `dir` is a
-                        # SIGNED input to `boxNormals2`, not a magnitude.
-                        # ⚠ TYPE ALONE DOES NOT ORDER A PAIR — for EQUAL types
-                        # this is false either way and the operand order fell
-                        # out of the broadphase, which is exactly how SAP and
-                        # the O(N^2) loop came to disagree with each other.
-                        # Tie-break on geom index, as `mj_collideGeoms` does.
-                        var mc_swap = gi_type > gj_type or (
-                            gi_type == gj_type and gi > gj
+                        # ⚠ THE OPERANDS ARE ALREADY MuJoCo'S. `(gi, gj)` is
+                        # `pushPairArena`'s pair — sorted by (type, geom
+                        # index) where the sweep names it — so the manifold
+                        # runs on the SAME order GJK just ran on, which is the
+                        # reference's structure: `mjc_Convex` hands
+                        # `multicontact` the `status` of its own `mjc_ccd`.
+                        #
+                        # ⚠⚠ THERE USED TO BE A SECOND, LOCAL SWAP HERE, and
+                        # it was half a fix. It ordered the MANIFOLD correctly
+                        # and left GJK running on whatever the broadphase
+                        # emitted, so `wf1`/`wf2`/`wx` — the witness the
+                        # manifold clips from — came out of a query in the
+                        # OTHER order and had to be re-swapped to match. With
+                        # the pair canonicalised where it is named, that
+                        # predicate is always false and the re-swap is gone.
+                        var mcn = native_multicontact_contacts[
+                            DTYPE](
+                            env, body_a, body_b,
+                            gi_type,
+                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                            hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                            gj_type,
+                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                            hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                            dims,
+                            mesh_verts, mesh_polys, mesh_polyvert,
+                            mesh_polymap, mesh_vert_polymap,
+                            wf1, wf2, wxx,
+                            dist, cm, cf, cfs, cfr, cdim,
+                            False,
+                            contacts, ws, env, num_contacts,
+                            cgp,
                         )
-                        var wxs = InlineArray[Scalar[DTYPE], 6](
-                            fill=Scalar[DTYPE](0)
-                        )
-                        wxs[0] = wxx[3]
-                        wxs[1] = wxx[4]
-                        wxs[2] = wxx[5]
-                        wxs[3] = wxx[0]
-                        wxs[4] = wxx[1]
-                        wxs[5] = wxx[2]
-                        var mcn = 0
-                        if mc_swap:
-                            mcn = native_multicontact_contacts[
-                                DTYPE](
-                                env, body_a, body_b,
-                                gj_type,
-                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                                gi_type,
-                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                                dims,
-                                mesh_verts, mesh_polys, mesh_polyvert,
-                                mesh_polymap, mesh_vert_polymap,
-                                wf2, wf1, wxs,
-                                dist, cm, cf, cfs, cfr, cdim,
-                                True,
-                                contacts, ws, env, num_contacts,
-                                cgp,
-                            )
-                        else:
-                            mcn = native_multicontact_contacts[
-                                DTYPE](
-                                env, body_a, body_b,
-                                gi_type,
-                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                                gj_type,
-                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                                dims,
-                                mesh_verts, mesh_polys, mesh_polyvert,
-                                mesh_polymap, mesh_vert_polymap,
-                                wf1, wf2, wxx,
-                                dist, cm, cf, cfs, cfr, cdim,
-                                False,
-                                contacts, ws, env, num_contacts,
-                                cgp,
-                            )
                         # The manifold REPLACES the single point.
                         if mcn > 0:
                             _fill_pair_solparams[

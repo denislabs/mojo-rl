@@ -1916,25 +1916,50 @@ def _detect_contacts_env[
     )
     var num_contacts = 0
 
-    for gi in range(ngeom):
-        var gi_type = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+    # ⚠⚠ `sa`/`sb` ARE THE LOOP'S ORDER AND `gi`/`gj` ARE MuJoCo'S. The pair
+    # this loop names is `sa < sb`, which is the order MuJoCo's own geom loops
+    # produce — but the reference then SORTS IT BY TYPE in `pushPairArena`
+    # (`engine_collision_driver.c:489`) before anything touches it:
+    #
+    #     if (m->geom_type[g1] > m->geom_type[g2]) { swap(g1, g2); }
+    #
+    # and the narrow phase is not symmetric in its operands. This loop's
+    # analytic branches each spell both orders out and so were never affected;
+    # the GJK/EPA branches were, on every pair whose lower-indexed geom has the
+    # higher type — cylinder before ellipsoid, mesh before box, and so on. See
+    # the same canonicalisation in `broadphase_sap`, where the sweep's own
+    # order made it much worse.
+    for sa in range(ngeom):
+        var sa_type = Int(
+            rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_TYPE])
         )
-        var gi_body = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
-        )
-        var gi_contype = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
-        )
-        var gi_conaffinity = Int(
-            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
-        )
-        for gj in range(gi + 1, ngeom):
+        for sb in range(sa + 1, ngeom):
             if num_contacts >= max_contacts:
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
                 return
+            var sb_type = Int(
+                rebind[Scalar[DTYPE]](geoms[sb, GEOM_IDX_TYPE])
+            )
+            var gi = sa
+            var gj = sb
+            if sa_type > sb_type:
+                gi = sb
+                gj = sa
+
+            var gi_type = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+            )
+            var gi_body = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
+            )
+            var gi_contype = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
+            )
+            var gi_conaffinity = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
+            )
             var gj_type = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
             )
@@ -3362,90 +3387,43 @@ def _detect_contacts_env[
                             pn2 = Int(rebind[Scalar[DTYPE]](
                                 mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
                             ))
-                        # ⚠ OPERANDS IN MuJoCo'S ORDER, LOWER GEOM TYPE
-                        # FIRST. `mj_collideGeoms` sorts the pair before
-                        # dispatch and BOX sorts before MESH, so the reference
-                        # always runs a box/mesh pair box-first; `multicontact`
-                        # is asymmetric, so running it in geom-index order
-                        # picks a different feature. The record still carries
-                        # `body_a = gi`, so the swap only flips the normal.
-                        # ⚠ TYPE ALONE DOES NOT ORDER A PAIR. For EQUAL types
-                        # (mesh x mesh) this comparison is false either way, so
-                        # face1/face2 fell out of whichever order the
-                        # broadphase emitted — and SAP emits some pairs the
-                        # opposite way to the O(N^2) loop. `multicontact` is
-                        # asymmetric, so the two phases then clipped different
-                        # faces and disagreed with EACH OTHER by up to 0.054 m,
-                        # losing a contact outright on 2 of 24 poses. MuJoCo's
-                        # `mj_collideGeoms` sorts by type and keeps geom-id
-                        # order within a type; tie-break on the index to match.
-                        var mc_swap = gi_type > gj_type or (
-                            gi_type == gj_type and gi > gj
+                        # ⚠ THE OPERANDS ARE ALREADY MuJoCo'S — `(gi, gj)` is
+                        # `pushPairArena`'s pair, sorted by (type, geom index)
+                        # at the top of this loop — so the manifold clips from
+                        # the SAME query GJK just ran, which is the reference's
+                        # own structure: `mjc_Convex` hands `multicontact` the
+                        # `status` of its own `mjc_ccd`.
+                        #
+                        # ⚠⚠ THERE USED TO BE A SECOND, LOCAL SWAP HERE AND IT
+                        # WAS HALF A FIX. It ordered the MANIFOLD and left
+                        # GJK on whatever order the loop emitted, so
+                        # `wf1`/`wf2`/`wx` — the witness the manifold clips
+                        # from — came out of a query in the OTHER order and had
+                        # to be re-swapped to compensate. Canonicalising where
+                        # the pair is named makes that predicate always false.
+                        var mcn = native_multicontact_contacts[
+                            DTYPE](
+                            env, body_a, body_b,
+                            gi_type,
+                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                            hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                            gj_type,
+                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                            hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                            dims,
+                            mesh_verts, mesh_polys, mesh_polyvert,
+                            mesh_polymap, mesh_vert_polymap,
+                            wf1, wf2, wxx,
+                            dist,
+                            contact_margin,
+                            contact_friction,
+                            contact_friction_spin,
+                            contact_friction_roll,
+                            contact_condim,
+                            False,
+                            contacts, ws, env, num_contacts,
+                            contact_gap,
                         )
-                        # ⚠ THE WITNESS PAIR SWAPS WITH THE OPERANDS. `dir` is
-                        # `x2 - x1`, and the routine hands `-dir` to obj1 and
-                        # `+dir` to obj2 as `boxNormals2`'s fallback direction —
-                        # a SIGNED input. Swapping the geoms without swapping
-                        # (x1, x2) would feed both of them the wrong sign and
-                        # recover the opposite box face.
-                        var wxs = InlineArray[Scalar[DTYPE], 6](
-                            fill=Scalar[DTYPE](0)
-                        )
-                        wxs[0] = wxx[3]
-                        wxs[1] = wxx[4]
-                        wxs[2] = wxx[5]
-                        wxs[3] = wxx[0]
-                        wxs[4] = wxx[1]
-                        wxs[5] = wxx[2]
-                        var mcn = 0
-                        if mc_swap:
-                            mcn = native_multicontact_contacts[
-                                DTYPE](
-                                env, body_a, body_b,
-                                gj_type,
-                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                                gi_type,
-                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                                dims,
-                                mesh_verts, mesh_polys, mesh_polyvert,
-                                mesh_polymap, mesh_vert_polymap,
-                                wf2, wf1, wxs,
-                                dist,
-                                contact_margin,
-                                contact_friction,
-                                contact_friction_spin,
-                                contact_friction_roll,
-                                contact_condim,
-                                True,
-                                contacts, ws, env, num_contacts,
-                                contact_gap,
-                            )
-                        else:
-                            mcn = native_multicontact_contacts[
-                                DTYPE](
-                                env, body_a, body_b,
-                                gi_type,
-                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                                gj_type,
-                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                                dims,
-                                mesh_verts, mesh_polys, mesh_polyvert,
-                                mesh_polymap, mesh_vert_polymap,
-                                wf1, wf2, wxx,
-                                dist,
-                                contact_margin,
-                                contact_friction,
-                                contact_friction_spin,
-                                contact_friction_roll,
-                                contact_condim,
-                                False,
-                                contacts, ws, env, num_contacts,
-                                contact_gap,
-                            )
                         # ⚠ THE MANIFOLD REPLACES THE POINT, it does not extend
                         # it — the reference overwrites `status->nx`. Falling
                         # through to the single-point emit as well would leave a
