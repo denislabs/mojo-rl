@@ -124,41 +124,70 @@ def test_gripper_maps_by_fraction_not_as_an_angle() raises:
 
 
 def test_the_range_gap_is_reported_not_hidden() raises:
-    """⚠ THE FINDING THIS FILE EXISTS FOR. EVERY body joint has more
-    calibrated travel than the model accepts, so an arm at its own end stop
-    asks for a pose the simulation refuses. `clamped_by` must SAY so.
+    """⚠ THE FINDING THIS FILE EXISTS FOR — corrected.
 
-    `to_sim` clamps (the model would reject the value anyway); a caller that
-    only ever saw the clamped number could not tell "the arm is at its limit"
-    from "the mapping is wrong", which is exactly the confusion teleop_sim is
-    meant to resolve.
+    THREE body joints have more calibrated travel than the model accepts, so
+    an arm at its own end stop asks for a pose the simulation refuses.
+    `clamped_by` must SAY so: a joint pinned at a limit looks exactly like a
+    broken mapping otherwise, which is the confusion `teleop_sim` resolves.
+
+    ⚠⚠ `wrist_roll` is EXCLUDED and is not a fourth. Its calibration is
+    `0..4095` — lerobot's UNLIMITED marker, not a sweep — so it has no
+    measured travel to exceed. An earlier version of this gate counted it and
+    asserted five; that read a category error as a measurement.
+
+    ⚠ The model is not at fault. Our ranges are byte-identical to
+    `references/SO-ARM100-main/Simulation/SO101/so101_new_calib.xml`, so this
+    is the ARMS' calibration reaching past the official travel (or the
+    official travel being conservative) — not a bad port.
     """
     var cal = _cal()
     var m = _map()
     var clamped_joints = 0
+    var continuous = 0
     for i in range(SO101_N):
         if i == GRIPPER:
+            continue
+        if cal.is_unlimited(i):
+            continuous += 1
             continue
         var at_lo = m.clamped_by(cal, i, Int32(CAL_LO(i)))
         var at_hi = m.clamped_by(cal, i, Int32(CAL_HI(i)))
         if at_lo > 0.0 or at_hi > 0.0:
             clamped_joints += 1
-            # And the clamped value must sit exactly ON the limit.
             var v = m.to_sim(cal, i, Int32(CAL_HI(i)))
             assert_true(
                 v <= m.sim_hi[i] + 1e-12 and v >= m.sim_lo[i] - 1e-12,
                 "clamped value is inside the model range",
             )
+    assert_equal(continuous, 1, "wrist_roll is the one continuous joint")
     assert_equal(
         clamped_joints,
-        5,
+        4,
         (
-            "expected ALL 5 body joints' real travel to exceed the model's —"
-            " if this changed, either the arms were recalibrated or"
-            " so_arm101.xml's ranges moved, and the sim/real story changed"
-            " with it"
+            "expected 4 LIMITED body joints whose real travel exceeds the"
+            " model's — pan, lift, wrist_flex by degrees and elbow_flex by"
+            " rounding; see the magnitude split below"
         ),
     )
+
+
+def test_wrist_roll_is_continuous_and_the_model_is_not() raises:
+    """A free-turning joint driven into a bounded model.
+
+    `wrist_roll` reaches +/-pi under the reference mapping while the model
+    stops at -2.744 / +2.841 rad, so roughly 20 degrees at each end is
+    unreachable in simulation. That is a REAL sim/real difference and it is
+    NOT the same kind as the three over-travelling joints: there is no
+    calibration to redo and no sweep that was too enthusiastic.
+    """
+    var cal = _cal()
+    var m = _map()
+    assert_true(cal.is_unlimited(4), "wrist_roll carries the unlimited marker")
+    assert_false(cal.is_unlimited(0), "shoulder_pan does not")
+    # Both extremes of a full turn fall outside the model.
+    assert_true(m.clamped_by(cal, 4, Int32(0)) > 0.3, "-pi is out of range")
+    assert_true(m.clamped_by(cal, 4, Int32(4095)) > 0.2, "+pi is out of range")
 
 
 def test_elbow_flex_is_marginal_and_the_others_are_not() raises:
@@ -171,8 +200,9 @@ def test_elbow_flex_is_marginal_and_the_others_are_not() raises:
     * `elbow_flex` overshoots by **9.2e-05 rad (0.005 deg)** — the MJCF writes
       its range as a rounded `±1.69`, where every other joint carries full
       precision, and that rounding is the entire overshoot. Nothing to fix.
-    * every other body joint overshoots by **> 0.05 rad (3 deg)** — real
+    * pan, lift and wrist_flex overshoot by **> 0.05 rad (3 deg)** — real
       travel the simulation genuinely cannot represent.
+    * `wrist_roll` is excluded: it is continuous, not over-travelling.
 
     ⚠ Which arm's calibration you use matters: this is the FOLLOWER's. The
     leader's elbow span is 11 ticks narrower and does NOT clamp at all, so a
@@ -189,7 +219,7 @@ def test_elbow_flex_is_marginal_and_the_others_are_not() raises:
         elbow < 1.0e-3,
         "elbow overshoot is rounding, not travel: " + String(elbow),
     )
-    for i in [Int(0), Int(1), Int(3), Int(4)]:
+    for i in [Int(0), Int(1), Int(3)]:
         var worst = max(
             m.clamped_by(cal, i, Int32(CAL_LO(i))),
             m.clamped_by(cal, i, Int32(CAL_HI(i))),
@@ -242,13 +272,15 @@ def test_offset_shifts_body_joints_and_not_the_gripper() raises:
     )
 
 
-def test_measured_flag_tells_the_truth() raises:
-    """A caller must be able to say "this mapping is unmeasured" out loud —
-    which is the difference between an honest viewer banner and a fake one."""
+def test_departure_from_the_reference_is_announced() raises:
+    """A caller must be able to say "this is the reference mapping" or "someone
+    changed it" — the difference between an honest viewer banner and a fake
+    one. Note the polarity: the DEFAULT is the reference, and `True` means we
+    have left it."""
     var m = _map()
-    assert_false(m.measured(), "the identity is not a measurement")
+    assert_false(m.differs_from_lerobot(), "the default IS the reference")
     m.sign[3] = -1.0
-    assert_true(m.measured(), "a flipped sign counts as measured")
+    assert_true(m.differs_from_lerobot(), "a flipped sign is a departure")
 
 
 def test_monotonic_in_ticks() raises:
@@ -268,6 +300,98 @@ def test_monotonic_in_ticks() raises:
                 "joint " + String(i) + " is not monotonic in ticks",
             )
             prev = v
+
+
+def test_matches_the_reference_implementation_exactly() raises:
+    """⚠ THE GATE THAT MATTERS: our mapping vs so101-nexus's own.
+
+    `lerobot_adapter/normalization.py::motor_ticks_to_sim_rad` is what a
+    WORKING LeRobot-on-MuJoCo stack uses for these arms:
+
+        mid  = (range_min + range_max) / 2
+        qpos = sign * (ticks - mid) / TICKS_PER_RADIAN        # body
+        frac = (ticks - range_min) / (range_max - range_min)  # gripper
+        qpos = lower + frac * (upper - lower)
+
+    with `sign = -1 if drive_mode else 1`, and lerobot HARD-CODES
+    `drive_mode=0` for every SO-101 joint. The values below were evaluated
+    from that formula against this follower's calibration, so this is a
+    cross-implementation comparison and not a restatement of our own code.
+
+    Four ticks per joint: both end stops, the mid-point, and an interior
+    third — enough that a sign flip, a mid-point slip or a 4095-vs-4096 error
+    each move at least one row.
+
+    ⚠ `to_sim_UNCLAMPED`, because the reference does not clamp. Where the two
+    would differ is exactly the range disagreement the tests above measure.
+
+    ⚠ The gripper rows carry a looser tolerance, and the reason is upstream's:
+    `so_arm101.xml` writes the gripper JOINT range at full precision
+    (`-0.17453297762778586`) and its actuator `ctrlrange` ROUNDED to five
+    decimals (`-0.17453`). We map onto the ctrlrange, because that is what
+    actually clamps `ctrl`. The 2.9e-06 rad that falls out is the model's own
+    rounding — byte-identical in `SO-ARM100-main` and Menagerie — not a
+    disagreement about the mapping.
+    """
+    var cal = _cal()
+    var m = _map()
+    var joint: List[Int] = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+                            3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5]
+    var ticks: List[Int] = [
+        592, 1954, 3317, 1500,
+        816, 2026, 3236, 1622,
+        927, 2028, 3130, 1661,
+        875, 2043, 3212, 1654,
+        0, 2047, 4095, 1365,
+        2030, 2771, 3513, 2524,
+    ]
+    var want: List[Float64] = [
+        -2.090559213927274, -0.000767177693184, 2.090559213927274, -0.697364523104548,
+        -1.856570017506056, 0.000000000000000, 1.856570017506056, -0.619879576092931,
+        -1.690092458085058, -0.000767177693184, 1.690092458085058, -0.563875604490476,
+        -1.792894268971758, -0.000767177693184, 1.792894268971758, -0.597631422990586,
+        -3.141592653589793, -0.000767177693184, 3.141592653589793, -1.047197551196598,
+        -0.174532925199433, 0.784750873384908, 1.745329251994330, 0.464989607190128,
+    ]
+    for k in range(len(joint)):
+        var got = m.to_sim_unclamped(cal, joint[k], Int32(ticks[k]))
+        # Body joints are exact; the gripper inherits the ctrlrange rounding.
+        var tol = 5.0e-06 if joint[k] == GRIPPER else 1.0e-12
+        assert_almost_equal(
+            got,
+            want[k],
+            atol=tol,
+            msg=(
+                "joint "
+                + String(joint[k])
+                + " at "
+                + String(ticks[k])
+                + " ticks disagrees with so101-nexus"
+            ),
+        )
+
+
+def test_our_gripper_limits_are_the_references() raises:
+    """`SO101_GRIPPER_LIMITS_RAD = (radians(-10), radians(100))` in
+    so101-nexus. Our model's gripper `ctrlrange` is read straight out of
+    `so_arm101.xml`. They agree to 1e-15 — independent confirmation that both
+    stacks are pointing at the same joint with the same convention, from two
+    sources that never saw each other.
+
+    ⚠ To 3e-06, not to 1e-15, and the shortfall is UPSTREAM'S ROUNDING, not
+    ours: `so_arm101.xml` carries the gripper's joint `range` at full
+    precision and its actuator `ctrlrange` at five decimals. Both
+    `SO-ARM100-main` and Menagerie write the same rounded pair, so the model
+    is a faithful port and its actuator simply cannot command the last
+    0.00017 degrees of its own joint.
+    """
+    var m = _map()
+    assert_almost_equal(m.sim_lo[GRIPPER], -0.17453292519943295, atol=5e-06)
+    assert_almost_equal(m.sim_hi[GRIPPER], 1.7453292519943295, atol=5e-06)
+    # And pin the rounding itself, so a future full-precision ctrlrange is a
+    # visible change rather than a silent one.
+    assert_almost_equal(m.sim_lo[GRIPPER], -0.17453, atol=1e-15)
+    assert_almost_equal(m.sim_hi[GRIPPER], 1.74533, atol=1e-15)
 
 
 def main() raises:

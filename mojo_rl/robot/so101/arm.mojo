@@ -88,6 +88,22 @@ struct SO101Calibration(Copyable, Movable):
     def span(self, i: Int) -> Int:
         return Int(self.range_max[i]) - Int(self.range_min[i])
 
+    def is_unlimited(self, i: Int) -> Bool:
+        """True when this joint turns freely and was never swept to end stops.
+
+        ⚠ `range_min == 0 and range_max == 4095` is lerobot's **unlimited
+        marker**, not a measurement. `wrist_roll` carries it on both arms here,
+        and `tools/soarm/so101_pairing.py` prints "full turn" for exactly that
+        reason.
+
+        Reading it as a calibrated span is a category error with a plausible
+        answer — it yields "360 degrees of travel", which then looks like the
+        joint over-travels its simulated limit by 40 degrees. It does not
+        over-travel; it is a continuous joint meeting a bounded model, which
+        is a different problem with a different fix.
+        """
+        return self.range_min[i] == 0 and self.range_max[i] == STS_RESOLUTION - 1
+
     def degrees(self, i: Int, raw: Int32) -> Float64:
         """Ticks to the units lerobot records — degrees, or 0..100 for the
         gripper."""

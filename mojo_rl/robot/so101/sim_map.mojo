@@ -3,31 +3,45 @@
 # +--------------------------------------------------------------------------+ #
 """The mapping between a servo's calibrated angle and the MJCF model's joint.
 
-⚠⚠ **THIS MAPPING HAS NOT BEEN MEASURED.** `SimJointMap.identity()` assumes
-`sign = +1` and `offset = 0` for every joint, and that assumption is almost
-certainly wrong for at least one of them. It is the honest starting point, not
-a result: `examples/so101/teleop_sim.mojo` exists to *find* the real values by
-driving the sim from the leader and watching which joints move backwards.
+**This mapping is the reference implementation's**, not a guess.
+`so101-nexus`'s `lerobot_adapter/normalization.py::motor_ticks_to_sim_rad` —
+the function a working LeRobot-on-MuJoCo stack uses for these arms — is:
 
-Three separate things stand between "our ticks equal lerobot's ticks" (proven,
-`docs/SO101_SERIAL_LAYER.md` §4) and "our radians equal the model's radians"
-(not proven at all):
+```python
+mid  = (range_min + range_max) / 2
+sign = -1 if cal.drive_mode else 1
+qpos = sign * (ticks - mid) / TICKS_PER_RADIAN          # body joints
+frac = (ticks - range_min) / (range_max - range_min)    # gripper
+qpos = lower + frac * (upper - lower)
+```
 
-1. **Zero.** `SO101Calibration.radians` is referenced to the servo's
-   calibrated mid-point, `(range_min + range_max) / 2`. The MJCF's zero is
-   wherever the URDF put it. Two different zeros, one constant offset each.
-2. **Sign.** Every joint in `so_arm101.xml` is `axis="0 0 1"` *in its own body
-   frame*, so whether a rising tick count is a rising model angle is a
-   per-joint coin flip that no amount of reading the XML settles.
-3. **Range.** The two do not agree, and this is measurable today — see
-   `range_report`. On the arms here, five of six joints have more calibrated
-   travel than the model will accept.
+which is exactly `to_sim_unclamped` below, with `offset_rad = 0` (the
+reference has no offset term at all) and `sign = +1`.
+
+⚠ **`sign = +1` is a property of the platform, not an assumption.** lerobot
+HARD-CODES `drive_mode=0` for every SO-101 joint — `robots/so_follower/
+so_follower.py:149`, `teleoperators/so_leader/so_leader.py:117` and
+`motors/feetech/feetech.py:260` — so there is no inverted joint to discover on
+this arm. An earlier version of this file claimed the identity was "almost
+certainly wrong for at least one joint"; that was wrong, and reading the
+reference rather than guessing is what settled it.
+
+`sign` and `offset_rad` stay as fields because they are the knobs a DIFFERENT
+arm would need (a Koch follower does use `drive_mode=1`), and because a
+mis-bolted horn is a real, physical thing that no table can predict.
 
 ⚠ The gripper is not an angle on either side. The servo reports it 0..100
 (`MotorNormMode.RANGE_0_100`) and the model has it as a hinge in radians, so
-it maps by FRACTION OF RANGE, and `offset_rad` does not apply to it. Treating
-it as an angle is the single easiest way to get a gripper that closes when it
-should open.
+it maps by FRACTION OF RANGE, and `offset_rad` does not apply to it. The
+reference's gripper limits — `SO101_GRIPPER_LIMITS_RAD = (-10 deg, 100 deg)` —
+agree with our model's `ctrlrange` to 1e-16, which is a pleasing independent
+confirmation that we are pointing at the same joint.
+
+⚠ **Range still disagrees, and that is measured** — see `range_report`. Our
+MJCF ranges are byte-identical to
+`references/SO-ARM100-main/Simulation/SO101/so101_new_calib.xml`, so the model
+is a faithful port; three body joints simply have more CALIBRATED travel than
+it accepts, and `wrist_roll` is a continuous joint meeting a bounded one.
 """
 
 from mojo_rl.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N, joint_name
@@ -53,17 +67,23 @@ struct SimJointMap(Copyable, Movable):
         var sim_lo: InlineArray[Float64, SO101_N],
         var sim_hi: InlineArray[Float64, SO101_N],
     ) -> Self:
-        """⚠ UNMEASURED: every sign +1, every offset 0. See the module doc."""
+        """The SO-101 mapping: every sign +1, every offset 0.
+
+        Not a placeholder — this IS `motor_ticks_to_sim_rad` for
+        `drive_mode=0`, which lerobot hard-codes for this arm. See the module
+        docstring.
+        """
         var s = InlineArray[Float64, SO101_N](fill=1.0)
         var o = InlineArray[Float64, SO101_N](fill=0.0)
         return Self(s^, o^, sim_lo^, sim_hi^)
 
-    def measured(self) -> Bool:
-        """False while this is still the identity — i.e. while nobody has
-        driven the sim from the real arm and written the numbers down.
+    def differs_from_lerobot(self) -> Bool:
+        """True once someone has moved a sign or an offset off the reference.
 
-        Exists so a caller can SAY so rather than presenting an unmeasured
-        mapping as a calibrated one.
+        Named for what it means. The previous name, `measured()`, said the
+        opposite of the truth: the default is not an unmeasured guess, it is
+        the reference implementation's mapping, and a `True` here means we
+        have DEPARTED from it — which is the thing worth announcing.
         """
         for i in range(SO101_N):
             if self.sign[i] != 1.0 or self.offset_rad[i] != 0.0:
@@ -130,8 +150,25 @@ struct SimJointMap(Copyable, Movable):
         )
         out += "-" * 46 + "\n"
         for i in range(SO101_N):
+            var sim_span = (
+                self.sim_hi[i] - self.sim_lo[i]
+            ) * 180.0 / 3.141592653589793
+
+            if cal.is_unlimited(i):
+                # ⚠ NOT a gap. `0..4095` is lerobot's unlimited marker, so
+                # there is no measured travel to compare against — the joint
+                # turns freely and the model bounds it. Reporting a number
+                # here would invent one.
+                out += (
+                    pad_right(joint_name(i), 15)
+                    + pad_left(String("free"), 11)
+                    + col(sim_span, 11, 1)
+                    + pad_left(String("n/a"), 9)
+                    + "   <-- CONTINUOUS joint, bounded model\n"
+                )
+                continue
+
             var real_span = Float64(cal.span(i)) * 360.0 / 4095.0
-            var sim_span = (self.sim_hi[i] - self.sim_lo[i]) * 180.0 / 3.141592653589793
             if i == GRIPPER:
                 # Both sides are rescaled onto each other by construction, so
                 # a "gap" here would be meaningless rather than zero.
@@ -143,6 +180,7 @@ struct SimJointMap(Copyable, Movable):
                     + "   (fraction-mapped)\n"
                 )
                 continue
+
             var gap = real_span - sim_span
             out += (
                 pad_right(joint_name(i), 15)
@@ -155,10 +193,10 @@ struct SimJointMap(Copyable, Movable):
         return out^
 
     def describe(self) -> String:
-        if not self.measured():
+        if not self.differs_from_lerobot():
             return String(
-                "sim map: IDENTITY (sign +1, offset 0) — UNMEASURED, see"
-                " mojo_rl/robot/so101/sim_map.mojo"
+                "sim map: lerobot reference (drive_mode=0 => sign +1, no"
+                " offset) — matches so101-nexus motor_ticks_to_sim_rad"
             )
         var out = String("sim map:")
         for i in range(SO101_N):

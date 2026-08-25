@@ -24,10 +24,11 @@ per-joint **zero**, per-joint **sign**, and a **range** disagreement that is
 already measurable. Moving the real arm by hand makes a sign error obvious in
 one second, where a numeric gate would need you to know the answer first.
 
-⚠ **The mapping starts as the identity and is therefore WRONG.** That is the
-point: run it, watch which joints go backwards, and write the signs and
-offsets into `SimJointMap`. The startup banner says so, and the sidebar
-`status` line keeps saying so until someone measures them.
+**The mapping is the reference implementation's**, not a guess:
+`so101-nexus`'s `motor_ticks_to_sim_rad`, gated against its own numbers, with
+`sign = +1` because lerobot hard-codes `drive_mode=0` for every SO-101 joint.
+An earlier version of this file said the mapping was "almost certainly wrong
+for at least one joint" — reading the reference settled it instead.
 
 ⚠ THE LEADER IS READ-ONLY HERE. Its torque is disabled at startup so it can
 be backdriven by hand, and nothing is ever written to the follower — this
@@ -141,8 +142,8 @@ struct LeaderArmSource(ActionSource, Movable):
                 any_clamped = True
         if any_clamped:
             out += " ⚠CLAMPED"
-        if not self.map.measured():
-            out += "  [identity map — UNMEASURED]"
+        if not self.map.differs_from_lerobot():
+            out += "  [lerobot reference map]"
         return out^
 
     def act(
@@ -177,11 +178,24 @@ def main() raises:
     print("\n" + src.map.range_report(src.arm.cal))
     print(src.map.describe())
     print(
-        "\n⚠ The mapping above is the IDENTITY and has not been measured."
-        "\n  Move each joint in turn and watch the simulated arm:"
-        "\n    - moves the wrong way   -> flip `sign[i]` in SimJointMap"
-        "\n    - offset from the real  -> set `offset_rad[i]`"
-        "\n    - pins at a limit       -> the `gap` column above, not a bug\n"
+        "\nThe mapping is so101-nexus's `motor_ticks_to_sim_rad`, gated"
+        " against its own numbers"
+        "\nin tests/robot/test_so101_sim_map.mojo. lerobot hard-codes"
+        " drive_mode=0 for every"
+        "\nSO-101 joint, so sign +1 / no offset is the platform's"
+        " convention, not a guess."
+        "\n"
+        "\n  A joint that PINS is the `gap` column above, not a bug:"
+        "\n    - pan / lift / wrist_flex — calibrated travel exceeds the"
+        " model's (which is a"
+        "\n      faithful port; the ranges are byte-identical to"
+        " SO-ARM100-main)"
+        "\n    - wrist_roll — CONTINUOUS on the real arm, bounded in the"
+        " model; ~20 deg at"
+        "\n      each end is simply unreachable in simulation"
+        "\n"
+        "\n  A joint that moves the WRONG WAY would mean a mis-bolted horn:"
+        " flip `sign[i]`.\n"
     )
 
     var names = List[String]()
