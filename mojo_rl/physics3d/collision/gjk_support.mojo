@@ -16,6 +16,131 @@ from ..constants import (
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
+from .epa import project_origin_plane
+
+
+# ---------------------------------------------------------------------------
+# the geom frame
+# ---------------------------------------------------------------------------
+
+
+@always_inline
+def quat2mat[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],
+]:
+    """`mju_quat2Mat` (`engine_util_spatial.c`), row-major.
+
+    ⚠⚠ EVERY SUPPORT FUNCTION IN THE REFERENCE WORKS IN THE GEOM'S LOCAL FRAME
+    AND GETS THERE THROUGH THIS MATRIX. `mjc_boxSupport` and the rest open with
+    `mulMatTVec3(local_dir, obj->mat, dir)` and close with
+    `localToGlobal(res, obj->mat, local_supp, obj->pos)`, where `obj->mat` is
+    `d->geom_xmat` — which `mj_kinematics` built from the geom's quaternion with
+    exactly the formula below. This engine rotated BASIS VECTORS by the
+    quaternion and did the arithmetic in WORLD coordinates instead: the same
+    mathematics and a different rounding path.
+
+    ⚠⚠ IT RETURNS A TUPLE, NOT AN `InlineArray`, AND THAT IS A GPU
+    REQUIREMENT. This is `@always_inline`d into every branch of `_support`, so
+    a nine-element per-thread array here is nine more stack slots per call site
+    in a Metal kernel that is already at its ceiling — the heightfield GPU leg
+    went from 17 contacts to 11 when this returned an array. A tuple of scalars
+    stays in registers. See
+    `feedback_metal_wide_per_thread_inlinearray_miscompute`.
+
+    ⚠ THE MATRIX IS REBUILT PER CALL rather than carried in `Data`. That is
+    repeated work — ten multiplies — and NOT a different answer: the reference
+    derives it from the same quaternion with the same formula, so the bits
+    agree.
+
+    ⚠ THE IDENTITY SHORT-CIRCUIT IS TRANSCRIBED, not an optimisation. It makes
+    an axis-aligned geom's matrix EXACTLY the identity instead of
+    `1 - 2*(y^2 + z^2)`, and those differ by an ulp when the quaternion is not
+    bit-exactly normalised.
+
+    ⚠ ORDER: MuJoCo stores `(w, x, y, z)` and this engine stores `(x, y, z, w)`.
+    """
+    if (
+        qw == Scalar[DTYPE](1)
+        and qx == Scalar[DTYPE](0)
+        and qy == Scalar[DTYPE](0)
+        and qz == Scalar[DTYPE](0)
+    ):
+        return (
+            Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0),
+            Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0),
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+        )
+    var q00 = qw * qw
+    var q01 = qw * qx
+    var q02 = qw * qy
+    var q03 = qw * qz
+    var q11 = qx * qx
+    var q12 = qx * qy
+    var q13 = qx * qz
+    var q22 = qy * qy
+    var q23 = qy * qz
+    var q33 = qz * qz
+    return (
+        q00 + q11 - q22 - q33,
+        Scalar[DTYPE](2) * (q12 - q03),
+        Scalar[DTYPE](2) * (q13 + q02),
+        Scalar[DTYPE](2) * (q12 + q03),
+        q00 - q11 + q22 - q33,
+        Scalar[DTYPE](2) * (q23 - q01),
+        Scalar[DTYPE](2) * (q13 - q02),
+        Scalar[DTYPE](2) * (q23 + q01),
+        q00 - q11 - q22 + q33,
+    )
+
+
+@always_inline
+def mat_t_vec3[
+    DTYPE: DType
+](
+    m0: Scalar[DTYPE], m1: Scalar[DTYPE], m2: Scalar[DTYPE],
+    m3: Scalar[DTYPE], m4: Scalar[DTYPE], m5: Scalar[DTYPE],
+    m6: Scalar[DTYPE], m7: Scalar[DTYPE], m8: Scalar[DTYPE],
+    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`mulMatTVec3` — world direction into the geom's local frame."""
+    return (
+        m0 * dx + m3 * dy + m6 * dz,
+        m1 * dx + m4 * dy + m7 * dz,
+        m2 * dx + m5 * dy + m8 * dz,
+    )
+
+
+@always_inline
+def local_to_global[
+    DTYPE: DType
+](
+    m0: Scalar[DTYPE], m1: Scalar[DTYPE], m2: Scalar[DTYPE],
+    m3: Scalar[DTYPE], m4: Scalar[DTYPE], m5: Scalar[DTYPE],
+    m6: Scalar[DTYPE], m7: Scalar[DTYPE], m8: Scalar[DTYPE],
+    lx: Scalar[DTYPE], ly: Scalar[DTYPE], lz: Scalar[DTYPE],
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`localToGlobal` — `mat * local + pos`, with the add written LAST exactly
+    as the reference writes it.
+
+    ⚠ RETURNS THE `InlineArray` THE SUPPORTS ALREADY RETURN, so this adds no
+    slot of its own — it is the existing return value, filled in place.
+    """
+    var r = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    r[0] = m0 * lx + m1 * ly + m2 * lz
+    r[1] = m3 * lx + m4 * ly + m5 * lz
+    r[2] = m6 * lx + m7 * ly + m8 * lz
+    r[0] += px
+    r[1] += py
+    r[2] += pz
+    return r^
 
 
 @always_inline
@@ -55,31 +180,31 @@ def support_capsule[
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Support point on capsule: choose endpoint closest to dir, then sphere support.
+    """`mjc_capsuleSupport` (`engine_collision_convex.c`), in the LOCAL frame:
+
+        mulMatTVec3(local_dir, mat, dir)
+        local_supp = local_dir * radius
+        local_supp[2] += (local_dir[2] >= 0 ? length : -length)
+        localToGlobal(res, mat, local_supp, pos)
+
+    ⚠ THE SPHERE PART IS `local_dir * radius`, NOT the world `dir * radius`
+    added to a rotated endpoint. The two are equal in exact arithmetic — a
+    rotation preserves the norm — and are not equal in floating point, and this
+    engine took the second route.
     """
-    # Capsule axis in world frame (local z-axis rotated by quaternion)
-    var axis = quat_rotate[DTYPE](
-        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+    var m = quat2mat[DTYPE](qx, qy, qz, qw)
+    var ld = mat_t_vec3[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        dir_x, dir_y, dir_z,
     )
-    var ax = axis[0]
-    var ay = axis[1]
-    var az = axis[2]
-
-    # Select endpoint: positive or negative half-length based on dot(dir, axis)
-    var dot = dir_x * ax + dir_y * ay + dir_z * az
-    var sign = Scalar[DTYPE](1) if dot >= 0 else Scalar[DTYPE](-1)
-
-    # Endpoint center
-    var ex = pos_x + sign * half_length * ax
-    var ey = pos_y + sign * half_length * ay
-    var ez = pos_z + sign * half_length * az
-
-    # Sphere support at endpoint
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    result[0] = ex + radius * dir_x
-    result[1] = ey + radius * dir_y
-    result[2] = ez + radius * dir_z
-    return result^
+    var l0 = ld[0] * radius
+    var l1 = ld[1] * radius
+    var l2 = ld[2] * radius
+    l2 += half_length if ld[2] >= Scalar[DTYPE](0) else -half_length
+    return local_to_global[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        l0, l1, l2, pos_x, pos_y, pos_z,
+    )
 
 
 @always_inline
@@ -99,41 +224,35 @@ def support_box[
     half_x: Scalar[DTYPE],
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
+    mut corner: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Support point on OBB: pick vertex furthest along dir."""
-    # Box axes in world frame (columns of rotation matrix from quaternion)
-    var ax = quat_rotate[DTYPE](
-        qx, qy, qz, qw, Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0)
-    )
-    var ay = quat_rotate[DTYPE](
-        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0)
-    )
-    var az = quat_rotate[DTYPE](
-        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
-    )
+    """`mjc_boxSupport` — the sign of each LOCAL component, in the local frame.
 
-    # Sign of projection onto each axis
-    var sx = Scalar[DTYPE](1) if (
-        dir_x * ax[0] + dir_y * ax[1] + dir_z * ax[2]
-    ) >= 0 else Scalar[DTYPE](-1)
-    var sy = Scalar[DTYPE](1) if (
-        dir_x * ay[0] + dir_y * ay[1] + dir_z * ay[2]
-    ) >= 0 else Scalar[DTYPE](-1)
-    var sz = Scalar[DTYPE](1) if (
-        dir_x * az[0] + dir_y * az[1] + dir_z * az[2]
-    ) >= 0 else Scalar[DTYPE](-1)
-
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    result[0] = (
-        pos_x + sx * half_x * ax[0] + sy * half_y * ay[0] + sz * half_z * az[0]
+    ⚠ `warm` comes back as MuJoCo's `obj->vertindex`, which for a box is the
+    CORNER CODE `(x>0) | (y>0)<<1 | (z>0)<<2` and not a mesh vertex. The
+    reference stores both in the same field, and EPA's discrete
+    repeated-support break compares it.
+    """
+    var m = quat2mat[DTYPE](qx, qy, qz, qw)
+    var ld = mat_t_vec3[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        dir_x, dir_y, dir_z,
     )
-    result[1] = (
-        pos_y + sx * half_x * ax[1] + sy * half_y * ay[1] + sz * half_z * az[1]
+    var l0 = half_x if ld[0] >= Scalar[DTYPE](0) else -half_x
+    var l1 = half_y if ld[1] >= Scalar[DTYPE](0) else -half_y
+    var l2 = half_z if ld[2] >= Scalar[DTYPE](0) else -half_z
+    var code = 0
+    if l0 > Scalar[DTYPE](0):
+        code |= 1
+    if l1 > Scalar[DTYPE](0):
+        code |= 2
+    if l2 > Scalar[DTYPE](0):
+        code |= 4
+    corner = code
+    return local_to_global[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        l0, l1, l2, pos_x, pos_y, pos_z,
     )
-    result[2] = (
-        pos_z + sx * half_x * ax[2] + sy * half_y * ay[2] + sz * half_z * az[2]
-    )
-    return result^
 
 
 @always_inline
@@ -169,28 +288,33 @@ def support_ellipsoid[
     MuJoCo sends EVERY ellipsoid pair except plane to `mjc_Convex`
     (`mjCOLLISIONFUNC` row ELLIPSOID), including sphere x ellipsoid.
     """
-    var d = quat_rotate_inverse[DTYPE](qx, qy, qz, qw, dir_x, dir_y, dir_z)
-    var rx = d[0] * half_x
-    var ry = d[1] * half_y
-    var rz = d[2] * half_z
-    var ln = sqrt(rx * rx + ry * ry + rz * rz)
-    # `mju_normalize3` rewrites a zero vector as (1, 0, 0).
-    if ln >= Scalar[DTYPE](1e-15):
-        rx /= ln
-        ry /= ln
-        rz /= ln
-    else:
-        rx = Scalar[DTYPE](1)
-        ry = Scalar[DTYPE](0)
-        rz = Scalar[DTYPE](0)
-    var w = quat_rotate[DTYPE](
-        qx, qy, qz, qw, rx * half_x, ry * half_y, rz * half_z
+    var m = quat2mat[DTYPE](qx, qy, qz, qw)
+    var ld = mat_t_vec3[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        dir_x, dir_y, dir_z,
     )
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    result[0] = pos_x + w[0]
-    result[1] = pos_y + w[1]
-    result[2] = pos_z + w[2]
-    return result^
+    var l0 = ld[0] * half_x
+    var l1 = ld[1] * half_y
+    var l2 = ld[2] * half_z
+    var norm2 = l0 * l0 + l1 * l1 + l2 * l2
+    # ⚠ THE DEGENERATE BRANCH IS THE FIRST COLUMN OF THE MATRIX, not a
+    # normalise-to-(1,0,0)-then-rotate. `mjc_ellipsoidSupport` writes
+    # `res[i] = mat[3*i] * size[0] + pos[i]` outright, and the threshold is
+    # `norm2 < mjMINVAL^2` on the SQUARED norm rather than 1e-15 on the norm.
+    if norm2 < Scalar[DTYPE](1e-30):
+        var deg = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+        deg[0] = m[0] * half_x + pos_x
+        deg[1] = m[3] * half_x + pos_y
+        deg[2] = m[6] * half_x + pos_z
+        return deg^
+    var inv = Scalar[DTYPE](1) / sqrt(norm2)
+    l0 = l0 * inv * half_x
+    l1 = l1 * inv * half_y
+    l2 = l2 * inv * half_z
+    return local_to_global[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        l0, l1, l2, pos_x, pos_y, pos_z,
+    )
 
 
 @always_inline
@@ -210,43 +334,38 @@ def support_cylinder[
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Support point on cylinder: disk rim + endpoint selection."""
-    # Cylinder axis in world frame (local z-axis)
-    var axis = quat_rotate[DTYPE](
-        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+    """`mjc_cylinderSupport` (`engine_collision_convex.c`), in the LOCAL frame:
+
+        mulMatTVec3(local_dir, mat, dir)
+        n2  = local_dir[0]^2 + local_dir[1]^2
+        scl = n2 >= mjMINVAL^2 ? size[0] / sqrt(n2) : 0
+        local_supp = (scl*local_dir[0], scl*local_dir[1],
+                      local_dir[2] >= 0 ? size[1] : -size[1])
+        localToGlobal(res, mat, local_supp, pos)
+
+    ⚠⚠ THE DEGENERATE BRANCH RETURNS THE CAP CENTRE, `scl = 0`. This engine
+    returned an ARBITRARY RIM POINT (the geom's local x axis scaled by the
+    radius) when `dir` was parallel to the axis — a completely different
+    support point — and it took that branch on a threshold of `1e-10` against
+    the norm where the reference uses `mjMINVAL^2` against the SQUARED norm,
+    so it fired a hundred thousand times more often.
+    """
+    var m = quat2mat[DTYPE](qx, qy, qz, qw)
+    var ld = mat_t_vec3[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        dir_x, dir_y, dir_z,
     )
-    var ax = axis[0]
-    var ay = axis[1]
-    var az = axis[2]
-
-    # Select endpoint
-    var dot_axis = dir_x * ax + dir_y * ay + dir_z * az
-    var sign = Scalar[DTYPE](1) if dot_axis >= 0 else Scalar[DTYPE](-1)
-    var cx = pos_x + sign * half_length * ax
-    var cy = pos_y + sign * half_length * ay
-    var cz = pos_z + sign * half_length * az
-
-    # Project dir onto the disk plane (perpendicular to axis)
-    var perp_x = dir_x - dot_axis * ax
-    var perp_y = dir_y - dot_axis * ay
-    var perp_z = dir_z - dot_axis * az
-    var perp_len = sqrt(perp_x * perp_x + perp_y * perp_y + perp_z * perp_z)
-
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    if perp_len > Scalar[DTYPE](1e-10):
-        var inv_perp = radius / perp_len
-        result[0] = cx + perp_x * inv_perp
-        result[1] = cy + perp_y * inv_perp
-        result[2] = cz + perp_z * inv_perp
-    else:
-        # dir is parallel to axis — any rim point works
-        var local_x = quat_rotate[DTYPE](
-            qx, qy, qz, qw, Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0)
-        )
-        result[0] = cx + radius * local_x[0]
-        result[1] = cy + radius * local_x[1]
-        result[2] = cz + radius * local_x[2]
-    return result^
+    var n2 = ld[0] * ld[0] + ld[1] * ld[1]
+    var scl = Scalar[DTYPE](0)
+    if n2 >= Scalar[DTYPE](1e-30):
+        scl = radius / sqrt(n2)
+    var l0 = scl * ld[0]
+    var l1 = scl * ld[1]
+    var l2 = half_length if ld[2] >= Scalar[DTYPE](0) else -half_length
+    return local_to_global[DTYPE](
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        l0, l1, l2, pos_x, pos_y, pos_z,
+    )
 
 
 @always_inline
@@ -334,379 +453,361 @@ def _cross3[
     return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
 
 
-def _closest_point_on_simplex[
+def _project_origin_line[
     DTYPE: DType
 ](
-    mut simplex: InlineArray[Scalar[DTYPE], 36],
-    nsimplex: Int,
-) -> InlineArray[
-    Scalar[DTYPE], 4
-]:
-    """Find closest point on simplex to origin and reduce simplex.
+    v1x: Scalar[DTYPE], v1y: Scalar[DTYPE], v1z: Scalar[DTYPE],
+    v2x: Scalar[DTYPE], v2y: Scalar[DTYPE], v2z: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`projectOriginLine` — the origin projected onto the line v1 v2.
 
-    Returns [vx, vy, vz, new_nsimplex].
-    Removes vertices that don't contribute to the closest feature.
+        res = v2 - <v2, v2 - v1> / <v2 - v1, v2 - v1> * (v2 - v1)
     """
-    var result = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var dx = v2x - v1x
+    var dy = v2y - v1y
+    var dz = v2z - v1z
+    var scl = -(
+        (v2x * dx + v2y * dy + v2z * dz) / (dx * dx + dy * dy + dz * dz)
+    )
+    var out = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    out[0] = v2x + scl * dx
+    out[1] = v2y + scl * dy
+    out[2] = v2z + scl * dz
+    return out^
 
-    if nsimplex == 1:
-        result[0] = simplex[0]
-        result[1] = simplex[1]
-        result[2] = simplex[2]
-        result[3] = Scalar[DTYPE](1)
-        return result^
 
-    if nsimplex == 2:
-        # Line segment: project origin onto segment A→B
-        var ax = simplex[0]
-        var ay = simplex[1]
-        var az = simplex[2]
-        var bx = simplex[9]
-        var by = simplex[10]
-        var bz = simplex[11]
-        var abx = bx - ax
-        var aby = by - ay
-        var abz = bz - az
-        var t = -(ax * abx + ay * aby + az * abz) / (
-            abx * abx + aby * aby + abz * abz + Scalar[DTYPE](1e-30)
+@always_inline
+def _same_sign2[DTYPE: DType](a: Scalar[DTYPE], b: Scalar[DTYPE]) -> Int:
+    """`sameSign2` — 1 if both positive, -1 if both negative, 0 otherwise."""
+    if a > Scalar[DTYPE](0) and b > Scalar[DTYPE](0):
+        return 1
+    if a < Scalar[DTYPE](0) and b < Scalar[DTYPE](0):
+        return -1
+    return 0
+
+
+@always_inline
+def _s1d[
+    DTYPE: DType
+](
+    s1x: Scalar[DTYPE], s1y: Scalar[DTYPE], s1z: Scalar[DTYPE],
+    s2x: Scalar[DTYPE], s2y: Scalar[DTYPE], s2z: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 2]:
+    """`S1D` — barycentric coordinates of the origin's closest point on a segment.
+
+    ⚠ THE FALLBACK IS `(0, 1)`, NOT A CLAMP. When the projection falls outside
+    the segment the reference returns the SECOND vertex outright — the newest
+    support point, which is the one GJK just added. Clamping to the nearer end
+    would keep the older vertex and stall the descent.
+    """
+    var p = _project_origin_line[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z)
+
+    # the axis with the largest projection "shadow" of the simplex
+    # ⚠ `>=` ON BOTH COMPARISONS, so a tie goes to the LATER axis — the
+    # opposite of `triAffineCoord`'s tie rule, and transcribed as written.
+    var mu_max = s1x - s2x
+    var index = 0
+    var mu = s1y - s2y
+    if abs(mu) >= abs(mu_max):
+        mu_max = mu
+        index = 1
+    mu = s1z - s2z
+    if abs(mu) >= abs(mu_max):
+        mu_max = mu
+        index = 2
+
+    var pi = p[0]
+    var a1 = s1x
+    var a2 = s2x
+    if index == 1:
+        pi = p[1]
+        a1 = s1y
+        a2 = s2y
+    elif index == 2:
+        pi = p[2]
+        a1 = s1z
+        a2 = s2z
+
+    var c1 = pi - a2
+    var c2 = a1 - pi
+    var same = (
+        _same_sign2[DTYPE](mu_max, c1) != 0
+        and _same_sign2[DTYPE](mu_max, c2) != 0
+    )
+    var out = InlineArray[Scalar[DTYPE], 2](uninitialized=True)
+    if same:
+        out[0] = c1 / mu_max
+        out[1] = c2 / mu_max
+    else:
+        out[0] = Scalar[DTYPE](0)
+        out[1] = Scalar[DTYPE](1)
+    return out^
+
+
+@always_inline
+def _s2d[
+    DTYPE: DType
+](
+    s1x: Scalar[DTYPE], s1y: Scalar[DTYPE], s1z: Scalar[DTYPE],
+    s2x: Scalar[DTYPE], s2y: Scalar[DTYPE], s2z: Scalar[DTYPE],
+    s3x: Scalar[DTYPE], s3y: Scalar[DTYPE], s3z: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`S2D` — barycentric coordinates of the origin's closest point on a triangle."""
+    var pr = project_origin_plane[DTYPE](
+        s1x, s1y, s1z, s2x, s2y, s2z, s3x, s3y, s3z
+    )
+    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    if pr[0] == Scalar[DTYPE](0):
+        # degenerate plane: drop to the segment s1 s2
+        var l1 = _s1d[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z)
+        out[0] = l1[0]
+        out[1] = l1[1]
+        out[2] = Scalar[DTYPE](0)
+        return out^
+    var pox = pr[1]
+    var poy = pr[2]
+    var poz = pr[3]
+
+    var m14 = (
+        s2y * s3z - s2z * s3y - s1y * s3z + s1z * s3y + s1y * s2z - s1z * s2y
+    )
+    var m24 = (
+        s2x * s3z - s2z * s3x - s1x * s3z + s1z * s3x + s1x * s2z - s1z * s2x
+    )
+    var m34 = (
+        s2x * s3y - s2y * s3x - s1x * s3y + s1y * s3x + s1x * s2y - s1y * s2x
+    )
+
+    var mu1 = abs(m14)
+    var mu2 = abs(m24)
+    var mu3 = abs(m34)
+    var m_max = m14
+    var a1 = s1y
+    var b1 = s1z
+    var a2 = s2y
+    var b2 = s2z
+    var a3 = s3y
+    var b3 = s3z
+    var pa = poy
+    var pb = poz
+    if mu1 >= mu2 and mu1 >= mu3:
+        pass
+    elif mu2 >= mu3:
+        m_max = m24
+        a1 = s1x
+        b1 = s1z
+        a2 = s2x
+        b2 = s2z
+        a3 = s3x
+        b3 = s3z
+        pa = pox
+        pb = poz
+    else:
+        m_max = m34
+        a1 = s1x
+        b1 = s1y
+        a2 = s2x
+        b2 = s2y
+        a3 = s3x
+        b3 = s3y
+        pa = pox
+        pb = poy
+
+    var c31 = pa * b2 + pb * a3 + a2 * b3 - pa * b3 - pb * a2 - a3 * b2
+    var c32 = pa * b3 + pb * a1 + a3 * b1 - pa * b1 - pb * a3 - a1 * b3
+    var c33 = pa * b1 + pb * a2 + a1 * b2 - pa * b2 - pb * a1 - a2 * b1
+
+    var comp1 = _same_sign2[DTYPE](m_max, c31) != 0
+    var comp2 = _same_sign2[DTYPE](m_max, c32) != 0
+    var comp3 = _same_sign2[DTYPE](m_max, c33) != 0
+
+    if comp1 and comp2 and comp3:
+        out[0] = c31 / m_max
+        out[1] = c32 / m_max
+        out[2] = c33 / m_max
+        return out^
+
+    var dmin = Scalar[DTYPE](1e30)
+    if not comp1:
+        var l = _s1d[DTYPE](s2x, s2y, s2z, s3x, s3y, s3z)
+        var xx = l[0] * s2x + l[1] * s3x
+        var xy = l[0] * s2y + l[1] * s3y
+        var xz = l[0] * s2z + l[1] * s3z
+        dmin = xx * xx + xy * xy + xz * xz
+        out[0] = Scalar[DTYPE](0)
+        out[1] = l[0]
+        out[2] = l[1]
+    if not comp2:
+        var l = _s1d[DTYPE](s1x, s1y, s1z, s3x, s3y, s3z)
+        var xx = l[0] * s1x + l[1] * s3x
+        var xy = l[0] * s1y + l[1] * s3y
+        var xz = l[0] * s1z + l[1] * s3z
+        var d = xx * xx + xy * xy + xz * xz
+        if d < dmin:
+            dmin = d
+            out[0] = l[0]
+            out[1] = Scalar[DTYPE](0)
+            out[2] = l[1]
+    if not comp3:
+        var l = _s1d[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z)
+        var xx = l[0] * s1x + l[1] * s2x
+        var xy = l[0] * s1y + l[1] * s2y
+        var xz = l[0] * s1z + l[1] * s2z
+        var d = xx * xx + xy * xy + xz * xz
+        if d < dmin:
+            out[0] = l[0]
+            out[1] = l[1]
+            out[2] = Scalar[DTYPE](0)
+    return out^
+
+
+@always_inline
+def _det3[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
+    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """`det3` — the determinant with columns a, b, c, written as `a . (b x c)`."""
+    return (
+        ax * (by * cz - bz * cy)
+        + ay * (bz * cx - bx * cz)
+        + az * (bx * cy - by * cx)
+    )
+
+
+def _subdistance[
+    DTYPE: DType
+](
+    simplex: InlineArray[Scalar[DTYPE], 36],
+    n: Int,
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`subdistance` / `S3D` — the barycentric coordinates of the point in the
+    simplex closest to the origin. Montanari et al, ToG 2017.
+
+    ⚠⚠ IT DOES NOT TOUCH THE SIMPLEX. The reference returns only `lambda`, and
+    the CALLER drops the vertices whose coordinate is EXACTLY zero, in order.
+    The routine this replaced reduced and re-packed the simplex itself and
+    returned the closest POINT, which threw `lambda` away — so the witness
+    points at the end of GJK were a UNIFORM average of the surviving vertices
+    rather than `lincomb(lambda, ...)`, and the caller had no way to spell the
+    reference's `equal3(x_next, x_k)` convergence break.
+
+    ⚠ WHICH VERTEX IS DROPPED IS THE WHOLE POINT. The retained set is what
+    `polytope2/3/4` seeds EPA from, so a different tie-break here is a
+    different seed, a different final face and a different contact normal.
+    """
+    var lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    if n < 2:
+        lam[0] = Scalar[DTYPE](1)
+        return lam^
+    if n == 2:
+        var l = _s1d[DTYPE](
+            simplex[0], simplex[1], simplex[2],
+            simplex[9], simplex[10], simplex[11],
         )
-        if t <= Scalar[DTYPE](0):
-            result[0] = ax
-            result[1] = ay
-            result[2] = az
-            result[3] = Scalar[DTYPE](1)
-            return result^
-        elif t >= Scalar[DTYPE](1):
-            # Keep only B
-            for k in range(9):
-                simplex[k] = simplex[9 + k]
-            result[0] = bx
-            result[1] = by
-            result[2] = bz
-            result[3] = Scalar[DTYPE](1)
-            return result^
-        else:
-            result[0] = ax + t * abx
-            result[1] = ay + t * aby
-            result[2] = az + t * abz
-            result[3] = Scalar[DTYPE](2)
-            return result^
-
-    if nsimplex == 3:
-        # Triangle: find closest point to origin using Voronoi regions
-        var ax = simplex[0]
-        var ay = simplex[1]
-        var az = simplex[2]
-        var bx = simplex[9]
-        var by = simplex[10]
-        var bz = simplex[11]
-        var cx = simplex[18]
-        var cy = simplex[19]
-        var cz = simplex[20]
-
-        var abx = bx - ax
-        var aby = by - ay
-        var abz = bz - az
-        var acx = cx - ax
-        var acy = cy - ay
-        var acz = cz - az
-
-        # Barycentric coordinates of origin projection onto triangle plane
-        # Using the method from Real-Time Collision Detection (Ericson)
-        var d1 = _dot3[DTYPE](abx, aby, abz, -ax, -ay, -az)
-        var d2 = _dot3[DTYPE](acx, acy, acz, -ax, -ay, -az)
-        var d3 = _dot3[DTYPE](abx, aby, abz, -bx, -by, -bz)
-        var d4 = _dot3[DTYPE](acx, acy, acz, -bx, -by, -bz)
-        var d5 = _dot3[DTYPE](abx, aby, abz, -cx, -cy, -cz)
-        var d6 = _dot3[DTYPE](acx, acy, acz, -cx, -cy, -cz)
-
-        # Vertex region A
-        if d1 <= 0 and d2 <= 0:
-            result[0] = ax
-            result[1] = ay
-            result[2] = az
-            # Keep only vertex A
-            result[3] = Scalar[DTYPE](1)
-            return result^
-
-        # Vertex region B
-        if d3 >= 0 and d4 <= d3:
-            # Keep only vertex B
-            for k in range(9):
-                simplex[k] = simplex[9 + k]
-            result[0] = bx
-            result[1] = by
-            result[2] = bz
-            result[3] = Scalar[DTYPE](1)
-            return result^
-
-        # Edge region AB
-        var vc = d1 * d4 - d3 * d2
-        if vc <= 0 and d1 >= 0 and d3 <= 0:
-            var v = d1 / (d1 - d3)
-            result[0] = ax + v * abx
-            result[1] = ay + v * aby
-            result[2] = az + v * abz
-            # Keep A and B (simplex[0] and simplex[9])
-            result[3] = Scalar[DTYPE](2)
-            return result^
-
-        # Vertex region C
-        if d6 >= 0 and d5 <= d6:
-            # Keep only vertex C
-            for k in range(9):
-                simplex[k] = simplex[18 + k]
-            result[0] = cx
-            result[1] = cy
-            result[2] = cz
-            result[3] = Scalar[DTYPE](1)
-            return result^
-
-        # Edge region AC
-        var vb = d5 * d2 - d1 * d6
-        if vb <= 0 and d2 >= 0 and d6 <= 0:
-            var w = d2 / (d2 - d6)
-            result[0] = ax + w * acx
-            result[1] = ay + w * acy
-            result[2] = az + w * acz
-            # Keep A and C: move C to slot 1
-            for k in range(9):
-                simplex[9 + k] = simplex[18 + k]
-            result[3] = Scalar[DTYPE](2)
-            return result^
-
-        # Edge region BC
-        var va = d3 * d6 - d5 * d4
-        if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
-            var w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
-            var bcx = cx - bx
-            var bcy = cy - by
-            var bcz = cz - bz
-            result[0] = bx + w * bcx
-            result[1] = by + w * bcy
-            result[2] = bz + w * bcz
-            # Keep B and C: move B to slot 0, C to slot 1
-            for k in range(9):
-                simplex[k] = simplex[9 + k]
-                simplex[9 + k] = simplex[18 + k]
-            result[3] = Scalar[DTYPE](2)
-            return result^
-
-        # Inside triangle: project origin onto plane
-        var denom = va + vb + vc
-        if denom < Scalar[DTYPE](1e-30):
-            result[0] = ax
-            result[1] = ay
-            result[2] = az
-            result[3] = Scalar[DTYPE](1)
-            return result^
-        var v = vb / denom
-        var w = vc / denom
-        result[0] = ax + abx * v + acx * w
-        result[1] = ay + aby * v + acy * w
-        result[2] = az + abz * v + acz * w
-        result[3] = Scalar[DTYPE](3)
-        return result^
-
-    # nsimplex == 4: tetrahedron — check if origin is inside or find closest face
-    # For each of the 4 faces, check if origin is on the outside
-    # Face normals point outward (away from the opposite vertex)
-    # Face ABC: normal = (B-A)×(C-A), check sign of dot(normal, D-A)
-    # If dot(normal, -A) has OPPOSITE sign to dot(normal, D-A), origin is outside this face
-
-    # Face indices: (A,B,C, opposite D), (A,C,D, opposite B), (A,D,B, opposite C), (B,D,C, opposite A)
-    var face_v = InlineArray[Int, 16](fill=0)
-    face_v[0] = 0
-    face_v[1] = 9
-    face_v[2] = 18
-    face_v[3] = 27  # ABC, opp D
-    face_v[4] = 0
-    face_v[5] = 18
-    face_v[6] = 27
-    face_v[7] = 9  # ACD, opp B
-    face_v[8] = 0
-    face_v[9] = 27
-    face_v[10] = 9
-    face_v[11] = 18  # ADB, opp C
-    face_v[12] = 9
-    face_v[13] = 27
-    face_v[14] = 18
-    face_v[15] = 0  # BDC, opp A
-
-    var best_dist_sq: Scalar[DTYPE] = 1e30
-    var best_face = -1
-    var best_vx: Scalar[DTYPE] = 0
-    var best_vy: Scalar[DTYPE] = 0
-    var best_vz: Scalar[DTYPE] = 0
-    var any_usable_face = False
-
-    # Scale for the degeneracy tests below: the largest vertex magnitude.
-    var scale: Scalar[DTYPE] = 0
-    for q in range(4):
-        var m = (
-            simplex[q * 9 + 0] * simplex[q * 9 + 0]
-            + simplex[q * 9 + 1] * simplex[q * 9 + 1]
-            + simplex[q * 9 + 2] * simplex[q * 9 + 2]
+        lam[0] = l[0]
+        lam[1] = l[1]
+        return lam^
+    if n == 3:
+        var l = _s2d[DTYPE](
+            simplex[0], simplex[1], simplex[2],
+            simplex[9], simplex[10], simplex[11],
+            simplex[18], simplex[19], simplex[20],
         )
-        if m > scale:
-            scale = m
-    scale = sqrt(scale)
+        lam[0] = l[0]
+        lam[1] = l[1]
+        lam[2] = l[2]
+        return lam^
 
-    for f in range(4):
-        var i0 = face_v[f * 4 + 0]
-        var i1 = face_v[f * 4 + 1]
-        var i2 = face_v[f * 4 + 2]
-        var io = face_v[f * 4 + 3]  # opposite vertex
+    # S3D
+    var s1x = simplex[0]
+    var s1y = simplex[1]
+    var s1z = simplex[2]
+    var s2x = simplex[9]
+    var s2y = simplex[10]
+    var s2z = simplex[11]
+    var s3x = simplex[18]
+    var s3y = simplex[19]
+    var s3z = simplex[20]
+    var s4x = simplex[27]
+    var s4y = simplex[28]
+    var s4z = simplex[29]
 
-        var f0x = simplex[i0]
-        var f0y = simplex[i0 + 1]
-        var f0z = simplex[i0 + 2]
-        var f1x = simplex[i1]
-        var f1y = simplex[i1 + 1]
-        var f1z = simplex[i1 + 2]
-        var f2x = simplex[i2]
-        var f2y = simplex[i2 + 1]
-        var f2z = simplex[i2 + 2]
-        var fox = simplex[io]
-        var foy = simplex[io + 1]
-        var foz = simplex[io + 2]
+    var c41 = -_det3[DTYPE](s2x, s2y, s2z, s3x, s3y, s3z, s4x, s4y, s4z)
+    var c42 = _det3[DTYPE](s1x, s1y, s1z, s3x, s3y, s3z, s4x, s4y, s4z)
+    var c43 = -_det3[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z, s4x, s4y, s4z)
+    var c44 = _det3[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z, s3x, s3y, s3z)
+    var m_det = c41 + c42 + c43 + c44
 
-        # Face normal
-        var e1x = f1x - f0x
-        var e1y = f1y - f0y
-        var e1z = f1z - f0z
-        var e2x = f2x - f0x
-        var e2y = f2y - f0y
-        var e2z = f2z - f0z
-        var face_n = _cross3[DTYPE](e1x, e1y, e1z, e2x, e2y, e2z)
+    var comp1 = _same_sign2[DTYPE](m_det, c41) != 0
+    var comp2 = _same_sign2[DTYPE](m_det, c42) != 0
+    var comp3 = _same_sign2[DTYPE](m_det, c43) != 0
+    var comp4 = _same_sign2[DTYPE](m_det, c44) != 0
 
-        # Sign check: is origin on the same side as the opposite vertex?
-        # Both dots are measured against the UNNORMALIZED normal, so divide by
-        # |n| to get true heights before testing them against a scale-relative
-        # epsilon — otherwise the test's sensitivity rides on the face's area.
-        var n_len = sqrt(
-            face_n[0] * face_n[0]
-            + face_n[1] * face_n[1]
-            + face_n[2] * face_n[2]
+    if comp1 and comp2 and comp3 and comp4:
+        lam[0] = c41 / m_det
+        lam[1] = c42 / m_det
+        lam[2] = c43 / m_det
+        lam[3] = c44 / m_det
+        return lam^
+
+    var dmin = Scalar[DTYPE](1e30)
+    if not comp1:
+        var l = _s2d[DTYPE](
+            s2x, s2y, s2z, s3x, s3y, s3z, s4x, s4y, s4z
         )
-        if n_len <= Scalar[DTYPE](1e-30):
-            # Repeated or collinear vertices — this face says nothing.
-            continue
-        any_usable_face = True
-        var dot_opp = _dot3[DTYPE](
-            face_n[0], face_n[1], face_n[2], fox - f0x, foy - f0y, foz - f0z
+        var xx = l[0] * s2x + l[1] * s3x + l[2] * s4x
+        var xy = l[0] * s2y + l[1] * s3y + l[2] * s4y
+        var xz = l[0] * s2z + l[1] * s3z + l[2] * s4z
+        dmin = xx * xx + xy * xy + xz * xz
+        lam[0] = Scalar[DTYPE](0)
+        lam[1] = l[0]
+        lam[2] = l[1]
+        lam[3] = l[2]
+    if not comp2:
+        var l = _s2d[DTYPE](
+            s1x, s1y, s1z, s3x, s3y, s3z, s4x, s4y, s4z
         )
-        var dot_origin = _dot3[DTYPE](
-            face_n[0], face_n[1], face_n[2], -f0x, -f0y, -f0z
+        var xx = l[0] * s1x + l[1] * s3x + l[2] * s4x
+        var xy = l[0] * s1y + l[1] * s3y + l[2] * s4y
+        var xz = l[0] * s1z + l[1] * s3z + l[2] * s4z
+        var d = xx * xx + xy * xy + xz * xz
+        if d < dmin:
+            dmin = d
+            lam[0] = l[0]
+            lam[1] = Scalar[DTYPE](0)
+            lam[2] = l[1]
+            lam[3] = l[2]
+    if not comp3:
+        var l = _s2d[DTYPE](
+            s1x, s1y, s1z, s2x, s2y, s2z, s4x, s4y, s4z
         )
-        var h_opp = dot_opp / n_len
-        var h_origin = dot_origin / n_len
-        var flat = Scalar[DTYPE](1e-6) * scale
-
-        # A tetrahedron whose opposite vertex sits IN this face's plane has no
-        # interior, so nothing can be enclosed by it. The old test was the bare
-        # product `dot_opp * dot_origin < 0`, which reads h_opp == 0 as "not
-        # outside" — and a FLAT simplex has h_opp == 0 on all four faces, so no
-        # face is ever flagged and the routine reports the origin as ENCLOSED.
-        # That is not a rare tie: GJK converges onto a planar facet whenever the
-        # closest feature is one (a hull face parallel to a box/cylinder cap),
-        # and the caller reads "enclosed" as penetration — a phantom contact
-        # between geoms that are centimetres apart, with a depth invented by
-        # the EPA fallback.
-        var outside: Bool
-        if h_opp > flat:
-            outside = h_origin < 0
-        elif h_opp < -flat:
-            outside = h_origin > 0
-        else:
-            outside = abs(h_origin) > flat
-
-        if outside:
-            # Origin is OUTSIDE this face — closest point is on this triangle
-            # Project origin onto this face plane
-            var n_dot_n = (
-                face_n[0] * face_n[0]
-                + face_n[1] * face_n[1]
-                + face_n[2] * face_n[2]
-            )
-            if n_dot_n > Scalar[DTYPE](1e-30):
-                # Closest point on the face PLANE to the origin is
-                # (n.f0 / |n|^2) * n — the same outward convention the
-                # nsimplex<=3 branches use (v = origin -> simplex). It used to
-                # carry a leading minus, which handed GJK a search direction
-                # pointing AWAY from the shape and flipped the reported
-                # contact normal on the separated path.
-                var d = (
-                    _dot3[DTYPE](f0x, f0y, f0z, face_n[0], face_n[1], face_n[2])
-                    / n_dot_n
-                )
-                var proj_x = d * face_n[0]
-                var proj_y = d * face_n[1]
-                var proj_z = d * face_n[2]
-                var d_sq = proj_x * proj_x + proj_y * proj_y + proj_z * proj_z
-                if d_sq < best_dist_sq:
-                    best_dist_sq = d_sq
-                    best_face = f
-                    best_vx = proj_x
-                    best_vy = proj_y
-                    best_vz = proj_z
-
-    if best_face >= 0:
-        # Origin is outside at least one face — reduce to that triangle.
-        # Stage through a temporary: destination slots OVERLAP the sources.
-        # Face ADB is (i0,i1,i2) = (0,27,9), so an in-place copy overwrites
-        # slot 1 with D and then reads that slot back as "B", retaining
-        # {A,D,D} — a degenerate simplex that stalls the next GJK iteration
-        # and makes a penetrating pair report as separated.
-        var i0 = face_v[best_face * 4 + 0]
-        var i1 = face_v[best_face * 4 + 1]
-        var i2 = face_v[best_face * 4 + 2]
-        var keep = InlineArray[Scalar[DTYPE], 27](fill=Scalar[DTYPE](0))
-        for k in range(9):
-            keep[k] = simplex[i0 + k]
-            keep[9 + k] = simplex[i1 + k]
-            keep[18 + k] = simplex[i2 + k]
-        for k in range(27):
-            simplex[k] = keep[k]
-        result[0] = best_vx
-        result[1] = best_vy
-        result[2] = best_vz
-        result[3] = Scalar[DTYPE](3)
-        return result^
-
-    if not any_usable_face:
-        # Every face was degenerate — the four points are collinear or
-        # coincident, so there is no tetrahedron to be inside of. Keep the
-        # vertex nearest the origin and let the next iteration rebuild; do NOT
-        # fall through to the enclosure verdict, which would be unfounded.
-        var near = 0
-        var near_sq: Scalar[DTYPE] = 1e30
-        for q in range(4):
-            var m = (
-                simplex[q * 9 + 0] * simplex[q * 9 + 0]
-                + simplex[q * 9 + 1] * simplex[q * 9 + 1]
-                + simplex[q * 9 + 2] * simplex[q * 9 + 2]
-            )
-            if m < near_sq:
-                near_sq = m
-                near = q
-        var keep1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-        for k in range(9):
-            keep1[k] = simplex[near * 9 + k]
-        for k in range(9):
-            simplex[k] = keep1[k]
-        result[0] = simplex[0]
-        result[1] = simplex[1]
-        result[2] = simplex[2]
-        result[3] = Scalar[DTYPE](1)
-        return result^
-
-    # Origin is inside all faces — truly inside tetrahedron
-    result[0] = Scalar[DTYPE](0)
-    result[1] = Scalar[DTYPE](0)
-    result[2] = Scalar[DTYPE](0)
-    result[3] = Scalar[DTYPE](4)
-    return result^
+        var xx = l[0] * s1x + l[1] * s2x + l[2] * s4x
+        var xy = l[0] * s1y + l[1] * s2y + l[2] * s4y
+        var xz = l[0] * s1z + l[1] * s2z + l[2] * s4z
+        var d = xx * xx + xy * xy + xz * xz
+        if d < dmin:
+            dmin = d
+            lam[0] = l[0]
+            lam[1] = l[1]
+            lam[2] = Scalar[DTYPE](0)
+            lam[3] = l[2]
+    if not comp4:
+        var l = _s2d[DTYPE](
+            s1x, s1y, s1z, s2x, s2y, s2z, s3x, s3y, s3z
+        )
+        var xx = l[0] * s1x + l[1] * s2x + l[2] * s3x
+        var xy = l[0] * s1y + l[1] * s2y + l[2] * s3y
+        var xz = l[0] * s1z + l[1] * s2z + l[2] * s3z
+        var d = xx * xx + xy * xy + xz * xz
+        if d < dmin:
+            lam[0] = l[0]
+            lam[1] = l[1]
+            lam[2] = l[2]
+            lam[3] = Scalar[DTYPE](0)
+    return lam^
 
 
 @always_inline

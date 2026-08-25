@@ -11,16 +11,41 @@ vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
 from .ccd_workspace import (
+    EPA_ITER_CAP,
     EPA_V_CAP,
     EPA_F_CAP,
-    CCD_WS_EV,
-    CCD_WS_EF,
-    CCD_WS_VIS,
-    CCD_WS_HOR,
     CCD_WS_SIZE,
 )
-from .gjk_support import _closest_point_on_simplex
+from .epa import (
+    ev,
+    set_ev,
+    ef,
+    eadj,
+    set_eadj,
+    efv,
+    efd,
+    efi,
+    set_efi,
+    emap,
+    set_emap,
+    ehor,
+    set_center,
+    attach_face,
+    horizon,
+    epa_witness,
+    tri_point_intersect,
+    test_tetra,
+    rotmat120,
+    ray_triangle,
+    epa_minval,
+    epa_mindist,
+    epa_mindist4,
+)
+from .gjk_support import _subdistance
 from .gjk_support import (
+    quat2mat,
+    mat_t_vec3,
+    local_to_global,
     support_sphere,
     support_capsule,
     support_box,
@@ -47,8 +72,6 @@ from ..gpu.constants import (
 # Reuse CPU GJK parameters (verbatim from gjk_gpu.mojo)
 comptime GJK_MAX_ITERATIONS: Int = 100
 comptime GJK_TOLERANCE: Float64 = 1e-10
-comptime EPA_MAX_VERTS: Int = 69
-comptime EPA_MAX_FACES: Int = 384
 
 # ⚠⚠ `EPA_MAX_ITERATIONS` AND `EPA_TOLERANCE` ARE GONE. They were 64 and 1e-8
 # — MuJoCo's are `opt.ccd_iterations` = 35 and `opt.ccd_tolerance` = 1e-6, and
@@ -60,7 +83,6 @@ comptime EPA_MAX_FACES: Int = 384
 # ⚠ TIGHTER WAS NOT SAFER. EPA's stopping rule picks WHICH boundary face it
 # settles on and the contact NORMAL is that face's, so iterating past the
 # reference walks away from it rather than toward it.
-comptime EPA_ITER_HARD_CAP: Int = 64
 
 # `mjMINVAL` (`mjtnum.h`).
 comptime MJ_MINVAL: Float64 = 1e-15
@@ -108,11 +130,74 @@ def _gjk_min_norm2[
     var tol2 = ccd_tol * ccd_tol
     if margin != 0:
         return tol2
-    var d1 = type1 == GEOM_BOX or type1 == GEOM_MESH
-    var d2 = type2 == GEOM_BOX or type2 == GEOM_MESH
+    # ⚠⚠ HFIELD IS IN `discreteGeoms` AND WAS MISSING FROM ALL THREE COPIES:
+    #   (g1 == mjGEOM_MESH || g1 == mjGEOM_BOX || g1 == mjGEOM_HFIELD) && ...
+    # A heightfield prism IS a polytope, so it belongs on the discrete side of
+    # every one of these switches. Fourth instance of
+    # `feedback_a_geom_type_absent_from_three_fallbacks`.
+    var d1 = (
+        type1 == GEOM_BOX or type1 == GEOM_MESH or type1 == GEOM_HFIELD
+    )
+    var d2 = (
+        type2 == GEOM_BOX or type2 == GEOM_MESH or type2 == GEOM_HFIELD
+    )
     if d1 and d2:
         return Scalar[DTYPE](MJ_MINVAL) * Scalar[DTYPE](MJ_MINVAL)
     return tol2
+
+
+@always_inline
+def _gjk_epsilon[
+    DTYPE: DType
+](
+    type1: Int,
+    type2: Int,
+    margin: Scalar[DTYPE],
+    ccd_tol: Scalar[DTYPE],
+    v_dot_v: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """MuJoCo's `epsilon` — the Frank-Wolfe duality-gap floor that ends GJK.
+
+        mjtNum tol2 = status->tolerance * status->tolerance;
+        mjtNum epsilon = discreteGeoms(obj1, obj2) ? 0 : 0.5 * tol2;
+        ...
+        sub3(diff, x_k, s_k);
+        if (dot3(x_k, diff) < epsilon) { if (!k) n = 1; break; }
+
+    ⚠⚠ THE QUANTITY IS `x . (x - s)`, IN METRES SQUARED, AND OURS WAS A
+    THRESHOLD ON THE SAME GAP DIVIDED BY `|x|`. The old test was
+    `w_dot - v_dot < GJK_TOLERANCE` with `GJK_TOLERANCE = 1e-10` — a hardcoded
+    constant in METRES, where the reference's is `0.5 * ccd_tolerance^2` and
+    is ZERO for a polytope pair. The two agree only where `|x|` happens to be
+    5 mm; at 0.5 mm ours was ten times tighter and at 5 cm ten times looser.
+
+    ⚠ AND THE CONSEQUENCE IS NOT A ROUNDING DIFFERENCE. This test fires BEFORE
+    `gjkIntersect` gets a chance to run, so stopping one iteration early hands
+    EPA a TRIANGLE where the reference hands it a TETRAHEDRON — `polytope3`
+    instead of `polytope4`, a different seed, a different final face and a
+    different contact normal. Measured on the `box/cylinder` group of
+    `test_narrow_phase_pairs`: the normal sat 1.7e-05 off MuJoCo's with the
+    old rule and lands within `TOL_DIR_APPROX` with this one.
+
+    ⚠ THE FLOAT32 TERM IS KEPT AND IS RELATIVE. `x . (x - s)` is a difference
+    of dot products of magnitude `|x|^2`, so at float32 its rounding floor is
+    about `1e-7 * |x|^2` — far above `0.5 * tol^2`. Without the relative term
+    the comparison never succeeds, GJK runs to its cap and returns whatever it
+    is holding, which produced PHANTOM CONTACTS at 17 cm
+    (`test_gjk_float32_no_phantom_contacts`). It is exactly the old relative
+    term re-expressed in the new units: `1e-6 * |x|` on the divided gap is
+    `1e-6 * |x|^2` on this one.
+    """
+    var eps = Scalar[DTYPE](0)
+    var discrete = margin == 0 and (
+        (type1 == GEOM_BOX or type1 == GEOM_MESH or type1 == GEOM_HFIELD)
+        and (type2 == GEOM_BOX or type2 == GEOM_MESH or type2 == GEOM_HFIELD)
+    )
+    if not discrete:
+        eps = Scalar[DTYPE](0.5) * ccd_tol * ccd_tol
+    comptime if DTYPE != DType.float64:
+        eps += Scalar[DTYPE](1e-6) * v_dot_v
+    return eps
 
 
 @always_inline
@@ -154,16 +239,32 @@ def _epa_tolerance[
     1e-15 is far below epsilon: the convergence test could never fire and EPA
     would run to its iteration cap on every mesh pair.
     """
-    comptime if DTYPE != DType.float64:
+    if margin != 0:
         return ccd_tol
+    # ⚠⚠ HFIELD IS IN `discreteGeoms` AND WAS MISSING FROM ALL THREE COPIES:
+    #   (g1 == mjGEOM_MESH || g1 == mjGEOM_BOX || g1 == mjGEOM_HFIELD) && ...
+    # A heightfield prism IS a polytope, so it belongs on the discrete side of
+    # every one of these switches. Fourth instance of
+    # `feedback_a_geom_type_absent_from_three_fallbacks`.
+    var d1 = (
+        type1 == GEOM_BOX or type1 == GEOM_MESH or type1 == GEOM_HFIELD
+    )
+    var d2 = (
+        type2 == GEOM_BOX or type2 == GEOM_MESH or type2 == GEOM_HFIELD
+    )
+    if not (d1 and d2):
+        return ccd_tol
+    # `mjMINEPATOL` — 1e-15 at double, 1e-7 at single. The precision split is
+    # the reference's own (`engine_collision_gjk.c`'s `mjUSESINGLE` block) and
+    # NOT a guard against the switch itself: at float32, 1e-15 is far below the
+    # gap between `upper` and `lower` can ever close to, so the discrete
+    # convergence test would never fire and EPA would run to its cap on every
+    # mesh pair. This used to return `ccd_tol` at float32, which is the OTHER
+    # error — it applied the smooth tolerance to a polytope pair.
+    comptime if DTYPE == DType.float64:
+        return Scalar[DTYPE](MJ_MINVAL)
     else:
-        if margin != 0:
-            return ccd_tol
-        var d1 = type1 == GEOM_BOX or type1 == GEOM_MESH
-        var d2 = type2 == GEOM_BOX or type2 == GEOM_MESH
-        if d1 and d2:
-            return Scalar[DTYPE](MJ_MINVAL)
-        return ccd_tol
+        return Scalar[DTYPE](1e-7)
 
 
 @always_inline
@@ -195,70 +296,21 @@ def _dot3[
 # against a box face, and on the same box expressed as an 8-vertex MESH, it
 # reproduces the analytic depth BIT-FOR-BIT at every penetration from 5e-4 to
 # 0.03, where the placeholder it replaced returned ~-1.1 throughout. It does
-# NOT yet cover pairs whose GJK simplex comes back degenerate — notably
-# sawyer's obj against the eGripperBase hull — which still take the old
-# estimate. Porting `polytope2/3/4` is what closes that, and until it lands
-# this is an improvement with a documented hole, not a finished collider.
+# `polytope2` / `polytope3` / `polytope4` are all ported now, so a degenerate
+# GJK simplex is handled the way the reference handles it rather than by an
+# invented fallback — see the EPA phase below.
 #
-# ⚠ THE CAPS ARE MEASURED, NOT INHERITED, and they live in `ccd_workspace`
-# with the row layout they size — `EPA_V_CAP` / `EPA_F_CAP`. `EPA_MAX_FACES =
-# 384` / `EPA_MAX_VERTS = 69` above are MuJoCo's generous allocation. Overflow
-# is REPORTED (the routine bails to its best face so far) rather than silently
-# truncating the polytope, which would return a plausible wrong depth.
+# ⚠ THE CAPS ARE MuJoCo'S OWN ALLOCATION FORMULA and live in `ccd_workspace`
+# beside the row layout they size: `EPA_V_CAP = 5 + N`, `EPA_F_CAP = 6 * N`
+# for `N = EPA_ITER_CAP`, exactly as `mjc_ccdSize` carves the buffer. Overflow
+# is REPORTED (the routine keeps its best face so far, which is a valid lower
+# bound) rather than silently truncating the polytope.
 #
 # ⚠ THE POLYTOPE ITSELF IS NOT A LOCAL. It lives in a `[BATCH, CCD_WS_SIZE]`
 # tensor row, one row per env, handed in as `(ws, wrow)` — MuJoCo's
 # `config->buffer`. See `ccd_workspace.mojo` for why that is the reference's
 # storage class and not a workaround.
 
-
-# ---- CCD workspace accessors ------------------------------------------------
-# `rebind` because a `LayoutTensor`'s element type is only provably
-# `Scalar[DTYPE]` once its layout is concrete, and `L_WS` is a parameter here
-# (the engine binds `[BATCH, CCD_WS_SIZE]`, a gate binds `[1, CCD_WS_SIZE]`).
-# Reads go through these; writes stay spelled out at the site so the slot being
-# written is visible.
-
-
-@always_inline
-def _ev[
-    DTYPE: DType, L_WS: Layout
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, i: Int, k: Int
-) -> Scalar[DTYPE]:
-    """Component `k` of polytope vertex `i` — 0..2 Minkowski, 3..5 and 6..8 the
-    two witness points."""
-    return rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_EV + i * 9 + k])
-
-
-@always_inline
-def _ef[
-    DTYPE: DType, L_WS: Layout
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, f: Int, c: Int
-) -> Int:
-    """Corner `c` of face `f`, as a polytope vertex index."""
-    return Int(rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_EF + f * 3 + c]))
-
-
-@always_inline
-def _hor[
-    DTYPE: DType, L_WS: Layout
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, h: Int, c: Int
-) -> Int:
-    """End `c` of horizon edge `h`, as a polytope vertex index."""
-    return Int(rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_HOR + h * 2 + c]))
-
-
-@always_inline
-def _vis[
-    DTYPE: DType, L_WS: Layout
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, f: Int
-) -> Bool:
-    """Can the new support point see face `f`."""
-    return rebind[Scalar[DTYPE]](ws[wrow, CCD_WS_VIS + f]) != Scalar[DTYPE](0)
 
 
 @always_inline
@@ -299,97 +351,6 @@ def _gjk_signed_distance[
             Scalar[DTYPE](0))
 
 
-@always_inline
-def _epa_face_normal[
-    DTYPE: DType,
-    L_WS: Layout,
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
-    wrow: Int,
-    i: Int,
-    j: Int,
-    k: Int,
-) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-]:
-    """Outward unit normal of face (i, j, k) and its distance to the origin.
-
-    "Outward" means away from the origin, which is inside the polytope
-    throughout EPA, so the sign is fixed by `n . a >= 0` rather than by winding.
-    A zero-area face returns a zero normal and the caller skips it.
-
-    Reads the polytope vertices out of the CCD workspace row (`ccd_workspace`).
-    """
-    var ax = _ev(ws, wrow, i, 0)
-    var ay = _ev(ws, wrow, i, 1)
-    var az = _ev(ws, wrow, i, 2)
-    var bx = _ev(ws, wrow, j, 0) - ax
-    var by = _ev(ws, wrow, j, 1) - ay
-    var bz = _ev(ws, wrow, j, 2) - az
-    var cx = _ev(ws, wrow, k, 0) - ax
-    var cy = _ev(ws, wrow, k, 1) - ay
-    var cz = _ev(ws, wrow, k, 2) - az
-    var nx = by * cz - bz * cy
-    var ny = bz * cx - bx * cz
-    var nz = bx * cy - by * cx
-    var ln = sqrt(nx * nx + ny * ny + nz * nz)
-    if ln < Scalar[DTYPE](1e-20):
-        return (Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
-                Scalar[DTYPE](0))
-    nx /= ln
-    ny /= ln
-    nz /= ln
-    var d = nx * ax + ny * ay + nz * az
-    if d < Scalar[DTYPE](0):
-        nx = -nx
-        ny = -ny
-        nz = -nz
-        d = -d
-    return (nx, ny, nz, d)
-
-
-@always_inline
-def _epa_seed_contains_origin[
-    DTYPE: DType,
-    L_WS: Layout,
-](
-    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
-    wrow: Int,
-    nef: Int,
-) -> Int:
-    """Seed classification: 1 contains the origin, 0 touching, -1 degenerate.
-
-    ⚠ THE TWO FAILURE MODES ARE NOT THE SAME and must not share an answer.
-    A well-formed hull whose nearest face sits on the origin means the geoms
-    TOUCH, and zero is the true depth. A hull with a ZERO-AREA face means the
-    seed itself is degenerate — GJK routinely ends on a near-flat simplex for
-    mesh pairs — and says nothing about depth; the pair may be deeply
-    overlapped. Answering "zero" there DROPS a real contact: sawyer's obj is
-    27.7 mm inside the gripper hull and vanished entirely when both modes
-    returned the same thing.
-
-    EPA assumes it does — every face distance it computes is a lower bound on
-    the depth only under that assumption. When the origin sits on the boundary
-    the closest-face search can lock onto the FAR side instead: a cylinder
-    resting exactly on a box returned -1.1, which is the full Minkowski extent
-    along z (2*0.5 + 2*0.05), not a depth.
-    """
-    if nef <= 0:
-        return -1
-    var touching = False
-    for f in range(nef):
-        var fnm = _epa_face_normal[DTYPE, L_WS](
-            ws,
-            wrow,
-            _ef(ws, wrow, f, 0),
-            _ef(ws, wrow, f, 1),
-            _ef(ws, wrow, f, 2),
-        )
-        if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
-            return -1
-        if fnm[3] < Scalar[DTYPE](1e-12):
-            touching = True
-    return 0 if touching else 1
 
 
 # MuJoCo's `mjMESH_HILLCLIMB_MIN` (`engine_collision_convex.h`): below this many
@@ -594,8 +555,14 @@ def _support_mesh[
     that on real hulls, because a support function that is merely CLOSE yields
     plausible contacts in the wrong place rather than an obvious failure.
     """
-    var local_dir = quat_rotate_inverse[DTYPE](
-        qx, qy, qz, qw, dir_x, dir_y, dir_z
+    # ⚠ `mulMatTVec3(local_dir, obj->mat, dir)` — the reference reaches the
+    # local frame through `geom_xmat`, not by rotating with the quaternion. The
+    # SEARCH below is still the hill climb (`test_gjk_hillclimb_support` pins
+    # it against the exhaustive scan); only the frame arithmetic changed.
+    var _mm = quat2mat[DTYPE](qx, qy, qz, qw)
+    var local_dir = mat_t_vec3[DTYPE](
+        _mm[0], _mm[1], _mm[2], _mm[3], _mm[4], _mm[5], _mm[6], _mm[7], _mm[8],
+        dir_x, dir_y, dir_z,
     )
     var ld_x = local_dir[0]
     var ld_y = local_dir[1]
@@ -632,11 +599,14 @@ def _support_mesh[
                 best_y = vy
                 best_z = vz
 
-    var world_pt = quat_rotate[DTYPE](qx, qy, qz, qw, best_x, best_y, best_z)
+    var world_pt = local_to_global[DTYPE](
+        _mm[0], _mm[1], _mm[2], _mm[3], _mm[4], _mm[5], _mm[6], _mm[7], _mm[8],
+        best_x, best_y, best_z, pos_x, pos_y, pos_z,
+    )
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    result[0] = pos_x + world_pt[0]
-    result[1] = pos_y + world_pt[1]
-    result[2] = pos_z + world_pt[2]
+    result[0] = world_pt[0]
+    result[1] = world_pt[1]
+    result[2] = world_pt[2]
     return result^
 
 
@@ -694,6 +664,15 @@ def _support[
     # race-free because it is indexed per ENV, not shared. See
     # `ccd_workspace`.) Ignored unless `geom_type == GEOM_HFIELD`.
     prism: InlineArray[Scalar[DTYPE], NPRISM],
+    # ⚠⚠ `mjc_ccd` SWAPS THE SUPPORT FUNCTION OUT for a sphere or a capsule
+    # before it runs GJK: `obj->support = mjc_pointSupport` / `mjc_lineSupport`
+    # and `obj->margin = 0`, with the radius folded into a `full_margin` that
+    # `inflate()` adds back afterwards. That is not an optimisation — it is how
+    # every sphere and capsule pair is SOLVED in the reference, because a
+    # point-or-line versus anything is a distance query GJK gets exactly, where
+    # the rounded surface is a smooth Minkowski boundary EPA can only
+    # approximate. See the two-phase structure in `gjk_epa_witness`.
+    shrink: Bool = False,
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Unified support function — reads mesh verts from the record tensor.
 
@@ -709,9 +688,34 @@ def _support[
                 dir_x, dir_y, dir_z, rebind[InlineArray[Scalar[DTYPE], 18]](prism)
             )
     if geom_type == GEOM_SPHERE:
+        if shrink:
+            # `mjc_pointSupport` — the geom's own position, whatever `dir` is.
+            var pt = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+            pt[0] = pos_x
+            pt[1] = pos_y
+            pt[2] = pos_z
+            return pt^
         return support_sphere[DTYPE](
             dir_x, dir_y, dir_z, pos_x, pos_y, pos_z, radius
         )
+    elif geom_type == GEOM_CAPSULE and shrink:
+        # `mjc_lineSupport` — the segment endpoint along the geom's local z.
+        #   dot = mat[2]*d0 + mat[5]*d1 + mat[8]*d2
+        #   scl = dot >= 0 ? length : -length     (length = size[1])
+        # ⚠ `mjc_lineSupport` reads the axis straight out of the matrix —
+        # `mat[2], mat[5], mat[8]`, its THIRD COLUMN — rather than rotating
+        # (0, 0, 1) by the quaternion.
+        var lm = quat2mat[DTYPE](qx, qy, qz, qw)
+        var a0 = lm[2]
+        var a1 = lm[5]
+        var a2 = lm[8]
+        var dt = a0 * dir_x + a1 * dir_y + a2 * dir_z
+        var scl = half_length if dt >= Scalar[DTYPE](0) else -half_length
+        var ln = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+        ln[0] = a0 * scl + pos_x
+        ln[1] = a1 * scl + pos_y
+        ln[2] = a2 * scl + pos_z
+        return ln^
     elif geom_type == GEOM_CAPSULE:
         return support_capsule[DTYPE](
             dir_x,
@@ -728,6 +732,9 @@ def _support[
             half_length,
         )
     elif geom_type == GEOM_BOX:
+        # ⚠ `warm` IS MuJoCo's `obj->vertindex`, and the reference uses that
+        # ONE field for both a mesh hull vertex and a box CORNER CODE. EPA's
+        # discrete repeated-support break compares it, so a box has to write it.
         return support_box[DTYPE](
             dir_x,
             dir_y,
@@ -742,6 +749,7 @@ def _support[
             half_x,
             half_y,
             half_z,
+            warm,
         )
     elif geom_type == GEOM_ELLIPSOID:
         return support_ellipsoid[DTYPE](
@@ -871,6 +879,13 @@ def _minkowski_support[
     # passes a normalised face normal, which is what makes the offset a true
     # Minkowski sum with a ball of radius `margin/2`.
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # ⚠ A SHRUNKEN OBJECT CARRIES NO MARGIN. `mjc_ccd` writes `obj->margin = 0`
+    # alongside the support swap and folds the half-margin into `full_margin`
+    # instead, so in the shrunken phase only the OTHER object still offsets its
+    # support point. One flag per object, because a capsule against a mesh
+    # shrinks one side and not the other.
+    shrink1: Bool = False,
+    shrink2: Bool = False,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -906,6 +921,7 @@ def _minkowski_support[
         dir_z,
         warm1,
         prism,
+        shrink1,
     )
     var s2 = _support[DTYPE, NPRISM=NPRISM](
         type2,
@@ -931,14 +947,20 @@ def _minkowski_support[
         -dir_z,
         warm2,
         prism,
+        shrink2,
     )
-    var hm = Scalar[DTYPE](0.5) * ccd_margin
-    var w1x = s1[0] + dir_x * hm
-    var w1y = s1[1] + dir_y * hm
-    var w1z = s1[2] + dir_z * hm
-    var w2x = s2[0] - dir_x * hm
-    var w2y = s2[1] - dir_y * hm
-    var w2z = s2[2] - dir_z * hm
+    var hm1 = Scalar[DTYPE](0)
+    if not shrink1:
+        hm1 = Scalar[DTYPE](0.5) * ccd_margin
+    var hm2 = Scalar[DTYPE](0)
+    if not shrink2:
+        hm2 = Scalar[DTYPE](0.5) * ccd_margin
+    var w1x = s1[0] + dir_x * hm1
+    var w1y = s1[1] + dir_y * hm1
+    var w1z = s1[2] + dir_z * hm1
+    var w2x = s2[0] - dir_x * hm2
+    var w2y = s2[1] - dir_y * hm2
+    var w2z = s2[2] - dir_z * hm2
     return (
         w1x - w2x,
         w1y - w2y,
@@ -991,6 +1013,12 @@ def _gjk_intersect[
     # them the same way, or it certifies separation on the UNINFLATED pair
     # while the loop around it is working on the inflated one.
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # ⚠ AND THE SHRINK FLAGS FOR THE SAME REASON. `gjkIntersect` runs inside
+    # `gjk()`, so it sees whichever support functions `mjc_ccd` has installed;
+    # running it on the ROUNDED shapes while the loop around it is on the
+    # shrunken ones would certify a tetrahedron the caller cannot use.
+    shrink1: Bool = False,
+    shrink2: Bool = False,
 ) -> Int:
     """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
 
@@ -1025,38 +1053,24 @@ def _gjk_intersect[
     """
     var sidx: InlineArray[Int, 4] = [0, 1, 2, 3]
 
-    # ⚠ ORIENT THE TETRAHEDRON FIRST. Every signed distance below carries the
-    # simplex's winding, and the whole loop reads those SIGNS to decide whether
-    # the origin is inside — so an arbitrarily wound input makes the answer
-    # meaningless. MuJoCo can skip this because its `gjk` builds the simplex by
-    # appending support points and never reorders them; ours arrives via
-    # `_closest_point_on_simplex`, which REDUCES and re-packs the simplex, so
-    # the winding is whatever that left behind. Measured symptom: a cylinder
-    # touching a box rim reported a confident enclosure with a 0.0999 margin
-    # while the origin sat exactly ON the Minkowski boundary — an inscribed
-    # tetrahedron cannot strictly contain a boundary point, so the sign was
-    # simply being read upside down.
-    var o0x = simplex[0 * 9 + 0]
-    var o0y = simplex[0 * 9 + 1]
-    var o0z = simplex[0 * 9 + 2]
-    var e1x = simplex[1 * 9 + 0] - o0x
-    var e1y = simplex[1 * 9 + 1] - o0y
-    var e1z = simplex[1 * 9 + 2] - o0z
-    var e2x = simplex[2 * 9 + 0] - o0x
-    var e2y = simplex[2 * 9 + 1] - o0y
-    var e2z = simplex[2 * 9 + 2] - o0z
-    var e3x = simplex[3 * 9 + 0] - o0x
-    var e3y = simplex[3 * 9 + 1] - o0y
-    var e3z = simplex[3 * 9 + 2] - o0z
-    var tp = (
-        (e1y * e2z - e1z * e2y) * e3x
-        + (e1z * e2x - e1x * e2z) * e3y
-        + (e1x * e2y - e1y * e2x) * e3z
-    )
-    if tp < Scalar[DTYPE](0):
-        sidx[0] = 1
-        sidx[1] = 0
-
+    # ⚠⚠ THERE USED TO BE A RE-ORIENTATION HERE AND MuJoCo HAS NONE.
+    # It computed the scalar triple product of the incoming simplex and swapped
+    # `sidx[0]`/`sidx[1]` when it was negative, on the reasoning that "MuJoCo
+    # can skip this because its `gjk` builds the simplex by appending support
+    # points and never reorders them; ours arrives via
+    # `_closest_point_on_simplex`, which REDUCES and re-packs".
+    #
+    # THAT PREMISE IS GONE. `subdistance` is a one-for-one port now and the
+    # caller compacts IN ORDER, exactly as the reference does — so our simplex
+    # reaches this function with the same winding MuJoCo's does, and imposing
+    # an orientation on top of it produces a DIFFERENT tetrahedron.
+    #
+    # ⚠ MEASURED on the ellipsoid pair of `test_ellipsoid_convex_vs_mujoco`,
+    # arbitrated against `min over unit n of h(n)` rather than against MuJoCo:
+    # the contact normal was 3.823 deg from the true minimising direction with
+    # the swap and MuJoCo is 0.694 deg from it. The seed tetrahedron's closest
+    # face was 1.68e-08 against the reference's 2.55e-06 — a different simplex
+    # from the first line.
     for _ in range(GJK_MAX_ITERATIONS):
         # signed distance to each face; face i is the one OPPOSITE vertex i
         var f0 = _gjk_signed_distance[DTYPE](
@@ -1088,24 +1102,19 @@ def _gjk_intersect[
         var index = i if di < dj else j
 
         var best = di if di < dj else dj
-        # ⚠ ENCLOSURE NEEDS A MARGIN, NOT JUST A POSITIVE SIGN. MuJoCo tests
-        # `dist[index] > 0` and separately rejects an EXACTLY zero distance
-        # (`!dist[i]`, origin on the affine hull). In floating point an exactly
-        # touching pair lands a hair either side of zero instead, and reading
-        # that as enclosure sends EPA off to a far face: a cylinder resting
-        # exactly on a box rim returned -0.09998 with a sideways normal where
-        # the truth is 0. Scale the threshold to the simplex, since these are
-        # metres and a fixed epsilon means nothing across models.
-        var vscale = Scalar[DTYPE](0)
-        for vv in range(4):
-            for cc in range(3):
-                var av = abs(simplex[sidx[vv] * 9 + cc])
-                if av > vscale:
-                    vscale = av
-        if vscale <= Scalar[DTYPE](0):
-            vscale = Scalar[DTYPE](1)
-        if best > Scalar[DTYPE](0) and best <= vscale * Scalar[DTYPE](1e-12):
-            return -1  # touching: let the distance path report zero depth
+        # ⚠⚠ THERE USED TO BE A RELATIVE FLOOR HERE AND MuJoCo HAS NONE.
+        # `dist[index] > 0` is the whole test; a distance of EXACTLY zero is
+        # already rejected above as "origin on the affine hull". The floor —
+        # `best <= 1e-12 * max|simplex|` also returning -1 — was added because
+        # a cylinder resting exactly on a box rim came back as a confident
+        # enclosure and EPA then reported -0.09998 with a sideways normal.
+        # That was the OLD EPA, which had no `testTetra` and no
+        # `polytope2/3/4`; the faithful one validates the seed the reference's
+        # way and answers "no contact" when it fails, so the floor is covering
+        # for something that no longer exists. Leaving it in cost a real
+        # difference: it rejected every THIN enclosure, so a 5 mm box/cylinder
+        # overlap fell through to the distance subalgorithm and seeded EPA from
+        # a TRIANGLE (`polytope3`) where MuJoCo seeds from the TETRAHEDRON.
         if best > Scalar[DTYPE](0):
             # enclosed: emit the tetrahedron in permutation order
             var out = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
@@ -1145,6 +1154,8 @@ def _gjk_intersect[
             warm1, warm2,
             prism,
             ccd_margin,
+            shrink1,
+            shrink2,
         )
         var tgt = sidx[index]
         simplex[tgt * 9 + 0] = w[0]
@@ -1292,304 +1303,467 @@ def gjk_epa_witness[
     var warm1 = -1
     var warm2 = -1
     # ===== GJK Phase =====
+    # ⚠⚠ TWO PHASES, AND THE FIRST IS WHERE EVERY SPHERE AND CAPSULE PAIR IS
+    # ACTUALLY SOLVED. `mjc_ccd` opens with
+    #
+    #   if (obj1 or obj2 is SPHERE or CAPSULE) {
+    #     full_margin_i = size[0] + 0.5*margin_i;  support -> point/line;
+    #     margin_i = 0;  dist_cutoff += full_margin1 + full_margin2;
+    #     gjk(...);  restore;
+    #     if (dist > tolerance) { inflate(...); ...; return dist; }
+    #     // deep penetration only: reset and fall through to GJK + EPA
+    #     gjk_iterations = 0;  x1 = center1;  x2 = center2;
+    #   }
+    #   gjk(status, obj1, obj2);
+    #
+    # so a sphere is a POINT and a capsule a LINE, the radii come back through
+    # `inflate()`, and EPA is reached only when the shrunken shapes themselves
+    # overlap. This engine ran the ROUNDED supports straight into GJK + EPA,
+    # which is a smooth Minkowski boundary where the reference had an exact
+    # point-or-line distance query.
+    #
+    # ⚠ MEASURED: it is what `test_hfield_vs_mujoco`'s sphere and capsule need
+    # (14 contacts against MuJoCo's 15 at float32 without it) and what
+    # `test_narrow_phase_pairs`' capsule/cylinder manifold needs (2 perturbed
+    # contacts against 5) — MuJoCo's perturbed re-queries move the witness
+    # point off a LINE, ours slid along a rounded surface and were rejected as
+    # non-distinct.
+    var _sh1 = type1 == GEOM_SPHERE or type1 == GEOM_CAPSULE
+    var _sh2 = type2 == GEOM_SPHERE or type2 == GEOM_CAPSULE
+    var full_m1 = Scalar[DTYPE](0)
+    var full_m2 = Scalar[DTYPE](0)
+    if _sh1:
+        full_m1 = r1 + Scalar[DTYPE](0.5) * ccd_margin
+    if _sh2:
+        full_m2 = r2 + Scalar[DTYPE](0.5) * ccd_margin
+    var shrunk = _sh1 or _sh2
+
     var simplex = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
     var nsimplex = 0
 
-    var dx = p1x - p2x
-    var dy = p1y - p2y
-    var dz = p1z - p2z
-    var dlen = sqrt(dx * dx + dy * dy + dz * dz)
-    if dlen < Scalar[DTYPE](1e-12):
-        dx = Scalar[DTYPE](1)
-        dy = Scalar[DTYPE](0)
-        dz = Scalar[DTYPE](0)
-        dlen = Scalar[DTYPE](1)
-    dx /= dlen
-    dy /= dlen
-    dz /= dlen
-
-    var s = _minkowski_support[DTYPE, NPRISM=NPRISM](
-        type1,
-        p1x,
-        p1y,
-        p1z,
-        q1x,
-        q1y,
-        q1z,
-        q1w,
-        r1,
-        hl1,
-        hx1,
-        hy1,
-        hz1,
-        mesh_verts,
-        mesh_vert_edgeadr,
-        mesh_edges,
-        va1,
-        mnv1,
-        type2,
-        p2x,
-        p2y,
-        p2z,
-        q2x,
-        q2y,
-        q2z,
-        q2w,
-        r2,
-        hl2,
-        hx2,
-        hy2,
-        hz2,
-        va2,
-        mnv2,
-        dx,
-        dy,
-        dz,
-        warm1,
-        warm2,
-        prism,
-        ccd_margin,
-    )
-    simplex[0] = s[0]
-    simplex[1] = s[1]
-    simplex[2] = s[2]
-    simplex[3] = s[3]
-    simplex[4] = s[4]
-    simplex[5] = s[5]
-    simplex[6] = s[6]
-    simplex[7] = s[7]
-    simplex[8] = s[8]
-    nsimplex = 1
-
-    var vx = s[0]
-    var vy = s[1]
-    var vz = s[2]
-
-    # MuJoCo's `min_norm2` (`engine_collision_gjk.c:218`), NOT a constant — see
-    # `_gjk_min_norm2`. The old hardcoded `GJK_TOLERANCE` was a 1e-5 m floor.
+    # ⚠⚠ `x_k` STARTS AS THE DIFFERENCE OF THE TWO GEOM CENTRES, NOT AS A
+    # SUPPORT POINT, AND THE FIRST SUPPORT IS TAKEN ALONG ITS NEGATION.
+    #
+    #     obj1->center(status->x1, obj1);  obj2->center(status->x2, obj2);
+    #     sub3(x_k, x1_k, x2_k);
+    #     ... gjkSupport(simplex + n, obj1, obj2, x_k, x_norm)
+    #     -> dir_neg = x_k/|x_k|;  dir = -dir_neg
+    #
+    # This engine used to take a support along `+(p1 - p2)/|p1 - p2|` OUTSIDE
+    # the loop and seed `v` with the point it returned — the OPPOSITE side of
+    # the Minkowski difference, and one iteration ahead of the reference. Every
+    # support after that was consistent (`-v/|v|`), so the loop looked right;
+    # it just descended from a different starting vertex, and GJK's answer is
+    # path-dependent whenever more than one face is within tolerance.
+    #
+    # ⚠ MEASURED, `test_narrow_phase_pairs`'s box/cylinder group: an
+    # independent numpy replica of `gjk()` + `polytope3` + `epa()` reproduces
+    # MuJoCo's contact to every printed digit, and its seed polytope's six face
+    # distances were 2.95e-07 1.88e-05 4.51e-04 ... against ours 2.20e-05
+    # 7.85e-06 7.56e-04 — different from the FIRST LINE, on the same pose, with
+    # the subdistance already ported. The seed is where it parted.
+    # ⚠⚠ THE WHOLE GJK RUN IS A PHASE. It executes once for an ordinary pair
+    # and TWICE when a sphere or capsule is involved: first on the shrunken
+    # shapes, then — only if those overlap — on the real ones. The declarations
+    # below sit outside the phase loop because the classification after it
+    # reads them.
+    var vx = Scalar[DTYPE](0)
+    var vy = Scalar[DTYPE](0)
+    var vz = Scalar[DTYPE](0)
+    var lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     var min_norm2 = _gjk_min_norm2[DTYPE](type1, type2, ccd_margin, ccd_tol)
+    var dist_sq = Scalar[DTYPE](0)
+    var dist = Scalar[DTYPE](0)
 
-    for _ in range(GJK_MAX_ITERATIONS):
-        var v_dot_v = vx * vx + vy * vy + vz * vz
-        if v_dot_v < min_norm2:
-            break
+    # ⚠⚠ A BOUNDED `for`, NOT `while True`. There are at most two phases — the
+    # shrunken one and the real one — and spelling that as an unbounded loop
+    # with a `break` and a `return` inside gave the METAL back end a control
+    # flow it miscompiled: the heightfield GPU leg returned 0, 7, 11, 12, 14,
+    # 16 or 17 contacts depending on unrelated edits while the float32 CPU leg
+    # sat at the correct 15 throughout. The trip count is what fixed it.
+    # ⚠ The baseline kernel was NOT near a stack ceiling — doubling
+    # `MC_MAX_DEG` there changes nothing — so this was never a size problem.
+    for _phase in range(2):
+        nsimplex = 0
+        warm1 = -1
+        warm2 = -1
+        vx = p1x - p2x
+        vy = p1y - p2y
+        vz = p1z - p2z
 
-        var inv_vlen = Scalar[DTYPE](1) / sqrt(v_dot_v)
-        var ndx = -vx * inv_vlen
-        var ndy = -vy * inv_vlen
-        var ndz = -vz * inv_vlen
 
-        var sn = _minkowski_support[DTYPE, NPRISM=NPRISM](
-            type1,
-            p1x,
-            p1y,
-            p1z,
-            q1x,
-            q1y,
-            q1z,
-            q1w,
-            r1,
-            hl1,
-            hx1,
-            hy1,
-            hz1,
-            mesh_verts,
-            mesh_vert_edgeadr,
-            mesh_edges,
-            va1,
-            mnv1,
-            type2,
-            p2x,
-            p2y,
-            p2z,
-            q2x,
-            q2y,
-            q2z,
-            q2w,
-            r2,
-            hl2,
-            hx2,
-            hy2,
-            hz2,
-            va2,
-            mnv2,
-            ndx,
-            ndy,
-            ndz,
-            warm1,
-            warm2,
-            prism,
-            ccd_margin,
-        )
+        # `lambda` rides OUTSIDE the loop because the witness points at the end are
+        # `lincomb(lambda, n, ...)` over whatever the last completed iteration
+        # left. `{1, 0, 0, 0}` is the reference's initial value, which is what a
+        # break on the very first iteration uses.
+        lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        lam[0] = Scalar[DTYPE](1)
 
-        var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
-        var v_dot = vx * ndx + vy * ndy + vz * ndz
+        # MuJoCo's `min_norm2` (`engine_collision_gjk.c:218`), NOT a constant — see
+        # `_gjk_min_norm2`. The old hardcoded `GJK_TOLERANCE` was a 1e-5 m floor.
+        min_norm2 = _gjk_min_norm2[DTYPE](type1, type2, ccd_margin, ccd_tol)
 
-        # ── CUTOFF EXIT — MuJoCo's `dist_cutoff` arm of `mj_gjk`
-        # (`engine_collision_gjk.c:225`). `nd = -v/|v|`, so `-w_dot` is
-        # `dot(w, v)/|v|`, the standard GJK LOWER BOUND on the distance from
-        # the origin to the Minkowski difference. Once that bound reaches the
-        # cutoff the pair is proven at least `cutoff` apart and no further
-        # iteration can change the caller's `dist < margin` answer.
-        #
-        # ⚠⚠ THIS IS SAFE WHERE THE `gi == 0` CERTIFICATE BELOW WAS NOT, AND
-        # THE DIFFERENCE IS THE BOUND. That branch proved "separated" and
-        # returned 1e30, which is only equivalent to "no contact" when the
-        # margin is 0 — with a margin it silently lost every contact in the
-        # band, 0 against MuJoCo's 5 (see the comment there). This exits only
-        # when a LOWER BOUND on the true distance has reached the very
-        # threshold the caller compares against, so it can cost iterations,
-        # never a contact. A penetrating pair has the origin inside, hence
-        # `dot(w, v) < 0` and `-w_dot < 0`, so it can never fire on one.
-        #
-        # ⚠ MuJoCo's OTHER early-out (`!get_dist`, one branch up) returns on
-        # ANY separating hyperplane. That one is safe only because
-        # `mjc_penetration` INFLATES both geoms by margin first, which we have
-        # never ported — do not copy it. See
-        # `feedback_copying_control_flow_without_its_precondition`.
-        #
-        # Measured, SO-ARM101: GJK runs ~15 iterations per call converging to a
-        # distance nobody reads; its 4 pairs sit 0.9-7.6 cm apart with margin 0.
-        if (
-            dist_cutoff >= Scalar[DTYPE](0)
-            and ccd_margin - w_dot >= dist_cutoff
-        ):
-            wf_ok = 0
-            return (ccd_margin - w_dot, Scalar[DTYPE](0), Scalar[DTYPE](0),
-                    Scalar[DTYPE](0), ndx, ndy, ndz)
-        # ⚠⚠ THE FLOAT32 FLOOR IS NOT A LOOSENING, IT IS WHAT MAKES THE TEST
-        # ABLE TO FIRE AT ALL. `w_dot - v_dot` is a difference of two dot
-        # products of magnitude |v|, so at float32 its rounding floor is about
-        # `1e-7 * |v|` — for robot-scale geometry, HUNDREDS of times above
-        # `GJK_TOLERANCE = 1e-10`. Without the relative term the comparison
-        # never succeeds, GJK runs to `GJK_MAX_ITERATIONS`, and it returns
-        # whatever it is holding at the cap. Measured over a 256-pose sweep of
-        # two real hulls, that produced three PHANTOM CONTACTS: `-0.0` returned
-        # for pairs float64 places 7.2, 16.5 and 16.9 cm apart. A phantom
-        # contact at 17 cm hands the solver a constraint row out of nowhere and
-        # is indistinguishable downstream from a real one.
-        #
-        # ⚠ MUJOCO'S THRESHOLD HERE IS ZERO, AND THAT IS NOT A LOOPHOLE WE CAN
-        # COPY. `engine_collision_gjk.c` sets it to 0 for mesh pairs because
-        # "if both geoms are discrete, finite convergence is guaranteed" — an
-        # exact-arithmetic guarantee that float64 nearly honours and float32
-        # does not. It is relative to |v| so it is scale-invariant, unlike the
-        # absolute constant it adds to.
-        #
-        # ⚠ FLOAT64 IS UNTOUCHED — the term is exactly 0 there, so every
-        # float64 gate is bit-identical. Which also means none of them covers
-        # this; `test_gjk_float32_no_phantom_contacts.mojo` does, and it is RED
-        # without the term.
-        var gjk_eps = Scalar[DTYPE](GJK_TOLERANCE) + Scalar[DTYPE](
-            0.0 if DTYPE == DType.float64 else 1e-6
-        ) * sqrt(v_dot_v)
-        if w_dot - v_dot < gjk_eps:
-            break
+        # `backup_gjk = !get_dist`, and `mjc_Convex` sets `dist_cutoff = 0`, so it
+        # is ON — but the reference clears it after ONE call
+        # (`k = status->gjk_iterations; backup_gjk = 0;`), so `gjkIntersect` is
+        # tried at most once per GJK run. Ours re-entered it every time the simplex
+        # reached four vertices.
+        var backup_gjk = True
+        for k in range(GJK_MAX_ITERATIONS):
+            var v_dot_v = vx * vx + vy * vy + vz * vz
+            if v_dot_v < min_norm2:
+                break
 
-        var si = nsimplex * 9
-        simplex[si + 0] = sn[0]
-        simplex[si + 1] = sn[1]
-        simplex[si + 2] = sn[2]
-        simplex[si + 3] = sn[3]
-        simplex[si + 4] = sn[4]
-        simplex[si + 5] = sn[5]
-        simplex[si + 6] = sn[6]
-        simplex[si + 7] = sn[7]
-        simplex[si + 8] = sn[8]
-        nsimplex += 1
+            var inv_vlen = Scalar[DTYPE](1) / sqrt(v_dot_v)
+            var ndx = -vx * inv_vlen
+            var ndy = -vy * inv_vlen
+            var ndz = -vz * inv_vlen
 
-        # ⚠ THE SIMPLEX IS AT FOUR VERTICES — REFINE IT BEFORE REDUCING IT.
-        # MuJoCo calls `gjkIntersect` at exactly this point
-        # (`engine_collision_gjk.c:238`, `if (n == 3 && backup_gjk)`), BEFORE
-        # the distance subalgorithm runs, because that subalgorithm's job is to
-        # find the closest FEATURE and it will happily drop back to a triangle
-        # or an edge. For a SEPARATED pair that is what you want; for a
-        # PENETRATING one it discards the enclosure and hands EPA a seed that
-        # does not contain the origin, which is the single root cause behind
-        # three failed attempts to use EPA on penetrating primitives.
-        if nsimplex == 4:
-            var gi = _gjk_intersect[DTYPE, NPRISM=NPRISM](
-                simplex,
-                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-                r2, hl2, hx2, hy2, hz2, va2, mnv2,
-                warm1, warm2,
+            var sn = _minkowski_support[DTYPE, NPRISM=NPRISM](
+                type1,
+                p1x,
+                p1y,
+                p1z,
+                q1x,
+                q1y,
+                q1z,
+                q1w,
+                r1,
+                hl1,
+                hx1,
+                hy1,
+                hz1,
+                mesh_verts,
+                mesh_vert_edgeadr,
+                mesh_edges,
+                va1,
+                mnv1,
+                type2,
+                p2x,
+                p2y,
+                p2z,
+                q2x,
+                q2y,
+                q2z,
+                q2w,
+                r2,
+                hl2,
+                hx2,
+                hy2,
+                hz2,
+                va2,
+                mnv2,
+                ndx,
+                ndy,
+                ndz,
+                warm1,
+                warm2,
                 prism,
                 ccd_margin,
+                shrunk and _sh1,
+                shrunk and _sh2,
             )
-            if gi == 1:
-                # enclosed, and `simplex` now holds a valid tetrahedron
+
+            var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
+            var v_dot = vx * ndx + vy * ndy + vz * ndz
+
+            # ── CUTOFF EXIT — MuJoCo's `dist_cutoff` arm of `mj_gjk`
+            # (`engine_collision_gjk.c:225`). `nd = -v/|v|`, so `-w_dot` is
+            # `dot(w, v)/|v|`, the standard GJK LOWER BOUND on the distance from
+            # the origin to the Minkowski difference. Once that bound reaches the
+            # cutoff the pair is proven at least `cutoff` apart and no further
+            # iteration can change the caller's `dist < margin` answer.
+            #
+            # ⚠⚠ THIS IS SAFE WHERE THE `gi == 0` CERTIFICATE BELOW WAS NOT, AND
+            # THE DIFFERENCE IS THE BOUND. That branch proved "separated" and
+            # returned 1e30, which is only equivalent to "no contact" when the
+            # margin is 0 — with a margin it silently lost every contact in the
+            # band, 0 against MuJoCo's 5 (see the comment there). This exits only
+            # when a LOWER BOUND on the true distance has reached the very
+            # threshold the caller compares against, so it can cost iterations,
+            # never a contact. A penetrating pair has the origin inside, hence
+            # `dot(w, v) < 0` and `-w_dot < 0`, so it can never fire on one.
+            #
+            # ⚠ MuJoCo's OTHER early-out (`!get_dist`, one branch up) returns on
+            # ANY separating hyperplane. That one is safe only because
+            # `mjc_penetration` INFLATES both geoms by margin first, which we have
+            # never ported — do not copy it. See
+            # `feedback_copying_control_flow_without_its_precondition`.
+            #
+            # Measured, SO-ARM101: GJK runs ~15 iterations per call converging to a
+            # distance nobody reads; its 4 pairs sit 0.9-7.6 cm apart with margin 0.
+            # ⚠ `status->dist_cutoff += full_margin1 + full_margin2` for the
+            # shrunken phase and is restored afterwards: the shrunken shapes
+            # are farther apart than the real ones by exactly the two radii, so
+            # the cutoff has to grow by the same amount or this exit would give
+            # up on a pair that is genuinely in contact.
+            var _cut = dist_cutoff
+            if shrunk and dist_cutoff >= Scalar[DTYPE](0):
+                _cut = dist_cutoff + full_m1 + full_m2
+            if (
+                dist_cutoff >= Scalar[DTYPE](0)
+                and ccd_margin - w_dot >= _cut
+            ):
+                wf_ok = 0
+                return (ccd_margin - w_dot, Scalar[DTYPE](0), Scalar[DTYPE](0),
+                        Scalar[DTYPE](0), ndx, ndy, ndz)
+            # ⚠⚠ THE FLOAT32 FLOOR IS NOT A LOOSENING, IT IS WHAT MAKES THE TEST
+            # ABLE TO FIRE AT ALL. `w_dot - v_dot` is a difference of two dot
+            # products of magnitude |v|, so at float32 its rounding floor is about
+            # `1e-7 * |v|` — for robot-scale geometry, HUNDREDS of times above
+            # `GJK_TOLERANCE = 1e-10`. Without the relative term the comparison
+            # never succeeds, GJK runs to `GJK_MAX_ITERATIONS`, and it returns
+            # whatever it is holding at the cap. Measured over a 256-pose sweep of
+            # two real hulls, that produced three PHANTOM CONTACTS: `-0.0` returned
+            # for pairs float64 places 7.2, 16.5 and 16.9 cm apart. A phantom
+            # contact at 17 cm hands the solver a constraint row out of nowhere and
+            # is indistinguishable downstream from a real one.
+            #
+            # ⚠ MUJOCO'S THRESHOLD HERE IS ZERO, AND THAT IS NOT A LOOPHOLE WE CAN
+            # COPY. `engine_collision_gjk.c` sets it to 0 for mesh pairs because
+            # "if both geoms are discrete, finite convergence is guaranteed" — an
+            # exact-arithmetic guarantee that float64 nearly honours and float32
+            # does not. It is relative to |v| so it is scale-invariant, unlike the
+            # absolute constant it adds to.
+            #
+            # ⚠ FLOAT64 IS UNTOUCHED — the term is exactly 0 there, so every
+            # float64 gate is bit-identical. Which also means none of them covers
+            # this; `test_gjk_float32_no_phantom_contacts.mojo` does, and it is RED
+            # without the term.
+            # ⚠ THE SUPPORT IS WRITTEN INTO SLOT `n` AND `n` IS NOT INCREMENTED.
+            # `gjkSupport(simplex + n, ...)` puts it there and the reference then
+            # passes `n + 1` to `subdistance`; `n` only advances when the
+            # compaction below decides how many vertices survived. Incrementing
+            # here instead — which this loop used to do — makes every test between
+            # this point and the compaction read a count one too high.
+            var si = nsimplex * 9
+            simplex[si + 0] = sn[0]
+            simplex[si + 1] = sn[1]
+            simplex[si + 2] = sn[2]
+            simplex[si + 3] = sn[3]
+            simplex[si + 4] = sn[4]
+            simplex[si + 5] = sn[5]
+            simplex[si + 6] = sn[6]
+            simplex[si + 7] = sn[7]
+            simplex[si + 8] = sn[8]
+
+            var fw_gap = v_dot_v - (sn[0] * vx + sn[1] * vy + sn[2] * vz)
+            if fw_gap < _gjk_epsilon[DTYPE](
+                type1, type2, ccd_margin, ccd_tol, v_dot_v
+            ):
+                # `if (!k) n = 1;` — a first-iteration convergence leaves the
+                # reference holding exactly one vertex, and `mjc_ccd` then refuses
+                # to build a polytope from it (`nsimplex > 1`).
+                if k == 0:
+                    nsimplex = 1
+                break
+
+            # ⚠ THE SIMPLEX IS AT FOUR VERTICES — REFINE IT BEFORE REDUCING IT.
+            # MuJoCo calls `gjkIntersect` at exactly this point
+            # (`engine_collision_gjk.c:238`, `if (n == 3 && backup_gjk)`), BEFORE
+            # the distance subalgorithm runs, because that subalgorithm's job is to
+            # find the closest FEATURE and it will happily drop back to a triangle
+            # or an edge. For a SEPARATED pair that is what you want; for a
+            # PENETRATING one it discards the enclosure and hands EPA a seed that
+            # does not contain the origin, which is the single root cause behind
+            # three failed attempts to use EPA on penetrating primitives.
+            if nsimplex == 3 and backup_gjk:
+                var gi = _gjk_intersect[DTYPE, NPRISM=NPRISM](
+                    simplex,
+                    type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                    r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
+                    type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                    r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                    warm1, warm2,
+                    prism,
+                    ccd_margin,
+                    shrunk and _sh1,
+                    shrunk and _sh2,
+                )
+                if gi == 1:
+                    # enclosed, and `simplex` now holds a valid tetrahedron.
+                    # ⚠ THE REFERENCE RETURNS HERE with `status->nsimplex = 4` set
+                    # by `gjkIntersect` itself, so the count has to be raised
+                    # explicitly now that the loop no longer pre-increments it.
+                    nsimplex = 4
+                    vx = Scalar[DTYPE](0)
+                    vy = Scalar[DTYPE](0)
+                    vz = Scalar[DTYPE](0)
+                    break
+                elif gi == 0:
+                    # ⚠⚠ PROVEN SEPARATED IS NOT THE SAME AS "FAR ENOUGH TO IGNORE",
+                    # AND THIS USED TO RETURN 1e30 ON THAT ASSUMPTION. The reasoning
+                    # was "no collision, so report a separation the caller's
+                    # `dist < margin` test will reject" — which is right only when
+                    # `margin` is 0. With a margin, a pair separated by LESS than it
+                    # is a contact MuJoCo reports and we returned nothing for.
+                    #
+                    # Measured, cylinder over a box, `margin=0.01` on each
+                    # (`includemargin` 0.02):
+                    #
+                    #     gap      ours   MuJoCo
+                    #     -0.0005    5       5
+                    #      0.0       0       5    <- lost
+                    #      0.0005    0       5    <- lost
+                    #      0.001     0       5    <- lost
+                    #      0.002     1       5
+                    #      0.02      0       0
+                    #
+                    # i.e. it fired exactly in the band that matters and nowhere
+                    # else — the certificate needs a 4-simplex, which only forms at
+                    # SMALL separations, so distant pairs never reached this branch
+                    # and paid nothing for it either.
+                    #
+                    # ⚠ MUJOCO NEVER NEEDS THE DISTANCE because `mjc_penetration`
+                    # sets `dist_cutoff = 0` and INFLATES both geoms by `margin`
+                    # instead (`mjc_initCCDObj(&obj, m, d, g, margin)`), so a
+                    # within-margin pair reads as penetrating. We do not inflate, so
+                    # our caller compares a real distance against `margin` — and
+                    # that means this path MUST produce one.
+                    #
+                    # Falling through costs a few more GJK iterations on
+                    # near-touching non-colliding pairs and keeps the certificate's
+                    # real value: it still prevents EPA being handed a non-enclosing
+                    # seed, because `gi == 1` is what gates that.
+                    #
+                    # ⚠ NOTHING IS SAVED OR RESTORED HERE, DELIBERATELY.
+                    # `_gjk_intersect` rewrites the simplex in place, so the obvious
+                    # move is to snapshot it and put it back — and a 36-element
+                    # per-thread `InlineArray` to do that is exactly the shape that
+                    # silently miscomputes on Metal
+                    # (`feedback_metal_wide_per_thread_inlinearray_miscompute`).
+                    # It was written that way first and cost CPU-vs-GPU parity:
+                    # 9.5e-06 on `test_narrow_phase_pairs_gpu_matches_cpu`, which
+                    # must be bit-exact. The snapshot is also unnecessary — every
+                    # vertex `_gjk_intersect` writes is a genuine support point, so
+                    # what it leaves behind is a valid simplex for the distance
+                    # subalgorithm, just a different one. Verified: identical
+                    # contact counts and distances across the whole margin band
+                    # with and without the restore.
+                    pass
+                # gi == -1: inconclusive, fall through to the subalgorithm below.
+                # Either way the reference clears `backup_gjk` on the way out.
+                backup_gjk = False
+
+            # `subdistance` — barycentric coordinates of the closest point.
+            # ⚠ IT DOES NOT REDUCE THE SIMPLEX; the compaction below is the
+            # reference's own, and the retention test is `lambda[i] != 0` EXACTLY.
+            lam = _subdistance[DTYPE](simplex, nsimplex + 1)
+
+            var keep = 0
+            for i in range(4):
+                if lam[i] == Scalar[DTYPE](0):
+                    continue
+                if keep != i:
+                    for c in range(9):
+                        simplex[keep * 9 + c] = simplex[i * 9 + c]
+                    lam[keep] = lam[i]
+                keep += 1
+            # "SHOULD NOT OCCUR"
+            if keep < 1:
+                wf_ok = 0
+                return (
+                    Scalar[DTYPE](1e30), Scalar[DTYPE](0), Scalar[DTYPE](0),
+                    Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
+                    Scalar[DTYPE](1),
+                )
+            nsimplex = keep
+
+            # the next iterate, `lincomb(lambda, n, simplex)`
+            var xnx = Scalar[DTYPE](0)
+            var xny = Scalar[DTYPE](0)
+            var xnz = Scalar[DTYPE](0)
+            for i in range(nsimplex):
+                xnx += lam[i] * simplex[i * 9 + 0]
+                xny += lam[i] * simplex[i * 9 + 1]
+                xnz += lam[i] * simplex[i * 9 + 2]
+
+            # ⚠⚠ `equal3(x_next, x_k)` — "x_k has converged to minimum". This break
+            # leaves `x_k` AND `x_norm` at the values the top of the iteration
+            # computed, which is why `vx/vy/vz` are not updated before it. The
+            # routine this replaced had no equivalent: it could not compare against
+            # the previous iterate because it returned a point rather than lambda.
+            if (
+                abs(xnx - vx) < Scalar[DTYPE](MJ_MINVAL)
+                and abs(xny - vy) < Scalar[DTYPE](MJ_MINVAL)
+                and abs(xnz - vz) < Scalar[DTYPE](MJ_MINVAL)
+            ):
+                break
+            vx = xnx
+            vy = xny
+            vz = xnz
+
+            if nsimplex == 4:
                 vx = Scalar[DTYPE](0)
                 vy = Scalar[DTYPE](0)
                 vz = Scalar[DTYPE](0)
                 break
-            elif gi == 0:
-                # ⚠⚠ PROVEN SEPARATED IS NOT THE SAME AS "FAR ENOUGH TO IGNORE",
-                # AND THIS USED TO RETURN 1e30 ON THAT ASSUMPTION. The reasoning
-                # was "no collision, so report a separation the caller's
-                # `dist < margin` test will reject" — which is right only when
-                # `margin` is 0. With a margin, a pair separated by LESS than it
-                # is a contact MuJoCo reports and we returned nothing for.
-                #
-                # Measured, cylinder over a box, `margin=0.01` on each
-                # (`includemargin` 0.02):
-                #
-                #     gap      ours   MuJoCo
-                #     -0.0005    5       5
-                #      0.0       0       5    <- lost
-                #      0.0005    0       5    <- lost
-                #      0.001     0       5    <- lost
-                #      0.002     1       5
-                #      0.02      0       0
-                #
-                # i.e. it fired exactly in the band that matters and nowhere
-                # else — the certificate needs a 4-simplex, which only forms at
-                # SMALL separations, so distant pairs never reached this branch
-                # and paid nothing for it either.
-                #
-                # ⚠ MUJOCO NEVER NEEDS THE DISTANCE because `mjc_penetration`
-                # sets `dist_cutoff = 0` and INFLATES both geoms by `margin`
-                # instead (`mjc_initCCDObj(&obj, m, d, g, margin)`), so a
-                # within-margin pair reads as penetrating. We do not inflate, so
-                # our caller compares a real distance against `margin` — and
-                # that means this path MUST produce one.
-                #
-                # Falling through costs a few more GJK iterations on
-                # near-touching non-colliding pairs and keeps the certificate's
-                # real value: it still prevents EPA being handed a non-enclosing
-                # seed, because `gi == 1` is what gates that.
-                #
-                # ⚠ NOTHING IS SAVED OR RESTORED HERE, DELIBERATELY.
-                # `_gjk_intersect` rewrites the simplex in place, so the obvious
-                # move is to snapshot it and put it back — and a 36-element
-                # per-thread `InlineArray` to do that is exactly the shape that
-                # silently miscomputes on Metal
-                # (`feedback_metal_wide_per_thread_inlinearray_miscompute`).
-                # It was written that way first and cost CPU-vs-GPU parity:
-                # 9.5e-06 on `test_narrow_phase_pairs_gpu_matches_cpu`, which
-                # must be bit-exact. The snapshot is also unnecessary — every
-                # vertex `_gjk_intersect` writes is a genuine support point, so
-                # what it leaves behind is a valid simplex for the distance
-                # subalgorithm, just a different one. Verified: identical
-                # contact counts and distances across the whole margin band
-                # with and without the restore.
-                pass
-            # gi == -1: inconclusive, fall through to the subalgorithm below
 
-        # Import and use the CPU closest_point function (works on InlineArray, no List)
 
-        var cp = _closest_point_on_simplex[DTYPE](simplex, nsimplex)
-        vx = cp[0]
-        vy = cp[1]
-        vz = cp[2]
-        nsimplex = Int(cp[3])
-
-        if nsimplex == 4:
-            vx = Scalar[DTYPE](0)
-            vy = Scalar[DTYPE](0)
-            vz = Scalar[DTYPE](0)
+        dist_sq = vx * vx + vy * vy + vz * vz
+        dist = sqrt(dist_sq)
+        if not shrunk:
             break
+
+        # `if (status->dist > status->tolerance) { inflate(...); return; }` —
+        # the shrunken shapes are APART, so the contact is entirely described
+        # by their distance and the two radii, and EPA never runs.
+        if dist > ccd_tol:
+            var i1x = Scalar[DTYPE](0)
+            var i1y = Scalar[DTYPE](0)
+            var i1z = Scalar[DTYPE](0)
+            var i2x = Scalar[DTYPE](0)
+            var i2y = Scalar[DTYPE](0)
+            var i2z = Scalar[DTYPE](0)
+            for i in range(nsimplex):
+                i1x += lam[i] * simplex[i * 9 + 3]
+                i1y += lam[i] * simplex[i * 9 + 4]
+                i1z += lam[i] * simplex[i * 9 + 5]
+                i2x += lam[i] * simplex[i * 9 + 6]
+                i2y += lam[i] * simplex[i * 9 + 7]
+                i2z += lam[i] * simplex[i * 9 + 8]
+            # `inflate`: n = normalize(x2 - x1); x1 += m1*n; x2 -= m2*n;
+            #            dist -= (m1 + m2)
+            var inx = i2x - i1x
+            var iny = i2y - i1y
+            var inz = i2z - i1z
+            var iln = sqrt(inx * inx + iny * iny + inz * inz)
+            if iln > Scalar[DTYPE](0):
+                inx /= iln
+                iny /= iln
+                inz /= iln
+            i1x += full_m1 * inx
+            i1y += full_m1 * iny
+            i1z += full_m1 * inz
+            i2x -= full_m2 * inx
+            i2y -= full_m2 * iny
+            i2z -= full_m2 * inz
+            dist -= full_m1 + full_m2
+            # The normal is `normalize(x1 - x2)` on the INFLATED witnesses,
+            # exactly as `mjc_penetration` builds it for the EPA path.
+            var fnx = i1x - i2x
+            var fny = i1y - i2y
+            var fnz = i1z - i2z
+            var fln = sqrt(fnx * fnx + fny * fny + fnz * fnz)
+            if fln > Scalar[DTYPE](0):
+                fnx /= fln
+                fny /= fln
+                fnz /= fln
+            else:
+                fnx = Scalar[DTYPE](0)
+                fny = Scalar[DTYPE](0)
+                fnz = Scalar[DTYPE](1)
+            wf_ok = 0
+            return (
+                dist + ccd_margin,
+                (i1x + i2x) * Scalar[DTYPE](0.5),
+                (i1y + i2y) * Scalar[DTYPE](0.5),
+                (i1z + i2z) * Scalar[DTYPE](0.5),
+                fnx, fny, fnz,
+            )
+
+        # Deep penetration: reset and re-run on the REAL shapes.
+        shrunk = False
 
     # Classify with the SAME quantity the loop converges on. `GJK_TOLERANCE` is
     # a threshold on |v|^2 in the loop above (`v_dot_v < GJK_TOLERANCE`), so
@@ -1599,32 +1773,39 @@ def gjk_epa_witness[
     # `dist < margin` test. A deep penetration would vanish outright: the two
     # exits that mean "origin reached" (tetrahedron enclosed, |v| -> 0) have to
     # agree, or a single ULP decides whether a contact exists at all.
-    var dist_sq = vx * vx + vy * vy + vz * vz
-    var dist = sqrt(dist_sq)
-
-    if dist_sq > min_norm2:
+    # ⚠⚠ THE EPA GATE IS `dist <= ccd_tolerance`, NOT `dist^2 > min_norm2`.
+    # `mjc_ccd` reads
+    #
+    #     if (status->dist <= config->tolerance && status->nsimplex > 1 ...)
+    #
+    # while `min_norm2` is only the GJK LOOP's break. This engine used the loop
+    # threshold for both, and the two are the same number only for a SMOOTH
+    # pair (`tol^2` either way). For a DISCRETE pair `min_norm2` is
+    # `mjMINVAL^2`, so anything GJK left further than 1e-15 from the origin was
+    # reported SEPARATED where the reference would have run EPA on it — a lost
+    # contact whenever GJK's own convergence floor sits above 1e-15, which at
+    # float32 is always.
+    if dist > ccd_tol:
         # Separated
-        var w1x: Scalar[DTYPE] = 0
-        var w1y: Scalar[DTYPE] = 0
-        var w1z: Scalar[DTYPE] = 0
-        var w2x: Scalar[DTYPE] = 0
-        var w2y: Scalar[DTYPE] = 0
-        var w2z: Scalar[DTYPE] = 0
+        # ⚠⚠ `lincomb(x1_k, lambda, n, ...)`, NOT A UNIFORM AVERAGE. This used
+        # to divide the SUM of the surviving support points by their count,
+        # which is the barycentric combination only when every coordinate
+        # happens to be equal. The reference weights by `lambda`, and those are
+        # the coordinates of the closest point — the whole output of
+        # `subdistance`, which the routine this replaced discarded.
+        var w1x = Scalar[DTYPE](0)
+        var w1y = Scalar[DTYPE](0)
+        var w1z = Scalar[DTYPE](0)
+        var w2x = Scalar[DTYPE](0)
+        var w2y = Scalar[DTYPE](0)
+        var w2z = Scalar[DTYPE](0)
         for i in range(nsimplex):
-            w1x += simplex[i * 9 + 3]
-            w1y += simplex[i * 9 + 4]
-            w1z += simplex[i * 9 + 5]
-            w2x += simplex[i * 9 + 6]
-            w2y += simplex[i * 9 + 7]
-            w2z += simplex[i * 9 + 8]
-        if nsimplex > 0:
-            var inv_n = Scalar[DTYPE](1) / Scalar[DTYPE](nsimplex)
-            w1x *= inv_n
-            w1y *= inv_n
-            w1z *= inv_n
-            w2x *= inv_n
-            w2y *= inv_n
-            w2z *= inv_n
+            w1x += lam[i] * simplex[i * 9 + 3]
+            w1y += lam[i] * simplex[i * 9 + 4]
+            w1z += lam[i] * simplex[i * 9 + 5]
+            w2x += lam[i] * simplex[i * 9 + 6]
+            w2y += lam[i] * simplex[i * 9 + 7]
+            w2z += lam[i] * simplex[i * 9 + 8]
         var cx = (w1x + w2x) * Scalar[DTYPE](0.5)
         var cy = (w1y + w2y) * Scalar[DTYPE](0.5)
         var cz = (w1z + w2z) * Scalar[DTYPE](0.5)
@@ -1645,625 +1826,707 @@ def gjk_epa_witness[
         return (dist + ccd_margin, cx, cy, cz, nx, ny, nz)
 
     # ===== EPA Phase =====
-    # Expanding Polytope Algorithm. Replaces a placeholder that took the
-    # CENTRE-LINE direction as the normal and the Minkowski support extent
-    # along it as the depth — neither of which is a penetration depth.
+    # A one-for-one port of `polytope2` / `polytope3` / `polytope4` and `epa()`
+    # (`engine_collision_gjk.c`). The polytope itself lives in `epa.mojo`; only
+    # the three seed builders and the expansion loop are here, because they are
+    # the only parts that call the support function.
     #
-    # Measured on a cylinder (r=hl=0.05) against a box face, where the true
-    # depth is known analytically:
-    #     penetration   placeholder      EPA
-    #     0.0005        -1.0995          exact
-    #     0.005         -1.095           exact
-    #     0.030         -1.07            exact
-    # i.e. the placeholder was wrong by 37x at 3 cm and ~2200x at contact,
-    # while EPA recovers the analytic depth at every sampled penetration.
+    # ⚠⚠ FOUR THINGS THE EPA THIS REPLACED DID THAT MuJoCo DOES NOT, all of
+    # which change WHICH boundary face is returned and therefore the contact
+    # NORMAL:
     #
-    # `simplex` holds `nsimplex` vertices of 9 floats — the Minkowski point
-    # (0..2) and the two witness points (3..5, 6..8). EPA needs the witnesses
-    # carried through expansion, which is why the vertex stride stays 9.
-    # `ev` and `ef` are SLICES OF THE CALLER'S WORKSPACE ROW, not locals —
-    # `ws[wrow, CCD_WS_EV + ...]` and `ws[wrow, CCD_WS_EF + ...]`. They are
-    # 7.5 KB together and a per-thread stack that size is what kept the
-    # heightfield prism off the GPU.
-    var nev = 0
-    var nef = 0
+    #   1. it rescanned EVERY face for the closest one; MuJoCo scans `map`, a
+    #      candidate list a face joins only when `lower2 <= dist2 <= upper2`;
+    #   2. it marked every globally visible face and compacted the array;
+    #      MuJoCo walks `Face::adj` out from the closest face and never reuses
+    #      a slot;
+    #   3. it compared the CURRENT iteration's upper bound against the lower
+    #      one; MuJoCo keeps `upper` as a running MINIMUM, so it stops no later
+    #      and usually sooner;
+    #   4. it had no "the closest face got worse, return the previous one" rule.
+    #
+    # ⚠⚠ AND THREE THINGS IT DID THAT HAVE NO COUNTERPART AT ALL, now gone: an
+    # axis-aligned OCTAHEDRON seed when GJK's simplex did not enclose the
+    # origin, a post-hoc UPPER-BOUND CHECK over seven sampled directions, and a
+    # CENTRE-LINE normal with a support-extent depth. Each was covering for a
+    # missing `polytope2/3/4`; the reference's answer in all three situations is
+    # `status->dist = 0`, which `mjc_penetration` records as NO CONTACT because
+    # it only writes a contact when `dist < 0`.
+    #
+    # ⚠ `status->dist = 0` IS SET BEFORE THE SEED IS BUILT, which is why
+    # `polytope3`'s `status->dist > 10*mjMINVAL` guard around `testTetra` can
+    # never fire from `mjc_ccd`. It is transcribed below as the dead branch it
+    # is rather than silently dropped.
 
-    # ---- seed the polytope -------------------------------------------------
-    # GJK exits enclosure with a tetrahedron, which is the seed MuJoCo uses.
-    # When it instead converged with |v| -> 0 on a lower-dimensional simplex
-    # there is no tetrahedron to hand, and rather than port `polytope2/3/4`
-    # (three more degenerate constructions) the polytope is seeded from the six
-    # AXIS supports. That octahedron was validated in the same reference run
-    # that measured the caps: it converged to the analytic depth on every
-    # cylinder/box, box/box and capsule/box case tested.
-    # Attempt 1 — GJK's tetrahedron, the seed MuJoCo uses.
-    if nsimplex == 4:
+    var nverts = 0
+    var nfaces = 0
+    var nmap = 0
+    var nhor = 0
+    # `mjc_ccd`'s `ret`: 0 is "simplex not on boundary, run EPA", anything else
+    # is one of the `mjEPA_*` codes and means no polytope and no contact.
+    var ret = 0
+    var need3 = False
+
+    var md23 = epa_mindist[DTYPE]()
+    var md4 = epa_mindist4[DTYPE]()
+    var mval = epa_minval[DTYPE]()
+
+    if nsimplex < 2:
+        # `mjc_ccd` requires `status->nsimplex > 1` before it builds anything.
+        ret = -1
+
+    # ── polytope4 — GJK ended enclosing the origin ────────────────────────
+    elif nsimplex >= 4:
         for i in range(4):
             for k in range(9):
-                ws[wrow, CCD_WS_EV + i * 9 + k] = simplex[i * 9 + k]
-        nev = 4
-        ws[wrow, CCD_WS_EF + 0] = Scalar[DTYPE](0)
-        ws[wrow, CCD_WS_EF + 1] = Scalar[DTYPE](1)
-        ws[wrow, CCD_WS_EF + 2] = Scalar[DTYPE](2)
-        ws[wrow, CCD_WS_EF + 3] = Scalar[DTYPE](0)
-        ws[wrow, CCD_WS_EF + 4] = Scalar[DTYPE](1)
-        ws[wrow, CCD_WS_EF + 5] = Scalar[DTYPE](3)
-        ws[wrow, CCD_WS_EF + 6] = Scalar[DTYPE](0)
-        ws[wrow, CCD_WS_EF + 7] = Scalar[DTYPE](2)
-        ws[wrow, CCD_WS_EF + 8] = Scalar[DTYPE](3)
-        ws[wrow, CCD_WS_EF + 9] = Scalar[DTYPE](1)
-        ws[wrow, CCD_WS_EF + 10] = Scalar[DTYPE](2)
-        ws[wrow, CCD_WS_EF + 11] = Scalar[DTYPE](3)
-        nef = 4
+                set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+            # ⚠ STAGE A: the seed vertices carry no support index. MuJoCo's
+            # `insertVertex` copies `index1`/`index2` out of the GJK simplex,
+            # which would mean widening the simplex from 9 floats to 11 and
+            # permuting the two extra columns through the whole subdistance.
+            # -1 is the value `mjc_initCCDObj` starts them at and can never
+            # equal a real box corner or hull vertex, so the discrete
+            # repeated-support break below is blind to a repeat of a SEED
+            # vertex and correct for every other pair.
+            set_ev(ws, wrow, i, 9, Scalar[DTYPE](-1))
+            set_ev(ws, wrow, i, 10, Scalar[DTYPE](-1))
+        nverts = 4
+        var c4x = Scalar[DTYPE](0)
+        var c4y = Scalar[DTYPE](0)
+        var c4z = Scalar[DTYPE](0)
+        for i in range(4):
+            c4x += ev(ws, wrow, i, 0)
+            c4y += ev(ws, wrow, i, 1)
+            c4z += ev(ws, wrow, i, 2)
+        set_center(
+            ws, wrow,
+            c4x * Scalar[DTYPE](0.25),
+            c4y * Scalar[DTYPE](0.25),
+            c4z * Scalar[DTYPE](0.25),
+        )
 
-    # Attempt 1b — GJK ended on a TRIANGLE: MuJoCo's `polytope3`.
-    #
-    # Measured, not guessed: sawyer's obj against the eGripperBase hull leaves
-    # GJK with `nsimplex == 3`, and both the tetrahedron seed (absent) and the
-    # axis octahedron (degenerate) fail on it, which is why that 27.7 mm
-    # contact fell through to the old estimate. `polytope3`
-    # (`engine_collision_gjk.c`) builds a hexahedron from the triangle by
-    # taking supports along BOTH triangle normals, giving 5 vertices and 6
-    # faces that straddle the plane the triangle lies in.
-    elif nsimplex == 3:
-        for i in range(3):
-            for k in range(9):
-                ws[wrow, CCD_WS_EV + i * 9 + k] = simplex[i * 9 + k]
-        var e1x = _ev(ws, wrow, 1, 0) - _ev(ws, wrow, 0, 0)
-        var e1y = _ev(ws, wrow, 1, 1) - _ev(ws, wrow, 0, 1)
-        var e1z = _ev(ws, wrow, 1, 2) - _ev(ws, wrow, 0, 2)
-        var e2x = _ev(ws, wrow, 2, 0) - _ev(ws, wrow, 0, 0)
-        var e2y = _ev(ws, wrow, 2, 1) - _ev(ws, wrow, 0, 1)
-        var e2z = _ev(ws, wrow, 2, 2) - _ev(ws, wrow, 0, 2)
-        var tnx = e1y * e2z - e1z * e2y
-        var tny = e1z * e2x - e1x * e2z
-        var tnz = e1x * e2y - e1y * e2x
-        var tln = sqrt(tnx * tnx + tny * tny + tnz * tnz)
-        if tln > Scalar[DTYPE](1e-20):
-            tnx /= tln
-            tny /= tln
-            tnz /= tln
-            var sp4 = _minkowski_support[DTYPE, NPRISM=NPRISM](
-                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-                r2, hl2, hx2, hy2, hz2, va2, mnv2,
-                tnx, tny, tnz,
-                warm1, warm2,
-                prism,
-                ccd_margin,
-            )
-            var sp5 = _minkowski_support[DTYPE, NPRISM=NPRISM](
-                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-                r2, hl2, hx2, hy2, hz2, va2, mnv2,
-                -tnx, -tny, -tnz,
-                warm1, warm2,
-                prism,
-                ccd_margin,
-            )
-            ws[wrow, CCD_WS_EV + 27 + 0] = sp4[0]
-            ws[wrow, CCD_WS_EV + 27 + 1] = sp4[1]
-            ws[wrow, CCD_WS_EV + 27 + 2] = sp4[2]
-            ws[wrow, CCD_WS_EV + 27 + 3] = sp4[3]
-            ws[wrow, CCD_WS_EV + 27 + 4] = sp4[4]
-            ws[wrow, CCD_WS_EV + 27 + 5] = sp4[5]
-            ws[wrow, CCD_WS_EV + 27 + 6] = sp4[6]
-            ws[wrow, CCD_WS_EV + 27 + 7] = sp4[7]
-            ws[wrow, CCD_WS_EV + 27 + 8] = sp4[8]
-            ws[wrow, CCD_WS_EV + 36 + 0] = sp5[0]
-            ws[wrow, CCD_WS_EV + 36 + 1] = sp5[1]
-            ws[wrow, CCD_WS_EV + 36 + 2] = sp5[2]
-            ws[wrow, CCD_WS_EV + 36 + 3] = sp5[3]
-            ws[wrow, CCD_WS_EV + 36 + 4] = sp5[4]
-            ws[wrow, CCD_WS_EV + 36 + 5] = sp5[5]
-            ws[wrow, CCD_WS_EV + 36 + 6] = sp5[6]
-            ws[wrow, CCD_WS_EV + 36 + 7] = sp5[7]
-            ws[wrow, CCD_WS_EV + 36 + 8] = sp5[8]
-            nev = 5
-            var hex_f: InlineArray[Int, 18] = [
-                3, 0, 1, 3, 2, 0, 3, 1, 2, 4, 1, 0, 4, 0, 2, 4, 2, 1,
-            ]
-            for k in range(18):
-                ws[wrow, CCD_WS_EF + k] = Scalar[DTYPE](hex_f[k])
-            nef = 6
-
-    var seed_code = _epa_seed_contains_origin[DTYPE, L_WS](ws, wrow, nef)
-
-    # Attempt 2 — the six AXIS supports as an octahedron.
-    #
-    # ⚠ A DEGENERATE TETRAHEDRON IS NOT THE SAME THING AS A TOUCHING PAIR, and
-    # conflating them drops real contacts. GJK routinely terminates on a nearly
-    # FLAT simplex for mesh pairs (the same coplanar-simplex family as the
-    # phantom fixed in 13d7d4bb), which fails the containment test while the
-    # geoms are deeply overlapped — sawyer's obj sits 27.7 mm inside the
-    # gripper hull there. Rebuilding the seed from axis supports recovers those
-    # cases; only when THAT is also degenerate is the origin genuinely on the
-    # boundary.
-    if seed_code != 1:
-        for a in range(6):
-            var sdx = Scalar[DTYPE](0)
-            var sdy = Scalar[DTYPE](0)
-            var sdz = Scalar[DTYPE](0)
-            if a == 0:
-                sdx = Scalar[DTYPE](1)
-            elif a == 1:
-                sdx = Scalar[DTYPE](-1)
-            elif a == 2:
-                sdy = Scalar[DTYPE](1)
-            elif a == 3:
-                sdy = Scalar[DTYPE](-1)
-            elif a == 4:
-                sdz = Scalar[DTYPE](1)
+        # ⚠⚠ THE FOUR CALLS ARE WRITTEN OUT, NOT DRIVEN BY A TABLE, and that is
+        # a GPU requirement rather than a style choice: a per-thread
+        # `InlineArray[Int, 24]` indexed by a RUNTIME loop variable is the
+        # shape that silently miscomputes in a Metal kernel
+        # (`feedback_metal_wide_per_thread_inlinearray_miscompute`). The
+        # reference writes them out too.
+        var fail4 = -1
+        var d = attach_face(ws, wrow, 0, 0, 1, 2, 1, 3, 2)
+        nfaces = 1
+        if d < md4:
+            fail4 = 0
+        else:
+            d = attach_face(ws, wrow, 1, 0, 3, 1, 2, 3, 0)
+            nfaces = 2
+            if d < md4:
+                fail4 = 1
             else:
-                sdz = Scalar[DTYPE](-1)
+                d = attach_face(ws, wrow, 2, 0, 2, 3, 0, 3, 1)
+                nfaces = 3
+                if d < md4:
+                    fail4 = 2
+                else:
+                    d = attach_face(ws, wrow, 3, 3, 2, 1, 2, 0, 1)
+                    nfaces = 4
+                    if d < md4:
+                        fail4 = 3
+
+        if fail4 >= 0:
+            # `replaceSimplex3` — the origin is on this face, so drop to the
+            # 2-simplex it spans and rebuild with `polytope3`. The triples are
+            # the first three arguments of the call that failed:
+            #   0 -> (0, 1, 2)   1 -> (0, 3, 1)   2 -> (0, 2, 3)   3 -> (3, 2, 1)
+            # ⚠ ONE 9-FLOAT SCRATCH, and the write ORDER matters: two of the
+            # four permutations read a slot they are about to overwrite.
+            var ra = 0
+            var rb = 1
+            var rc = 2
+            if fail4 == 1:
+                ra = 0
+                rb = 3
+                rc = 1
+            elif fail4 == 2:
+                ra = 0
+                rb = 2
+                rc = 3
+            elif fail4 == 3:
+                ra = 3
+                rb = 2
+                rc = 1
+            var tmp = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+            for k in range(9):
+                tmp[k] = simplex[rc * 9 + k]
+            for k in range(9):
+                simplex[0 * 9 + k] = simplex[ra * 9 + k]
+            for k in range(9):
+                simplex[1 * 9 + k] = simplex[rb * 9 + k]
+            for k in range(9):
+                simplex[2 * 9 + k] = tmp[k]
+            nsimplex = 3
+            nverts = 0
+            nfaces = 0
+            nmap = 0
+            need3 = True
+        elif not test_tetra[DTYPE](
+            ev(ws, wrow, 0, 0), ev(ws, wrow, 0, 1), ev(ws, wrow, 0, 2),
+            ev(ws, wrow, 1, 0), ev(ws, wrow, 1, 1), ev(ws, wrow, 1, 2),
+            ev(ws, wrow, 2, 0), ev(ws, wrow, 2, 1), ev(ws, wrow, 2, 2),
+            ev(ws, wrow, 3, 0), ev(ws, wrow, 3, 1), ev(ws, wrow, 3, 2),
+        ):
+            ret = 1  # mjEPA_P4_MISSING_ORIGIN
+        else:
+            for i in range(4):
+                set_emap(ws, wrow, i, i)
+                set_efi(ws, wrow, i, i)
+            nmap = 4
+
+    # ── polytope2 — GJK ended on a segment ────────────────────────────────
+    elif nsimplex == 2:
+        var v1x = simplex[0]
+        var v1y = simplex[1]
+        var v1z = simplex[2]
+        var v2x = simplex[9]
+        var v2y = simplex[10]
+        var v2z = simplex[11]
+        set_center(
+            ws, wrow,
+            (v1x + v2x) * Scalar[DTYPE](0.5),
+            (v1y + v2y) * Scalar[DTYPE](0.5),
+            (v1z + v2z) * Scalar[DTYPE](0.5),
+        )
+        var dfx = v2x - v1x
+        var dfy = v2y - v1y
+        var dfz = v2z - v1z
+
+        # the axis with the smallest component, so the cross product is largest
+        var ex = Scalar[DTYPE](0)
+        var ey = Scalar[DTYPE](0)
+        var ez = Scalar[DTYPE](0)
+        if abs(dfx) <= abs(dfy) and abs(dfx) <= abs(dfz):
+            ex = Scalar[DTYPE](1)
+        elif abs(dfy) <= abs(dfz):
+            ey = Scalar[DTYPE](1)
+        else:
+            ez = Scalar[DTYPE](1)
+
+        var d1x = ey * dfz - ez * dfy
+        var d1y = ez * dfx - ex * dfz
+        var d1z = ex * dfy - ey * dfx
+        var rm = rotmat120[DTYPE](dfx, dfy, dfz)
+        var d2x = rm[0] * d1x + rm[1] * d1y + rm[2] * d1z
+        var d2y = rm[3] * d1x + rm[4] * d1y + rm[5] * d1z
+        var d2z = rm[6] * d1x + rm[7] * d1y + rm[8] * d1z
+        var d3x = rm[0] * d2x + rm[1] * d2y + rm[2] * d2z
+        var d3y = rm[3] * d2x + rm[4] * d2y + rm[5] * d2z
+        var d3z = rm[6] * d2x + rm[7] * d2y + rm[8] * d2z
+
+        for i in range(2):
+            for k in range(9):
+                set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+            set_ev(ws, wrow, i, 9, Scalar[DTYPE](-1))
+            set_ev(ws, wrow, i, 10, Scalar[DTYPE](-1))
+        nverts = 2
+
+        for s in range(3):
+            var sx = d1x
+            var sy = d1y
+            var sz = d1z
+            if s == 1:
+                sx = d2x
+                sy = d2y
+                sz = d2z
+            elif s == 2:
+                sx = d3x
+                sy = d3y
+                sz = d3z
+            var sn2 = sqrt(sx * sx + sy * sy + sz * sz)
+            # `epaSupport` normalises by the norm it is handed and falls back
+            # to (1, 0, 0) when that norm is below `mjMINVAL`.
+            var ux = Scalar[DTYPE](1)
+            var uy = Scalar[DTYPE](0)
+            var uz = Scalar[DTYPE](0)
+            if sn2 > mval:
+                ux = sx / sn2
+                uy = sy / sn2
+                uz = sz / sn2
             var sp = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
-                sdx, sdy, sdz,
+                ux, uy, uz,
                 warm1, warm2,
                 prism,
                 ccd_margin,
             )
-            ws[wrow, CCD_WS_EV + a * 9 + 0] = sp[0]
-            ws[wrow, CCD_WS_EV + a * 9 + 1] = sp[1]
-            ws[wrow, CCD_WS_EV + a * 9 + 2] = sp[2]
-            ws[wrow, CCD_WS_EV + a * 9 + 3] = sp[3]
-            ws[wrow, CCD_WS_EV + a * 9 + 4] = sp[4]
-            ws[wrow, CCD_WS_EV + a * 9 + 5] = sp[5]
-            ws[wrow, CCD_WS_EV + a * 9 + 6] = sp[6]
-            ws[wrow, CCD_WS_EV + a * 9 + 7] = sp[7]
-            ws[wrow, CCD_WS_EV + a * 9 + 8] = sp[8]
-        nev = 6
-        var oct_f: InlineArray[Int, 24] = [
-            0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
-            2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
-        ]
-        for k in range(24):
-            ws[wrow, CCD_WS_EF + k] = Scalar[DTYPE](oct_f[k])
-        nef = 8
-        seed_code = _epa_seed_contains_origin[DTYPE, L_WS](ws, wrow, nef)
+            set_ev(ws, wrow, nverts, 0, sp[0])
+            set_ev(ws, wrow, nverts, 1, sp[1])
+            set_ev(ws, wrow, nverts, 2, sp[2])
+            set_ev(ws, wrow, nverts, 3, sp[3])
+            set_ev(ws, wrow, nverts, 4, sp[4])
+            set_ev(ws, wrow, nverts, 5, sp[5])
+            set_ev(ws, wrow, nverts, 6, sp[6])
+            set_ev(ws, wrow, nverts, 7, sp[7])
+            set_ev(ws, wrow, nverts, 8, sp[8])
+            set_ev(ws, wrow, nverts, 9, Scalar[DTYPE](warm1))
+            set_ev(ws, wrow, nverts, 10, Scalar[DTYPE](warm2))
+            nverts += 1
 
-    # ---- expand ------------------------------------------------------------
-    var best_nx = Scalar[DTYPE](0)
-    var best_ny = Scalar[DTYPE](0)
-    var best_nz = Scalar[DTYPE](1)
-    var best_d = Scalar[DTYPE](0)
-    var best_face = -1
-    var converged = False
+        # Written out for the same reason as `polytope4`'s four.
+        var fail2 = -1
+        var d2a = attach_face(ws, wrow, 0, 0, 2, 3, 1, 3, 2)
+        nfaces = 1
+        if d2a < md23:
+            fail2 = 0
+        else:
+            d2a = attach_face(ws, wrow, 1, 0, 4, 2, 2, 4, 0)
+            nfaces = 2
+            if d2a < md23:
+                fail2 = 1
+            else:
+                d2a = attach_face(ws, wrow, 2, 0, 3, 4, 0, 5, 1)
+                nfaces = 3
+                if d2a < md23:
+                    fail2 = 2
+                else:
+                    d2a = attach_face(ws, wrow, 3, 1, 3, 2, 5, 0, 4)
+                    nfaces = 4
+                    if d2a < md23:
+                        fail2 = 3
+                    else:
+                        d2a = attach_face(ws, wrow, 4, 1, 2, 4, 3, 1, 5)
+                        nfaces = 5
+                        if d2a < md23:
+                            fail2 = 4
+                        else:
+                            d2a = attach_face(
+                                ws, wrow, 5, 1, 4, 3, 4, 2, 3
+                            )
+                            nfaces = 6
+                            if d2a < md23:
+                                fail2 = 5
 
-    # `ccd_iterations` from model META, but never past what the polytope arrays
-    # can hold — MuJoCo grows its polytope on the heap and has no equivalent
-    # cap, so a model asking for more than `EPA_ITER_HARD_CAP` gets the arrays'
-    # limit and NOT what it asked for. The `nev`/`nef` guard below is the one
-    # that actually reports it.
+        if fail2 >= 0:
+            # The failing call's first three arguments. ⚠ These index the
+            # POLYTOPE's vertices, not the simplex, so there is no aliasing.
+            var sa = 0
+            var sb = 2
+            var sc = 3
+            if fail2 == 1:
+                sa = 0
+                sb = 4
+                sc = 2
+            elif fail2 == 2:
+                sa = 0
+                sb = 3
+                sc = 4
+            elif fail2 == 3:
+                sa = 1
+                sb = 3
+                sc = 2
+            elif fail2 == 4:
+                sa = 1
+                sb = 2
+                sc = 4
+            elif fail2 == 5:
+                sa = 1
+                sb = 4
+                sc = 3
+            for k in range(9):
+                simplex[0 * 9 + k] = ev(ws, wrow, sa, k)
+            for k in range(9):
+                simplex[1 * 9 + k] = ev(ws, wrow, sb, k)
+            for k in range(9):
+                simplex[2 * 9 + k] = ev(ws, wrow, sc, k)
+            nsimplex = 3
+            nverts = 0
+            nfaces = 0
+            nmap = 0
+            need3 = True
+        elif ray_triangle[DTYPE](
+            ev(ws, wrow, 0, 0), ev(ws, wrow, 0, 1), ev(ws, wrow, 0, 2),
+            ev(ws, wrow, 1, 0), ev(ws, wrow, 1, 1), ev(ws, wrow, 1, 2),
+            ev(ws, wrow, 2, 0), ev(ws, wrow, 2, 1), ev(ws, wrow, 2, 2),
+            ev(ws, wrow, 3, 0), ev(ws, wrow, 3, 1), ev(ws, wrow, 3, 2),
+            ev(ws, wrow, 4, 0), ev(ws, wrow, 4, 1), ev(ws, wrow, 4, 2),
+        ) == 0:
+            ret = 2  # mjEPA_P2_NONCONVEX
+        else:
+            for i in range(6):
+                set_emap(ws, wrow, i, i)
+                set_efi(ws, wrow, i, i)
+            nmap = 6
+
+    else:
+        need3 = True
+
+    # ── polytope3 — GJK ended on a triangle, or a seed dropped to one ─────
+    if need3 and ret == 0:
+        var w1x = simplex[0]
+        var w1y = simplex[1]
+        var w1z = simplex[2]
+        var w2x = simplex[9]
+        var w2y = simplex[10]
+        var w2z = simplex[11]
+        var w3x = simplex[18]
+        var w3y = simplex[19]
+        var w3z = simplex[20]
+        set_center(
+            ws, wrow,
+            (w1x + w2x + w3x) / Scalar[DTYPE](3),
+            (w1y + w2y + w3y) / Scalar[DTYPE](3),
+            (w1z + w2z + w3z) / Scalar[DTYPE](3),
+        )
+        var a1x = w2x - w1x
+        var a1y = w2y - w1y
+        var a1z = w2z - w1z
+        var a2x = w3x - w1x
+        var a2y = w3y - w1y
+        var a2z = w3z - w1z
+        var tnx = a1y * a2z - a1z * a2y
+        var tny = a1z * a2x - a1x * a2z
+        var tnz = a1x * a2y - a1y * a2x
+        var tn = sqrt(tnx * tnx + tny * tny + tnz * tnz)
+        if tn < mval:
+            ret = 3  # mjEPA_P3_BAD_NORMAL
+        else:
+            for i in range(3):
+                for k in range(9):
+                    set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+                set_ev(ws, wrow, i, 9, Scalar[DTYPE](-1))
+                set_ev(ws, wrow, i, 10, Scalar[DTYPE](-1))
+            nverts = 3
+
+            # ⚠ v5 IS INSERTED BEFORE v4. The reference calls
+            # `epaSupport(..., n_neg, ...)` first, so the support along -n
+            # takes polytope index 3 and the one along +n takes index 4. Their
+            # order decides every face index below.
+            for s in range(2):
+                var ux = -tnx / tn
+                var uy = -tny / tn
+                var uz = -tnz / tn
+                if s == 1:
+                    ux = tnx / tn
+                    uy = tny / tn
+                    uz = tnz / tn
+                var sp = _minkowski_support[DTYPE, NPRISM=NPRISM](
+                    type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                    r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
+                    type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                    r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                    ux, uy, uz,
+                    warm1, warm2,
+                    prism,
+                    ccd_margin,
+                )
+                set_ev(ws, wrow, nverts, 0, sp[0])
+                set_ev(ws, wrow, nverts, 1, sp[1])
+                set_ev(ws, wrow, nverts, 2, sp[2])
+                set_ev(ws, wrow, nverts, 3, sp[3])
+                set_ev(ws, wrow, nverts, 4, sp[4])
+                set_ev(ws, wrow, nverts, 5, sp[5])
+                set_ev(ws, wrow, nverts, 6, sp[6])
+                set_ev(ws, wrow, nverts, 7, sp[7])
+                set_ev(ws, wrow, nverts, 8, sp[8])
+                set_ev(ws, wrow, nverts, 9, Scalar[DTYPE](warm1))
+                set_ev(ws, wrow, nverts, 10, Scalar[DTYPE](warm2))
+                nverts += 1
+
+            if tri_point_intersect[DTYPE](
+                w1x, w1y, w1z, w2x, w2y, w2z, w3x, w3y, w3z,
+                ev(ws, wrow, 4, 0), ev(ws, wrow, 4, 1), ev(ws, wrow, 4, 2),
+            ):
+                ret = 4  # mjEPA_P3_INVALID_V4
+            elif tri_point_intersect[DTYPE](
+                w1x, w1y, w1z, w2x, w2y, w2z, w3x, w3y, w3z,
+                ev(ws, wrow, 3, 0), ev(ws, wrow, 3, 1), ev(ws, wrow, 3, 2),
+            ):
+                ret = 5  # mjEPA_P3_INVALID_V5
+            else:
+                # ⚠ THE `mjEPA_P3_MISSING_ORIGIN` GUARD IS DEAD FROM `mjc_ccd`.
+                # It reads `status->dist > 10*mjMINVAL`, and `mjc_ccd` has
+                # already written `status->dist = 0`. Transcribed as a comment
+                # rather than as code that can never run.
+                # Written out for the same reason as `polytope4`'s four.
+                # `v1i, v2i, v3i` are 0, 1, 2 and — note the order —
+                # `v5i` is 3 and `v4i` is 4.
+                var d3 = attach_face(ws, wrow, 0, 4, 0, 1, 1, 3, 2)
+                nfaces = 1
+                if d3 < md23:
+                    ret = 6  # mjEPA_P3_ORIGIN_ON_FACE
+                else:
+                    d3 = attach_face(ws, wrow, 1, 4, 2, 0, 2, 4, 0)
+                    nfaces = 2
+                    if d3 < md23:
+                        ret = 6
+                    else:
+                        d3 = attach_face(ws, wrow, 2, 4, 1, 2, 0, 5, 1)
+                        nfaces = 3
+                        if d3 < md23:
+                            ret = 6
+                        else:
+                            d3 = attach_face(ws, wrow, 3, 3, 1, 0, 5, 0, 4)
+                            nfaces = 4
+                            if d3 < md23:
+                                ret = 6
+                            else:
+                                d3 = attach_face(
+                                    ws, wrow, 4, 3, 0, 2, 3, 1, 5
+                                )
+                                nfaces = 5
+                                if d3 < md23:
+                                    ret = 6
+                                else:
+                                    d3 = attach_face(
+                                        ws, wrow, 5, 3, 2, 1, 4, 2, 3
+                                    )
+                                    nfaces = 6
+                                    if d3 < md23:
+                                        ret = 6
+                if ret == 0:
+                    for i in range(6):
+                        set_emap(ws, wrow, i, i)
+                        set_efi(ws, wrow, i, i)
+                    nmap = 6
+
+    # ── epa() ─────────────────────────────────────────────────────────────
+    var face = -1
+    var pface = -1
+    var upper = Scalar[DTYPE](1e30)
+    var upper2 = Scalar[DTYPE](1e30)
     var _epa_tol = _epa_tolerance[DTYPE](type1, type2, ccd_margin, ccd_tol)
     var _epa_iters = ccd_iter
-    if _epa_iters > EPA_ITER_HARD_CAP:
-        _epa_iters = EPA_ITER_HARD_CAP
+    if _epa_iters > EPA_ITER_CAP:
+        _epa_iters = EPA_ITER_CAP
     if _epa_iters < 1:
         _epa_iters = 1
-    for _epa_it in range(_epa_iters if seed_code == 1 else 0):
-        # closest face to the origin
-        best_face = -1
-        best_d = Scalar[DTYPE](1e30)
-        for f in range(nef):
-            var fnm = _epa_face_normal[DTYPE, L_WS](
-                ws,
-                wrow,
-                _ef(ws, wrow, f, 0),
-                _ef(ws, wrow, f, 1),
-                _ef(ws, wrow, f, 2),
-            )
-            if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
-                continue
-            if fnm[3] < best_d:
-                best_d = fnm[3]
-                best_nx = fnm[0]
-                best_ny = fnm[1]
-                best_nz = fnm[2]
-                best_face = f
-        if best_face < 0:
-            break
 
-        # support along that normal; converged when it adds no depth
-        var w = _minkowski_support[DTYPE, NPRISM=NPRISM](
-            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-            r2, hl2, hx2, hy2, hz2, va2, mnv2,
-            best_nx, best_ny, best_nz,
-            warm1, warm2,
-            prism,
-            ccd_margin,
-        )
-        var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
-        if wd - best_d < _epa_tol:
-            converged = True
-            break
+    if ret == 0:
+        for k in range(_epa_iters):
+            pface = face
 
-        # ⚠ OVERFLOW IS REPORTED, NOT TRUNCATED. Silently dropping faces would
-        # return a plausible but wrong depth from a polytope that stopped
-        # growing. Bailing keeps the best face found so far, which is a valid
-        # LOWER bound on the depth.
-        if nev >= EPA_V_CAP or nef + 3 >= EPA_F_CAP:
-            break
+            # the face closest to the origin, over the CANDIDATE list
+            var lower2 = Scalar[DTYPE](1e30)
+            face = -1
+            for i in range(nmap):
+                var fi = emap(ws, wrow, i)
+                var d2 = efd(ws, wrow, fi)
+                if d2 < lower2:
+                    face = fi
+                    lower2 = d2
 
-        # mark faces the new point can see
-        var nvis = 0
-        for f in range(nef):
-            ws[wrow, CCD_WS_VIS + f] = Scalar[DTYPE](0)
-            var i0 = _ef(ws, wrow, f, 0)
-            var fnm = _epa_face_normal[DTYPE, L_WS](
-                ws, wrow, i0, _ef(ws, wrow, f, 1), _ef(ws, wrow, f, 2)
-            )
-            if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
-                continue
-            var rx = w[0] - _ev(ws, wrow, i0, 0)
-            var ry = w[1] - _ev(ws, wrow, i0, 1)
-            var rz = w[2] - _ev(ws, wrow, i0, 2)
-            if fnm[0] * rx + fnm[1] * ry + fnm[2] * rz > Scalar[DTYPE](1e-14):
-                ws[wrow, CCD_WS_VIS + f] = Scalar[DTYPE](1)
-                nvis += 1
-        if nvis == 0:
-            converged = True
-            break
+            # the lower bound moved backwards, or nothing is left
+            if lower2 > upper2 or face < 0:
+                face = pface
+                break
 
-        # Horizon = edges belonging to exactly ONE visible face.
-        #
-        # ⚠ EDGES ARE UNDIRECTED HERE, DELIBERATELY. The obvious formulation is
-        # the directed one — an edge is on the horizon when its REVERSE is not
-        # also an edge of a visible face — but that needs consistently wound
-        # faces, and these are not wound consistently: `_epa_face_normal`
-        # orients the NORMAL by `n . a >= 0` and never reorders the triangle's
-        # vertices, so an interior edge can appear as (a0, a1) in both of the
-        # faces sharing it. The directed rule then reads it as a horizon edge,
-        # stitches a malformed polytope, and EPA stops early — which returns a
-        # LOW depth, because face distance climbs monotonically toward the true
-        # one. Measured on sawyer's mesh pair: 0.0148582 from the directed rule
-        # against 0.0260234 for a correct EPA over the same 81 hull vertices.
-        var nhor = 0
-        for f in range(nef):
-            if not _vis(ws, wrow, f):
-                continue
-            for e in range(3):
-                var a0 = _ef(ws, wrow, f, e)
-                var a1 = _ef(ws, wrow, f, (e + 1) % 3)
-                var lo = a0 if a0 < a1 else a1
-                var hi = a1 if a0 < a1 else a0
-                var count = 0
-                for g in range(nef):
-                    if not _vis(ws, wrow, g):
-                        continue
-                    for e2 in range(3):
-                        var b0 = _ef(ws, wrow, g, e2)
-                        var b1 = _ef(ws, wrow, g, (e2 + 1) % 3)
-                        var blo = b0 if b0 < b1 else b1
-                        var bhi = b1 if b0 < b1 else b0
-                        if blo == lo and bhi == hi:
-                            count += 1
-                if count == 1 and nhor * 2 + 1 < EPA_F_CAP * 6:
-                    ws[wrow, CCD_WS_HOR + nhor * 2 + 0] = Scalar[DTYPE](lo)
-                    ws[wrow, CCD_WS_HOR + nhor * 2 + 1] = Scalar[DTYPE](hi)
-                    nhor += 1
-        if nhor < 3 or nef - nvis + nhor > EPA_F_CAP:
-            break
+            # `mju_warning("EPA: origin lies on affine hull of face")`
+            if lower2 <= Scalar[DTYPE](0):
+                break
 
-        # drop visible faces, keeping the rest compact
-        var keep = 0
-        for f in range(nef):
-            if _vis(ws, wrow, f):
-                continue
-            for c in range(3):
-                ws[wrow, CCD_WS_EF + keep * 3 + c] = Scalar[DTYPE](
-                    _ef(ws, wrow, f, c)
-                )
-            keep += 1
-        nef = keep
-
-        # add w and stitch the horizon to it
-        ws[wrow, CCD_WS_EV + nev * 9 + 0] = w[0]
-        ws[wrow, CCD_WS_EV + nev * 9 + 1] = w[1]
-        ws[wrow, CCD_WS_EV + nev * 9 + 2] = w[2]
-        ws[wrow, CCD_WS_EV + nev * 9 + 3] = w[3]
-        ws[wrow, CCD_WS_EV + nev * 9 + 4] = w[4]
-        ws[wrow, CCD_WS_EV + nev * 9 + 5] = w[5]
-        ws[wrow, CCD_WS_EV + nev * 9 + 6] = w[6]
-        ws[wrow, CCD_WS_EV + nev * 9 + 7] = w[7]
-        ws[wrow, CCD_WS_EV + nev * 9 + 8] = w[8]
-        var wi = nev
-        nev += 1
-        for h in range(nhor):
-            ws[wrow, CCD_WS_EF + nef * 3 + 0] = Scalar[DTYPE](
-                _hor(ws, wrow, h, 0)
-            )
-            ws[wrow, CCD_WS_EF + nef * 3 + 1] = Scalar[DTYPE](
-                _hor(ws, wrow, h, 1)
-            )
-            ws[wrow, CCD_WS_EF + nef * 3 + 2] = Scalar[DTYPE](wi)
-            nef += 1
-
-    # ---- UPPER-BOUND CHECK on the depth ------------------------------------
-    # Penetration depth is `min` over all unit directions of the Minkowski
-    # support extent h(n) = support_M(n) . n, so EVERY direction sampled gives
-    # an upper bound the answer cannot exceed. This is a definition, not an
-    # approximation, which makes it a cheap and sound guard against EPA
-    # converging on a face that is genuinely on the boundary but is NOT the
-    # closest one.
-    #
-    # ⚠ IT FIRES ON EXACT CONTACT, which is where EPA is least trustworthy and
-    # where sawyer's reset pose sits. A cylinder resting exactly on a box
-    # returned -0.55 face-on and -0.0999 on the rim, both with confident
-    # normals, where the truth is 0 — the sampled bound along the contact
-    # normal is 0 and pulls it back. Seven support queries.
-    if best_face >= 0:
-        var ub = best_d
-        var ubx = best_nx
-        var uby = best_ny
-        var ubz = best_nz
-        for ax in range(7):
-            var dxx = best_nx
-            var dyy = best_ny
-            var dzz = best_nz
-            if ax == 0:
-                dxx = Scalar[DTYPE](1); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](0)
-            elif ax == 1:
-                dxx = Scalar[DTYPE](-1); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](0)
-            elif ax == 2:
-                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](1); dzz = Scalar[DTYPE](0)
-            elif ax == 3:
-                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](-1); dzz = Scalar[DTYPE](0)
-            elif ax == 4:
-                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](1)
-            elif ax == 5:
-                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](-1)
-            var sw = _minkowski_support[DTYPE, NPRISM=NPRISM](
+            var lower = sqrt(lower2)
+            var ux = Scalar[DTYPE](1)
+            var uy = Scalar[DTYPE](0)
+            var uz = Scalar[DTYPE](0)
+            if lower > mval:
+                ux = efv(ws, wrow, face, 0) / lower
+                uy = efv(ws, wrow, face, 1) / lower
+                uz = efv(ws, wrow, face, 2) / lower
+            var w = _minkowski_support[DTYPE, NPRISM=NPRISM](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
-                dxx, dyy, dzz,
+                ux, uy, uz,
                 warm1, warm2,
                 prism,
                 ccd_margin,
             )
-            var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
-            if hh < ub:
-                ub = hh
-                ubx = dxx
-                uby = dyy
-                ubz = dzz
-        if ub < best_d:
-            best_d = ub if ub > Scalar[DTYPE](0) else Scalar[DTYPE](0)
-            best_nx = ubx
-            best_ny = uby
-            best_nz = ubz
+            # ⚠ `epaSupport` INSERTS THE VERTEX BEFORE ANY TEST, and the
+            # reference has no capacity check here because `5 + N` vertices
+            # exactly covers a seed of five plus one per iteration. Ours is
+            # sized by the same formula, so this can only fire if the two ever
+            # drift apart.
+            if nverts >= EPA_V_CAP:
+                break
+            var wi = nverts
+            set_ev(ws, wrow, wi, 0, w[0])
+            set_ev(ws, wrow, wi, 1, w[1])
+            set_ev(ws, wrow, wi, 2, w[2])
+            set_ev(ws, wrow, wi, 3, w[3])
+            set_ev(ws, wrow, wi, 4, w[4])
+            set_ev(ws, wrow, wi, 5, w[5])
+            set_ev(ws, wrow, wi, 6, w[6])
+            set_ev(ws, wrow, wi, 7, w[7])
+            set_ev(ws, wrow, wi, 8, w[8])
+            set_ev(ws, wrow, wi, 9, Scalar[DTYPE](warm1))
+            set_ev(ws, wrow, wi, 10, Scalar[DTYPE](warm2))
+            nverts += 1
 
-    # ---- witness points on the closest face --------------------------------
-    # Barycentric coordinates of the origin's projection onto the face, applied
-    # to the stored witness points — MuJoCo's `epaWitness`. Degenerate faces
-    # fall back to the face centroid, which is what the barycentric solve
-    # converges to as the triangle collapses.
-    if best_face >= 0 and (converged or best_d < Scalar[DTYPE](1e29)):
-        var i0 = _ef(ws, wrow, best_face, 0)
-        var i1 = _ef(ws, wrow, best_face, 1)
-        var i2 = _ef(ws, wrow, best_face, 2)
-        var px = best_nx * best_d
-        var py = best_ny * best_d
-        var pz = best_nz * best_d
-        var v0x = _ev(ws, wrow, i1, 0) - _ev(ws, wrow, i0, 0)
-        var v0y = _ev(ws, wrow, i1, 1) - _ev(ws, wrow, i0, 1)
-        var v0z = _ev(ws, wrow, i1, 2) - _ev(ws, wrow, i0, 2)
-        var v1x = _ev(ws, wrow, i2, 0) - _ev(ws, wrow, i0, 0)
-        var v1y = _ev(ws, wrow, i2, 1) - _ev(ws, wrow, i0, 1)
-        var v1z = _ev(ws, wrow, i2, 2) - _ev(ws, wrow, i0, 2)
-        var v2x = px - _ev(ws, wrow, i0, 0)
-        var v2y = py - _ev(ws, wrow, i0, 1)
-        var v2z = pz - _ev(ws, wrow, i0, 2)
-        var d00 = v0x * v0x + v0y * v0y + v0z * v0z
-        var d01 = v0x * v1x + v0y * v1y + v0z * v1z
-        var d11 = v1x * v1x + v1y * v1y + v1z * v1z
-        var d20 = v2x * v0x + v2y * v0y + v2z * v0z
-        var d21 = v2x * v1x + v2y * v1y + v2z * v1z
-        var den = d00 * d11 - d01 * d01
-        var l0 = Scalar[DTYPE](1) / Scalar[DTYPE](3)
-        var l1 = l0
-        var l2 = l0
-        if abs(den) > Scalar[DTYPE](1e-20):
-            l1 = (d11 * d20 - d01 * d21) / den
-            l2 = (d00 * d21 - d01 * d20) / den
-            l0 = Scalar[DTYPE](1) - l1 - l2
-        var w1x = (
-            l0 * _ev(ws, wrow, i0, 3)
-            + l1 * _ev(ws, wrow, i1, 3)
-            + l2 * _ev(ws, wrow, i2, 3)
-        )
-        var w1y = (
-            l0 * _ev(ws, wrow, i0, 4)
-            + l1 * _ev(ws, wrow, i1, 4)
-            + l2 * _ev(ws, wrow, i2, 4)
-        )
-        var w1z = (
-            l0 * _ev(ws, wrow, i0, 5)
-            + l1 * _ev(ws, wrow, i1, 5)
-            + l2 * _ev(ws, wrow, i2, 5)
-        )
-        var w2x = (
-            l0 * _ev(ws, wrow, i0, 6)
-            + l1 * _ev(ws, wrow, i1, 6)
-            + l2 * _ev(ws, wrow, i2, 6)
-        )
-        var w2y = (
-            l0 * _ev(ws, wrow, i0, 7)
-            + l1 * _ev(ws, wrow, i1, 7)
-            + l2 * _ev(ws, wrow, i2, 7)
-        )
-        var w2z = (
-            l0 * _ev(ws, wrow, i0, 8)
-            + l1 * _ev(ws, wrow, i1, 8)
-            + l2 * _ev(ws, wrow, i2, 8)
-        )
+            # ⚠⚠ `upper` IS A RUNNING MINIMUM ACROSS ITERATIONS, not the
+            # current iteration's bound. It also gates which new faces are
+            # allowed into `map` at all, through `upper2`.
+            var upper_k = (
+                efv(ws, wrow, face, 0) * w[0]
+                + efv(ws, wrow, face, 1) * w[1]
+                + efv(ws, wrow, face, 2) * w[2]
+            ) / lower
+            if upper_k < upper:
+                upper = upper_k
+                upper2 = upper * upper
+            if upper - lower < _epa_tol:
+                # `if (k == 0 && upper < lower - 1e-10) face = NULL;` —
+                # "terminate without contact when upper < lower on the first
+                # iteration".
+                #
+                # ⚠⚠ THE 1e-10 IS ABSOLUTE AND LIVES IN A DOUBLE-PRECISION
+                # WORLD. `upper` and `lower` are two distances of magnitude
+                # `|v|`, so their difference has a float32 rounding floor near
+                # `1e-7 * |v|` — for a geom 0.2 m from the origin that is
+                # 2e-08, two hundred times the constant. A genuine contact
+                # whose bounds cross by rounding then reads as NO CONTACT.
+                # Measured on `test_hfield_vs_mujoco`: the box loses exactly
+                # one of its three prism-face contacts at float32 and keeps all
+                # three at float64, with `ret == 0`, `nfaces == 4` and
+                # `face == -1` — EPA gave up here on its first iteration.
+                #
+                # ⚠ THE RELATIVE TERM IS FLOAT32-ONLY, so every float64 gate
+                # is bit-identical. It is the same shape and the same reason as
+                # `_gjk_epsilon`'s float32 floor.
+                var _sep = Scalar[DTYPE](1e-10)
+                comptime if DTYPE != DType.float64:
+                    _sep += Scalar[DTYPE](1e-6) * lower
+                if k == 0 and upper < lower - _sep:
+                    face = -1
+                break
 
+            var vis_x = w[0]
+            var vis_y = w[1]
+            var vis_z = w[2]
+            nhor = 0
+            horizon(ws, wrow, face, vis_x, vis_y, vis_z, nmap, nhor)
+
+            # "unrecoverable numerical issue; at least one face was deleted so
+            # nedges is 3 or more"
+            if nhor < 3:
+                face = -1
+                break
+
+            var nf0 = nfaces
+            var nedges = nhor
+            if nedges > EPA_F_CAP - nfaces:
+                # `mju_warning("EPA: out of memory for faces")` — the reference
+                # keeps the face it has, which is a valid lower bound.
+                break
+
+            var bad = False
+            for i in range(nedges):
+                var cur = nf0 + i
+                var nxt = nf0 + (i + 1) % nedges
+                var prv = nf0 + nedges - 1 if i == 0 else cur - 1
+                var hf = ehor(ws, wrow, i, 0)
+                var he = ehor(ws, wrow, i, 1)
+                var hv1 = ef(ws, wrow, hf, he)
+                var hv2 = ef(ws, wrow, hf, (he + 1) % 3)
+                set_eadj(ws, wrow, hf, he, cur)
+                var d2 = attach_face(
+                    ws, wrow, cur, wi, hv2, hv1, prv, hf, nxt
+                )
+                nfaces = cur + 1
+                if d2 == Scalar[DTYPE](0):
+                    face = -1
+                    bad = True
+                    break
+                if d2 >= lower2 and d2 <= upper2:
+                    set_emap(ws, wrow, nmap, cur)
+                    set_efi(ws, wrow, cur, nmap)
+                    nmap += 1
+            nhor = 0
+            if bad or nmap == 0 or face < 0:
+                break
+
+    # ---- what the reference does with the face it ended on ------------------
+    if face >= 0:
+        var wit = epa_witness(ws, wrow, face)
+        var i0 = ef(ws, wrow, face, 0)
+        var i1 = ef(ws, wrow, face, 1)
+        var i2 = ef(ws, wrow, face, 2)
         # The winning face's three vertices, as support points on each geom.
-        # Written with CONSTANT indices on the destination and only the polytope
-        # vertex id varying, so no per-thread array is indexed by a runtime
-        # value on the way out — see
+        # Written with CONSTANT indices on the destination and only the
+        # polytope vertex id varying, so no per-thread array is indexed by a
+        # runtime value on the way out — see
         # `feedback_metal_wide_per_thread_inlinearray_miscompute`.
-        wf1[0] = _ev(ws, wrow, i0, 3)
-        wf1[1] = _ev(ws, wrow, i0, 4)
-        wf1[2] = _ev(ws, wrow, i0, 5)
-        wf1[3] = _ev(ws, wrow, i1, 3)
-        wf1[4] = _ev(ws, wrow, i1, 4)
-        wf1[5] = _ev(ws, wrow, i1, 5)
-        wf1[6] = _ev(ws, wrow, i2, 3)
-        wf1[7] = _ev(ws, wrow, i2, 4)
-        wf1[8] = _ev(ws, wrow, i2, 5)
-        wf2[0] = _ev(ws, wrow, i0, 6)
-        wf2[1] = _ev(ws, wrow, i0, 7)
-        wf2[2] = _ev(ws, wrow, i0, 8)
-        wf2[3] = _ev(ws, wrow, i1, 6)
-        wf2[4] = _ev(ws, wrow, i1, 7)
-        wf2[5] = _ev(ws, wrow, i1, 8)
-        wf2[6] = _ev(ws, wrow, i2, 6)
-        wf2[7] = _ev(ws, wrow, i2, 7)
-        wf2[8] = _ev(ws, wrow, i2, 8)
-        wx[0] = w1x
-        wx[1] = w1y
-        wx[2] = w1z
-        wx[3] = w2x
-        wx[4] = w2y
-        wx[5] = w2z
+        wf1[0] = ev(ws, wrow, i0, 3)
+        wf1[1] = ev(ws, wrow, i0, 4)
+        wf1[2] = ev(ws, wrow, i0, 5)
+        wf1[3] = ev(ws, wrow, i1, 3)
+        wf1[4] = ev(ws, wrow, i1, 4)
+        wf1[5] = ev(ws, wrow, i1, 5)
+        wf1[6] = ev(ws, wrow, i2, 3)
+        wf1[7] = ev(ws, wrow, i2, 4)
+        wf1[8] = ev(ws, wrow, i2, 5)
+        wf2[0] = ev(ws, wrow, i0, 6)
+        wf2[1] = ev(ws, wrow, i0, 7)
+        wf2[2] = ev(ws, wrow, i0, 8)
+        wf2[3] = ev(ws, wrow, i1, 6)
+        wf2[4] = ev(ws, wrow, i1, 7)
+        wf2[5] = ev(ws, wrow, i1, 8)
+        wf2[6] = ev(ws, wrow, i2, 6)
+        wf2[7] = ev(ws, wrow, i2, 7)
+        wf2[8] = ev(ws, wrow, i2, 8)
+        wx[0] = wit[0]
+        wx[1] = wit[1]
+        wx[2] = wit[2]
+        wx[3] = wit[3]
+        wx[4] = wit[4]
+        wx[5] = wit[5]
         wf_ok = 1
-        # ⚠ THIS SIGN WAS WRONG AND NOTHING CAUGHT IT FOR THE MESH PATH.
-        # `test_narrow_phase_pairs` anchors contact DIRECTION against MuJoCo for
-        # the primitive pairs, but no gate covered direction for a MESH pair, so
-        # every mesh contact this engine produced pointed the wrong way.
-        # Measured on sawyer's obj/eGripperBase contact, where MuJoCo reports
-        # `geom1(36) -> geom2(27)` = (-8.6e-05, 1.13e-03, -0.999999) and the
-        # record convention makes that the same direction we store: ours came
-        # out +z. The re-route of cylinder/box through this same function is
-        # what exposed it, via a `dir err 1.9999999999976286` — a full
-        # reversal — on a pair that IS anchored.
-        #
-        # EPA's face normal points out of the Minkowski difference, i.e.
-        # `gj -> gi`, so returning it negated gives the `gi -> gj` that callers
-        # expect. The previous code negated in the comment's direction but
-        # against the wrong baseline.
-        return (
-            -best_d + ccd_margin,
-            (w1x + w2x) * Scalar[DTYPE](0.5),
-            (w1y + w2y) * Scalar[DTYPE](0.5),
-            (w1z + w2z) * Scalar[DTYPE](0.5),
-            best_nx,
-            best_ny,
-            best_nz,
-        )
 
-    # EPA produced no valid face. That is not a failure needing a guess: it
-    # means the polytope is degenerate because the origin lies ON the boundary
-    # of the Minkowski difference, i.e. the geoms TOUCH at zero depth.
-    #
-    # ⚠ This used to fall through to a centre-line estimate — normal = the line
-    # between geom origins, depth = the Minkowski support extent along it —
-    # which returned -1.1 for a cylinder resting exactly on a box where the
-    # true depth is 0. Sawyer's canonical reset pose is exactly that case (the
-    # obj's bottom face sits exactly on the table top), so the guess was not
-    # hypothetical. MuJoCo reports NO contact there, and returning 0 reproduces
-    # that: the caller admits a contact on `dist < margin`, and margin is 0.
-    var fallback_nx = p1x - p2x
-    var fallback_ny = p1y - p2y
-    var fallback_nz = p1z - p2z
-    var fallback_len = sqrt(
-        fallback_nx * fallback_nx
-        + fallback_ny * fallback_ny
-        + fallback_nz * fallback_nz
-    )
-    if fallback_len < Scalar[DTYPE](1e-10):
-        fallback_nx = Scalar[DTYPE](0)
-        fallback_ny = Scalar[DTYPE](0)
-        fallback_nz = Scalar[DTYPE](1)
-    else:
-        fallback_nx /= fallback_len
-        fallback_ny /= fallback_len
-        fallback_nz /= fallback_len
-    var pen_depth = Scalar[DTYPE](0)
-    # The same upper bound applies here, and this path needs it MORE: the
-    # centre-line estimate is not a depth at all, so bounding it by the
-    # smallest sampled support extent is the only thing keeping it sane. A
-    # cylinder touching a box expressed as a mesh returned -1.1 -- the full
-    # Minkowski extent -- where the truth is 0.
-    var fb_ub = Scalar[DTYPE](1e30)
-    for ax in range(6):
-        var dxx = Scalar[DTYPE](0)
-        var dyy = Scalar[DTYPE](0)
-        var dzz = Scalar[DTYPE](0)
-        if ax == 0:
-            dxx = Scalar[DTYPE](1)
-        elif ax == 1:
-            dxx = Scalar[DTYPE](-1)
-        elif ax == 2:
-            dyy = Scalar[DTYPE](1)
-        elif ax == 3:
-            dyy = Scalar[DTYPE](-1)
-        elif ax == 4:
-            dzz = Scalar[DTYPE](1)
+        # ⚠ THE NORMAL IS `normalize(x1 - x2)`, NOT THE UNIT FACE NORMAL.
+        # `mjc_penetration` (`engine_collision_convex.c`) builds it from the
+        # two witness points; that is the same vector as `face->v / |face->v|`
+        # in exact arithmetic and not the same bits, and this function's
+        # callers compare against MuJoCo to 1e-12.
+        var nx = wit[0] - wit[3]
+        var ny = wit[1] - wit[4]
+        var nz = wit[2] - wit[5]
+        var nl = sqrt(nx * nx + ny * ny + nz * nz)
+        if nl > Scalar[DTYPE](0):
+            nx /= nl
+            ny /= nl
+            nz /= nl
         else:
-            dzz = Scalar[DTYPE](-1)
-        var sw = _minkowski_support[DTYPE, NPRISM=NPRISM](
-            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-            r2, hl2, hx2, hy2, hz2, va2, mnv2,
-            dxx, dyy, dzz,
-            warm1, warm2,
-            prism,
-            ccd_margin,
+            nx = Scalar[DTYPE](0)
+            ny = Scalar[DTYPE](0)
+            nz = Scalar[DTYPE](1)
+        # `con[i].dist = margin + dist` with `dist = -sqrt(face->dist2)`.
+        var pen = -sqrt(efd(ws, wrow, face))
+        return (
+            pen + ccd_margin,
+            (wit[0] + wit[3]) * Scalar[DTYPE](0.5),
+            (wit[1] + wit[4]) * Scalar[DTYPE](0.5),
+            (wit[2] + wit[5]) * Scalar[DTYPE](0.5),
+            nx,
+            ny,
+            nz,
         )
-        var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
-        if hh < fb_ub:
-            fb_ub = hh
-            fallback_nx = dxx
-            fallback_ny = dyy
-            fallback_nz = dzz
-    if seed_code < 0:
-        # Degenerate seed: EPA never ran, so fall back to the estimate that
-        # shipped before it existed. Wrong depth, but it KEEPS the contact,
-        # which is strictly the prior behaviour rather than a new regression.
-        var s_fwd = _minkowski_support[DTYPE, NPRISM=NPRISM](
-            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-            r2, hl2, hx2, hy2, hz2, va2, mnv2,
-            fallback_nx, fallback_ny, fallback_nz,
-            warm1, warm2,
-            prism,
-            ccd_margin,
-        )
-        pen_depth = _dot3[DTYPE](
-            s_fwd[0], s_fwd[1], s_fwd[2],
-            fallback_nx, fallback_ny, fallback_nz,
-        )
-        if pen_depth > Scalar[DTYPE](0):
-            pen_depth = -pen_depth
-        if fb_ub < Scalar[DTYPE](1e29):
-            var cap = -fb_ub if fb_ub > Scalar[DTYPE](0) else Scalar[DTYPE](0)
-            if pen_depth < cap:
-                pen_depth = cap
 
-    var contact_x = (p1x + p2x) * Scalar[DTYPE](0.5)
-    var contact_y = (p1y + p2y) * Scalar[DTYPE](0.5)
-    var contact_z = (p1z + p2z) * Scalar[DTYPE](0.5)
+    # ⚠⚠ NO POLYTOPE, NO CONTACT — AND THAT IS THE REFERENCE'S ANSWER, NOT A
+    # GIVE-UP. `mjc_ccd` leaves `status->dist` at the 0 it wrote before
+    # building the seed, and `mjc_penetration` records a contact only when
+    # `mjc_ccd` returns something NEGATIVE. Returning `1e30` is how this
+    # function's callers spell the same thing: every one of them admits a
+    # contact on `dist < margin`.
+    wf_ok = 0
     return (
-        pen_depth + ccd_margin,
-        contact_x,
-        contact_y,
-        contact_z,
-        fallback_nx,
-        fallback_ny,
-        fallback_nz,
+        Scalar[DTYPE](1e30),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](0),
+        Scalar[DTYPE](1),
     )
 
 
