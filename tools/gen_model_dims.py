@@ -103,7 +103,7 @@ MODELS = [
      ["dm_point_mass_xml"]),
     ("mojo_rl/envs/dm_control/quadruped/quadruped_xml.mojo",
      ["dm_quadruped_walk_xml", "dm_quadruped_run_xml",
-      "dm_quadruped_fetch_xml"]),
+      "dm_quadruped_fetch_xml", "dm_quadruped_escape_xml"]),
     # ⚠ BOTH REACHERS. `dm_reacher_hard_xml` differs from the easy one in a
     # single attribute VALUE (the target's radius) and used to borrow the
     # easy model's `pmr` dims outright, on the stated grounds that every count

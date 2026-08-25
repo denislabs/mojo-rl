@@ -117,7 +117,9 @@ struct Phyics3dEnv[
     # come from the MJCF (whether a model's meshes are COLLIDABLE is an env
     # decision), so the config supplies it — and it now travels INSIDE the
     # provider, where the "geoms with no geometry" failure cannot reach it.
-    comptime MD = ModelDims[Self.MODEL_DEF, Self.NMESH_VERTS]
+    comptime MD = ModelDims[
+        Self.MODEL_DEF, Self.NMESH_VERTS, Self.CONFIG.NHFIELD_DATA
+    ]
 
     # Fields path (the physics state; hooks read/write it directly)
     var mf: Model[Self.DTYPE, Self.MD]
@@ -489,12 +491,21 @@ struct Phyics3dEnv[
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
-        var custom = Self.CONFIG.custom_extract_obs_cpu(
+        # ⚠ The RAY-capable hook, which DEFAULTS to forwarding to
+        # `custom_extract_obs_cpu` — see `Phyics3dEnvConfig`. Calling the
+        # narrow one here too would give a config that overrode the ray hook
+        # two chances to write the observation.
+        var custom = Self.CONFIG.custom_extract_obs_ray_cpu(
             self.d,
             self.mf.bodies.data,
             self.mf.joints.data,
             self.mf.geoms.data,
             self.mf.sites.data,
+            self.mf.mesh_meta.data,
+            self.mf.mesh_tris.data,
+            self.mf.hfield_meta.data,
+            self.mf.hfield_data.data,
+            Self.MODEL_DEF.NGEOM,
             self.act,
             obs_list,
         )

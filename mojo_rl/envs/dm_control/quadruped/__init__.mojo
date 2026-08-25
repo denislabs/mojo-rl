@@ -50,6 +50,7 @@ from .quadruped import (
     DMQuadrupedWalk,
     DMQuadrupedRun,
     DMQuadrupedFetch,
+    DMQuadrupedEscape,
     DMQuadrupedWalkBatched,
     DMQuadrupedRunBatched,
 )

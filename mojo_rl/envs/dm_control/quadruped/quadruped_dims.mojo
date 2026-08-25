@@ -85,3 +85,28 @@ comptime DM_QUADRUPED_FETCH_DIMS = ParsedModel(
     ccd_tol=1e-06,
     ccd_iter=35,
 )
+
+
+# mojo_rl/envs/dm_control/assets/quadruped_escape.xml
+comptime DM_QUADRUPED_ESCAPE_DIMS = ParsedModel(
+    nbody=18,
+    njoint=17,
+    nq=23,
+    nv=22,
+    ngeom=21,
+    nact=12,
+    ntex=3,
+    nmat=14,
+    nlight=1,
+    ncam=4,
+    nsite=29,
+    neq=0,
+    nexclude=0,
+    npair=0,
+    ntendon=12,
+    timestep=0.005,
+    max_condim=3,
+    noslip_iter=0,
+    ccd_tol=1e-06,
+    ccd_iter=35,
+)

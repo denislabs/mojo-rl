@@ -22,18 +22,26 @@ spawned embedded in the floor.
 
 `fetch` stays CPU-only for now — it is under active development.
 
-`escape` stays descoped — it needs heightfield terrain and rangefinders,
-neither of which the engine has. `fetch` is IN, and brought two engine
-prerequisites with it: oriented planes (its four walls are tilted planes) and
+`escape` LANDED 2026-08-25, and it is the 49th and last suite task. It needed
+three engine features that did not exist when the rest of quadruped was ported
+— a heightfield geom, a heightfield whose grid is per-episode STATE, and the
+`<rangefinder>` sensor — which is why it sat descoped through the whole port.
+⚠ It is CPU-ONLY: `ray_model` is a host-side linear scan and the terrain
+rewrite is a CPU write plus an upload, so `HAS_GPU_HOOKS` is False and there is
+no `*Batched` alias below.
+
+`fetch` brought two engine prerequisites with it: oriented planes (its four walls are tilted planes) and
 condim>=4 friction rows (its ball is the only condim-6 geom in the tree, and
 the pyramidal edge builder silently dropped those rows until 004fe439).
 """
 
 from .quadruped_xml import (
     DMQuadrupedWalkModel, DMQuadrupedRunModel, DMQuadrupedFetchModel,
+    DMQuadrupedEscapeModel,
 )
 from .quadruped_config import DMQuadrupedWalkConfig, DMQuadrupedRunConfig
 from .quadruped_fetch_config import DMQuadrupedFetchConfig
+from .quadruped_escape_config import DMQuadrupedEscapeConfig
 from ...phyics3d_env import Phyics3dEnv
 from ...phyics3d_batched_env import Phyics3dBatchedEnv
 
@@ -50,6 +58,10 @@ comptime DMQuadrupedRun[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMQuadrupedFetch[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMQuadrupedFetchModel, DMQuadrupedFetchConfig, DTYPE, False
+]
+
+comptime DMQuadrupedEscape[DTYPE: DType = DType.float64] = Phyics3dEnv[
+    DMQuadrupedEscapeModel, DMQuadrupedEscapeConfig, DTYPE, False
 ]
 
 

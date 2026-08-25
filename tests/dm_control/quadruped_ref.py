@@ -123,6 +123,36 @@ def make_model_xml(floor_size=None, terrain=False, rangefinders=False,
     return etree.tostring(mjcf)
 
 
+def escape_model():
+    """The compiled reference `mjModel` for `escape`.
+
+    `make_model(floor_size=40, terrain=True, rangefinders=True)` — the only
+    task that keeps BOTH the heightfield geom and the forty rangefinder
+    sensors, and the reason both had to exist in the engine before it could be
+    ported.
+    """
+    import mujoco
+
+    return mujoco.MjModel.from_xml_string(
+        make_model_xml(floor_size=40, terrain=True, rangefinders=True),
+        assets(),
+    )
+
+
+def escape_xml():
+    """The reference XML text for `escape`, for baking the shipped asset."""
+    return make_model_xml(floor_size=40, terrain=True, rangefinders=True)
+
+
+def compare_escape_xml_to_reference(xml_string):
+    import mujoco
+    from mjmodel_diff import diff_models
+
+    return diff_models(
+        escape_model(), mujoco.MjModel.from_xml_path(xml_string)
+    )
+
+
 def model(run=False):
     """The compiled reference `mjModel` for `walk` (default) or `run`.
 

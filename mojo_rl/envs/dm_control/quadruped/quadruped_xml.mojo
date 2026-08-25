@@ -54,6 +54,7 @@ from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from mojo_rl.envs.dm_control.quadruped.quadruped_dims import (
+    DM_QUADRUPED_ESCAPE_DIMS,
     DM_QUADRUPED_FETCH_DIMS,
     DM_QUADRUPED_WALK_DIMS,
     DM_QUADRUPED_RUN_DIMS,
@@ -115,6 +116,7 @@ comptime qfp = DM_QUADRUPED_FETCH_DIMS
 comptime qwp = DM_QUADRUPED_WALK_DIMS
 
 comptime qrp = DM_QUADRUPED_RUN_DIMS
+comptime qep = DM_QUADRUPED_ESCAPE_DIMS
 
 # obs = egocentric_state (16 hinge qpos + 16 hinge qvel + 12 act = 44)
 #     + torso_velocity (3) + torso_upright (1) + imu (6) + force_torque (24)
@@ -134,6 +136,32 @@ comptime DMQuadrupedWalkModel = ModelDefFromXML[
     obs_dim_override=QUADRUPED_OBS_DIM,
     obs_qpos_skip=0,
     timestep=qwp.TIMESTEP,
+    # MuJoCo `m->na`: 12 `<general dyntype="filter">` servos, one activation
+    # each. Hand-supplied because `parse_xml` does not compute it; `init_fields`
+    # asserts it against the parsed XML.
+    na = 12,
+]
+
+# `escape` observes everything walk/run do, plus where the origin is and what
+# the twenty rangefinders see.
+#   + origin (3)  + rangefinder (20)  = 101
+comptime QUADRUPED_ESCAPE_OBS_DIM: Int = QUADRUPED_OBS_DIM + 3 + 20
+
+
+comptime DMQuadrupedEscapeModel = ModelDefFromXML[
+    xml_path="mojo_rl/envs/dm_control/assets/quadruped_escape.xml",
+    nbody=qep.NBODY, njoint=qep.NJOINT, nq=qep.NQ, nv=qep.NV,
+    ngeom=qep.NGEOM, nact=qep.NACT, ntex=qep.NTEX, nmat=qep.NMAT,
+    nlight=qep.NLIGHT, ncam=qep.NCAM, nsite=qep.NSITE,
+    max_tendon=qep.NTENDON,
+    cone_type=ConeType.PYRAMIDAL,
+    # ⚠ MORE THAN WALK'S 16. The floor is still there but the robot stands on
+    # the TERRAIN, whose narrow phase emits one contact per triangular PRISM
+    # of the sub-grid a foot overlaps — several per toe rather than one.
+    max_contacts=32,
+    obs_dim_override=QUADRUPED_ESCAPE_OBS_DIM,
+    obs_qpos_skip=0,
+    timestep=qep.TIMESTEP,
     # MuJoCo `m->na`: 12 `<general dyntype="filter">` servos, one activation
     # each. Hand-supplied because `parse_xml` does not compute it; `init_fields`
     # asserts it against the parsed XML.

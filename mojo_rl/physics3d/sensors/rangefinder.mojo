@@ -25,11 +25,19 @@ exclusions left are the sensor's own body and INVISIBILITY — see
 is the difference between a rangefinder reading terrain and reading a
 decoration.
 
-⚠ **NO HIT IS -1, NOT INFINITY, NOT THE CUTOFF.** dm_control's
-`quadruped.py:204` divides by a scale and takes `tanh`, which turns -1 into a
-NEGATIVE reading rather than a saturated one. A caller substituting a large
-number would change the observation on exactly the states where the robot is
-in the open.
+⚠ **NO HIT IS -1, NOT INFINITY, NOT THE CUTOFF** — and -1 is a SENTINEL, not
+a distance. ⚠⚠ AN EARLIER VERSION OF THIS NOTE SAID `tanh(-1)` MAKES IT A
+NEGATIVE READING. THAT IS WRONG. dm_control's `Physics.rangefinder`
+(`quadruped.py:204`) reads
+
+    np.where(rf_readings == -1.0, 1.0, np.tanh(rf_readings))
+
+so a miss is replaced by **1.0** — the same value a very distant hit
+saturates to — BEFORE the `tanh` is applied to the rest. There is no divide by
+a scale either. The consequence for a consumer is the opposite of what that
+note claimed: a miss reads as MAXIMUM range, and it is the caller's job to
+apply that substitution, not this function's. Returning -1 here is what makes
+the substitution possible; returning a large number would make it impossible.
 
 COST. `ray_model` is a linear scan over every geom, so N rangefinders on a
 model of G geoms cost N*G ray/geom queries per step — and any geom that is a

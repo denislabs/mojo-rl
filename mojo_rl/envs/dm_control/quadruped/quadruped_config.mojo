@@ -113,6 +113,66 @@ def _asinh(x: Float64) -> Float64:
 
 
 @always_inline
+def _random_root_orientation[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1]
+):
+    """`orientation = randn(4); orientation /= norm(orientation)`, into qpos.
+
+    ⚠ A NORMALISED GAUSSIAN, NOT A NORMALISED UNIFORM. A normalised vector of
+    uniforms clusters toward the cube's corners, so the Box-Muller pair is
+    load-bearing rather than decoration.
+
+    The height is left at 0 for `_find_non_contacting_height` to raise — the
+    env does that after the reset hooks, because it needs FK and broadphase.
+
+    ⚠ SHARED BY `Move` AND `Escape`. Both draw the same orientation; keeping
+    one copy is what stops the two drifting when one is touched.
+    """
+    var q = InlineArray[Float64, 4](fill=0.0)
+    for pair in range(2):
+        var u1 = random_float64()
+        if u1 < 1e-300:
+            u1 = 1e-300
+        var u2 = random_float64()
+        var r = sqrt(-2.0 * log(u1))
+        q[2 * pair + 0] = r * cos(2.0 * pi * u2)
+        q[2 * pair + 1] = r * sin(2.0 * pi * u2)
+
+    var n = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+    if n < 1e-12:
+        q[0] = 1.0
+        q[1] = 0.0
+        q[2] = 0.0
+        q[3] = 0.0
+        n = 1.0
+
+    # Free-joint qpos is [x, y, z, qw, qx, qy, qz] — w FIRST.
+    d.qpos.data[0] = Scalar[DTYPE](0)
+    d.qpos.data[1] = Scalar[DTYPE](0)
+    d.qpos.data[2] = Scalar[DTYPE](0)
+    for k in range(4):
+        d.qpos.data[3 + k] = Scalar[DTYPE](q[k] / n)
+
+
+@always_inline
+def _upright_reward_at(zz: Float64, deviation: Float64) -> Float64:
+    """`_upright_reward(physics, deviation_angle)` for any deviation.
+
+    `bounds=(deviation, inf)`, `margin=1 + deviation`, linear, 0 at margin —
+    so the term is 1 while the torso z-axis is within `acos(deviation)` of
+    world up and falls linearly to 0 at exactly upside-down.
+
+    ⚠ `Move` passes `deviation_angle=0` (deviation 1.0) and `Escape` passes
+    **20 degrees** (deviation 0.9397). Sharing one hardcoded 1.0 between them
+    would make escape strictly harder in a way no gate on the walk model can
+    see, because walk never exercises the other value.
+    """
+    return tolerance[SIGMOID_LINEAR, 0.0](
+        zz, deviation, inf[DType.float64](), 1.0 + deviation
+    )
+
+
+@always_inline
 def _upright_reward(zz: Float64) -> Float64:
     """`_upright_reward(physics, deviation_angle=0)`.
 
@@ -405,30 +465,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         The height is left at 0 for `_find_non_contacting_height` to raise —
         the env does that after this hook, because it needs FK and broadphase.
         """
-        var q = InlineArray[Float64, 4](fill=0.0)
-        for pair in range(2):
-            var u1 = random_float64()
-            if u1 < 1e-300:
-                u1 = 1e-300
-            var u2 = random_float64()
-            var r = sqrt(-2.0 * log(u1))
-            q[2 * pair + 0] = r * cos(2.0 * pi * u2)
-            q[2 * pair + 1] = r * sin(2.0 * pi * u2)
-
-        var n = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
-        if n < 1e-12:
-            q[0] = 1.0
-            q[1] = 0.0
-            q[2] = 0.0
-            q[3] = 0.0
-            n = 1.0
-
-        # Free-joint qpos is [x, y, z, qw, qx, qy, qz] — w FIRST.
-        d.qpos.data[0] = Scalar[DTYPE](0)
-        d.qpos.data[1] = Scalar[DTYPE](0)
-        d.qpos.data[2] = Scalar[DTYPE](0)
-        for k in range(4):
-            d.qpos.data[3 + k] = Scalar[DTYPE](q[k] / n)
+        _random_root_orientation[DTYPE, D](d)
 
     @staticmethod
     def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](

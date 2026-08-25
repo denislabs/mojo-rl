@@ -60,6 +60,21 @@ trait Phyics3dEnvConfig:
     # required count — an undersized value can no longer truncate silently.
     comptime NMESH_VERTS: Int = 0
 
+    comptime NHFIELD_DATA: Int = 0
+    """Total heightfield grid samples, `sum(nrow * ncol)` over `<hfield>`.
+
+    ⚠ EXACT, NOT A BUDGET, unlike `NMESH_VERTS` — the grid's size is known
+    from the XML's `nrow`/`ncol` and nothing derives it later. 0 is right for
+    every model without a heightfield, which until `quadruped escape` was all
+    of them.
+
+    ⚠⚠ LEAVING IT AT 0 ON A MODEL THAT HAS ONE IS SILENT: the grid allocates
+    a single element, every elevation reads as whatever that one slot holds,
+    and the terrain collides as a flat plane at z=0. It is a capacity being
+    read as geometry — the shape
+    `feedback_a_capacity_answer_read_as_a_feature_gate` warns about.
+    """
+
     # Refresh forward kinematics AFTER the frame-skip loop, so that reward and
     # observation hooks see xpos/xquat/xipos/site_xpos consistent with the
     # INTEGRATED qpos.
@@ -321,6 +336,44 @@ trait Phyics3dEnvConfig:
            see runtime writes, and would silently keep the XML coefficients.
         """
         pass
+
+    # === CPU: Custom observation extraction, WITH the ray tables ===
+    @staticmethod
+    def custom_extract_obs_ray_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        m_mesh_meta: List[Scalar[DTYPE]],
+        m_mesh_tris: List[Scalar[DTYPE]],
+        m_hfield_meta: List[Scalar[DTYPE]],
+        m_hfield_data: List[Scalar[DTYPE]],
+        ngeom: Int,
+        act: List[Scalar[DTYPE]],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        """`custom_extract_obs_cpu` plus everything a RAY needs.
+
+        ⚠⚠ A SECOND HOOK RATHER THAN A WIDER FIRST ONE, and the reason is
+        arithmetic: fifty types implement `Phyics3dEnvConfig`, and widening
+        the existing signature would edit all fifty to give one of them four
+        arguments. This defaults to FORWARDING to `custom_extract_obs_cpu`, so
+        every config that does not care is untouched and unaware.
+
+        Override THIS one when an observation needs `mj_ray` — a
+        `<rangefinder>`, a lidar, a line-of-sight test. `dm_control`'s
+        `quadruped escape` is the first: twenty rangefinders, which need the
+        mesh and heightfield tables the four record lists above do not carry.
+
+        ⚠ `ngeom` is passed EXPLICITLY. `len(m_geoms) / MODEL_GEOM_SIZE` is
+        the geom COUNT only when the tensor is exactly sized, and a caller
+        that derived it that way would silently ray a padded model's zero
+        rows — a geom of type PLANE at the origin, which occludes everything.
+        """
+        return Self.custom_extract_obs_cpu[DTYPE, D](
+            d, m_bodies, m_joints, m_geoms, m_sites, act, obs
+        )
 
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===
     @staticmethod
