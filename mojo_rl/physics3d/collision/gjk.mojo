@@ -15,10 +15,15 @@ from .ccd_workspace import (
     EPA_V_CAP,
     EPA_F_CAP,
     CCD_WS_SIZE,
+    CCD_WS_SPX,
+    CCD_WS_SPX2,
+    SPX_STRIDE,
 )
 from .epa import (
     ev,
     set_ev,
+    sv,
+    set_sv,
     ef,
     eadj,
     set_eadj,
@@ -86,6 +91,29 @@ comptime GJK_TOLERANCE: Float64 = 1e-10
 
 # `mjMINVAL` (`mjtnum.h`).
 comptime MJ_MINVAL: Float64 = 1e-15
+
+
+# ⚠ HOW TO SEE INSIDE THE METAL KERNEL. With this on, `gjk_epa_witness`
+# returns EPA's own counters — `(nverts, nfaces, face)` where the position goes
+# and `(i0, i1, i2)` where the normal goes — so a GPU run can be read through
+# the DOWNLOADABLE contact record. `hfield_convex.mojo` reads the same flag and
+# writes its sub-grid walk into the record's force slots.
+#
+# ⚠⚠ IT LIES ABOUT THE CONTACT WHILE IT IS ON. Off in every committed state.
+#
+# It exists because `print` does not, and because overwriting expendable
+# columns of a record the kernel already writes is the ONLY technique that has
+# ever worked on this target — see
+# `feedback_metal_wide_per_thread_inlinearray_miscompute`, which was found that
+# way twice, and `HF_DEBUG` next door, which exists for the same reason.
+#
+# ⚠ AND TURNING IT ON IS ITSELF A MEASUREMENT. If the contact COUNT moves when
+# this flag moves, the kernel is miscompiled: the count is decided by `dist`,
+# which does not depend on the witness, so dead-coding `epa_witness` cannot
+# change it. That is exactly how the heightfield GPU defect was caught — 11
+# contacts with the flag off, 16 with it on, 15 and 15 after the simplex moved
+# off the per-thread stack.
+comptime EPA_DBG: Bool = False
 
 
 @always_inline
@@ -314,10 +342,30 @@ def _dot3[
 
 
 @always_inline
+def _sel4i(i: Int, a: Int, b: Int, c: Int, d: Int) -> Int:
+    """Pick one of four `Int`s by a RUNTIME index, as an if-chain.
+
+    ⚠ THIS EXISTS INSTEAD OF AN `InlineArray[Int, 4]`. Indexing a per-thread
+    array by a runtime value reads back the wrong value on Metal with no crash
+    — see `feedback_metal_wide_per_thread_inlinearray_miscompute`, whose second
+    instance was a THREE-element array.
+    """
+    if i == 0:
+        return a
+    if i == 1:
+        return b
+    if i == 2:
+        return c
+    return d
+
+
+@always_inline
 def _gjk_signed_distance[
-    DTYPE: DType,
+    DTYPE: DType, L_WS: Layout
 ](
-    simplex: InlineArray[Scalar[DTYPE], 36],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    base: Int,
     i1: Int, i2: Int, i3: Int,
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Signed distance from the origin to the plane (v1, v2, v3), and its normal.
@@ -328,15 +376,15 @@ def _gjk_signed_distance[
     `_gjk_intersect` relies on. A degenerate face returns a huge distance so it
     loses every minimum comparison, exactly as MuJoCo's `mjMAX_LIMIT` does.
     """
-    var ax = simplex[i1 * 9 + 0]
-    var ay = simplex[i1 * 9 + 1]
-    var az = simplex[i1 * 9 + 2]
-    var d1x = simplex[i3 * 9 + 0] - ax
-    var d1y = simplex[i3 * 9 + 1] - ay
-    var d1z = simplex[i3 * 9 + 2] - az
-    var d2x = simplex[i2 * 9 + 0] - ax
-    var d2y = simplex[i2 * 9 + 1] - ay
-    var d2z = simplex[i2 * 9 + 2] - az
+    var ax = sv(ws, wrow, base, i1, 0)
+    var ay = sv(ws, wrow, base, i1, 1)
+    var az = sv(ws, wrow, base, i1, 2)
+    var d1x = sv(ws, wrow, base, i3, 0) - ax
+    var d1y = sv(ws, wrow, base, i3, 1) - ay
+    var d1z = sv(ws, wrow, base, i3, 2) - az
+    var d2x = sv(ws, wrow, base, i2, 0) - ax
+    var d2y = sv(ws, wrow, base, i2, 1) - ay
+    var d2z = sv(ws, wrow, base, i2, 2) - az
     var nx = d1y * d2z - d1z * d2y
     var ny = d1z * d2x - d1x * d2z
     var nz = d1x * d2y - d1y * d2x
@@ -979,9 +1027,12 @@ def _gjk_intersect[
     L_MESH_VERTS: Layout,
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
+    L_WS: Layout,
     NPRISM: Int = 1,
 ](
-    mut simplex: InlineArray[Scalar[DTYPE], 36],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    base: Int,
     type1: Int,
     p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
     q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE],
@@ -1051,7 +1102,16 @@ def _gjk_intersect[
     plane, the whole Minkowski difference lies beyond it and the geoms provably
     do not overlap.
     """
-    var sidx: InlineArray[Int, 4] = [0, 1, 2, 3]
+    # ⚠ THE PERMUTATION IS FOUR SCALARS, NOT AN `InlineArray[Int, 4]`.
+    # `sidx[index]` and the trailing swap index it by a RUNTIME value, which is
+    # the per-thread-array miscompile of
+    # `feedback_metal_wide_per_thread_inlinearray_miscompute` — three elements
+    # was enough to hit it the second time. `_sel4i` is the same if-chain fix
+    # `_capsule_box_second_pos` took.
+    var sidx0 = 0
+    var sidx1 = 1
+    var sidx2 = 2
+    var sidx3 = 3
 
     # ⚠⚠ THERE USED TO BE A RE-ORIENTATION HERE AND MuJoCo HAS NONE.
     # It computed the scalar triple product of the incoming simplex and swapped
@@ -1074,16 +1134,16 @@ def _gjk_intersect[
     for _ in range(GJK_MAX_ITERATIONS):
         # signed distance to each face; face i is the one OPPOSITE vertex i
         var f0 = _gjk_signed_distance[DTYPE](
-            simplex, sidx[2], sidx[1], sidx[3]
+            ws, wrow, base, sidx2, sidx1, sidx3
         )
         var f1 = _gjk_signed_distance[DTYPE](
-            simplex, sidx[0], sidx[2], sidx[3]
+            ws, wrow, base, sidx0, sidx2, sidx3
         )
         var f2 = _gjk_signed_distance[DTYPE](
-            simplex, sidx[1], sidx[0], sidx[3]
+            ws, wrow, base, sidx1, sidx0, sidx3
         )
         var f3 = _gjk_signed_distance[DTYPE](
-            simplex, sidx[0], sidx[1], sidx[2]
+            ws, wrow, base, sidx0, sidx1, sidx2
         )
 
         # origin exactly on an affine hull -> the signs cannot converge
@@ -1117,12 +1177,19 @@ def _gjk_intersect[
         # a TRIANGLE (`polytope3`) where MuJoCo seeds from the TETRAHEDRON.
         if best > Scalar[DTYPE](0):
             # enclosed: emit the tetrahedron in permutation order
-            var out = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
+            # Built in `CCD_WS_SPX2` first: the permutation can read a slot
+            # it has already overwritten, so it cannot be done in place. That
+            # is the reference's own `Vertex simplex[4]` local.
+            for c in range(9):
+                set_sv(ws, wrow, CCD_WS_SPX2, 0, c, sv(ws, wrow, base, sidx0, c))
+                set_sv(ws, wrow, CCD_WS_SPX2, 1, c, sv(ws, wrow, base, sidx1, c))
+                set_sv(ws, wrow, CCD_WS_SPX2, 2, c, sv(ws, wrow, base, sidx2, c))
+                set_sv(ws, wrow, CCD_WS_SPX2, 3, c, sv(ws, wrow, base, sidx3, c))
             for v in range(4):
                 for c in range(9):
-                    out[v * 9 + c] = simplex[sidx[v] * 9 + c]
-            for c in range(36):
-                simplex[c] = out[c]
+                    set_sv(
+                        ws, wrow, base, v, c, sv(ws, wrow, CCD_WS_SPX2, v, c)
+                    )
             return 1
 
         var nx = Scalar[DTYPE](0)
@@ -1157,16 +1224,16 @@ def _gjk_intersect[
             shrink1,
             shrink2,
         )
-        var tgt = sidx[index]
-        simplex[tgt * 9 + 0] = w[0]
-        simplex[tgt * 9 + 1] = w[1]
-        simplex[tgt * 9 + 2] = w[2]
-        simplex[tgt * 9 + 3] = w[3]
-        simplex[tgt * 9 + 4] = w[4]
-        simplex[tgt * 9 + 5] = w[5]
-        simplex[tgt * 9 + 6] = w[6]
-        simplex[tgt * 9 + 7] = w[7]
-        simplex[tgt * 9 + 8] = w[8]
+        var tgt = _sel4i(index, sidx0, sidx1, sidx2, sidx3)
+        set_sv(ws, wrow, base, tgt, 0, w[0])
+        set_sv(ws, wrow, base, tgt, 1, w[1])
+        set_sv(ws, wrow, base, tgt, 2, w[2])
+        set_sv(ws, wrow, base, tgt, 3, w[3])
+        set_sv(ws, wrow, base, tgt, 4, w[4])
+        set_sv(ws, wrow, base, tgt, 5, w[5])
+        set_sv(ws, wrow, base, tgt, 6, w[6])
+        set_sv(ws, wrow, base, tgt, 7, w[7])
+        set_sv(ws, wrow, base, tgt, 8, w[8])
 
         # separation certificate
         if nx * w[0] + ny * w[1] + nz * w[2] < Scalar[DTYPE](0):
@@ -1174,9 +1241,24 @@ def _gjk_intersect[
 
         var a = (index + 1) & 3
         var b = (index + 2) & 3
-        var tmp = sidx[a]
-        sidx[a] = sidx[b]
-        sidx[b] = tmp
+        var va = _sel4i(a, sidx0, sidx1, sidx2, sidx3)
+        var vb = _sel4i(b, sidx0, sidx1, sidx2, sidx3)
+        if a == 0:
+            sidx0 = vb
+        elif a == 1:
+            sidx1 = vb
+        elif a == 2:
+            sidx2 = vb
+        else:
+            sidx3 = vb
+        if b == 0:
+            sidx0 = va
+        elif b == 1:
+            sidx1 = va
+        elif b == 2:
+            sidx2 = va
+        else:
+            sidx3 = va
 
     return -1
 
@@ -1338,7 +1420,12 @@ def gjk_epa_witness[
         full_m2 = r2 + Scalar[DTYPE](0.5) * ccd_margin
     var shrunk = _sh1 or _sh2
 
-    var simplex = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
+    # ⚠ GJK'S SIMPLEX LIVES IN THE ROW, NOT ON THE STACK — see
+    # `ccd_workspace.mojo`. It is zeroed here because `mjc_ccd` starts each
+    # phase from a fresh `Vertex sv(ws, wrow, SPX, 0, 4)`.
+    comptime SPX = CCD_WS_SPX
+    for _c in range(4 * SPX_STRIDE):
+        ws[wrow, SPX + _c] = Scalar[DTYPE](0)
     var nsimplex = 0
 
     # ⚠⚠ `x_k` STARTS AS THE DIFFERENCE OF THE TWO GEOM CENTRES, NOT AS A
@@ -1536,16 +1623,16 @@ def gjk_epa_witness[
             # compaction below decides how many vertices survived. Incrementing
             # here instead — which this loop used to do — makes every test between
             # this point and the compaction read a count one too high.
-            var si = nsimplex * 9
-            simplex[si + 0] = sn[0]
-            simplex[si + 1] = sn[1]
-            simplex[si + 2] = sn[2]
-            simplex[si + 3] = sn[3]
-            simplex[si + 4] = sn[4]
-            simplex[si + 5] = sn[5]
-            simplex[si + 6] = sn[6]
-            simplex[si + 7] = sn[7]
-            simplex[si + 8] = sn[8]
+            var si = nsimplex
+            set_sv(ws, wrow, SPX, si, 0, sn[0])
+            set_sv(ws, wrow, SPX, si, 1, sn[1])
+            set_sv(ws, wrow, SPX, si, 2, sn[2])
+            set_sv(ws, wrow, SPX, si, 3, sn[3])
+            set_sv(ws, wrow, SPX, si, 4, sn[4])
+            set_sv(ws, wrow, SPX, si, 5, sn[5])
+            set_sv(ws, wrow, SPX, si, 6, sn[6])
+            set_sv(ws, wrow, SPX, si, 7, sn[7])
+            set_sv(ws, wrow, SPX, si, 8, sn[8])
 
             var fw_gap = v_dot_v - (sn[0] * vx + sn[1] * vy + sn[2] * vz)
             if fw_gap < _gjk_epsilon[DTYPE](
@@ -1569,7 +1656,7 @@ def gjk_epa_witness[
             # three failed attempts to use EPA on penetrating primitives.
             if nsimplex == 3 and backup_gjk:
                 var gi = _gjk_intersect[DTYPE, NPRISM=NPRISM](
-                    simplex,
+                    ws, wrow, SPX,
                     type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                     r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                     type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1648,7 +1735,7 @@ def gjk_epa_witness[
             # `subdistance` — barycentric coordinates of the closest point.
             # ⚠ IT DOES NOT REDUCE THE SIMPLEX; the compaction below is the
             # reference's own, and the retention test is `lambda[i] != 0` EXACTLY.
-            lam = _subdistance[DTYPE](simplex, nsimplex + 1)
+            lam = _subdistance[DTYPE](ws, wrow, SPX, nsimplex + 1)
 
             var keep = 0
             for i in range(4):
@@ -1656,7 +1743,9 @@ def gjk_epa_witness[
                     continue
                 if keep != i:
                     for c in range(9):
-                        simplex[keep * 9 + c] = simplex[i * 9 + c]
+                        set_sv(
+                            ws, wrow, SPX, keep, c, sv(ws, wrow, SPX, i, c)
+                        )
                     lam[keep] = lam[i]
                 keep += 1
             # "SHOULD NOT OCCUR"
@@ -1674,9 +1763,9 @@ def gjk_epa_witness[
             var xny = Scalar[DTYPE](0)
             var xnz = Scalar[DTYPE](0)
             for i in range(nsimplex):
-                xnx += lam[i] * simplex[i * 9 + 0]
-                xny += lam[i] * simplex[i * 9 + 1]
-                xnz += lam[i] * simplex[i * 9 + 2]
+                xnx += lam[i] * sv(ws, wrow, SPX, i, 0)
+                xny += lam[i] * sv(ws, wrow, SPX, i, 1)
+                xnz += lam[i] * sv(ws, wrow, SPX, i, 2)
 
             # ⚠⚠ `equal3(x_next, x_k)` — "x_k has converged to minimum". This break
             # leaves `x_k` AND `x_norm` at the values the top of the iteration
@@ -1716,12 +1805,12 @@ def gjk_epa_witness[
             var i2y = Scalar[DTYPE](0)
             var i2z = Scalar[DTYPE](0)
             for i in range(nsimplex):
-                i1x += lam[i] * simplex[i * 9 + 3]
-                i1y += lam[i] * simplex[i * 9 + 4]
-                i1z += lam[i] * simplex[i * 9 + 5]
-                i2x += lam[i] * simplex[i * 9 + 6]
-                i2y += lam[i] * simplex[i * 9 + 7]
-                i2z += lam[i] * simplex[i * 9 + 8]
+                i1x += lam[i] * sv(ws, wrow, SPX, i, 3)
+                i1y += lam[i] * sv(ws, wrow, SPX, i, 4)
+                i1z += lam[i] * sv(ws, wrow, SPX, i, 5)
+                i2x += lam[i] * sv(ws, wrow, SPX, i, 6)
+                i2y += lam[i] * sv(ws, wrow, SPX, i, 7)
+                i2z += lam[i] * sv(ws, wrow, SPX, i, 8)
             # `inflate`: n = normalize(x2 - x1); x1 += m1*n; x2 -= m2*n;
             #            dist -= (m1 + m2)
             var inx = i2x - i1x
@@ -1800,12 +1889,12 @@ def gjk_epa_witness[
         var w2y = Scalar[DTYPE](0)
         var w2z = Scalar[DTYPE](0)
         for i in range(nsimplex):
-            w1x += lam[i] * simplex[i * 9 + 3]
-            w1y += lam[i] * simplex[i * 9 + 4]
-            w1z += lam[i] * simplex[i * 9 + 5]
-            w2x += lam[i] * simplex[i * 9 + 6]
-            w2y += lam[i] * simplex[i * 9 + 7]
-            w2z += lam[i] * simplex[i * 9 + 8]
+            w1x += lam[i] * sv(ws, wrow, SPX, i, 3)
+            w1y += lam[i] * sv(ws, wrow, SPX, i, 4)
+            w1z += lam[i] * sv(ws, wrow, SPX, i, 5)
+            w2x += lam[i] * sv(ws, wrow, SPX, i, 6)
+            w2y += lam[i] * sv(ws, wrow, SPX, i, 7)
+            w2z += lam[i] * sv(ws, wrow, SPX, i, 8)
         var cx = (w1x + w2x) * Scalar[DTYPE](0.5)
         var cy = (w1y + w2y) * Scalar[DTYPE](0.5)
         var cz = (w1z + w2z) * Scalar[DTYPE](0.5)
@@ -1879,7 +1968,7 @@ def gjk_epa_witness[
     elif nsimplex >= 4:
         for i in range(4):
             for k in range(9):
-                set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+                set_ev(ws, wrow, i, k, sv(ws, wrow, SPX, i, k))
             # ⚠ STAGE A: the seed vertices carry no support index. MuJoCo's
             # `insertVertex` copies `index1`/`index2` out of the GJK simplex,
             # which would mean widening the simplex from 9 floats to 11 and
@@ -1956,13 +2045,13 @@ def gjk_epa_witness[
                 rc = 1
             var tmp = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
             for k in range(9):
-                tmp[k] = simplex[rc * 9 + k]
+                tmp[k] = sv(ws, wrow, SPX, rc, k)
             for k in range(9):
-                simplex[0 * 9 + k] = simplex[ra * 9 + k]
+                set_sv(ws, wrow, SPX, 0, k, sv(ws, wrow, SPX, ra, k))
             for k in range(9):
-                simplex[1 * 9 + k] = simplex[rb * 9 + k]
+                set_sv(ws, wrow, SPX, 1, k, sv(ws, wrow, SPX, rb, k))
             for k in range(9):
-                simplex[2 * 9 + k] = tmp[k]
+                set_sv(ws, wrow, SPX, 2, k, tmp[k])
             nsimplex = 3
             nverts = 0
             nfaces = 0
@@ -1983,12 +2072,12 @@ def gjk_epa_witness[
 
     # ── polytope2 — GJK ended on a segment ────────────────────────────────
     elif nsimplex == 2:
-        var v1x = simplex[0]
-        var v1y = simplex[1]
-        var v1z = simplex[2]
-        var v2x = simplex[9]
-        var v2y = simplex[10]
-        var v2z = simplex[11]
+        var v1x = sv(ws, wrow, SPX, 0, 0)
+        var v1y = sv(ws, wrow, SPX, 0, 1)
+        var v1z = sv(ws, wrow, SPX, 0, 2)
+        var v2x = sv(ws, wrow, SPX, 1, 0)
+        var v2y = sv(ws, wrow, SPX, 1, 1)
+        var v2z = sv(ws, wrow, SPX, 1, 2)
         set_center(
             ws, wrow,
             (v1x + v2x) * Scalar[DTYPE](0.5),
@@ -2023,7 +2112,7 @@ def gjk_epa_witness[
 
         for i in range(2):
             for k in range(9):
-                set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+                set_ev(ws, wrow, i, k, sv(ws, wrow, SPX, i, k))
             set_ev(ws, wrow, i, 9, Scalar[DTYPE](-1))
             set_ev(ws, wrow, i, 10, Scalar[DTYPE](-1))
         nverts = 2
@@ -2134,11 +2223,11 @@ def gjk_epa_witness[
                 sb = 4
                 sc = 3
             for k in range(9):
-                simplex[0 * 9 + k] = ev(ws, wrow, sa, k)
+                set_sv(ws, wrow, SPX, 0, k, ev(ws, wrow, sa, k))
             for k in range(9):
-                simplex[1 * 9 + k] = ev(ws, wrow, sb, k)
+                set_sv(ws, wrow, SPX, 1, k, ev(ws, wrow, sb, k))
             for k in range(9):
-                simplex[2 * 9 + k] = ev(ws, wrow, sc, k)
+                set_sv(ws, wrow, SPX, 2, k, ev(ws, wrow, sc, k))
             nsimplex = 3
             nverts = 0
             nfaces = 0
@@ -2163,15 +2252,15 @@ def gjk_epa_witness[
 
     # ── polytope3 — GJK ended on a triangle, or a seed dropped to one ─────
     if need3 and ret == 0:
-        var w1x = simplex[0]
-        var w1y = simplex[1]
-        var w1z = simplex[2]
-        var w2x = simplex[9]
-        var w2y = simplex[10]
-        var w2z = simplex[11]
-        var w3x = simplex[18]
-        var w3y = simplex[19]
-        var w3z = simplex[20]
+        var w1x = sv(ws, wrow, SPX, 0, 0)
+        var w1y = sv(ws, wrow, SPX, 0, 1)
+        var w1z = sv(ws, wrow, SPX, 0, 2)
+        var w2x = sv(ws, wrow, SPX, 1, 0)
+        var w2y = sv(ws, wrow, SPX, 1, 1)
+        var w2z = sv(ws, wrow, SPX, 1, 2)
+        var w3x = sv(ws, wrow, SPX, 2, 0)
+        var w3y = sv(ws, wrow, SPX, 2, 1)
+        var w3z = sv(ws, wrow, SPX, 2, 2)
         set_center(
             ws, wrow,
             (w1x + w2x + w3x) / Scalar[DTYPE](3),
@@ -2193,7 +2282,7 @@ def gjk_epa_witness[
         else:
             for i in range(3):
                 for k in range(9):
-                    set_ev(ws, wrow, i, k, simplex[i * 9 + k])
+                    set_ev(ws, wrow, i, k, sv(ws, wrow, SPX, i, k))
                 set_ev(ws, wrow, i, 9, Scalar[DTYPE](-1))
                 set_ev(ws, wrow, i, 10, Scalar[DTYPE](-1))
             nverts = 3
@@ -2482,6 +2571,17 @@ def gjk_epa_witness[
         wx[4] = wit[4]
         wx[5] = wit[5]
         wf_ok = 1
+
+        comptime if EPA_DBG:
+            return (
+                -sqrt(efd(ws, wrow, face)) + ccd_margin,
+                Scalar[DTYPE](nverts),
+                Scalar[DTYPE](nfaces),
+                Scalar[DTYPE](face),
+                Scalar[DTYPE](i0),
+                Scalar[DTYPE](i1),
+                Scalar[DTYPE](i2),
+            )
 
         # ⚠ THE NORMAL IS `normalize(x1 - x2)`, NOT THE UNIT FACE NORMAL.
         # `mjc_penetration` (`engine_collision_convex.c`) builds it from the

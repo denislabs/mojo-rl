@@ -7,6 +7,8 @@ Reference: MuJoCo engine_collision_convex.c lines 162-398
 """
 
 from std.math import sqrt, abs
+
+from layout import Layout, LayoutTensor
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -16,7 +18,7 @@ from ..constants import (
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
-from .epa import project_origin_plane
+from .epa import project_origin_plane, sv
 
 
 # ---------------------------------------------------------------------------
@@ -678,9 +680,11 @@ def _det3[
 
 
 def _subdistance[
-    DTYPE: DType
+    DTYPE: DType, L_WS: Layout
 ](
-    simplex: InlineArray[Scalar[DTYPE], 36],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    base: Int,
     n: Int,
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """`subdistance` / `S3D` — the barycentric coordinates of the point in the
@@ -704,17 +708,17 @@ def _subdistance[
         return lam^
     if n == 2:
         var l = _s1d[DTYPE](
-            simplex[0], simplex[1], simplex[2],
-            simplex[9], simplex[10], simplex[11],
+            sv(ws, wrow, base, 0, 0), sv(ws, wrow, base, 0, 1), sv(ws, wrow, base, 0, 2),
+            sv(ws, wrow, base, 1, 0), sv(ws, wrow, base, 1, 1), sv(ws, wrow, base, 1, 2),
         )
         lam[0] = l[0]
         lam[1] = l[1]
         return lam^
     if n == 3:
         var l = _s2d[DTYPE](
-            simplex[0], simplex[1], simplex[2],
-            simplex[9], simplex[10], simplex[11],
-            simplex[18], simplex[19], simplex[20],
+            sv(ws, wrow, base, 0, 0), sv(ws, wrow, base, 0, 1), sv(ws, wrow, base, 0, 2),
+            sv(ws, wrow, base, 1, 0), sv(ws, wrow, base, 1, 1), sv(ws, wrow, base, 1, 2),
+            sv(ws, wrow, base, 2, 0), sv(ws, wrow, base, 2, 1), sv(ws, wrow, base, 2, 2),
         )
         lam[0] = l[0]
         lam[1] = l[1]
@@ -722,18 +726,18 @@ def _subdistance[
         return lam^
 
     # S3D
-    var s1x = simplex[0]
-    var s1y = simplex[1]
-    var s1z = simplex[2]
-    var s2x = simplex[9]
-    var s2y = simplex[10]
-    var s2z = simplex[11]
-    var s3x = simplex[18]
-    var s3y = simplex[19]
-    var s3z = simplex[20]
-    var s4x = simplex[27]
-    var s4y = simplex[28]
-    var s4z = simplex[29]
+    var s1x = sv(ws, wrow, base, 0, 0)
+    var s1y = sv(ws, wrow, base, 0, 1)
+    var s1z = sv(ws, wrow, base, 0, 2)
+    var s2x = sv(ws, wrow, base, 1, 0)
+    var s2y = sv(ws, wrow, base, 1, 1)
+    var s2z = sv(ws, wrow, base, 1, 2)
+    var s3x = sv(ws, wrow, base, 2, 0)
+    var s3y = sv(ws, wrow, base, 2, 1)
+    var s3z = sv(ws, wrow, base, 2, 2)
+    var s4x = sv(ws, wrow, base, 3, 0)
+    var s4y = sv(ws, wrow, base, 3, 1)
+    var s4z = sv(ws, wrow, base, 3, 2)
 
     var c41 = -_det3[DTYPE](s2x, s2y, s2z, s3x, s3y, s3z, s4x, s4y, s4z)
     var c42 = _det3[DTYPE](s1x, s1y, s1z, s3x, s3y, s3z, s4x, s4y, s4z)

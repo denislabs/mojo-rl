@@ -71,7 +71,7 @@ from ..gpu.constants import (
     MJ_CCD_TOLERANCE,
     MJ_CCD_ITERATIONS,
 )
-from .gjk import gjk_epa, _support
+from .gjk import gjk_epa, _support, EPA_DBG
 
 # `mjMAXCONPAIR` (`mjmodel.h:29`) — MuJoCo's own per-pair ceiling, and the loop
 # in `mjc_ConvexHField` breaks out of all three loops when it is reached.
@@ -390,6 +390,27 @@ def hfield_convex_contacts[
                     contacts[env, o + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                         contact_condim
                     )
+                    # ⚠ THE SUB-GRID WALK, SMUGGLED OUT THROUGH THE FORCE
+                    # SLOTS. See `EPA_DBG` in `gjk.mojo`: the columns below are
+                    # written by the solver later and are free at detection
+                    # time, so a GPU run can be diffed against a CPU one cell
+                    # by cell. This is what proved the AABB and the sub-grid
+                    # IDENTICAL on both targets while the contacts were not,
+                    # which is what moved the hunt off this file and into GJK.
+                    comptime if EPA_DBG:
+                        contacts[env, o + 10] = Scalar[DTYPE](r)
+                        contacts[env, o + 11] = Scalar[DTYPE](c)
+                        contacts[env, o + 12] = Scalar[DTYPE](i)
+                        contacts[env, o + 17] = Scalar[DTYPE](cmin)
+                        contacts[env, o + 18] = Scalar[DTYPE](cmax)
+                        contacts[env, o + 19] = Scalar[DTYPE](rmin)
+                        contacts[env, o + 20] = Scalar[DTYPE](rmax)
+                        contacts[env, o + 21] = xmin
+                        contacts[env, o + 22] = xmax
+                        contacts[env, o + 23] = ymin
+                        contacts[env, o + 24] = ymax
+                        contacts[env, o + 25] = zmin
+                        contacts[env, o + 26] = zmax
                     num_contacts += 1
                     ncon += 1
                     if ncon >= cap:

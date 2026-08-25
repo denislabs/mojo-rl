@@ -142,7 +142,33 @@ comptime CCD_WS_HSTK: Int = CCD_WS_HOR + EPA_F_CAP * 2
 # `center` — `Polytope::center`, the seed's centroid. `attachFace` orients each
 # face's projection away from it.
 comptime CCD_WS_CTR: Int = CCD_WS_HSTK + EPA_F_CAP * 3
-comptime EPA_WS_SIZE: Int = CCD_WS_CTR + 3
+
+# `spx` — GJK'S OWN SIMPLEX, four vertices of nine floats: the Minkowski point
+# (0..2) and the two witness points (3..5, 6..8).
+#
+# ⚠⚠ IT IS HERE FOR A DIFFERENT REASON THAN THE POLYTOPE ABOVE, AND THE REASON
+# IS A METAL MISCOMPILE, NOT SIZE. Thirty-six floats is nothing; what matters
+# is that GJK indexes this array BY A RUNTIME VALUE in eleven places
+# (`simplex[i * 9 + c]`, the `lambda`-compaction that overwrites
+# `simplex[keep * 9 + c]`, `gjkIntersect`'s permutation, `polytope3`'s
+# rotation). A per-thread `InlineArray` indexed by a runtime value is the
+# defect recorded in `feedback_metal_wide_per_thread_inlinearray_miscompute` —
+# it reads back the WRONG VALUE with no crash, and it has now cost this engine
+# three separate hunts. THREE elements was enough the second time; this one is
+# thirty-six.
+#
+# ⚠ MEASURED, NOT ASSUMED. On `test_hfield_vs_mujoco`'s GPU leg the sphere —
+# whose `mjc_pointSupport` returns a CONSTANT, so GJK converges before the
+# simplex ever grows — was bit-identical to the CPU across all six of its
+# contacts, while the box and the capsule, which make GJK iterate, diverged
+# from the first vertex count onwards. That split is what named this array.
+comptime CCD_WS_SPX: Int = CCD_WS_CTR + 3
+comptime SPX_STRIDE: Int = 9
+# `spx2` — `gjkIntersect`'s scratch copy. The reference builds the permuted
+# tetrahedron in a local `Vertex simplex[4]` and copies it back over the
+# caller's; ours cannot alias the same region while it does that.
+comptime CCD_WS_SPX2: Int = CCD_WS_SPX + 4 * SPX_STRIDE
+comptime EPA_WS_SIZE: Int = CCD_WS_SPX2 + 4 * SPX_STRIDE
 
 
 # ---- the multi-contact region ----------------------------------------------

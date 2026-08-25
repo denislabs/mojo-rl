@@ -53,6 +53,9 @@ from .ccd_workspace import (
     CCD_WS_HOR,
     CCD_WS_HSTK,
     CCD_WS_CTR,
+    CCD_WS_SPX,
+    CCD_WS_SPX2,
+    SPX_STRIDE,
 )
 
 # `mjMINVAL` (`mjtnum.h`) and its square.
@@ -114,6 +117,35 @@ def set_ev[DTYPE: DType, L_WS: Layout](
     v: Scalar[DTYPE],
 ):
     ws[wrow, CCD_WS_EV + i * EPA_V_STRIDE + k] = v
+
+
+@always_inline
+def sv[DTYPE: DType, L_WS: Layout](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    base: Int,
+    i: Int,
+    k: Int,
+) -> Scalar[DTYPE]:
+    """GJK's simplex vertex `i`, component `k` — 0..2 the Minkowski point,
+    3..5 and 6..8 the two witness points.
+
+    `base` is `CCD_WS_SPX` or `CCD_WS_SPX2`; see the note in
+    `ccd_workspace.mojo` for why the simplex is in the row at all.
+    """
+    return rebind[Scalar[DTYPE]](ws[wrow, base + i * SPX_STRIDE + k])
+
+
+@always_inline
+def set_sv[DTYPE: DType, L_WS: Layout](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    base: Int,
+    i: Int,
+    k: Int,
+    v: Scalar[DTYPE],
+):
+    ws[wrow, base + i * SPX_STRIDE + k] = v
 
 
 @always_inline
