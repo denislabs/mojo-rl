@@ -1342,6 +1342,7 @@ def load_mesh_hull[
     rqx: Float64 = 0.0,
     rqy: Float64 = 0.0,
     rqz: Float64 = 0.0,
+    maxhullvert: Int = -1,
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
 
@@ -1377,9 +1378,12 @@ def load_mesh_hull[
         sx * (1.0 + 7.0 * rpx + 13.0 * rqx),
         sy * (1.0 + 7.0 * rpy + 13.0 * rqy),
         sz * (1.0 + 7.0 * rpz + 13.0 * rqz + 3.0 * (rqw - 1.0)),
+        maxhullvert,
     ) if not mesh_ref_is_identity(
         rpx, rpy, rpz, rqw, rqx, rqy, rqz
-    ) else hull_cache_path[DTYPE](mesh_filename, mi, sx, sy, sz)
+    ) else hull_cache_path[DTYPE](
+        mesh_filename, mi, sx, sy, sz, maxhullvert
+    )
     var p = HullPayload()
 
     if not hull_cache_load(cache_path, p):
@@ -1435,10 +1439,23 @@ def load_mesh_hull[
         # `MakePolygonNormals` reads that cycle's first three vertices).
         # `compute_convex_hull` is the fallback for a tree without the dylib.
         var nh = _qhull_hull[DTYPE](
-            unique, num_unique, -1, lvert, lfaces
+            unique, num_unique, maxhullvert, lvert, lfaces
         )
         var qhull_order = nh > 0
         if not qhull_order:
+            # ⚠ THE FALLBACK IGNORES THE BUDGET, and says so. Without the
+            # shim there is no qhull to hand `TA` to, and
+            # `compute_convex_hull` is an exact incremental hull with no
+            # notion of stopping early; a model that asked for 64 gets its
+            # full hull. The alternative — trimming afterwards — would be a
+            # DIFFERENT hull from MuJoCo's, not a closer one.
+            if maxhullvert > -1:
+                print(
+                    "physics3d: <mesh maxhullvert=" + String(maxhullvert)
+                    + "> ignored for " + mesh_filename
+                    + " — the qhull shim is unavailable, so the full hull is"
+                    " used. Build it with `pixi run build-qhull`."
+                )
             nh = compute_convex_hull[DTYPE](
                 unique, num_unique, lvert, lfaces
             )

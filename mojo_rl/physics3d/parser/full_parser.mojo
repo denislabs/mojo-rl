@@ -561,6 +561,14 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var msc_s = _extract_attr(mshtag, "scale")
         if msc_s.byte_length() > 0:
             d.mesh_scale_s = msc_s
+        # ⚠ `maxhullvert` LIVES IN THE SAME TAG AND HAS THE SAME TRAP.
+        # trossen_wxai declares it ONCE, here, and leaves all 27 of its
+        # `<mesh file=.../>` assets bare; reading the asset tag alone finds
+        # nothing and every hull comes out with MuJoCo's vertices plus the
+        # ones qhull's budget stopped it adding.
+        var mhv_s = _extract_attr(mshtag, "maxhullvert")
+        if mhv_s.byte_length() > 0:
+            d.mesh_maxhullvert_s = mhv_s
 
     # Find default <joint
     var jpos = defaults_sec.find("<joint")
@@ -1952,6 +1960,35 @@ def _fill_assets(
             # shell" is the message that sends a model here. Three Menagerie
             # models use it. `convex` and `exact` are not modelled; they are
             # named rather than silently treated as legacy.
+            # ── `maxhullvert` — the qhull BUDGET, element then class ──────
+            # `mjCMesh::MakeGraph` (user_mesh.cc:1732) appends
+            # `Q9 TA<n-4>` to qhull's options when this is > -1, so qhull
+            # stops after adding that many vertices to the initial simplex.
+            # MuJoCo's default is -1 (unlimited).
+            #
+            # ⚠ THE PRECEDENCE IS THE ELEMENT'S, THEN ITS CLASS, THEN THE
+            # TOP-LEVEL DEFAULT — the same order `scale` above uses, and the
+            # order so101 needs: it sets 128 in a `<default>` and overrides it
+            # to 64 on three of its meshes.
+            var mhv_s = _trim(_extract_attr(tag, "maxhullvert"))
+            if mhv_s.byte_length() == 0:
+                var mhvcls = _extract_attr(tag, "class")
+                if mhvcls.byte_length() > 0:
+                    mhv_s = named_defaults.find(mhvcls).mesh_maxhullvert_s
+                if mhv_s.byte_length() == 0:
+                    mhv_s = defaults.mesh_maxhullvert_s
+            var mhv = -1
+            if mhv_s.byte_length() > 0:
+                mhv = Int(_parse_float(mhv_s))
+                # `xml_native_reader.cc:1914` — MuJoCo raises here, and a
+                # budget below the initial simplex would ask qhull for a
+                # negative `TA`. Anything else is left as unlimited.
+                if mhv != -1 and mhv < 4:
+                    raise Error(
+                        "<mesh maxhullvert=\"" + mhv_s + "\"> must be larger"
+                        " than 3 (or -1 for unlimited)"
+                    )
+            result.mesh_asset_maxhullvert.append(mhv)
             var in_s = _trim(_extract_attr(tag, "inertia"))
             result.mesh_asset_inertia_shell.append(1 if in_s == "shell" else 0)
             if in_s.byte_length() > 0 and in_s != "shell" and in_s != "legacy":
@@ -2328,6 +2365,8 @@ def _parse_one_geom(
                     gd.mesh_inertia_shell = (
                         assets.mesh_asset_inertia_shell[mi] != 0
                     )
+                if mi < len(assets.mesh_asset_maxhullvert):
+                    gd.mesh_maxhullvert = assets.mesh_asset_maxhullvert[mi]
                 if mi * 4 + 3 < len(assets.mesh_asset_refquat):
                     gd.mesh_ref_quat_w = assets.mesh_asset_refquat[mi * 4 + 0]
                     gd.mesh_ref_quat_x = assets.mesh_asset_refquat[mi * 4 + 1]
@@ -6352,23 +6391,25 @@ def parse_xml_full(
 
     # Assets: textures and materials
     _fill_assets(asset_sec, result, defaults, named_defaults)
-    # ── `maxhullvert` — a hull BUDGET we do not honour ────────────────────
+    # ── `maxhullvert` — the hull BUDGET, now honoured ────────────────────
     #
-    # ⚠ MuJoCo decimates the convex hull to this many vertices
-    # (`mjCMesh::MakeGraph`), and its compiled hull really is smaller:
-    # measured on trossen_wxai, whose meshes inherit `maxhullvert="64"`,
-    # MuJoCo reports hulls of exactly 64 vertices where ours keep 86, 91,
-    # 110... Ours CONTAINS MuJoCo's, so contacts on the decimated faces sit
-    # slightly differently. Two Menagerie models declare it (trossen_wxai,
-    # robotstudio_so101) and both step to 1e-10 or better, so this is a
-    # fidelity gap rather than a live defect — but a silent one until now.
+    # MuJoCo decimates each convex hull to this many vertices by handing qhull
+    # `Q9 TA<n-4>` (`mjCMesh::MakeGraph`, user_mesh.cc:1732); the budget is
+    # parsed above, rides on the geom and reaches `load_mesh_hull`. Measured on
+    # trossen_wxai, whose 27 meshes inherit `maxhullvert="64"` from a
+    # `<default>`: MuJoCo reports hulls of exactly 64 vertices where ours used
+    # to keep 86, 91, 110...
     #
-    # ⚠ COUNTED OVER THE WHOLE DOCUMENT, NOT OFF THE ELEMENT. Both models put
-    # it in a `<default><mesh maxhullvert="64"/></default>`, so an
-    # element-only read reports ZERO on trossen_wxai and 4 on so101 — the
-    # `<default>`-chain trap this parser has been bitten by repeatedly, here
-    # in the warning itself. A diagnostic that misses the common spelling is
-    # worse than none.
+    # ⚠ THE COUNT IS KEPT AND THE WARNING IS NOT. It is the only thing that can
+    # separate "this model never declared it" from "the `<default>` chain lost
+    # the declaration", and `test_maxhullvert_decimates_the_hull` asserts it
+    # beside the hull itself. ⚠ IT IS NOT THE GATE: this count was correct for
+    # months while every hull was wrong.
+    #
+    # ⚠ COUNTED OVER THE WHOLE DOCUMENT, NOT OFF THE ELEMENT. Both models that
+    # declare it put it in a `<default><mesh maxhullvert="64"/></default>`, so
+    # an element-only scan reports ZERO on trossen_wxai and 4 on so101 — the
+    # `<default>`-chain trap this parser has been bitten by repeatedly.
     var _mhv_n = 0
     var _mhv_at = 0
     while True:
@@ -6378,13 +6419,6 @@ def parse_xml_full(
         _mhv_n += 1
         _mhv_at = _hit + 1
     result.unhonoured_maxhullvert = _mhv_n
-    if _mhv_n > 0:
-        print(
-            "physics3d:", _mhv_n, "`maxhullvert` declaration(s) are not"
-            " honoured — MuJoCo decimates each convex hull to that many"
-            " vertices and this engine keeps all of them, so contacts on the"
-            " decimated faces will differ slightly.",
-        )
 
     # ── `hfield` / `sdf` geoms — a SILENT SUBSTITUTION, now audible ───────
     #

@@ -323,6 +323,13 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
     var mesh_inertia_shell: Bool
     """`<mesh inertia="shell">` on the asset this geom names."""
+    var mesh_maxhullvert: Int
+    """`<mesh maxhullvert>` on the asset this geom names — -1 when unset.
+
+    ⚠ CARRIED ON THE GEOM FOR THE SAME REASON `mesh_scale_*` IS: the hull
+    loader is handed a FILENAME, and two assets may name one file with
+    different budgets. It also belongs in the hull CACHE KEY — the same STL at
+    two budgets is two different hulls."""
     var mesh_ref_pos_x: Float64
     var mesh_ref_pos_y: Float64
     var mesh_ref_pos_z: Float64
@@ -466,6 +473,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.hfield_id = -1
         self.mesh_filename = mesh_filename
         self.mesh_inertia_shell = False
+        self.mesh_maxhullvert = -1
         self.mesh_ref_pos_x = 0.0
         self.mesh_ref_pos_y = 0.0
         self.mesh_ref_pos_z = 0.0
@@ -1438,6 +1446,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_inheritrange_s: String
     var motor_kv_s: String
     var motor_dampratio_s: String
+    var mesh_maxhullvert_s: String
+    """`<default><mesh maxhullvert="n"/></default>` — raw, "" when unset.
+
+    ⚠ THE ONLY SPELLING trossen_wxai USES, and so101 uses it for the budget
+    its three per-element declarations override. An element-only read reports
+    ZERO on wxai — see `mesh_scale_s` directly below, which is the same trap."""
     var mesh_scale_s: String
     """`<default><mesh scale="x y z"/></default>` — raw, "" when unset.
 
@@ -1623,6 +1637,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_inheritrange_s = ""
         self.motor_kv_s = ""
         self.motor_dampratio_s = ""
+        self.mesh_maxhullvert_s = ""
         self.mesh_scale_s = ""
         self.motor_gaintype_s = ""
         self.motor_biastype_s = ""
@@ -2206,11 +2221,20 @@ struct FlatModelDef(Movable):
     # it — hello_robot_stretch_3 (11 meshes), hello_robot_stretch (8),
     # pndbotics_adam_lite (4).
     var mesh_asset_inertia_shell: List[Int]
-    # How many `maxhullvert` declarations the document carries that this
-    # engine does not honour. MuJoCo decimates each convex hull to that many
-    # vertices; we keep all of them, so ours CONTAINS MuJoCo's and contacts on
-    # the decimated faces sit slightly differently. Recorded so the gate can
-    # assert the count rather than watching for a print.
+    # `<mesh maxhullvert>` — 1 per asset, -1 for MuJoCo's default (unlimited).
+    #
+    # ⚠ A BUDGET FOR qhull, NOT A POST-PASS. `mjCMesh::MakeGraph`
+    # (user_mesh.cc:1732) appends `Q9 TA<n-4>` to its option string and lets
+    # qhull stop after adding that many vertices to the initial simplex, so the
+    # decimated hull is the one qhull would have built had it run out of
+    # budget — NOT the full hull with vertices removed afterwards. Anything
+    # that reimplements the trimming gets a different hull.
+    var mesh_asset_maxhullvert: List[Int]
+    # How many `maxhullvert` declarations the document carries. Honoured since
+    # the budget reached `load_mesh_hull`; kept because it is the only thing
+    # that can tell a model that never declares it from one whose declaration
+    # the `<default>` chain lost. ⚠ IT IS NOT THE GATE — the count was right
+    # for months while the hull was wrong. Gate the hull.
     var unhonoured_maxhullvert: Int
     # How many `<geom type="sdf">` declarations the document carries. It is
     # not modelled: `_geom_type_from_str` falls through to `_GEOM_SPHERE`, so
@@ -2334,6 +2358,7 @@ struct FlatModelDef(Movable):
         self.mesh_asset_refpos = List[Float64]()
         self.mesh_asset_refquat = List[Float64]()
         self.mesh_asset_inertia_shell = List[Int]()
+        self.mesh_asset_maxhullvert = List[Int]()
         self.unhonoured_maxhullvert = 0
         self.unmodelled_geom_types = 0
         self.vis_znear = 0.01

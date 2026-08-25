@@ -1988,6 +1988,7 @@ def build_model_fields_from_flat[
                         gd.mesh_ref_quat_x,
                         gd.mesh_ref_quat_y,
                         gd.mesh_ref_quat_z,
+                        gd.mesh_maxhullvert,
                     )
                     var mesh_id = result[0]
                     mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](

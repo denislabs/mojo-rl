@@ -104,7 +104,7 @@ from ..model.mesh_inertia import MeshInertia
 # entries are not detectable from their contents; the version is the only
 # thing standing between a hull-algorithm fix and a cache that keeps serving
 # the old geometry.
-comptime HULL_CACHE_VERSION: Int = 8  # 8: FACE ORDER from qhull (polygon normals move)
+comptime HULL_CACHE_VERSION: Int = 9  # 9: `<mesh maxhullvert>` decimates the hull
 
 comptime _MAGIC: UInt64 = 0x4D4A48554C4C3031  # "MJHULL01"
 comptime _FNV_OFFSET: UInt64 = 14695981039346656037
@@ -247,6 +247,7 @@ def hull_cache_path[
     sx: Float64 = 1.0,
     sy: Float64 = 1.0,
     sz: Float64 = 1.0,
+    maxhullvert: Int = -1,
 ) raises -> String:
     """Cache file for this (mesh contents, mesh frame, format version).
 
@@ -313,6 +314,14 @@ def hull_cache_path[
     h = _fnv(h, _f2u(Float64(mi.qy)))
     h = _fnv(h, _f2u(Float64(mi.qz)))
     h = _fnv(h, _f2u(Float64(mi.qw)))
+
+    # ⚠⚠ `<mesh maxhullvert>` IS IN THE KEY FOR THE SAME REASON `scale` IS.
+    # It changes the hull qhull returns — a budgeted run stops adding vertices
+    # — so one STL at two budgets is two payloads. A hull cached before the
+    # budget was honoured is the UNLIMITED one, and serving it to a
+    # `maxhullvert="64"` model reproduces the pre-fix hull from disk, silently
+    # and with no warning left to notice it by.
+    h = _fnv(h, UInt64(Int64(maxhullvert)))
 
     return dir + "/" + _basename(mesh_filename) + "-" + _hex16(h) + ".hull"
 
