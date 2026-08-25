@@ -125,7 +125,31 @@ comptime GOLD_NCON_H = 14  # Part A humanoid SAP: total contacts
 # ⚠ The split print is permanent ON PURPOSE. A count-and-fingerprint golden can
 # only be refreshed honestly if the move can be attributed to specific columns;
 # harvesting the number first produces a golden that passes by construction.
-comptime GOLD_CON_H = 28658.222165894345
+# --- 2026-08-25: `c43517db`, the pair reaches GJK in MuJoCo's order ---------
+# 28658.222165894345 -> 28019.840439933934, i.e. "everything else"
+# 8090.978258839459 -> 7449.836571192951. ACCOUNTED, per this file's own rule.
+# `pushPairArena` sorts a candidate pair by (geom type, geom index) and we were
+# emitting the broadphase's order; canonicalising it relabels the pair and
+# negates the record's normal with it (the record stores `body_b -> body_a`).
+# FIVE of the 14 records move, every one of them a pure relabel:
+#
+#     env0 c2   body_a 9->6  body_b 6->9   nz +0.049736 -> -0.049736
+#     env1 c4   body_a 7->4  body_b 4->7   nz +0.091242 -> -0.091242
+#     env1 c5   body_a 7->5  body_b 5->7   nz +0.360082 -> -0.360082
+#     env1 c7   body_a 9->6  body_b 6->9   nz +0.091242 -> -0.091242
+#     env1 c10  body_a 8->5  body_b 5->8   nz +0.091241 -> -0.091241
+#
+# and the fingerprint delta decomposes term by term with nothing left over:
+#
+#     BODY_A -177.000000   BODY_B +354.000000        (integers, a relabel)
+#     NX     +157.431351   NY     -833.976375   NZ  -141.596665
+#     POS_X/Y/Z             ~1e-06                   (rounding only)
+#     total  -641.141688  == the observed move
+#
+# ⚠ `dist` IS BIT-IDENTICAL ON ALL FIVE. These are analytic capsule pairs, so
+# the witness does not depend on the operand order the way a mesh manifold's
+# does — which is why POS moves 1e-06 here and 2e-01 in Part B.
+comptime GOLD_CON_H = 28019.840439933934
 # Re-harvested 2026-07-29 (was NCON 6 / fingerprint 2258.0145981857786), same
 # cause as the plane-mesh gate: SawyerReach's class-only geoms now inherit
 # `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
@@ -190,7 +214,7 @@ comptime GOLD_CON_H = 28658.222165894345
 # "would move sawyer" is wrong for this fixture. It DOES move Part A
 # (8088.218297153362 -> 8090.978297284455, inside GOLD_RTOL) — so that
 # experiment is not free, and was reverted.
-comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
+comptime GOLD_NCON_S = 5  # Part B sawyer SAP: total contacts (08-13, below)
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -282,8 +306,36 @@ comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
 # `maxplanemesh` cap landed in the same commit but moves counts DOWN, not up,
 # and does not touch this fixture. Justification and the MuJoCo comparisons
 # that back the new value are in `test_mesh_detection_fields.mojo`.
-comptime GOLD_CON_S = 3361.6499817769654  # geometry columns (k < 23)
-comptime GOLD_SOL_S = 3015.4800115525723  # solparam columns (k >= 23)
+#
+# ⚠⚠ 2026-08-25: AND THAT 08-13 REFRESH WAS NEVER APPLIED EITHER — TO EITHER
+# TWIN. The block above says "GOLD_CON_S 3361.63858178955 -> 5042.802909596139
+# and GOLD_SOL_S 3015.4800115525723 -> 4523.220017328858 ... THESE ARE THE
+# SAME" as `test_mesh_detection_fields`'s, and BOTH files kept the old numbers.
+# Twelve days red on both, on a count already justified against MuJoCo. This is
+# the third time this file has recorded "a twin gate refreshed on one side
+# only"; this time neither side was.
+#
+# `GOLD_SOL_S` is the proof again: measured today it is 4523.220017328858, that
+# block's value to the last digit.
+#
+# --- 2026-08-25: `c43517db` on top of it ------------------------------------
+# GOLD_CON_S 5042.516301484706 -> 5222.468882602276, the SAME move and the same
+# account as `test_mesh_detection_fields`'s (see there): the obj CYLINDER sorts
+# before the eGripperBase MESH, so env1's five rows are relabelled 23 <-> 33 and
+# their normal negated —
+#
+#     body_a/body_b relabel   -300.000000  = 300*(k_A - k_B), exact
+#     normal sign flip        +479.740543
+#     dist                      +0.000004
+#     witness positions         +0.212034  sub-mm, other operand order
+#     total                   +179.952581  == the observed delta
+#
+# ⚠ THE TWO FILES MUST AGREE, and they now do: this SAP gate and the O(N^2)
+# gate report the same 5 records, the same 5222.468882602276 and the same
+# 4523.220017328858. That agreement is the real assertion here — the numbers
+# come from two different broadphases.
+comptime GOLD_CON_S = 5222.468882602276  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 4523.220017328858  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
