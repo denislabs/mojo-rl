@@ -30,6 +30,21 @@ cell — soup OFF, shadows OFF — is what separates them:
                          being the interesting lever.
     shadow_x_free ~= shadow_x   shadows cost what they cost, independently.
 
+⚠⚠ ANSWERED, AND IT IS THE SECOND BRANCH ON BOTH BOARDS. 5090 at 1 024 lanes:
+`shadow_x` 2.99 vs `shadow_x_free` **3.37** — mesh-free is HIGHER, so removing
+the soup does not make the shadow ray cheap. Apple: 1.91 vs 2.37, same verdict
+at a smaller multiplier. **SHADOWS AND MESHES ARE INDEPENDENT COSTS; a BVH will
+not touch shadows, and `SHADOWS=False` stays a real ~3x lever on NVIDIA that no
+BVH will hand you.**
+
+⚠ AND THE SHADOW COST RISES WITH OCCUPANCY: `shadow_x_free` goes 1.74 -> 2.21
+-> 2.73 -> 3.29 -> 3.37 across the sweep. A second ray should cost ~2x. At one
+lane it costs LESS (1.74 — it hides in the same memory latency); at saturation
+it costs 3.4. That is the signature of REGISTER PRESSURE — two inlined
+`ray_model` copies roughly double live registers and cut resident warps exactly
+when occupancy is what carries the kernel. HYPOTHESIS, not measured: check it
+against the compiler's register report before acting on it.
+
 ⚠ THE FOURTH LEG IS FREE. Legs 1 and 2 already instantiate both kernels and the
 soup is DATA (`TRINUM`), not a kernel — so the cell that discriminates costs one
 timing loop and no compile. It was missing from the first version of this file
@@ -348,11 +363,12 @@ def main() raises:
         bench_lanes[1024](ctx, env, tri_backup)
 
     print("")
-    print("sweep_x COLUMN: if it falls as lanes rise, the one-lane figure was")
-    print("an occupancy artefact; if it RISES it was a floor. (Apple 29->37,")
-    print("5090 71->92: a floor, on both boards.)")
+    print("sweep_x: RISES with occupancy on both boards, so a one-lane run")
+    print("UNDERSTATES the mesh cost. 5090 77->94 (plateau ~95), Apple 38->46.")
+    print("94x is the HEADROOM to zero mesh cost, not a BVH's yield: a BVH")
+    print("turns 8 000 triangle tests into a ~13-deep walk, not into nothing.")
     print("")
-    print("shadow_x vs shadow_x_free: the shadow ray is a second `ray_model`")
-    print("against the SAME soup, so if shadow_x tracks sweep_x while")
-    print("shadow_x_free stays near 1, the shadow cost IS the triangle sweep")
-    print("and a BVH fixes both. If they agree, shadows cost what they cost.")
+    print("shadow_x vs shadow_x_free: THEY AGREE (5090 2.99 vs 3.37 at 1 024;")
+    print("Apple 1.91 vs 2.37), so the shadow cost is NOT the triangle sweep.")
+    print("Shadows and meshes are INDEPENDENT: `SHADOWS=False` is a real ~3x")
+    print("on NVIDIA that no BVH will give you, and a BVH will not touch it.")
