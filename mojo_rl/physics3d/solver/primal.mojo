@@ -140,17 +140,37 @@ def pyramidal_linesearch[
     `newton_solve.mojo` already runs — that leg was ported faithfully and this
     one was not, which is why the two cones stopped agreeing:
 
-      1. one Newton step on the line from alpha=0; accept on `|d1| < gtol`;
+      1. one Newton step on the line from alpha=0; accept on `|d0| < gtol`;
       2. a ONE-SIDED Newton search in the descent direction until the
          derivative changes sign (a bracket) or the budget runs out;
-      3. bisection inside the bracket until `|d1| < gtol`.
+      3. a BRACKETED search over three candidates — `p1next`, `p2next` and the
+         bracket midpoint — accepting the CHEAPEST of those under `gtol`.
 
-    ⚠ Phase 3 BISECTS where `PrimalSearch` picks the best of three candidates
-    (`p1next`, `p2next`, `pmid`) by cost. Both converge to the same root of
-    `d1` and both stop at `gtol`, so the answers agree to within the tolerance;
-    the candidate list only gets there in fewer evaluations. The ELLIPTIC leg
-    made the same simplification and keeping the two identical matters more
-    than the evaluation count.
+    ⚠⚠ PHASE 3 IS NOT A BISECTION, and believing it was cost apollo four
+    orders. This body used to bisect the bracket and stop on `|d0| < gtol`,
+    on the reasoning that both schemes converge to the same root of `d0` and
+    both stop at the same tolerance, so they agree to within it. They do not.
+    MuJoCo's phase 3 keeps a NEWTON step off each bracket end (`p1next`,
+    `p2next`) alongside the midpoint, and on apollo's second Newton iteration
+    the very first `p1next` lands the root — `d0` = -3.6e-11 against a `gtol`
+    of 7.3e-05 — and returns in ONE evaluation. Bisection starts from the
+    midpoint, which is at the WRONG END of a bracket whose root sits hard
+    against the low edge, and spends the entire `ls_iterations` budget
+    halving from 0.875 down to 0.7515 without ever getting under `gtol`; it
+    then returns the stale endpoint. The returned alpha is not "the same root
+    within tolerance" — it does not satisfy the criterion AT ALL:
+
+        MuJoCo  alpha 0.75053713815071321  (5 evaluations, converged)
+        bisect  alpha 0.7504804293368179   (10 evaluations, budget exhausted)
+
+    That is 7.6e-05 of relative alpha, and it is the whole of apollo's
+    residual against MuJoCo — `|d qpos|` 1.7e-06 after two Newton iterations
+    where one iteration agrees to 4.4e-16.
+
+    ⚠ `p2update` (engine_solver.c:1787, LSresult 6) is NOT ported: the
+    reference initialises it to 1 and only ever assigns 1, so its branch is
+    unreachable in 3.10.0. Ported code that cannot run is a second thing to
+    keep in step for no behaviour.
     """
     comptime ZERO = Scalar[DTYPE](0)
     comptime MINVAL = Scalar[DTYPE](PRIMAL_MINVAL)
@@ -184,123 +204,195 @@ def pyramidal_linesearch[
 
     var gtol = gtol_scale * snorm
 
-    # ── the line's derivatives at `alpha` ────────────────────────────────
+    # ── `PrimalEval` (engine_solver.c:1511) ──────────────────────────────
+    # The SHIFTED line cost `cost(alpha) - cost(0)` and its two derivatives,
+    # in ONE pass. ⚠ THE COST IS CARRIED AT EVERY POINT, not computed on
+    # demand: phase 3 selects among its candidates by COST among those under
+    # `gtol`, and the two bracket ends are compared by cost on the way out.
+    #
     # `d(cost)/dalpha = -f*Jv` in EVERY state; the second derivative is
     # `D*Jv^2` only where the row is quadratic. Rows are RE-CLASSIFIED at the
     # trial point — a step can move a row across a zone boundary, and not
     # re-classifying is what makes a line search a fixed quadratic model.
+    #
+    # The Gauss term's shifted cost is `0.5*a^2*(Mv·s) + a*((Ma - f)·s)`. The
+    # cross term `Mv·(qacc - qacc_smooth)` equals `(Ma - f_smooth)·s` because
+    # M is symmetric and `f_smooth = M*qacc_smooth`, which is why MuJoCo
+    # stores two coefficients rather than three (`quadGauss[1..2]`).
+    #
+    # `it` is `ctx->LSiter`, and it counts EVERY evaluation including the two
+    # before the one-sided search — the budget `ls_iterations` is a count of
+    # `PrimalEval` calls, not of bracket steps.
     @parameter
     @always_inline
-    def eval_at(
+    def peval(
         a: Scalar[DTYPE],
+        mut c: Scalar[DTYPE],
+        mut d0: Scalar[DTYPE],
         mut d1: Scalar[DTYPE],
-        mut d2: Scalar[DTYPE],
+        mut it: Int,
     ):
-        d1 = gauss_a * a + gauss_b
-        d2 = gauss_a
+        c = Scalar[DTYPE](0.5) * gauss_a * a * a + gauss_b * a
+        d0 = gauss_a * a + gauss_b
+        d1 = gauss_a
         for e_idx in range(num_edges):
             var jt = jar[e_idx] + a * Jv_e[e_idx]
             var st = scalar_row_state[DTYPE](
                 kind_e[e_idx], jt, R_e[e_idx], floss_e[e_idx]
             )
-            d1 += (
+            var st0 = scalar_row_state[DTYPE](
+                kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
+            )
+            c += scalar_row_cost[DTYPE](
+                st, jt, De[e_idx], R_e[e_idx], floss_e[e_idx]
+            ) - scalar_row_cost[DTYPE](
+                st0, jar[e_idx], De[e_idx], R_e[e_idx], floss_e[e_idx]
+            )
+            d0 += (
                 -scalar_row_force[DTYPE](st, jt, De[e_idx], floss_e[e_idx])
                 * Jv_e[e_idx]
             )
             if st == SROW_QUADRATIC:
-                d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
+                d1 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
         # ⚠ FLOOR ONLY A NON-POSITIVE SECOND DERIVATIVE, AND ONLY TO
-        # `mjMINVAL`. `PrimalPoint` (engine_solver.c:1648) reads
+        # `mjMINVAL`. `PrimalEval` (engine_solver.c:1643) reads
         # `if (deriv[1] <= 0) { mju_warning("not convex"); deriv[1] = mjMINVAL; }`
         # — a guard against a SHOULD-NOT-OCCUR convexity violation. Testing
         # `< PRIMAL_MINVAL` instead floors a legitimately SMALL POSITIVE
         # curvature, which is what this IS near the optimum, and crushes
-        # `alpha = -d1/d2` by up to three orders.
-        if d2 <= ZERO:
-            d2 = MINVAL
+        # `alpha = -d0/d1` by up to three orders.
+        if d1 <= ZERO:
+            d1 = MINVAL
+        it += 1
 
-    # ── the line's cost at `alpha`, RELATIVE to alpha = 0 ────────────────
-    # Only the fallback branch needs it, and only to choose between two
-    # brackets, so it is computed on demand rather than carried per point.
-    @parameter
-    @always_inline
-    def cost_delta(a: Scalar[DTYPE]) -> Scalar[DTYPE]:
-        var c: Scalar[DTYPE] = 0
-        for i in range(nv):
-            var qa_t = qacc[i] + a * search[i]
-            var Ma_t = Ma[i] + a * Mv[i]
-            c += (
-                Scalar[DTYPE](0.5)
-                * (Ma_t - f_smooth[i])
-                * (qa_t - qacc_smooth[i])
-            )
-            c -= (
-                Scalar[DTYPE](0.5)
-                * (Ma[i] - f_smooth[i])
-                * (qacc[i] - qacc_smooth[i])
-            )
-        for e_idx in range(num_edges):
-            var jt = jar[e_idx] + a * Jv_e[e_idx]
-            var st_t = scalar_row_state[DTYPE](
-                kind_e[e_idx], jt, R_e[e_idx], floss_e[e_idx]
-            )
-            c += scalar_row_cost[DTYPE](
-                st_t, jt, De[e_idx], R_e[e_idx], floss_e[e_idx]
-            )
-            var st_0 = scalar_row_state[DTYPE](
-                kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
-            )
-            c -= scalar_row_cost[DTYPE](
-                st_0, jar[e_idx], De[e_idx], R_e[e_idx], floss_e[e_idx]
-            )
-        return c
+    var lsiter = 0
 
+    var p0_a = ZERO
+    var p0_c = ZERO
+    var p0_d0 = ZERO
     var p0_d1 = ZERO
-    var p0_d2 = ZERO
-    eval_at(ZERO, p0_d1, p0_d2)
+    peval(p0_a, p0_c, p0_d0, p0_d1, lsiter)
 
     # ⚠ `PrimalSearch` ALWAYS ATTEMPTS ONE NEWTON STEP (engine_solver.c:1733),
-    # including when `d1 >= 0`. The old body returned 0 on a non-descent
+    # including when `d0 >= 0`. The old body returned 0 on a non-descent
     # direction; the caller's `alpha < 1e-10` break then ended the whole solve.
-    var p1_a = -p0_d1 / p0_d2
+    var p1_a = p0_a - p0_d0 / p0_d1
+    var p1_c = ZERO
+    var p1_d0 = ZERO
     var p1_d1 = ZERO
-    var p1_d2 = ZERO
-    eval_at(p1_a, p1_d1, p1_d2)
-    var used = 1
+    peval(p1_a, p1_c, p1_d0, p1_d1, lsiter)
 
-    if abs(p1_d1) < gtol:
+    if abs(p1_d0) < gtol:
         return p1_a
 
-    # Phase 2: one-sided Newton search until the derivative changes sign.
-    var dir = Scalar[DTYPE](1) if p1_d1 < ZERO else Scalar[DTYPE](-1)
-    var p2_a = ZERO
-    var bracketed = False
-    while used < budget:
-        if p1_d1 * dir > -gtol:
-            bracketed = True
-            break
+    var dir = Scalar[DTYPE](1) if p1_d0 < ZERO else Scalar[DTYPE](-1)
+
+    # ── phase 2: one-sided Newton search ────────────────────────────────
+    var p2_a = p0_a
+    var p2_c = p0_c
+    var p2_d0 = p0_d0
+    var p2_d1 = p0_d1
+    while p1_d0 * dir <= -gtol and lsiter < budget:
         p2_a = p1_a
-        p1_a = p1_a - p1_d1 / p1_d2
-        eval_at(p1_a, p1_d1, p1_d2)
-        used += 1
-        if abs(p1_d1) < gtol:
+        p2_c = p1_c
+        p2_d0 = p1_d0
+        p2_d1 = p1_d1
+        p1_a = p1_a - p1_d0 / p1_d1
+        peval(p1_a, p1_c, p1_d0, p1_d1, lsiter)
+        if abs(p1_d0) < gtol:
             return p1_a
 
-    # Phase 3: bisect inside the bracket.
-    if bracketed:
-        while used < budget:
-            var mid = (p1_a + p2_a) * Scalar[DTYPE](0.5)
-            var m_d1 = ZERO
-            var m_d2 = ZERO
-            eval_at(mid, m_d1, m_d2)
-            used += 1
-            if abs(m_d1) < gtol:
-                return mid
-            # Keep the half whose endpoints straddle the root.
-            if m_d1 * dir < ZERO:
-                p2_a = mid
-            else:
-                p1_a = mid
+    # Could not bracket within the budget (LSresult 3).
+    if lsiter >= budget:
+        return p1_a
+
+    # ── phase 3: bracketed search over {p1next, p2next, pmid} ───────────
+    # `p2next` starts as the point that ENDED phase 2 and `p1next` as one
+    # Newton step off it. On apollo that first `p1next` is already the root.
+    var n2_a = p1_a
+    var n2_c = p1_c
+    var n2_d0 = p1_d0
+    var n2_d1 = p1_d1
+    var n1_a = p1_a - p1_d0 / p1_d1
+    var n1_c = ZERO
+    var n1_d0 = ZERO
+    var n1_d1 = ZERO
+    peval(n1_a, n1_c, n1_d0, n1_d1, lsiter)
+
+    var pm_a = ZERO
+    var pm_c = ZERO
+    var pm_d0 = ZERO
+    var pm_d1 = ZERO
+
+    while lsiter < budget:
+        pm_a = Scalar[DTYPE](0.5) * (p1_a + p2_a)
+        peval(pm_a, pm_c, pm_d0, pm_d1, lsiter)
+
+        # Cheapest candidate that is under `gtol`, scanned in MuJoCo's order
+        # (`p1next`, `p2next`, `pmid`) so a cost tie resolves as it does there.
+        var best_a = ZERO
+        var best_c = ZERO
+        var has_best = False
+        if abs(n1_d0) < gtol:
+            best_a = n1_a
+            best_c = n1_c
+            has_best = True
+        if abs(n2_d0) < gtol and (not has_best or n2_c < best_c):
+            best_a = n2_a
+            best_c = n2_c
+            has_best = True
+        if abs(pm_d0) < gtol and (not has_best or pm_c < best_c):
+            best_a = pm_a
+            best_c = pm_c
+            has_best = True
+        if has_best:
+            return best_a
+
+        # ── `updateBracket` (engine_solver.c:1665), once per bracket end ──
+        # A candidate replaces the end when it has the SAME derivative sign
+        # and is closer to zero; the end then gets a fresh Newton next-point.
+        var b1 = False
+        if p1_d0 < ZERO and n1_d0 < ZERO and p1_d0 < n1_d0:
+            p1_a = n1_a; p1_c = n1_c; p1_d0 = n1_d0; p1_d1 = n1_d1; b1 = True
+        elif p1_d0 > ZERO and n1_d0 > ZERO and p1_d0 > n1_d0:
+            p1_a = n1_a; p1_c = n1_c; p1_d0 = n1_d0; p1_d1 = n1_d1; b1 = True
+        if p1_d0 < ZERO and n2_d0 < ZERO and p1_d0 < n2_d0:
+            p1_a = n2_a; p1_c = n2_c; p1_d0 = n2_d0; p1_d1 = n2_d1; b1 = True
+        elif p1_d0 > ZERO and n2_d0 > ZERO and p1_d0 > n2_d0:
+            p1_a = n2_a; p1_c = n2_c; p1_d0 = n2_d0; p1_d1 = n2_d1; b1 = True
+        if p1_d0 < ZERO and pm_d0 < ZERO and p1_d0 < pm_d0:
+            p1_a = pm_a; p1_c = pm_c; p1_d0 = pm_d0; p1_d1 = pm_d1; b1 = True
+        elif p1_d0 > ZERO and pm_d0 > ZERO and p1_d0 > pm_d0:
+            p1_a = pm_a; p1_c = pm_c; p1_d0 = pm_d0; p1_d1 = pm_d1; b1 = True
+
+        var b2 = False
+        if p2_d0 < ZERO and n1_d0 < ZERO and p2_d0 < n1_d0:
+            p2_a = n1_a; p2_c = n1_c; p2_d0 = n1_d0; p2_d1 = n1_d1; b2 = True
+        elif p2_d0 > ZERO and n1_d0 > ZERO and p2_d0 > n1_d0:
+            p2_a = n1_a; p2_c = n1_c; p2_d0 = n1_d0; p2_d1 = n1_d1; b2 = True
+        if p2_d0 < ZERO and n2_d0 < ZERO and p2_d0 < n2_d0:
+            p2_a = n2_a; p2_c = n2_c; p2_d0 = n2_d0; p2_d1 = n2_d1; b2 = True
+        elif p2_d0 > ZERO and n2_d0 > ZERO and p2_d0 > n2_d0:
+            p2_a = n2_a; p2_c = n2_c; p2_d0 = n2_d0; p2_d1 = n2_d1; b2 = True
+        if p2_d0 < ZERO and pm_d0 < ZERO and p2_d0 < pm_d0:
+            p2_a = pm_a; p2_c = pm_c; p2_d0 = pm_d0; p2_d1 = pm_d1; b2 = True
+        elif p2_d0 > ZERO and pm_d0 > ZERO and p2_d0 > pm_d0:
+            p2_a = pm_a; p2_c = pm_c; p2_d0 = pm_d0; p2_d1 = pm_d1; b2 = True
+
+        # ⚠ THE NEXT-POINTS ARE RECOMPUTED ONLY FOR AN END THAT MOVED, and an
+        # end that did not move keeps the next-point it already had — which is
+        # what lets a converged `p1next` survive to the candidate scan above.
+        if b1:
+            n1_a = p1_a - p1_d0 / p1_d1
+            peval(n1_a, n1_c, n1_d0, n1_d1, lsiter)
+        if b2:
+            n2_a = p2_a - p2_d0 / p2_d1
+            peval(n2_a, n2_c, n2_d0, n2_d1, lsiter)
+
+        # Neither end could be improved: numerical accuracy reached, take the
+        # midpoint (LSresult 0 when it improves, 7 when it does not).
+        if not b1 and not b2:
+            return pm_a
 
     # ⚠ NO IMPROVEMENT MEANS ZERO, NOT A SMALL STEP. `PrimalSearch` returns
     # the bracket with the lower cost only when that cost is BELOW alpha=0's,
@@ -308,10 +400,8 @@ def pyramidal_linesearch[
     # without moving `qacc`. Returning a tiny non-improving alpha instead — as
     # the halving body did — nudged `qacc` by ~1e-12 on EVERY step of a
     # rollout once the warm start put the iterate near its optimum.
-    var c1 = cost_delta(p1_a)
-    var c2 = cost_delta(p2_a)
-    if c1 <= c2 and c1 < ZERO:
+    if p1_c <= p2_c and p1_c < ZERO:
         return p1_a
-    if c2 < c1 and c2 < ZERO:
+    if p2_c <= p1_c and p2_c < ZERO:
         return p2_a
     return ZERO

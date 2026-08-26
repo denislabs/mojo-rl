@@ -4242,86 +4242,48 @@ def _newton_blocked_fields_kernel[
             if lsiter_rt > 0 and lsiter_rt < ls_budget:
                 ls_budget = lsiter_rt
 
-            # The line's derivatives at `a`, rows RE-CLASSIFIED at the trial
-            # point. Mirrors `eval_at` in `primal.mojo`.
+            # `PrimalEval` (engine_solver.c:1511): the SHIFTED line cost
+            # `cost(a) - cost(0)` and BOTH derivatives in one pass, rows
+            # RE-CLASSIFIED at the trial point. Mirrors `peval` in
+            # `primal.mojo` — see that docstring for why the cost has to be
+            # carried at every point rather than computed in the fallback.
             @parameter
             @always_inline
-            def _bl_line_deriv(
+            def _bl_peval(
                 a: Scalar[DTYPE],
+                mut c: Scalar[DTYPE],
+                mut d0: Scalar[DTYPE],
                 mut d1: Scalar[DTYPE],
-                mut d2: Scalar[DTYPE],
+                mut it: Int,
             ):
-                d1 = gauss_a * a + gauss_b
-                d2 = gauss_a
+                c = Scalar[DTYPE](0.5) * gauss_a * a * a + gauss_b * a
+                d0 = gauss_a * a + gauss_b
+                d1 = gauss_a
                 for e_idx in range(num_edges_b):
+                    var kd = Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx]))
+                    var Rd = rebind[Scalar[DTYPE]](R_e_sh[e_idx])
+                    var fd = rebind[Scalar[DTYPE]](floss_e_sh[e_idx])
+                    var Dd = rebind[Scalar[DTYPE]](De_sh[e_idx])
                     var jt = jar[e_idx] + a * Jv_e[e_idx]
-                    var st = scalar_row_state[DTYPE](
-                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
-                        jt,
-                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                    )
-                    d1 += (
-                        -scalar_row_force[DTYPE](
-                            st,
-                            jt,
-                            rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                        )
-                        * Jv_e[e_idx]
+                    var st = scalar_row_state[DTYPE](kd, jt, Rd, fd)
+                    # ⚠ THE alpha=0 REFERENCE IS RE-DERIVED FROM `jar`, not
+                    # read from `state_e_sh`. `PrimalEval` evaluates the line
+                    # at `Jaref + alpha*Jv` for alpha=0 like any other alpha,
+                    # and the stored state is one Newton move stale.
+                    var st0 = scalar_row_state[DTYPE](kd, jar[e_idx], Rd, fd)
+                    c += scalar_row_cost[DTYPE](
+                        st, jt, Dd, Rd, fd
+                    ) - scalar_row_cost[DTYPE](st0, jar[e_idx], Dd, Rd, fd)
+                    d0 += (
+                        -scalar_row_force[DTYPE](st, jt, Dd, fd) * Jv_e[e_idx]
                     )
                     if st == SROW_QUADRATIC:
-                        d2 += (
-                            rebind[Scalar[DTYPE]](De_sh[e_idx])
-                            * Jv_e[e_idx]
-                            * Jv_e[e_idx]
-                        )
-                if d2 <= Scalar[DTYPE](0):
-                    d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                        d1 += Dd * Jv_e[e_idx] * Jv_e[e_idx]
+                if d1 <= Scalar[DTYPE](0):
+                    d1 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                it += 1
 
-            # The line's cost at `a` RELATIVE to a = 0. Mirrors `cost_delta`.
-            @parameter
-            @always_inline
-            def _bl_cost_delta(a: Scalar[DTYPE]) -> Scalar[DTYPE]:
-                var c = Scalar[DTYPE](0)
-                for i in range(NV):
-                    var qa_t = qacc[i] + a * search[i]
-                    var Ma_t = Ma[i] + a * Mv[i]
-                    c += (
-                        Scalar[DTYPE](0.5)
-                        * (Ma_t - f_smooth[i])
-                        * (qa_t - qacc_smooth[i])
-                    )
-                    c -= (
-                        Scalar[DTYPE](0.5)
-                        * (Ma[i] - f_smooth[i])
-                        * (qacc[i] - qacc_smooth[i])
-                    )
-                for e_idx in range(num_edges_b):
-                    var jt = jar[e_idx] + a * Jv_e[e_idx]
-                    var st_t = scalar_row_state[DTYPE](
-                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
-                        jt,
-                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                    )
-                    c += scalar_row_cost[DTYPE](
-                        st_t,
-                        jt,
-                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                    )
-                    c -= scalar_row_cost[DTYPE](
-                        Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
-                        jar[e_idx],
-                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                    )
-                return c
-
-            # ⚠⚠ p0 GOES THROUGH `_bl_line_deriv` LIKE EVERY OTHER POINT.
+            # ⚠⚠ p0 GOES THROUGH `_bl_peval` LIKE EVERY OTHER POINT.
             # This block used to read the STORED `state_e_sh` and derive its
             # force from that, where the per-env twin RE-CLASSIFIES from `jar`
             # — and so does `PrimalEval`, which evaluates the line at
@@ -4330,70 +4292,161 @@ def _newton_blocked_fields_kernel[
             # one leg start its search from a different derivative than the
             # other; blocked-GPU vs per-env-CPU `qacc` with the noslip pass OFF
             # went 1.06e-05 -> 6.26e-04 while they disagreed about it.
+            var lsiter_b = 0
+            var p0_c = Scalar[DTYPE](0)
+            var p0_d0 = Scalar[DTYPE](0)
             var p0_d1 = Scalar[DTYPE](0)
-            var p0_d2 = Scalar[DTYPE](0)
-            _bl_line_deriv(Scalar[DTYPE](0), p0_d1, p0_d2)
+            _bl_peval(Scalar[DTYPE](0), p0_c, p0_d0, p0_d1, lsiter_b)
 
             var alpha: Scalar[DTYPE] = 0
             if snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                 # Phase 1: always attempt one Newton step on the line.
-                var p1_a = -p0_d1 / p0_d2
+                var p1_a = -p0_d0 / p0_d1
+                var p1_c = Scalar[DTYPE](0)
+                var p1_d0 = Scalar[DTYPE](0)
                 var p1_d1 = Scalar[DTYPE](0)
-                var p1_d2 = Scalar[DTYPE](0)
-                _bl_line_deriv(p1_a, p1_d1, p1_d2)
-                var used_ls = 1
+                _bl_peval(p1_a, p1_c, p1_d0, p1_d1, lsiter_b)
                 var done_ls = False
-                if abs(p1_d1) < gtol_b:
+                if abs(p1_d0) < gtol_b:
                     alpha = p1_a
                     done_ls = True
 
                 var dir_b = (
-                    Scalar[DTYPE](1) if p1_d1 < Scalar[DTYPE](0)
+                    Scalar[DTYPE](1) if p1_d0 < Scalar[DTYPE](0)
                     else Scalar[DTYPE](-1)
                 )
                 var p2_a = Scalar[DTYPE](0)
-                var bracketed = False
+                var p2_c = p0_c
+                var p2_d0 = p0_d0
+                var p2_d1 = p0_d1
                 if not done_ls:
                     # Phase 2: one-sided Newton search to a sign change.
-                    while used_ls < ls_budget:
-                        if p1_d1 * dir_b > -gtol_b:
-                            bracketed = True
-                            break
+                    while p1_d0 * dir_b <= -gtol_b and lsiter_b < ls_budget:
                         p2_a = p1_a
-                        p1_a = p1_a - p1_d1 / p1_d2
-                        _bl_line_deriv(p1_a, p1_d1, p1_d2)
-                        used_ls += 1
-                        if abs(p1_d1) < gtol_b:
+                        p2_c = p1_c
+                        p2_d0 = p1_d0
+                        p2_d1 = p1_d1
+                        p1_a = p1_a - p1_d0 / p1_d1
+                        _bl_peval(p1_a, p1_c, p1_d0, p1_d1, lsiter_b)
+                        if abs(p1_d0) < gtol_b:
                             alpha = p1_a
                             done_ls = True
                             break
+                    # Could not bracket within the budget (LSresult 3).
+                    if not done_ls and lsiter_b >= ls_budget:
+                        alpha = p1_a
+                        done_ls = True
 
-                if not done_ls and bracketed:
-                    # Phase 3: bisect inside the bracket.
-                    while used_ls < ls_budget:
-                        var mid_a = (p1_a + p2_a) * Scalar[DTYPE](0.5)
-                        var m_d1 = Scalar[DTYPE](0)
-                        var m_d2 = Scalar[DTYPE](0)
-                        _bl_line_deriv(mid_a, m_d1, m_d2)
-                        used_ls += 1
-                        if abs(m_d1) < gtol_b:
-                            alpha = mid_a
+                if not done_ls:
+                    # Phase 3: the BRACKETED search over {p1next, p2next,
+                    # pmid} — NOT a bisection. See `primal.mojo`'s docstring:
+                    # the Newton next-point off a bracket end is what lands
+                    # the root, and halving from the midpoint spends the whole
+                    # budget without reaching `gtol`.
+                    var n2_a = p1_a
+                    var n2_c = p1_c
+                    var n2_d0 = p1_d0
+                    var n2_d1 = p1_d1
+                    var n1_a = p1_a - p1_d0 / p1_d1
+                    var n1_c = Scalar[DTYPE](0)
+                    var n1_d0 = Scalar[DTYPE](0)
+                    var n1_d1 = Scalar[DTYPE](0)
+                    _bl_peval(n1_a, n1_c, n1_d0, n1_d1, lsiter_b)
+
+                    var pm_a = Scalar[DTYPE](0)
+                    var pm_c = Scalar[DTYPE](0)
+                    var pm_d0 = Scalar[DTYPE](0)
+                    var pm_d1 = Scalar[DTYPE](0)
+                    var ZB = Scalar[DTYPE](0)
+
+                    while lsiter_b < ls_budget:
+                        pm_a = Scalar[DTYPE](0.5) * (p1_a + p2_a)
+                        _bl_peval(pm_a, pm_c, pm_d0, pm_d1, lsiter_b)
+
+                        var best_a = ZB
+                        var best_c = ZB
+                        var has_best = False
+                        if abs(n1_d0) < gtol_b:
+                            best_a = n1_a
+                            best_c = n1_c
+                            has_best = True
+                        if abs(n2_d0) < gtol_b and (
+                            not has_best or n2_c < best_c
+                        ):
+                            best_a = n2_a
+                            best_c = n2_c
+                            has_best = True
+                        if abs(pm_d0) < gtol_b and (
+                            not has_best or pm_c < best_c
+                        ):
+                            best_a = pm_a
+                            best_c = pm_c
+                            has_best = True
+                        if has_best:
+                            alpha = best_a
                             done_ls = True
                             break
-                        if m_d1 * dir_b < Scalar[DTYPE](0):
-                            p2_a = mid_a
-                        else:
-                            p1_a = mid_a
+
+                        # `updateBracket` (engine_solver.c:1665), per end.
+                        var b1 = False
+                        if p1_d0 < ZB and n1_d0 < ZB and p1_d0 < n1_d0:
+                            p1_a = n1_a; p1_c = n1_c
+                            p1_d0 = n1_d0; p1_d1 = n1_d1; b1 = True
+                        elif p1_d0 > ZB and n1_d0 > ZB and p1_d0 > n1_d0:
+                            p1_a = n1_a; p1_c = n1_c
+                            p1_d0 = n1_d0; p1_d1 = n1_d1; b1 = True
+                        if p1_d0 < ZB and n2_d0 < ZB and p1_d0 < n2_d0:
+                            p1_a = n2_a; p1_c = n2_c
+                            p1_d0 = n2_d0; p1_d1 = n2_d1; b1 = True
+                        elif p1_d0 > ZB and n2_d0 > ZB and p1_d0 > n2_d0:
+                            p1_a = n2_a; p1_c = n2_c
+                            p1_d0 = n2_d0; p1_d1 = n2_d1; b1 = True
+                        if p1_d0 < ZB and pm_d0 < ZB and p1_d0 < pm_d0:
+                            p1_a = pm_a; p1_c = pm_c
+                            p1_d0 = pm_d0; p1_d1 = pm_d1; b1 = True
+                        elif p1_d0 > ZB and pm_d0 > ZB and p1_d0 > pm_d0:
+                            p1_a = pm_a; p1_c = pm_c
+                            p1_d0 = pm_d0; p1_d1 = pm_d1; b1 = True
+
+                        var b2 = False
+                        if p2_d0 < ZB and n1_d0 < ZB and p2_d0 < n1_d0:
+                            p2_a = n1_a; p2_c = n1_c
+                            p2_d0 = n1_d0; p2_d1 = n1_d1; b2 = True
+                        elif p2_d0 > ZB and n1_d0 > ZB and p2_d0 > n1_d0:
+                            p2_a = n1_a; p2_c = n1_c
+                            p2_d0 = n1_d0; p2_d1 = n1_d1; b2 = True
+                        if p2_d0 < ZB and n2_d0 < ZB and p2_d0 < n2_d0:
+                            p2_a = n2_a; p2_c = n2_c
+                            p2_d0 = n2_d0; p2_d1 = n2_d1; b2 = True
+                        elif p2_d0 > ZB and n2_d0 > ZB and p2_d0 > n2_d0:
+                            p2_a = n2_a; p2_c = n2_c
+                            p2_d0 = n2_d0; p2_d1 = n2_d1; b2 = True
+                        if p2_d0 < ZB and pm_d0 < ZB and p2_d0 < pm_d0:
+                            p2_a = pm_a; p2_c = pm_c
+                            p2_d0 = pm_d0; p2_d1 = pm_d1; b2 = True
+                        elif p2_d0 > ZB and pm_d0 > ZB and p2_d0 > pm_d0:
+                            p2_a = pm_a; p2_c = pm_c
+                            p2_d0 = pm_d0; p2_d1 = pm_d1; b2 = True
+
+                        if b1:
+                            n1_a = p1_a - p1_d0 / p1_d1
+                            _bl_peval(n1_a, n1_c, n1_d0, n1_d1, lsiter_b)
+                        if b2:
+                            n2_a = p2_a - p2_d0 / p2_d1
+                            _bl_peval(n2_a, n2_c, n2_d0, n2_d1, lsiter_b)
+
+                        if not b1 and not b2:
+                            alpha = pm_a
+                            done_ls = True
+                            break
 
                 if not done_ls:
                     # No convergence: take the cheaper bracket, and ONLY if it
                     # actually improves — otherwise 0, so the caller breaks
                     # without moving `qacc`.
-                    var c1 = _bl_cost_delta(p1_a)
-                    var c2 = _bl_cost_delta(p2_a)
-                    if c1 <= c2 and c1 < Scalar[DTYPE](0):
+                    if p1_c <= p2_c and p1_c < Scalar[DTYPE](0):
                         alpha = p1_a
-                    elif c2 < c1 and c2 < Scalar[DTYPE](0):
+                    elif p2_c <= p1_c and p2_c < Scalar[DTYPE](0):
                         alpha = p2_a
 
             if alpha < Scalar[DTYPE](1e-10):
