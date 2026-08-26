@@ -99,11 +99,23 @@ comptime SECONDS = 5
 the first live run is a BRING-UP of the guards, not a demonstration of the
 policy — five seconds is enough to read the achieved rate and see the arm
 settle, and short enough that a guard that does not work costs little."""
-comptime MAX_STEP_TICKS = 25
+comptime MAX_STEP_TICKS = 60
 """Per-tick slew bound, in servo ticks. At 50 Hz this is 25 * 50 = 1250
 ticks/s ~= 110 deg/s.
 
-⚠ WAS 60 (~264 deg/s), AND THE DRY RUN IS WHY IT IS NOT. It measured the
+⚠⚠ BACK TO 60 (~264 deg/s) BECAUSE 25 WAS THROTTLING THE POLICY, and the
+measurement is unambiguous — two live runs differing ONLY in this value:
+
+    --step 25   closest 54.2 mm   inside 20 mm    0/1000   throttle 14.4x
+    --step 60   closest  3.9 mm   inside 20 mm  395/1000   throttle  1.3x
+
+At 25 the arm trailed its commanded pose by a mean of 327 ticks and never got
+within 5 cm; the CLAMP was holding it out, not the policy. `max_step_ticks`
+has no counterpart in sim, so a tight one is a sim2real gap and not merely a
+safety margin. Watch the throttle line in the report: above ~2x, this number
+is deciding the run.
+
+⚠ The earlier note, kept because it is still true of the OPENING move: It measured the
 policy asking for a mean move of **1252 ticks** and a max of 2197 — the
 distance from the arm's parked pose to the pose the policy wants, roughly 110
 degrees. The clamp is what turns that into a slew rather than a snap, so its
@@ -111,7 +123,7 @@ value IS the opening motion's speed: at 60 the arm crosses that gap in 0.4 s,
 at 25 in about 1 s. Raise it once the first live run has shown the direction
 is right."""
 
-comptime SMOOTH = 0.15
+comptime SMOOTH = 0.05
 """Low-pass on the COMMAND: `cmd <- (1-a)*cmd + a*policy`. 1.0 disables it.
 
 ⚠⚠ THE RAW COMMAND STREAM IS NOT SOMETHING TO SEND A SERVO. Measured in sim
@@ -138,9 +150,17 @@ assumed — same 24 targets, greedy, in sim:
 
 Anything in 0.1-0.3 costs NOTHING in task terms — the reach rate is flat
 inside the noise of 24 episodes — and buys a 4x to 11x calmer command. 0.05
-breaks the policy (the filter outruns the task). 0.15 sits in the middle of
-the free band. THE REAL FIX IS AN ACTION-RATE PENALTY IN THE REWARD AND A
-RETRAIN; this is the guard for a policy that does not have one."""
+breaks the policy (the filter outruns the task). ⚠⚠ 0.05, NOT THE 0.15 THIS SHIPPED WITH. An EMA's steady-state response to a
+signal alternating EVERY step is `a / (2 - a)`: 0.15 leaves **8.1%** of the
+chatter standing, 0.05 leaves 2.6%. The sim sweep had already shown 0.05 to be
+4x calmer at no measurable cost in reach, and 0.15 was chosen as "the middle
+of the free band" — the wrong reading for hardware, where the whole point is
+the residual. Confirmed live.
+
+THE REAL FIX IS IN THE REWARD, and it is `REWARD_MARGIN`, not an action-rate
+penalty: at the old 0.25 an orbit through the target cost 0.015/step, so the
+policy had no reason to stop. This filter is the guard for a policy trained
+before that was fixed."""
 
 comptime SUCCESS_MM = 20.0
 """`SoArmReachConfig.TARGET_RADIUS` in millimetres — the radius inside which

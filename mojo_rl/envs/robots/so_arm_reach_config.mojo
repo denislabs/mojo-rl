@@ -138,7 +138,41 @@ struct SoArmReachConfig[
     # `reacher` (margin 0, a hard indicator) this one is SHAPED, because a
     # 6-DOF arm reaching a 2 cm ball has far too little chance of stumbling
     # onto a sparse reward.
-    REWARD_MARGIN: Float64 = 0.25,
+    #
+    # ⚠⚠ WAS 0.25 — TWELVE TIMES THE SUCCESS RADIUS — AND THAT WAS THE ROOT
+    # DEFECT BEHIND EVERY SYMPTOM THIS TASK HAS SHOWN. At 0.25 the falloff is
+    # nearly flat across the whole neighbourhood of the target, so:
+    #
+    #   * hovering 40 mm away scored 0.985/step, i.e. 492.7/500 for an arm
+    #     that never touches the target;
+    #   * closing the last 24 mm was worth 0.0006/step, against 0.20 for the
+    #     stillness term — a 333x inversion of the task's own priorities;
+    #   * ORBITING between 4 mm and 40 mm cost 0.015/step, so a policy that
+    #     swings through the target and back out lost essentially nothing.
+    #
+    # That last one is not hypothetical: measured on hardware 2026-08-26, the
+    # trained policy reached 3.9 mm and then orbited 8..43 mm for the rest of
+    # the run, at 40% of steps inside the radius. Sim shows the same shape
+    # (per-episode closest 4..9 mm, final 20..41 mm), so it transferred
+    # faithfully — the behaviour is the REWARD's, not the hardware's.
+    #
+    # At 0.05 that same orbit costs 0.308/step, twenty times more and now the
+    # dominant term. Resting on target finally beats passing through it.
+    #
+    #     dist    margin .25   margin .05
+    #     20 mm       1.000        1.000
+    #     30 mm       0.996        0.912
+    #     40 mm       0.985        0.692
+    #    100 mm       0.790        0.003
+    #
+    # ⚠ THE ORIGINAL REASON FOR 0.25 WAS EXPLORATION and it was a good one —
+    # at 0.05 a target 100 mm away is worth 0.003/step, so a policy that
+    # cannot already find the target learns nothing. FINE-TUNE FROM AN
+    # EXISTING CHECKPOINT rather than training from scratch: exploration is
+    # demonstrably solved (the arm reaches 4 mm), and the tighter margin only
+    # sharpens the endgame. From scratch, keep 0.25 until the arm reaches,
+    # then tighten and continue.
+    REWARD_MARGIN: Float64 = 0.05,
     # ── the stillness term ────────────────────────────────────────────────
     #
     # ⚠⚠ WITHOUT THIS THE POLICY SHAKES, AND THE REWARD CANNOT SEE IT.
