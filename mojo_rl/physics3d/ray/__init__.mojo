@@ -25,5 +25,5 @@ from .geom import (
 )
 from .triangle import ray_basis, ray_triangle
 from .hfield import ray_hfield
-from .mesh import ray_mesh
+from .mesh import ray_mesh, ray_mesh_bvh
 from .model import RayHit, RAY_NGROUP, ray_model

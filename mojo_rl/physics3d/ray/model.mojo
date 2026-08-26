@@ -71,6 +71,8 @@ from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_WELDID,
     MODEL_MESH_META_SIZE,
+    MESH_META_IDX_BVHADR,
+    MESH_META_IDX_BVHNUM,
     MESH_META_IDX_TRIADR,
     MESH_META_IDX_TRINUM,
     MODEL_HFIELD_META_SIZE,
@@ -84,7 +86,7 @@ from ..gpu.constants import (
 )
 from .geom import RAY_NO_HIT, ray_geom
 from .hfield import ray_hfield
-from .mesh import ray_mesh
+from .mesh import ray_mesh, ray_mesh_bvh
 
 comptime RAY_NGROUP: Int = 6
 """`mjNGROUP`. The group mask is this wide and the geom's group is clamped
@@ -218,26 +220,60 @@ def ray_model[
             )
             if mid >= 0:
                 var mb = mid * MODEL_MESH_META_SIZE
-                var r = ray_mesh[DTYPE, L_TRI](
-                    pos,
-                    quat,
-                    Vec3Generic[DTYPE](
-                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X]),
-                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y]),
-                        rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z]),
-                    ),
-                    mesh_tris,
-                    Int(
-                        rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRIADR])
-                    ),
-                    Int(
-                        rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRINUM])
-                    ),
-                    pnt,
-                    vec,
+                var half = Vec3Generic[DTYPE](
+                    rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X]),
+                    rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y]),
+                    rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z]),
                 )
-                t = r[0]
-                n = r[1]
+                var triadr = Int(
+                    rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRIADR])
+                )
+                var trinum = Int(
+                    rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_TRINUM])
+                )
+                var bvhnum = Int(
+                    rebind[Scalar[DTYPE]](mesh_meta[mb + MESH_META_IDX_BVHNUM])
+                )
+                # ⚠⚠ TWO LEGS THAT MUST RETURN THE SAME THING, AND ONE OF THEM
+                # IS ~35x SLOWER. `BVHNUM == 0` means the model carries a soup
+                # with no tree — every model the parser builds now carries
+                # one, so this is a fallback for a hand-assembled `Model` and
+                # NOT a mode anything selects. It is here rather than an error
+                # because a `Model` built field-by-field in a test is a real
+                # caller (`_a_hand_built_call_must_do_what_the_loader_does`),
+                # and the linear sweep is the correct answer, just slowly.
+                if bvhnum > 0:
+                    var rb = ray_mesh_bvh[DTYPE, L_TRI](
+                        pos,
+                        quat,
+                        half,
+                        mesh_tris,
+                        triadr,
+                        trinum,
+                        Int(
+                            rebind[Scalar[DTYPE]](
+                                mesh_meta[mb + MESH_META_IDX_BVHADR]
+                            )
+                        ),
+                        bvhnum,
+                        pnt,
+                        vec,
+                    )
+                    t = rb[0]
+                    n = rb[1]
+                else:
+                    var r = ray_mesh[DTYPE, L_TRI](
+                        pos,
+                        quat,
+                        half,
+                        mesh_tris,
+                        triadr,
+                        trinum,
+                        pnt,
+                        vec,
+                    )
+                    t = r[0]
+                    n = r[1]
         elif gtype == GEOM_HFIELD:
             var hid = Int(
                 rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HFIELD_ID])

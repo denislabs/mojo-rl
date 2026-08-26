@@ -15,6 +15,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_MESH_META_SIZE,
     MAX_GPU_HFIELDS,
     MODEL_HFIELD_META_SIZE,
@@ -81,7 +82,8 @@ trait Phyics3dEnvConfig:
     small — so the way to find the number is to set it to 1 and read the error,
     not to count triangles by hand.
 
-    Costs `NMESH_TRI * 9` floats in `Model` and nothing per step. Leave it 0 on
+    Costs `NMESH_TRI * 27` floats in `Model` (triangles plus their BVH — see
+    `MESH_ARENA_FLOATS_PER_TRI`) and nothing per step. Leave it 0 on
     a model nothing rays at.
     """
 
@@ -956,7 +958,9 @@ trait Phyics3dEnvConfig:
             MutAnyOrigin,
         ],
         mesh_tris: LayoutTensor[
-            DTYPE, Layout.row_major(NMESH_TRI_F * 9), MutAnyOrigin
+            DTYPE,
+            Layout.row_major(NMESH_TRI_F * MESH_ARENA_FLOATS_PER_TRI),
+            MutAnyOrigin,
         ],
         hfield_meta: LayoutTensor[
             DTYPE,
@@ -989,9 +993,11 @@ trait Phyics3dEnvConfig:
 
         ⚠ COST, BECAUSE IT IS NOT SMALL. `ray_model` is a linear scan over
         every geom and one lane owns one ray, so N rangefinders on G geoms is
-        N*G geom queries PER LANE PER STEP, plus the whole triangle soup for
-        every mesh geom. Escape's 20 x 18 is fine; a mesh-heavy scene needs the
-        BVH this engine does not have yet.
+        N*G geom queries PER LANE PER STEP. Escape's 20 x 18 is fine. The
+        MESH part of that is no longer linear — every mesh now carries a BVH
+        (`MESH_META_IDX_BVHNUM`) and `ray_model` takes it — but the GEOM loop
+        still is: there is no broad phase over geoms here, and that is the
+        next one to notice on a scene with hundreds.
 
         Returns:
             True if custom extraction was performed (skip model default).

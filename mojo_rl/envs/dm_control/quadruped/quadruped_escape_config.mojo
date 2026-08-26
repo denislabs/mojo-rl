@@ -65,6 +65,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.gpu.constants import (
     MAX_GPU_HFIELDS,
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_MESH_META_SIZE,
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -436,7 +437,9 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
             MutAnyOrigin,
         ],
         mesh_tris: LayoutTensor[
-            DTYPE, Layout.row_major(NMESH_TRI_F * 9), MutAnyOrigin
+            DTYPE,
+            Layout.row_major(NMESH_TRI_F * MESH_ARENA_FLOATS_PER_TRI),
+            MutAnyOrigin,
         ],
         hfield_meta: LayoutTensor[
             DTYPE,

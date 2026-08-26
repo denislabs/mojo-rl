@@ -63,6 +63,7 @@ from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_MESH_META_SIZE,
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
 )
@@ -124,7 +125,7 @@ def rangefinder_site[
             rl1(MAX_GPU_MESHES * MODEL_MESH_META_SIZE)
         ),
         m.mesh_tris.lt_dyn["cpu", DYN1](
-            rl1(_pos(m.dims.get_nmesh_tri() * 9))
+            rl1(_pos(m.dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI))
         ),
         m.hfield_meta.lt_dyn["cpu", DYN1](
             rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)

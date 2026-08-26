@@ -48,6 +48,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_MESH_META_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_BODY_SIZE,
@@ -93,7 +94,7 @@ def test_the_drawn_nodes_are_where_the_rays_land() raises:
     var ng = env.mf.dims.get_ngeom()
     var nb = env.mf.dims.get_nbody()
     var hfn = env.mf.dims.get_nhfield_data()
-    var nmt = env.mf.dims.get_nmesh_tri() * 9
+    var nmt = env.mf.dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI
     if nmt < 1:
         nmt = 1
 

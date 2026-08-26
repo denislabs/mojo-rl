@@ -1346,7 +1346,7 @@ mesh-heaviest models in or near this tree. See
 `tests/physics3d/test_mesh_cap_is_loud.mojo`."""
 # vertadr, vertnum, polyadr, polynum per mesh — the last two added with the
 # native multi-contact path, mirroring `mesh_polyadr` / `mesh_polynum`.
-comptime MODEL_MESH_META_SIZE: Int = 6
+comptime MODEL_MESH_META_SIZE: Int = 8
 comptime MESH_META_IDX_VERTADR: Int = 0
 comptime MESH_META_IDX_VERTNUM: Int = 1
 comptime MESH_META_IDX_POLYADR: Int = 2
@@ -1358,6 +1358,58 @@ comptime MESH_META_IDX_POLYNUM: Int = 3
 # carried" and not as "this mesh has no geometry".
 comptime MESH_META_IDX_TRIADR: Int = 4
 comptime MESH_META_IDX_TRINUM: Int = 5
+# The mesh's BVH over that soup, in RECORDS of the same arena. `BVHNUM` is 0
+# exactly when no tree was built, and `ray/mesh.mojo` then falls back to the
+# linear sweep — the two must return the SAME distance and normal, which is
+# what `tests/physics3d/test_ray_bvh_matches_linear.mojo` exists to hold.
+comptime MESH_META_IDX_BVHADR: Int = 6
+comptime MESH_META_IDX_BVHNUM: Int = 7
+
+# ---- The mesh geometry ARENA (`Model.mesh_tris`) -----------------------------
+#
+# ⚠⚠ `mesh_tris` HOLDS TWO KINDS OF RECORD, AND THAT IS THE WHOLE POINT. Nine
+# floats per record, triangles first and BVH nodes after them:
+#
+#   records [0, ntri)                   a triangle: v0 v1 v2, mesh frame
+#   records [BVHADR, BVHADR + BVHNUM)   a BVH node, fields below
+#
+# The alternative was a second `Model` tensor, which would have added a
+# `Layout` parameter and an argument to `ray_model`, `render_pixel`,
+# `directional_light_term`, both camera kernels and EVERY env config's
+# observation hook — a public signature, in this tree, changed for a table
+# whose size is a fixed multiple of one that is already there. A node indexes
+# the triangles it covers by the same record number the triangle already has,
+# so keeping them in one arena also removes the chance of the two tables
+# disagreeing about which triangle is which.
+#
+# ⚠ THE BUDGET IS STILL SPELT IN TRIANGLES. `nmesh_tri` is the caller's
+# TRIANGLE count and its meaning has not changed; the arena is
+# `MESH_ARENA_FLOATS_PER_TRI` per triangle because a one-triangle-per-leaf BVH
+# over n triangles has exactly 2n-1 nodes. 1 + 2 records of 9 floats = 27.
+comptime MESH_ARENA_RECORD: Int = 9
+comptime MESH_ARENA_FLOATS_PER_TRI: Int = 27
+
+# A BVH node's nine floats. The AABB is CENTRE + HALF-EXTENT, in the mesh's
+# principal frame, which is `mjModel.bvh_aabb`'s layout exactly.
+comptime MESH_BVH_IDX_CX: Int = 0
+comptime MESH_BVH_IDX_CY: Int = 1
+comptime MESH_BVH_IDX_CZ: Int = 2
+comptime MESH_BVH_IDX_HX: Int = 3
+comptime MESH_BVH_IDX_HY: Int = 4
+comptime MESH_BVH_IDX_HZ: Int = 5
+# ⚠⚠ AN ESCAPE INDEX, NOT A CHILD POINTER, AND THAT IS WHY THERE IS NO STACK.
+# The reference walks its two-child tree with `int stack[mjMAXTREEDEPTH]`, a
+# per-thread array indexed at RUNTIME — the exact read that is silently wrong
+# on Metal and has been four times in this engine. Nodes are stored in
+# PRE-ORDER, so the left child is always the next record and the only thing a
+# miss needs is where the subtree ends. Traversal is then `node += 1` on a hit
+# and `node = escape` on a miss: no stack, no per-thread storage, no bound to
+# exceed.
+comptime MESH_BVH_IDX_ESCAPE: Int = 6
+# The triangle's record number for a leaf, -1 for an internal node.
+comptime MESH_BVH_IDX_TRI: Int = 7
+# Slot 8 is unused. It buys the node the same stride as a triangle, which is
+# what lets both live in one tensor.
 
 # ---- HEIGHTFIELDS -----------------------------------------------------------
 #

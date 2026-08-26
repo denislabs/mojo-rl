@@ -56,6 +56,7 @@ from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_MESH_META_SIZE,
     MAX_GPU_HFIELDS,
     MODEL_HFIELD_META_SIZE,
@@ -201,7 +202,9 @@ struct Phyics3dBatchedEnv[
     comptime L_MESH_META_HOOK = Layout.row_major(
         MAX_GPU_MESHES * MODEL_MESH_META_SIZE
     )
-    comptime L_MESH_TRIS_HOOK = Layout.row_major(Self.NMESH_TRI_F * 9)
+    comptime L_MESH_TRIS_HOOK = Layout.row_major(
+        Self.NMESH_TRI_F * MESH_ARENA_FLOATS_PER_TRI
+    )
     # `Model.tendons` is `_at_least_one`'d too — layout only.
     comptime NTENDON_F: Int = (
         Self.MODEL_DEF.MAX_TENDON if Self.MODEL_DEF.MAX_TENDON > 0 else 1

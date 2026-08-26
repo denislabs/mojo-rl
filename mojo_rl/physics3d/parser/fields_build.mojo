@@ -80,6 +80,9 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_SITE_SIZE,
     MODEL_MESH_META_SIZE,
+    MESH_ARENA_FLOATS_PER_TRI,
+    MESH_META_IDX_BVHADR,
+    MESH_META_IDX_BVHNUM,
     MODEL_MESH_POLY_SIZE,
     MESH_META_IDX_POLYADR,
     MESH_META_IDX_POLYNUM,
@@ -402,6 +405,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_RANGE_MIN,
     JLIM_IDX_RANGE_MAX,
 )
+from .mesh_bvh_build import build_mesh_bvh
 from .flat_model import (
     FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT,
     ACT_KIND_POSITION, ACT_KIND_VELOCITY,
@@ -2348,8 +2352,61 @@ def build_model_fields_from_flat[
             break
         mf.mesh_tris.data[i] = mesh_tri[i]
 
+    # ── the soup's BVH ───────────────────────────────────────────────────
+    #
+    # Built HERE rather than lazily, because the alternative is a first frame
+    # that pays for it inside a kernel. The nodes go into the SAME tensor,
+    # after the triangles — see `MESH_ARENA_FLOATS_PER_TRI` for why one arena
+    # and not two.
+    #
+    # ⚠ NOT AN OPTIONAL EXTRA THE MODEL CAN BE MISSING. A model with a soup
+    # and no tree still works (`ray_model` takes the linear leg on
+    # `BVHNUM == 0`), which is a fallback and not a mode: nothing sets it, and
+    # a silent fall back to a 34x slower path is exactly the kind of thing
+    # that goes unnoticed for a month. If this ever becomes conditional, the
+    # condition needs a gate.
+    var mesh_bvh = List[Scalar[DTYPE]]()
+    var mesh_bvhadr = List[Int]()
+    var mesh_bvhnum = List[Int]()
+    var soup_carried = mf.dims.get_nmesh_tri() > 0 and len(mesh_tri) > 0
+    if soup_carried:
+        build_mesh_bvh[DTYPE](
+            mesh_tri, mesh_triadr, mesh_trinum,
+            mesh_bvh, mesh_bvhadr, mesh_bvhnum,
+        )
+        # The arena is `3 * nmesh_tri` records and the tree is `2n - 1` per
+        # mesh, so a soup that fit CANNOT overflow this — which is the point
+        # of sizing it that way. Checked anyway: the bound holds for the
+        # builder as written, and a builder bug is what would break it.
+        var tri_floats = len(mesh_tri)
+        var cap = mf.dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI
+        if tri_floats + len(mesh_bvh) > cap:
+            raise Error(
+                String("physics3d: the mesh arena holds ")
+                + String(cap) + " floats but the soup plus its BVH need "
+                + String(tri_floats + len(mesh_bvh))
+                + ". A one-triangle-per-leaf tree is 2n-1 nodes, so this"
+                " cannot happen for a soup that fit — the builder is wrong."
+            )
+        for i in range(len(mesh_bvh)):
+            mf.mesh_tris.data[tri_floats + i] = mesh_bvh[i]
+
     # `mesh_meta` gains the soup's per-mesh window, parallel to the hull's.
+    #
+    # ⚠⚠ ONLY WHEN THE SOUP WAS ACTUALLY CARRIED, WHICH IS A FIX AND NOT A
+    # GUARD. `mesh_tri` is collected for every collidable mesh REGARDLESS of
+    # `nmesh_tri`; only the copy into the tensor is capacity-gated. So with
+    # the default `nmesh_tri = 0` this loop used to publish a TRIADR/TRINUM
+    # window into an arena of ONE float — a table saying "this mesh has 1 200
+    # triangles" over memory that holds none. `ray/mesh.mojo`'s docstring has
+    # claimed the opposite ("`nmesh_tri` defaults to 0, so ... `ntri` here is
+    # 0") the whole time; nothing had noticed because the only ray consumer
+    # was a heightfield scene. `MESH_META_IDX_BVHNUM` would have made it
+    # WORSE — a walk over uninitialised escape indices rather than a scan over
+    # zeros — which is how it surfaced.
     for m in range(num_meshes):
+        if not soup_carried:
+            break
         if m >= MAX_GPU_MESHES or m >= len(mesh_triadr):
             break
         mf.mesh_meta.data[
@@ -2358,6 +2415,13 @@ def build_model_fields_from_flat[
         mf.mesh_meta.data[
             m * MODEL_MESH_META_SIZE + MESH_META_IDX_TRINUM
         ] = Scalar[DTYPE](mesh_trinum[m])
+        if m < len(mesh_bvhadr):
+            mf.mesh_meta.data[
+                m * MODEL_MESH_META_SIZE + MESH_META_IDX_BVHADR
+            ] = Scalar[DTYPE](mesh_bvhadr[m])
+            mf.mesh_meta.data[
+                m * MODEL_MESH_META_SIZE + MESH_META_IDX_BVHNUM
+            ] = Scalar[DTYPE](mesh_bvhnum[m])
 
     # ── mesh polygon topology ────────────────────────────────────────────
     #

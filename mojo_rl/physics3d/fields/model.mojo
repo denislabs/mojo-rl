@@ -49,6 +49,7 @@ from ..gpu.constants import (
     MODEL_GEOM_RGBA_SIZE,
     MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     mesh_max_poly,
     mesh_max_polyvert,
     mesh_max_edge,
@@ -267,7 +268,7 @@ struct Model[
     ⚠ NOT IN `MODEL_GEOM_SIZE`. See `MODEL_GEOM_RGBA_SIZE`.
     """
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
-    var mesh_tris: TensorImpl[Self.DTYPE]  # [NMESH_TRI, 9]
+    var mesh_tris: TensorImpl[Self.DTYPE]  # [NMESH_TRI * 3, 9] — an ARENA
     """The meshes' ORIGINAL triangles, nine floats each, principal frame.
 
     ⚠ A DIFFERENT SURFACE FROM `mesh_verts`, which is the convex HULL. The
@@ -280,6 +281,15 @@ struct Model[
 
     Sized by `nmesh_tri`, which is 0 unless something asked for it, so a model
     nobody rays pays nothing.
+
+    ⚠⚠ IT IS AN ARENA OF TWO RECORD KINDS, NOT AN ARRAY OF TRIANGLES. Nine
+    floats per record; the triangles occupy records `[0, ntri)` and the
+    per-mesh BVHs the records after them, addressed by
+    `MESH_META_IDX_BVHADR`/`BVHNUM`. `MESH_ARENA_FLOATS_PER_TRI` is 27 rather
+    than 9 for that reason — a one-triangle-per-leaf tree over n triangles has
+    exactly 2n-1 nodes, so the arena is a FIXED multiple of the triangle
+    budget and `nmesh_tri` still means triangles. See `gpu/constants.mojo` for
+    the node layout and for why this is one tensor rather than two.
     """
     var mesh_polys: TensorImpl[Self.DTYPE]  # [NMESH_POLY, 5]
     var mesh_polyvert: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
@@ -408,7 +418,7 @@ struct Model[
 
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
         self.mesh_tris = TensorImpl[Self.DTYPE].alloc(
-            _at_least_one(dims.get_nmesh_tri() * 9)
+            _at_least_one(dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI)
         )
         self.mesh_polys = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(mesh_max_poly(dims.get_nmesh_verts()) * MODEL_MESH_POLY_SIZE)

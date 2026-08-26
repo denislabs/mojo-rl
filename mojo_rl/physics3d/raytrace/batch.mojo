@@ -47,6 +47,7 @@ from ..gpu.constants import (
     MODEL_GEOM_RGBA_SIZE,
     MODEL_MESH_META_SIZE,
     MAX_GPU_MESHES,
+    MESH_ARENA_FLOATS_PER_TRI,
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
     MAX_GPU_CAMERAS,
@@ -116,7 +117,9 @@ struct BatchedCameraRenderer[
     comptime L_MESH_META = Layout.row_major(
         MAX_GPU_MESHES * MODEL_MESH_META_SIZE
     )
-    comptime L_TRI = Layout.row_major(Self.NMESH_TRI_F * 9)
+    comptime L_TRI = Layout.row_major(
+        Self.NMESH_TRI_F * MESH_ARENA_FLOATS_PER_TRI
+    )
     comptime L_HF_META = Layout.row_major(
         MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
     )
