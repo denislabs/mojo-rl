@@ -146,6 +146,7 @@ from ..gpu.constants import (
     mesh_max_polyvert,
     mesh_max_edge,
 )
+from .contact_order import sort_contacts_mujoco_order
 from .plane_frame import (
     plane_world_normal,
     to_plane_frame,
@@ -1936,6 +1937,10 @@ def _detect_contacts_env[
         )
         for sb in range(sa + 1, ngeom):
             if num_contacts >= max_contacts:
+                # ⚠ ORDERED BEFORE THE EARLY EXIT TOO — see the SAP twin.
+                sort_contacts_mujoco_order[DTYPE](
+                    env, contacts, num_contacts
+                )
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -3544,6 +3549,14 @@ def _detect_contacts_env[
             _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
+
+    # ── MuJoCo's contact ORDER — see `collision/contact_order.mojo` ────────
+    # ⚠ APPLIED HERE TOO, and that is the point. `detect_contacts_auto`'s
+    # docstring records that the two broadphases emit in DIFFERENT orders and
+    # warns against swapping one for the other in a bit-exact pipeline. Both
+    # now end in the same canonical order, so that split is closed rather than
+    # documented.
+    sort_contacts_mujoco_order[DTYPE](env, contacts, num_contacts)
 
     smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
 

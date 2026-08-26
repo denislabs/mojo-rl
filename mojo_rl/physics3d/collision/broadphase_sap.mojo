@@ -171,6 +171,7 @@ from .native_multicontact import (
     native_multicontact_contacts,
     MC_ENABLED,
 )
+from .contact_order import sort_contacts_mujoco_order
 from .contact_detection import (
     _plane_mesh_contacts,
     mix_contact_params,
@@ -610,6 +611,13 @@ def _detect_contacts_sap_env[
 
         for gj in range(ngeom):
             if num_contacts >= max_contacts:
+                # ⚠ ORDERED BEFORE THE EARLY EXIT TOO. This return is the
+                # `max_contacts` overflow guard, and a truncated contact set is
+                # still handed to the solver — leaving it in sweep order would
+                # make the ordering fix silently conditional on not overflowing.
+                sort_contacts_mujoco_order[DTYPE](
+                    env, contacts, num_contacts
+                )
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -1099,6 +1107,13 @@ def _detect_contacts_sap_env[
 
         for j in range(i + 1, sap_n):
             if num_contacts >= max_contacts:
+                # ⚠ ORDERED BEFORE THE EARLY EXIT TOO. This return is the
+                # `max_contacts` overflow guard, and a truncated contact set is
+                # still handed to the solver — leaving it in sweep order would
+                # make the ordering fix silently conditional on not overflowing.
+                sort_contacts_mujoco_order[DTYPE](
+                    env, contacts, num_contacts
+                )
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -2034,6 +2049,13 @@ def _detect_contacts_sap_env[
             _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
+
+    # ── MuJoCo's contact ORDER (`bfsort`, engine_collision_driver.c:1683) ──
+    # The sweep above emits in AABB order and runs PLANES in a separate phase
+    # before it; MuJoCo runs body pair by body pair in SORTED signature order.
+    # See `collision/contact_order.mojo` — noslip and PGS are Gauss-Seidel, so
+    # this is part of the answer, not a presentation choice.
+    sort_contacts_mujoco_order[DTYPE](env, contacts, num_contacts)
 
     smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
 
