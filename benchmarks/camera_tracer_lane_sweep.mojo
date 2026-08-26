@@ -18,6 +18,23 @@ down. Whether that gap survives at saturation decides how much a BVH is worth,
 and it cannot be answered from one lane. Read the `sweep_x` COLUMN, not any
 single cell.
 
+⚠⚠ FOUR LEGS, A 2x2 OVER (soup, shadows), BECAUSE `shadow_x` ALONE CANNOT BE
+READ. The shadow ray is a second full `ray_model` against the SAME triangle
+soup, and it starts INSIDE the scene aimed at the light, so it enters mesh
+AABBs more often than a camera ray grazing them from outside. That makes
+`shadow_x` on a mesh-heavy scene partly a measurement of the SWEEP. The fourth
+cell — soup OFF, shadows OFF — is what separates them:
+
+    shadow_x_free ~= 1   the shadow cost IS the triangle sweep; a BVH fixes
+                         shadows as a side effect and `SHADOWS=False` stops
+                         being the interesting lever.
+    shadow_x_free ~= shadow_x   shadows cost what they cost, independently.
+
+⚠ THE FOURTH LEG IS FREE. Legs 1 and 2 already instantiate both kernels and the
+soup is DATA (`TRINUM`), not a kernel — so the cell that discriminates costs one
+timing loop and no compile. It was missing from the first version of this file
+for no better reason than that three legs matched the bench it grew out of.
+
 ⚠ EVERY LANE RENDERS THE SAME POSE, and that is a BEST CASE this file does not
 hide. Identical lanes read identical triangles in identical order, so the L2
 sees one working set and every warp diverges the same way. Real training lanes
@@ -166,6 +183,21 @@ def bench_lanes[
     ctx.synchronize()
     var nosoup_shadow = Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
 
+    # ── leg 4: soup OFF, shadows OFF — the 2x2's fourth cell ──────────────
+    #
+    # ⚠⚠ THIS LEG COSTS NO COMPILE. Both kernels are already instantiated by
+    # legs 1 and 2; the soup is DATA (`TRINUM`), not a kernel. So the only
+    # cell that tells `shadow_x` apart from `sweep_x` is also the cheapest.
+    rn.render(ctx, d, env.mf)
+    ctx.synchronize()
+    t = perf_counter_ns()
+    for _i in range(REPS):
+        rn.render(ctx, d, env.mf)
+    ctx.synchronize()
+    var nosoup_noshadow = (
+        Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
+    )
+
     # ⚠ RESTORE, OR EVERY LATER ROW MEASURES AN EMPTY SCENE. The model is
     # shared across the whole sweep; this is the one piece of global state the
     # rows can corrupt for each other.
@@ -192,6 +224,8 @@ def bench_lanes[
         _r3(soup_shadow / nosoup_shadow),
         "\t",
         _r3(soup_shadow / soup_noshadow),
+        "\t",
+        _r3(nosoup_shadow / nosoup_noshadow),
         "\t",
         _r3(nosoup_shadow),
         "\t",
@@ -249,7 +283,7 @@ def main() raises:
     print("")
     print(
         "   lanes \t ms/frame \t us/lane \t frames/s \t sweep_x \t"
-        " shadow_x \t control_ms \t reps"
+        " shadow_x \t shadow_x_free \t control_ms \t reps"
     )
     bench_lanes[1](ctx, env, tri_backup)
     bench_lanes[16](ctx, env, tri_backup)
@@ -259,6 +293,11 @@ def main() raises:
         bench_lanes[1024](ctx, env, tri_backup)
 
     print("")
-    print("read the sweep_x COLUMN: if it falls as lanes rise, the 76x at one")
-    print("lane was an occupancy artefact; if it holds, the BVH is worth that")
-    print("much at training batch size.")
+    print("sweep_x COLUMN: if it falls as lanes rise, the one-lane figure was")
+    print("an occupancy artefact; if it RISES it was a floor. (Apple 29->37,")
+    print("5090 71->92: a floor, on both boards.)")
+    print("")
+    print("shadow_x vs shadow_x_free: the shadow ray is a second `ray_model`")
+    print("against the SAME soup, so if shadow_x tracks sweep_x while")
+    print("shadow_x_free stays near 1, the shadow cost IS the triangle sweep")
+    print("and a BVH fixes both. If they agree, shadows cost what they cost.")
