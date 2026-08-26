@@ -4396,7 +4396,16 @@ def box_box_manifold[
                     break
                 var j = Scalar[DTYPE](-1) if jj == 0 else Scalar[DTYPE](1)
                 var l = ss[q] * j
-                var c1 = (l - a) / b
+                # ⚠⚠ RECIPROCAL-THEN-MULTIPLY, NOT A DIVIDE, AND THE
+                # DIFFERENCE IS OBSERVABLE. MuJoCo writes
+                # `c1 = (l - a) * (1/b)` (`engine_collision_box.c:881`), and
+                # the very next line REJECTS the point when `c1 > 1`. On a
+                # face-to-face pose the exact answer IS 1: a divide returns
+                # exactly 1.0 and keeps the point, while `(l-a) * (1/b)` lands
+                # a hair above and drops it. We kept a point MuJoCo does not,
+                # duplicating a manifold corner. Gated by
+                # `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+                var c1 = (l - a) * (Scalar[DTYPE](1) / b)
                 if c1 < Scalar[DTYPE](0) or c1 > Scalar[DTYPE](1):
                     continue
                 var c2 = c + d * c1
@@ -4422,8 +4431,12 @@ def box_box_manifold[
             var lly = ly if (i % 2) != 0 else -ly
             var x = llx - pts[0]
             var y = lly - pts[1]
-            var u = (x * ed - y * eb) / det
-            var v = (y * ea - x * ec) / det
+            # The same reciprocal-then-multiply, for the same reason: the
+            # test below is `u <= 0 || v <= 0 || u >= 1 || v >= 1`, and on a
+            # degenerate face these land exactly on the bounds.
+            var inv_det = Scalar[DTYPE](1) / det
+            var u = (x * ed - y * eb) * inv_det
+            var v = (y * ea - x * ec) * inv_det
             if (
                 u <= Scalar[DTYPE](0)
                 or v <= Scalar[DTYPE](0)

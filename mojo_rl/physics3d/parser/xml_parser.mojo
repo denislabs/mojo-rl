@@ -538,6 +538,12 @@ def _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
     return (x, y, z)
 
 
+# MuJoCo's `mjEPS` (`user_util.h:31`), the COMPILE-TIME tolerance. The runtime
+# `mju_normalize4` uses `mjMINVAL` = 1e-15 for the same near-unit test; the two
+# thresholds differ by 10x in the reference and are kept distinct here.
+comptime _MJEPS_COMPILE: Float64 = 1e-14
+
+
 def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Parse MuJoCo "w x y z" quaternion string into internal (qx, qy, qz, qw).
 
@@ -545,13 +551,34 @@ def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     joint quat) in (w, x, y, z) order. Our internal representation is (x, y, z, w).
 
     The result is NORMALIZED, as MuJoCo's compiler does to every quat it
-    reads (`mju_normalize4` in `user_objects.cc`). Hand-written MJCF is
+    reads (`mjuu_normvec`, `user_util.cc:149`). Hand-written MJCF is
     routinely a hair off unit length — dm_control's humanoid writes
     `quat="1.000 0 -.002 0"` on `lower_waist`, norm 1.000002 — and an
     unnormalized quat scales every vector it rotates by |q|^2, which leaked
     ~4e-6 of relative error into that body's whole subtree. Normalizing at
     parse time keeps it out of the kinematics rather than papering over it
     downstream. Degenerate (all-zero) input falls back to identity.
+
+    ⚠⚠ ...EXCEPT WHEN IT IS ALREADY UNIT, WHICH IS NOT AN OPTIMISATION.
+    `mjuu_normvec` divides only when `std::abs(nrm - 1) > mjEPS`, under the
+    comment "don't normalize if nrm is within mjEPS of 1", and `mjEPS` is
+    1e-14 — TEN TIMES LOOSER than the runtime `mjMINVAL` that
+    `mju_normalize4` uses for the same test. A quaternion written to full
+    double precision is generally not exactly unit: the yaw every Duplo brick
+    in `reassemble_5` carries, `0.8158341149610219 0 0 0.5782859991956973`,
+    has norm 0.9999999999999999, and MuJoCo stores it back VERBATIM.
+
+    ⚠ AN ULP HERE IS NOT COSMETIC. `_bb_post_filter` removes duplicate box/box
+    manifold points with `pos[i] == pos[j]`, faithfully copying
+    `engine_collision_box.c:1394` — and that filter only works because
+    MuJoCo's coincident points are BIT-IDENTICAL. Renormalising a unit
+    quaternion moved a body pose by an ulp, the filter went inert, and two
+    stacked bricks handed the solver a duplicated constraint row. Gated by
+    `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+
+    ⚠ THE DIVISION IS A DIVISION, NOT A RECIPROCAL MULTIPLY. `mjuu_normvec`
+    writes `vec[i] /= nrm`; `mju_normalize4` writes `vec[i] *= 1/norm`. They
+    do not agree in the last bit, and this is the compile-time one.
     """
     var parts = List[String]()
     _split_spaces(s, parts)
@@ -570,6 +597,12 @@ def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     var n = _sqrt_f64(qw * qw + qx * qx + qy * qy + qz * qz)
     if n <= Float64(0):
         return (Float64(0), Float64(0), Float64(0), Float64(1))
+    # `mjuu_normvec`'s guard, at its own threshold. See the docstring.
+    var dev = n - Float64(1)
+    if dev < Float64(0):
+        dev = -dev
+    if dev <= _MJEPS_COMPILE:
+        return (qx, qy, qz, qw)
     return (qx / n, qy / n, qz / n, qw / n)
 
 

@@ -11,7 +11,13 @@ Functions:
 - axis_angle_to_quat: Convert axis-angle to quaternion
 """
 
-from std.math import sqrt, sin, cos, acos, atan2
+from std.math import sqrt, sin, cos, acos, atan2, abs
+
+# MuJoCo's `mjMINVAL` (`mjmodel.h`). `mju_normalize4` skips the division when
+# `mju_abs(norm - 1) <= mjMINVAL`; the compiler's `mjuu_normvec` uses `mjEPS`
+# = 1e-14, ten times looser, on the same test. The RUNTIME value is the one
+# these two functions implement.
+comptime _MJMINVAL: Float64 = 1e-15
 
 
 # =============================================================================
@@ -187,6 +193,20 @@ def quat_normalize[
         Normalized unit quaternion.
     """
     var length_sq = qx * qx + qy * qy + qz * qz + qw * qw
+    # ⚠⚠ THE NEAR-UNIT GUARD IS `mju_normalize4`'s, and the reasoning is
+    # written out in full on `gpu_quat_normalize` below — read it there. Short
+    # version: MuJoCo returns an already-unit quaternion UNTOUCHED
+    # (`engine_util_blas.c:258`), and moving one by an ulp made
+    # `_bb_post_filter`'s `==` duplicate removal inert.
+    #
+    # ⚠ THE TWO NORMALISERS MUST CARRY THE SAME RULE. This one runs on the CPU
+    # leg and `gpu_quat_normalize` on the other; a guard added to one only
+    # would make the two legs disagree about every body pose in the model,
+    # which is a worse failure than the one being fixed.
+    var length = sqrt(length_sq)
+    if abs(length - Scalar[DTYPE](1)) <= Scalar[DTYPE](_MJMINVAL):
+        return (qx, qy, qz, qw)
+
     # Degenerate input keeps the OLD formula bit-for-bit, so this is a pure
     # precision change. As with the GPU pair, that arm is believed unreachable
     # — every caller passes a quaternion that is already unit to rounding.
@@ -196,7 +216,7 @@ def quat_normalize[
             length_sq + Scalar[DTYPE](1e-12)
         )
     else:
-        inv_length = Scalar[DTYPE](1.0) / sqrt(length_sq)
+        inv_length = Scalar[DTYPE](1.0) / length
     return (qx * inv_length, qy * inv_length, qz * inv_length, qw * inv_length)
 
 
@@ -569,11 +589,40 @@ def gpu_quat_normalize[
     # Keep it anyway: it costs one comparison, and "unreachable in this suite"
     # is not "unreachable". If you ever make it reachable, note that returning
     # a ZERO quaternion is not a rotation and identity is the sane answer.
+    # ⚠⚠ AN ALREADY-UNIT QUATERNION IS RETURNED UNTOUCHED, AND THAT IS
+    # `mju_normalize4` (`engine_util_blas.c:258`), NOT an optimisation:
+    #
+    #     } else if (mju_abs(norm - 1) > mjMINVAL) { ... vec[i] *= normInv; }
+    #
+    # `mjuu_normvec` (`user_util.cc:162`) carries the same rule at compile
+    # time, with the comment "don't normalize if nrm is within mjEPS of 1".
+    # A quaternion written to full double precision is generally NOT exactly
+    # unit — `(0.8158341149610219, 0, 0, 0.5782859991956973)`, the yaw every
+    # Duplo brick in `reassemble_5` carries, has `norm^2 = 0.9999999999999999`
+    # — and renormalising it MOVES it by an ulp for nothing.
+    #
+    # ⚠ AN ULP IS NOT COSMETIC WHEN SOMETHING DOWNSTREAM COMPARES WITH `==`.
+    # `_bb_post_filter` (`collision/collision_primitives.mojo`) removes
+    # duplicate box/box manifold points with `pos[i] == pos[j]`, exactly as
+    # `engine_collision_box.c:1394` does, and that filter is only correct
+    # because MuJoCo's coincident points come out BIT-IDENTICAL. With this
+    # ulp in the body quaternion they came out one ulp apart, the filter went
+    # inert, and two stacked bricks handed the solver a DUPLICATED CONSTRAINT
+    # ROW — an exactly rank-deficient Hessian. Gated by
+    # `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+    var norm = sqrt(norm_sq)
+    if abs(norm - Scalar[DTYPE](1)) <= Scalar[DTYPE](_MJMINVAL):
+        result[0] = qx
+        result[1] = qy
+        result[2] = qz
+        result[3] = qw
+        return result^
+
     var inv_norm: Scalar[DTYPE]
     if norm_sq < Scalar[DTYPE](1e-6):
         inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq + Scalar[DTYPE](1e-10))
     else:
-        inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq)
+        inv_norm = Scalar[DTYPE](1.0) / norm
 
     result[0] = qx * inv_norm
     result[1] = qy * inv_norm
