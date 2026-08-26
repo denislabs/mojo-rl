@@ -2037,6 +2037,11 @@ struct FlatModelDef(Movable):
     var eulerdamp_disabled: Bool
     var multiccd_disabled: Bool
     var nativeccd_disabled: Bool
+    # `<option><flag warmstart="disable"/></option>` — mjDSBL_WARMSTART. Read
+    # by the primal solvers (Newton, CG), which otherwise start each solve at
+    # the CHEAPER of `qacc_warmstart` and `qacc_smooth`. See
+    # `MODEL_META_IDX_WARMSTART_DISABLED`.
+    var warmstart_disabled: Bool
     # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
     # after its inertial frame is set: `mass = max(mass, boundmass)` and the
     # same per principal moment. Default 0, i.e. no bound. Load-bearing on
@@ -2369,6 +2374,7 @@ struct FlatModelDef(Movable):
         self.eulerdamp_disabled = False
         self.multiccd_disabled = False
         self.nativeccd_disabled = False
+        self.warmstart_disabled = False
         self.hfield_names = List[String]()
         self.hfield_files = List[String]()
         self.hfield_size = List[Float64]()
