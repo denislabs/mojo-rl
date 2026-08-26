@@ -137,12 +137,18 @@ def directional_light_term[
     if ndotl <= Scalar[DTYPE](0):
         return Scalar[DTYPE](0)
 
-    # ⚠⚠ COMPTIME, NOT A RUNTIME FLAG, AND THE REASON IS THE COMPILER. A
-    # runtime `use_shadows` still puts a second `ray_model` in the kernel, and
-    # `ray_model` is a dispatch over every geom type — Metal spent ~550 s
-    # compiling the two-copy kernel against ~28 s for the one-copy kernel in
-    # `test_ray_model_gpu_vs_cpu`. As a parameter, a caller that does not want
-    # shadows gets a kernel that does not contain the code.
+    # ⚠⚠ COMPTIME, NOT A RUNTIME FLAG, AND THE REASON IS RUN TIME. A runtime
+    # `use_shadows` still puts a second `ray_model` — a dispatch over every
+    # geom type — in the kernel, and still pays for it on every miss. As a
+    # parameter, a caller that does not want shadows gets a kernel that does
+    # not contain the code, worth 1.98x on the mesh-heavy scene in
+    # `benchmarks/camera_tracer_lift_brick.mojo`.
+    #
+    # ⚠ AN EARLIER VERSION OF THIS NOTE JUSTIFIED THE PARAMETER WITH A ~550 s
+    # METAL COMPILE. THAT NUMBER WAS WRONG: it came from a test harness line
+    # that reports MILLISECONDS, and it was the test's RUNTIME rather than a
+    # compile. A real recompile of the camera kernel is about 8 s. The
+    # correction is stated at length in `batch.mojo`; this was its second site.
     comptime if not SHADOWS:
         return ndotl
 
