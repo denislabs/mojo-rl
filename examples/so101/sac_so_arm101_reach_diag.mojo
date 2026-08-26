@@ -67,6 +67,19 @@ comptime SETTLE = 200
 and counting the approach as shake would blame the policy for doing its job."""
 comptime SUCCESS_M = 0.02  # SoArmReachConfig.TARGET_RADIUS
 comptime TICKS_PER_RAD = 4096.0 / 6.283185307179586
+comptime RANGE_RAD = 3.4
+"""Mean joint span, radians — `ctrlrange` runs 3.32 (wrist_flex) to 5.58
+(wrist_roll), mean ~3.4.
+
+⚠⚠ THE ACTION IS NORMALIZED NOW, so a delta in action units is NOT a delta in
+radians and multiplying it by `TICKS_PER_RAD` alone under-reports the command
+motion by half a joint span. `a in [-1, 1]` maps onto `[lo, hi]`, so
+`d(ctrl) = d(a) * (hi - lo) / 2`. Using ONE mean span rather than the per-joint
+one keeps this a single comparable number across joints and versions; it is a
+scale, not a physical claim. The same units error made the action probe report
+the gripper 78% "out of range" when it was in bounds — third instance of it
+from one action-space change, which is what a change of UNITS does to every
+derived number that was written before it."""
 comptime BASE_Z = 0.05  # SoArmReachConfig.BASE_Z
 
 comptime AgentT = SACAgent[
@@ -131,7 +144,7 @@ def episodes(
                 a.data[j] = cmd[j]
                 if t >= SETTLE:
                     var d = cmd[j] - prev[j]
-                    chat += abs(d) * TICKS_PER_RAD
+                    chat += abs(d) * 0.5 * RANGE_RAD * TICKS_PER_RAD
                     if d * prev_d[j] < 0.0:
                         revs += 1.0
                     moves += 1.0

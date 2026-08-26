@@ -216,11 +216,37 @@ struct SoArmReachConfig[
     # and a still arm at 1.0.
     VEL_FREE: Float64 = 0.3,
     VEL_MARGIN: Float64 = 2.0,
-    # The floor of the multiplicative term. 0.8 is dm_control's own value
-    # ((4 + s) / 5). ⚠ THIS IS THE STRENGTH KNOB: 0.8 means a permanently
-    # vibrating arm forfeits 20% of every step, ~60 points of a ~475 return.
-    # Lower it if a retrain still shakes; raise it toward 1.0 to disable.
-    VEL_FLOOR: Float64 = 0.8,
+    # The floor of the multiplicative term — THE STRENGTH KNOB.
+    #
+    # ⚠⚠ 0.5, NOT dm_control's 0.8 ((4 + s) / 5), BECAUSE 0.8 WAS MEASURABLY
+    # NOT WORTH TAKING. Across THREE trained checkpoints the policy has left
+    # this term pinned at its floor — it pays the velocity penalty in full,
+    # every step, every episode:
+    #
+    #     checkpoint            return/500   reach    still
+    #     margin .25            400.6/500    ~1.00     0.81   <- floor
+    #     margin .05            321.6/500     0.80     0.80   <- floor
+    #     normalized actions    389.4/500     0.97     0.80   <- floor
+    #
+    # At 0.8 the whole term is worth 0.2/step against a reach term that swings
+    # by more than that, so it never became the thing to optimise. At 0.5 an
+    # arm that arrives and FREEZES scores 1.0/step where one that arrives and
+    # shakes scores 0.5 — the difference is now the largest single term in the
+    # reward.
+    #
+    # ⚠ AND IT DOES NOT REOPEN THE "STOP SHORT TO BE CALM" EXPLOIT that the
+    # 0.25 margin created, because the margin is 0.05 now. Parking still at
+    # 30 mm scores reach(30mm) = 0.912; arriving and freezing scores 1.000;
+    # arriving and shaking scores 0.500. The ordering puts arrive-and-hold
+    # first and, tellingly, prefers a still arm parked short over an orbiting
+    # one on target — which is also the better hardware behaviour of the two.
+    #
+    # ⚠ MEASURED CONTEXT: the shake is REAL, not a command artefact — 1.06
+    # rad/s mean joint speed with the velocity reversing on 85% of control
+    # steps, while a CONSTANT command settles to exactly zero in under 50
+    # steps and holds its pose to 0.03 deg. The behaviour is available; it has
+    # simply never been worth more than the noise.
+    VEL_FLOOR: Float64 = 0.5,
     # Uniform noise on each joint at reset, radians, clipped to joint range.
     RESET_NOISE: Float64 = 0.05,
     MAX_STEPS_P: Int = 500,

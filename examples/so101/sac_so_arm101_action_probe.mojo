@@ -88,7 +88,15 @@ def main() raises:
                     # |a| > 0.99 * scale means tanh is within 1% of its rail
                     if abs(v) > 0.99 * SCALE:
                         rail[j] += 1.0
-                    if v < Float64(lo_col[j]) or v > Float64(hi_col[j]):
+                    # ⚠⚠ "OUTSIDE" IS OUTSIDE THE ACTION BOX, NOT THE
+                    # ctrlrange. Under the old radians action space those were
+                    # the same test; under `NORMALIZED_ACTIONS` they are not,
+                    # and comparing a normalized action against a range in
+                    # RADIANS reported the gripper — range -0.17..1.75, so it
+                    # does not contain [-1, 1] — as 78% out of range when it
+                    # was perfectly in bounds. A units error in the CHECK,
+                    # read for a moment as a defect in the policy.
+                    if abs(v) > SCALE:
                         outside[j] += 1.0
                     absmean[j] += abs(v)
             if t >= SETTLE:
@@ -100,7 +108,7 @@ def main() raises:
     print("GREEDY ACTION, after arrival —", Int(n), "control steps")
     print("  action_scale =", SCALE, " (tanh rails at +/-", SCALE, ")")
     print("=" * 72)
-    print("  joint          ctrlrange        mean|a|   at rail   outside range")
+    print("  joint          ctrlrange        mean|a|   at rail   outside +/-1")
     for j in range(ACT_DIM):
         print(
             "  " + pad_right(String(joint_name(j)), 13),
