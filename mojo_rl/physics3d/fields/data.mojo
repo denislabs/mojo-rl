@@ -71,6 +71,25 @@ struct Data[
     var qvel: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     var qacc: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     var qfrc: TensorImpl[Self.DTYPE]  # [BATCH, NV]
+    # `mjData.qacc_warmstart` — THE PREVIOUS `mj_forward`'S CONSTRAINED
+    # ACCELERATION, carried across steps so the next primal solve can start
+    # from it.
+    #
+    # ⚠⚠ IT IS SIMULATION STATE, NOT SCRATCH. `warmstart()`
+    # (engine_forward.c:786) starts the Newton/CG iterate at the CHEAPER of
+    # this and `qacc_smooth` — by primal cost, so a stale or hostile value is
+    # DISCARDED rather than trusted — and `mj_forward` ends by writing
+    # `qacc_warmstart = qacc` (:1087). Both engines share the solve's fixed
+    # point, so a converged solve is indifferent; a model that TRUNCATES its
+    # solve (`<option iterations>`) is not, and neither is the iteration count
+    # a rollout pays.
+    #
+    # ⚠ `mj_resetData` ZEROES IT, so every reset path must too — a lane that
+    # starts a new episode from the last one's acceleration is stepping a
+    # different algorithm than MuJoCo. `alloc` zero-fills, which covers
+    # construction and every hand-built `Data`; the batched env's per-lane
+    # reset zeroes it beside `qacc`/`qfrc`.
+    var qacc_warmstart: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     # THIS STEP's actuator damping diagonal — `-diag(d qfrc_actuator/d qvel)`.
     # ⚠ IT IS STATE-DEPENDENT AND `Model` CANNOT HOLD IT: MuJoCo's
     # `mjd_actuator_vel` skips any actuator whose force is CLAMPED by its
@@ -203,6 +222,8 @@ struct Data[
         self.qvel = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.qacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.qfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        # Zero-filled by `alloc`, which IS `mj_resetData`'s value for it.
+        self.qacc_warmstart = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         # ⚠ NEVER ZERO-LENGTH. A model with no actuators would otherwise
         # allocate 0 and any later bind of this tensor is a null view — the
@@ -252,6 +273,7 @@ struct Data[
         self.qvel.upload(ctx)
         self.qacc.upload(ctx)
         self.qfrc.upload(ctx)
+        self.qacc_warmstart.upload(ctx)
         self.dof_actdamp.upload(ctx)
         self.actdamp_act.upload(ctx)
         self.xpos.upload(ctx)
@@ -286,6 +308,7 @@ struct Data[
         self.qvel.download(ctx)
         self.qacc.download(ctx)
         self.qfrc.download(ctx)
+        self.qacc_warmstart.download(ctx)
         self.xpos.download(ctx)
         self.xquat.download(ctx)
         self.xipos.download(ctx)
