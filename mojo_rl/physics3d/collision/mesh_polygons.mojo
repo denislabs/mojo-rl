@@ -29,11 +29,12 @@ almost every mesh and then disagree on the ones with two parallel faces sharing
 no edge — the common case, e.g. the top and bottom of any prism.
 
 ⚠ MuJoCo'S POLYGON ORDER IS AN `unordered_map` ITERATION ORDER, so it is a hash
-artefact and cannot be reproduced by any port. `test_mesh_polygons_vs_mujoco`
-therefore compares polygon SETS, matched by normal, not index by index. Where a
-tie-break in `multicontact()` reads polygon order (two coplanar candidate faces
-for one edge), the two engines may pick differently; that is a property of the
-reference, not a defect here.
+artefact and cannot be reproduced by any port — MEASURED, see the emission loop.
+`test_mesh_polygons_vs_mujoco` therefore compares polygon SETS, matched by
+normal, not index by index. Where a tie-break in `multicontact()` reads polygon
+order (two coplanar candidate faces for one edge) the two engines may pick
+differently; we emit in REVERSE first-seen order because that agrees with the
+reference ~70% of the time against ~30% forward.
 
 ⚠ THE PATH WINDING IS CCW AS SEEN FROM OUTSIDE — `cross(p1-p0, p2-p0)` points
 ALONG the stored normal. Both `meshFace` and `boxFace` in the reference hand
@@ -487,7 +488,49 @@ def build_mesh_polygons[
             groups[found].insert_face(i1, i2, i3)
 
     var npoly = 0
-    for g in range(len(groups)):
+    # ⚠⚠ GROUPS ARE EMITTED IN REVERSE FIRST-SEEN ORDER, AND THAT IS A
+    # DELIBERATE, MEASURED APPROXIMATION — NOT A PORT OF ANYTHING.
+    #
+    # `MakePolygons` emits `for (const auto& pair : mesh_polygons)`, an
+    # `std::unordered_map` ITERATION ORDER. Where `multicontact()` has to break
+    # a tie between two coplanar candidate faces for one edge it takes the
+    # FIRST in that order, so the order is observable in the contact positions
+    # — `hello_robot_stretch_3` and `shadow_dexee` each place a manifold point
+    # millimetres off with the depth and the normal EXACT.
+    #
+    # It is not reproducible, and 2026-08-26 that was tested rather than
+    # assumed: replaying our insertion sequence through the real libc++
+    # `unordered_map` does NOT reproduce it. The check is structural — in
+    # libc++ a bucket's keys are CONTIGUOUS in iteration order:
+    #
+    #     a known libc++ iteration (positive control)  runs/distinct  1.000
+    #     MuJoCo's observed polygon order                             1.743
+    #     fully randomised keys                                       1.755
+    #     (10% key noise, for scale)                                  1.165
+    #
+    # ⚠ BUT THE ORDER IS NOT RANDOM EITHER. Pairwise agreement with MuJoCo's,
+    # over 5 meshes of 2 scenes:
+    #
+    #     our insertion order FORWARD    26.7 - 31.5 %
+    #     our insertion order REVERSED   68.7 - 73.8 %
+    #     the libc++ replay              58.9 - 64.1 %
+    #
+    # Reverse-insertion is what FRONT-INSERTION into a hash bucket looks like,
+    # so ~70% is a mechanism rather than a coincidence. Emitting reversed makes
+    # the tie-break agree with the reference about seven times in ten instead
+    # of three.
+    #
+    # ⚠ IT LIVES HERE, NOT IN `alignedFaceEdge`. That routine takes the FIRST
+    # qualifying edge and that IS the reference's rule; reversing its scan
+    # would get the same board and leave a correct routine reading as a wrong
+    # one. The one thing we cannot reproduce is the ORDER, so the one
+    # approximation belongs in the ORDER.
+    #
+    # ⚠ `polygon_map` below scans polygons in emission order, so it follows
+    # from this and must not be reversed a second time.
+    #
+    # Probes: `docs/menagerie_fidelity_harnesses/polyorder/`.
+    for g in range(len(groups) - 1, -1, -1):
         var paths = groups[g].paths()
         for p in range(len(paths)):
             var path = paths[p].copy()
