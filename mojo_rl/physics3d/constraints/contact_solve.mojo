@@ -842,12 +842,38 @@ def _precompute_contact_friction[
         #     [2*NE*MC..+MC)     mu[MC]
         var pyr_sc = ws_Jt1_idx + NE_PYR * max_contacts * nv
 
-        # Use imp and diag_n from normal precompute (already read above)
+        # ⚠ RAW `friction[0]` HERE, REGULARIZED `mu` JUST BELOW — the two are
+        # DIFFERENT NUMBERS and that is not a slip. `diag_edge` is the diagonal
+        # of `A` for the pyramid EDGE Jacobian, and MuJoCo builds that Jacobian
+        # from the raw coefficient (`mju_addScl(jacdifp, jac, jac + k*NV,
+        # con->friction[k-1], NV)`, engine_core_constraint.c:1686) because
+        # `con->mu` does not exist yet — `mj_makeImpedance` assigns it later.
         var diag_edge = diag_n_c + mu_c * mu_c * diag_n_c
 
-        # R_edge = 2*mu²*(1-imp)/imp*diag_edge
-        # Since R_n = (1-imp)/imp * diag_n → R_edge = 2*mu² * diag_edge/diag_n * R_n
-        var R_edge = Scalar[DTYPE](2.0) * mu_c * mu_c * (
+        # `Rpy = 2 * con->mu * con->mu * R[i]`, written over ALL `2*(dim-1)`
+        # rows of the contact (engine_core_constraint.c:2242-2248). With
+        # `R_n = (1-imp)/imp * diag_n`, the edge row's own `R[i]` is
+        # `(diag_edge/diag_n) * R_n`.
+        #
+        # ⚠⚠ `con->mu` IS THE REGULARIZED COEFFICIENT, NOT `friction[0]`:
+        # `con->mu = friction[0] * sqrt(R[1]/R[0])` with `R[1] = R[0]/impratio`
+        # (engine_core_constraint.c:2224-2227), so `con->mu^2 = mu^2/impratio`.
+        # This read `mu_c * mu_c`, which made every pyramidal `R` a factor of
+        # `impratio` TOO LARGE and the edge constraints that much too soft.
+        #
+        # ⚠ IT IS AN EXACT NO-OP AT `impratio = 1`, and no Menagerie scene the
+        # board loads is pyramidal with `impratio != 1` — 27 models set it and
+        # all but two are `cone="elliptic"`; of those two `franka_emika_panda`
+        # has `ncon 0` and `anybotics_anymal_c` is elliptic in `anymal_c.xml`
+        # (its `cone="pyramidal"` lives in `anymal_c_mjx.xml`, which the board
+        # filters out). So NO GATE IN THE TREE COULD MOVE, and none did. The
+        # gate for this is `test_impratio_pyramidal_vs_mujoco`, which FORCES
+        # the cone rather than waiting for a model to ship the combination.
+        #
+        # The ELLIPTIC branch below already regularizes (`R_t0 = R_n/impratio`,
+        # then `mu = mu_c*sqrt(R_t0/R_n)`), which is exactly why that cone is
+        # correct at impratio 1, 10 AND 100 and this one was not.
+        var R_edge = Scalar[DTYPE](2.0) * (mu_c * mu_c / impratio) * (
             diag_edge / diag_n_c
         ) * R_n_c
         if R_edge < Scalar[DTYPE](1e-14):
@@ -1838,8 +1864,17 @@ def _contact_solve_env[
                             - Scalar[DTYPE](2.0) * mu_d_p * c_nt_val
                             + mu_d_p * mu_d_p * K_f_d
                         )
+                        # `Rpy = 2 * con->mu^2 * R[i]` with the REGULARIZED
+                        # `con->mu = friction[0]/sqrt(impratio)` — the PGS twin
+                        # of the Newton builder's `R_edge`, and it carried the
+                        # same raw-`mu` defect. See that comment for why the
+                        # `mu_d_p` in `ws_kep`/`ws_ken` above stays RAW: those
+                        # are the edge JACOBIAN's coefficient, which MuJoCo
+                        # takes from `con->friction[k-1]`.
                         solver[env, ws_re + d * max_contacts + c] = (
-                            Scalar[DTYPE](2.0) * mu_d_p * mu_d_p * R_n_val
+                            Scalar[DTYPE](2.0)
+                            * (mu_d_p * mu_d_p / impratio_pgs)
+                            * R_n_val
                         )
                     # No warm-start for pyramidal
                     for d in range(num_fric):
