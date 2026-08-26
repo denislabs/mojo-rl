@@ -81,15 +81,24 @@ def _sweep[D: DType]() raises -> List[Float64]:
     var pmn = List[Int]()
     var ea = List[Int]()
     var el = List[Int]()
+    # ⚠ THE TRIANGLE ARENA IS A REQUIRED OUT-PARAMETER, not an option. The mesh
+    # BVH (`53f0e830`) publishes its nodes into `mesh_tri` and indexes them
+    # with `mesh_triadr`/`mesh_trinum`; `load_mesh_hull` fills all three. This
+    # file does not read them — it sweeps GJK over two hulls — but omitting
+    # them stopped it COMPILING, and a gate that does not compile is not a
+    # gate: this one had been silently absent since the BVH landed.
+    var mtri = List[Scalar[D]]()
+    var mtriadr = List[Int]()
+    var mtrinum = List[Int]()
     var mi = MeshInertia[D]()
     var b = String("mojo_rl/envs/robots/assets/so_arm100/")
     _ = load_mesh_hull[D](
         b + "Fixed_Jaw_Collision_2.stl", mv, mva, mvn, nm, mpa, mpn, pv, pva,
-        pvn, pn, pm, pma, pmn, ea, el, mi,
+        pvn, pn, pm, pma, pmn, ea, el, mtri, mtriadr, mtrinum, mi,
     )
     _ = load_mesh_hull[D](
         b + "Wrist_Pitch_Roll.stl", mv, mva, mvn, nm, mpa, mpn, pv, pva,
-        pvn, pn, pm, pma, pmn, ea, el, mi,
+        pvn, pn, pm, pma, pmn, ea, el, mtri, mtriadr, mtrinum, mi,
     )
 
     # ⚠ HEAP, NOT `InlineArray` — see `test_gjk_hillclimb_support.mojo`. The

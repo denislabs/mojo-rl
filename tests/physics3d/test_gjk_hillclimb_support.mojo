@@ -73,11 +73,20 @@ def _check(name: String, path: String) raises:
     var polymap_num = List[Int]()
     var edge_adr = List[Int]()
     var edge_list = List[Int]()
+    # ⚠ THE TRIANGLE ARENA IS A REQUIRED OUT-PARAMETER, not an option. The mesh
+    # BVH (`53f0e830`) publishes its nodes into `mesh_tri` and indexes them
+    # with `mesh_triadr`/`mesh_trinum`; `load_mesh_hull` fills all three. This
+    # file does not read them — it only needs the hull — but omitting them
+    # stopped it COMPILING, and a gate that does not compile is not a gate.
+    var mesh_tri = List[Scalar[D]]()
+    var mesh_triadr = List[Int]()
+    var mesh_trinum = List[Int]()
     var mi = MeshInertia[D]()
     _ = load_mesh_hull[D](
         path, mesh_vert, mesh_vertadr, mesh_vertnum, num_meshes,
         mesh_polyadr, mesh_polynum, poly_vert, poly_vertadr, poly_vertnum,
         poly_normal, polymap, polymap_adr, polymap_num, edge_adr, edge_list,
+        mesh_tri, mesh_triadr, mesh_trinum,
         mi,
     )
     var nverts = mesh_vertnum[0]
