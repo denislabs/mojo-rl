@@ -109,6 +109,7 @@ from ..constraints.elliptic_layout import (
 )
 from .elliptic_cone import (
     ell_state_force,
+    ell_row_cost,
     ell_hessian_block,
     ell_add_contact_hessian,
     ell_line_deriv,
@@ -198,6 +199,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_NOSLIP_ITERATIONS,
+    MODEL_META_IDX_WARMSTART_DISABLED,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -264,6 +266,14 @@ comptime NS_TPB: Int = 1
 # per-iteration `alpha` column shows it immediately. Board row `unitree_go1`
 # was mis-attributed to the elliptic cone's algebra for want of these numbers.
 comptime _ELL_TRACE: Bool = False
+# Per-iteration trace of the PYRAMIDAL Newton — the accepted `alpha`, the
+# improvement, and the gradient AFTER the update. Off in every committed state.
+#
+# ⚠ THE `alpha` AND `impr` COLUMNS TOGETHER ARE THE DIAGNOSIS. A line search
+# whose second-derivative floor binds does not fail and does not diverge: it
+# returns a TINY alpha with `improvement` exactly 0.0 while the gradient
+# plateaus just above `tolerance`. No aggregate shows that.
+comptime _PYR_TRACE: Bool = False
 
 
 # =============================================================================
@@ -585,6 +595,11 @@ def _newton_solve_env[
         DTYPE, L_M, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
+        DTYPE, L_QVEL, MutAnyOrigin
+    ],
+    # `mjData.qacc_warmstart` — the previous `mj_forward`'s constrained
+    # acceleration. READ ONLY here; `solver/warmstart.mojo` writes it.
+    qacc_warmstart: LayoutTensor[
         DTYPE, L_QVEL, MutAnyOrigin
     ],
     solver: LayoutTensor[
@@ -1389,6 +1404,75 @@ def _newton_solve_env[
             qacc, jar, force, state_e, qfrc, nv,
         )
 
+        # ── warmstart(): START AT THE CHEAPER OF `qacc_warmstart` AND
+        # `qacc_smooth` (engine_forward.c:786) ───────────────────────────────
+        #
+        # ⚠⚠ IT IS A COST COMPARISON, NOT A COPY. `qacc_warmstart` carries the
+        # previous `mj_forward`'s answer, which after a contact change or a
+        # reset can be far worse than the cold start; MuJoCo prices both and
+        # keeps the cheaper. Skipping the test is a DIFFERENT algorithm, not a
+        # cheaper version of this one.
+        #
+        # The Gauss term is `0.5*(M*q - qfrc_smooth)·(q - qacc_smooth)`, which
+        # is identically 0 at `q = qacc_smooth` — hence `cost_s` carrying the
+        # constraint rows only, exactly as MuJoCo's
+        # `mj_constraintUpdate(m, d, d->efc_b, &cost_smooth, 0)` does.
+        #
+        # ⚠ THE TIE GOES TO THE WARM START. MuJoCo falls back only on
+        # `cost_warmstart > cost_smooth`, so `<=` here is the reference's `>`
+        # negated and not a choice of ours.
+        #
+        # ⚠ THE TRIAL STATE IS NOT KEPT. Pricing the candidate needs its jar
+        # and its row states, and holding those would add two `E_CAP` locals
+        # to a frame that Metal already sizes at the edge; instead the cost is
+        # accumulated row by row and `pyramidal_edge_forces` is simply re-run
+        # once, on whichever `qacc` won. `Ma` is restored from `f_smooth`,
+        # which is bit-identically `M * qacc_smooth`.
+        if (
+            mmeta[MODEL_META_IDX_WARMSTART_DISABLED] == Scalar[DTYPE](0)
+            and num_edges > 0
+        ):
+            var cost_s: Scalar[DTYPE] = 0
+            for e_idx in range(num_edges):
+                cost_s += scalar_row_cost[DTYPE](
+                    state_e[e_idx], jar[e_idx], De[e_idx], R_e[e_idx],
+                    floss_e[e_idx],
+                )
+            var qacc_w = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+            for i in range(nv):
+                qacc_w[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
+            var cost_w: Scalar[DTYPE] = 0
+            for e_idx in range(num_edges):
+                var jar_w = bias_e[e_idx]
+                for i in range(nv):
+                    jar_w += Je[e_idx * nv + i] * qacc_w[i]
+                var st_w = scalar_row_state[DTYPE](
+                    kind_e[e_idx], jar_w, R_e[e_idx], floss_e[e_idx]
+                )
+                cost_w += scalar_row_cost[DTYPE](
+                    st_w, jar_w, De[e_idx], R_e[e_idx], floss_e[e_idx]
+                )
+            for i in range(nv):
+                var s_i: Scalar[DTYPE] = 0
+                for j in range(nv):
+                    s_i += M_local[i * nv + j] * qacc_w[j]
+                Ma[i] = s_i
+                cost_w += (
+                    Scalar[DTYPE](0.5)
+                    * (s_i - f_smooth[i])
+                    * (qacc_w[i] - qacc_smooth[i])
+                )
+            if cost_w <= cost_s:
+                for i in range(nv):
+                    qacc[i] = qacc_w[i]
+                pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
+                    num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
+                    qacc, jar, force, state_e, qfrc, nv,
+                )
+            else:
+                for i in range(nv):
+                    Ma[i] = f_smooth[i]
+
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
             # ⚠ THE MODEL'S BUDGET, checked before any work — the comptime
@@ -1401,7 +1485,17 @@ def _newton_solve_env[
                 grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
                 grad_norm += grad[i] * grad[i]
 
-            if scale * sqrt(grad_norm) < tol_rt:
+            # ⚠⚠ NOT ON THE FIRST PASS. `mj_solPrimal` evaluates `gradient`
+            # only AFTER an update (engine_solver.c:2270-2282): its loop is
+            # linesearch -> move -> update -> test, so a solve that STARTS
+            # inside the tolerance still takes one line search, and only
+            # `PrimalSearch` returning `alpha == 0` can end it with zero
+            # updates. Testing here at `iter_n == 0` let a warm start be
+            # returned UNTOUCHED — which is exactly the regime the warm start
+            # creates, and why it cost `test_frictionless_contact_pyramidal`
+            # three orders (4.4e-16 -> 1.2e-12 of qpos against MuJoCo over 60
+            # steps) the day `qacc_warmstart` started carrying.
+            if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
                 break
 
             # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
@@ -1436,7 +1530,11 @@ def _newton_solve_env[
                 for j in range(nv):
                     Mv[i] += M_local[i * nv + j] * search[j]
 
-            # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
+            # `PrimalSearch` (engine_solver.c:1692) — an ITERATED search, not
+            # a single analytical step. ⚠ `gtol_scale` is
+            # `opt.tolerance * opt.ls_tolerance / scale`, the product
+            # `mj_solPrimal` passes at engine_solver.c:2236 divided by the
+            # convergence scale; the callee multiplies by `|search|`.
             var alpha = pyramidal_linesearch[
                 DTYPE, E_CAP, V_CAP, LINESEARCH_ITER,
                 PRIMAL_MINVAL_GPU
@@ -1445,6 +1543,7 @@ def _newton_solve_env[
                 f_smooth, qacc, qacc_smooth, jar,
                 nv,
                 lsiter_rt,
+                tol_rt * lstol_rt / scale,
             )
 
             if alpha < Scalar[DTYPE](1e-10):
@@ -1504,6 +1603,9 @@ def _newton_solve_env[
                 )
 
             var improvement = scale * (old_cost - new_cost)
+            comptime if _PYR_TRACE:
+                print("  [pyr]", iter_n, "alpha", alpha, "impr", improvement,
+                      "tol", tol_rt)
             if improvement < tol_rt and iter_n > 0:
                 if improvement < Scalar[DTYPE](0):
                     # Cost increased — revert to old state
@@ -1953,6 +2055,99 @@ def _newton_solve_env[
     var jar_t_arr = Scratch[Scalar[DTYPE], T_CAP](tn, fill=Scalar[DTYPE](0))
     var cs_arr = Scratch[Int, MC_CAP](max_contacts, uninitialized=0)
 
+    # ── warmstart(): START AT THE CHEAPER OF `qacc_warmstart` AND
+    # `qacc_smooth` (engine_forward.c:786) ───────────────────────────────────
+    #
+    # The PYRAMIDAL twin above carries the reasoning; two things differ here.
+    #
+    # 1. THE COST FUNCTION. `mj_constraintUpdate` prices an elliptic contact as
+    #    ONE block (`ell_row_cost`), not as `dim` independent scalar rows.
+    # 2. IT RUNS BEFORE STEP 3. Step 3 fills the state/force arrays the Hessian
+    #    and the whole iteration read, so the choice has to be made while
+    #    `qacc` is the only thing that has been decided; the alternative is a
+    #    second copy of every one of those arrays to swap in.
+    #
+    # `jar_t_arr` / `ft_arr` are borrowed as the trial scratch precisely
+    # because Step 3 overwrites both unconditionally one loop later.
+    if mmeta[MODEL_META_IDX_WARMSTART_DISABLED] == Scalar[DTYPE](0) and (
+        nc > 0 or ns > 0 or neq_rows > 0
+    ):
+        var qacc_w = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+        for i in range(nv):
+            qacc_w[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
+        var cost_w = Scalar[DTYPE](0)
+        var cost_s = Scalar[DTYPE](0)
+        for cand in range(2):
+            var acc_cost = Scalar[DTYPE](0)
+            for c in range(nc):
+                if dist_cache[c] >= Scalar[DTYPE](0):
+                    continue
+                var nt_c = nt_cache[c]
+                var jn = pb_cache[c]
+                for t in range(nt_c):
+                    jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
+                for i in range(nv):
+                    var qa_i = qacc_w[i] if cand == 0 else qacc_sm[i]
+                    jn += Jn_c[c * nv + i] * qa_i
+                    for t in range(nt_c):
+                        jar_t_arr[c * NT + t] += (
+                            Jt_c[(c * NT + t) * nv + i] * qa_i
+                        )
+                var f_n_try = Scalar[DTYPE](0)
+                var zone = ell_state_force[DTYPE, NT, T_CAP](
+                    nt_c, c * NT, jn, jar_t_arr,
+                    mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                    f_n_try, ft_arr,
+                )
+                acc_cost += ell_row_cost[DTYPE, NT, T_CAP](
+                    zone, nt_c, c * NT, jn, jar_t_arr,
+                    mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                )
+            for sr in range(ns):
+                var qa_s = (
+                    qacc_w[sr_dof[sr]] if cand == 0 else qacc_sm[sr_dof[sr]]
+                )
+                var jar_s = sr_bias[sr] + sr_sign[sr] * qa_s
+                var st_s = scalar_row_state[DTYPE](
+                    sr_kind[sr], jar_s, sr_R[sr], sr_floss[sr]
+                )
+                acc_cost += scalar_row_cost[DTYPE](
+                    st_s, jar_s, sr_D[sr], sr_R[sr], sr_floss[sr]
+                )
+            for e in range(neq_rows):
+                var jar_e = eq_bias[e]
+                for dd in range(nv):
+                    var qa_e = qacc_w[dd] if cand == 0 else qacc_sm[dd]
+                    jar_e += eq_J[e * nv + dd] * qa_e
+                var st_e = scalar_row_state[DTYPE](
+                    eq_kind[e], jar_e, Scalar[DTYPE](0), Scalar[DTYPE](0)
+                )
+                acc_cost += scalar_row_cost[DTYPE](
+                    st_e, jar_e, eq_D[e], Scalar[DTYPE](0), Scalar[DTYPE](0)
+                )
+            if cand == 0:
+                cost_w = acc_cost
+            else:
+                cost_s = acc_cost
+        # Gauss, identically 0 at `qacc_smooth`. `Ma` is written tentatively
+        # and restored from `qfrc_sm`, which IS `M * qacc_sm` bit for bit.
+        for i in range(nv):
+            var s_i = Scalar[DTYPE](0)
+            for j in range(nv):
+                s_i += M_local[i * nv + j] * qacc_w[j]
+            Ma[i] = s_i
+            cost_w += (
+                Scalar[DTYPE](0.5)
+                * (s_i - qfrc_sm[i])
+                * (qacc_w[i] - qacc_sm[i])
+            )
+        if cost_w <= cost_s:
+            for i in range(nv):
+                qacc[i] = qacc_w[i]
+        else:
+            for i in range(nv):
+                Ma[i] = qfrc_sm[i]
+
     # === Step 3: Compute initial jar and forces via 3-zone cone logic ===
     for c in range(nc):
         var nt_c = nt_cache[c]
@@ -2080,8 +2275,8 @@ def _newton_solve_env[
             grad[i] = Ma[i] - qfrc_sm[i] - qfrc_c[i]
             grad_norm_sq += grad[i] * grad[i]
 
-        # Convergence check
-        if scale * sqrt(grad_norm_sq) < tol_rt:
+        # Convergence check — see the PYRAMIDAL twin for why not on pass 0.
+        if _iter > 0 and scale * sqrt(grad_norm_sq) < tol_rt:
             break
         comptime if _ELL_TRACE:
             var _nst = 0
@@ -2165,7 +2360,13 @@ def _newton_solve_env[
             p0_d1 += -eq_f[e] * eq_Js[e]
             if eq_st[e] == SROW_QUADRATIC:
                 p0_d2 += eq_D[e] * eq_Js[e] * eq_Js[e]
-        if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+        # ⚠ MuJoCo FLOORS `deriv[1]` ONLY WHEN IT IS <= 0 (engine_solver.c:1648,
+        # a should-not-occur convexity violation) and to `mjMINVAL` = 1e-15.
+        # Testing `< PRIMAL_MINVAL_GPU` inflates a legitimately SMALL POSITIVE
+        # curvature — which is what the line's second derivative IS near the
+        # optimum — and crushes `alpha = -d1/d2`. See the PYRAMIDAL twin in
+        # `primal.mojo` for the measurement.
+        if p0_d2 <= Scalar[DTYPE](0):
             p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
         var alpha: Scalar[DTYPE] = 0
@@ -2219,7 +2420,8 @@ def _newton_solve_env[
                 )
                 if tste == SROW_QUADRATIC:
                     p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
-            if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+            # Same rule as `p0_d2` above.
+            if p1_d2_v <= Scalar[DTYPE](0):
                 p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
             alpha = p1_alpha
@@ -2279,7 +2481,8 @@ def _newton_solve_env[
                         )
                         if tste == SROW_QUADRATIC:
                             p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
-                    if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                    # Same rule as `p0_d2` above.
+                    if p1_d2_v <= Scalar[DTYPE](0):
                         p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
                     if p1_d1 * p1_d1 < gtol_sq:
                         alpha = p1_alpha
@@ -2650,6 +2853,9 @@ def _newton_solve_fields_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    qacc_warmstart: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
     solver: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
     ],
@@ -2664,7 +2870,8 @@ def _newton_solve_fields_kernel[
         SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, geoms_w, body_invweight0,
-        dof_invweight0, cdof, M, m_inv, qacc_constrained, solver,
+        dof_invweight0, cdof, M, m_inv, qacc_constrained, qacc_warmstart,
+        solver,
     )
 
 
@@ -2771,6 +2978,7 @@ def solve_newton[
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
         for e in range(BATCH):
             _newton_solve_env[
@@ -2780,7 +2988,7 @@ def solve_newton[
                 SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, sol_v,
+                cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
             )
     else:
         # GPU. PYRAMIDAL (the production default cone) on NVIDIA uses the
@@ -2837,6 +3045,7 @@ def solve_newton[
                 scratch.M.lt["gpu", L_M](),
                 scratch.m_inv.lt["gpu", L_M](),
                 scratch.qacc_constrained.lt["gpu", L_NV](),
+                d.qacc_warmstart.lt["gpu", L_NV](),
                 cscratch.solver.lt["gpu", L_SOLVER](),
                 grid_dim=(BLOCKS,),
                 block_dim=(NS_TPB,),
@@ -2928,6 +3137,9 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    qacc_warmstart: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
     solver: LayoutTensor[
@@ -3839,6 +4051,94 @@ def _newton_blocked_fields_kernel[
             for i in range(NV):
                 qfrc[i] += rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_e
 
+        # ── warmstart() — the per-env path's twin, see the comment there.
+        # Serial on thread 0 like the rest of this init, and re-running the
+        # init loop above rather than keeping a trial state is what keeps the
+        # thread-0 frame the size that made this kernel exist.
+        if (
+            mmeta[MODEL_META_IDX_WARMSTART_DISABLED] == Scalar[DTYPE](0)
+            and num_edges > 0
+        ):
+            var cost_s: Scalar[DTYPE] = 0
+            for e_idx in range(num_edges):
+                cost_s += scalar_row_cost[DTYPE](
+                    Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
+                    jar[e_idx],
+                    rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                )
+            var qacc_w = Scratch[Scalar[DTYPE], V_SIZE](
+                NV, uninitialized=Scalar[DTYPE](0)
+            )
+            for i in range(NV):
+                qacc_w[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
+            var cost_w: Scalar[DTYPE] = 0
+            for e_idx in range(num_edges):
+                var jar_w = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
+                for i in range(NV):
+                    jar_w += (
+                        rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
+                        * qacc_w[i]
+                    )
+                var st_w = scalar_row_state[DTYPE](
+                    Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                    jar_w,
+                    rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                )
+                cost_w += scalar_row_cost[DTYPE](
+                    st_w,
+                    jar_w,
+                    rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                )
+            for i in range(NV):
+                var s_i: Scalar[DTYPE] = 0
+                for j in range(NV):
+                    s_i += (
+                        rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc_w[j]
+                    )
+                Ma[i] = s_i
+                cost_w += (
+                    Scalar[DTYPE](0.5)
+                    * (s_i - f_smooth[i])
+                    * (qacc_w[i] - qacc_smooth[i])
+                )
+            if cost_w <= cost_s:
+                for i in range(NV):
+                    qacc[i] = qacc_w[i]
+                    qfrc[i] = Scalar[DTYPE](0)
+                for e_idx in range(num_edges):
+                    jar[e_idx] = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
+                    for i in range(NV):
+                        jar[e_idx] += (
+                            rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
+                            * qacc[i]
+                        )
+                    var st_c = scalar_row_state[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                        jar[e_idx],
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
+                    state_e_sh[e_idx] = Scalar[DTYPE](st_c)
+                    var f_c = scalar_row_force[DTYPE](
+                        st_c,
+                        jar[e_idx],
+                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
+                    force_sh[e_idx] = f_c
+                    for i in range(NV):
+                        qfrc[i] += (
+                            rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_c
+                        )
+            else:
+                for i in range(NV):
+                    Ma[i] = f_smooth[i]
+
     # Make num_edges + force_sh visible to all threads.
     barrier()
     var num_edges_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
@@ -3853,7 +4153,9 @@ def _newton_blocked_fields_kernel[
             for i in range(NV):
                 grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
                 grad_norm += grad[i] * grad[i]
-            if scale * sqrt(grad_norm) < tol_rt:
+            # ⚠ NOT ON THE FIRST PASS — see the per-env twin. `mj_solPrimal`
+            # tests `gradient` only after an update.
+            if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done
             else:
                 ctrl_sh[1] = Scalar[DTYPE](0)
@@ -3920,83 +4222,179 @@ def _newton_blocked_fields_kernel[
                 gauss_a += Mv[i] * search[i]
                 gauss_b += (Ma[i] - f_smooth[i]) * search[i]
 
-            var p0_d1 = gauss_b
-            var p0_d2 = gauss_a
-            for e_idx in range(num_edges_b):
-                # d1 gets -f*Jv in EVERY active state (a saturated box row
-                # still pushes); d2 gets curvature only where the cost is
-                # quadratic. Collapsing these two into one `jar < 0` test is
-                # what makes box rows wrong.
-                var st_p = Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx]))
-                var f_p = scalar_row_force[DTYPE](
-                    st_p,
-                    jar[e_idx],
-                    rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                )
-                p0_d1 += -f_p * Jv_e[e_idx]
-                if st_p == SROW_QUADRATIC:
-                    p0_d2 += (
-                        rebind[Scalar[DTYPE]](De_sh[e_idx])
-                        * Jv_e[e_idx]
+            # ── `PrimalSearch` (engine_solver.c:1692), thread-0 serial ──
+            #
+            # ⚠⚠ THE SAME THREE PHASES AS `primal.mojo`'s
+            # `pyramidal_linesearch`, AND IT HAS TO STAY THAT WAY. This kernel
+            # cannot call that helper — its rows live in SHARED-memory
+            # LayoutTensors, not `Scratch` — so the algorithm is written twice
+            # and `test_noslip_blocked_kernel` / `test_newton_blocked_fields`
+            # are what hold the two together. A rule written inline twice in
+            # this tree has drifted before; read the other copy's docstring
+            # for why one analytical step plus halving is not this.
+            var snorm_sq: Scalar[DTYPE] = 0
+            for i in range(NV):
+                snorm_sq += search[i] * search[i]
+            var snorm = sqrt(snorm_sq)
+            var gtol_b = tol_rt * lstol_rt / scale * snorm
+
+            var ls_budget = LINESEARCH_ITER
+            if lsiter_rt > 0 and lsiter_rt < ls_budget:
+                ls_budget = lsiter_rt
+
+            # The line's derivatives at `a`, rows RE-CLASSIFIED at the trial
+            # point. Mirrors `eval_at` in `primal.mojo`.
+            @parameter
+            @always_inline
+            def _bl_line_deriv(
+                a: Scalar[DTYPE],
+                mut d1: Scalar[DTYPE],
+                mut d2: Scalar[DTYPE],
+            ):
+                d1 = gauss_a * a + gauss_b
+                d2 = gauss_a
+                for e_idx in range(num_edges_b):
+                    var jt = jar[e_idx] + a * Jv_e[e_idx]
+                    var st = scalar_row_state[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                        jt,
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
+                    d1 += (
+                        -scalar_row_force[DTYPE](
+                            st,
+                            jt,
+                            rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                        )
                         * Jv_e[e_idx]
                     )
-            if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                    if st == SROW_QUADRATIC:
+                        d2 += (
+                            rebind[Scalar[DTYPE]](De_sh[e_idx])
+                            * Jv_e[e_idx]
+                            * Jv_e[e_idx]
+                        )
+                if d2 <= Scalar[DTYPE](0):
+                    d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
-            var alpha: Scalar[DTYPE] = 0
-            if p0_d1 < Scalar[DTYPE](0):
-                alpha = -p0_d1 / p0_d2
-
-                var old_cost_ls: Scalar[DTYPE] = 0
+            # The line's cost at `a` RELATIVE to a = 0. Mirrors `cost_delta`.
+            @parameter
+            @always_inline
+            def _bl_cost_delta(a: Scalar[DTYPE]) -> Scalar[DTYPE]:
+                var c = Scalar[DTYPE](0)
                 for i in range(NV):
-                    old_cost_ls += (
+                    var qa_t = qacc[i] + a * search[i]
+                    var Ma_t = Ma[i] + a * Mv[i]
+                    c += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma_t - f_smooth[i])
+                        * (qa_t - qacc_smooth[i])
+                    )
+                    c -= (
                         Scalar[DTYPE](0.5)
                         * (Ma[i] - f_smooth[i])
                         * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges_b):
-                    old_cost_ls += scalar_row_cost[DTYPE](
+                    var jt = jar[e_idx] + a * Jv_e[e_idx]
+                    var st_t = scalar_row_state[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                        jt,
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
+                    c += scalar_row_cost[DTYPE](
+                        st_t,
+                        jt,
+                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
+                    c -= scalar_row_cost[DTYPE](
                         Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
                         jar[e_idx],
                         rebind[Scalar[DTYPE]](De_sh[e_idx]),
                         rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
                         rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                     )
+                return c
 
-                for _ls in range(LINESEARCH_ITER):
-                    if _ls >= lsiter_rt:
-                        break
-                    var trial_cost: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        var qa_t = qacc[i] + alpha * search[i]
-                        var Ma_t = Ma[i] + alpha * Mv[i]
-                        trial_cost += (
-                            Scalar[DTYPE](0.5)
-                            * (Ma_t - f_smooth[i])
-                            * (qa_t - qacc_smooth[i])
-                        )
-                    for e_idx in range(num_edges_b):
-                        var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
-                        # Re-classify at the TRIAL point: a step can move a row
-                        # across a zone boundary, which is the whole reason the
-                        # line search exists.
-                        var st_t = scalar_row_state[DTYPE](
-                            Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
-                            jar_t,
-                            rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                        )
-                        trial_cost += scalar_row_cost[DTYPE](
-                            st_t,
-                            jar_t,
-                            rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                            rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                        )
-                    if trial_cost <= old_cost_ls:
-                        break
-                    alpha *= Scalar[DTYPE](0.5)
+            # ⚠⚠ p0 GOES THROUGH `_bl_line_deriv` LIKE EVERY OTHER POINT.
+            # This block used to read the STORED `state_e_sh` and derive its
+            # force from that, where the per-env twin RE-CLASSIFIES from `jar`
+            # — and so does `PrimalEval`, which evaluates the line at
+            # `Jaref + alpha*Jv` for alpha=0 like any other alpha. Two
+            # spellings of the same point is exactly the asymmetry that makes
+            # one leg start its search from a different derivative than the
+            # other; blocked-GPU vs per-env-CPU `qacc` with the noslip pass OFF
+            # went 1.06e-05 -> 6.26e-04 while they disagreed about it.
+            var p0_d1 = Scalar[DTYPE](0)
+            var p0_d2 = Scalar[DTYPE](0)
+            _bl_line_deriv(Scalar[DTYPE](0), p0_d1, p0_d2)
+
+            var alpha: Scalar[DTYPE] = 0
+            if snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                # Phase 1: always attempt one Newton step on the line.
+                var p1_a = -p0_d1 / p0_d2
+                var p1_d1 = Scalar[DTYPE](0)
+                var p1_d2 = Scalar[DTYPE](0)
+                _bl_line_deriv(p1_a, p1_d1, p1_d2)
+                var used_ls = 1
+                var done_ls = False
+                if abs(p1_d1) < gtol_b:
+                    alpha = p1_a
+                    done_ls = True
+
+                var dir_b = (
+                    Scalar[DTYPE](1) if p1_d1 < Scalar[DTYPE](0)
+                    else Scalar[DTYPE](-1)
+                )
+                var p2_a = Scalar[DTYPE](0)
+                var bracketed = False
+                if not done_ls:
+                    # Phase 2: one-sided Newton search to a sign change.
+                    while used_ls < ls_budget:
+                        if p1_d1 * dir_b > -gtol_b:
+                            bracketed = True
+                            break
+                        p2_a = p1_a
+                        p1_a = p1_a - p1_d1 / p1_d2
+                        _bl_line_deriv(p1_a, p1_d1, p1_d2)
+                        used_ls += 1
+                        if abs(p1_d1) < gtol_b:
+                            alpha = p1_a
+                            done_ls = True
+                            break
+
+                if not done_ls and bracketed:
+                    # Phase 3: bisect inside the bracket.
+                    while used_ls < ls_budget:
+                        var mid_a = (p1_a + p2_a) * Scalar[DTYPE](0.5)
+                        var m_d1 = Scalar[DTYPE](0)
+                        var m_d2 = Scalar[DTYPE](0)
+                        _bl_line_deriv(mid_a, m_d1, m_d2)
+                        used_ls += 1
+                        if abs(m_d1) < gtol_b:
+                            alpha = mid_a
+                            done_ls = True
+                            break
+                        if m_d1 * dir_b < Scalar[DTYPE](0):
+                            p2_a = mid_a
+                        else:
+                            p1_a = mid_a
+
+                if not done_ls:
+                    # No convergence: take the cheaper bracket, and ONLY if it
+                    # actually improves — otherwise 0, so the caller breaks
+                    # without moving `qacc`.
+                    var c1 = _bl_cost_delta(p1_a)
+                    var c2 = _bl_cost_delta(p2_a)
+                    if c1 <= c2 and c1 < Scalar[DTYPE](0):
+                        alpha = p1_a
+                    elif c2 < c1 and c2 < Scalar[DTYPE](0):
+                        alpha = p2_a
 
             if alpha < Scalar[DTYPE](1e-10):
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done (break next iter)
@@ -4311,13 +4709,14 @@ def solve_newton_blocked[
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
         for e in range(BATCH):
             _newton_solve_env[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, sol_v,
+                cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
             )
     else:
         var c = ctx.value()
@@ -4350,6 +4749,7 @@ def solve_newton_blocked[
             scratch.M.lt["gpu", L_M](),
             scratch.m_inv.lt["gpu", L_M](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
+            d.qacc_warmstart.lt["gpu", L_NV](),
             cscratch.solver.lt["gpu", L_SOLVER](),
             cscratch.je.lt["gpu", L_JE_WS](),
             grid_dim=(BATCH,),

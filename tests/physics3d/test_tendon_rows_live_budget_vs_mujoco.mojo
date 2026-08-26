@@ -248,12 +248,40 @@ def test_spatial_tendon_limit_reaches_the_solver() raises:
     # paths. That equality is a stronger statement than either tolerance
     # below: it fails the moment one leg builds a row the other does not.
     var cone_gap = _worst(got_p, got_e)
-    print("  pyramidal vs elliptic", cone_gap)
+    # ⚠⚠ A FEW ULP, NOT BIT EQUALITY — RELAXED 2026-08-26, and the number is
+    # the argument. This used to require `== 0.0` and got it, because both
+    # cones cold-started at `qacc_smooth` and converged in a couple of
+    # iterations along nearly the same path. Once the primal solve warm-starts
+    # (`warmstart()`, engine_forward.c:786) the iterate begins somewhere else
+    # and the two legs take a LONGER route to the same fixed point — through
+    # genuinely different code, since pyramidal carries these rows as `Je`
+    # EDGES and elliptic as `eq_*` dense rows, summed in different orders.
+    #
+    # MEASURED: 9.094947017729282e-13, which is exactly 2^-40 and ~3 ULP of
+    # this fixture's `|qacc|` (~1344). It was BIT-IDENTICAL across three
+    # separate solver changes — the `deriv[1]` floor, that floor applied to the
+    # elliptic leg too, and the full `PrimalSearch` port — which is what says
+    # it is deterministic converged rounding and not something algorithmic:
+    # a real difference would have moved when the algorithm did.
+    #
+    # ⚠ THE ASSERTION'S PURPOSE IS UNCHANGED. "One leg is building a row the
+    # other is not" is an ORDERS-OF-MAGNITUDE statement — a missing tendon
+    # limit row leaves this fixture's `qacc` wrong by ~1e+03, not by 1e-12.
+    # The bound below is 32 ULP of the answer's own magnitude, ~10x the
+    # measured gap and ~14 orders under a missing row, so it cannot hide one.
+    var cone_scale = Float64(0)
+    for i in range(6):
+        if abs(got_p[i]) > cone_scale:
+            cone_scale = abs(got_p[i])
+    var cone_tol = 32.0 * 2.220446049250313e-16 * cone_scale
+    print("  pyramidal vs elliptic", cone_gap, " (budget", cone_tol, ")")
     assert_true(
-        cone_gap == 0.0,
+        cone_gap <= cone_tol,
         "with no contacts the two cones solve an identical system and must"
-        " agree bit for bit; they differ by " + String(cone_gap)
-        + ", i.e. one leg is building a row the other is not.",
+        " agree to a few ULP; they differ by " + String(cone_gap)
+        + " against a budget of " + String(cone_tol) + " (32 ULP of "
+        + String(cone_scale) + "). At this magnitude that is one leg building"
+        " a row the other is not, NOT rounding.",
     )
 
     # ⚠ VACUITY. Free fall is `(0, 0, -9.81, 0, 0, 0)`; the reference answer

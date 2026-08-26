@@ -54,6 +54,7 @@ from ..dynamics.qderiv import compute_rne_vel_derivative
 from ..constraints.limits import solve_limits
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.warmstart import save_qacc_warmstart
 from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
@@ -754,6 +755,14 @@ struct ImplicitIntegrator[
                         solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
         else:
             solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+        # `qacc_warmstart = qacc` — the tail of `mj_forward`
+        # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
+        # saves the CONSTRAINT SOLVER's acceleration, and anything the
+        # integrator does to `qacc` afterwards never reaches `qacc_warmstart`.
+        save_qacc_warmstart[target, Self.DTYPE, BATCH=Self.BATCH](
+            d, self.scratch, ctx
+        )
 
         # ── the implicit re-solve: qacc = M_hat^-1 * (M * qacc_constrained)
         #

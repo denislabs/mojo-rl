@@ -43,6 +43,7 @@ from ..constraints.limits import solve_limits
 from ..constraints.friction_dof import solve_friction
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.warmstart import save_qacc_warmstart
 from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
@@ -702,6 +703,14 @@ struct EulerIntegrator[
             # this is the only place they can be applied; with contacts the
             # solvers call `_friction_env` themselves beside their limit rows.
             solve_friction[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+        # `qacc_warmstart = qacc` — the tail of `mj_forward`
+        # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
+        # saves the CONSTRAINT SOLVER's acceleration, and anything the
+        # integrator does to `qacc` afterwards never reaches `qacc_warmstart`.
+        save_qacc_warmstart[target, Self.DTYPE, BATCH=Self.BATCH](
+            d, self.scratch, ctx
+        )
 
         # `mj_sensorAcc` sits exactly here in MuJoCo: after fwdConstraint,
         # before the integrator. Every input the stage needs (FK products,

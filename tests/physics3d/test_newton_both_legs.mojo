@@ -285,6 +285,7 @@ def solve_static[
             sc.M.lt["cpu", L_M](),
             sc.m_inv.lt["cpu", L_M](),
             sc.qacc_constrained.lt["cpu", L_NV](),
+            d.qacc_warmstart.lt["cpu", L_NV](),
             cs.solver.lt["cpu", L_SOLVER](),
         )
 
@@ -390,6 +391,7 @@ def solve_dynamic[
             sc.M.lt_dyn["cpu", DYN2](rl_m),
             sc.m_inv.lt_dyn["cpu", DYN2](rl_m),
             sc.qacc_constrained.lt_dyn["cpu", DYN2](rl_nv),
+            d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_nv),
             cs.solver.lt_dyn["cpu", DYN2](rl_solver),
         )
 

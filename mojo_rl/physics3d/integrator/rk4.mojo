@@ -66,6 +66,7 @@ from ..dynamics.fluid_forces import compute_fluid_forces
 from ..dynamics.gravcomp import compute_gravcomp_forces
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.warmstart import save_qacc_warmstart
 from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
@@ -733,6 +734,14 @@ struct RK4Integrator[
                             solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                         else:
                             solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+
+        # `qacc_warmstart = qacc` — the tail of `mj_forward`
+        # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
+        # saves the CONSTRAINT SOLVER's acceleration, and anything the
+        # integrator does to `qacc` afterwards never reaches `qacc_warmstart`.
+        save_qacc_warmstart[target, Self.DTYPE, BATCH=Self.BATCH](
+            d, self.scratch, ctx
+        )
 
         comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)

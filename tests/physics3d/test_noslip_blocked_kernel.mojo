@@ -98,7 +98,7 @@ from mojo_rl.physics3d.integrator.euler import (
     _qacc_writeback_env,
 )
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.solver.newton_solve import solve_newton_blocked
+from mojo_rl.physics3d.solver.newton_solve import solve_newton_blocked, solve_newton
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
@@ -219,7 +219,30 @@ comptime GATE_VSCALE: Int = 20
 # change. It is deliberately far below the ~0.2 the pass moves `qacc` by.
 comptime FN_INVARIANT_TOL: Float64 = 1e-5
 # The two branches may disagree by at most this FRACTION of that effect.
-comptime MAX_GAP_FRACTION: Float64 = 0.02
+# ⚠⚠ RAISED FROM 0.02 ON 2026-08-26, AND THE REASON MATTERS. This bounds a
+# CROSS-DEVICE comparison (blocked on GPU against the per-env body on CPU) at
+# float32, so it charges the pass for every difference the two DEVICES already
+# have. That was tolerable while the line search was one analytical step plus
+# halving — almost no data-dependent branching, so both devices picked the
+# same alpha and `gap_off` sat at 1.06e-05. Porting `PrimalSearch`
+# (engine_solver.c:1692) made the search ITERATE, and it branches on data:
+# which phase converges, how many steps, which bracket wins. At float32 the
+# two devices round `d1` differently near those branch points, take different
+# paths, and land on different alphas — `gap_off` 1.06e-05 -> 6.26e-04 — which
+# `mj_solNoSlip` then amplifies to 0.111 (53% of the 0.208 the pass is worth).
+#
+# ⚠ THAT IS NOT A FIDELITY REGRESSION AND THIS NUMBER IS NOT A FIDELITY BOUND.
+# Every float64 measurement improved with the same change: `apptronik_apollo`
+# 1.251e-04 -> 6.945e-09 on the board, `test_frictionless_contact_pyramidal`
+# back to a bit-identical 4.44e-16, `test_newton_float32_tracks_float64` green.
+# What this bounds is float32 GPU-vs-CPU AGREEMENT on a deliberately stiff
+# slam pose, and the sweep in `test_float32_sensitivity_is_measured` shows that
+# quantity moving over two orders (0.044 -> 3.44) with the operating point.
+#
+# ⚠ THE STRICT STATEMENT MOVED TO `gpu_perenv` — see assertion (c) below,
+# which holds the DEVICE fixed and requires bit equality. Keep THAT tight;
+# this one is a coarse regression bound, not the gate.
+comptime MAX_GAP_FRACTION: Float64 = 0.75
 
 
 def _prep[
@@ -373,7 +396,28 @@ def _solve[
     var scratch = DynamicsScratch[DTYPE, MD_2, BATCH]()
     var cscratch = ContactScratch[DTYPE, MD_2, BATCH]()
 
-    comptime if target == "gpu":
+    comptime if target == "gpu_perenv":
+        # ⚠⚠ THE PER-ENV KERNEL ON THE SAME DEVICE. `solve_newton` routes
+        # PYRAMIDAL to the blocked kernel only on NVIDIA, so on Metal — where
+        # this file deliberately runs — this reaches
+        # `_newton_solve_fields_kernel` instead. That makes it the leg that
+        # can actually answer "does the blocked kernel run the same pass?",
+        # because it holds the DEVICE fixed and varies only the
+        # implementation. The cross-device comparison below cannot: it varies
+        # both at once, and at float32 the device is the louder term.
+        #
+        # ⚠ ON NVIDIA THIS IS THE BLOCKED KERNEL and the comparison degrades
+        # to an identity. Not a false pass — just a weaker statement there —
+        # and the cross-device leg still runs.
+        d.upload_all(ctx)
+        scratch.upload_all(ctx)
+        cscratch.upload_all(ctx)
+        _prep["gpu"](d, mf, scratch, ctx)
+        solve_newton["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, ctx)
+        scratch.qacc_constrained.download(ctx)
+        d.meta.download(ctx)
+        d.contacts.download(ctx)
+    elif target == "gpu":
         d.upload_all(ctx)
         scratch.upload_all(ctx)
         cscratch.upload_all(ctx)
@@ -482,6 +526,11 @@ def test_blocked_kernel_runs_noslip() raises:
     # without this number would charge the whole of it to the pass, which is a
     # confounded toggle rather than a measurement.
     var gap_off = _worst_rel(gpu_off[0], cpu_off[0])
+    # ⚠ THE SAME-DEVICE COMPARISON — the one assertion (c) actually gates on.
+    var pe_on = _solve["gpu_perenv", M_ON.NOSLIP_ITER, GATE_VSCALE](ctx)
+    var pe_off = _solve["gpu_perenv", 0, GATE_VSCALE](ctx)
+    var pe_gap_on = _worst_rel(gpu_on[0], pe_on[0])
+    var pe_gap_off = _worst_rel(gpu_off[0], pe_off[0])
     # The structural invariant — see `_solve`. Chaos cannot move this.
     var fn_move_gpu = _worst_rel(gpu_on[1], gpu_off[1])
 
@@ -490,6 +539,8 @@ def test_blocked_kernel_runs_noslip() raises:
     print("  blocked-GPU vs per-env-CPU gap          :", gap)
     print("  ...the SAME gap with the pass OFF       :", gap_off)
     print("  contact NORMAL force moved by           :", fn_move_gpu)
+    print("  blocked-GPU vs per-env-GPU, pass OFF    :", pe_gap_off)
+    print("  blocked-GPU vs per-env-GPU, pass ON     :", pe_gap_on)
 
     # (a) The fixture is not inert — the reference path moves.
     assert_true(
@@ -511,8 +562,28 @@ def test_blocked_kernel_runs_noslip() raises:
         " `_newton_blocked_fields_kernel` is ignoring NOSLIP_ITER",
     )
 
-    # (c) It is the SAME pass, judged against the primal baseline rather than
-    # an absolute tolerance.
+    # (c) THE SAME PASS, ON THE SAME DEVICE, BIT FOR BIT.
+    #
+    # ⚠⚠ THIS IS THE REAL GATE and it is STRICTER than what it replaced.
+    # Holding the device fixed and varying only the implementation removes the
+    # float32 cross-device term entirely, and what is left is an equality:
+    # `_newton_blocked_fields_kernel` and `_newton_solve_env` are two spellings
+    # of one algorithm, so on one device they must agree EXACTLY. Measured 0.0
+    # with the pass ON and OFF. Anything non-zero means the two copies have
+    # drifted — which is the standing risk, since the blocked kernel cannot
+    # call `pyramidal_linesearch` (its rows live in threadgroup memory) and
+    # carries its own transcription of it.
+    assert_true(
+        pe_gap_on == 0.0 and pe_gap_off == 0.0,
+        "the blocked kernel and the per-env body disagree ON THE SAME DEVICE"
+        " — pass OFF " + String(pe_gap_off) + ", pass ON " + String(pe_gap_on)
+        + ". They are two transcriptions of one algorithm and must be bit"
+        " identical; check the `PrimalSearch` copy in"
+        " `_newton_blocked_fields_kernel` against `primal.mojo`",
+    )
+
+    # (d) And a COARSE cross-device bound. See `MAX_GAP_FRACTION` for why this
+    # is a regression bound rather than the gate.
     assert_true(
         gap < gap_off + MAX_GAP_FRACTION * effect_cpu,
         "turning the pass ON widened the blocked-GPU vs per-env-CPU gap from "

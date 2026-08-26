@@ -467,6 +467,20 @@ def _cg_solve_env[
         nv, uninitialized=Scalar[DTYPE](0)
     )
 
+    # ⚠ A COLD START, AND MuJoCo'S CG IS WARM-STARTED. `warmstart()`
+    # (engine_forward.c:786) runs in `mj_fwdConstraint` BEFORE the solver is
+    # chosen, so `mjSOL_CG` takes the same non-PGS branch `mjSOL_NEWTON` does:
+    # start at the cheaper of `qacc_warmstart` and `qacc_smooth` by primal
+    # cost. `newton_solve.mojo` implements that; this does not.
+    #
+    # NOT AN OVERSIGHT AND NOT DONE: no model in either reference tree selects
+    # CG — every `<option solver=>` in Menagerie and dm_control says Newton —
+    # so the gap is unreachable from anything gated here, and porting it needs
+    # CG's own cost evaluation rather than a copy of the Newton block. It
+    # costs a converged solve NOTHING (both starts reach the same fixed point)
+    # and costs a TRUNCATED one a different iterate. `d.qacc_warmstart` is
+    # written after every solve whatever the solver, so the field this would
+    # read is already live and correct.
     for i in range(nv):
         var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
         qacc[i] = q_i

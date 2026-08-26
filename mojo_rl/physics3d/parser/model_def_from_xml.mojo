@@ -518,6 +518,12 @@ struct ModelDefFromXML[
             d.qvel.data[i] = Scalar[DTYPE](0)
             d.qacc.data[i] = Scalar[DTYPE](0)
             d.qfrc.data[i] = Scalar[DTYPE](0)
+            # ⚠ `mj_resetData` ZEROES `qacc_warmstart` TOO. The primal solvers
+            # start from the cheaper of it and `qacc_smooth`, so leaving the
+            # last episode's acceleration here would price a candidate MuJoCo
+            # never sees. The cost comparison would usually discard it —
+            # "usually" is not the reference's algorithm.
+            d.qacc_warmstart.data[i] = Scalar[DTYPE](0)
 
 
     # ⚠ THE ROW STRIDES ARE `Self.NQ` / `Self.NV` / `Self.NACT` — the tensors'
@@ -596,6 +602,9 @@ struct ModelDefFromXML[
             d.qvel.data[i] = Scalar[DTYPE](Self.key_qvel_at[DTYPE](sf, k, i))
             d.qacc.data[i] = Scalar[DTYPE](0)
             d.qfrc.data[i] = Scalar[DTYPE](0)
+            # ⚠ `mj_resetDataKeyframe` calls `mj_resetData` first, so the
+            # carried acceleration goes with them. See `reset_data`.
+            d.qacc_warmstart.data[i] = Scalar[DTYPE](0)
 
     @staticmethod
     def extract_obs[DTYPE: DType, D: DimsLike](

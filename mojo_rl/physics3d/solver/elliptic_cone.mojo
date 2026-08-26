@@ -114,6 +114,54 @@ def ell_state_force[
 
 
 @always_inline
+def ell_row_cost[
+    DTYPE: DType, NT: Int, T_CAP: Int
+](
+    state: Int,
+    nt: Int,
+    base: Int,
+    jar_n: Scalar[DTYPE],
+    jar_t: Scratch[Scalar[DTYPE], T_CAP],
+    mu: Scalar[DTYPE],
+    D_n: Scalar[DTYPE],
+    D_t: Scratch[Scalar[DTYPE], T_CAP],
+    fr: Scratch[Scalar[DTYPE], T_CAP],
+) -> Scalar[DTYPE]:
+    """One elliptic contact's primal cost (engine_core_constraint.c:3255-3277).
+
+    ⚠ IT TAKES THE ZONE RATHER THAN RE-DERIVING IT. `ell_state_force` already
+    classifies the contact and the classification is three float comparisons
+    on a knife edge; a second copy of that rule beside this one is exactly the
+    shape that has drifted in this tree before. Call them as a pair.
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    comptime ONE = Scalar[DTYPE](1)
+
+    if state == ELL_SATISFIED:
+        return ZERO
+
+    if state == ELL_QUADRATIC:
+        # The unconstrained quadratic, one independent row per cone dimension
+        # — the NORMAL row included.
+        var s = Scalar[DTYPE](0.5) * D_n * jar_n * jar_n
+        for t in range(nt):
+            var jt = jar_t[base + t]
+            s += Scalar[DTYPE](0.5) * D_t[base + t] * jt * jt
+        return s
+
+    # Middle zone: 0.5 * D0/(mu^2 (1+mu^2)) * (N - mu*T)^2.
+    var N = jar_n * mu
+    var T_sq = ZERO
+    for t in range(nt):
+        var u = jar_t[base + t] * fr[base + t]
+        T_sq += u * u
+    var T = sqrt(T_sq)
+    var Dm = D_n / (mu * mu * (ONE + mu * mu))
+    var NmT = N - mu * T
+    return Scalar[DTYPE](0.5) * Dm * NmT * NmT
+
+
+@always_inline
 def ell_hessian_block[
     DTYPE: DType, NT: Int, T_CAP: Int, HN: Int
 ](

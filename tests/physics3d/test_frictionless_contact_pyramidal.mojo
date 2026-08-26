@@ -172,10 +172,23 @@ def test_frictionless_contact_matches_mujoco() raises:
 
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()
+    # ⚠⚠ AND `qacc_warmstart`, WHICH IS STATE TOO. `_settle` steps MuJoCo
+    # `N_SETTLE` times before this hand-off, so `md` arrives carrying the
+    # acceleration its last `mj_forward` solved, and `warmstart()` starts the
+    # next solve from it. `reset_data` above leaves ours at ZERO, so without
+    # this line the two engines begin the compared rollout from different
+    # iterates and the comparison measures that instead of the contact —
+    # worth 4.4e-16 -> 1.2e-12 of qpos over 60 steps, i.e. a red gate.
+    #
+    # ⚠ SAME SHAPE AS THE HEIGHTFIELD GRID (`836a65ff`): promoting a field
+    # into `Data` turns every fixture that hand-builds one into a caller, and
+    # the ones that INJECT a reference state are the ones it bites.
+    var sw = md.qacc_warmstart.flatten().tolist()
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=sq[i]))
     for i in range(M.NV):
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
+        d.qacc_warmstart.data[i] = Scalar[DTYPE](Float64(py=sw[i]))
     forward_kinematics["cpu"](d, mf)
 
     var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
@@ -256,10 +269,23 @@ def test_frictionless_contact_records_no_tangential_force() raises:
     M.reset_data[DTYPE](sf, d)
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()
+    # ⚠⚠ AND `qacc_warmstart`, WHICH IS STATE TOO. `_settle` steps MuJoCo
+    # `N_SETTLE` times before this hand-off, so `md` arrives carrying the
+    # acceleration its last `mj_forward` solved, and `warmstart()` starts the
+    # next solve from it. `reset_data` above leaves ours at ZERO, so without
+    # this line the two engines begin the compared rollout from different
+    # iterates and the comparison measures that instead of the contact —
+    # worth 4.4e-16 -> 1.2e-12 of qpos over 60 steps, i.e. a red gate.
+    #
+    # ⚠ SAME SHAPE AS THE HEIGHTFIELD GRID (`836a65ff`): promoting a field
+    # into `Data` turns every fixture that hand-builds one into a caller, and
+    # the ones that INJECT a reference state are the ones it bites.
+    var sw = md.qacc_warmstart.flatten().tolist()
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=sq[i]))
     for i in range(M.NV):
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
+        d.qacc_warmstart.data[i] = Scalar[DTYPE](Float64(py=sw[i]))
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()

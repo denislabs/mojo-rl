@@ -6344,6 +6344,9 @@ def parse_xml_full(
     result.eulerdamp_disabled = _option_flag_disabled(xml, "eulerdamp")
     result.multiccd_disabled = _option_flag_disabled(xml, "multiccd")
     result.nativeccd_disabled = _option_flag_disabled(xml, "nativeccd")
+    # <flag warmstart="disable"/> — mjDSBL_WARMSTART. Read by the primal
+    # solvers; see `MODEL_META_IDX_WARMSTART_DISABLED`.
+    result.warmstart_disabled = _option_flag_disabled(xml, "warmstart")
 
     # ⚠ `<joint actuatorgravcomp="true">` — COUNTED OVER THE DOCUMENT, not off
     # the element. `<default><joint>` carries every joint attribute, so reading
