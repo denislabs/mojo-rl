@@ -169,7 +169,9 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    def apply_actions[DTYPE: DType, D: DimsLike, D2: DimsLike](
+    def apply_actions[
+        DTYPE: DType, D: DimsLike, D2: DimsLike, NORMALIZED: Bool = False
+    ](
         sf: SpecFields[DTYPE, D],
         mut d: Data[DTYPE, D2, 1],
         actions: List[Float64],
@@ -214,6 +216,7 @@ trait ModelDefLike:
         DTYPE: DType,
         BATCH_SIZE: Int,
         ACTION_DIM: Int,
+        NORMALIZED: Bool = False,
     ](
         ctx: DeviceContext,
         qfrc: LayoutTensor[

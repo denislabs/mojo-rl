@@ -58,7 +58,7 @@ comptime HIDDEN = 256
 comptime BATCH = 256
 comptime CAP = 1000
 comptime CKPT = "sac_so_arm101_reach.ckpt"
-comptime ACTION_SCALE = 2.0
+comptime ACTION_SCALE = 1.0
 
 comptime N_EP = 24
 comptime STEPS = 500  # SoArmReachConfig.MAX_STEPS

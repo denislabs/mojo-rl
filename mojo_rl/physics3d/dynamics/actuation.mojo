@@ -119,7 +119,9 @@ def actuator_scalar_force(
     return force
 
 
-def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
+def apply_actions_fields[
+    DTYPE: DType, D: DimsLike, D2: DimsLike, NORMALIZED: Bool = False
+](
     sf: SpecFields[DTYPE, D],
     mut d: Data[DTYPE, D2, 1],
     actions: List[Float64],
@@ -258,6 +260,20 @@ def apply_actions_fields[DTYPE: DType, D: DimsLike, D2: DimsLike](
         if sf.actuators.data[o + ACT_IDX_CTRL_LIMITED] != 0:
             var c_max = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MAX])
             var c_min = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MIN])
+            # ⚠⚠ NORMALIZED ACTION SPACE — see `Phyics3dEnvConfig.
+            # NORMALIZED_ACTIONS`. The action arrives in [-1, 1] and is mapped
+            # AFFINELY onto this actuator's own `ctrlrange`, so a policy's
+            # `tanh` rails land exactly ON the joint limits instead of outside
+            # them. The clamp below then only catches inputs that were already
+            # out of [-1, 1], and the dead band where many actions map to one
+            # clamped pose — the band whose gradient is zero — disappears.
+            #
+            # ⚠ ONLY FOR A `ctrllimited` ACTUATOR, because an unlimited one has
+            # no range to map onto; its action passes through raw. A model
+            # mixing the two gets a mixed action space, which is why the flag
+            # is per-CONFIG and not per-actuator.
+            comptime if NORMALIZED:
+                ctrl = c_min + (ctrl + 1.0) * 0.5 * (c_max - c_min)
             if ctrl > c_max:
                 ctrl = c_max
             elif ctrl < c_min:

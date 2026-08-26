@@ -83,7 +83,7 @@ comptime ACT_DIM = EnvT.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 100_000
-comptime ACTION_SCALE = Scalar[DT](2.0)  # radians; MUST match the trainer
+comptime ACTION_SCALE = Scalar[DT](1.0)  # normalized; MUST match the trainer
 
 comptime HZ = 50
 """⚠ 50, NOT 30 — IT MUST MATCH THE RATE THE POLICY TRAINED AT.
@@ -422,14 +422,20 @@ def main() raises:
             # ── act ──────────────────────────────────────────────────────
             agent.select_greedy_action(obs, action)
             for i in range(SO101_N):
-                # Guard 3: the policy trained INSIDE the model's ctrlrange and
-                # is not trusted outside it.
-                # Read the limits back off the MAP, not off `lo`/`hi` — those
-                # were transferred into it, and a second copy is a second
-                # thing to drift.
-                var a = min(
-                    jmap.sim_hi[i], max(jmap.sim_lo[i], Float64(action[i]))
-                )
+                # ⚠⚠ THE SAME AFFINE MAP THE ENV APPLIES. The policy's action
+                # is NORMALIZED [-1, 1] (`SoArmReachConfig.NORMALIZED_ACTIONS`)
+                # and the simulator maps it onto each joint's `ctrlrange`
+                # inside `apply_actions`. Hardware never runs that code, so
+                # this is the one place the same map has to be repeated — and
+                # getting it wrong here is a policy that behaves in sim and
+                # commands the wrong POSE on the arm, with nothing raising.
+                # `jmap.sim_lo/sim_hi` ARE that ctrlrange, read from the model.
+                var lo_i = jmap.sim_lo[i]
+                var hi_i = jmap.sim_hi[i]
+                var a = lo_i + (Float64(action[i]) + 1.0) * 0.5 * (hi_i - lo_i)
+                # Guard 3 stays: an action outside [-1, 1] maps outside the
+                # range, and the policy is not trusted past its own limits.
+                a = min(hi_i, max(lo_i, a))
                 # Guard 5: low-pass the command — see `SMOOTH`. AFTER the
                 # clamp, so the filter can never carry a state the limits
                 # already rejected, and BEFORE `from_sim`, so what is filtered

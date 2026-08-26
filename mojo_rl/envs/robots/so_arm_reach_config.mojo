@@ -256,6 +256,19 @@ struct SoArmReachConfig[
     # `Data.mocap_pos` is. Same mechanism `reacher` uses.
     comptime USES_MOCAP: Bool = True
     comptime HAS_GPU_HOOKS: Bool = True
+    # ⚠⚠ THE ACTION IS [-1, 1] PER JOINT, mapped affinely onto each joint's
+    # own `ctrlrange` — see `Phyics3dEnvConfig.NORMALIZED_ACTIONS` for the
+    # measurement that forced this. With `ACTION_SCALE = 2.0` against ranges
+    # of 1.66..2.84 the trained policy commanded out-of-range poses on 24% to
+    # 100% of steps and sat at the tanh rail up to 49% of the time; past the
+    # clamp the gradient is zero, which is why three reward shapes in a row
+    # produced the same shaking arm.
+    #
+    # ⚠ `action_scale` MUST NOW BE 1.0 in every script that builds an agent
+    # for this env — trainer, eval, viewer and the hardware deploy. A scale of
+    # 2.0 here would map [-2, 2] onto the range and put the useful band back
+    # inside the rails, i.e. undo the fix while still looking configured.
+    comptime NORMALIZED_ACTIONS: Bool = True
 
     # ⚠⚠ NOT A SIZE HINT. Zero silently disables every mesh contact — both
     # narrow phases guard their mesh branch on `NMESH_VERTS > 0`. The value is

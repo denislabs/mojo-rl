@@ -1429,7 +1429,10 @@ struct Phyics3dBatchedEnv[
                 self._apply_actions_custom(c)
             else:
                 Self.MODEL_DEF.apply_actions_kernel_gpu[
-                    DT, Self.N_ENVS, Self.ACT_DIM
+                    DT,
+                    Self.N_ENVS,
+                    Self.ACT_DIM,
+                    NORMALIZED = Self.CONFIG.NORMALIZED_ACTIONS,
                 ](
                     c,
                     self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),

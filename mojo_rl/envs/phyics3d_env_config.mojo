@@ -188,6 +188,31 @@ trait Phyics3dEnvConfig:
     # Setting this True and not implementing the hook gives a permanently zero
     # `qfrc` — every actuator dead, which trains to a flat curve rather than
     # crashing. Flip it in the same commit as the hook.
+    comptime NORMALIZED_ACTIONS: Bool = False
+    """Actions arrive in [-1, 1] and are mapped AFFINELY onto each actuator's
+    own `ctrlrange`, instead of being taken as raw control values and clamped.
+
+    ⚠⚠ THIS IS AN OPTIMISATION FIX, NOT A CONVENIENCE. A policy emitting
+    `tanh(mu) * action_scale` with ONE scalar scale cannot fit a set of joints
+    with different ranges: pick a scale large enough for the widest joint and
+    the narrow ones saturate. Measured on SO-ARM101 (`ACTION_SCALE = 2.0`
+    against ranges of 1.66 to 2.84): the trained policy commanded an
+    out-of-range pose on **24% to 100% of control steps**, `elbow_flex` sat at
+    the tanh rail 49% of the time, and the gripper — range -0.17..1.75 against
+    a symmetric +-2.0 — was out of range on EVERY step.
+
+    Everything past the clamp is then a DEAD GRADIENT BAND: a whole interval
+    of actor outputs maps to one clamped pose, so the actor can drift across
+    it at no cost and flip to the far rail for free. That is what made three
+    successive reward shapes produce the same shaking behaviour — the clamp
+    was destroying the gradient the reward was trying to supply.
+
+    ⚠ Only `ctrllimited` actuators are mapped; an unlimited one has no range
+    to map onto and passes through raw. A model mixing the two gets a mixed
+    action space, which is why this is per-CONFIG rather than per-actuator.
+
+    ⚠ CHANGING THIS INVALIDATES CHECKPOINTS. The action means something
+    different on each side of the flag."""
     comptime HAS_CUSTOM_ACTUATION_GPU: Bool = False
 
     # === CPU: Pre-step hook — save any per-env state before physics ===

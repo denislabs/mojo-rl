@@ -108,7 +108,7 @@ def main() raises:
             alpha_lr=3e-4,
             gamma=0.99,
             tau=0.005,
-            action_scale=2.0,  # radians — see the training script
+            action_scale=1.0,  # normalized — see the training script
             init_alpha=0.2,
             target_entropy=-Scalar[DT](ACT_DIM),
             learning_starts=WARMUP_STEPS,

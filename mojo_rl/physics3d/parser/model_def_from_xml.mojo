@@ -724,7 +724,9 @@ struct ModelDefFromXML[
         return sf^
 
     @staticmethod
-    def apply_actions[DTYPE: DType, D: DimsLike, D2: DimsLike](
+    def apply_actions[
+        DTYPE: DType, D: DimsLike, D2: DimsLike, NORMALIZED: Bool = False
+    ](
         sf: SpecFields[DTYPE, D],
         mut d: Data[DTYPE, D2, 1],
         actions: List[Float64],
@@ -737,7 +739,9 @@ struct ModelDefFromXML[
         the comptime path. `Self.TIMESTEP` is passed through because it is the
         one value there that is not a dimension.
         """
-        apply_actions_fields[DTYPE](sf, d, actions, act, Self.TIMESTEP)
+        apply_actions_fields[DTYPE, NORMALIZED=NORMALIZED](
+            sf, d, actions, act, Self.TIMESTEP
+        )
 
 
     @staticmethod
@@ -1245,6 +1249,7 @@ struct ModelDefFromXML[
         DTYPE: DType,
         BATCH_SIZE: Int,
         ACTION_DIM: Int,
+        NORMALIZED: Bool = False,
     ](
         ctx: DeviceContext,
         qfrc: LayoutTensor[
@@ -1427,6 +1432,15 @@ struct ModelDefFromXML[
                     var c_min = rebind[Scalar[DTYPE]](
                         acts[o + ACT_IDX_CTRL_MIN]
                     )
+                    # ⚠⚠ BYTE-FOR-BYTE THE CPU HOOK'S MAP. The note above says
+                    # it outright: these two clamps were once unconditional and
+                    # fixing one alone left the two targets computing different
+                    # forces from the same action. The normalized map is the
+                    # same hazard, so it is the same three lines here.
+                    comptime if NORMALIZED:
+                        ctrl = c_min + (ctrl + Scalar[DTYPE](1.0)) * Scalar[
+                            DTYPE
+                        ](0.5) * (c_max - c_min)
                     if ctrl > c_max:
                         ctrl = c_max
                     elif ctrl < c_min:

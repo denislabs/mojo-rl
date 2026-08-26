@@ -30,18 +30,19 @@ reaches and holds, and the two can share a mean return. The policy status line
 adds the distance the reward is computed from, in millimetres, against the
 task's own 20 mm success radius.
 
-⚠ WATCH THE SHAPE, NOT THE NUMBER. An UNTRAINED actor measured a 45.9 mean
-return here over 11 episodes (2026-08-26) with a per-episode spread of
-3.5 .. 123.8 — the 0.25 m reward margin covers most of the 0.15-0.30 m target
-shell, so flailing pays. One good-looking episode is not evidence of anything;
-a sparkline that PINS near 1.0 is.
+⚠ WATCH THE SHAPE, NOT THE NUMBER. An untrained actor once measured 45.9 mean
+over 11 episodes here — a shaped reward's floor is not zero, so a plausible
+number is not evidence. ⚠ THAT FIGURE IS STALE: it predates the stillness
+term, `REWARD_MARGIN` 0.25 -> 0.05 and the normalized action space, all three
+of which changed the scale. Re-measure it. A sparkline that PINS near 1.0 is
+the thing to look for either way.
 
 ⚠ THE DRIVE COMBO STILL OFFERS zero / random / sweep. They drive the MODEL,
 not the agent — useful for telling "the policy is bad" apart from "the model
 moved", which is the same question `examples/robots/so_arm_viewer_imgui.mojo`
-exists to answer. Note the action here is a JOINT ANGLE IN RADIANS, not a
-normalised torque, so `scale` means something different than it does for the
-dm_control tasks; policy mode ignores it entirely.
+exists to answer. The action here is NORMALIZED [-1, 1] per joint (the env
+maps it onto each `ctrlrange`), so `scale` reaches the joint limits at 1.0
+rather than meaning a torque; policy mode ignores it entirely.
 
 ⚠ CPU PHYSICS + CPU POLICY, on purpose: one arm at 60 Hz needs no GPU and a
 256x256 MLP forward pass is free beside the physics step. Run it on the LAPTOP
@@ -80,10 +81,13 @@ agent never fills; the checkpoint holds no replay."""
 comptime BATCH = 256
 comptime CAP = 1000
 
-comptime ACTION_SCALE = 2.0
+comptime ACTION_SCALE = 1.0
 """⚠⚠ MUST MATCH `sac_so_arm101_reach_training_gpu.mojo`. The greedy action is
-`tanh(mu) * action_scale` and for this arm it is a JOINT ANGLE IN RADIANS, so a
-mismatched scale does not weaken the policy — it commands a different pose."""
+`tanh(mu) * action_scale`, and this env's action space is NORMALIZED — [-1, 1]
+per joint, mapped affinely onto each joint's `ctrlrange` by the env
+(`SoArmReachConfig.NORMALIZED_ACTIONS`). A mismatched scale does not weaken
+the policy, it commands a different pose: at 2.0 the useful band would sit
+back inside the tanh rails and half the range would be unreachable."""
 
 comptime CKPT_NAME = "sac_so_arm101_reach.ckpt"
 """What the trainer's `checkpoint_path` writes. A single file, overwritten at

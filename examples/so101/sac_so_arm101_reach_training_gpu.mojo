@@ -9,17 +9,24 @@ Shaped exactly like `examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`
 one-file `nn-ckpt v2` output — so the two are diffable and a change to the
 driver shows up in both.
 
-⚠⚠ **THE ACTION SPACE IS JOINT ANGLES IN RADIANS, NOT [-1, 1].** Both SO-ARM
-models drive `<position>` servos whose `ctrlrange` IS the joint range, so an
-action is a commanded angle and `action_scale` has to span that range rather
-than the usual unit box. `ACTION_SCALE = 2.0` covers every joint's limit
-except `wrist_roll`'s +2.84 rad, and the env clamps to `ctrlrange` regardless.
+⚠⚠ **THE ACTION SPACE IS [-1, 1] PER JOINT**, mapped affinely onto each
+joint's own `ctrlrange` by the env (`SoArmReachConfig.NORMALIZED_ACTIONS`). So
+`ACTION_SCALE = 1.0`, and every other script that builds an agent for this env
+must use 1.0 too.
 
-⚠ The gripper's range is ASYMMETRIC (-0.17 .. +1.75 rad) while `tanh · scale`
-is symmetric, so roughly half the gripper's action range is unreachable and
-the rest is clamped. That is harmless for *reach* — the task is scored on the
-moving jaw's position and never on the jaw opening — and it is NOT harmless
-for a future grasp task, which will want a per-joint action scale.
+⚠⚠ IT USED TO BE RADIANS WITH `ACTION_SCALE = 2.0`, and that was the defect
+behind the shaking. One scalar scale cannot fit six joints whose ranges run
+1.66 to 2.84: at 2.0 the tanh rails sat OUTSIDE most ranges, so the trained
+policy commanded out-of-range poses on **24% to 100% of control steps**,
+`elbow_flex` was railed 49% of the time, and the gripper — asymmetric
+-0.17..1.75 against a symmetric +-2.0 — was out of range on EVERY step. Past
+the clamp the gradient is ZERO: a whole band of actor outputs maps to one
+pose, so the actor drifts across it for free and flips to the far rail for
+free. Three successive reward shapes produced the same shaking arm because the
+clamp was eating the signal each of them tried to send.
+
+⚠ The asymmetric gripper is now handled correctly rather than being 100%
+clamped — the affine map is per-joint and uses each range's true endpoints.
 
 Task (`SoArmReachConfig`): a mocap target drawn per episode from an azimuth
 cone × elevation band × radial shell (**0.18–0.30 m** — the near end was raised
@@ -110,7 +117,7 @@ comptime CHECKPOINT_EVERY = 25_000
 comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
 
 # See the module docstring: radians, not a unit box.
-comptime ACTION_SCALE = Scalar[DT](2.0)
+comptime ACTION_SCALE = Scalar[DT](1.0)
 
 comptime ActorNet = StochasticActor[
     OBS_DIM,

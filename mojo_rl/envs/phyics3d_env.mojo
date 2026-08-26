@@ -576,7 +576,9 @@ struct Phyics3dEnv[
             # qpos, hoisting it would freeze the spring at its start-of-step
             # value for the whole control step.
             if not custom_applied:
-                Self.MODEL_DEF.apply_actions(
+                Self.MODEL_DEF.apply_actions[
+                    NORMALIZED = Self.CONFIG.NORMALIZED_ACTIONS
+                ](
                     self.sf, self.d, action_list, self.act
                 )
                 # ⚠⚠ AND THE TRANSMISSIONS THAT NEED THE POSE. A

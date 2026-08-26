@@ -51,7 +51,7 @@ comptime BATCH = 256
 comptime REPLAY_CAPACITY = 100_000
 
 comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
-comptime ACTION_SCALE = Scalar[DT](2.0)  # radians; MUST match the trainer
+comptime ACTION_SCALE = Scalar[DT](1.0)  # normalized; MUST match the trainer
 
 comptime NUM_EPISODES = 10
 comptime MAX_STEPS = 500  # SoArmReachConfig.MAX_STEPS
