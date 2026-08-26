@@ -22,20 +22,32 @@ moving jaw's position and never on the jaw opening — and it is NOT harmless
 for a future grasp task, which will want a per-joint action scale.
 
 Task (`SoArmReachConfig`): a mocap target drawn per episode from an azimuth
-cone × elevation band × radial shell (0.15–0.30 m); reward is dm_control's
-shaped `tolerance` on jaw-to-target distance with a 2 cm radius; no early
+cone × elevation band × radial shell (**0.18–0.30 m** — the near end was raised
+from 0.15 after measurement showed 1/6 reached below 0.17 against 14/18 above);
+reward is dm_control's shaped `tolerance` on jaw-to-target distance with a 2 cm
+radius and a **0.05 m** margin, times a stillness term on joint speed; no early
 termination.
 
   * 21D observation — qpos(6) + qvel(6) + ee(3) + target(3) + ee_to_target(3)
   * 6D continuous action — joint angle targets, radians
 
 Run:
-    pixi run -e apple  mojo run -I . examples/so101/sac_so_arm101_reach_training_gpu.mojo
     pixi run -e nvidia mojo run -I . examples/so101/sac_so_arm101_reach_training_gpu.mojo
+    ... --resume                       # fine-tune from CHECKPOINT_PATH
+    ... --resume --steps 100000        # a shorter fine-tune
+    ... --resume --ckpt other.ckpt --alpha 0.02
+
+⚠⚠ **`--resume` IS THE RIGHT WAY TO PICK UP `REWARD_MARGIN = 0.05`.** The
+margin was 0.25 — twelve times the success radius — and at 0.05 a target
+100 mm away is worth 0.003 per step, so a policy that cannot already find the
+target learns nothing from scratch. Exploration is demonstrably solved (the
+current checkpoint reaches 3.9 mm on real hardware); the tighter margin only
+sharpens the endgame, which is exactly what a fine-tune is for.
 """
 
 from max.gpu.host import DeviceContext
 from std.random import seed
+from std.sys import argv
 from std.time import perf_counter_ns
 
 from mojo_rl.core.dotenv import load_dotenv
@@ -67,6 +79,31 @@ comptime REPLAY_CAPACITY = 1_000_000
 
 comptime NUM_STEPS = 400_000
 comptime WARMUP_STEPS = 10_000
+
+# ── fine-tuning (`--resume`) ──────────────────────────────────────────────
+#
+# ⚠⚠ `learning_starts` GATES ACTING, NOT JUST UPDATES. `SACTrainer.
+# select_action_batched` opens with
+#
+#     if step_idx < self.learning_starts:
+#         warmup_uniform_batched[...]        # uniform in [-scale, +scale]
+#
+# so a resume that kept `WARMUP_STEPS = 10_000` would load a trained policy
+# and then take TEN THOUSAND ENV-STEPS OF UNIFORM RANDOM ACTIONS, fill the
+# replay with them, and begin updating the loaded weights against that. The
+# checkpoint would be damaged before the first useful gradient. A fine-tune
+# needs only enough prefill to fill one batch — 1000 env-steps is 1000
+# transitions against a BATCH of 256, with the LOADED policy generating them.
+comptime RESUME_WARMUP = 1_000
+# ⚠ AND THE CHECKPOINT DOES NOT CARRY ALPHA. `SACAgent.save` writes actor +
+# both online critics and nothing else — "optimizer moments, alpha, replay
+# buffer and episode tracker are NOT included; resume re-warms". So a resume
+# restarts the entropy temperature at `init_alpha`, and 0.2 on an already
+# competent policy is a lot of exploration noise poured over it. 0.05 keeps
+# some exploration — which this fine-tune WANTS, since the behaviour it has to
+# find (arrive and hold still) is not the one it currently has — without
+# washing the policy out. `--alpha` overrides.
+comptime RESUME_ALPHA = Scalar[DT](0.05)
 comptime PRINT_EVERY = 25_000
 comptime DIAG_EVERY = 1000
 comptime CHECKPOINT_EVERY = 25_000
@@ -90,14 +127,47 @@ comptime CriticNet = Sequential[
 
 def main() raises:
     seed(42)
+
+    # ── flags ─────────────────────────────────────────────────────────────
+    #   --resume        fine-tune from CHECKPOINT_PATH instead of scratch
+    #   --ckpt PATH     read AND write this path instead of the default
+    #   --alpha X       initial entropy temperature (see RESUME_ALPHA)
+    #   --steps N       env-steps to run (a fine-tune wants far fewer)
+    var resume = False
+    var ckpt_path = String(CHECKPOINT_PATH)
+    var num_steps = NUM_STEPS
+    var init_alpha = Scalar[DT](0.2)
+    var alpha_set = False
+    var args = argv()
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if a == "--resume":
+            resume = True
+        elif a == "--ckpt" and i + 1 < len(args):
+            ckpt_path = String(args[i + 1])
+        elif a == "--steps" and i + 1 < len(args):
+            num_steps = Int(String(args[i + 1]))
+        elif a == "--alpha" and i + 1 < len(args):
+            init_alpha = Scalar[DT](Float64(String(args[i + 1])))
+            alpha_set = True
+    if resume and not alpha_set:
+        init_alpha = RESUME_ALPHA
+    var warmup = RESUME_WARMUP if resume else WARMUP_STEPS
+
     print("=" * 70)
-    print("SAC — SO-ARM101 reach, GPU (multi-env)")
+    if resume:
+        print("SAC — SO-ARM101 reach, GPU — FINE-TUNE from a checkpoint")
+    else:
+        print("SAC — SO-ARM101 reach, GPU (multi-env)")
     print("=" * 70)
+    print("  resume           =", resume, "(" + ckpt_path + ")")
+    print("  warmup steps     =", warmup, "(RANDOM actions until then)")
+    print("  init_alpha       =", init_alpha)
     print("  OBS_DIM          =", OBS_DIM)
     print("  ACT_DIM          =", ACT_DIM, "(joint angles in RADIANS)")
     print("  HIDDEN           =", HIDDEN)
     print("  N_ENVS           =", N_ENVS)
-    print("  NUM_STEPS        =", NUM_STEPS)
+    print("  NUM_STEPS        =", num_steps)
     print("  action_scale     =", ACTION_SCALE)
     print("=" * 70)
 
@@ -128,9 +198,9 @@ def main() raises:
             gamma=0.99,
             tau=0.005,
             action_scale=ACTION_SCALE,
-            init_alpha=0.2,
+            init_alpha=init_alpha,
             target_entropy=-Scalar[DT](ACT_DIM),
-            learning_starts=WARMUP_STEPS,
+            learning_starts=warmup,
             window_size=100,
             # ⚠⚠ NOT THE DEFAULT. SAC seeds its return window with
             # `initial_episode_fill = -1250.0`, a HalfCheetah-flavoured
@@ -153,6 +223,26 @@ def main() raises:
         )
         var env = BatchedEnvT(ctx)
 
+        # ⚠⚠ A FAILED `--resume` MUST NOT FALL BACK TO TRAINING FROM SCRATCH.
+        # The two runs look identical in the log until the return curve starts
+        # from zero hours later, and the wasted run is the whole cost of the
+        # mistake. Refuse instead.
+        if resume:
+            try:
+                agent.load(ckpt_path)
+                print("Resumed from", ckpt_path)
+                print(
+                    "  ⚠ actor + both online critics restored; optimizer"
+                    " moments, alpha and the\n    replay buffer are NOT in the"
+                    " envelope and re-warm from scratch."
+                )
+            except e:
+                print("ERROR: --resume given but", ckpt_path, "did not load:")
+                print("   ", e)
+                print("Refusing to silently train from scratch. Drop --resume")
+                print("to start fresh, or pass --ckpt with the right path.")
+                return
+
         print("Starting GPU training...")
         print("-" * 70)
         var t_start = perf_counter_ns()
@@ -164,7 +254,7 @@ def main() raises:
             L=RemoteLogger,
         ](
             env,
-            NUM_STEPS,
+            num_steps,
             rng_seed=UInt64(42),
             updates_per_step=N_ENVS,
             print_every=PRINT_EVERY,
@@ -173,7 +263,7 @@ def main() raises:
             diag_every=DIAG_EVERY,
             episode_sync_every=32,
             checkpoint_every=CHECKPOINT_EVERY,
-            checkpoint_path=CHECKPOINT_PATH,
+            checkpoint_path=ckpt_path,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
@@ -181,7 +271,7 @@ def main() raises:
 
         print("-" * 70)
         print("Training complete")
-        print("  total env_steps           =", NUM_STEPS)
+        print("  total env_steps           =", num_steps)
         print("  elapsed                   =", elapsed_s, "s")
         print("  mean ep return (last 100) =", agent.mean_return())
         print("  episodes completed        =", agent.ep_count())
