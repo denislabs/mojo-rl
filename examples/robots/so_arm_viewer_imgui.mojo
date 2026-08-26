@@ -131,6 +131,12 @@ def main() raises:
     var st = ViewerState(
         task, drive, scale, task_names(), domain_names(), task_domain()
     )
+    # ⚠ SO-101's ONLY camera is `<camera name="wrist_cam">`, bolted to the
+    # wrist, and `active_camera` starts at 0 — so without this the viewer opens
+    # looking down the gripper, re-aimed every frame and immune to the mouse.
+    # SO-100 declares no camera at all, where this costs nothing but a 3/4
+    # reframe and an honest "free" toggle. Press `1` for the wrist view.
+    st.free_camera = True
     while not st.quit:
         dispatch(st)
 

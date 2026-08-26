@@ -141,9 +141,14 @@ def main() raises:
             #
             # Measured: a 24k-step smoke run printed `mean_ret = -793.2661`
             # at 32 episodes. Solving (32R + 68*(-1250))/100 for R gives
-            # R = 177.3 — a policy already reaching targets, reported as
-            # "still exploring". The template sets this to 0.0 for the same
-            # reason; dropping the line is what produced the false reading.
+            # R = 177.3, reported as "still exploring". The template sets this
+            # to 0.0 for the same reason; dropping the line is what produced
+            # the false reading.
+            #
+            # ⚠ AND 177 IS NOT YET "REACHING TARGETS", which an earlier version
+            # of this comment claimed. The untrained baseline is 46 (see the
+            # verdict bands below), so 177 is ~4x the floor after 24k steps —
+            # real movement, not a solved task.
             initial_episode_fill=0.0,
         )
         var env = BatchedEnvT(ctx)
@@ -184,15 +189,22 @@ def main() raises:
 
         # ⚠ Reward is a shaped `tolerance` in [0, 1] per step over
         # `MAX_STEPS = 500` control steps, so the ceiling is 500 and a policy
-        # that reaches the target quickly and HOLDS it is what scores. A
-        # return near 0 means the jaw never got inside the 0.25 m margin.
+        # that reaches the target quickly and HOLDS it is what scores.
+        #
+        # ⚠⚠ THE FLOOR IS NOT ZERO, AND THAT IS THE WHOLE POINT OF THESE
+        # BANDS. An UNTRAINED actor measured **45.9** over 11 episodes on this
+        # env (greedy, 2026-08-26; per-episode 3.5 .. 123.8) — the 0.25 m
+        # reward margin covers most of a 0.15-0.30 m target shell, so flailing
+        # near the middle of the workspace pays. Anything under ~90 has not
+        # been shown to have learned anything. Same bands as
+        # `sac_so_arm101_reach_eval_cpu.mojo`; keep them in step.
         var m = Float64(agent.mean_return())
         if m > 400.0:
             print("EXCELLENT — reaches and holds (mean > 400 / 500).")
         elif m > 200.0:
             print("STRONG — reaches most targets (mean > 200).")
-        elif m > 50.0:
-            print("PROGRESS — approaching the target (mean > 50).")
+        elif m > 90.0:
+            print("PROGRESS — measurably above the untrained baseline (~46).")
         else:
-            print("EARLY — still exploring (mean < 50).")
+            print("NO BETTER THAN AN UNTRAINED NET (baseline mean ~46).")
         print("=" * 70)

@@ -275,6 +275,20 @@ struct ViewerState(Copyable, Movable):
     """True = the deterministic action (the actor's mean). The default, because
     a viewer is for reading the LEARNED GAIT; SAC's stochastic action adds the
     entropy-calibrated jitter that is dataset coverage, not behaviour."""
+    var free_camera: Bool
+    """Open on the FREE camera (dm_control's -1) instead of model camera 0.
+
+    ⚠ DEFAULTS TO FALSE so every existing front end opens exactly as before.
+    Set it when the model's camera 0 is an ONBOARD one: `so_arm101.xml` ships a
+    single `<camera name="wrist_cam">` bolted to the wrist, and `active_camera`
+    starts at 0 — so the viewer opens looking down the gripper, whipping around
+    with every joint, and the mouse cannot fight it back (a body-attached
+    camera is re-aimed every frame; see `model_renderer.render`). The free
+    camera is the only one the mouse fully owns.
+
+    Kept HERE and not in `run_view` for the same reason as `drive`: it is a
+    user choice, and clicking a numbered camera then switching task must not
+    silently snap back to free. The loop writes it on every camera button."""
     var episode_steps: Int
     """Steps before the viewer forces a new episode. **0 means never**, which
     is what a teleoperated front end wants — there is no task to time out, and
@@ -332,6 +346,7 @@ struct ViewerState(Copyable, Movable):
         self.show_plot = True
         self.policy_variant = 0
         self.policy_greedy = True
+        self.free_camera = False
         self.episode_steps = EPISODE_STEPS
         self.tasks = tasks^
         self.domains = domains^
@@ -768,6 +783,14 @@ def run_view[
         st.quit = True
         return
 
+    # ⚠ AFTER `init_renderer`, and per task rather than once: the env owns the
+    # model renderer, so a task switch rebuilds it with `active_camera = 0` and
+    # the choice has to be re-applied. The reframe itself is deferred to the
+    # first `render`, which is where the camera's current distance — the only
+    # model-scale information available — is still on hand.
+    if st.free_camera:
+        env.renderer_request_free_camera()
+
     # Idempotent, and on the adopt path it is a no-op that returns True: the
     # ImGui context is attached to the window and device, both of which just
     # came across intact.
@@ -855,8 +878,10 @@ def run_view[
             st.scale = 1.0
         if vc.want_free_camera:
             env.renderer_request_free_camera()
+            st.free_camera = True
         if vc.want_camera >= 0:
             env.renderer_request_camera(vc.want_camera)
+            st.free_camera = False
         if vc.want_screenshot:
             env.renderer_request_screenshot()
         if vc.want_toggle_pause:

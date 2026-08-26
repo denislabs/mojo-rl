@@ -211,6 +211,11 @@ def main() raises:
     # removes the task's own 500-step limit; this removes the viewer's.
     # Press `n` in the window for a fresh episode (and a fresh target).
     st.episode_steps = 0
+    # The model's camera 0 is `wrist_cam`, an ONBOARD view that whips around
+    # with the joint the human is driving — the worst possible camera for
+    # teleoperation, and one the mouse cannot fight (it is re-aimed every
+    # frame). Open free; `1` still selects the wrist view.
+    st.free_camera = True
     # Same handoff the dm_control policy viewers use: the source is owned HERE
     # and lent to the loop, so its serial port outlives a task switch.
     var pol = Pointer(to=src).as_unsafe_any_origin()

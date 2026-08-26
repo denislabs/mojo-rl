@@ -91,6 +91,24 @@ def main() raises:
     print("-" * 70)
     var ctx = DeviceContext()
     var env = EnvT(ctx)
+
+    # ⚠ OPEN ON THE FREE CAMERA. `so_arm101.xml` declares exactly one camera —
+    # `<camera name="wrist_cam">`, bolted to the wrist — and the model renderer
+    # starts at `active_camera = 0`, so this used to open looking down the
+    # gripper: an onboard view that whips around with the wrist and cannot be
+    # dragged back, since a body-attached camera is re-aimed EVERY frame
+    # (`model_renderer.render`). Press `1` in the window for the wrist view.
+    #
+    # Done HERE because `eval_render` owns the loop and calls `init_renderer`
+    # itself; `_init_renderer` returns early when already initialised, so this
+    # is one window, not two, and the only place to get in front of it.
+    #
+    # For a camera plus the reward as a live sparkline, pause/step and
+    # recording, use `sac_so_arm101_reach_policy_viewer.mojo` instead — same
+    # checkpoint, same env, with the ImGui sidebar around it.
+    if env.init_renderer():
+        env.renderer_request_free_camera()
+
     var avg_reward = Float64(
         agent.eval_render[EnvT](
             env,
@@ -108,13 +126,27 @@ def main() raises:
     print("  Average reward  =", avg_reward)
     # Reward is a shaped `tolerance` in [0, 1] per step over MAX_STEPS control
     # steps, so the ceiling is 500 and what scores is reaching EARLY and
-    # HOLDING. A 24k-step smoke run on Apple Silicon reached ~177.
+    # HOLDING.
+    #
+    # ⚠⚠ THE BANDS ARE ANCHORED ON A MEASURED BASELINE, NOT ON ROUND NUMBERS.
+    # An UNTRAINED SAC actor — random init, greedy action — was run through
+    # this exact env for 11 episodes (2026-08-26): mean **45.9**, per-episode
+    # 3.5 .. 123.8. The margin is 0.25 m against a 0.15-0.30 m target shell, so
+    # an arm that flails near the middle of its workspace collects real reward
+    # for free. The earlier "> 50 = PROGRESS" band was therefore INDISTIN-
+    # GUISHABLE FROM AN UNTRAINED NET, and a single episode proves nothing at
+    # all: one untrained episode scored 123.8.
     if avg_reward > 400.0:
         print("  Result: EXCELLENT — reaches and holds (mean > 400 / 500).")
     elif avg_reward > 200.0:
         print("  Result: STRONG — reaches most targets (mean > 200).")
-    elif avg_reward > 50.0:
-        print("  Result: PROGRESS — approaching the target (mean > 50).")
+    elif avg_reward > 90.0:
+        print(
+            "  Result: PROGRESS — measurably above the untrained baseline"
+            " (~46)."
+        )
     else:
-        print("  Result: EARLY — the jaw rarely enters the margin.")
+        print(
+            "  Result: NO BETTER THAN AN UNTRAINED NET (baseline mean ~46)."
+        )
     print("=" * 70)
