@@ -72,6 +72,7 @@ from ..dm_control.rewards import (
     tolerance,
     SIGMOID_GAUSSIAN,
     DEFAULT_VALUE_AT_MARGIN,
+    SIGMOID_QUADRATIC,
 )
 from ..dm_control.gpu_reset import reset_seed
 from ..dm_control.dtype_math import sin_dt, cos_dt
@@ -110,17 +111,20 @@ struct SoArmReachConfig[
     # A near target is reachable only through a narrow, tightly-folded band of
     # configurations — so it is not "hard to learn", it is nearly singular.
     #
-    # Raising R_MIN to 0.18 would drop that tail. NOT DONE HERE: the shell is
-    # shared with SO-100 and changing it makes every number measured against
-    # the old one incomparable, which is the model-owner's call and needs a
-    # retrain to mean anything.
+    # R_MIN IS NOW 0.18, which drops that tail. ⚠ EVERY NUMBER MEASURED
+    # AGAINST 0.15 IS NOW INCOMPARABLE, including the reach rates quoted
+    # above and the ~46 untrained baseline in the eval script's bands: this
+    # is a strictly easier target distribution, so a rate measured here must
+    # not be compared with one from a checkpoint trained before it. Shared
+    # with SO-100 deliberately — the two arms differ in their ROBOT, not in
+    # what is asked of them, and that is what makes them comparable.
     #
     # ⚠ ELEVATION IS NOT THE SIGNAL, though a first 24-episode draw suggested
     # it was (2 of 9 above el 0.9 against 9 of 15 below). The second draw put
     # failures at el 0.18, 0.29 and 0.34 as readily as at 1.18 and 1.20. One
     # draw of 24 is not enough to split a second axis; the radius effect
     # survived both.
-    R_MIN: Float64 = 0.15,
+    R_MIN: Float64 = 0.18,
     R_MAX: Float64 = 0.30,
     # Elevation band, radians above the XY plane through the base.
     EL_MIN: Float64 = 0.17,
@@ -135,6 +139,54 @@ struct SoArmReachConfig[
     # 6-DOF arm reaching a 2 cm ball has far too little chance of stumbling
     # onto a sparse reward.
     REWARD_MARGIN: Float64 = 0.25,
+    # ── the stillness term ────────────────────────────────────────────────
+    #
+    # ⚠⚠ WITHOUT THIS THE POLICY SHAKES, AND THE REWARD CANNOT SEE IT.
+    # `tolerance`'s margin is 12x its success radius, so hovering 40 mm away
+    # scores 0.985 and there is nothing left to distinguish a still arm from a
+    # vibrating one. Measured on a trained checkpoint, over the 300 control
+    # steps AFTER it has arrived: mean per-joint |qvel| **1.21 rad/s** (69
+    # deg/s), peak **5.8 rad/s**, and the velocity REVERSES SIGN on 59% of
+    # control steps. The commanded position moves ~500 servo ticks per joint
+    # per step, reversing on 83%. On hardware that is continuous current
+    # reversal through the gear train for the whole episode.
+    #
+    # ⚠ THE PENALTY IS ON `qvel`, NOT ON THE ACTION RATE, and the reason is
+    # MARKOV rather than aesthetic: the previous action is NOT in the
+    # observation, so an agent penalised for `a_t - a_{t-1}` is being charged
+    # for a quantity it cannot observe, and can only learn a blurred average
+    # of it. `qvel` IS in the observation (indices 6..11). Penalising the
+    # action rate properly means widening the observation to carry the
+    # previous action — a different and larger change, and the measurement
+    # above says the joints really are moving, so this term has something
+    # real to bite on. `deploy_reach_real.mojo`'s `SMOOTH` covers whatever
+    # command chatter survives.
+    #
+    # ⚠ NOT ON THE ACTION MAGNITUDE EITHER — the gym `ctrl_cost` idiom is
+    # actively WRONG here. These are `<position>` actuators, so an action IS a
+    # joint angle: penalising its magnitude pulls the arm toward zero, which
+    # is a POSE, not an effort.
+    #
+    # Shape is dm_control's, from `suite/humanoid.py`:
+    #     small_control = (4 + small_control) / 5
+    #     return small_control * stand_reward * move
+    # i.e. a MULTIPLICATIVE term squashed into [FLOOR, 1]. Multiplicative
+    # matters: the cost of moving scales with how well the arm is doing, so
+    # travelling fast while still far away is nearly free and vibrating on
+    # target is not — which is the distinction the task wants and a subtractive
+    # penalty would flatten.
+    #
+    # Speed is the L2 norm over all DOF. `VEL_FREE` is the speed that costs
+    # nothing; past it the quadratic sigmoid falls to zero at `VEL_FREE +
+    # VEL_MARGIN`. Defaults put the measured shake (L2 ~3 rad/s) at the floor
+    # and a still arm at 1.0.
+    VEL_FREE: Float64 = 0.3,
+    VEL_MARGIN: Float64 = 2.0,
+    # The floor of the multiplicative term. 0.8 is dm_control's own value
+    # ((4 + s) / 5). ⚠ THIS IS THE STRENGTH KNOB: 0.8 means a permanently
+    # vibrating arm forfeits 20% of every step, ~60 points of a ~475 return.
+    # Lower it if a retrain still shakes; raise it toward 1.0 to disable.
+    VEL_FLOOR: Float64 = 0.8,
     # Uniform noise on each joint at reset, radians, clipped to joint range.
     RESET_NOISE: Float64 = 0.05,
     MAX_STEPS_P: Int = 500,
@@ -197,6 +249,49 @@ struct SoArmReachConfig[
         if i == 4:
             return Self.HOME_4
         return Self.HOME_5
+
+    # === the reward, ONCE ===
+    #
+    # ⚠⚠ THE CPU AND GPU HOOKS BOTH CALL THESE. They used to spell the reward
+    # out twice — once over `Data`, once over `LayoutTensor` — with a comment
+    # on each asking the reader to keep them identical. That is the setup for
+    # a policy trained against one reward and evaluated against another, with
+    # nothing raising, and this repo has already paid for a rule written twice
+    # (`body_geom_visible`, three copies, two thresholds). The containers
+    # differ, so the SUM over DOF still happens on each side; everything after
+    # it happens here, once.
+
+    @always_inline
+    @staticmethod
+    def _reach[DTYPE: DType](dist: Scalar[DTYPE]) -> Scalar[DTYPE]:
+        """Shaped distance term: 1 inside `TARGET_RADIUS`, decaying over
+        `REWARD_MARGIN`.
+
+        ⚠ The sigmoid and its value-at-margin are NAMED rather than left to
+        the default, because the GPU call site cannot use defaults and a
+        silent mismatch would be a different reward curve per device.
+        """
+        return tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+            dist,
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](Self.TARGET_RADIUS),
+            Scalar[DTYPE](Self.REWARD_MARGIN),
+        )
+
+    @always_inline
+    @staticmethod
+    def _still[DTYPE: DType](speed_sq: Scalar[DTYPE]) -> Scalar[DTYPE]:
+        """Multiplicative stillness term in `[VEL_FLOOR, 1]`, from the SQUARED
+        L2 joint speed. See `VEL_FREE` for the measurement behind it."""
+        var calm = tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](
+            sqrt(speed_sq),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](Self.VEL_FREE),
+            Scalar[DTYPE](Self.VEL_MARGIN),
+        )
+        return Scalar[DTYPE](Self.VEL_FLOOR) + Scalar[DTYPE](
+            1.0 - Self.VEL_FLOOR
+        ) * calm
 
     # === CPU: Observation ===
     @staticmethod
@@ -331,10 +426,16 @@ struct SoArmReachConfig[
             - d.xpos.data[Self.EE_BODY * 3 + 2]
         )
         var dist = sqrt(dx * dx + dy * dy + dz * dz)
-        var r = tolerance(
-            dist, 0.0, Self.TARGET_RADIUS, Self.REWARD_MARGIN
+        # Only the SUM is per-container; the terms themselves are shared with
+        # the GPU hook — see `_reach` / `_still`.
+        var speed2 = Scalar[DTYPE](0)
+        for i in range(D.NV):
+            var v = d.qvel.data[i]
+            speed2 += v * v
+        return (
+            Self._reach(Scalar[DTYPE](dist)) * Self._still(speed2),
+            False,
         )
-        return (Scalar[DTYPE](r), False)
 
 
     # =====================================================================
@@ -578,13 +679,15 @@ struct SoArmReachConfig[
             xpos[env, Self.TARGET_BODY * 3 + 2]
         ) - rebind[Scalar[DTYPE]](xpos[env, Self.EE_BODY * 3 + 2])
         var dist = sqrt(dx * dx + dy * dy + dz * dz)
-        var r = tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
-            dist,
-            Scalar[DTYPE](0.0),
-            Scalar[DTYPE](Self.TARGET_RADIUS),
-            Scalar[DTYPE](Self.REWARD_MARGIN),
-        )
-        return (r, False)
+        # ⚠ ONLY THE SUM IS WRITTEN TWICE — `qvel` is a `LayoutTensor` here
+        # and a `Data` field there. Both terms come from `_reach` / `_still`,
+        # so the reward the trainer optimises and the reward the eval, the
+        # viewer and the hardware deploy score are the same expression.
+        var speed2 = Scalar[DTYPE](0)
+        for i in range(NV_F):
+            var v = rebind[Scalar[DTYPE]](qvel[env, i])
+            speed2 += v * v
+        return (Self._reach(dist) * Self._still(speed2), False)
 
     @always_inline
     @staticmethod

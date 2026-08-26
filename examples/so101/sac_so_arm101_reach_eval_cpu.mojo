@@ -147,6 +147,15 @@ def main() raises:
     # `examples/so101/sac_so_arm101_reach_diag.mojo` reports reached / held /
     # command chatter, which are the questions this number cannot answer. Read
     # the bands below as "how much reward", never as "did it reach".
+    #
+    # ⚠⚠ AND EVERY NUMBER IN THIS COMMENT IS NOW ON AN OBSOLETE SCALE. The
+    # task gained a multiplicative stillness term (`VEL_FLOOR`, so a
+    # permanently vibrating arm forfeits 20% of every step) and `R_MIN` moved
+    # 0.15 -> 0.18. Measured: the SAME checkpoint that scored 480.5 under the
+    # old reward scores **388.5** under the new one — the policy did not get
+    # worse, the ruler got stricter. The 46 untrained baseline and the 90 /
+    # 200 / 400 thresholds all predate both changes. RE-MEASURE THEM AFTER THE
+    # NEXT RETRAIN; until then these bands are indicative only.
     if avg_reward > 400.0:
         print("  Result: high reward (mean > 400 / 500) — NOT the same as")
         print("          reaching; run ..._reach_diag.mojo for reach + hold.")
