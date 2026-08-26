@@ -4154,6 +4154,56 @@ def box_box_manifold[
             penetration = c2
             code = i + (3 if pos12[i] < Scalar[DTYPE](0) else 0) + 6
 
+    # ⚠⚠ THE FACE-VS-EDGE COMPARISON IS BELOW float32's NOISE FLOOR, AND
+    # MuJoCo'S GUARD AGAINST THAT IS A NO-OP AT float32.
+    #
+    # Every `c1`/`c2`/`c3` above and below is a DIFFERENCE of quantities ~10^4
+    # times larger: `-|pos21[i]| + size1[i] + plen2[i]`, with a Duplo base
+    # that is `-0.0192 + 0.0096 + 0.0096`. Catastrophic cancellation, so the
+    # result carries an absolute error of about one ulp OF THE OPERANDS —
+    # 9.3e-10 at float32 — while the result itself is ~1e-08. Measured on
+    # `reassemble_5`'s tower:
+    #
+    #     face_pen 1.2107193e-08   edge_pen 1.1175871e-08   diff 9.31e-10
+    #
+    # The two axes are the same number and which one "wins" is a coin flip.
+    # MuJoCo guards the tie with `c3 < penetration * (1 - 1e-12)`
+    # (`engine_collision_box.c:707`), a RELATIVE bias towards the face axis —
+    # and at float32 `1 - 1e-12` IS EXACTLY 1.0, so the bias disappears
+    # entirely. A relative bias could not fix it anyway: the noise here is 8%
+    # of the value, and grows without bound as the pair approaches touching.
+    #
+    # ⚠ IT IS NOT A COSMETIC MISPICK. When the edge axis wins, the manifold
+    # comes from `_bb_edge_manifold`, whose corner sources report
+    # `depth = sqrt(lateral_overshoot^2 + (pz*innorm)^2)` — a DISTANCE. On a
+    # near-parallel pair that distance is the box's own extent, so a pair
+    # separated by 3e-09 reported `dist = -0.0318` and `-0.0636`, i.e.
+    # `2 x half_x` and `2 x half_y`, with 176 N of normal force. That is what
+    # blew up `reassemble_5`'s float32 tower: `max|qacc|` 9.5 -> 27032 in one
+    # substep, from a tower still seated to 7e-09. float64 never sees it
+    # because there the same cancellation leaves 7e-18 of error against the
+    # same 1e-08, and the winner is decided by geometry rather than rounding.
+    #
+    # So the tie gets an ABSOLUTE floor sized to the cancellation: the edge
+    # axis must beat the face axis by more than the rounding error of the
+    # sums that produced them. `4 x eps x sum(|operands|)` is the standard
+    # bound for a three-term sum, with a factor of four for the products
+    # feeding `plen`.
+    #
+    # ⚠ float64 GETS ZERO AND KEEPS MuJoCo'S EXPRESSION BIT FOR BIT. The
+    # Menagerie board is measured at float64 and must not move; this is a
+    # float32 noise-floor repair, not a change of algorithm.
+    var tie_floor = Scalar[DTYPE](0)
+    @parameter
+    if DTYPE != DType.float64:
+        # float32's eps. Anything narrower is noisier still, so this is a
+        # lower bound rather than a wrong one; physics3d runs f32 and f64.
+        comptime _EPS32 = Scalar[DTYPE](1.1920929e-07)
+        var scale = Scalar[DTYPE](0)
+        for i in range(3):
+            scale += size1[i] + size2[i] + abs(pos21[i])
+        tie_floor = scale * _EPS32 * Scalar[DTYPE](4)
+
     # The nine edge-edge axes. Whichever one wins carries state the manifold
     # needs later: which corner of each box leads (`cle1`, `cle2`), the axis
     # itself (`clnorm`), and which side of it box 2's centre sits on (`inflag`).
@@ -4197,7 +4247,9 @@ def box_box_manifold[
             c3 -= abs(c2)
             if c3 < -margin:
                 return -1
-            if c3 < penetration * (Scalar[DTYPE](1) - Scalar[DTYPE](1e-12)):
+            if c3 < penetration * (
+                Scalar[DTYPE](1) - Scalar[DTYPE](1e-12)
+            ) - tie_floor:
                 penetration = c3
                 code = 12 + i * 3 + j
                 cle1 = 0

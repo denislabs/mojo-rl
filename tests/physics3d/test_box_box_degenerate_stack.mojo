@@ -49,6 +49,9 @@ from mojo_rl.physics3d.kinematics.quat_math import (
     quat_normalize, gpu_quat_normalize,
 )
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.collision.collision_primitives import (
+    box_box_manifold, BB_MAX_POINTS,
+)
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.fields import SpecFields
@@ -557,6 +560,112 @@ def test_box_box_near_degenerate_sweep_vs_mujoco() raises:
         + " — at that distance it is not the axis tie (which moves a corner by"
         " ~1e-07 here) but a corner of the manifold we are not emitting at"
         " all, leaving the solver blind to it.",
+    )
+    print("  PASS")
+
+
+def test_box_box_float32_keeps_the_face_axis_on_a_stacked_pair() raises:
+    """At float32 the face-vs-edge choice is BELOW THE NOISE FLOOR, and losing
+    it costs three orders of magnitude of depth.
+
+    `penetration` is a difference of quantities ~10^4 times larger —
+    `-|pos21[i]| + size1[i] + plen2[i]`, which for a Duplo base is
+    `-0.0192 + 0.0096 + 0.0096`. Catastrophic cancellation leaves an absolute
+    error of about one ulp OF THE OPERANDS, 9.3e-10 at float32, against a
+    result of ~1e-08. Measured inside `reassemble_5`'s own tower:
+
+        face_pen 1.2107193e-08   edge_pen 1.1175871e-08   diff 9.31e-10
+
+    The two axes are the same number and the winner is rounding. MuJoCo biases
+    the tie towards the face axis with `c3 < penetration * (1 - 1e-12)`
+    (`engine_collision_box.c:707`) — and at float32 `1 - 1e-12` IS EXACTLY 1.0,
+    so the bias is not merely small, it is absent.
+
+    ⚠ THE CONSEQUENCE IS NOT A COSMETIC MISPICK. `_bb_edge_manifold`'s corner
+    sources report `depth = sqrt(lateral_overshoot^2 + (pz*innorm)^2)` — a
+    DISTANCE — and on a near-parallel pair that distance is the box's own
+    extent. Two bricks separated by nanometres reported `dist = -0.0318` and
+    `-0.0636` (`2 x half_x` and `2 x half_y`) carrying 176 N, and the float32
+    tower went from `max|qacc| 9.5` to `27032` in one substep.
+
+    ⚠⚠ THE INPUTS ARE THE ENGINE'S OWN, COPIED OUT OF A FAILING SUBSTEP, AND
+    THAT IS DELIBERATE. Two synthetic fixtures were written first — a
+    scale-swept stacked pair, then the same with tilt about x and y — and BOTH
+    passed with the fix ABLATED. The defect needs a numerical coincidence
+    between two cancellations that a clean symmetric perturbation does not
+    reproduce, so a generated pose is not evidence of anything here. These
+    twenty-one floats are what `_box_box_contacts` actually passed
+    `box_box_manifold` at the substep that blew up, printed from the ablated
+    build; with the fix removed this returns `code 13` and `dist -0.0319`.
+
+    ⚠ THIS TEST MUST BE float32. The rest of this file runs at float64, where
+    the same cancellation leaves 7e-18 against the same 1e-08 and the winner is
+    decided by geometry rather than rounding. A float64 gate is structurally
+    blind to it — the defect IS the dtype.
+    """
+    print("--- float32: the stacked pair must not be given to the edge axis")
+    var n = 0
+    var dist = InlineArray[Scalar[DType.float32], BB_MAX_POINTS](
+        fill=Scalar[DType.float32](0)
+    )
+    var pos = InlineArray[Scalar[DType.float32], 3 * BB_MAX_POINTS](
+        fill=Scalar[DType.float32](0)
+    )
+    var nrm = InlineArray[Scalar[DType.float32], 3](
+        fill=Scalar[DType.float32](0)
+    )
+    var code = box_box_manifold[DType.float32](
+        Scalar[DType.float32](0.04244107007980347),
+        Scalar[DType.float32](0.06740491837263107),
+        Scalar[DType.float32](0.06719570606946945),
+        Scalar[DType.float32](-5.083861196908401e-06),
+        Scalar[DType.float32](-8.977338552540459e-07),
+        Scalar[DType.float32](0.9999986886978149),
+        Scalar[DType.float32](0.00161449215374887),
+        Scalar[DType.float32](0.01590000092983246),
+        Scalar[DType.float32](0.03180000185966492),
+        Scalar[DType.float32](0.009600000455975533),
+        Scalar[DType.float32](0.04244135692715645),
+        Scalar[DType.float32](0.06740497052669525),
+        Scalar[DType.float32](0.08639685064554214),
+        Scalar[DType.float32](4.786380031873705e-06),
+        Scalar[DType.float32](-3.010294312844053e-05),
+        Scalar[DType.float32](0.0016153586329892278),
+        Scalar[DType.float32](-0.9999986886978149),
+        Scalar[DType.float32](0.01590000092983246),
+        Scalar[DType.float32](0.03180000185966492),
+        Scalar[DType.float32](0.009600000455975533),
+        Scalar[DType.float32](0.0),
+        n, dist, pos, nrm,
+    )
+    var deepest = 0.0
+    for k in range(n):
+        if -Float64(dist[k]) > deepest:
+            deepest = -Float64(dist[k])
+    print("   code", code, " points", n, " deepest |dist|", deepest)
+
+    # NON-VACUITY: a separated pair returns -1 and writes nothing, and then the
+    # depth assertion below would hold trivially.
+    assert_true(
+        code >= 0 and n > 0,
+        String("VACUOUS: box/box returned code ") + String(code)
+        + " with " + String(n) + " points — these two boxes are in contact"
+        " (they are 0.0192 apart with half-height 0.0096 each), so returning"
+        " nothing means the inputs were transcribed wrong.",
+    )
+    # The box's smallest full extent is 2 x 0.0096 = 0.0192 and the failure
+    # reported 0.0319; the true separation is ~1e-08. This threshold sits
+    # three orders above the truth and three below the failure.
+    assert_true(
+        deepest < 1e-3,
+        String("a stacked pair separated by ~1e-08 reports a depth of ")
+        + String(deepest) + " at float32, from box/box code " + String(code)
+        + ". Code 12 or above is the EDGE-EDGE axis winning a tie it should"
+        " lose: the face-vs-edge comparison is below float32's noise floor"
+        " (one ulp of the box size, 9.3e-10, against a value of 1e-08) and"
+        " MuJoCo's `(1 - 1e-12)` bias towards the face axis is exactly 1.0 at"
+        " this dtype. `_bb_edge_manifold` then reports a lateral DISTANCE as a"
+        " depth. See `box_box_manifold`'s `tie_floor`.",
     )
     print("  PASS")
 
