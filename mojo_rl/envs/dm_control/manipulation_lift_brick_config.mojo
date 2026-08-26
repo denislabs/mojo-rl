@@ -180,6 +180,23 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
     comptime SYNC_FK_AFTER_STEP: Bool = True
     comptime RNE_POST: Bool = True  # required by `joints_torque`
     comptime NMESH_VERTS: Int = 60000
+    comptime NMESH_TRI: Int = 8000
+    """The nine Jaco meshes' ORIGINAL triangles — the RAY soup.
+
+    ⚠ WITHOUT THIS THE ARM IS INVISIBLE TO A CAMERA. `NMESH_VERTS` above is the
+    convex HULL, which is what collision wants; a ray needs the real triangles
+    (`ray/mesh.mojo`), and `ntri = 0` makes `ray_mesh` return NO HIT for every
+    ray. A `_vision` variant of this task would have rendered a floating brick
+    and an empty gripper.
+
+    8 000 is exact, not a budget: 5 parts at 1 000 triangles plus the hand at
+    898 + 102, counted from the STL headers. dm_control decimates each part to
+    1 000. All 13 manipulation tasks share these same nine meshes, so the
+    number is the same for every one of them.
+
+    Costs 8 000 * 9 floats = 576 KB in `Model`, once, and nothing per step.
+    """
+
     comptime HAS_GPU_HOOKS: Bool = False
     comptime USES_MOCAP: Bool = False
 

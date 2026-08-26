@@ -64,6 +64,27 @@ trait Phyics3dEnvConfig:
     # required count — an undersized value can no longer truncate silently.
     comptime NMESH_VERTS: Int = 0
 
+    comptime NMESH_TRI: Int = 0
+    """Total ORIGINAL triangles across every collidable mesh — the RAY soup.
+
+    ⚠⚠ A DIFFERENT SURFACE FROM `NMESH_VERTS`, WHICH IS THE CONVEX HULL. The
+    hull is what collision wants and what MuJoCo collides too; it cannot answer
+    a RAY, because a ray aimed into a bracket's cutout hits hull where the real
+    part has a hole. `ray/mesh.mojo` walks these triangles.
+
+    ⚠ ZERO MEANS EVERY MESH IS INVISIBLE TO A RAY — a rangefinder, studio
+    picking, or a camera looks straight through the robot's own arm. It is not
+    a size hint and it is not derived: `ray_mesh` returns NO HIT when `ntri` is
+    0, which is a capacity being read as an absence of geometry.
+
+    ⚠ EXACT, and `fields_build` RAISES quoting the required count if it is too
+    small — so the way to find the number is to set it to 1 and read the error,
+    not to count triangles by hand.
+
+    Costs `NMESH_TRI * 9` floats in `Model` and nothing per step. Leave it 0 on
+    a model nothing rays at.
+    """
+
     comptime NHFIELD_DATA: Int = 0
     """Total heightfield grid samples, `sum(nrow * ncol)` over `<hfield>`.
 

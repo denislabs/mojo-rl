@@ -4,19 +4,21 @@ One thread per `(env, pixel)`. No shared memory, no per-thread array, no
 window, no swapchain, no draw command — the whole scene is the batched `Data`
 the physics already wrote, read in place.
 
-⚠⚠ THE KERNEL IS EXPENSIVE TO COMPILE, AND THE NUMBER IS MEASURED, NOT
-GUESSED. `render_pixel` inlines `ray_model` TWICE — once for the primary ray
-and once for the shadow ray — and `ray_model` is itself a dispatch over every
-geom type. On Apple/Metal `test_camera_render_gpu_vs_cpu` spends ~550 s in that
-one compile, against ~28 s for `test_ray_model_gpu_vs_cpu`, whose kernel
-inlines `ray_model` once. The RUN is not the cost: the CPU control leg renders
-the same 4 608 pixels in about a second.
+⚠ `SHADOWS` IS A COMPTIME PARAMETER BECAUSE THE SHADOW RAY IS A SECOND FULL
+`ray_model` PER PIXEL. A runtime flag would leave that code in the kernel and
+still pay for it on every miss; as a parameter, `BatchedCameraRenderer[...,
+SHADOWS=False]` compiles a kernel that does not contain it. See
+`benchmarks/camera_tracer_lift_brick.mojo` for what it costs on a mesh-heavy
+scene.
 
-⇒ if that becomes a problem, the lever is `use_shadows` as a COMPTIME
-parameter rather than a runtime field, which lets a caller that does not want
-shadows compile a kernel with one `ray_model` in it. It is left runtime here
-because shadows are wanted by default and two instantiations is the price of
-the alternative.
+⚠ AN EARLIER VERSION OF THIS NOTE CLAIMED A ~550 s METAL COMPILE FOR THIS
+KERNEL. THAT WAS WRONG, AND WRONG TWICE: the number came from a test harness
+line that reports MILLISECONDS, and it was the test's RUNTIME rather than a
+compile. Measured properly — edit this file, run the gate, wall-clock the
+command — a full recompile of the camera kernel is about **8 s**. The minutes
+that produced the false reading were a cold cache over the whole package graph,
+which any first build pays. `SHADOWS` earns its keep on RUN time, not compile
+time.
 
 ⚠ RGB IS FLOAT, NOT PACKED `uint32`. The reference packs ABGR into a `uint32`
 and ships an unpack kernel (`render_util.unpack_rgb_kernel`) because Warp's
@@ -65,6 +67,18 @@ comptime RGB_CHANNELS: Int = 3
 
 
 @always_inline
+def _to_byte(x: Float64) -> Int:
+    """[0, 1] -> [0, 255], clamped. `render_pixel` already clamps, so this is
+    belt and braces against a caller that scaled the buffer."""
+    var v = Int(x * 255.0 + 0.5)
+    if v < 0:
+        return 0
+    if v > 255:
+        return 255
+    return v
+
+
+@always_inline
 def _pos(n: Int) -> Int:
     """`_at_least_one` — every tensor allocates one element even when unused."""
     return n if n > 0 else 1
@@ -76,6 +90,7 @@ struct BatchedCameraRenderer[
     BATCH: Int,
     WIDTH: Int,
     HEIGHT: Int,
+    SHADOWS: Bool = True,
 ](Copyable, Movable):
     """RGB + depth + segmentation for one camera, over every lane.
 
@@ -135,7 +150,6 @@ struct BatchedCameraRenderer[
     points down and slightly forward, matching the key light `Renderer3D`
     uses, so a scene looks the same way up in both pipelines."""
     var background: Vec3Generic[Self.DTYPE]
-    var use_shadows: Bool
 
     def __init__(
         out self,
@@ -215,7 +229,6 @@ struct BatchedCameraRenderer[
             Scalar[Self.DTYPE](0.72),
             Scalar[Self.DTYPE](0.90),
         )
-        self.use_shadows = True
 
     def render(
         mut self,
@@ -259,7 +272,7 @@ struct BatchedCameraRenderer[
             ],
             # ⚠ `Int32`, NOT `Int`. Neither `Int` nor `UInt` conforms to
             # `DevicePassable` — "use a fixed-width type" — so a plain `Int`
-            # kernel operand does not compile. Same for `shadows` below.
+            # kernel operand does not compile.
             cam: Int32,
             lx: Scalar[Self.DTYPE],
             ly: Scalar[Self.DTYPE],
@@ -267,9 +280,7 @@ struct BatchedCameraRenderer[
             br: Scalar[Self.DTYPE],
             bg: Scalar[Self.DTYPE],
             bb: Scalar[Self.DTYPE],
-            shadows: Int32,
         ):
-            # ⚠ AN INTEGER, NOT A `Bool`, for the same reason.
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.BATCH * Self.NPIX:
                 return
@@ -295,7 +306,7 @@ struct BatchedCameraRenderer[
                 var frame = camera_world_frame[Self.DTYPE](
                     cameras, xpos, xquat, subtree_com, env, Int(cam)
                 )
-                var hit = render_pixel[Self.DTYPE](
+                var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
                     geoms,
                     Self.D.NGEOM,
                     geom_rgba,
@@ -315,7 +326,6 @@ struct BatchedCameraRenderer[
                     py,
                     Vec3Generic[Self.DTYPE](lx, ly, lz),
                     Vec3Generic[Self.DTYPE](br, bg, bb),
-                    shadows != 0,
                 )
                 rgb_out[env, pix * RGB_CHANNELS + 0] = hit.rgb.x
                 rgb_out[env, pix * RGB_CHANNELS + 1] = hit.rgb.y
@@ -346,10 +356,93 @@ struct BatchedCameraRenderer[
             self.background.x,
             self.background.y,
             self.background.z,
-            Int32(1) if self.use_shadows else Int32(0),
             grid_dim=(ceildiv(total, TPB),),
             block_dim=(TPB,),
         )
+
+    def frame_bgra(
+        mut self,
+        ctx: DeviceContext,
+        env: Int,
+        mut out: List[UInt8],
+        scale: Int = 1,
+    ) raises:
+        """One lane's RGB as **BGRA uint8**, ready for `VideoRecorder`.
+
+        `scale` replicates each pixel `scale` times in both axes — nearest
+        neighbour, on the host. An 84x84 observation is what the AGENT sees and
+        is the honest thing to record, but it is also a postage stamp in a video
+        player; upscaling here shows the real pixels bigger rather than
+        rendering a different, prettier image the agent never gets.
+
+        ⚠⚠ BGRA, NOT RGBA, AND THE ORDER IS NOT NEGOTIABLE.
+        `VideoRecorder.add_frame_bgra` takes the address of a B8G8R8A8 buffer
+        because that is the Metal/SDL3 swapchain format it was written for, and
+        it re-orders to RGB with `np.take(arr, [2, 1, 0], axis=2)`. Handing it
+        RGBA produces a picture that is correct in every respect except that
+        red and blue are swapped — which looks like a plausible colour-grading
+        choice and not like a bug.
+
+        ⚠ THIS IS THE "uint8 UNPACK" the assessment asked for, arriving where
+        it is actually needed rather than as a second kernel. The reference
+        packs ABGR into a `uint32` on the DEVICE because its render context
+        stores every camera in one buffer; here the float buffer is already the
+        RL observation, and the byte conversion is only for the video sink. So
+        it runs on the HOST, once per recorded frame, over one lane.
+
+        `out` is resized, so a caller may reuse it across frames.
+        """
+        var n = Self.NPIX
+        var s = scale if scale >= 1 else 1
+        var ow = Self.WIDTH * s
+        var oh = Self.HEIGHT * s
+        out = List[UInt8](length=ow * oh * 4, fill=UInt8(0))
+        var host = ctx.enqueue_create_host_buffer[Self.DTYPE](
+            Self.BATCH * n * RGB_CHANNELS
+        )
+        ctx.enqueue_copy(host, self.rgb)
+        ctx.synchronize()
+        var base = env * n * RGB_CHANNELS
+        for py in range(Self.HEIGHT):
+            for px in range(Self.WIDTH):
+                var p = py * Self.WIDTH + px
+                var b = _to_byte(Float64(host[base + p * RGB_CHANNELS + 2]))
+                var g = _to_byte(Float64(host[base + p * RGB_CHANNELS + 1]))
+                var r = _to_byte(Float64(host[base + p * RGB_CHANNELS + 0]))
+                for dy in range(s):
+                    for dx in range(s):
+                        var o = ((py * s + dy) * ow + (px * s + dx)) * 4
+                        out[o + 0] = UInt8(b)
+                        out[o + 1] = UInt8(g)
+                        out[o + 2] = UInt8(r)
+                        out[o + 3] = UInt8(255)
+
+    def frame_bgra_from_cpu(
+        self,
+        rgb: List[Scalar[Self.DTYPE]],
+        env: Int,
+        mut out: List[UInt8],
+    ):
+        """`frame_bgra` for a picture that came off `render_cpu`.
+
+        Exists so a video can be produced on a machine with no accelerator,
+        and so the CPU and GPU legs can be written to two files and LOOKED AT
+        side by side — which is a comparison the pixel residual cannot make.
+        """
+        var n = Self.NPIX
+        out = List[UInt8](length=n * 4, fill=UInt8(0))
+        var base = env * n * RGB_CHANNELS
+        for p in range(n):
+            out[p * 4 + 0] = UInt8(
+                _to_byte(Float64(rgb[base + p * RGB_CHANNELS + 2]))
+            )
+            out[p * 4 + 1] = UInt8(
+                _to_byte(Float64(rgb[base + p * RGB_CHANNELS + 1]))
+            )
+            out[p * 4 + 2] = UInt8(
+                _to_byte(Float64(rgb[base + p * RGB_CHANNELS + 0]))
+            )
+            out[p * 4 + 3] = UInt8(255)
 
     def render_cpu(
         mut self,
@@ -398,7 +491,7 @@ struct BatchedCameraRenderer[
                 for py in range(Self.HEIGHT):
                     for pxx in range(Self.WIDTH):
                         var pix = py * Self.WIDTH + pxx
-                        var hit = render_pixel[Self.DTYPE](
+                        var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
                             geoms_c,
                             Self.D.NGEOM,
                             rgba_c,
@@ -418,7 +511,6 @@ struct BatchedCameraRenderer[
                             py,
                             self.light_dir,
                             self.background,
-                            self.use_shadows,
                         )
                         var b = env * Self.NPIX + pix
                         rgb[b * RGB_CHANNELS + 0] = hit.rgb.x

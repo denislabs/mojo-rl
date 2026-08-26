@@ -328,7 +328,6 @@ def test_the_depth_channel_is_planar_not_radial() raises:
     var r = Renderer(ctx, m, CAM_WORLD)
     # Straight down at the floor, so the plane is perpendicular to the axis
     # and PLANAR depth is constant while radial distance is not.
-    r.use_shadows = False
     var rgb = List[Scalar[GT]]()
     var dep = List[Scalar[GT]]()
     var seg = List[Scalar[GT]]()

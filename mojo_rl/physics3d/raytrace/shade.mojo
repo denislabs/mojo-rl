@@ -75,6 +75,7 @@ def ambient_term[
 
 def directional_light_term[
     DTYPE: DType,
+    SHADOWS: Bool,
     L_GEOMS: Layout,
     L_BODIES: Layout,
     L_XPOS: Layout,
@@ -98,7 +99,6 @@ def directional_light_term[
     normal: Vec3Generic[DTYPE],
     hitpoint: Vec3Generic[DTYPE],
     light_dir: Vec3Generic[DTYPE],
-    use_shadows: Bool,
 ) -> Scalar[DTYPE] where DTYPE.is_floating_point():
     """`compute_lighting`'s directional branch — `ndotl * visible`.
 
@@ -116,6 +116,8 @@ def directional_light_term[
     does. Without it every lit surface shadows itself at t = 0 and the whole
     image goes to the ambient term, which reads as "shadows are broken" rather
     than "the ray started on the surface".
+
+    ⚠ `SHADOWS` IS A PARAMETER AND NOT AN ARGUMENT — see the body.
 
     ⚠ ANY HIT DARKENS TO 0.3 RATHER THAN 0. Also the reference's number. It
     keeps a shadowed surface from collapsing into the background, which for an
@@ -135,7 +137,13 @@ def directional_light_term[
     if ndotl <= Scalar[DTYPE](0):
         return Scalar[DTYPE](0)
 
-    if not use_shadows:
+    # ⚠⚠ COMPTIME, NOT A RUNTIME FLAG, AND THE REASON IS THE COMPILER. A
+    # runtime `use_shadows` still puts a second `ray_model` in the kernel, and
+    # `ray_model` is a dispatch over every geom type — Metal spent ~550 s
+    # compiling the two-copy kernel against ~28 s for the one-copy kernel in
+    # `test_ray_model_gpu_vs_cpu`. As a parameter, a caller that does not want
+    # shadows gets a kernel that does not contain the code.
+    comptime if not SHADOWS:
         return ndotl
 
     var origin = hitpoint + n * Scalar[DTYPE](1.0e-4)

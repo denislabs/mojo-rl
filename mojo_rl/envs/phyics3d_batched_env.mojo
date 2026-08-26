@@ -151,6 +151,7 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF,
         nmesh_verts = Self.CONFIG.NMESH_VERTS,
         nhfield_data = Self.CONFIG.NHFIELD_DATA,
+        nmesh_tri = Self.CONFIG.NMESH_TRI,
     ]
     comptime NV: Int = Self.MODEL_DEF.NV
     comptime NBODY: Int = Self.MODEL_DEF.NBODY
@@ -188,11 +189,12 @@ struct Phyics3dBatchedEnv[
     comptime L_GEOMS_HOOK = Layout.row_major(
         Self.NGEOM_F, MODEL_GEOM_SIZE
     )
-    # `Model.mesh_tris` is `_at_least_one`'d too — layout only. Zero today:
-    # `ModelDims` does not forward `nmesh_tri`, so the batched path carries no
-    # triangle soup and a MESH geom is invisible to `ray_model` here. Stated
-    # rather than assumed — escape's terrain is a heightfield and its robot is
-    # primitives, so nothing it casts a ray at is a mesh.
+    # `Model.mesh_tris` is `_at_least_one`'d too — layout only. ⚠ ZERO UNLESS
+    # THE CONFIG SETS `NMESH_TRI`, and zero means a MESH geom is invisible to
+    # `ray_model` here — a ray goes straight through it. `ModelDims` did not
+    # forward this at all until 2026-08-26, which went unnoticed because the
+    # only ray consumer was `quadruped escape`, whose terrain is a heightfield
+    # and whose robot is primitives.
     comptime NMESH_TRI_F: Int = (
         Self.MD.NMESH_TRI if Self.MD.NMESH_TRI > 0 else 1
     )
@@ -1244,6 +1246,14 @@ struct Phyics3dBatchedEnv[
             qfrc: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
             ],
+            # ⚠ `mj_resetData` ZEROES `qacc_warmstart`, so a lane that starts a
+            # new episode must too — otherwise its first primal solve prices
+            # the PREVIOUS episode's acceleration. The cost comparison would
+            # usually discard it, but "usually" is not the reference's
+            # algorithm.
+            qacc_ws: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
             meta: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, METADATA_SIZE),
@@ -1291,7 +1301,7 @@ struct Phyics3dBatchedEnv[
             if i >= Self.N_ENVS:
                 return
             Self._reset_env_lane(
-                qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
+                qpos, qvel, qacc, qfrc, qacc_ws, meta, joints, mocap_pos,
                 mocap_quat, bodies, geoms, act, hfield_meta, hfield_data,
                 qpos0, pose_meta, i, seed,
             )
@@ -1302,6 +1312,7 @@ struct Phyics3dBatchedEnv[
             self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
             self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
             self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qacc_warmstart.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
             self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
@@ -1606,6 +1617,14 @@ struct Phyics3dBatchedEnv[
             qfrc: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
             ],
+            # ⚠ `mj_resetData` ZEROES `qacc_warmstart`, so a lane that starts a
+            # new episode must too — otherwise its first primal solve prices
+            # the PREVIOUS episode's acceleration. The cost comparison would
+            # usually discard it, but "usually" is not the reference's
+            # algorithm.
+            qacc_ws: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
             meta: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, METADATA_SIZE),
@@ -1661,6 +1680,7 @@ struct Phyics3dBatchedEnv[
                     qvel,
                     qacc,
                     qfrc,
+                    qacc_ws,
                     meta,
                     joints,
                     mocap_pos,
@@ -1686,6 +1706,7 @@ struct Phyics3dBatchedEnv[
             self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
             self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
             self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qacc_warmstart.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             dones_t,
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
@@ -1734,6 +1755,9 @@ struct Phyics3dBatchedEnv[
         qfrc: LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
         ],
+        qacc_ws: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+        ],
         meta: LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, METADATA_SIZE), MutAnyOrigin
         ],
@@ -1771,6 +1795,11 @@ struct Phyics3dBatchedEnv[
         has the same ordering (`_reset_state` runs `_fields_fk()` after
         `custom_reset_cpu`), which is exactly how ball_in_cup's rejection
         sampler ended up testing against a stale cup position."""
+        # `mj_resetData`'s zero for the carried acceleration. Written HERE
+        # rather than inside `reset_env_gpu`, which is a MODEL_DEF method with
+        # its own callers and no business knowing about the solver's carry.
+        for _wi in range(Self.NV):
+            qacc_ws[env, _wi] = Scalar[DT](0)
         var RESET_NOISE = Scalar[DT](Self.CONFIG.get_reset_noise())
         Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS](
             qpos, qvel, qacc, qfrc, qpos0, pose_meta, env, RESET_NOISE, seed

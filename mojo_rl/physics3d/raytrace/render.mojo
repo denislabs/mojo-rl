@@ -71,6 +71,7 @@ struct PixelHit[DTYPE: DType](Copyable, Movable):
 
 def render_pixel[
     DTYPE: DType,
+    SHADOWS: Bool,
     L_GEOMS: Layout,
     L_RGBA: Layout,
     L_BODIES: Layout,
@@ -100,7 +101,6 @@ def render_pixel[
     py: Int,
     light_dir: Vec3Generic[DTYPE],
     background: Vec3Generic[DTYPE],
-    use_shadows: Bool = True,
 ) -> PixelHit[DTYPE] where DTYPE.is_floating_point():
     """Primary ray, shade, and the two by-products.
 
@@ -159,7 +159,7 @@ def render_pixel[
         Scalar[DTYPE](0.5) * base.z * amb.z,
     )
 
-    var lit = directional_light_term[DTYPE](
+    var lit = directional_light_term[DTYPE, SHADOWS](
         geoms,
         ngeom,
         bodies,
@@ -174,7 +174,6 @@ def render_pixel[
         hit.normal,
         hitpoint,
         light_dir,
-        use_shadows,
     )
     rgb = rgb + base * lit
 

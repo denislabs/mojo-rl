@@ -118,7 +118,10 @@ struct Phyics3dEnv[
     # decision), so the config supplies it — and it now travels INSIDE the
     # provider, where the "geoms with no geometry" failure cannot reach it.
     comptime MD = ModelDims[
-        Self.MODEL_DEF, Self.NMESH_VERTS, Self.CONFIG.NHFIELD_DATA
+        Self.MODEL_DEF,
+        Self.NMESH_VERTS,
+        Self.CONFIG.NHFIELD_DATA,
+        nmesh_tri = Self.CONFIG.NMESH_TRI,
     ]
 
     # Fields path (the physics state; hooks read/write it directly)

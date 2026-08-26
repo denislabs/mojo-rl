@@ -61,7 +61,17 @@ from .model_def import ModelDefLike
 # disappears silently when its owner gains a real `D`. No flag day.
 
 comptime ModelDims[
-    MD: ModelDefLike, nmesh_verts: Int = 0, nhfield_data: Int = 0
+    MD: ModelDefLike,
+    nmesh_verts: Int = 0,
+    nhfield_data: Int = 0,
+    # ⚠ APPENDED, AND EVERY CALLER SPELLS IT BY KEYWORD. Until 2026-08-26 this
+    # alias did not forward `nmesh_tri` at all, so `Dims.NMESH_TRI` was 0 for
+    # EVERY env in the tree and a MESH geom was invisible to `ray_model` from
+    # the env layer — `Phyics3dBatchedEnv` carried a standing comment saying
+    # so. It went unnoticed because the only ray consumer until now was
+    # `quadruped escape`, whose terrain is a heightfield and whose robot is
+    # primitives. A camera is the first consumer that looks at a mesh.
+    nmesh_tri: Int = 0,
 ] = Dims[
     nq = MD.NQ,
     nv = MD.NV,
@@ -74,6 +84,7 @@ comptime ModelDims[
     ntendon = MD.MAX_TENDON,
     nexclude = MD.NEXCLUDE,
     nmesh_verts=nmesh_verts,
+    nmesh_tri=nmesh_tri,
     nhfield_data=nhfield_data,
     npair = MD.NPAIR,
     nact = MD.NACT,
