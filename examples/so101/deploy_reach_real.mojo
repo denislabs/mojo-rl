@@ -67,7 +67,6 @@ from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
 from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
 from mojo_rl.physics3d.fields import actuator_column
 from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.robot.feetech.control_table import SIZE_2, STS_PRESENT_VELOCITY
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import col, fixed
@@ -85,9 +84,52 @@ comptime BATCH = 256
 comptime REPLAY_CAPACITY = 100_000
 comptime ACTION_SCALE = Scalar[DT](2.0)  # radians; MUST match the trainer
 
-comptime HZ = 30
+comptime HZ = 50
+"""⚠ 50, NOT 30 — IT MUST MATCH THE RATE THE POLICY TRAINED AT.
+`SoArmReachConfig` is `FRAME_SKIP = 10` over a 0.002 s timestep, i.e. a 50 Hz
+control rate, and the action is a POSITION TARGET: at 30 Hz every commanded
+pose is held 67% longer than the policy ever saw, which changes the closed
+loop, not just the latency. This was 30 because the loop could not go faster —
+it spent six serial round trips per tick reading velocity one joint at a time.
+`SO101Arm.read_velocities` makes that one `sync_read`, so the tick is now
+three transactions (positions, velocities, goals) instead of eight."""
 comptime SECONDS = 20
 comptime MAX_STEP_TICKS = 60
+
+comptime SMOOTH = 0.15
+"""Low-pass on the COMMAND: `cmd <- (1-a)*cmd + a*policy`. 1.0 disables it.
+
+⚠⚠ THE RAW COMMAND STREAM IS NOT SOMETHING TO SEND A SERVO. Measured in sim
+over 24 episodes (greedy, after the arm has arrived): the commanded position
+moves **~500 ticks per joint per control step and reverses direction on 83% of
+consecutive steps**. That is a 44-degree-per-step bang-bang command at 50 Hz.
+`max_step_ticks` bounds each move but does not stop the reversals, so the arm
+would sit at the target buzzing — continuous current reversal through the gear
+train, which is the "will this damage the motors" question answered YES-ish.
+
+The reward cannot see it: `tolerance` has a 0.25 m margin against a 0.02 m
+success radius, so hovering 40 mm away scores 0.985 per step. Shake is free.
+
+⚠ AND SMOOTHING IS A DEVIATION FROM TRAINING, so it was measured rather than
+assumed — same 24 targets, greedy, in sim:
+
+    alpha | reached <=20mm | mean closest | chatter ticks/step | return
+     1.00 |        15/24   |     20.4 mm  |            2520    |  480.5
+     0.50 |        15/24   |     18.6 mm  |            1029    |  480.2
+     0.30 |        15/24   |     17.9 mm  |             665    |  479.1
+     0.20 |        16/24   |     16.9 mm  |             470    |  476.9
+     0.10 |        17/24   |     18.7 mm  |             223    |  474.7
+     0.05 |        12/24   |     26.5 mm  |              72    |  475.5
+
+Anything in 0.1-0.3 costs NOTHING in task terms — the reach rate is flat
+inside the noise of 24 episodes — and buys a 4x to 11x calmer command. 0.05
+breaks the policy (the filter outruns the task). 0.15 sits in the middle of
+the free band. THE REAL FIX IS AN ACTION-RATE PENALTY IN THE REWARD AND A
+RETRAIN; this is the guard for a policy that does not have one."""
+
+comptime SUCCESS_MM = 20.0
+"""`SoArmReachConfig.TARGET_RADIUS` in millimetres — the radius inside which
+the task calls it reached."""
 
 # The target, in the model's base frame. Inside the shell the policy trained
 # on (0.15-0.30 m, elevation 0.17-1.22 rad), or it is being asked for a pose
@@ -171,13 +213,23 @@ def main() raises:
         qp.append(0.0)
         qv.append(0.0)
 
+    var vraw = InlineArray[Int32, SO101_N](fill=0)
     var goals = InlineArray[Int32, SO101_N](fill=0)
+    # ⚠ SEEDED FROM THE ARM'S OWN POSE, not from zero. A filter starting at
+    # zero would spend its first ticks sweeping the arm from wherever it is
+    # toward the folded pose — a large unwanted motion, produced by the very
+    # thing that is there to make motion gentler.
+    var cmd = List[Float64]()
+    for i in range(SO101_N):
+        cmd.append(jmap.to_sim(arm.cal, i, raw[i]))
     var period_ns = 1_000_000_000 // HZ
     var ticks = HZ * SECONDS
     var dropped = 0
     var best_err = 1.0e9
     var last_err = 0.0
+    var inside = 0
 
+    var loop_t0 = perf_counter_ns()
     try:
         for t in range(ticks):
             var t0 = perf_counter_ns()
@@ -187,15 +239,18 @@ def main() raises:
                 dropped += 1
                 _sleep_until(t0 + period_ns)
                 continue
+            # ⚠ ONE ROUND TRIP, NOT SIX. `Present_Velocity` is sign-magnitude
+            # at bit 15, which `sync_read` decodes through `sign_bit_for` —
+            # the same path the positions take. Ticks per second -> rad/s uses
+            # the same 4095 the position map does, not 4096.
+            var n_vel = arm.read_velocities(Span(vraw))
+            if n_vel != SO101_N:
+                dropped += 1
+                _sleep_until(t0 + period_ns)
+                continue
             for i in range(SO101_N):
                 qp[i] = jmap.to_sim(arm.cal, i, raw[i])
-                # ⚠ `Present_Velocity` is sign-magnitude at bit 15, which
-                # `read_register` decodes. Ticks per second -> rad/s uses the
-                # same 4095, not 4096.
-                var v = arm.bus.read_register(
-                    arm.ids[i], STS_PRESENT_VELOCITY, SIZE_2
-                )
-                qv[i] = Float64(v) * 2.0 * 3.141592653589793 / 4095.0
+                qv[i] = Float64(vraw[i]) * 2.0 * 3.141592653589793 / 4095.0
 
             # ── the simulator AS A SENSOR: qpos -> FK -> end-effector ─────
             env.d.mocap_pos.data[SoArm101ReachConfig.TARGET_BODY * 3 + 0] = (
@@ -224,7 +279,13 @@ def main() raises:
                 var a = min(
                     jmap.sim_hi[i], max(jmap.sim_lo[i], Float64(action[i]))
                 )
-                goals[i] = jmap.from_sim(arm.cal, i, a)
+                # Guard 5: low-pass the command — see `SMOOTH`. AFTER the
+                # clamp, so the filter can never carry a state the limits
+                # already rejected, and BEFORE `from_sim`, so what is filtered
+                # is an ANGLE and not a tick count whose sign convention
+                # differs per joint.
+                cmd[i] = (1.0 - SMOOTH) * cmd[i] + SMOOTH * a
+                goals[i] = jmap.from_sim(arm.cal, i, cmd[i])
             arm.write_goals(Span(goals))
 
             # ── report ───────────────────────────────────────────────────
@@ -235,6 +296,8 @@ def main() raises:
             last_err = (dx * dx + dy * dy + dz * dz) ** 0.5
             if last_err < best_err:
                 best_err = last_err
+            if last_err * 1000.0 <= SUCCESS_MM:
+                inside += 1
             if t % HZ == 0:
                 print(
                     "t=" + String(t // HZ) + "s  ee->target = "
@@ -250,7 +313,26 @@ def main() raises:
     print("  target            = (", TARGET_X, TARGET_Y, TARGET_Z, ")")
     print("  closest approach  =", fixed(best_err * 1000.0, 1), "mm")
     print("  final error       =", fixed(last_err * 1000.0, 1), "mm")
+    # ⚠ CLOSEST APPROACH IS THE FLATTERING NUMBER, and on its own it is the
+    # wrong one: in sim this policy's mean CLOSEST approach is ~20 mm while
+    # its mean FINAL distance is ~38 mm — it passes through the target and
+    # drifts off rather than arriving. "Held" is the question a reach task is
+    # actually asking, so it gets its own row.
+    print(
+        "  steps inside", fixed(SUCCESS_MM, 0), "mm =", inside, "/", ticks,
+        "(" + fixed(100.0 * Float64(inside) / Float64(ticks), 0) + "%)",
+    )
     print("  dropped ticks     =", dropped, "/", ticks)
+    # ⚠ THE RATE THE LOOP ACTUALLY HELD, not the one it asked for. The bus is
+    # the budget: three round trips a tick at ~1.3 ms each leaves ~16 ms of
+    # the 20 ms period, and a serial hiccup eats it silently. A policy trained
+    # at 50 Hz running at 35 would look like a worse policy.
+    var achieved = Float64(ticks) * 1e9 / Float64(perf_counter_ns() - loop_t0)
+    print(
+        "  control rate      =", fixed(achieved, 1), "Hz achieved of",
+        Int(HZ), "asked (policy trained at 50 Hz)",
+    )
+    print("  smoothing         =", SMOOTH, "(1.0 = raw policy)")
     # ⚠ The error is FK-derived, not measured with a ruler: it is where the
     # model says the jaw is given the servo angles. A systematic kinematic
     # error is invisible to it. The sim task's own success radius is 20 mm.

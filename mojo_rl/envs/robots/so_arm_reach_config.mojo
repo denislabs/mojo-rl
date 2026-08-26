@@ -95,6 +95,31 @@ struct SoArmReachConfig[
     # Half-width of that cone. Both arms' base-rotation range is 1.92 rad.
     AZ_HALF: Float64 = 1.92,
     # Target shell, metres from the base origin.
+    #
+    # ⚠ THE NEAR END IS WHERE THE POLICY FAILS, and it is a WORKSPACE fact,
+    # not a training one. Measured 2026-08-26 on SO-101 with a trained
+    # checkpoint, 24 episodes (`examples/so101/sac_so_arm101_reach_diag.mojo`):
+    #
+    #     r <  0.17 m   reached <=20 mm in  1 of  6 episodes   (17%)
+    #     r >= 0.17 m   reached <=20 mm in 14 of 18 episodes   (78%)
+    #
+    # An FK sweep of 40 000 random poses inside the joint limits says why: the
+    # jaw's reachable set thins out sharply toward the base. Poses landing in
+    # the (radius, elevation) cell at r = 0.15 fall from 396 at low elevation
+    # to 1 at el = 1.3, against 528..455 for the same elevations at r = 0.275.
+    # A near target is reachable only through a narrow, tightly-folded band of
+    # configurations — so it is not "hard to learn", it is nearly singular.
+    #
+    # Raising R_MIN to 0.18 would drop that tail. NOT DONE HERE: the shell is
+    # shared with SO-100 and changing it makes every number measured against
+    # the old one incomparable, which is the model-owner's call and needs a
+    # retrain to mean anything.
+    #
+    # ⚠ ELEVATION IS NOT THE SIGNAL, though a first 24-episode draw suggested
+    # it was (2 of 9 above el 0.9 against 9 of 15 below). The second draw put
+    # failures at el 0.18, 0.29 and 0.34 as readily as at 1.18 and 1.20. One
+    # draw of 24 is not enough to split a second axis; the radius effect
+    # survived both.
     R_MIN: Float64 = 0.15,
     R_MAX: Float64 = 0.30,
     # Elevation band, radians above the XY plane through the base.

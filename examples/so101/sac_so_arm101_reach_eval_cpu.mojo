@@ -136,10 +136,22 @@ def main() raises:
     # for free. The earlier "> 50 = PROGRESS" band was therefore INDISTIN-
     # GUISHABLE FROM AN UNTRAINED NET, and a single episode proves nothing at
     # all: one untrained episode scored 123.8.
+    # ⚠⚠ AND THE BAND NAMES ARE STILL A CLAIM THE RETURN CANNOT SUPPORT.
+    # `tolerance`'s margin (0.25 m) is TWELVE TIMES its success radius
+    # (0.02 m), so hovering 40 mm away for a whole episode scores 492.7 / 500
+    # — above any episode this checkpoint has actually produced. A mean of 475
+    # is therefore consistent with an arm that never touches the target, and
+    # measurement says roughly half its episodes do not: mean CLOSEST approach
+    # 20 mm, mean FINAL distance 38 mm.
+    #
+    # `examples/so101/sac_so_arm101_reach_diag.mojo` reports reached / held /
+    # command chatter, which are the questions this number cannot answer. Read
+    # the bands below as "how much reward", never as "did it reach".
     if avg_reward > 400.0:
-        print("  Result: EXCELLENT — reaches and holds (mean > 400 / 500).")
+        print("  Result: high reward (mean > 400 / 500) — NOT the same as")
+        print("          reaching; run ..._reach_diag.mojo for reach + hold.")
     elif avg_reward > 200.0:
-        print("  Result: STRONG — reaches most targets (mean > 200).")
+        print("  Result: moderate reward (mean > 200) — see ..._reach_diag.")
     elif avg_reward > 90.0:
         print(
             "  Result: PROGRESS — measurably above the untrained baseline"

@@ -42,6 +42,7 @@ from mojo_rl.robot.feetech.control_table import (
     STS_MIN_POSITION_LIMIT,
     STS_OPERATING_MODE,
     STS_PRESENT_POSITION,
+    STS_PRESENT_VELOCITY,
     STS_RESOLUTION,
     STS_TORQUE_ENABLE,
     TORQUE_DISABLED,
@@ -218,6 +219,26 @@ struct SO101Arm(Movable):
         """
         return self.bus.sync_read(
             STS_PRESENT_POSITION, SIZE_2, Span(self.ids), out_raw
+        )
+
+    def read_velocities[
+        o: MutOrigin
+    ](mut self, out_raw: Span[Int32, o]) raises -> Int:
+        """All six present velocities, in TICKS PER SECOND, in one round trip.
+
+        ⚠ ONE ROUND TRIP IS THE POINT. A control loop that wants qvel was
+        calling `read_register` six times — six request/response pairs at
+        ~1.3 ms each, which is 8 ms of the loop's budget spent on a quantity a
+        single `sync_read` returns. `deploy_reach_real.mojo` could not hold
+        the 50 Hz its policy trained at because of exactly that.
+
+        Sign-magnitude at bit 15, decoded by `sync_read` through
+        `sign_bit_for` — the same path `read_positions` takes for bit 15 of
+        `Present_Position`, so the two share their decoding rather than
+        restating it.
+        """
+        return self.bus.sync_read(
+            STS_PRESENT_VELOCITY, SIZE_2, Span(self.ids), out_raw
         )
 
     # ── writing ────────────────────────────────────────────────────────────
