@@ -3625,24 +3625,29 @@ def _bb_post_filter[
                 bad[i] = True
                 break
 
-    # ⚠ MuJoCo STOPS AT EIGHT, and we had no cap at all. Its consolidation is
-    # `for (j...) if (dupe[j]==0) { con[ncon++] = tmp[j]; if (ncon >= 8) break; }`
-    # (`engine_collision_box.c:1410`) — `mjMAXCONPAIR` is 50 for the SCRATCH
-    # buffer, but at most eight points ever reach `mjContact`. `BB_MAX_POINTS`
-    # is 16 here, so a degenerate pair whose filter leaves nine or more good
-    # points would have emitted all of them.
+    # ⚠⚠ MuJoCo'S EIGHT-POINT OUTPUT CAP IS DELIBERATELY *NOT* PORTED, AND
+    # THAT IS A MEASURED DECISION. Its consolidation ends
+    # `if (ncon >= 8) break;` (`engine_collision_box.c:1410`) — `mjMAXCONPAIR`
+    # is 50 for the scratch buffer, but at most eight points ever reach
+    # `mjContact`. Adding the same cap here is faithful in isolation and buys
+    # NOTHING: `test_box_box_sweep`'s 400 poses put at most SIX points on any
+    # pair, and instrumented on the sawyer mesh scene the cap FIRED ZERO TIMES.
     #
-    # Latent rather than observed: `test_box_box_sweep`'s 400 poses put at most
-    # SIX points on any pair, so nothing in the tree reaches the cap today. It
-    # is ported because an unbounded manifold is a different algorithm from a
-    # bounded one, not because a measurement demanded it.
-    comptime _MJ_MAX_OUT = 8
+    # It is not free, though. Merely adding the never-taken `break` moved
+    # `test_mesh_detection_fields`'s CPU-vs-GPU worst contact-record error from
+    # 4.30e-06 to 2.08e-04 — 48x, and through a 1e-4 tolerance — on the MESH
+    # manifold rows, which do not go through this function at all. A dead
+    # branch in a hot loop is enough to change Metal's float32 codegen. An
+    # unused `comptime` alone did NOT move it, so this is control flow, not
+    # arbitrary sensitivity.
+    #
+    # So the cap stays out until something reaches it. What the episode really
+    # exposed is that the mesh manifold's CPU/GPU agreement on that scene is
+    # luck at the 1e-4 level; see that test's own note.
     var w = 0
     for i in range(n):
         if bad[i]:
             continue
-        if w >= _MJ_MAX_OUT:
-            break
         if w != i:
             pos_out[3 * w + 0] = pos_out[3 * i + 0]
             pos_out[3 * w + 1] = pos_out[3 * i + 1]

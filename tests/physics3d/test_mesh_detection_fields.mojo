@@ -669,6 +669,25 @@ def main() raises:
                 )
                 if err > worst:
                     worst = err
+    # ⚠⚠ THIS NUMBER IS 4.3e-06 AND THE TOLERANCE IS 1e-4, WHICH LOOKS LIKE 23x
+    # OF MARGIN AND IS NOT. Measured 2026-08-26: adding a NEVER-TAKEN `break`
+    # to `_bb_post_filter` — a function the mesh path does not call — moved
+    # this from 4.30e-06 to 2.08e-04, straight through the tolerance. The
+    # records that moved are POS_X/POS_Y/NX on the mesh manifold rows, by up to
+    # 0.18 mm on coordinates of ~0.62 m.
+    #
+    # An unused `comptime` did NOT move it, so this is not arbitrary
+    # sensitivity: a dead branch in a hot loop is enough to change Metal's
+    # float32 codegen, and the CPU and GPU legs then land on different EPA
+    # witness points. See `_metal_wide_per_thread_inlinearray_miscompute` —
+    # "the answer moves when the compile moves" is the symptom, four times now.
+    #
+    # So this assertion is real but it is BRITTLE, and a failure here is not
+    # automatically a defect in whatever was just changed. Before believing it,
+    # bisect by ADDING the change to the old file rather than removing it from
+    # the new one, and check whether the change is even on the mesh path. The
+    # underlying gap — CPU/GPU mesh manifold agreement at float32 being decided
+    # by codegen — is real, unfixed, and bigger than this file.
     print("  fields-CPU vs fields-GPU worst record err:", worst)
     if worst > 1e-4:
         raise Error("fields-CPU contact records tolerance exceeded")
