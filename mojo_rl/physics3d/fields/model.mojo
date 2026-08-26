@@ -44,6 +44,9 @@ from ..gpu.constants import (
     MODEL_MESH_META_SIZE,
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
+    MODEL_CAM_SIZE,
+    MAX_GPU_CAMERAS,
+    MODEL_GEOM_RGBA_SIZE,
     MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
     mesh_max_poly,
@@ -117,6 +120,15 @@ struct Model[
     comptime L_EXCLUDE = Layout.row_major(Self.NEXCLUDE, 2)
     comptime L_PAIR = Layout.row_major(Self.NPAIR, MODEL_PAIR_SIZE)
     comptime L_MESH_META = Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE)
+    # ⚠ FLAT, NOT `[N, SIZE]`. Every consumer of these two indexes them as
+    # `base + FIELD`, and a 2-D `LayoutTensor` given ONE index returns a ROW,
+    # not an element — the mismatch that cost a debugging session on
+    # `hfield_data` in `feb1b6c7`. Spelling the layout flat makes the wrong
+    # access a compile error instead of a silent row read.
+    comptime L_CAM = Layout.row_major(MAX_GPU_CAMERAS * MODEL_CAM_SIZE)
+    comptime L_GEOM_RGBA = Layout.row_major(
+        Self.NGEOM * MODEL_GEOM_RGBA_SIZE
+    )
     comptime L_MESH_VERT = Layout.row_major(Self.NMESH_VERTS, 3)
     # Mesh POLYGON topology for the native multi-contact path. The capacities
     # are Euler's formula on NMESH_VERTS, so they need no type parameter of
@@ -220,6 +232,39 @@ struct Model[
     the lanes reset at different times, so a shared grid would give every
     environment whichever terrain reset last. The metadata is genuinely
     per-asset and stays.
+    """
+    var cameras: TensorImpl[Self.DTYPE]  # [MAX_GPU_CAMERAS, MODEL_CAM_SIZE]
+    """`mjModel.cam_*` as a tensor, for the batched ray tracer.
+
+    ⚠⚠ THE POSE HERE IS LOCAL TO `CAM_IDX_BODY`, exactly as `mjModel.cam_pos`
+    is. Composing it is `raytrace/camera.camera_world_frame`, which is
+    `mj_camlight` — the batched twin the `kinematics/camera_frame.mojo`
+    docstring said this would need. Reading these three fields as a world pose
+    is right for every camera in `<worldbody>` and wrong for every camera on a
+    moving body, which is the one failure mode this table exists to make
+    spellable.
+
+    ⚠ CAPPED AT `MAX_GPU_CAMERAS` AND ANNOUNCED, NOT TRUNCATED — see
+    `fields_build`. Rows past the model's camera count have
+    `CAM_IDX_ACTIVE == 0`.
+    """
+    var geom_rgba: TensorImpl[Self.DTYPE]  # [NGEOM, 4]
+    """Each geom's visual colour, material already resolved.
+
+    ⚠ THE PARSER RESOLVED THE MATERIAL, NOT THIS FILE.
+    `_resolve_geom_materials` writes the material's colour into the geom's own
+    `rgba` where MuJoCo says it should win (XMLreference: only where the geom's
+    rgba still equals the default `0.5 0.5 0.5 1`), so this is a straight copy
+    of `GeomData.rgba_*`.
+
+    ⚠ THE SDL RENDERER DOES NOT USE THIS RULE. `model_def_from_xml` re-derives
+    the colour at draw time as "the material always wins if there is one",
+    which is a SECOND copy of a rule that has already drifted. The two paths
+    can therefore disagree on a geom that carries both an explicit `rgba` and a
+    `material`. This one follows the parser, i.e. MuJoCo; reconciling the
+    renderer is a separate change and is not made here.
+
+    ⚠ NOT IN `MODEL_GEOM_SIZE`. See `MODEL_GEOM_RGBA_SIZE`.
     """
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
     var mesh_tris: TensorImpl[Self.DTYPE]  # [NMESH_TRI, 9]
@@ -348,6 +393,18 @@ struct Model[
         self.hfield_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE
         )
+        # CAMERAS. A capped table like `hfield_meta`, and for the same
+        # reason — 1.5 KB at float64, so every model pays for it and no model
+        # needs a dimension for it. Zeroed, so an unfilled row reads
+        # `CAM_IDX_ACTIVE == 0`.
+        self.cameras = TensorImpl[Self.DTYPE].alloc(
+            MAX_GPU_CAMERAS * MODEL_CAM_SIZE
+        )
+        for _c in range(MAX_GPU_CAMERAS * MODEL_CAM_SIZE):
+            self.cameras.data[_c] = Scalar[Self.DTYPE](0)
+        self.geom_rgba = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_ngeom() * MODEL_GEOM_RGBA_SIZE)
+        )
 
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nmesh_verts() * 3))
         self.mesh_tris = TensorImpl[Self.DTYPE].alloc(
@@ -408,6 +465,8 @@ struct Model[
         self.mesh_meta.upload(ctx)
         self.hfield_data0.upload(ctx)
         self.hfield_meta.upload(ctx)
+        self.cameras.upload(ctx)
+        self.geom_rgba.upload(ctx)
         self.mesh_verts.upload(ctx)
         self.mesh_tris.upload(ctx)
         self.mesh_polys.upload(ctx)

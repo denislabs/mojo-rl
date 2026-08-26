@@ -354,7 +354,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 45
+comptime MODEL_META_SIZE: Int = 46
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -570,6 +570,24 @@ comptime MODEL_META_IDX_SOLVER_ITERATIONS: Int = 41
 comptime MODEL_META_IDX_SOLVER_TOLERANCE: Int = 42
 comptime MODEL_META_IDX_LS_ITERATIONS: Int = 43
 comptime MODEL_META_IDX_LS_TOLERANCE: Int = 44
+
+# ⚠⚠ `<option><flag warmstart="disable"/></option>` — `mjDSBL_WARMSTART`.
+# DISABLE-SENSE like `MODEL_META_IDX_EULERDAMP_DISABLED`: 0 means MuJoCo's
+# default, which is warm start ENABLED.
+#
+# `warmstart()` (engine_forward.c:786) runs before every constraint solve and
+# starts the iterate at the CHEAPER of `qacc_warmstart` (the previous
+# `mj_forward`'s answer) and `qacc_smooth`, by primal cost. With the flag set
+# it cold-starts at `qacc_smooth` and zeroes `efc_force` — which is exactly
+# and only what this engine used to do at all three Newton init sites.
+#
+# ⚠ IT IS A FIDELITY FEATURE BEFORE IT IS A SPEED ONE. Both engines share the
+# FIXED POINT, so a converged solve does not care; a model that TRUNCATES its
+# solve does. Measured on `apptronik_apollo` (which ships
+# `<option iterations="4">`), `|d(qpos)|` after one step against MuJoCo:
+# turning MuJoCo's own warm start OFF moved N=1 from 8.06e-03 to 3.29e-05, a
+# factor of 245. The board row was mostly this.
+comptime MODEL_META_IDX_WARMSTART_DISABLED: Int = 45
 
 comptime MJ_SOLVER_ITERATIONS: Int = 100
 comptime MJ_SOLVER_TOLERANCE: Float64 = 1e-8
@@ -1437,3 +1455,138 @@ def rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
 
 
 
+
+
+# =============================================================================
+# CAMERAS — the model-side table the batched ray tracer reads
+# =============================================================================
+#
+# `mjModel.cam_*`, minus everything only a rasteriser wants. Cameras existed in
+# this tree ONLY as `RenderFields` lists (host-side, `Float64`, `List`), which
+# is the right shape for the SDL viewer and the wrong one for a kernel: a
+# thread rendering pixel (env, px, py) needs the camera's parent body, local
+# pose and fovy as tensor reads, and cannot hold a `List`.
+#
+# ⚠ A FIXED CAP, LIKE `hfield_meta` AND UNLIKE `hfield_data`. The table is
+# `[MAX_GPU_CAMERAS, MODEL_CAM_SIZE]` — 1.5 KB at float64 — so capping the
+# COUNT costs nothing and needs no `Dims` member, no config parameter and no
+# positional risk in `ModelDims[...]`. Exceeding it RAISES in `fields_build`;
+# it does not truncate. A model whose last camera silently vanished would
+# render a black image with nothing to point at.
+comptime MAX_GPU_CAMERAS: Int = 32
+"""Headroom, measured 2026-08-26 over `assets/`, `dm_control-main`,
+`mujoco_menagerie-main`, `Metaworld-master` and `so101-nexus-main`: the
+camera-heaviest model in or near this tree is `flybody/fruitfly.xml` at **9**.
+(MuJoCo's own `100_humanoids_chol.xml` benchmark has 300, which is what a cap
+looks like when the model is a hundred copies of one robot — nothing here loads
+it.) The table is 6 KB at float64, so the cap is set well clear of the measured
+maximum rather than snugly above it."""
+
+comptime MODEL_CAM_SIZE: Int = 24
+comptime CAM_IDX_BODY: Int = 0
+"""`mjModel.cam_bodyid` — the body `pos`/`quat` below are expressed in.
+
+⚠⚠ THE POSE IS LOCAL, NOT WORLD. `mj_camlight` composes
+`xpos[b] + xmat[b]*cam_pos` before it dispatches on the mode, and a camera in
+`<worldbody>` has the identity there — which is why dropping this field was
+invisible across the whole dm_control suite and broke only the first
+body-attached camera. See `kinematics/camera_frame.mojo`."""
+comptime CAM_IDX_POS_X: Int = 1
+comptime CAM_IDX_POS_Y: Int = 2
+comptime CAM_IDX_POS_Z: Int = 3
+# ⚠ (x, y, z, w) — the order `GEOM_IDX_QUAT_*` and `BODY_IDX_QUAT_*` use, NOT
+# the (w, x, y, z) a `math3d.Quat` constructor takes. The records agree with
+# each other; the constructor is where the swap happens.
+comptime CAM_IDX_QUAT_X: Int = 4
+comptime CAM_IDX_QUAT_Y: Int = 5
+comptime CAM_IDX_QUAT_Z: Int = 6
+comptime CAM_IDX_QUAT_W: Int = 7
+comptime CAM_IDX_FOVY: Int = 8  # VERTICAL field of view, in DEGREES
+comptime CAM_IDX_MODE: Int = 9  # one of the `CAM_MODE_*` below
+comptime CAM_IDX_TARGET_BODY: Int = 10  # `mode="targetbody"` aim; -1 if none
+comptime CAM_IDX_ACTIVE: Int = 11
+"""1 on a row a `<camera>` actually filled, 0 on padding.
+
+⚠ NOT REDUNDANT WITH THE COUNT. The count is a host-side `Int` passed to the
+kernel, and a kernel that reads past it would find a zero row whose `fovy` is
+0 — a degenerate frustum, not an obvious error. This flag is what a reader
+tests so the failure names itself."""
+
+
+# ---- The REFERENCE pose, for `mode="track"` and `mode="trackcom"` ----------
+#
+# `mjModel.cam_pos0` / `cam_poscom0` / `cam_mat0`. MuJoCo's compiler computes
+# these once, at `qpos0`, and `mj_camlight` reads them for the two tracking
+# modes:
+#
+#     TRACK:    cam_xpos = xpos[body]        + cam_pos0
+#     TRACKCOM: cam_xpos = subtree_com[body] + cam_poscom0
+#     both:     cam_xmat = cam_mat0          (a FIXED world orientation)
+#
+# ⚠⚠ SO A TRACKING CAMERA'S ORIENTATION IS NOT ITS BODY'S. It translates with
+# the body and never turns — which is exactly what makes a `trackcom` view of
+# a walker readable, and what makes "compose the body transform" the WRONG
+# answer for two of the five modes.
+#
+# ⚠ WE HAVE NO MODEL COMPILER, so these are not filled by the parser: they
+# need forward kinematics at `qpos0`, which happens in `Data`, not in
+# `fields_build`. `raytrace.init_camera_reference` fills them from a lane whose
+# FK has run, and sets `CAM_IDX_REF_SET`. A tracking camera whose reference was
+# never taken is the silent-zero failure this tree keeps paying for, so the
+# renderer's HOST entry point refuses to launch on one.
+comptime CAM_IDX_POS0_X: Int = 12
+comptime CAM_IDX_POS0_Y: Int = 13
+comptime CAM_IDX_POS0_Z: Int = 14
+comptime CAM_IDX_POSCOM0_X: Int = 15
+comptime CAM_IDX_POSCOM0_Y: Int = 16
+comptime CAM_IDX_POSCOM0_Z: Int = 17
+comptime CAM_IDX_QUAT0_X: Int = 18  # `cam_mat0`, as a quaternion (x, y, z, w)
+comptime CAM_IDX_QUAT0_Y: Int = 19
+comptime CAM_IDX_QUAT0_Z: Int = 20
+comptime CAM_IDX_QUAT0_W: Int = 21
+# `mjtCamLight`. ⚠⚠ THESE ARE A SECOND SPELLING OF `parser/flat_model.mojo`'s
+# `CAM_MODE_*`, and the two MUST agree — `fields_build` writes the parser's
+# value into `CAM_IDX_MODE` and `raytrace/camera.mojo` dispatches on this one.
+# A silent disagreement would turn every `trackcom` camera into a `track`
+# camera, which still renders. `fields_build` carries a comptime assert
+# pairing them, so the agreement is CHECKED and not merely asserted in a
+# comment. They live here rather than only in the parser because `raytrace`
+# does not (and should not) import the parser.
+comptime CAM_MODE_FIXED: Int = 0
+comptime CAM_MODE_TRACK: Int = 1
+comptime CAM_MODE_TRACKCOM: Int = 2
+comptime CAM_MODE_TARGETBODY: Int = 3
+comptime CAM_MODE_TARGETBODYCOM: Int = 4
+
+comptime CAM_IDX_TAN_HALF_FOVY: Int = 23
+"""`tan(fovy/2)` in RADIANS, precomputed at model build.
+
+⚠⚠ NOT AN OPTIMISATION — `std.math.tan` IS CPU-ONLY. It resolves to libm, and
+a kernel calling it fails to compile with *"libm operations are only available
+on CPU targets"*. The frustum's half-height depends on nothing but `fovy`, a
+per-camera constant, so a per-pixel transcendental was never wanted anyway;
+this is the shape `dm_control/dtype_math.mojo` exists to avoid needing.
+
+⚠ `fovy` IS KEPT ALONGSIDE IT rather than replaced. A gate comparing against
+`mjModel.cam_fovy` should read the quantity MuJoCo stores, not its tangent.
+"""
+
+
+comptime CAM_IDX_REF_SET: Int = 22
+"""1 once `init_camera_reference` has taken this camera's `qpos0` pose.
+
+0 on a FIXED or TARGETBODY camera is harmless — neither mode reads the
+reference. On a TRACK/TRACKCOM camera it means the pose above is ZERO, i.e.
+the camera sits exactly on its body's origin looking along world -Z. That is a
+picture, not an error, which is why it is checked on the host."""
+
+
+# ---- Per-geom visual colour, for the ray tracer only ------------------------
+#
+# `Model.geom_rgba` is `[NGEOM, 4]` and is NOT part of `MODEL_GEOM_SIZE`.
+#
+# ⚠ DELIBERATELY A SEPARATE TENSOR. The geom record is read by the broadphase,
+# the narrow phase and the solver on every step; colour is read by nothing but
+# a renderer. Widening the hot record by four floats per geom to carry a field
+# no physics path touches trades cache for tidiness in the wrong direction.
+comptime MODEL_GEOM_RGBA_SIZE: Int = 4

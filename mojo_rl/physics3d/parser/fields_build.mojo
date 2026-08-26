@@ -32,7 +32,7 @@ settotalmass mutate it); all other records are written straight into `mf`.
 """
 
 from std.collections import InlineArray
-from std.math import sqrt
+from std.math import sqrt, tan, pi
 
 from mojo_rl.physics3d.joint_types import (
     JNT_FREE,
@@ -202,6 +202,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_CTRL_MIN,
     MODEL_META_IDX_CTRL_MAX,
     MODEL_META_IDX_MULTICCD_DISABLED,
+    MODEL_META_IDX_WARMSTART_DISABLED,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -241,6 +242,27 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RBOUND,
     GEOM_IDX_PRIORITY,
     GEOM_IDX_RAY_VISIBLE,
+    MODEL_GEOM_RGBA_SIZE,
+    MODEL_CAM_SIZE,
+    MAX_GPU_CAMERAS,
+    CAM_IDX_BODY,
+    CAM_IDX_POS_X,
+    CAM_IDX_POS_Y,
+    CAM_IDX_POS_Z,
+    CAM_IDX_QUAT_X,
+    CAM_IDX_QUAT_Y,
+    CAM_IDX_QUAT_Z,
+    CAM_IDX_QUAT_W,
+    CAM_IDX_FOVY,
+    CAM_IDX_MODE,
+    CAM_IDX_TARGET_BODY,
+    CAM_IDX_ACTIVE,
+    CAM_IDX_TAN_HALF_FOVY,
+    CAM_MODE_FIXED,
+    CAM_MODE_TRACK,
+    CAM_MODE_TRACKCOM,
+    CAM_MODE_TARGETBODY,
+    CAM_MODE_TARGETBODYCOM,
     GEOM_IDX_GROUP,
     GEOM_IDX_SOLREF_0,
     GEOM_IDX_SOLREF_1,
@@ -384,6 +406,22 @@ from .flat_model import (
     FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT,
     ACT_KIND_POSITION, ACT_KIND_VELOCITY,
 )
+from .flat_model import (
+    CAM_MODE_FIXED as _P_CAM_FIXED,
+    CAM_MODE_TRACK as _P_CAM_TRACK,
+    CAM_MODE_TRACKCOM as _P_CAM_TRACKCOM,
+    CAM_MODE_TARGETBODY as _P_CAM_TARGETBODY,
+    CAM_MODE_TARGETBODYCOM as _P_CAM_TARGETBODYCOM,
+)
+
+# ⚠⚠ TWO SPELLINGS OF ONE ENCODING, PAIRED HERE BECAUSE THIS IS THE ONLY FILE
+# THAT SEES BOTH. The parser writes `CameraData.mode` and this file copies it
+# into `CAM_IDX_MODE`; `raytrace/camera.mojo` dispatches on `gpu.constants`'
+# copy. If the two ever drifted, a `trackcom` camera would be rendered as a
+# `track` camera — still a picture, still plausible, and nothing downstream
+# could tell. `raytrace` must not import the parser, so a shared definition is
+# not available; an assert is.
+
 
 
 def _jnt_qpos_size(jnt_type: Int) -> Int:
@@ -1294,6 +1332,11 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_MULTICCD_DISABLED] = Scalar[DTYPE](
         1.0 if fmd.multiccd_disabled else 0.0
     )
+    # `<flag warmstart="disable"/>` — same disable-sense, same unconditional
+    # write.
+    mf.meta.data[MODEL_META_IDX_WARMSTART_DISABLED] = Scalar[DTYPE](
+        1.0 if fmd.warmstart_disabled else 0.0
+    )
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed
     # values (floor / first worldbody geom inherits <default><geom>).
@@ -1727,6 +1770,17 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_GAP] = Scalar[DTYPE](gd.gap)
         mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](gd.mesh_id)
         mf.geoms.data[o + GEOM_IDX_HFIELD_ID] = Scalar[DTYPE](gd.hfield_id)
+        # ── the ray tracer's colour, a separate tensor ────────────────────
+        # ⚠ `gd.rgba_*` IS ALREADY MATERIAL-RESOLVED.
+        # `_resolve_geom_materials` applied MuJoCo's rule (the material wins
+        # only where the geom's own rgba still equals the internal default)
+        # during parsing, so this is a copy and NOT a fourth place the rule
+        # gets re-derived. See `Model.geom_rgba`.
+        var co = i * MODEL_GEOM_RGBA_SIZE
+        mf.geom_rgba.data[co + 0] = Scalar[DTYPE](gd.rgba_r)
+        mf.geom_rgba.data[co + 1] = Scalar[DTYPE](gd.rgba_g)
+        mf.geom_rgba.data[co + 2] = Scalar[DTYPE](gd.rgba_b)
+        mf.geom_rgba.data[co + 3] = Scalar[DTYPE](gd.rgba_a)
         geom_mass[i] = Scalar[DTYPE](gd.mass)
         geom_density[i] = Scalar[DTYPE](gd.density)
         geom_group[i] = gd.group
@@ -2180,6 +2234,58 @@ def build_model_fields_from_flat[
             mf.hfield_data0.data[hf_adr[h] + k] = Scalar[DTYPE](
                 fmd.hfield_data[src + k]
             )
+
+    # ── CAMERAS ──────────────────────────────────────────────────────────
+    #
+    # `mjModel.cam_*` for the batched ray tracer. Straight copies except for
+    # the quaternion, which the RECORDS store (x, y, z, w) and `CameraData`
+    # stores as four separate fields in the same order.
+    #
+    # ⚠ ANNOUNCED, NOT TRUNCATED — the `MAX_GPU_MESHES` lesson. A camera past
+    # the cap would be a row nothing filled, i.e. `fovy = 0`, a degenerate
+    # frustum that renders a single point and looks like a shading bug.
+    comptime assert (
+        _P_CAM_FIXED == CAM_MODE_FIXED
+        and _P_CAM_TRACK == CAM_MODE_TRACK
+        and _P_CAM_TRACKCOM == CAM_MODE_TRACKCOM
+        and _P_CAM_TARGETBODY == CAM_MODE_TARGETBODY
+        and _P_CAM_TARGETBODYCOM == CAM_MODE_TARGETBODYCOM
+    ), (
+        "parser/flat_model.mojo's CAM_MODE_* and gpu/constants.mojo's CAM_MODE_*"
+        " have drifted. `fields_build` writes the first into CAM_IDX_MODE and"
+        " `raytrace/camera.mojo` dispatches on the second."
+    )
+    if len(fmd.cameras) > MAX_GPU_CAMERAS:
+        raise Error(
+            String("this model declares ") + String(len(fmd.cameras))
+            + " cameras and MAX_GPU_CAMERAS is " + String(MAX_GPU_CAMERAS)
+            + ". The rows are comptime-sized; raise it in"
+            " `gpu/constants.mojo`."
+        )
+    for c in range(len(fmd.cameras)):
+        var cd = fmd.cameras[c]
+        var cbase = c * MODEL_CAM_SIZE
+        mf.cameras.data[cbase + CAM_IDX_BODY] = Scalar[DTYPE](cd.body_id)
+        mf.cameras.data[cbase + CAM_IDX_POS_X] = Scalar[DTYPE](cd.pos_x)
+        mf.cameras.data[cbase + CAM_IDX_POS_Y] = Scalar[DTYPE](cd.pos_y)
+        mf.cameras.data[cbase + CAM_IDX_POS_Z] = Scalar[DTYPE](cd.pos_z)
+        mf.cameras.data[cbase + CAM_IDX_QUAT_X] = Scalar[DTYPE](cd.quat_x)
+        mf.cameras.data[cbase + CAM_IDX_QUAT_Y] = Scalar[DTYPE](cd.quat_y)
+        mf.cameras.data[cbase + CAM_IDX_QUAT_Z] = Scalar[DTYPE](cd.quat_z)
+        mf.cameras.data[cbase + CAM_IDX_QUAT_W] = Scalar[DTYPE](cd.quat_w)
+        mf.cameras.data[cbase + CAM_IDX_FOVY] = Scalar[DTYPE](cd.fovy)
+        mf.cameras.data[cbase + CAM_IDX_MODE] = Scalar[DTYPE](cd.mode)
+        mf.cameras.data[cbase + CAM_IDX_TARGET_BODY] = Scalar[DTYPE](
+            cd.target_body
+        )
+        # ⚠ THE TANGENT IS BAKED HERE BECAUSE `std.math.tan` IS CPU-ONLY.
+        # See `CAM_IDX_TAN_HALF_FOVY`. Computed at float64 regardless of the
+        # model's DTYPE, so a float32 model still gets a correctly-rounded
+        # half-angle rather than the tangent of a rounded angle.
+        mf.cameras.data[cbase + CAM_IDX_TAN_HALF_FOVY] = Scalar[DTYPE](
+            tan(0.5 * cd.fovy * (pi / 180.0))
+        )
+        mf.cameras.data[cbase + CAM_IDX_ACTIVE] = Scalar[DTYPE](1)
     # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just
     # `break` at the cap, which drops hull vertices from the LAST meshes and
     # shrinks their collision shape — an error with one sign, invisible to
