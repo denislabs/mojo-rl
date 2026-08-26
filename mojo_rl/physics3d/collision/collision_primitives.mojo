@@ -3625,10 +3625,24 @@ def _bb_post_filter[
                 bad[i] = True
                 break
 
+    # ⚠ MuJoCo STOPS AT EIGHT, and we had no cap at all. Its consolidation is
+    # `for (j...) if (dupe[j]==0) { con[ncon++] = tmp[j]; if (ncon >= 8) break; }`
+    # (`engine_collision_box.c:1410`) — `mjMAXCONPAIR` is 50 for the SCRATCH
+    # buffer, but at most eight points ever reach `mjContact`. `BB_MAX_POINTS`
+    # is 16 here, so a degenerate pair whose filter leaves nine or more good
+    # points would have emitted all of them.
+    #
+    # Latent rather than observed: `test_box_box_sweep`'s 400 poses put at most
+    # SIX points on any pair, so nothing in the tree reaches the cap today. It
+    # is ported because an unbounded manifold is a different algorithm from a
+    # bounded one, not because a measurement demanded it.
+    comptime _MJ_MAX_OUT = 8
     var w = 0
     for i in range(n):
         if bad[i]:
             continue
+        if w >= _MJ_MAX_OUT:
+            break
         if w != i:
             pos_out[3 * w + 0] = pos_out[3 * i + 0]
             pos_out[3 * w + 1] = pos_out[3 * i + 1]

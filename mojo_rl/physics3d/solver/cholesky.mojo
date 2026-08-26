@@ -29,6 +29,10 @@ So NV became the runtime `nv` and the comptime parameters that remain
 from std.math import sqrt
 from ..fields.scratch import Scratch
 
+# MuJoCo's `mjMINVAL` (`mjmodel.h`), which is what `mj_solNewton` passes as
+# `mindiag` to `mju_cholFactor` (`engine_solver.c:2038`, `:2068`).
+comptime _MJMINVAL: Float64 = 1e-15
+
 
 @always_inline
 def chol_factor[
@@ -56,9 +60,39 @@ def chol_factor[
                 s += L[i * nv + k] * L[j * nv + k]
             if i == j:
                 var diag = H[i * nv + i] - s
-                if diag < Scalar[DTYPE](1e-10):
+                # ⚠⚠ THE THRESHOLD IS `mjMINVAL`, AND `1e-10` WAS OURS, NOT
+                # MuJoCo'S. `mju_cholFactor` takes `mindiag` as an ARGUMENT
+                # (`engine_util_solve.c:33`) and the Newton solver passes
+                # `mjMINVAL` at both of its call sites
+                # (`engine_solver.c:2038` and `:2068`). The `1e-10` that used
+                # to be here is the value MuJoCo passes from a DIFFERENT
+                # routine (`engine_util_solve.c:1284`), five orders looser, and
+                # it arrived here without that provenance.
+                #
+                # ⚠ IT IS ALSO A RANK DETECTOR, NOT A CONDITIONER. MuJoCo
+                # floors the pivot and decrements `rank` so the factorization
+                # cannot produce NaN on a singular matrix; it does not try to
+                # improve conditioning, and the Newton path IGNORES the
+                # returned rank entirely.
+                #
+                # MEASURED, because a threshold nobody reaches is not a fix:
+                # instrumented at 1e-6 — four orders ABOVE the guard — it fired
+                # ZERO times across all 85 Menagerie scenes and zero times over
+                # `reassemble_5`'s twelve towers at BOTH dtypes. So this change
+                # is a provable no-op today and is here to remove an invented
+                # constant, not to alter behaviour.
+                #
+                # ⚠ `PHYSICS3D_CONTACT_FIDELITY_REASSEMBLE5.md` §5.1 filed this
+                # as "an absolute guard against a float32 noise floor of
+                # 4.8e-06". That framing does not survive the measurement: the
+                # 4.8e-06 is a RELATIVE pivot on a Hessian whose diagonal spans
+                # 1.1e6, so the absolute pivot is ~2 and nowhere near any
+                # threshold. MuJoCo has no relative guard, and inventing one
+                # (Jacobi equilibration) was already tried and refuted at
+                # 2435x worse.
+                if diag < Scalar[DTYPE](_MJMINVAL):
                     rank_ok = False
-                    diag = Scalar[DTYPE](1e-10)
+                    diag = Scalar[DTYPE](_MJMINVAL)
                 L[i * nv + j] = sqrt(diag)
             else:
                 L[i * nv + j] = (H[i * nv + j] - s) / L[j * nv + j]
@@ -122,9 +156,39 @@ def chol_factor_inline[
                 s += L[i * nv + k] * L[j * nv + k]
             if i == j:
                 var diag = H[i * nv + i] - s
-                if diag < Scalar[DTYPE](1e-10):
+                # ⚠⚠ THE THRESHOLD IS `mjMINVAL`, AND `1e-10` WAS OURS, NOT
+                # MuJoCo'S. `mju_cholFactor` takes `mindiag` as an ARGUMENT
+                # (`engine_util_solve.c:33`) and the Newton solver passes
+                # `mjMINVAL` at both of its call sites
+                # (`engine_solver.c:2038` and `:2068`). The `1e-10` that used
+                # to be here is the value MuJoCo passes from a DIFFERENT
+                # routine (`engine_util_solve.c:1284`), five orders looser, and
+                # it arrived here without that provenance.
+                #
+                # ⚠ IT IS ALSO A RANK DETECTOR, NOT A CONDITIONER. MuJoCo
+                # floors the pivot and decrements `rank` so the factorization
+                # cannot produce NaN on a singular matrix; it does not try to
+                # improve conditioning, and the Newton path IGNORES the
+                # returned rank entirely.
+                #
+                # MEASURED, because a threshold nobody reaches is not a fix:
+                # instrumented at 1e-6 — four orders ABOVE the guard — it fired
+                # ZERO times across all 85 Menagerie scenes and zero times over
+                # `reassemble_5`'s twelve towers at BOTH dtypes. So this change
+                # is a provable no-op today and is here to remove an invented
+                # constant, not to alter behaviour.
+                #
+                # ⚠ `PHYSICS3D_CONTACT_FIDELITY_REASSEMBLE5.md` §5.1 filed this
+                # as "an absolute guard against a float32 noise floor of
+                # 4.8e-06". That framing does not survive the measurement: the
+                # 4.8e-06 is a RELATIVE pivot on a Hessian whose diagonal spans
+                # 1.1e6, so the absolute pivot is ~2 and nowhere near any
+                # threshold. MuJoCo has no relative guard, and inventing one
+                # (Jacobi equilibration) was already tried and refuted at
+                # 2435x worse.
+                if diag < Scalar[DTYPE](_MJMINVAL):
                     rank_ok = False
-                    diag = Scalar[DTYPE](1e-10)
+                    diag = Scalar[DTYPE](_MJMINVAL)
                 L[i * nv + j] = sqrt(diag)
             else:
                 L[i * nv + j] = (H[i * nv + j] - s) / L[j * nv + j]

@@ -80,6 +80,10 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
+
+# MuJoCo's `mjMINVAL`; see `cholesky.mojo` on why `1e-10` was not the
+# reference's number for this guard.
+comptime _CHOL_MJMINVAL: Float64 = 1e-15
 from ..constraints.solver_ws import (
     ws_budget,
     _max_one_rt,
@@ -325,9 +329,14 @@ def _chol_factor_coop[
                     var ljk = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
                     s_d += ljk * ljk
                 var diag = rebind[Scalar[DTYPE]](H_sh[j * nv + j]) - s_d
-                if diag < Scalar[DTYPE](1e-10):
+                # `mjMINVAL`, matching `chol_factor_inline` — see the long
+                # note in `cholesky.mojo`. This third copy exists because the
+                # cooperative GPU factorization is documented as BIT-IDENTICAL
+                # to that one, and a threshold that drifted between them would
+                # break exactly that property.
+                if diag < Scalar[DTYPE](_CHOL_MJMINVAL):
                     ctrl_sh[2] = Scalar[DTYPE](1)
-                    diag = Scalar[DTYPE](1e-10)
+                    diag = Scalar[DTYPE](_CHOL_MJMINVAL)
                 L_sh[j * nv + j] = sqrt(diag)
             barrier()
             var ljj = rebind[Scalar[DTYPE]](L_sh[j * nv + j])
