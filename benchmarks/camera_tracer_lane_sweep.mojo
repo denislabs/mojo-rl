@@ -93,6 +93,34 @@ comptime LANES_1024: Bool = True
 comptime JITTER: Bool = False
 comptime JITTER_M = 0.02  # metres of shift between adjacent lanes
 
+# ⚠ EVERY LEG GETS THE SAME WALL-CLOCK WINDOW, not the same rep count. See
+# `_reps_for`. 200 ms is long enough that a stray kernel from another process
+# cannot dominate it and short enough that the whole sweep stays minutes.
+comptime MIN_WINDOW_MS = 200.0
+comptime MIN_REPS = 3
+comptime MAX_REPS = 2000
+
+
+def _reps_for(probe_ms: Float64) -> Int:
+    """Repetitions enough to fill `MIN_WINDOW_MS`, from a measured probe.
+
+    ⚠⚠ THIS EXISTS BECAUSE A PER-ROW `REPS` IS A BUG. The four legs of a row
+    differ by up to 100x in cost — at 1 024 lanes the soup leg is ~832 ms and
+    the mesh-free leg ~3 ms on a 5090 — so one rep count sized for the
+    expensive leg gives the cheap one a window of a few milliseconds, which
+    interference dominates. The symptom is not noise that averages out: it is
+    `shadow_x_free` coming back as **0.631**, i.e. shadows OFF timing SLOWER
+    than shadows ON, which is impossible and was printed as data.
+    """
+    if probe_ms <= 0.0:
+        return MAX_REPS
+    var n = Int(MIN_WINDOW_MS / probe_ms) + 1
+    if n < MIN_REPS:
+        return MIN_REPS
+    if n > MAX_REPS:
+        return MAX_REPS
+    return n
+
 
 def _r3(x: Float64) -> Float64:
     """Three decimals, so a row is readable as a table."""
@@ -113,9 +141,6 @@ def bench_lanes[
     comptime RL_NS = BatchedCameraRenderer[
         DT, E.MD, BATCH, W, H, SHADOWS=False
     ]
-    # Enough repetitions to average out launch jitter, few enough that the wide
-    # rows do not dominate the wall clock.
-    comptime REPS = 20 if BATCH <= 16 else (10 if BATCH <= 64 else 4)
 
     comptime NB3 = E.MD.NBODY * 3
     comptime NB4 = E.MD.NBODY * 4
@@ -151,20 +176,28 @@ def bench_lanes[
     r.render(ctx, d, env.mf)
     ctx.synchronize()
     var t = perf_counter_ns()
-    for _i in range(REPS):
+    r.render(ctx, d, env.mf)
+    ctx.synchronize()
+    var n1 = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+    t = perf_counter_ns()
+    for _i in range(n1):
         r.render(ctx, d, env.mf)
     ctx.synchronize()
-    var soup_shadow = Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
+    var soup_shadow = Float64(perf_counter_ns() - t) / Float64(n1) / 1.0e6
 
     # ── leg 2: soup ON, shadows OFF (a different kernel, same data) ───────
     var rn = RL_NS(ctx, env.mf, CAM)
     rn.render(ctx, d, env.mf)
     ctx.synchronize()
     t = perf_counter_ns()
-    for _i in range(REPS):
+    rn.render(ctx, d, env.mf)
+    ctx.synchronize()
+    var n2 = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+    t = perf_counter_ns()
+    for _i in range(n2):
         rn.render(ctx, d, env.mf)
     ctx.synchronize()
-    var soup_noshadow = Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
+    var soup_noshadow = Float64(perf_counter_ns() - t) / Float64(n2) / 1.0e6
 
     # ── leg 3: soup OFF, shadows ON — the control ─────────────────────────
     # `TRINUM = 0` makes `ray_mesh` return NO HIT without touching a geom, a
@@ -178,10 +211,14 @@ def bench_lanes[
     r.render(ctx, d, env.mf)
     ctx.synchronize()
     t = perf_counter_ns()
-    for _i in range(REPS):
+    r.render(ctx, d, env.mf)
+    ctx.synchronize()
+    var n3 = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+    t = perf_counter_ns()
+    for _i in range(n3):
         r.render(ctx, d, env.mf)
     ctx.synchronize()
-    var nosoup_shadow = Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
+    var nosoup_shadow = Float64(perf_counter_ns() - t) / Float64(n3) / 1.0e6
 
     # ── leg 4: soup OFF, shadows OFF — the 2x2's fourth cell ──────────────
     #
@@ -191,11 +228,15 @@ def bench_lanes[
     rn.render(ctx, d, env.mf)
     ctx.synchronize()
     t = perf_counter_ns()
-    for _i in range(REPS):
+    rn.render(ctx, d, env.mf)
+    ctx.synchronize()
+    var n4 = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+    t = perf_counter_ns()
+    for _i in range(n4):
         rn.render(ctx, d, env.mf)
     ctx.synchronize()
     var nosoup_noshadow = (
-        Float64(perf_counter_ns() - t) / Float64(REPS) / 1.0e6
+        Float64(perf_counter_ns() - t) / Float64(n4) / 1.0e6
     )
 
     # ⚠ RESTORE, OR EVERY LATER ROW MEASURES AN EMPTY SCENE. The model is
@@ -229,8 +270,22 @@ def bench_lanes[
         "\t",
         _r3(nosoup_shadow),
         "\t",
-        REPS,
+        String(n1) + "/" + String(n2) + "/" + String(n3) + "/" + String(n4),
     )
+
+    # ⚠⚠ THE ROW IS CHECKED AGAINST PHYSICS BEFORE IT IS BELIEVED. Turning
+    # shadows OFF cannot make a kernel slower, and removing the triangle soup
+    # cannot either — both legs run strictly less work in the same kernel or a
+    # smaller one. A violation is not a slow GPU, it is a measurement window
+    # too short to contain the work, and it MUST NOT be read as data: an
+    # earlier version of this file printed `shadow_x_free` = 0.631 and 10.107
+    # from a 12 ms window and they went into a report as findings.
+    if soup_noshadow > soup_shadow:
+        print("      !! shadows OFF timed SLOWER than ON (soup) — window too short")
+    if nosoup_noshadow > nosoup_shadow:
+        print("      !! shadows OFF timed SLOWER than ON (free) — window too short")
+    if nosoup_shadow > soup_shadow:
+        print("      !! soup OFF timed SLOWER than ON — window too short")
 
 
 def main() raises:
@@ -283,7 +338,7 @@ def main() raises:
     print("")
     print(
         "   lanes \t ms/frame \t us/lane \t frames/s \t sweep_x \t"
-        " shadow_x \t shadow_x_free \t control_ms \t reps"
+        " shadow_x \t shadow_x_free \t control_ms \t reps(1/2/3/4)"
     )
     bench_lanes[1](ctx, env, tri_backup)
     bench_lanes[16](ctx, env, tri_backup)
