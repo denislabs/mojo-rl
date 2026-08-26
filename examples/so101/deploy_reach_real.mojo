@@ -56,6 +56,7 @@ the recovery, not the `finally`.
 """
 
 from std.ffi import external_call
+from std.sys import argv
 from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
@@ -69,7 +70,7 @@ from mojo_rl.physics3d.fields import actuator_column
 from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.robot.so101.sim_map import SimJointMap
-from mojo_rl.utils.fmt import col, fixed
+from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
 
 comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
 comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
@@ -93,8 +94,22 @@ loop, not just the latency. This was 30 because the loop could not go faster —
 it spent six serial round trips per tick reading velocity one joint at a time.
 `SO101Arm.read_velocities` makes that one `sync_read`, so the tick is now
 three transactions (positions, velocities, goals) instead of eight."""
-comptime SECONDS = 20
-comptime MAX_STEP_TICKS = 60
+comptime SECONDS = 5
+"""Short on purpose. This program had never been executed against hardware, so
+the first live run is a BRING-UP of the guards, not a demonstration of the
+policy — five seconds is enough to read the achieved rate and see the arm
+settle, and short enough that a guard that does not work costs little."""
+comptime MAX_STEP_TICKS = 25
+"""Per-tick slew bound, in servo ticks. At 50 Hz this is 25 * 50 = 1250
+ticks/s ~= 110 deg/s.
+
+⚠ WAS 60 (~264 deg/s), AND THE DRY RUN IS WHY IT IS NOT. It measured the
+policy asking for a mean move of **1252 ticks** and a max of 2197 — the
+distance from the arm's parked pose to the pose the policy wants, roughly 110
+degrees. The clamp is what turns that into a slew rather than a snap, so its
+value IS the opening motion's speed: at 60 the arm crosses that gap in 0.4 s,
+at 25 in about 1 s. Raise it once the first live run has shown the direction
+is right."""
 
 comptime SMOOTH = 0.15
 """Low-pass on the COMMAND: `cmd <- (1-a)*cmd + a*policy`. 1.0 disables it.
@@ -139,6 +154,11 @@ comptime TARGET_Y = 0.0
 comptime TARGET_Z = 0.18
 
 
+def col_name(i: Int) -> String:
+    """Joint name, padded, so the self-check reads as a table."""
+    return pad_right(String(joint_name(i)), 12)
+
+
 def _sleep_until(deadline_ns: Int):
     """Spin. Measured better than `usleep` on this box — see
     `examples/so101/teleop.mojo` for the table."""
@@ -147,8 +167,36 @@ def _sleep_until(deadline_ns: Int):
 
 
 def main() raises:
+    # ⚠⚠ THE ARM MOVES ONLY WITH AN EXPLICIT `--live`. Everything else — the
+    # bus, the observation, the forward kinematics, the policy, the joint
+    # mapping, the clamps, the filter and the loop rate — runs identically in
+    # DRY RUN, which never arms torque and never writes a goal. A first
+    # contact with hardware that exercises every path except the dangerous one
+    # is worth more than a cautious live run, because a fault in ANY of those
+    # paths shows up as a printed number instead of as a motion.
+    # ⚠ RUNTIME, NOT COMPTIME, for `seconds` and `step`. Hardware bring-up is
+    # a sweep — the first live run showed the arm rate-limited by the clamp for
+    # its whole duration, and answering "how long does it need" or "how much
+    # clamp is enough" should not cost a two-minute rebuild each time. `--live`
+    # stays a flag rather than a default for the reason it always was.
+    var live = False
+    var seconds = SECONDS
+    var step_ticks = MAX_STEP_TICKS
+    var args = argv()
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if a == "--live":
+            live = True
+        elif a == "--seconds" and i + 1 < len(args):
+            seconds = Int(String(args[i + 1]))
+        elif a == "--step" and i + 1 < len(args):
+            step_ticks = Int(String(args[i + 1]))
     print("=" * 70)
-    print("SO-ARM101 reach — SIM-TRAINED POLICY ON THE REAL ARM")
+    if live:
+        print("SO-ARM101 reach — SIM-TRAINED POLICY ON THE REAL ARM  [LIVE]")
+    else:
+        print("SO-ARM101 reach — DRY RUN (no torque, no goals written)")
+        print("  pass --live to actually move the arm")
     print("=" * 70)
 
     # ── the policy ────────────────────────────────────────────────────────
@@ -182,7 +230,7 @@ def main() raises:
 
     # ── the arm ───────────────────────────────────────────────────────────
     print("  opening         =", FOLLOWER_PORT)
-    var arm = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=MAX_STEP_TICKS)
+    var arm = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=step_ticks)
     arm.bus.timeout_ms = 20
     print("  target          = (", TARGET_X, TARGET_Y, TARGET_Z, ")")
     print("=" * 70)
@@ -191,14 +239,86 @@ def main() raises:
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("deploy: follower did not report 6 positions — not arming")
 
+    # ── the mapping self-check ────────────────────────────────────────────
+    #
+    # ⚠⚠ `from_sim` IS THE ONLY LINK IN THIS CHAIN THAT NOTHING HAS EVER
+    # EXERCISED. `to_sim` is gated against so101-nexus's reference function and
+    # is driven every frame by `teleop_sim.mojo`; its inverse is used HERE and
+    # nowhere else. A sign error in it does not produce an error — it produces
+    # a mirrored pose, at full slew, on a real arm.
+    #
+    # So round-trip each joint's MEASURED position through both directions
+    # before anything is armed. It is not proof the convention is right (a
+    # convention wrong in both directions round-trips perfectly — `to_sim` is
+    # what pins that, and it is separately gated), but it is proof the two are
+    # consistent, which is the failure this file could introduce on its own.
+    var worst = 0
+    var n_outside = 0
+    for i in range(SO101_N):
+        # ⚠⚠ A CLAMPED JOINT CANNOT ROUND-TRIP, AND THAT IS NOT A DEFECT.
+        # `to_sim` clamps to the MODEL's `ctrlrange`, and three of these
+        # joints have calibrated travel that EXCEEDS it (the `gap` column in
+        # `SimJointMap.range_report`, and a faithful port of the upstream
+        # ranges — see `teleop_sim.mojo`). Sitting outside the model's range,
+        # `from_sim(to_sim(raw))` returns the LIMIT, not `raw`, by
+        # construction. Asserting on it would block a live run for a condition
+        # the mapping is documented to have — the first version of this check
+        # did exactly that, on `shoulder_lift`, 68 ticks out.
+        var over = jmap.clamped_by(arm.cal, i, raw[i])
+        var rad = jmap.to_sim(arm.cal, i, raw[i])
+        var back = jmap.from_sim(arm.cal, i, rad)
+        var err = Int(back) - Int(raw[i])
+        if err < 0:
+            err = -err
+        var note = String("")
+        if over > 0.0:
+            n_outside += 1
+            note = " ⚠ OUTSIDE the model range by " + fixed(over, 3) + " rad"
+        elif err > worst:
+            worst = err
+        print(
+            "  " + col_name(i), "raw", pad_left(String(Int(raw[i])), 6),
+            "-> rad", col(rad, 7, 3),
+            "-> raw", pad_left(String(Int(back)), 6),
+            "  (err " + String(err) + ")" + note,
+        )
+    if worst > 2:
+        raise Error(
+            "deploy: to_sim/from_sim do not round-trip inside the model range"
+            " (worst " + String(worst) + " ticks) — NOT arming. A sign or"
+            " offset in the joint mapping is inconsistent, and the failure it"
+            " produces on hardware is a MIRRORED pose at full slew."
+        )
+    print(
+        "  mapping round-trips inside the model range, worst", worst, "ticks"
+    )
+    if n_outside > 0:
+        # Not fatal, and worth saying out loud: until the arm moves back
+        # inside, the policy's observation carries a CLAMPED angle rather than
+        # the arm's true one, so its first action is taken on a pose that is
+        # off by that much. Every command it issues is clamped INTO the range,
+        # so the first motion fixes it.
+        print(
+            "  ⚠", n_outside, "joint(s) are parked outside the model's range."
+            " The policy's first\n     observation is clamped there; its"
+            " first command moves them back inside."
+        )
+    print()
+
     # Guard 1: park the goal on the present pose BEFORE arming torque.
-    arm.set_position_mode()
-    var hold = arm.max_step_ticks
-    arm.max_step_ticks = 0
-    arm.write_goals(Span(raw))
-    arm.max_step_ticks = hold
-    arm.set_torque(True)
-    print("follower torque ON\n")
+    # ⚠ SKIPPED ENTIRELY IN DRY RUN — writing `Goal_Position` on an unarmed
+    # servo is harmless, but not writing it at all is the only way to be sure
+    # a dry run cannot move anything, and "sure" is the point of the mode.
+    if live:
+        arm.set_position_mode()
+        var hold = arm.max_step_ticks
+        arm.max_step_ticks = 0
+        arm.write_goals(Span(raw))
+        arm.max_step_ticks = hold
+        arm.set_torque(True)
+        print("follower torque ON\n")
+    else:
+        print("dry run — torque left OFF, the arm is backdrivable\n")
 
     var obs = List[Scalar[DT]]()
     for _ in range(OBS_DIM):
@@ -223,11 +343,14 @@ def main() raises:
     for i in range(SO101_N):
         cmd.append(jmap.to_sim(arm.cal, i, raw[i]))
     var period_ns = 1_000_000_000 // HZ
-    var ticks = HZ * SECONDS
+    var ticks = HZ * seconds
     var dropped = 0
     var best_err = 1.0e9
     var last_err = 0.0
     var inside = 0
+    var max_step = 0.0
+    var sum_step = 0.0
+    var n_step = 0.0
 
     var loop_t0 = perf_counter_ns()
     try:
@@ -286,7 +409,19 @@ def main() raises:
                 # differs per joint.
                 cmd[i] = (1.0 - SMOOTH) * cmd[i] + SMOOTH * a
                 goals[i] = jmap.from_sim(arm.cal, i, cmd[i])
-            arm.write_goals(Span(goals))
+                # The move the servo is being asked for THIS tick, in ticks —
+                # the quantity `max_step_ticks` bounds and the one that decides
+                # whether this is gentle. Tracked in dry run too, where it is
+                # the whole output.
+                var step = Float64(goals[i] - raw[i])
+                if step < 0.0:
+                    step = -step
+                if step > max_step:
+                    max_step = step
+                sum_step += step
+                n_step += 1.0
+            if live:
+                arm.write_goals(Span(goals))
 
             # ── report ───────────────────────────────────────────────────
             var b = 12  # qpos(6) + qvel(6)
@@ -305,6 +440,8 @@ def main() raises:
                 )
             _sleep_until(t0 + period_ns)
     finally:
+        # Unconditional, dry run included: it costs one packet and it is the
+        # net under every path that could have armed something.
         arm.set_torque(False)
         print("\nfollower torque OFF")
 
@@ -328,11 +465,37 @@ def main() raises:
     # the 20 ms period, and a serial hiccup eats it silently. A policy trained
     # at 50 Hz running at 35 would look like a worse policy.
     var achieved = Float64(ticks) * 1e9 / Float64(perf_counter_ns() - loop_t0)
+    _ = seconds
     print(
         "  control rate      =", fixed(achieved, 1), "Hz achieved of",
         Int(HZ), "asked (policy trained at 50 Hz)",
     )
     print("  smoothing         =", SMOOTH, "(1.0 = raw policy)")
+    print(
+        "  commanded step    = mean",
+        fixed(sum_step / n_step, 1) if n_step > 0 else String("n/a"),
+        "ticks, max", fixed(max_step, 1),
+        "(clamp is " + String(step_ticks) + ")",
+    )
+    # ⚠⚠ THE CLAMP DECIDES THE MOTION WHENEVER THIS RATIO IS LARGE. Measured on
+    # the first live run: mean demand 612 ticks against a clamp of 25, i.e. the
+    # arm ran at 1/24 of what the policy asked for, for the whole episode, and
+    # was still approaching when time ran out. `max_step_ticks` HAS NO
+    # COUNTERPART IN SIM — there the commanded pose goes straight to the
+    # `<position>` actuator and only its gain limits the response — so a tight
+    # clamp is a sim2real gap, not just a safety margin. Read this line before
+    # concluding anything about the policy.
+    var throttle = (sum_step / n_step) / Float64(step_ticks) if n_step > 0 else 0.0
+    if throttle > 2.0:
+        print(
+            "  ⚠ RATE-LIMITED: the policy asked for",
+            fixed(throttle, 1) + "x the clamp on average.",
+            "\n     The CLAMP shaped this run, not the policy. Raise --step"
+            " or lengthen --seconds",
+            "\n     before reading the distance as the policy's fault.",
+        )
+    if not live:
+        print("  ⚠ DRY RUN — nothing was written to the arm. Add --live.")
     # ⚠ The error is FK-derived, not measured with a ruler: it is where the
     # model says the jaw is given the servo angles. A systematic kinematic
     # error is invisible to it. The sim task's own success radius is 20 mm.
