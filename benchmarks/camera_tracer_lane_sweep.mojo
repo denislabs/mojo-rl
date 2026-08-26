@@ -33,30 +33,62 @@ cell — soup OFF, shadows OFF — is what separates them:
 ⚠⚠ THE BVH LANDED, AND THIS FILE MEASURES IT WITHOUT A BISECT. `bvh_x` is a
 FIFTH leg that zeroes `MESH_META_IDX_BVHNUM` — the dispatch `ray_model` already
 carries — so the tree and the linear sweep are timed in the same binary, on the
-same board, in the same run. Apple at 1 024 lanes: **11.2x**, 72 fps -> 810 fps,
-and `sweep_x` (the headroom that REMAINS to a triangle-free scene) fell from
-38-46x to **3.34x**. The tree took about 92% of what was there.
+same board, in the same run. At 1 024 lanes:
 
-⚠⚠ AND IT REORDERS THE TWO LEVERS. With meshes at 40x, `SHADOWS=False`'s ~3x
-was the small one; with meshes at 3.3x it is the LARGER remaining lever on this
-scene. Read `bvh_x` and `shadow_x` side by side before optimising anything else.
+    board    bvh_x    ms/frame        fps            sweep_x
+    5090     21.97    835.0 -> 38.03  1 226 -> 26 927   94.2 -> 4.36
+    Apple    11.21   14 173 -> 1 264     72 ->    810   38-46 -> 3.34
+
+96% of the mesh TIME is gone on the 5090 (826 ms of overhead down to 29 ms).
+`bvh_x` RISES with occupancy on both boards — 11.0 -> 22.0 on the 5090, 9.5 ->
+11.2 on Apple — so a one-lane run understates the tree exactly as it understated
+the sweep it replaced.
 
 ⚠ `sweep_x` IS NOT A BVH's YIELD AND NEVER WAS. It is the ratio to a scene with
 no triangles at all, which no acceleration structure reaches: a walk still costs
-its ~13 node visits. That distinction is why `bvh_x` exists as its own leg —
-sizing the port against `sweep_x` would have promised 94x and delivered 11.
+its node visits. That distinction is why `bvh_x` exists as its own leg — sizing
+the port against `sweep_x` would have promised 94x and delivered 22.
 
-⚠⚠ ANSWERED, AND IT IS THE SECOND BRANCH ON BOTH BOARDS. 5090 at 1 024 lanes:
-`shadow_x` 2.99 vs `shadow_x_free` **3.37** — mesh-free is HIGHER, so removing
-the soup does not make the shadow ray cheap. Apple: 1.91 vs 2.37, same verdict
-at a smaller multiplier. **SHADOWS AND MESHES ARE INDEPENDENT COSTS; a BVH will
-not touch shadows, and `SHADOWS=False` stays a real ~3x lever on NVIDIA that no
-BVH will hand you.**
+⚠⚠ AND THE BVH BROKE THE INDEPENDENCE THIS FILE HAD JUST ESTABLISHED. Before
+the tree, `shadow_x` (2.99) and `shadow_x_free` (3.37) agreed, and the reading
+was that shadows and meshes were separable costs. They no longer agree: on the
+5090 at 1 024 lanes `shadow_x` is now **4.74** against `shadow_x_free` **3.28**,
+and `shadow_x_free` — the cell with no triangles in it — barely moved (3.37 ->
+3.28), which is the control that says the change is in the MESH interaction and
+not in the shadow ray itself.
 
-⚠ AND THE SHADOW COST RISES WITH OCCUPANCY: `shadow_x_free` goes 1.74 -> 2.21
--> 2.73 -> 3.29 -> 3.37 across the sweep. A second ray should cost ~2x. At one
-lane it costs LESS (1.74 — it hides in the same memory latency); at saturation
-it costs 3.4. That is the signature of REGISTER PRESSURE — two inlined
+The 2x2 in milliseconds says it plainly (5090, 1 024 lanes):
+
+                        before the tree        after
+    neither                    2.63             2.67
+    shadows only               8.86             8.73     <- unchanged, as it must be
+    meshes only              278.9              8.03
+    both                     835.0             38.03
+    sum of the parts         285.2             14.09
+    INTERACTION              549.8             23.94
+
+The interaction is the shadow ray paying the mesh cost a second time. It used to
+be 2.0x the camera ray's mesh cost; it is now **4.5x** of a much smaller number.
+HYPOTHESIS, and the arithmetic above is all that supports it: a linear sweep
+costs the same for every ray, so the two rays cost the same; a TREE does not — a
+camera ray stops at the first surface it hits, while a shadow ray starts inside
+the scene aimed at the light and walks far more nodes before it can answer. The
+tree therefore helps the camera ray more (51x on the marginal cost) than the
+shadow ray (23x). Counting node visits per ray type would settle it.
+
+⚠⚠ SO THE LEVERS REORDERED, AND HARDER THAN EXPECTED. `SHADOWS=False` was a 3x
+lever behind a 94x mesh problem; it is now a **4.74x** lever and the LARGEST
+single thing left in this kernel. At 1 024 lanes on a 5090 that is 38.03 ms ->
+8.03 ms, i.e. 26 927 -> 127 500 frames/s, and 2.67 ms (384 000 fps) with the
+meshes gone too. Read `bvh_x` and `shadow_x` side by side before optimising
+anything else — and note that an any-hit shadow ray (the query is a BOOLEAN, and
+`ray_model` answers it with a NEAREST-hit search) is the obvious next cut and
+has never been measured.
+
+⚠ THE SHADOW COST STILL RISES WITH OCCUPANCY: `shadow_x_free` goes 1.67 -> 2.19
+-> 2.97 -> 3.24 -> 3.28 across the sweep. A second ray should cost ~2x. At one
+lane it costs LESS (1.67 — it hides in the same memory latency); at saturation
+it costs 3.3. That is the signature of REGISTER PRESSURE — two inlined
 `ray_model` copies roughly double live registers and cut resident warps exactly
 when occupancy is what carries the kernel. HYPOTHESIS, not measured: check it
 against the compiler's register report before acting on it.
@@ -449,17 +481,21 @@ def main() raises:
         bench_lanes[1024](ctx, env, tri_backup, bvh_backup)
 
     print("")
-    print("bvh_x: what the tree bought, measured in THIS run against the")
-    print("linear sweep in the SAME binary. Apple: 9.5x at one lane rising to")
-    print("11.2x at 1 024 — 72 fps -> 810 fps on lift_brick.")
+    print("bvh_x: what the tree bought, timed against the linear sweep in the")
+    print("SAME binary. 5090 11.0x -> 21.97x across the sweep (835 -> 38 ms at")
+    print("1 024 lanes, 1 226 -> 26 927 fps); Apple 9.5x -> 11.2x (72 -> 810).")
+    print("It RISES with occupancy, so one lane understates it.")
     print("")
-    print("sweep_x: the mesh cost that REMAINS. Apple fell 38-46x -> 3.34x, so")
-    print("the tree took ~92% of the headroom and meshes are no longer what")
-    print("this kernel is made of. The rest is not another tree: it is the")
-    print("~13 node visits a walk costs, which is the floor.")
+    print("sweep_x: the mesh cost that REMAINS. 5090 94.2x -> 4.36x, Apple")
+    print("38-46x -> 3.34x: 96% of the mesh TIME is gone. What is left is not")
+    print("another tree, it is the node visits a walk costs.")
     print("")
-    print("shadow_x vs shadow_x_free: THEY AGREE (5090 2.99 vs 3.37 at 1 024;")
-    print("Apple 1.91 vs 2.37), so the shadow cost is NOT the triangle sweep.")
-    print("Shadows and meshes are INDEPENDENT: `SHADOWS=False` is a real ~3x")
-    print("on NVIDIA that no BVH gives you — and now that meshes cost 3.3x")
-    print("instead of 40x, shadows are the LARGER of the two levers.")
+    print("shadow_x vs shadow_x_free: THEY NO LONGER AGREE (5090 4.74 vs 3.28")
+    print("at 1 024; they were 2.99 vs 3.37 BEFORE the tree, and the mesh-free")
+    print("cell barely moved). The BVH helps the CAMERA ray more than the")
+    print("SHADOW ray — a camera ray stops at the first surface, a shadow ray")
+    print("starts inside the scene and walks. So `SHADOWS=False` went from a")
+    print("3x lever to a **4.74x** one and is now the LARGEST thing left:")
+    print("38.03 -> 8.03 ms, 26 927 -> 127 500 fps at 1 024 lanes.")
+    print("Never measured: an ANY-HIT shadow ray. The query is a boolean and")
+    print("`ray_model` answers it with a nearest-hit search.")
