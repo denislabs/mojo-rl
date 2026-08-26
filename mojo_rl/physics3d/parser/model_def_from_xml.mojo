@@ -114,7 +114,11 @@ from .flat_model import (
     TEX_BUILTIN_CHECKER,
 )
 from .full_parser import parse_xml_full
-from .render_fields import RenderFields, build_render_fields
+from .render_fields import (
+    RenderFields,
+    body_geom_visible,
+    build_render_fields,
+)
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
@@ -2413,7 +2417,6 @@ struct ModelDefFromXML[
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
         ref _m_geom_body_id = rf.geom_body_id
-        ref _m_geom_group = rf.geom_group
         ref _m_geom_half_length = rf.geom_half_length
         ref _m_geom_half_x = rf.geom_half_x
         ref _m_geom_half_y = rf.geom_half_y
@@ -2447,22 +2450,12 @@ struct ModelDefFromXML[
             var bid = _m_geom_body_id[i]
             if bid < 0:
                 continue
-            # Skip plane geoms (handled by render_ground_geoms)
-            if _m_geom_type[i] == 0:
-                continue
             if bid >= len(positions):
                 continue
-            # ⚠ GROUP IS VISIBILITY, and skipping this check is what drew
-            # dm_control's dog as a teal skeleton. MuJoCo's default
-            # `mjvOption.geomgroup` is 1 for groups 0-2 and 0 for the rest
-            # (`mjv_defaultOption`, engine_vis_init.c:320), and dog parks its
-            # collision capsules in group 3 and its 162 bone meshes in group 5.
-            # Drawing every group means drawing the collision proxy as if it
-            # were the model.
-            if _m_geom_group[i] >= 3:
-                continue
-            # Skip geoms with alpha < 1 (collision-only / semi-transparent)
-            if _m_geom_rgba_a[i] < 0.99:
+            # Plane / group / alpha, ONE predicate shared with the picker and
+            # the selection outline — see `body_geom_visible` for all three
+            # rules and for the 490 geoms the old inline `alpha < 0.99` hid.
+            if not body_geom_visible(rf, i):
                 continue
             var body_pos = positions[bid]
             var body_quat = quaternions[bid]

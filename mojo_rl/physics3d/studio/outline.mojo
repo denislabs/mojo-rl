@@ -26,7 +26,7 @@ from std.math import sin, cos, pi
 from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
 from mojo_rl.render import Color
 from ..model.model_renderer import OverlayLine
-from ..parser.render_fields import RenderFields
+from ..parser.render_fields import RenderFields, body_geom_visible
 
 comptime Vec3 = Vec3G[DType.float64]
 comptime Quat = QuatG[DType.float64]
@@ -198,9 +198,11 @@ def outline_body(
     for g in range(len(rf.geom_type)):
         if rf.geom_body_id[g] != body:
             continue
-        if rf.geom_type[g] == RF_PLANE:
-            continue
-        if rf.geom_group[g] >= 3 or rf.geom_rgba_a[g] < 1.0:
+        # ⚠ THE SAME PREDICATE THE RENDERER USES, not a second copy of it: an
+        # outline around a geom nobody can see is worse than no outline, and
+        # this file's copy had already drifted from the renderer's (`< 1.0`
+        # against `< 0.99`).
+        if not body_geom_visible(rf, g):
             continue
         var part = outline_geom(
             rf, g, positions, quats, visual_radius_scale, mesh_half

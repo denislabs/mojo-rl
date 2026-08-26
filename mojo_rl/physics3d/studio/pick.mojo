@@ -8,16 +8,17 @@ the name straight out of `fmd.geom_names`.
 
 `Model.geoms` and `RenderFields` describe the same geoms, and picking from the
 wrong one is a bug you cannot see: a collision-only geom is INVISIBLE (group
->= 3, or alpha < 1) and picking it would select something the user cannot see,
-while a visual-only geom is absent from the physics narrow phase and would be
+>= 3, or fully transparent) and picking it would select something the user
+cannot see, while a visual-only geom is absent from the narrow phase and is
 UNPICKABLE though it is the thing on screen. dm_control's dog is the extreme
 case — 123 of its 128 geoms are hidden by group, and the 5 you see are the
 skin.
 
-⇒ **this sweep mirrors `render_body_geoms`' skips exactly**: no plane, no
-body -1, group >= 3, alpha < 1. "You pick what you see" is the contract, and
-it is only true if the two lists of skips stay identical. They are adjacent in
-this file's docstring for that reason; if one changes, change both.
+⇒ **this sweep SHARES `render_body_geoms`' skips**: `body_geom_visible` in
+`parser/render_fields.mojo`, plus the body -1 bound. "You pick what you see"
+is the contract, and it is only true if the rule is one rule — restating it
+here is what let the two drift (`alpha < 1.0` here against `alpha < 0.99`
+there, so a geom at 0.995 drew and could not be picked).
 
 ## What is exact and what is a bound
 
@@ -40,7 +41,7 @@ and these approximations stop being acceptable.
 from std.math import tan, sqrt
 
 from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from ..parser.render_fields import RenderFields
+from ..parser.render_fields import RenderFields, body_geom_visible
 
 comptime Vec3 = Vec3G[DType.float64]
 comptime Quat = QuatG[DType.float64]
@@ -245,15 +246,14 @@ def pick_geom(
     var best = Hit(-1, 1.0e30, Vec3(0.0, 0.0, 0.0))
     for i in range(len(rf.geom_type)):
         var bid = rf.geom_body_id[i]
-        # ── the skips, IDENTICAL to `render_body_geoms` ──────────────────
+        # ── the skips, IDENTICAL to `render_body_geoms` — now by SHARING the
+        # predicate rather than by restating it. The comment claimed identity
+        # while the alpha thresholds differed (`< 1.0` here, `< 0.99` there);
+        # "you pick what you see" cannot survive two copies of the rule.
         if bid < 0 or bid >= len(positions):
             continue
         var gt = rf.geom_type[i]
-        if gt == RF_PLANE:
-            continue
-        if rf.geom_group[i] >= 3:
-            continue
-        if rf.geom_rgba_a[i] < 1.0:
+        if not body_geom_visible(rf, i):
             continue
 
         var bp = positions[bid]

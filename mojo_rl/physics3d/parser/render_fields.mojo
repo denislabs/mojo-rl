@@ -543,3 +543,57 @@ def build_render_fields(
     rf.vis_has_headlight = fmd.vis_has_headlight
 
     return rf^
+
+
+@always_inline
+def body_geom_visible(rf: RenderFields, g: Int) -> Bool:
+    """Is geom `g` drawn by the body-geom pass? MuJoCo's rule, in ONE place.
+
+    ⚠ THIS EXISTED THREE TIMES INLINE AND HAD ALREADY DRIFTED. The renderer
+    (`model_def_from_xml.render_body_geoms`), the picker (`studio/pick.mojo`)
+    and the selection outline (`studio/outline.mojo`) each open with the same
+    three skips, and `pick.mojo`'s own comment says "IDENTICAL to
+    `render_body_geoms`" — while the renderer culled `alpha < 0.99` and the
+    other two culled `alpha < 1.0`, so a geom at alpha 0.995 drew and could
+    not be picked. "You pick what you see" is the picker's stated contract and
+    only a shared predicate can keep it.
+
+    The three rules:
+
+    1. PLANES belong to `render_ground_geoms`, which draws them with the
+       ground's own material and extent. Not a visibility statement — a
+       "some other pass owns this one".
+
+    2. GROUP IS MuJoCo'S VISIBILITY MECHANISM. `mjv_defaultOption`
+       (engine_vis_init.c) sets `geomgroup` to 1 for groups 0-2 and 0 for the
+       rest, so 3+ is hidden by default. Skipping this check is what drew
+       dm_control's dog as a teal skeleton: it parks its collision capsules in
+       group 3 and its 162 bone meshes in group 5.
+
+    3. ALPHA ZERO IS INVISIBLE, and NOTHING ELSE IS. `mjc_` renders a
+       translucent geom translucent; only `rgba[3] == 0` removes it.
+
+    ⚠⚠ RULE 3 USED TO READ `alpha < 0.99`, AND IT HID 490 GEOMS. Measured
+    2026-08-26 by loading all 58 assets in MuJoCo 3.10 and asking for the
+    resolved per-geom group and rgba: 11 models carry a visible-group geom
+    with `0 < alpha < 0.99`, and every one of them was being dropped —
+    SO-ARM100/101's REACH TARGET (the red sphere the task is scored on), dog's
+    two irises, and the duplo bricks in `stack_2_bricks` / `stack_3_bricks` /
+    `stack_3_random` / `reassemble5`, i.e. 64 to 160 geoms each and the object
+    the whole manipulation task is ABOUT. The heuristic was reading
+    "translucent" as "collision proxy", which is what GROUP already says.
+
+    ⚠ THEY DRAW OPAQUE, THOUGH. `Renderer3D`'s solid pipeline is built with
+    `enable_blend=False` (the ground pass is the only blended one), so a geom
+    at alpha 0.6 is drawn at alpha 1.0 — MuJoCo would blend it. Visible and
+    solid beats invisible, and that is the whole claim here; a real
+    transparency pass needs its own pipeline and a back-to-front sort, and is
+    not what this predicate decides.
+    """
+    if rf.geom_type[g] == _RF_PLANE:
+        return False
+    if rf.geom_group[g] >= 3:
+        return False
+    if rf.geom_rgba_a[g] <= 0.0:
+        return False
+    return True
