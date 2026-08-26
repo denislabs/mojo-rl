@@ -182,6 +182,7 @@ def main() raises:
     var live = False
     var seconds = SECONDS
     var step_ticks = MAX_STEP_TICKS
+    var smooth = SMOOTH
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -191,6 +192,8 @@ def main() raises:
             seconds = Int(String(args[i + 1]))
         elif a == "--step" and i + 1 < len(args):
             step_ticks = Int(String(args[i + 1]))
+        elif a == "--smooth" and i + 1 < len(args):
+            smooth = Float64(String(args[i + 1]))
     print("=" * 70)
     if live:
         print("SO-ARM101 reach — SIM-TRAINED POLICY ON THE REAL ARM  [LIVE]")
@@ -351,6 +354,11 @@ def main() raises:
     var max_step = 0.0
     var sum_step = 0.0
     var n_step = 0.0
+    var reversals = 0.0
+    var last_delta = List[Float64](length=SO101_N, fill=0.0)
+    var last_goal = List[Float64](length=SO101_N, fill=0.0)
+    for i in range(SO101_N):
+        last_goal[i] = Float64(raw[i])
 
     var loop_t0 = perf_counter_ns()
     try:
@@ -407,12 +415,23 @@ def main() raises:
                 # already rejected, and BEFORE `from_sim`, so what is filtered
                 # is an ANGLE and not a tick count whose sign convention
                 # differs per joint.
-                cmd[i] = (1.0 - SMOOTH) * cmd[i] + SMOOTH * a
+                cmd[i] = (1.0 - smooth) * cmd[i] + smooth * a
                 goals[i] = jmap.from_sim(arm.cal, i, cmd[i])
                 # The move the servo is being asked for THIS tick, in ticks —
                 # the quantity `max_step_ticks` bounds and the one that decides
                 # whether this is gentle. Tracked in dry run too, where it is
                 # the whole output.
+                var delta = Float64(goals[i]) - last_goal[i]
+                # ⚠ THE REVERSAL RATE IS THE SHAKE, and it is a different
+                # quantity from the step SIZE. A goal that advances 25 ticks
+                # every tick in one direction is a smooth slew; one that
+                # alternates +25/-25 at the same size is a 25 Hz buzz through
+                # the gear train. Only this counter tells them apart, and it
+                # is the number to watch when tuning `--smooth`.
+                if delta * last_delta[i] < 0.0:
+                    reversals += 1.0
+                last_delta[i] = delta
+                last_goal[i] = Float64(goals[i])
                 var step = Float64(goals[i] - raw[i])
                 if step < 0.0:
                     step = -step
@@ -470,7 +489,17 @@ def main() raises:
         "  control rate      =", fixed(achieved, 1), "Hz achieved of",
         Int(HZ), "asked (policy trained at 50 Hz)",
     )
-    print("  smoothing         =", SMOOTH, "(1.0 = raw policy)")
+    # ⚠ THE ATTENUATION, NOT JUST THE ALPHA. An EMA's steady-state response to
+    # a signal that alternates every step is `a / (2 - a)`, so 0.15 leaves 8%
+    # of the chatter standing and 0.05 leaves 2.6%. Printing only the alpha
+    # invites reading 0.15 as "smoothed" when it is barely filtered — and the
+    # policy's command reverses direction on 83-97% of steps, which is exactly
+    # the signal this formula is about.
+    print(
+        "  smoothing         = alpha", fixed(smooth, 3),
+        "-> leaves", fixed(100.0 * smooth / (2.0 - smooth), 1),
+        "% of an every-step alternation (1.0 = raw policy)",
+    )
     print(
         "  commanded step    = mean",
         fixed(sum_step / n_step, 1) if n_step > 0 else String("n/a"),
@@ -485,6 +514,11 @@ def main() raises:
     # `<position>` actuator and only its gain limits the response — so a tight
     # clamp is a sim2real gap, not just a safety margin. Read this line before
     # concluding anything about the policy.
+    print(
+        "  goal reversals    =",
+        fixed(100.0 * reversals / n_step, 0) if n_step > 0 else String("n/a"),
+        "% of writes changed DIRECTION  <- this is the shake",
+    )
     var throttle = (sum_step / n_step) / Float64(step_ticks) if n_step > 0 else 0.0
     if throttle > 2.0:
         print(
