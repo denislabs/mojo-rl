@@ -12,6 +12,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/mojo_rl/physics3d/collision/native/mrl_qhull.c"
+# ⚠ A SECOND TRANSLATION UNIT, AND IT IS C++ ON PURPOSE. `mrl_poly_order`
+# reproduces `MakePolygons`' emission order by calling the SAME
+# `std::unordered_map` MuJoCo does — see native/mrl_polyorder.cc for why that
+# is a call rather than a reimplementation. It rides in this dylib because the
+# Mojo side already dlopen's exactly one library for mesh topology.
+SRC_CXX="$ROOT/mojo_rl/physics3d/collision/native/mrl_polyorder.cc"
 OUTDIR="$ROOT/mojo_rl/physics3d/collision"
 # ⚠ FIND THE PREFIX THAT ACTUALLY HAS THE HEADER, do not trust $CONDA_PREFIX.
 # Outside `pixi run` it points at the user's own miniforge, which has no
@@ -38,14 +44,21 @@ Linux)  LIB="$OUTDIR/libmrl_qhull.so" ;;
 *) echo "build_qhull.sh: unsupported OS $(uname -s)" >&2; exit 1 ;;
 esac
 
-if [[ "$SRC" -ot "$LIB" && -f "$LIB" ]]; then
+if [[ "$SRC" -ot "$LIB" && "$SRC_CXX" -ot "$LIB" && -f "$LIB" ]]; then
     echo "qhull shim up to date: $LIB"
     exit 0
 fi
 
 CC="${CC:-cc}"
-echo "building qhull shim from $SRC"
+CXX="${CXX:-c++}"
+echo "building qhull shim from $SRC + $SRC_CXX"
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+"$CC"  -O2 -fPIC -c -I"$PREFIX/include" -o "$TMPD/mrl_qhull.o"     "$SRC"
+"$CXX" -O2 -fPIC -c -std=c++17          -o "$TMPD/mrl_polyorder.o" "$SRC_CXX"
+# ⚠ LINK WITH THE C++ DRIVER — one object needs libc++, and it is the whole
+# point of that object that it is the SAME libc++ MuJoCo's map ran on.
 # ⚠ RPATH TO THE ENV, so the dylib finds libqhull_r wherever pixi put it.
-"$CC" -O2 -fPIC -shared -I"$PREFIX/include" -o "$LIB" "$SRC" \
+"$CXX" -O2 -fPIC -shared -o "$LIB" "$TMPD/mrl_qhull.o" "$TMPD/mrl_polyorder.o" \
       -L"$PREFIX/lib" -lqhull_r -Wl,-rpath,"$PREFIX/lib"
 echo "  $LIB"

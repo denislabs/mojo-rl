@@ -176,3 +176,52 @@ def qhull_faces(
             why = String("qhull returned a point id out of range")
         raise Error("mrl_qhull_faces failed: " + why)
     return r
+
+
+def poly_order(
+    keys: Pointer[mut=False, Float64, _],
+    nkeys: Int,
+    # ⚠ NOT `out` — that is a RESERVED KEYWORD in Mojo (named results,
+    # `out self`) and a parameter called it fails with "expected argument
+    # name". Same family as `ref`, which this tree has hit before.
+    dst: Pointer[mut=True, Int32, _],
+) raises -> Int:
+    """`MakePolygons`' EMISSION ORDER — libc++'s `unordered_map` iteration.
+
+    `keys` is `nkeys` (rtheta, rphi) pairs in FIRST-SEEN order, i.e. the order
+    the hull faces are walked; `dst` receives the insertion indices in the
+    map's iteration order. Returns how many were written.
+
+    ⚠ WHY THIS IS A CALL AND NOT A REIMPLEMENTATION: MuJoCo does not define
+    this order, its standard library does — the same argument that makes the
+    HULL a call to qhull. An instrumented build of 3.10.0 shows the real key
+    order is bucket-contiguous at the map's own `bucket_count` (ratio 1.000 on
+    every mesh), and a local build agrees with the pixi wheel on 84 of 85
+    stretch_3 meshes. See `native/mrl_polyorder.cc`.
+
+    ⚠ THE KEYS MUST BE COMPUTED ON THE RAW FILE VERTICES — `MakePolygons` runs
+    before `ApplyTransformations` and before `Process()` bakes the principal
+    frame. That is already the vertex array this module's hull is built from.
+    """
+    if nkeys <= 0:
+        return 0
+    var n = _get_dylib_function[
+        lib,
+        "mrl_poly_order",
+        def (
+            Pointer[Float64, MutUntrackedOrigin],
+            Int32,
+            Pointer[Int32, MutUntrackedOrigin],
+        ) thin -> Int32,
+    ]()(
+        keys.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin](),
+        Int32(nkeys),
+        dst.unsafe_origin_cast[MutUntrackedOrigin](),
+    )
+    var r = Int(n)
+    if r < 0:
+        raise Error(
+            "mrl_poly_order rejected its arguments (nkeys "
+            + String(nkeys) + ")"
+        )
+    return r

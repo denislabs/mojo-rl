@@ -45,6 +45,7 @@ convention here matches `m.mesh_polyvert` exactly and is verified against it.
 from std.math import sqrt, atan2, acos, cos, sin, abs, round
 
 from ..constants import MESH_POLY_ANGLE_TOL
+from .qhull_native import poly_order, qhull_shim_available
 
 
 # `mjEPS` (`user_util.h:31`) — the compiler-side "this is zero" threshold that
@@ -488,49 +489,75 @@ def build_mesh_polygons[
             groups[found].insert_face(i1, i2, i3)
 
     var npoly = 0
-    # ⚠⚠ GROUPS ARE EMITTED IN REVERSE FIRST-SEEN ORDER, AND THAT IS A
-    # DELIBERATE, MEASURED APPROXIMATION — NOT A PORT OF ANYTHING.
+    # ⚠⚠ THE EMISSION ORDER IS libc++'S `unordered_map` ITERATION ORDER, AND
+    # IT IS FETCHED FROM THE SHIM RATHER THAN INVENTED.
     #
-    # `MakePolygons` emits `for (const auto& pair : mesh_polygons)`, an
-    # `std::unordered_map` ITERATION ORDER. Where `multicontact()` has to break
-    # a tie between two coplanar candidate faces for one edge it takes the
-    # FIRST in that order, so the order is observable in the contact positions
-    # — `hello_robot_stretch_3` and `shadow_dexee` each place a manifold point
-    # millimetres off with the depth and the normal EXACT.
+    # `MakePolygons` emits `for (const auto& pair : mesh_polygons)`. That order
+    # is OBSERVABLE: where `multicontact()` breaks a tie between two coplanar
+    # candidate faces for one edge it takes the FIRST in polygon order, so the
+    # choice lands in the contact POSITION — `hello_robot_stretch_3` and
+    # `shadow_dexee` each placed a manifold point millimetres off with the
+    # depth and the normal EXACT.
     #
-    # It is not reproducible, and 2026-08-26 that was tested rather than
-    # assumed: replaying our insertion sequence through the real libc++
-    # `unordered_map` does NOT reproduce it. The check is structural — in
-    # libc++ a bucket's keys are CONTIGUOUS in iteration order:
+    # ⚠ IT IS REPRODUCIBLE, AND THAT WAS MEASURED. An instrumented build of
+    # MuJoCo 3.10.0 dumping the real key order shows it is exactly
+    # bucket-contiguous at the map's own `bucket_count` (ratio 1.000 on every
+    # mesh), i.e. it IS a libc++ iteration; and a local build agrees with the
+    # pixi wheel on 84 of 85 `stretch_3` meshes, i.e. it is stable across
+    # builds. So the faithful port is a CALL — the same argument that makes
+    # the hull a call to qhull. See `native/mrl_polyorder.cc`.
     #
-    #     a known libc++ iteration (positive control)  runs/distinct  1.000
-    #     MuJoCo's observed polygon order                             1.743
-    #     fully randomised keys                                       1.755
-    #     (10% key noise, for scale)                                  1.165
-    #
-    # ⚠ BUT THE ORDER IS NOT RANDOM EITHER. Pairwise agreement with MuJoCo's,
-    # over 5 meshes of 2 scenes:
-    #
-    #     our insertion order FORWARD    26.7 - 31.5 %
-    #     our insertion order REVERSED   68.7 - 73.8 %
-    #     the libc++ replay              58.9 - 64.1 %
-    #
-    # Reverse-insertion is what FRONT-INSERTION into a hash bucket looks like,
-    # so ~70% is a mechanism rather than a coincidence. Emitting reversed makes
-    # the tie-break agree with the reference about seven times in ten instead
-    # of three.
-    #
-    # ⚠ IT LIVES HERE, NOT IN `alignedFaceEdge`. That routine takes the FIRST
-    # qualifying edge and that IS the reference's rule; reversing its scan
-    # would get the same board and leave a correct routine reading as a wrong
-    # one. The one thing we cannot reproduce is the ORDER, so the one
-    # approximation belongs in the ORDER.
-    #
-    # ⚠ `polygon_map` below scans polygons in emission order, so it follows
-    # from this and must not be reversed a second time.
-    #
-    # Probes: `docs/menagerie_fidelity_harnesses/polyorder/`.
-    for g in range(len(groups) - 1, -1, -1):
+    # ⚠ THE KEYS GO IN FIRST-SEEN ORDER, which is `groups`' own order, which is
+    # the hull-face walk order — `MakePolygons` inserts as it walks
+    # `GraphFaces()`. And they are computed on the RAW FILE vertices, because
+    # `MakePolygons` runs before `ApplyTransformations` and before `Process()`
+    # bakes the principal frame; that is already the array `verts` is.
+    var order = List[Int]()
+    var got_order = False
+    if len(groups) > 0:
+        # ⚠ `try` IS A SCOPE in Mojo, so `order`/`got_order` are declared
+        # above it and only ASSIGNED inside. `build_mesh_polygons` cannot
+        # raise (its callers are non-raising), which is why this is a `try`
+        # rather than a propagated error.
+        try:
+            if qhull_shim_available():
+                var kbuf = List[Float64](capacity=2 * len(groups))
+                for g in range(len(groups)):
+                    kbuf.append(groups[g].rtheta)
+                    kbuf.append(groups[g].rphi)
+                var obuf = List[Int32](length=len(groups), fill=Int32(0))
+                var nw = poly_order(
+                    Pointer(to=kbuf[0]), len(groups), Pointer(to=obuf[0])
+                )
+                if nw == len(groups):
+                    for k in range(nw):
+                        order.append(Int(obuf[k]))
+                    got_order = True
+        except e:
+            # ⚠⚠ LOUD, NOT SWALLOWED. Falling back here silently swaps the
+            # REFERENCE'S order for a 70% approximation, and the only symptom
+            # is a contact a few millimetres off on two Menagerie scenes —
+            # nothing that fails a build or a smoke test. A bare `except` in
+            # this file's neighbourhood once left four legs on the wrong hull.
+            print(
+                "mesh_polygons: mrl_poly_order failed (", e, ") — falling back"
+                " to REVERSE first-seen order, which agrees with MuJoCo ~70%"
+                " of the time. Rebuild the shim with `pixi run build-qhull`."
+            )
+            order = List[Int]()
+            got_order = False
+    if not got_order:
+        # ⚠ FALLBACK, AND IT IS AN APPROXIMATION — NOT THE REFERENCE'S ORDER.
+        # Without the shim the best available is REVERSE first-seen order,
+        # which is what front-insertion into a hash bucket looks like and which
+        # agrees with the reference 68.7-73.8% of the time against 26.7-31.5%
+        # forward (measured over 5 meshes of 2 scenes). A model whose contacts
+        # never hit the tie is unaffected either way.
+        for g in range(len(groups) - 1, -1, -1):
+            order.append(g)
+
+    for oi in range(len(order)):
+        var g = order[oi]
         var paths = groups[g].paths()
         for p in range(len(paths)):
             var path = paths[p].copy()
