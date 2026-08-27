@@ -1274,8 +1274,11 @@ struct LunarLander[
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a list."""
-        var state = self.get_state()
-        return state.to_list()
+        # Reads the cache directly rather than through `get_state`: the `Env`
+        # trait pins that one as `mut self` while `BoxDiscreteActionEnv` pins
+        # this one as `self`, so routing through it no longer type-checks.
+        # Same value either way — `get_state` only returns `cached_state`.
+        return self.cached_state.to_list()
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""

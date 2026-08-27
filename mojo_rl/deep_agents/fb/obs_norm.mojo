@@ -49,10 +49,6 @@ struct ObsNorm[N: Int](Copyable & Deinitable):
         self.mu = move.mu^
         self.sd = move.sd^
 
-    def __copyinit__(out self, ref other: Self):
-        self.mu = other.mu
-        self.sd = other.sd
-
     @staticmethod
     def fit(ref rows: Tensor, n_rows: Int) raises -> Self:
         """Mean and std over `n_rows` contiguous `[N]` rows of a HOST tensor.

@@ -1679,8 +1679,8 @@ def _class_parent(xml: String, cls: String) -> String:
 #
 # `_DefaultsIndex`, `_build_defaults_index`, `_class_attr_indexed`,
 # `_class_parent_indexed`, `_class_attr_inherited_indexed`, `_AttrCache`,
-# `_attr_3way_cached`, plus the rescanning `_class_attr_inherited` and
-# `_attr_3way` they replaced.
+# `_attr_3way_cached`, `_ClassAttrCache`, plus the rescanning
+# `_class_attr_inherited` and `_attr_3way` they replaced.
 #
 # Written FOR `parse_xml_model_data`'s actuator loop and
 # `parse_xml_render_data`'s geom loop, where they killed ~340 O(n) document
@@ -3695,49 +3695,6 @@ def _build_joint_adr_table(xml: String, deg_factor: Float64) -> _JointAdrTable:
         out.qadr.append(qa)
         out.dadr.append(da)
     return out^
-
-
-struct _ClassAttrCache(Copyable, Movable):
-    """Class-attribute resolution for `parse_xml_model_data`'s actuator loop.
-
-    Two layers, because the loop repeats itself in two different ways. It asks
-    for 8 attributes per actuator, and many actuators share a class, so the
-    (class, kind, attribute) memo below kills the repeats — dog's 38 actuators
-    make 304 requests over ~190 distinct triples. What remains is one
-    resolution per distinct triple, and each of those used to walk the whole
-    document once per link of the inheritance chain; `_DefaultsIndex` locates
-    every `<default>` block once instead.
-
-    The memo is keyed on all three parts because the same attribute resolves
-    differently for a `<motor>` than for a `<general>` of the same class.
-    """
-
-    var idx: _DefaultsIndex
-    var keys: List[String]
-    var vals: List[String]
-
-    def __init__(out self, xml: String):
-        self.idx = _build_defaults_index(xml)
-        self.keys = List[String]()
-        self.vals = List[String]()
-
-    def get(
-        mut self, xml: String, cls: String, tag_name: String, attr: String
-    ) -> String:
-        """`_class_attr_inherited`, memoized and index-backed.
-
-        Equivalence with the rescanning original is not assumed: every
-        (class, kind, attribute) triple these models use is diffed against it
-        in `tests/physics3d/test_defaults_index_equivalence.mojo`.
-        """
-        var key = cls + "|" + tag_name + "|" + attr
-        for i in range(len(self.keys)):
-            if self.keys[i] == key:
-                return self.vals[i]
-        var v = _class_attr_inherited_indexed(xml, self.idx, cls, tag_name, attr)
-        self.keys.append(key)
-        self.vals.append(v)
-        return v
 
 
 def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:

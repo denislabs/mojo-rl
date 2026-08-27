@@ -55,18 +55,12 @@ from mojo_rl.envs.dm_control.finger.finger_dims import (
 )
 
 
-
-
 # `Spin.initialize_episode` writes `dof_damping['hinge'] = .03` (the XML says
 # .5). That is a real dynamics change and `fields.Model` is shared+unbatched,
-# so it cannot be a per-episode write — spin compiles from its OWN XML with the
-# value already substituted. The substitution is asserted in the parity test,
+# so it cannot be a per-episode write — spin loads its OWN asset,
+# `finger_spin.xml`, with the value already substituted (`finger.xml` keeps the
+# reference's .5 for turn). The substitution is asserted in the parity test,
 # because a silent no-op here would leave spin running the turn dynamics.
-comptime _finger_body_spin = String(_finger_body).replace(
-    '<joint name="hinge" frictionloss=".1" damping=".5"/>',
-    '<joint name="hinge" frictionloss=".1" damping=".03"/>',
-)
-
 
 
 comptime pmf = DM_FINGER_DIMS
