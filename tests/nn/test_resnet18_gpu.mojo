@@ -1,0 +1,374 @@
+# +--------------------------------------------------------------------------+ #
+# | ResNet18 backbone — GPU vs CPU
+# +--------------------------------------------------------------------------+ #
+"""The vision tower's GPU path, on its own.
+
+    pixi run -e apple mojo run -I . tests/nn/test_resnet18_gpu.mojo
+    pixi run -e nvidia mojo run -I . tests/nn/test_resnet18_gpu.mojo
+
+⚠ Deliberately separate from `test_act_gpu_vs_cpu.mojo`. That gate instantiates
+the whole ACT graph twice — once per target — and ResNet18 is 20 Conv2D + 20
+BatchNorm2D, so including it there meant 80 kernel instantiations on top of
+everything else and a build that never completed on CUDA. It runs a two-conv
+stub instead, because what it checks (the graph, the optimizer, the host/device
+boundary) does not depend on which backbone is attached. This file keeps the
+real backbone's GPU coverage, at one model type instead of a whole graph.
+
+Chained, not re-derived: the CPU path is gated against torchvision in
+`tests/deep_agents/act/test_act_backbone_vs_reference.mojo`, so CPU-vs-GPU here
+covers the whole tower.
+
+The FORWARD runs with BatchNorm in EVAL — on running statistics — because in
+training mode each side computes its own batch statistics and the comparison
+would measure two reduction orders rather than the convolutions. Weights and
+running statistics are copied from the CPU model so the two are the same
+function.
+
+⚠⚠ The BACKWARD runs in TRAINING mode, and that is not a convenience.
+`BatchNorm2D`'s CPU and GPU eval-mode backwards DISAGREE BY CONSTRUCTION, and
+each documents its own choice as fine:
+
+    cpu (batch_norm_2d.mojo:1286)  accumulates dgamma/dbeta
+                                   "harmless for a frozen backbone"
+    gpu (batch_norm_2d.mojo:1352)  `_bn2d_eval_bwd_kernel` takes only
+                                   (grad_output, gamma, running_var, gin) —
+                                   it never touches gamma.grd / beta.grd
+
+So on GPU, BatchNorm's affine parameters receive EXACTLY ZERO gradient in eval
+mode. Measured on one BatchNorm2D in isolation: forward and grad_input agree
+bit-exactly (0.0), while d/dgamma and d/dbeta differ by precisely the CPU's own
+magnitude. The CPU is mathematically right — the loss does depend on gamma and
+beta — so the GPU is dropping real gradient, in exactly the frozen-BN
+fine-tuning setup ACT's own reference uses (`FrozenBatchNorm2d`).
+
+Comparing the backward in TRAINING mode (where the two agree to 1e-7) keeps
+this gate measuring the convolutions rather than re-reporting that known
+divergence. It is filed separately; do not "fix" this gate by loosening its
+tolerance.
+"""
+
+from max.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_pack import TensorPack
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.models.resnet18 import (
+    RESNET18_OUT_CH,
+    ResNet18Backbone,
+    ResNet18OutH,
+    ResNet18OutW,
+)
+
+
+comptime B = 2
+comptime IMG_H = 64
+comptime IMG_W = 96
+comptime OH = ResNet18OutH[IMG_H]
+comptime OW = ResNet18OutW[IMG_W]
+comptime IN_N = B * 3 * IMG_H * IMG_W
+comptime OUT_N = B * RESNET18_OUT_CH * OH * OW
+
+comptime TOL = 2e-4
+"""20 convolutions and 20 BatchNorms of fp32 accumulation in two different
+reduction orders. The CPU path's agreement with torchvision (1e-5) is the tight
+comparison; this is the device-agreement bound."""
+
+
+def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
+    if ok:
+        print("  PASS  " + name + ("  " + detail if detail else ""))
+    else:
+        fails += 1
+        print("  FAIL  " + name + ("  " + detail if detail else ""))
+
+
+struct _Collect(ParamVisitor):
+    """Snapshot every param — or every GRADIENT — in walk order."""
+
+    var vals: List[Scalar[DT]]
+    var grads: Bool
+    var names: List[String]
+    var starts: List[Int]
+
+    def __init__(out self, grads: Bool = False):
+        self.vals = List[Scalar[DT]]()
+        self.grads = grads
+        self.names = List[String]()
+        self.starts = List[Int]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.vals = move.vals^
+        self.grads = move.grads
+        self.names = move.names^
+        self.starts = move.starts^
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target != "cpu":
+            if self.grads:
+                grad.download(ctx.value())
+            else:
+                param.download(ctx.value())
+        self.names.append(String(name))
+        self.starts.append(len(self.vals))
+        for i in range(N):
+            self.vals.append(grad.data[i] if self.grads else param.data[i])
+
+
+struct _Inject(ParamVisitor):
+    var vals: List[Scalar[DT]]
+    var pos: Int
+
+    def __init__(out self, var vals: List[Scalar[DT]]):
+        self.vals = vals^
+        self.pos = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.vals = move.vals^
+        self.pos = move.pos
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        param.ensure(N)
+        for i in range(N):
+            param.data[i] = self.vals[self.pos + i]
+        self.pos += N
+        comptime if target != "cpu":
+            param.upload(ctx.value())
+
+
+def main() raises:
+    var fails = 0
+    var ctx = DeviceContext()
+    print("ResNet18 GPU-vs-CPU gate")
+    print("  device: " + String(ctx.name()))
+    print(
+        "  " + String(IMG_H) + "x" + String(IMG_W) + " -> "
+        + String(RESNET18_OUT_CH) + "x" + String(OH) + "x" + String(OW)
+    )
+    print("")
+
+    var nc = ResNet18Backbone[3, IMG_H, IMG_W].make["cpu", Kaiming]()
+    var ng = ResNet18Backbone[3, IMG_H, IMG_W].make["gpu", Kaiming](ctx)
+    nc.set_attr["training"](Scalar[DT](0.0))
+    ng.set_attr["training"](Scalar[DT](0.0))
+
+    # Two independent Kaiming inits do NOT agree — copy the CPU model's.
+    var wp = _Collect()
+    nc.for_each_param["cpu"](wp, None, String(""))
+    var wi = _Inject(wp.vals.copy())
+    ng.for_each_param["gpu"](wi, ctx, String(""))
+    var sp = _Collect()
+    nc.for_each_state["cpu"](sp, None, String(""))
+    var si = _Inject(sp.vals.copy())
+    ng.for_each_state["gpu"](si, ctx, String(""))
+    check(
+        fails,
+        "weights + BatchNorm statistics transferred",
+        wi.pos > 0 and si.pos > 0,
+        String(wi.pos) + " params, " + String(si.pos) + " state",
+    )
+
+    var pc = TensorPack[1]()
+    var pg = TensorPack[1]()
+    pc[0].ensure(IN_N)
+    pg[0].ensure(IN_N)
+    for i in range(IN_N):
+        var v = Scalar[DT](0.05 * Float64(i % 23) - 0.5)
+        pc[0].data[i] = v
+        pg[0].data[i] = v
+    pg[0].upload(ctx)
+
+    var oc = Tensor()
+    var og = Tensor()
+    nc.forward["cpu", B](TensorRefs[1, MutAnyOrigin](pc[0]), oc)
+    ng.forward["gpu", B](TensorRefs[1, MutAnyOrigin](pg[0]), og, ctx)
+    ctx.synchronize()
+    og.download(ctx)
+
+    var w = Float64(0.0)
+    var mag = Float64(0.0)
+    for i in range(OUT_N):
+        w = max(w, abs(Float64(oc.data[i]) - Float64(og.data[i])))
+        mag = max(mag, abs(Float64(oc.data[i])))
+    check(
+        fails,
+        "layer4 output",
+        w < TOL,
+        "max|cpu-gpu| = " + String(w),
+    )
+    # A dead output would satisfy the comparison and mean nothing.
+    check(
+        fails,
+        "the output is non-trivial",
+        mag > 0.05,
+        "max|cpu| = " + String(mag),
+    )
+
+    # ── backward, in EVAL (see the header) ───────────────────────────────
+    var gc = Tensor()
+    var gg = Tensor()
+    gc.ensure(OUT_N)
+    gg.ensure(OUT_N)
+    for i in range(OUT_N):
+        var v = Scalar[DT](0.01 * Float64((i * 7) % 13) - 0.06)
+        gc.data[i] = v
+        gg.data[i] = v
+    gg.upload(ctx)
+
+    var ggc = TensorPack[1]()
+    var ggg = TensorPack[1]()
+    ggc[0].ensure(IN_N)
+    ggg[0].ensure_gpu(ctx, IN_N)
+    nc.zero_grad["cpu"](None)
+    ng.zero_grad["gpu"](ctx)
+    nc.vjp["cpu", B](
+        TensorRefs[1, MutAnyOrigin](pc[0]), gc,
+        TensorRefs[1, MutAnyOrigin](ggc[0]),
+    )
+    ng.vjp["gpu", B](
+        TensorRefs[1, MutAnyOrigin](pg[0]), gg,
+        TensorRefs[1, MutAnyOrigin](ggg[0]), ctx,
+    )
+    ctx.synchronize()
+    ggg[0].download(ctx)
+
+    var gw = Float64(0.0)
+    var gmag = Float64(0.0)
+    for i in range(IN_N):
+        gw = max(gw, abs(Float64(ggc[0].data[i]) - Float64(ggg[0].data[i])))
+        gmag = max(gmag, abs(Float64(ggc[0].data[i])))
+    check(
+        fails,
+        "grad_input",
+        gw < TOL,
+        "max|cpu-gpu| = " + String(gw),
+    )
+    check(
+        fails,
+        "the input gradient is non-trivial",
+        gmag > 1e-6,
+        "max|cpu| = " + String(gmag),
+    )
+
+    # The PARAMETER gradients matter more than grad_input — that is where the
+    # 40 layers actually learn, and a wrong conv/BN backward kernel shows up
+    # here while grad_input can still look plausible.
+    var pgc = _Collect(grads=True)
+    nc.for_each_param["cpu"](pgc, None, String(""))
+    var pgg = _Collect(grads=True)
+    ng.for_each_param["gpu"](pgg, ctx, String(""))
+
+    var pw = Float64(0.0)
+    var pmag = Float64(0.0)
+    var n_nonzero = 0
+    if len(pgc.vals) != len(pgg.vals):
+        raise Error(
+            "gate: param walks differ — " + String(len(pgc.vals)) + " vs "
+            + String(len(pgg.vals))
+        )
+    for i in range(len(pgc.vals)):
+        var a = Float64(pgc.vals[i])
+        pw = max(pw, abs(a - Float64(pgg.vals[i])))
+        pmag = max(pmag, abs(a))
+        if a != 0.0:
+            n_nonzero += 1
+    # Which parameter carries the disagreement? A per-layer breakdown is the
+    # difference between "the backward is wrong" and knowing WHICH backward.
+    var worst_name = String("(none)")
+    var worst_val = Float64(0.0)
+    for k in range(len(pgc.names)):
+        var lo = pgc.starts[k]
+        var hi = pgc.starts[k + 1] if k + 1 < len(pgc.starts) else len(
+            pgc.vals
+        )
+        var d = Float64(0.0)
+        for i in range(lo, hi):
+            d = max(d, abs(Float64(pgc.vals[i]) - Float64(pgg.vals[i])))
+        if d > worst_val:
+            worst_val = d
+            worst_name = pgc.names[k]
+    print("    worst parameter: " + worst_name + "  " + String(worst_val))
+
+    # CONVOLUTION gradients only. BatchNorm's gamma/beta are excluded because
+    # the GPU drops them in eval mode — a framework divergence this gate must
+    # not restate as its own failure, and must not hide either. It is named in
+    # the header and reproduced in isolation there.
+    var conv_w = Float64(0.0)
+    var conv_mag = Float64(0.0)
+    var n_conv = 0
+    var bn_dropped = 0
+    for k in range(len(pgc.names)):
+        var nm = pgc.names[k]
+        var is_bn = nm.endswith(".gamma") or nm.endswith(".beta")
+        var lo = pgc.starts[k]
+        var hi = pgc.starts[k + 1] if k + 1 < len(pgc.starts) else len(
+            pgc.vals
+        )
+        if is_bn:
+            var gpu_all_zero = True
+            for i in range(lo, hi):
+                if pgg.vals[i] != Scalar[DT](0.0):
+                    gpu_all_zero = False
+            if gpu_all_zero:
+                bn_dropped += 1
+            continue
+        n_conv += 1
+        for i in range(lo, hi):
+            conv_w = max(
+                conv_w, abs(Float64(pgc.vals[i]) - Float64(pgg.vals[i]))
+            )
+            conv_mag = max(conv_mag, abs(Float64(pgc.vals[i])))
+    check(
+        fails,
+        "convolution parameter gradients (" + String(n_conv) + " tensors)",
+        conv_w < TOL,
+        "max|cpu-gpu| = " + String(conv_w),
+    )
+    check(
+        fails,
+        "the convolution gradients are non-trivial",
+        conv_mag > 1e-6,
+        "max|cpu| = " + String(conv_mag),
+    )
+    # Pin the KNOWN divergence so it cannot change unnoticed: if the GPU ever
+    # starts producing BN affine gradients in eval, this fires and the header
+    # needs rewriting.
+    var n_bn = len(pgc.names) - n_conv
+    check(
+        fails,
+        "BN affine grads are still dropped on GPU in eval (known divergence)",
+        bn_dropped == n_bn and n_bn > 0,
+        String(bn_dropped) + "/" + String(n_bn)
+        + " BN tensors zero on GPU — see the header",
+    )
+
+    print("")
+    if fails == 0:
+        print("ALL PASS")
+    else:
+        print(String(fails) + " FAILURES")
+        raise Error("resnet18 GPU gate failed")

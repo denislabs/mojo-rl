@@ -59,7 +59,14 @@ from layout import Layout
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn import Adam, Kaiming, Tensor
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.models.resnet18 import (
+    RESNET18_OUT_CH,
+    ResNet18Backbone,
+    ResNet18OutH,
+    ResNet18OutW,
+)
 from mojo_rl.nn.core.checkpoint import (
     BinaryCheckpointReader,
     BinaryCheckpointWriter,
@@ -186,6 +193,12 @@ struct ACTTrainer[
     BATCH: Int,
     P: Float64 = ACT_DROPOUT,
     target: StaticString = "cpu",
+    # See `loss_graph.mojo` — swappable so a GPU-vs-CPU gate need not
+    # instantiate ResNet18's 40 layers twice. Default unchanged.
+    FEAT_CH: Int = RESNET18_OUT_CH,
+    OH: Int = ResNet18OutH[IMG_H],
+    OW: Int = ResNet18OutW[IMG_W],
+    BACKBONE: Module = ResNet18Backbone[3, IMG_H, IMG_W],
 ](Movable & Deinitable):
     comptime LG = ACTLossGraph[
         Self.QPOS,
@@ -201,6 +214,13 @@ struct ACTTrainer[
         Self.N_ENC,
         Self.N_DEC,
         Self.P,
+        Self.FEAT_CH,
+        Self.OH,
+        Self.OW,
+        Self.N_CAM * Self.OH * Self.OW,
+        2 + Self.N_CAM * Self.OH * Self.OW,
+        Self.K + 2,
+        Self.BACKBONE,
     ]
     comptime ENC_SEQ: Int = Self.K + 2
     comptime IMG_ELEMS: Int = Self.N_CAM * 3 * Self.IMG_H * Self.IMG_W

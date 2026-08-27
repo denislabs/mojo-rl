@@ -73,6 +73,7 @@ trained); it is a different model, and a better one, but not this paper's.
   IS the reference (`self.backbones[0]  # HARDCODED`).
 """
 
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn import (
     Add,
     ComputeGraph,
@@ -125,11 +126,20 @@ comptime ACTLossGraph[
     # Derived — spelled as defaulted parameters because Mojo comptime aliases
     # cannot introduce local bindings, and repeating these expressions inline
     # (they appear 20+ times below) is where a transcription error would hide.
+    # ⚠ `BACKBONE` is a parameter so a GPU-vs-CPU gate can swap ResNet18 for a
+    # two-conv stub. That gate instantiates the WHOLE graph twice (once per
+    # target), and ResNet18 is 20 Conv2D + 20 BatchNorm2D — 80 kernel
+    # instantiations on its own, which is what made the gate untenable to
+    # build. The vision tower's own GPU path is gated separately and cheaply
+    # (`test_resnet18_gpu.mojo`); the model gate needs a backbone, not THIS
+    # backbone. Default is unchanged, so every existing caller is identical.
+    FEAT_CH: Int = RESNET18_OUT_CH,
     OH: Int = ResNet18OutH[IMG_H],
     OW: Int = ResNet18OutW[IMG_W],
     NTOK: Int = N_CAM * ResNet18OutH[IMG_H] * ResNet18OutW[IMG_W],
     MEM: Int = 2 + N_CAM * ResNet18OutH[IMG_H] * ResNet18OutW[IMG_W],
     ENC_SEQ: Int = K + 2,
+    BACKBONE: Module = ResNet18Backbone[3, IMG_H, IMG_W],
 ] = ComputeGraph[
     InputSlot["qpos", QPOS],
     InputSlot["images", N_CAM * 3 * IMG_H * IMG_W],
@@ -156,17 +166,9 @@ comptime ACTLossGraph[
     Node["zs", Scale[LATENT], "z"],  # 1.0 train / 0.0 eval
     Node["lattok", Linear[LATENT, DIM], "zs"],  # latent_out_proj
     # ── vision ───────────────────────────────────────────────────────────
-    Node[
-        "feat",
-        Tokenwise[N_CAM, ResNet18Backbone[3, IMG_H, IMG_W]],
-        "images",
-    ],
-    Node[
-        "featt",
-        Tokenwise[N_CAM, Transpose2D[RESNET18_OUT_CH, OH * OW]],
-        "feat",
-    ],
-    Node["src", Tokenwise[NTOK, Linear[RESNET18_OUT_CH, DIM]], "featt"],
+    Node["feat", Tokenwise[N_CAM, BACKBONE], "images"],
+    Node["featt", Tokenwise[N_CAM, Transpose2D[FEAT_CH, OH * OW]], "feat"],
+    Node["src", Tokenwise[NTOK, Linear[FEAT_CH, DIM]], "featt"],
     Node["prop", Linear[QPOS, DIM], "qpos"],  # input_proj_robot_state
     Node["meminp", Concat[DIM, DIM, NTOK * DIM], "lattok", "prop", "src"],
     # ── transformer encoder ──────────────────────────────────────────────

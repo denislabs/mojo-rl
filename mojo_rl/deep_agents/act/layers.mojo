@@ -55,6 +55,15 @@ from mojo_rl.nn import (
     Slice,
     Tokenwise,
 )
+from max.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.combinators.graph_module2 import GraphModule2
 from mojo_rl.nn.primitives.cross_attention import CrossAttention
 
@@ -229,26 +238,266 @@ comptime DETRDecoderGraph[
 # hand-written wrapper). These three aliases are what the stacks and the loss
 # graph actually use.
 
-comptime DETREncoderLayer[
-    DIM: Int, HEADS: Int, SEQ: Int, FF: Int, P: Float64 = 0.1
-] = GraphModule2[
-    SEQ * DIM, SEQ * DIM, SEQ * DIM, DETREncoderGraph[DIM, HEADS, SEQ, FF, P]
-]
+# ══════════════════════════════════════════════════════════════════════════
+# Module wrappers — NAMED STRUCTS, not aliases
+# ══════════════════════════════════════════════════════════════════════════
+"""⚠ Each layer is a struct holding its `GraphModule2` as an INTERNAL
+`comptime` member, rather than an alias for it.
 
-comptime DETREncoderLayerMasked[
-    DIM: Int, HEADS: Int, SEQ: Int, FF: Int, P: Float64 = 0.1
-] = GraphModule2[
-    SEQ * DIM,
-    SEQ * DIM + SEQ,
-    SEQ * DIM,
-    DETREncoderMaskedGraph[DIM, HEADS, SEQ, FF, P],
-]
+`GraphModule2[IN0, IN1, OUT, GRAPH]` takes the graph as a PARAMETER, so an
+alias puts the layer's entire ~18-node `ComputeGraph` — every `Linear`,
+`LayerNorm`, `Dropout` and `CrossAttention` with all their parameters — into
+the mangled name of everything that mentions it. `ACTLossGraph` mentions all
+three, inside `RepeatConditional`, and `ComputeGraph[*DECLS]` mangles its whole
+decl list into `__init__`'s symbol. The expansions multiply.
 
-comptime DETRDecoderLayer[
-    DIM: Int, HEADS: Int, Q_LEN: Int, KV_LEN: Int, FF: Int, P: Float64 = 0.1
-] = GraphModule2[
-    Q_LEN * DIM,
-    Q_LEN * DIM + 2 * KV_LEN * DIM,
-    Q_LEN * DIM,
-    DETRDecoderGraph[DIM, HEADS, Q_LEN, KV_LEN, FF, P],
-]
+Behind a named struct the enclosing type sees only
+`DETREncoderLayer,DIM=..,HEADS=..,SEQ=..,FF=..,P=..`. Same mechanism as
+`ResNet18Backbone` and `primitives/decoder_block.mojo`. Behaviour is
+unchanged — every method delegates to the same `GraphModule2`.
+"""
+
+
+struct DETREncoderLayer[
+    DIM: Int, HEADS: Int, SEQ: Int, FF: Int, P: Float64 = 0.1
+](Module):
+    comptime Impl = GraphModule2[
+        Self.SEQ * Self.DIM,
+        Self.SEQ * Self.DIM,
+        Self.SEQ * Self.DIM,
+        DETREncoderGraph[Self.DIM, Self.HEADS, Self.SEQ, Self.FF, Self.P],
+    ]
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = Self.Impl.IN_DIMS
+    comptime OUT_DIM: Int = Self.SEQ * Self.DIM
+
+    var impl: Self.Impl
+
+    def __init__(out self):
+        self.impl = Self.Impl()
+
+    def __init__(out self, *, deinit move: Self):
+        self.impl = move.impl^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var b = Self()
+        b.impl = Self.Impl.make[target, INIT](ctx)
+        return b^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[2, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[2, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[2, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_param[target](visitor, ctx, prefix)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_state[target](visitor, ctx, prefix)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.impl.zero_grad[target](ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.impl.set_attr[ATTR](value)
+
+    def polyak_from[
+        target: StaticString
+    ](mut self, mut src: Self, tau: Scalar[DT],
+      ctx: Optional[DeviceContext]) raises:
+        self.impl.polyak_from[target](src.impl, tau, ctx)
+
+
+struct DETREncoderLayerMasked[
+    DIM: Int, HEADS: Int, SEQ: Int, FF: Int, P: Float64 = 0.1
+](Module):
+    comptime Impl = GraphModule2[
+        Self.SEQ * Self.DIM,
+        Self.SEQ * Self.DIM + Self.SEQ,
+        Self.SEQ * Self.DIM,
+        DETREncoderMaskedGraph[
+            Self.DIM, Self.HEADS, Self.SEQ, Self.FF, Self.P
+        ],
+    ]
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = Self.Impl.IN_DIMS
+    comptime OUT_DIM: Int = Self.SEQ * Self.DIM
+
+    var impl: Self.Impl
+
+    def __init__(out self):
+        self.impl = Self.Impl()
+
+    def __init__(out self, *, deinit move: Self):
+        self.impl = move.impl^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var b = Self()
+        b.impl = Self.Impl.make[target, INIT](ctx)
+        return b^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[2, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[2, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[2, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_param[target](visitor, ctx, prefix)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_state[target](visitor, ctx, prefix)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.impl.zero_grad[target](ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.impl.set_attr[ATTR](value)
+
+    def polyak_from[
+        target: StaticString
+    ](mut self, mut src: Self, tau: Scalar[DT],
+      ctx: Optional[DeviceContext]) raises:
+        self.impl.polyak_from[target](src.impl, tau, ctx)
+
+
+struct DETRDecoderLayer[
+    DIM: Int, HEADS: Int, Q_LEN: Int, KV_LEN: Int, FF: Int,
+    P: Float64 = 0.1,
+](Module):
+    comptime Impl = GraphModule2[
+        Self.Q_LEN * Self.DIM,
+        Self.Q_LEN * Self.DIM + 2 * Self.KV_LEN * Self.DIM,
+        Self.Q_LEN * Self.DIM,
+        DETRDecoderGraph[
+            Self.DIM, Self.HEADS, Self.Q_LEN, Self.KV_LEN, Self.FF, Self.P
+        ],
+    ]
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = Self.Impl.IN_DIMS
+    comptime OUT_DIM: Int = Self.Q_LEN * Self.DIM
+
+    var impl: Self.Impl
+
+    def __init__(out self):
+        self.impl = Self.Impl()
+
+    def __init__(out self, *, deinit move: Self):
+        self.impl = move.impl^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var b = Self()
+        b.impl = Self.Impl.make[target, INIT](ctx)
+        return b^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[2, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[2, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[2, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.impl.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_param[target](visitor, ctx, prefix)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.impl.for_each_state[target](visitor, ctx, prefix)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.impl.zero_grad[target](ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.impl.set_attr[ATTR](value)
+
+    def polyak_from[
+        target: StaticString
+    ](mut self, mut src: Self, tau: Scalar[DT],
+      ctx: Optional[DeviceContext]) raises:
+        self.impl.polyak_from[target](src.impl, tau, ctx)

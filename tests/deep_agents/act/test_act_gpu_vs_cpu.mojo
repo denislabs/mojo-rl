@@ -34,7 +34,27 @@ from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
+from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.deep_agents.act.trainer import ACTTrainer
+
+
+# ⚠ A STUB backbone, deliberately. This gate instantiates the whole ACT graph
+# TWICE (once per target); with ResNet18 that is 40 conv/BN layers compiled for
+# both CPU and GPU, and the build stopped being tractable — it never completed
+# on CUDA. What this gate exists to check is the graph, the optimizer and the
+# host/device boundary, none of which care WHICH backbone is attached. The real
+# backbone's GPU path is gated on its own in `tests/nn/test_resnet18_gpu.mojo`,
+# and against torchvision on CPU in `test_act_backbone_vs_reference.mojo`.
+comptime FEAT_CH = 8
+comptime STUB = Sequential[
+    Conv2DBatchNormReLU[3, FEAT_CH, 3, 2, 1, IMG_H, IMG_W],
+    Conv2DBatchNormReLU[
+        FEAT_CH, FEAT_CH, 3, 2, 1, IMG_H // 2, IMG_W // 2
+    ],
+]
+comptime SOH = IMG_H // 4
+comptime SOW = IMG_W // 4
 
 
 comptime QPOS = 6
@@ -54,11 +74,11 @@ comptime P = 0.0
 
 comptime TC = ACTTrainer[
     QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
-    BATCH, P, "cpu",
+    BATCH, P, "cpu", FEAT_CH, SOH, SOW, STUB,
 ]
 comptime TG = ACTTrainer[
     QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
-    BATCH, P, "gpu",
+    BATCH, P, "gpu", FEAT_CH, SOH, SOW, STUB,
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
