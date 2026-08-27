@@ -22,6 +22,15 @@ dm_control's camera -1 instead, which is the absence of a model camera and
 therefore the only one orbit/pan/zoom fully control. Press `1` — or the
 sidebar's camera button — for the wrist view when you want it.
 
+⚠⚠ **THE `ckpt` COMBO PICKS THE SMOOTHING, NOT A CHECKPOINT.** It opens on
+`alpha 0.05` — what `deploy_reach_real.mojo` actually sends the arm — and the
++/- buttons walk it up to `raw (alpha 1.0)`, which is the actor's unfiltered
+output and is NOT what any robot receives. The difference is not cosmetic:
+4438 against 93 ticks/step of command motion on the current checkpoint, a 48x
+reduction, with the reach rate identical either way (21/24). Watching the raw
+actor and concluding "the policy shakes" is a conclusion about a signal that
+never leaves the simulator.
+
 WHAT THE SIDEBAR IS FOR HERE. Reward is a shaped `tolerance` in [0, 1] per
 step, so the sparkline is the whole task in one glance: it should climb as the
 jaw closes on the mocap target and then FLATTEN NEAR 1.0 and stay there. A
@@ -149,6 +158,14 @@ struct ReachPolicy(ActionSource, Movable):
     Read out of `obs[18..20]` — the `ee_to_target` block — rather than
     recomputed, so the status line reports the number the reward was actually
     computed from and cannot drift from it."""
+    var smooth: Float64
+    """EMA on the COMMAND, matching `deploy_reach_real.mojo`'s `SMOOTH`."""
+    var cmd: List[Float64]
+    """Filter state — the smoothed command, in the env's action units."""
+    var last_q: List[Float64]
+    """Previous qpos, only to notice a RESET (the viewer does not tell the
+    policy about one) so the filter can be re-seeded instead of spending
+    1/alpha steps dragging the arm back from wherever it was."""
 
     def __init__(out self, var explicit: String) raises:
         self.agent = SAC["cpu", OBS_DIM, ACT_DIM, BATCH, CAP, HIDDEN](
@@ -161,6 +178,9 @@ struct ReachPolicy(ActionSource, Movable):
         self.loaded = False
         self.step_idx = 1
         self.dist = -1.0
+        self.smooth = 1.0
+        self.cmd = List[Float64](length=ACT_DIM, fill=0.0)
+        self.last_q = List[Float64](length=ACT_DIM, fill=1.0e9)
 
         # An explicit argv path is taken AS GIVEN and not probed: naming a file
         # and being handed a different one that happened to exist is worse than
@@ -177,7 +197,19 @@ struct ReachPolicy(ActionSource, Movable):
                 var cand = dirs[d] + CKPT_NAME
                 if Path(cand).exists():
                     self.paths.append(cand.copy())
-                    self.labels.append(cand.copy())
+                    break
+        # ⚠⚠ THE VARIANTS ARE SMOOTHING LEVELS, NOT CHECKPOINTS, and that is
+        # the whole point of this file now. The viewer used to drive the RAW
+        # policy while `deploy_reach_real.mojo` drives it through an EMA — so
+        # what you WATCHED was never what the arm RECEIVES. Measured on the
+        # current checkpoint: raw command motion 4438 ticks/step against 93 at
+        # alpha 0.05, a 48x difference, with the reach rate identical (21/24
+        # either way). Judging a policy by a signal nobody sends to a robot is
+        # how "the policy shakes" and "the arm is fine" coexist.
+        self.labels.append(String("raw (alpha 1.0) — NOT what deploy sends"))
+        self.labels.append(String("alpha 0.30"))
+        self.labels.append(String("alpha 0.15"))
+        self.labels.append(String("alpha 0.05 — deploy's default"))
         if len(self.paths) == 0:
             print("  ⚠ no checkpoint found. Looked for:")
             var dirs = ckpt_dirs()
@@ -202,6 +234,17 @@ struct ReachPolicy(ActionSource, Movable):
     def variant_labels(self) -> List[String]:
         return self.labels.copy()
 
+    @staticmethod
+    def alpha_for(i: Int) -> Float64:
+        """Smoothing per variant. ⚠ POSITIONALLY COUPLED to `self.labels`."""
+        if i == 0:
+            return 1.0
+        if i == 1:
+            return 0.30
+        if i == 2:
+            return 0.15
+        return 0.05
+
     def choose(mut self, i: Int) raises:
         """Load variant `i`, or raise WITHOUT SIDE EFFECTS.
 
@@ -209,22 +252,35 @@ struct ReachPolicy(ActionSource, Movable):
         a variant selected and then failing to load it leaves the sidebar
         naming one policy while another drives.
         """
-        if i < 0 or i >= len(self.paths):
+        if i < 0 or i >= len(self.labels):
             raise Error("variant out of range: " + String(i))
-        self.agent.load(self.paths[i])
+        if len(self.paths) == 0:
+            raise Error("no checkpoint on disk")
+        # The weights load ONCE; a variant switch only changes the filter, so
+        # stepping through the smoothing levels is free and can be done while
+        # watching the same episode.
+        if not self.loaded:
+            self.agent.load(self.paths[0])
+            self.loaded = True
         self.current = i
-        self.loaded = True
+        self.smooth = Self.alpha_for(i)
+        # Re-seed rather than carry the previous level's state across.
+        for j in range(ACT_DIM):
+            self.last_q[j] = 1.0e9
 
     def status(self) -> String:
         if self.current < 0 or not self.loaded:
             return String("no checkpoint loaded — drive modes still work")
         if self.dist < 0.0:
             return self.labels[self.current] + String(" loaded")
+        # The alpha rides along on every line: the difference between these
+        # variants is the entire reason the viewer disagreed with the arm.
+        var tag = String(" [a=") + fixed(self.smooth, 2) + "]"
         var mm = self.dist * 1000.0
         var mark = String(" ✓ inside") if mm <= TARGET_RADIUS_MM else String("")
         return (
             String("ee->target ") + fixed(mm, 1) + " mm / "
-            + fixed(TARGET_RADIUS_MM, 0) + " mm" + mark
+            + fixed(TARGET_RADIUS_MM, 0) + " mm" + mark + tag
         )
 
     def act(
@@ -250,6 +306,31 @@ struct ReachPolicy(ActionSource, Movable):
         else:
             self.agent.select_action(obs, action_out, self.step_idx)
             self.step_idx += 1
+
+        if self.smooth >= 1.0:
+            return
+        # ⚠ RE-SEED ON A RESET. `run_view` resets the env without telling the
+        # policy, and a filter carrying the previous episode's command would
+        # spend 1/alpha steps dragging the arm back from wherever it was —
+        # which looks exactly like a slow, broken policy. A reset folds the
+        # arm to HOME, so a large one-step jump in ANY joint is the signal.
+        var jumped = False
+        for j in range(ACT_DIM):
+            var q = Float64(obs[j])
+            if self.last_q[j] < 1.0e8:
+                var d = q - self.last_q[j]
+                if d > 0.5 or d < -0.5:
+                    jumped = True
+            self.last_q[j] = q
+        if jumped:
+            for j in range(ACT_DIM):
+                self.cmd[j] = Float64(action_out[j])
+        for j in range(ACT_DIM):
+            self.cmd[j] = (
+                (1.0 - self.smooth) * self.cmd[j]
+                + self.smooth * Float64(action_out[j])
+            )
+            action_out[j] = Scalar[DT](self.cmd[j])
 
 
 def main() raises:
@@ -285,6 +366,14 @@ def main() raises:
     # scale 1.0 is inert in policy mode and is the sane starting point for the
     # other three; see `ui_drive_controls`.
     var st = ViewerState(0, DRIVE_POLICY, 1.0, names^, domains^, td^)
+    # ⚠⚠ OPENS ON alpha 0.05, THE DEPLOY DEFAULT, NOT ON THE RAW POLICY. This
+    # viewer used to drive the raw actor while `deploy_reach_real.mojo` drives
+    # it through an EMA, so what it showed was never what the arm receives —
+    # 4438 against 93 ticks/step of command motion on the current checkpoint,
+    # a 48x difference, at an identical reach rate. Opening on raw meant the
+    # default view was the one nobody deploys. The combo still selects it, and
+    # comparing the two live is the point of the list.
+    st.policy_variant = 3
     st.free_camera = True
     # The task ends itself at `SoArmReachConfig.MAX_STEPS` (500 control steps),
     # so the viewer's own 1000-step limit would only ever fire on a config that
