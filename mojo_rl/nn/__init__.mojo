@@ -108,6 +108,18 @@ from .primitives.qkv_to_major import QKVToMajor
 from .primitives.swiglu import SwiGLU
 from .primitives.space_time_transpose import SpaceTimeTranspose
 from .primitives.sinusoidal_pos import SinusoidalPosAdd
+from .primitives.sinusoidal_pos_tokens import (
+    SinusoidalPos1DTokens,
+    SinusoidalPos2DTokens,
+    ZeroTokens,
+)
+from .primitives.cross_attention import (
+    CrossAttention,
+    SelfAttentionPos,
+    SelfAttentionPosMasked,
+)
+from .primitives.gaussian_vae import GaussianKLStdNormal, GaussianReparam
+from .primitives.l1_masked_per_sample import L1MaskedPerSample
 from .primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
 from .primitives.broadcast_tokens import BroadcastTokens
 from .primitives.learned_tokens import LearnedTokens
@@ -141,6 +153,7 @@ from .combinators.skip_concat import SkipConcat
 from .combinators.branch_concat import BranchConcat
 from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
+from .combinators.graph_module2 import GraphModule2, TwoInputGraph
 from .combinators.graph_decl import (
     GraphDecl,
     InputSlot,

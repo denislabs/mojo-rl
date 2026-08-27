@@ -53,6 +53,7 @@ from ..core.param import ParamVisitor
 from ..core.graph_visitor import GraphVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
+from .graph_module2 import TwoInputGraph
 from .graph_decl import GraphDecl
 
 
@@ -68,7 +69,10 @@ def _cg_accum_kernel[
         dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
-struct ComputeGraph[*DECLS: GraphDecl](Movable & Deinitable):
+struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph):
+    # `TwoInputGraph` already implies `Defaultable & Movable & Deinitable`. It
+    # is the bound `GraphModule2` needs to drive a graph generically — see
+    # `combinators/graph_module2.mojo` for why `Module` cannot serve.
     comptime N = Self.DECLS.length
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
     comptime MAXARITY = Self._max_arity()

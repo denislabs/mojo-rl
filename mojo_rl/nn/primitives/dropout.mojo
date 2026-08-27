@@ -173,6 +173,21 @@ struct Dropout[
     def set_training(mut self, v: Bool):
         self.training = v
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attr hook so a parent `Sequential` / `Repeat` / `ComputeGraph`
+        can switch this dropout to eval via `net.set_attr["training"](0.0)`.
+        `value != 0` -> training (sample a mask); else eval (identity).
+
+        ⚠ Without this, `set_training` was reachable only on a Dropout the
+        caller held DIRECTLY. Any dropout nested inside a container was stuck
+        in training mode for its whole life, and `set_attr["training"](0)` on
+        the container returned quietly — `Module.set_attr`'s default is `pass`,
+        so the call site looked correct and did nothing. `BatchNorm2D` has had
+        this override since the AlphaZero BN switch; dropout was missed.
+        """
+        comptime if ATTR == "training":
+            self.training = value != Scalar[DT](0.0)
+
     def set_seed(mut self) raises:
         """Reset the per-instance RNG counters to the start of the stream."""
         self.call_counter = 0

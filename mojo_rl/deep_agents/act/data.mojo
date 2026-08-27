@@ -1,0 +1,390 @@
+# +--------------------------------------------------------------------------+ #
+# | ACT episodic sampler over a TrajectoryStore
+# +--------------------------------------------------------------------------+ #
+"""One observation, one chunk of future actions — the ACT training sample.
+
+Mirrors `EpisodicDataset.__getitem__` (`references/act-main/utils.py:24`):
+pick an episode, pick a start timestep uniformly inside it, take the
+observation AT that step and the next `K` actions FROM it, zero-padding past
+the episode end.
+
+Input is a `TrajectoryStore` `.h5` written by `tools/act/lerobot_v3_to_store.py`
+with columns `qpos` (S,), `action` (A,), `images` (C,3,H,W) uint8. All three
+are loaded RESIDENT: `store.mojo` measured scattered per-row HDF5 gathers at
+~4500x the cost of the same gather from RAM, and the sampler's access pattern
+is exactly that scatter. 2 cameras at 240x320 over 1997 frames is 920 MB.
+
+## Two things the reference does that look like bugs and are not
+
+1. **Padding happens BEFORE normalization.** `utils.py:52` zero-fills
+   `padded_action` and only then applies `(a - mean)/std`, so a padded slot
+   holds `-mean/std`, not 0. It never reaches the loss (masked) or the CVAE
+   encoder (key-padding-masked), so it is unobservable — but reproducing it
+   keeps the reference gate exact instead of nearly-exact.
+
+2. **The L1 denominator counts padded slots.** See `l1_per_sample`; this file
+   only has to deliver the mask.
+
+## One thing it does that IS specific to ALOHA
+
+`utils.py:45` shifts the action window by one for real-robot data
+(`action = root['/action'][max(0, start_ts - 1):]`, commented "hack, to make
+timesteps more aligned"). That compensates for a misalignment in ALOHA's own
+recorder. LeRobot writes `action[t]` alongside `observation.state[t]` already,
+so the shift is NOT applied here. Deviation, deliberate.
+
+## Mask polarity
+
+The buffer carries `valid` — **1.0 = a real action, 0.0 = padding** — which is
+the INVERSE of the reference's `is_pad`. One name, one meaning; the loss node
+multiplies by it and the attention node turns it into an additive bias.
+"""
+
+from std.memory import alloc, dealloc
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
+from mojo_rl.data.store import TrajectoryStore
+
+from .config import (
+    IMAGENET_MEAN_B,
+    IMAGENET_MEAN_G,
+    IMAGENET_MEAN_R,
+    IMAGENET_STD_B,
+    IMAGENET_STD_G,
+    IMAGENET_STD_R,
+    NORM_STD_FLOOR,
+    TRAIN_SPLIT_RATIO,
+)
+
+
+# ── deterministic RNG ────────────────────────────────────────────────────
+# splitmix64. Local and seeded rather than the global `random_float64()` the
+# CPU samplers in `data/sampler.mojo` use, because the dataset gates compare
+# against a recorded index sequence and must reproduce it exactly.
+
+
+@always_inline
+def _splitmix64(mut state: UInt64) -> UInt64:
+    state += UInt64(0x9E3779B97F4A7C15)
+    var z = state
+    z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> 27)) * UInt64(0x94D049BB133111EB)
+    return z ^ (z >> 31)
+
+
+@always_inline
+def _rand_below(mut state: UInt64, n: Int) -> Int:
+    """Uniform in `[0, n)`. `n <= 0` is a caller bug, not a sample."""
+    return Int(_splitmix64(state) % UInt64(n))
+
+
+# ── the dataset ──────────────────────────────────────────────────────────
+
+
+struct ACTDataset[
+    QPOS: Int, ADIM: Int, N_CAM: Int, IMG_H: Int, IMG_W: Int
+](Movable & Deinitable):
+    """Resident columns + normalization statistics + the episode split.
+
+    ONE instance serves both splits (`sample_batch[..](val=…)`); holding two
+    would duplicate the ~1 GB image column for no reason.
+    """
+
+    comptime CAM_ELEMS: Int = 3 * Self.IMG_H * Self.IMG_W
+    comptime IMG_ELEMS: Int = Self.N_CAM * Self.CAM_ELEMS
+
+    var store: TrajectoryStore
+    var qpos_raw: List[Scalar[DT]]
+    """[n_rows, QPOS] — UNNORMALIZED, as recorded (lerobot degrees / 0-100)."""
+    var action_raw: List[Scalar[DT]]
+    var images_raw: List[Scalar[DType.uint8]]
+    """[n_rows, N_CAM, 3, IMG_H, IMG_W] — uint8, CHW per camera."""
+
+    var qpos_mean: List[Scalar[DT]]
+    var qpos_std: List[Scalar[DT]]
+    var action_mean: List[Scalar[DT]]
+    var action_std: List[Scalar[DT]]
+
+    var train_eps: List[Int]
+    var val_eps: List[Int]
+    var rng: UInt64
+
+    def __init__(out self, var path: String, seed: UInt64 = 0) raises:
+        self.store = TrajectoryStore(path^)
+
+        ref m = self.store.manifest
+        var q_spec = m.column(String("qpos"))
+        var a_spec = m.column(String("action"))
+        var i_spec = m.column(String("images"))
+        if q_spec.row_dim() != Self.QPOS:
+            raise Error(
+                "ACTDataset: store 'qpos' is width "
+                + String(q_spec.row_dim())
+                + " but QPOS=" + String(Self.QPOS)
+            )
+        if a_spec.row_dim() != Self.ADIM:
+            raise Error(
+                "ACTDataset: store 'action' is width "
+                + String(a_spec.row_dim())
+                + " but ADIM=" + String(Self.ADIM)
+            )
+        if i_spec.row_dim() != Self.IMG_ELEMS:
+            raise Error(
+                "ACTDataset: store 'images' is "
+                + String(i_spec.row_dim())
+                + " bytes/row but N_CAM*3*H*W=" + String(Self.IMG_ELEMS)
+                + " — the store was built at a different resolution or camera"
+                " count. Rebuild with tools/act/lerobot_v3_to_store.py."
+            )
+
+        self.qpos_raw = self.store.load_column[DT](String("qpos"))
+        self.action_raw = self.store.load_column[DT](String("action"))
+        self.images_raw = self.store.load_column[DType.uint8](
+            String("images")
+        )
+
+        # Statistics are RECOMPUTED here rather than read from the converter's
+        # `norm_*` datasets. `utils.py:get_norm_stats` is four lines; a second
+        # independent implementation is what makes the gate against the
+        # converter's numpy version mean something.
+        self.qpos_mean = List[Scalar[DT]]()
+        self.qpos_std = List[Scalar[DT]]()
+        self.action_mean = List[Scalar[DT]]()
+        self.action_std = List[Scalar[DT]]()
+        self.train_eps = List[Int]()
+        self.val_eps = List[Int]()
+        self.rng = seed if seed != 0 else UInt64(0x2545F4914F6CDD1D)
+
+        var n = self.store.n_rows()
+        _moments(self.qpos_raw, n, Self.QPOS, self.qpos_mean, self.qpos_std)
+        _moments(
+            self.action_raw, n, Self.ADIM, self.action_mean, self.action_std
+        )
+        self._split_episodes()
+
+    def __init__(out self, *, deinit move: Self):
+        self.store = move.store^
+        self.qpos_raw = move.qpos_raw^
+        self.action_raw = move.action_raw^
+        self.images_raw = move.images_raw^
+        self.qpos_mean = move.qpos_mean^
+        self.qpos_std = move.qpos_std^
+        self.action_mean = move.action_mean^
+        self.action_std = move.action_std^
+        self.train_eps = move.train_eps^
+        self.val_eps = move.val_eps^
+        self.rng = move.rng
+
+    def _split_episodes(mut self) raises:
+        """`utils.py:112` — shuffle episode ids, first 80% train.
+
+        The reference uses `np.random.permutation`; a Fisher-Yates over the
+        local splitmix stream is the same construction with a reproducible
+        stream. With 5 episodes this is 4 train / 1 validation.
+        """
+        var n_ep = self.store.n_episodes()
+        var perm = List[Int](capacity=n_ep)
+        for i in range(n_ep):
+            perm.append(i)
+        for i in range(n_ep - 1, 0, -1):
+            var j = _rand_below(self.rng, i + 1)
+            var t = perm[i]
+            perm[i] = perm[j]
+            perm[j] = t
+
+        var n_train = Int(TRAIN_SPLIT_RATIO * Float64(n_ep))
+        if n_train < 1:
+            n_train = 1
+        if n_train >= n_ep:
+            # Everything in train leaves no validation split, and the
+            # reference's model selection IS validation loss.
+            n_train = n_ep - 1
+        for i in range(n_ep):
+            if i < n_train:
+                self.train_eps.append(perm[i])
+            else:
+                self.val_eps.append(perm[i])
+
+    def n_rows(self) -> Int:
+        return self.store.n_rows()
+
+    def n_episodes(self) -> Int:
+        return self.store.n_episodes()
+
+    # ── sampling ─────────────────────────────────────────────────────────
+
+    def sample_batch[
+        K: Int, BATCH: Int
+    ](
+        mut self,
+        val: Bool,
+        mut out_qpos: List[Scalar[DT]],
+        mut out_images: List[Scalar[DT]],
+        mut out_actions: List[Scalar[DT]],
+        mut out_valid: List[Scalar[DT]],
+    ) raises:
+        """Fill `BATCH` samples. Buffers are sized here if they are empty.
+
+        `out_qpos`    [BATCH, QPOS]              normalized
+        `out_images`  [BATCH, N_CAM, 3, H, W]    /255 then ImageNet-normalized
+        `out_actions` [BATCH, K, ADIM]           normalized, padded per above
+        `out_valid`   [BATCH, K]                 1.0 real / 0.0 padding
+        """
+        _ensure(out_qpos, BATCH * Self.QPOS)
+        _ensure(out_images, BATCH * Self.IMG_ELEMS)
+        _ensure(out_actions, BATCH * K * Self.ADIM)
+        _ensure(out_valid, BATCH * K)
+
+        ref eps = self.val_eps if val else self.train_eps
+        if len(eps) == 0:
+            raise Error("ACTDataset.sample_batch: the split is empty")
+
+        for b in range(BATCH):
+            var ep = eps[_rand_below(self.rng, len(eps))]
+            var ep_start = self.store.episodes.start_of(ep)
+            var ep_len = self.store.episodes.length_of(ep)
+            var start_ts = _rand_below(self.rng, ep_len)
+            self._fill_one[K](b, ep_start + start_ts, ep_len - start_ts,
+                              out_qpos, out_images, out_actions, out_valid)
+
+    def fill_at[
+        K: Int
+    ](
+        mut self,
+        slot: Int,
+        ep: Int,
+        start_ts: Int,
+        mut out_qpos: List[Scalar[DT]],
+        mut out_images: List[Scalar[DT]],
+        mut out_actions: List[Scalar[DT]],
+        mut out_valid: List[Scalar[DT]],
+    ) raises:
+        """Deterministic single-sample fill at an explicit `(episode, step)`.
+
+        The open-loop evaluation walks an episode step by step, and the gates
+        need a sample they can name. Buffers must already be sized.
+        """
+        var ep_start = self.store.episodes.start_of(ep)
+        var ep_len = self.store.episodes.length_of(ep)
+        if start_ts < 0 or start_ts >= ep_len:
+            raise Error(
+                "ACTDataset.fill_at: step " + String(start_ts)
+                + " outside episode " + String(ep) + " (length "
+                + String(ep_len) + ")"
+            )
+        self._fill_one[K](slot, ep_start + start_ts, ep_len - start_ts,
+                          out_qpos, out_images, out_actions, out_valid)
+
+    def _fill_one[
+        K: Int
+    ](
+        mut self,
+        slot: Int,
+        g: Int,
+        remaining: Int,
+        mut out_qpos: List[Scalar[DT]],
+        mut out_images: List[Scalar[DT]],
+        mut out_actions: List[Scalar[DT]],
+        mut out_valid: List[Scalar[DT]],
+    ) raises:
+        """`g` = flat row of the observation; `remaining` = steps left in its
+        episode (so `min(K, remaining)` actions are real)."""
+
+        # qpos at g.
+        var qo = slot * Self.QPOS
+        for j in range(Self.QPOS):
+            out_qpos[qo + j] = (
+                self.qpos_raw[g * Self.QPOS + j] - self.qpos_mean[j]
+            ) / self.qpos_std[j]
+
+        # Actions [g, g+K), padded. The pad value is the NORMALIZED zero,
+        # `(0 - mean)/std`, exactly as `utils.py` produces it by padding first.
+        var n_real = K if remaining > K else remaining
+        var ao = slot * K * Self.ADIM
+        for t in range(K):
+            var valid = t < n_real
+            for j in range(Self.ADIM):
+                var raw = (
+                    self.action_raw[(g + t) * Self.ADIM + j]
+                    if valid
+                    else Scalar[DT](0.0)
+                )
+                out_actions[ao + t * Self.ADIM + j] = (
+                    raw - self.action_mean[j]
+                ) / self.action_std[j]
+            out_valid[slot * K + t] = Scalar[DT](
+                1.0
+            ) if valid else Scalar[DT](0.0)
+
+        # Images at g: uint8 CHW -> /255 -> per-channel ImageNet normalize.
+        var io = slot * Self.IMG_ELEMS
+        var src = g * Self.IMG_ELEMS
+        comptime HW = Self.IMG_H * Self.IMG_W
+        for c in range(Self.N_CAM):
+            var cbase = c * Self.CAM_ELEMS
+            for ch in range(3):
+                var mean = Scalar[DT](
+                    IMAGENET_MEAN_R
+                ) if ch == 0 else (
+                    Scalar[DT](IMAGENET_MEAN_G) if ch
+                    == 1 else Scalar[DT](IMAGENET_MEAN_B)
+                )
+                var std = Scalar[DT](
+                    IMAGENET_STD_R
+                ) if ch == 0 else (
+                    Scalar[DT](IMAGENET_STD_G) if ch
+                    == 1 else Scalar[DT](IMAGENET_STD_B)
+                )
+                var inv = Scalar[DT](1.0) / std
+                var base = cbase + ch * HW
+                for p in range(HW):
+                    var v = (
+                        Scalar[DT](Int(self.images_raw[src + base + p]))
+                        / Scalar[DT](255.0)
+                    )
+                    out_images[io + base + p] = (v - mean) * inv
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+
+def _ensure(mut buf: List[Scalar[DT]], n: Int):
+    """Size a caller buffer once; a reused buffer of the right size is left
+    alone (the sampler runs every training step)."""
+    if len(buf) != n:
+        buf = List[Scalar[DT]](unsafe_uninit_length=n)
+
+
+def _moments(
+    ref data: List[Scalar[DT]],
+    n_rows: Int,
+    dim: Int,
+    mut mean: List[Scalar[DT]],
+    mut std: List[Scalar[DT]],
+) raises:
+    """Per-column mean and UNBIASED std, floored at `NORM_STD_FLOOR`.
+
+    ⚠ ddof = 1. `torch.std` is unbiased by default and `utils.py` uses it;
+    `np.std` is not. The ratio is only sqrt(N/(N-1)) — 1.00025 at N=1997, far
+    below anything a single check would flag — but it is a systematic offset
+    that would then sit under every comparison against the reference.
+    """
+    if n_rows < 2:
+        raise Error("ACTDataset: need at least 2 rows to compute statistics")
+    mean = List[Scalar[DT]](unsafe_uninit_length=dim)
+    std = List[Scalar[DT]](unsafe_uninit_length=dim)
+    for j in range(dim):
+        var s = Float64(0.0)
+        for i in range(n_rows):
+            s += Float64(data[i * dim + j])
+        var mu = s / Float64(n_rows)
+        var ss = Float64(0.0)
+        for i in range(n_rows):
+            var d = Float64(data[i * dim + j]) - mu
+            ss += d * d
+        var sd = (ss / Float64(n_rows - 1)) ** 0.5
+        if sd < NORM_STD_FLOOR:
+            sd = NORM_STD_FLOOR
+        mean[j] = Scalar[DT](mu)
+        std[j] = Scalar[DT](sd)

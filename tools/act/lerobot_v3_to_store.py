@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+# +--------------------------------------------------------------------------+ #
+# | LeRobot v3.0 dataset  ->  mojo_rl TrajectoryStore (.h5)
+# +--------------------------------------------------------------------------+ #
+"""Convert a LeRobot v3.0 HuggingFace dataset into one `TrajectoryStore` file.
+
+Run ONCE per (repo, resolution); everything after that is pure Mojo through
+`mojo_rl/io/hdf5` + `mojo_rl.data.TrajectoryStore`.
+
+    pixi run python tools/act/lerobot_v3_to_store.py \
+        --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
+
+⚠ This script must run in its OWN process, never inside Mojo's embedded Python
+interpreter: `libarrow` (pyarrow) SIGABRTs at static-destructor teardown when
+loaded there. Mojo callers shell out with `subprocess.run([sys.executable, ...])`.
+
+## What LeRobot v3.0 looks like
+
+    meta/info.json                       features, fps, total_{episodes,frames}
+    meta/episodes/chunk-*/file-*.parquet  per-episode index + per-camera video map
+    data/chunk-*/file-*.parquet          action / observation.state / timestamps
+    videos/<key>/chunk-*/file-*.mp4      MANY episodes concatenated per file
+
+The episode index carries `dataset_from_index` / `dataset_to_index` (the flat
+row range, i.e. exactly `ep_offset` / `ep_len`) and, per camera, the
+`(chunk_index, file_index, from_timestamp)` locating that episode inside the
+packed mp4. `round(from_timestamp * fps)` is the episode's first frame index
+within its video file, so each file is decoded ONCE, sequentially, and its
+frames are routed to the right flat rows. No seeking.
+
+## Output layout
+
+A single `.h5` in `TrajectoryStoreWriter`'s format — rank-2 columns with the
+true trailing shape carried in the manifest text (`data/store.mojo`
+`_create_for`, `data/manifest.mojo`):
+
+    __manifest__  uint8   (M,)          key=value block
+    ep_len        int64   (E,)
+    ep_offset     int64   (E,)
+    qpos          float32 (N, S)        observation.state
+    action        float32 (N, A)
+    images        uint8   (N, C*3*H*W)  C cameras, CHW each, sorted by name
+
+plus `norm_{qpos,action}_{mean,std}` float32 (S,)/(A,) — the reference's
+`get_norm_stats` (`references/act-main/utils.py:78`), std clipped below at 1e-2.
+Those four are NOT manifest columns (they have E-independent length); a reader
+that has a manifest ignores undeclared datasets.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+import numpy as np
+
+SCHEMA_VERSION = 1
+STD_FLOOR = 1e-2  # references/act-main/utils.py:96 `torch.clip(std, 1e-2, inf)`
+
+
+# ── manifest -----------------------------------------------------------------
+
+
+def encode_manifest(env_id, n_rows, n_episodes, seed, source_commit, columns):
+    """`data/manifest.mojo::Manifest.encode` — byte-for-byte the same format.
+
+    `columns` is a list of `(name, dtype_name, trailing_shape_tuple)`.
+    """
+    lines = [
+        f"schema_version={SCHEMA_VERSION}",
+        f"env_id={env_id}",
+        f"n_rows={n_rows}",
+        f"n_episodes={n_episodes}",
+        f"seed={seed}",
+        f"source_commit={source_commit}",
+    ]
+    for name, dt, shape in columns:
+        spec = f"{name}:{dt}"
+        if shape:
+            spec += ":" + ",".join(str(d) for d in shape)
+        lines.append(f"column={spec}")
+    return "\n".join(lines) + "\n"
+
+
+# ── hub ----------------------------------------------------------------------
+
+
+def snapshot(repo: str, revision: str | None):
+    """Pull the whole dataset repo (metadata + parquet + mp4) into the HF cache."""
+    from huggingface_hub import snapshot_download
+
+    return Path(
+        snapshot_download(repo, repo_type="dataset", revision=revision)
+    )
+
+
+def sorted_parquets(root: Path, subdir: str):
+    """`chunk-XXX/file-YYY.parquet` under `subdir`, in (chunk, file) order."""
+    base = root / subdir
+    if not base.is_dir():
+        raise SystemExit(f"missing {subdir}/ in the dataset repo")
+    out = []
+    for p in base.rglob("*.parquet"):
+        rel = p.relative_to(base).as_posix()
+        m = re.search(r"chunk-(\d+)/file-(\d+)\.parquet$", rel)
+        key = (int(m.group(1)), int(m.group(2))) if m else (1 << 30, 1 << 30)
+        out.append((key, p))
+    out.sort()
+    return [p for _, p in out]
+
+
+# ── reading ------------------------------------------------------------------
+
+
+def read_frames(root: Path):
+    """The flat per-frame table: action, observation.state, episode_index."""
+    import pyarrow.parquet as pq
+
+    tables = [pq.read_table(p) for p in sorted_parquets(root, "data")]
+    if not tables:
+        raise SystemExit("no data/*.parquet found")
+    import pyarrow as pa
+
+    t = pa.concat_tables(tables)
+
+    def fixed_list(col):
+        """fixed_size_list<float>[k] -> (N, k) float32."""
+        arr = t.column(col).combine_chunks()
+        width = arr.type.list_size
+        flat = np.asarray(arr.flatten(), dtype=np.float32)
+        return flat.reshape(len(arr), width)
+
+    return {
+        "action": fixed_list("action"),
+        "qpos": fixed_list("observation.state"),
+        "episode_index": np.asarray(t.column("episode_index"), dtype=np.int64),
+        "n_rows": t.num_rows,
+    }
+
+
+def read_episodes(root: Path, cameras):
+    """The per-episode index, sorted by `episode_index`.
+
+    Returns `(lengths, from_index, video_map)` where `video_map[cam]` is a list
+    of `(chunk_index, file_index, from_timestamp)`, one per episode.
+    """
+    import pyarrow.parquet as pq
+    import pyarrow as pa
+
+    tables = [pq.read_table(p) for p in sorted_parquets(root, "meta/episodes")]
+    if not tables:
+        raise SystemExit("no meta/episodes/*.parquet found")
+    # The stats/* columns are wide and unused here; drop them before concat so
+    # a schema mismatch between files cannot fail on a column we never read.
+    keep = [n for n in tables[0].schema.names if not n.startswith("stats/")]
+    t = pa.concat_tables([tb.select(keep) for tb in tables])
+    d = t.to_pydict()
+
+    order = np.argsort(np.asarray(d["episode_index"], dtype=np.int64))
+    lengths = np.asarray(d["length"], dtype=np.int64)[order]
+    from_index = np.asarray(d["dataset_from_index"], dtype=np.int64)[order]
+    to_index = np.asarray(d["dataset_to_index"], dtype=np.int64)[order]
+
+    if not np.array_equal(to_index - from_index, lengths):
+        raise SystemExit("episode index: dataset_to - dataset_from != length")
+    if from_index[0] != 0 or not np.array_equal(from_index[1:], to_index[:-1]):
+        raise SystemExit("episode index: flat row ranges are not contiguous")
+
+    video_map = {}
+    for cam in cameras:
+        ci = np.asarray(d[f"videos/{cam}/chunk_index"], dtype=np.int64)[order]
+        fi = np.asarray(d[f"videos/{cam}/file_index"], dtype=np.int64)[order]
+        ts = np.asarray(
+            d[f"videos/{cam}/from_timestamp"], dtype=np.float64
+        )[order]
+        video_map[cam] = list(zip(ci.tolist(), fi.tolist(), ts.tolist()))
+
+    return lengths, from_index, video_map
+
+
+# ── video --------------------------------------------------------------------
+
+
+def decode_camera(root, cam, video_map, lengths, from_index, fps, h, w, out):
+    """Decode one camera's mp4 files into `out[:, cam_slot]` as CHW uint8.
+
+    `out` is a preallocated `(N, 3, h, w)` uint8 view for this camera.
+    """
+    import imageio.v3 as iio
+    from PIL import Image
+
+    # Group episodes by the video file they live in.
+    by_file = {}
+    for ep, (ci, fi, ts) in enumerate(video_map[cam]):
+        by_file.setdefault((ci, fi), []).append((ep, ts))
+
+    filled = 0
+    for (ci, fi), eps in sorted(by_file.items()):
+        path = root / "videos" / cam / f"chunk-{ci:03d}" / f"file-{fi:03d}.mp4"
+        if not path.is_file():
+            raise SystemExit(f"missing video file {path}")
+
+        # src frame index -> flat dataset row, for every frame this file owns.
+        route = {}
+        for ep, ts in eps:
+            src0 = int(round(ts * fps))
+            dst0 = int(from_index[ep])
+            for k in range(int(lengths[ep])):
+                route[src0 + k] = dst0 + k
+
+        n_src = 0
+        for i, frame in enumerate(iio.imiter(path, plugin="FFMPEG")):
+            n_src += 1
+            dst = route.get(i)
+            if dst is None:
+                continue
+            if frame.shape[0] != h or frame.shape[1] != w:
+                frame = np.asarray(
+                    Image.fromarray(frame).resize((w, h), Image.BILINEAR)
+                )
+            # HWC -> CHW
+            out[dst] = np.transpose(frame, (2, 0, 1))
+            filled += 1
+
+        missing = [s for s in route if s >= n_src]
+        if missing:
+            raise SystemExit(
+                f"{cam} {path.name}: {len(missing)} routed frames past the end"
+                f" of the file ({n_src} frames decoded); the episode index and"
+                f" the video disagree"
+            )
+        print(f"    {cam} chunk-{ci:03d}/file-{fi:03d}: {n_src} frames decoded")
+
+    if filled != int(lengths.sum()):
+        raise SystemExit(
+            f"{cam}: filled {filled} rows, expected {int(lengths.sum())}"
+        )
+
+
+# ── stats --------------------------------------------------------------------
+
+
+def norm_stats(x: np.ndarray):
+    """`get_norm_stats` (references/act-main/utils.py:78), generalized.
+
+    The reference `torch.stack`s per-episode arrays and reduces over dims
+    [0, 1], which requires equal-length episodes; over the flat row axis is the
+    same quantity whenever they ARE equal, and the natural reading when they
+    are not. `std` is clipped below at 1e-2 exactly as the reference does.
+
+    ⚠ `ddof=1`. `torch.std` is UNBIASED by default; `np.std` is not. The gap is
+    only sqrt(N/(N-1)) — 1.00025 at N=1997, invisible in any single check — but
+    it is a systematic offset that would sit under every sim-to-reference
+    comparison afterwards, so it is matched rather than waved off.
+    """
+    mean = x.mean(axis=0)
+    std = x.std(axis=0, ddof=1)
+    return mean.astype(np.float32), np.clip(std, STD_FLOOR, np.inf).astype(
+        np.float32
+    )
+
+
+# ── main ---------------------------------------------------------------------
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--repo", required=True, help="HF dataset repo id")
+    ap.add_argument("--revision", default=None)
+    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--width", type=int, default=320)
+    ap.add_argument(
+        "--cameras",
+        default=None,
+        help="comma-separated video feature keys; default = all, sorted",
+    )
+    ap.add_argument("--out", default=None, help="output .h5 (default: cache)")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    h, w = args.height, args.width
+
+    slug = args.repo.replace("/", "__")
+    out = (
+        Path(args.out)
+        if args.out
+        else Path.home()
+        / ".cache/mojo_rl/act_so101"
+        / f"{slug}_{h}x{w}.h5"
+    )
+    if out.exists() and not args.force:
+        print(f"already present: {out}  (pass --force to rebuild)")
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"[1/5] downloading {args.repo} ...")
+    root = snapshot(args.repo, args.revision)
+    info = json.loads((root / "meta/info.json").read_text())
+
+    version = info.get("codebase_version", "?")
+    if not str(version).startswith("v3"):
+        raise SystemExit(
+            f"this converter targets LeRobot v3.x; info.json says {version!r}"
+        )
+
+    fps = int(info["fps"])
+    feats = info["features"]
+    all_cams = sorted(k for k, v in feats.items() if v.get("dtype") == "video")
+    cams = args.cameras.split(",") if args.cameras else all_cams
+    for c in cams:
+        if c not in all_cams:
+            raise SystemExit(f"no video feature {c!r}; have {all_cams}")
+
+    s_dim = int(feats["observation.state"]["shape"][0])
+    a_dim = int(feats["action"]["shape"][0])
+    print(
+        f"      v{version}  fps={fps}  state={s_dim}  action={a_dim}\n"
+        f"      cameras={cams}  -> {h}x{w}"
+    )
+
+    print("[2/5] reading parquet ...")
+    fr = read_frames(root)
+    lengths, from_index, video_map = read_episodes(root, cams)
+    n_rows, n_ep = fr["n_rows"], len(lengths)
+
+    if n_rows != int(info["total_frames"]):
+        raise SystemExit(
+            f"data has {n_rows} rows, info.json says {info['total_frames']}"
+        )
+    if n_ep != int(info["total_episodes"]):
+        raise SystemExit(
+            f"{n_ep} episodes in the index, info.json says"
+            f" {info['total_episodes']}"
+        )
+    if int(lengths.sum()) != n_rows:
+        raise SystemExit(
+            f"episode lengths sum to {int(lengths.sum())}, data has {n_rows}"
+        )
+    # The flat table must already be in episode order for `ep_offset` to mean
+    # anything. Check rather than assume.
+    expect_ep = np.repeat(np.arange(n_ep, dtype=np.int64), lengths)
+    if not np.array_equal(fr["episode_index"], expect_ep):
+        raise SystemExit(
+            "data rows are not grouped by episode in index order; this"
+            " converter's flat ep_offset/ep_len would be wrong"
+        )
+    print(f"      {n_rows} frames over {n_ep} episodes: {lengths.tolist()}")
+
+    print(f"[3/5] decoding video ({len(cams)} camera(s)) ...")
+    images = np.zeros((n_rows, len(cams), 3, h, w), dtype=np.uint8)
+    for slot, cam in enumerate(cams):
+        decode_camera(
+            root, cam, video_map, lengths, from_index, fps, h, w,
+            images[:, slot],
+        )
+
+    print("[4/5] computing norm stats ...")
+    q_mean, q_std = norm_stats(fr["qpos"])
+    a_mean, a_std = norm_stats(fr["action"])
+    print(f"      qpos   mean={np.round(q_mean, 3).tolist()}")
+    print(f"      qpos   std ={np.round(q_std, 3).tolist()}")
+    print(f"      action mean={np.round(a_mean, 3).tolist()}")
+    print(f"      action std ={np.round(a_std, 3).tolist()}")
+
+    print(f"[5/5] writing {out} ...")
+    import h5py
+
+    columns = [
+        ("qpos", "float32", (s_dim,)),
+        ("action", "float32", (a_dim,)),
+        ("images", "uint8", (len(cams), 3, h, w)),
+    ]
+    manifest = encode_manifest(
+        env_id=f"lerobot/{args.repo}",
+        n_rows=n_rows,
+        n_episodes=n_ep,
+        seed=0,
+        source_commit=args.revision or "",
+        columns=columns,
+    )
+
+    tmp = out.with_suffix(".h5.tmp")
+    with h5py.File(tmp, "w") as f:
+        # Columns are rank-2 `[N, row_dim]`; the manifest carries the true
+        # trailing shape (`TrajectoryStoreWriter._create_for`).
+        f.create_dataset("qpos", data=fr["qpos"], dtype="f4")
+        f.create_dataset("action", data=fr["action"], dtype="f4")
+        f.create_dataset(
+            "images",
+            data=images.reshape(n_rows, -1),
+            dtype="u1",
+            chunks=(1, len(cams) * 3 * h * w),
+        )
+        f.create_dataset("ep_len", data=lengths.astype(np.int64))
+        f.create_dataset("ep_offset", data=from_index.astype(np.int64))
+        f.create_dataset("norm_qpos_mean", data=q_mean)
+        f.create_dataset("norm_qpos_std", data=q_std)
+        f.create_dataset("norm_action_mean", data=a_mean)
+        f.create_dataset("norm_action_std", data=a_std)
+        f.create_dataset(
+            "__manifest__",
+            data=np.frombuffer(manifest.encode("utf-8"), dtype=np.uint8),
+        )
+    os.replace(tmp, out)
+
+    sha = hashlib.sha256(out.read_bytes()).hexdigest()[:16]
+    print(
+        f"\nwrote {out}\n"
+        f"  {out.stat().st_size / 1e9:.2f} GB   sha256:{sha}\n"
+        f"  images column: {len(cams)}*3*{h}*{w} = {len(cams) * 3 * h * w}"
+        f" bytes/row"
+    )
+    (out.with_suffix(".json")).write_text(
+        json.dumps(
+            {
+                "repo": args.repo,
+                "cameras": cams,
+                "height": h,
+                "width": w,
+                "fps": fps,
+                "state_dim": s_dim,
+                "action_dim": a_dim,
+                "n_rows": n_rows,
+                "episode_lengths": lengths.tolist(),
+                "qpos_mean": q_mean.tolist(),
+                "qpos_std": q_std.tolist(),
+                "action_mean": a_mean.tolist(),
+                "action_std": a_std.tolist(),
+            },
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
