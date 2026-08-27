@@ -1,0 +1,108 @@
+---
+/**
+ * Physics3dPipeline — one physics3d step, and where each named algorithm sits.
+ *
+ * The page lists the five stages as an ASCII arrow chain and then lists CRBA,
+ * RNE, the solvers and the integrators in three separate tables, so nothing
+ * says which stage each belongs to. That mapping is the diagram.
+ *
+ * The constraint solve is drawn in spark rather than cyan for a reason: it is
+ * the stage that carries every hazard on the page — the blocked Newton kernel
+ * that will not survive CUDA-graph capture, the elliptic cone that cannot be
+ * combined with RK4, and the Metal crash. One stage, all three.
+ */
+
+const STAGES = [
+	{
+		name: 'forward\nkinematics',
+		lines: ['qpos → xpos, xquat'],
+		tone: 'cyan',
+	},
+	{
+		name: 'collision\ndetection',
+		lines: ['SAP broadphase', 'primitives · GJK'],
+		tone: 'cyan',
+	},
+	{
+		name: 'constraint\nbuilding',
+		lines: ['contact Jacobians', 'CRBA · RNE'],
+		tone: 'cyan',
+	},
+	{
+		name: 'constraint\nsolving',
+		lines: ['Newton · CG · PGS', 'pyramidal | elliptic'],
+		tone: 'spark',
+	},
+	{
+		name: 'integration',
+		lines: ['euler · implicit', 'rk4'],
+		tone: 'cyan',
+	},
+];
+
+const W = 150;
+const GAP = 22;
+const X = (i: number) => 22 + i * (W + GAP);
+const Y = 104;
+const H = 62;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 340" role="img"
+		aria-label="One physics3d step runs five stages in order: forward kinematics, collision detection, constraint building using CRBA and RNE, constraint solving with Newton, conjugate gradient or projected Gauss-Seidel, and integration. The constraint solve is the stage carrying the GPU hazards.">
+		<defs>
+			<marker id="p3-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+		</defs>
+
+		<text x="20" y="30" class="dg-title dg-title--left">One step</text>
+		{/* Not a restatement of the paragraph below the diagram, which already gives
+		    the Data/Model split. This says what the diagram is *for*. */}
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			The tables further down name the algorithms; this is where each of them runs.
+		</text>
+
+		{
+			STAGES.map((stage, i) => (
+				<g>
+					<g class={`dg-node dg-node--${stage.tone}`}>
+						<rect x={X(i)} y={Y} width={W} height={H} rx="8" />
+					</g>
+					{stage.name.split('\n').map((line, k, all) => (
+						<text x={X(i) + W / 2}
+							y={all.length === 1 ? Y + 38 : Y + 23 + k * 20}
+							class="dg-sub">
+							{line}
+						</text>
+					))}
+					{stage.lines.map((line, k) => (
+						<text x={X(i) + W / 2} y={Y + H + 30 + k * 20} class="dg-caption">
+							{line}
+						</text>
+					))}
+					{i < STAGES.length - 1 && (
+						<path class="dg-edge dg-edge--cyan" marker-end="url(#p3-cyan)"
+							d={`M ${X(i) + W} ${Y + H / 2} L ${X(i + 1) - 5} ${Y + H / 2}`} />
+					)}
+				</g>
+			))
+		}
+
+		<text x="20" y="264" class="dg-sub dg-sub--left">
+			The whole pipeline runs batched on GPU, one environment per block for the contact solve.
+		</text>
+		<text x="20" y="292" class="dg-sub dg-sub--left">
+			That block kernel is why the hazards cluster on one stage: it will not survive CUDA-graph
+		</text>
+		<text x="20" y="314" class="dg-sub dg-sub--left">
+			capture, it hard-crashes Metal, and its elliptic friction cone cannot be combined with RK4.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">straightforward on GPU</span>
+		<span class="diagram__key diagram__key--spark">where the GPU caveats live</span>
+	</figcaption>
+</figure>

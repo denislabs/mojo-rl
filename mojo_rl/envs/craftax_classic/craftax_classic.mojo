@@ -9,7 +9,7 @@ Game logic, world gen, and observation extraction land in later phases.
 See `docs/CRAFTAX_PORT.md`.
 """
 
-from std.memory import alloc
+from std.memory import dealloc, alloc
 from std.ffi import c_int, c_float
 from mojo_rl.core import (
     State,
@@ -22,7 +22,7 @@ from mojo_rl.nn.constants import DT as gpu_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from .constants import (
     MAP_H,
@@ -155,6 +155,7 @@ from .craftax_classic_sprites import (
     SPR_ICON_ENERGY,
 )
 from std.random.philox import Random as PhiloxRandom
+from mojo_rl.core.fmt import fit
 
 
 # Per-env GPU world-gen workspace: 4 noise fields × MAP_SIZE floats.
@@ -228,9 +229,9 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     var _rng_counter: UInt64
 
     # Renderer (allocated lazily by init_renderer)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+    var _sprite_pixels: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -317,7 +318,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     # Env trait methods
     # ========================================================================
 
-    def get_state(self) -> CraftaxState:
+    def get_state(mut self) -> CraftaxState:
         return CraftaxState(index=Int(self.state[S_TIMESTEP]))
 
     def close(mut self):
@@ -344,10 +345,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs_arr = InlineArray[Float32, OBS_DIM](fill=Float32(0.0))
-        var obs_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+        var obs_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             obs_arr.unsafe_ptr().unsafe_bitcast[Float32]()
         )
-        var state_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+        var state_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             self.state.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         extract_obs_inline(state_ptr, obs_ptr)
@@ -422,13 +423,13 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
 
             # Slice per-env scratch and compute pointers.
             var ws_base = e * WORLD_GEN_WS_PER_ENV
-            var scratch_ptr = scratch.ptr + ws_base
+            var scratch_ptr = scratch.ptr.unsafe_offset(ws_base)
             var water_ptr = scratch_ptr
-            var mountain_ptr = scratch_ptr + MAP_SIZE
-            var path_ptr = scratch_ptr + 2 * MAP_SIZE
-            var tree_ptr = scratch_ptr + 3 * MAP_SIZE
+            var mountain_ptr = scratch_ptr.unsafe_offset(MAP_SIZE)
+            var path_ptr = scratch_ptr.unsafe_offset(2 * MAP_SIZE)
+            var tree_ptr = scratch_ptr.unsafe_offset(3 * MAP_SIZE)
             var map_ptr = (
-                states.ptr + e * STATE_SIZE + S_MAP_BASE
+                states.ptr.unsafe_offset(e * STATE_SIZE + S_MAP_BASE)
             )
 
             var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(
@@ -472,10 +473,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         var states = LayoutTensor[
@@ -524,9 +525,9 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                 states[e, s] = Scalar[gpu_dtype](0.0)
 
             var ws_base = e * WORLD_GEN_WS_PER_ENV
-            var scratch_ptr = scratch.ptr + ws_base
+            var scratch_ptr = scratch.ptr.unsafe_offset(ws_base)
             var map_ptr = (
-                states.ptr + e * STATE_SIZE + S_MAP_BASE
+                states.ptr.unsafe_offset(e * STATE_SIZE + S_MAP_BASE)
             )
             var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(
                 e
@@ -534,9 +535,9 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
             var spawn = generate_world_inline(
                 per_env_seed,
                 scratch_ptr,
-                scratch_ptr + MAP_SIZE,
-                scratch_ptr + 2 * MAP_SIZE,
-                scratch_ptr + 3 * MAP_SIZE,
+                scratch_ptr.unsafe_offset(MAP_SIZE),
+                scratch_ptr.unsafe_offset(2 * MAP_SIZE),
+                scratch_ptr.unsafe_offset(3 * MAP_SIZE),
                 map_ptr,
                 False,
             )
@@ -576,10 +577,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         var states = LayoutTensor[
@@ -639,7 +640,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                 e
             ) + UInt64(1)
             var rng = PhiloxRandom(seed=per_env_seed, offset=0)
-            var state_ptr = states.ptr + e * STATE_SIZE
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
             var result = apply_step_inline(state_ptr, action, rng)
 
             rewards[e] = Scalar[gpu_dtype](result[0])
@@ -649,7 +650,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
             terminated_out[e] = Scalar[gpu_dtype](0.0)
 
             # Symbolic obs: write into this env's slice of the obs buffer.
-            var obs_ptr = obs.ptr + e * OBS_DIM
+            var obs_ptr = obs.ptr.unsafe_offset(e * OBS_DIM)
             extract_obs_inline(state_ptr, obs_ptr)
 
         ctx.enqueue_function[step_wrapper](
@@ -675,7 +676,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
         # `extract_obs_inline` reads state through the mutable `State` pointer
-        # alias (= UnsafePointer[..., MutAnyOrigin]), so the view must be mut.
+        # alias (= Pointer[..., MutAnyOrigin]), so the view must be mut.
         # Rebind the read-only buffer through a mut local to get a mut=True
         # concrete-origin view (no unsafe_ptr; widens into the MutAnyOrigin param).
         var states_buf_mut = states_buf
@@ -703,8 +704,8 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
             var e = Int(block_dim.x * block_idx.x + thread_idx.x)
             if e >= BATCH_SIZE:
                 return
-            var state_ptr = states.ptr + e * STATE_SIZE
-            var obs_ptr = obs.ptr + e * OBS_DIM
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
+            var obs_ptr = obs.ptr.unsafe_offset(e * OBS_DIM)
             extract_obs_inline(state_ptr, obs_ptr)
 
         ctx.enqueue_function[extract_wrapper](
@@ -883,7 +884,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(
                 width=Self.WIN_PX_W,
@@ -953,7 +954,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         # Upload the sprite sheet as one SDL3 texture for this frame.
         var has_texture = False
         var texture: Optional[
-            UnsafePointer[Texture, MutAnyOrigin]
+            Pointer[Texture, MutAnyOrigin]
         ] = None
         if self._has_sprites:
             try:
@@ -961,7 +962,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                    rebind[Pointer[NoneType, MutAnyOrigin]](
                         self._sprite_pixels.value()
                     ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
@@ -984,14 +985,16 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int):
             if not has_texture:
                 return
-            var src = alloc[FRect](1)
+            var src_alloc = alloc[FRect]({count = 1})
+            var src = src_alloc.unsafe_ptr()
             src[] = FRect(
                 c_float(idx * SPRITE_SIZE),
                 c_float(0),
                 c_float(SPRITE_SIZE),
                 c_float(SPRITE_SIZE),
             )
-            var dst = alloc[FRect](1)
+            var dst_alloc = alloc[FRect]({count = 1})
+            var dst = dst_alloc.unsafe_ptr()
             dst[] = FRect(
                 c_float(dst_x),
                 c_float(dst_y),
@@ -1002,13 +1005,13 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                 render_texture(
                     renderer.sdl_renderer.value(),
                     texture.value(),
-                    rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src),
-                    rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst),
+                    rebind[Pointer[FRect, ImmutAnyOrigin]](src),
+                    rebind[Pointer[FRect, ImmutAnyOrigin]](dst),
                 )
             except:
                 pass
-            src.free()
-            dst.free()
+            dealloc(src_alloc^)
+            dealloc(dst_alloc^)
 
         # --- Tiles in the 9×7 view ---
         for vy in range(VIEW_H):
@@ -1188,7 +1191,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
             + "/"
             + String(NUM_ACHIEVEMENTS)
             + "  Light "
-            + String(Float64(Int(light * 100.0)) / 100.0)[byte=:4]
+            + fit(String(Float64(Int(light * 100.0)) / 100.0), 4)
         )
         if sleeping:
             foot_text = foot_text + "  Sleeping"
@@ -1207,10 +1210,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
         if self._has_sprites:
-            self._sprite_pixels.value().free()
+            self._sprite_pixels.value().unsafe_free()
             self._has_sprites = False
 
     def is_renderer_open(self) -> Bool:

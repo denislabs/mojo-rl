@@ -1,0 +1,45 @@
+---
+/**
+ * Maturity — a per-page stability marker.
+ *
+ * mojo-rl is not uniformly mature: the tabular agents, the classic-control and
+ * MuJoCo-style environments, and DQN/PPO/SAC/TD3 are stable and tested, while
+ * the world-model agents are still moving. A single sitewide beta banner would
+ * understate the former and overstate the latter, so stability is declared per
+ * page instead.
+ *
+ * Usage:
+ *   import Maturity from '~/components/Maturity.astro';
+ *   <Maturity level="stable" />
+ *   <Maturity level="beta" note="MCTS on Metal is single-threaded." />
+ */
+interface Props {
+	level: 'stable' | 'beta' | 'experimental';
+	/** Optional one-line qualifier shown after the standard blurb. */
+	note?: string;
+}
+
+const { level, note } = Astro.props;
+
+const COPY = {
+	stable: {
+		label: 'Stable',
+		blurb: 'Tested and in active use. Breaking changes will be called out.',
+	},
+	beta: {
+		label: 'Beta',
+		blurb: 'Works, but under active development — APIs and results may shift.',
+	},
+	experimental: {
+		label: 'Experimental',
+		blurb: 'Research code. Expect rough edges, and expect the API to break.',
+	},
+} as const;
+
+const { label, blurb } = COPY[level];
+---
+
+<p class={`maturity maturity--${level}`} data-maturity={level}>
+	<span class="maturity__pill">{label}</span>
+	<span class="maturity__text">{blurb}{note ? ` ${note}` : ''}</span>
+</p>

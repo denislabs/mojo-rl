@@ -194,7 +194,7 @@ def main() raises:
             )
             last_loss = result.output_loss_final
 
-        print("    ", epoch, "  ", String(last_loss)[byte=:9])
+        print("    ", epoch, "  ", fit(String(last_loss), 9))
 
     # ── Inspect trained params ───────────────────────────────────────────────
     print("\n  Trained params:")
@@ -347,3 +347,5 @@ def main() raises:
     gen_x_in_buf.free()
     gen_y_dummy_buf.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

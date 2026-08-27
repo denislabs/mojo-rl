@@ -18,12 +18,13 @@ from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
 from std.collections import InlineArray
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NQ = AntModel.NQ  # 15
@@ -36,18 +37,44 @@ comptime NSITE = AntModel.NSITE
 comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTEN = AntModel.MAX_TENDON
 comptime NEXCL = AntModel.NEXCLUDE
+comptime MD = ModelDims[AntModel]
 
-# Same budgets as the legacy free-joint gate.
-comptime QPOS_ABS_TOL_1: Float64 = 1e-4
-comptime QVEL_ABS_TOL_1: Float64 = 5e-3
-comptime QPOS_ABS_TOL_10: Float64 = 1e-3
-comptime QVEL_ABS_TOL_10: Float64 = 5e-3
+# ⚠ These were inherited from the legacy free-joint gate at 1e-4 / 5e-3 —
+# NINE orders of magnitude looser than what the path actually achieves, so
+# they could not fail for any reason short of a total break. That slack is
+# precisely what hid a real bug: `quat_integrate` was a first-order
+# approximation where MuJoCo's `mju_quatIntegrate` is the exact exponential
+# map, which made this a DIFFERENT INTEGRATOR for every free-rooted model.
+# Ant sat comfortably inside 1e-4 the whole time. Fixed 2026-07-30; observed
+# is now 4.8e-13 / 4.9e-13 (1 step) and 4.7e-13 / 4.7e-12 (10 steps), so the
+# budgets are set ~20x above that. Do NOT loosen these back to "safe" values;
+# if a change moves them, that is the gate doing its job.
+comptime QPOS_ABS_TOL_1: Float64 = 1e-11
+comptime QVEL_ABS_TOL_1: Float64 = 1e-11
+comptime QPOS_ABS_TOL_10: Float64 = 1e-11
+comptime QVEL_ABS_TOL_10: Float64 = 1e-10
 
 # --- GOLDEN fingerprint for the active-limit fields-CPU trajectory -----------
 comptime HARVEST = False  # True => print fingerprint + skip asserts (regen)
 comptime GOLD_RTOL = 1e-6  # fields-CPU f64 is deterministic across devices
-comptime GOLD_LIM_QPOS = 12.238419676584359
-comptime GOLD_LIM_QVEL = 17.46190088582406
+# ⚠ This golden pins our OWN output, and there is no MuJoCo comparison in this
+# file for the active-limit case (the two sub-tests above assert nefc == 0).
+# It therefore CANNOT catch an error in the constraint response — it froze one
+# for months: `dof_invweight0` was ~1% wrong, and this number faithfully
+# preserved it. The authority for constrained behaviour is
+# tests/physics3d/test_constraints_vs_mujoco.mojo, which compares against
+# MuJoCo directly. Treat this fingerprint as a determinism check only.
+#
+# Regenerated 2026-07-30 (b) for bug 18 (dof_invweight0 built at the env reset
+# pose instead of qpos0, and missing MuJoCo's free/ball dof-group averaging).
+# Moved 1.2e-6 (qpos) / 2.3e-5 (qvel) — small because the limit rows are only
+# briefly active over these 10 steps. What says this is a fix and not a
+# regression: the MuJoCo-gated sub-tests above did NOT move (4.8e-13 / 4.7e-12,
+# they run limit-free), while the active-limit case measured against MuJoCo in
+# test_constraints_vs_mujoco went 9.4e-6 -> 4.4e-13 in the same change.
+# Previously regenerated 2026-07-30 (a) for the exact `quat_integrate` (bug 17).
+comptime GOLD_LIM_QPOS = 12.238441724124275
+comptime GOLD_LIM_QVEL = 17.46150375918525
 
 
 def _tumbling_qpos() -> InlineArray[Float64, NQ]:
@@ -60,7 +87,7 @@ def _tumbling_qpos() -> InlineArray[Float64, NQ]:
     qpos[10] = -0.9  # ankle_2
     qpos[12] = -0.9  # ankle_3
     qpos[14] = 0.9  # ankle_4
-    return qpos
+    return qpos^
 
 
 def _tumbling_qvel() -> InlineArray[Float64, NV]:
@@ -68,15 +95,15 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
     qvel[3] = 2.0
     qvel[4] = 1.0
     qvel[5] = 0.5
-    return qvel
+    return qvel^
 
 
 def _make_model(
     ctx: DeviceContext,
-) raises -> Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]:
+) raises -> Model[DTYPE, MD]:
     """Build the model into Model via the model-def init + flattening."""
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
-    AntModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    AntModel.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -92,15 +119,12 @@ def _compare_vs_mujoco(
     var mf = _make_model(ctx)
 
     # Fields path (f64, CPU target, BATCH=1).
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, BATCH=1,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=1]()
     for _ in range(num_steps):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -175,15 +199,12 @@ def test_fields_euler_active_limits_golden() raises:
     var ctx = DeviceContext()
     var mf = _make_model(ctx)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, BATCH=1,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=1]()
     for _ in range(10):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)

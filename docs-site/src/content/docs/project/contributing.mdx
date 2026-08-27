@@ -1,0 +1,172 @@
+---
+title: Contributing
+description: Development workflow, Mojo nightly syntax, the compiler traps worth knowing, and where the project is going.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+mojo-rl is developed in the open and was selected for a **Modular Community
+Grant** in 2026. Bug reports and contributions are welcome — the
+[project status](/) is honest about which parts are settled and which are not.
+
+## Setup
+
+```bash
+git clone https://github.com/denislabs/mojo-rl.git
+cd mojo-rl
+pixi install
+pixi run install-pre-commit
+```
+
+See [Installation](/start/installation/) for GPU environments and optional
+dependencies.
+
+## Workflow
+
+```bash
+pixi run format                  # mojo format -l 80
+pixi run test-smoke              # the CI gate
+pixi run examples-compile        # catch example rot
+```
+
+Formatting is 80 columns via `mojo format`, enforced by pre-commit.
+
+## Mojo nightly
+
+The project tracks **Mojo nightly**, which differs from stable in ways your
+editor may not know about. The LSP will report false warnings on valid code.
+
+| Stable | Nightly |
+|---|---|
+| `inout` | `mut` |
+| `owned` / `var` (transfer) | `deinit` |
+| `alias` | `comptime` |
+| `ptr.offset(n)` | `ptr + n` |
+| `enqueue_function_unchecked` | `enqueue_function` |
+
+Pointers also split into safe and unsafe forms — `p[unsafe_offset=i]`,
+`.unsafe_load/store/offset/bitcast`.
+
+## Compiler traps worth knowing
+
+These are not bugs in your code. Each has cost real time here.
+
+:::caution[Probe compilation with `--emit=llvm`]
+```bash
+pixi run mojo build --emit=llvm <file>
+```
+macOS `ld` rejects the very long generic symbol names this design produces, so a
+**link** failure can be a false negative unrelated to your code. Stop at LLVM
+emission when you only want to know whether it type-checks.
+
+Note also that `mojo precompile` skips generic instantiation, so a green
+package build can still hide real errors in generic code.
+:::
+
+:::caution[Instantiation depth can hang the compiler]
+Two known shapes: ~80+ calls in one function triggers an inliner explosion, and
+a deep `comptime` loop building nested modules can hang outright. Both are fixed
+by extracting the body into a helper function.
+
+If a build stops making progress rather than failing, suspect depth first.
+:::
+
+:::caution[Stale `mojo_rl.mojoc` shadows the source tree]
+```bash
+rm -f mojo_rl.mojoc
+```
+A stale precompiled package produces errors pointing at code that no longer
+exists.
+:::
+
+**Intra-package imports** should name the module: `from .mod import X`, not
+`from . import X` — the latter misses wildcard re-exports.
+
+**`_DLCallable` discards arguments.** `get_function[T](name)(args)` silently
+becomes a no-op. Unwrap with `()` first, then call.
+
+## Where the sharp edges are
+
+If you are looking for something to work on, these are known and documented:
+
+| Area | Issue |
+|---|---|
+| Replay gather | Dominates step time at pixel scale; unoptimized |
+| Dreamer 4 | Perceptual loss corrupts token reconstruction |
+| Elliptic contacts | Drift vs. MuJoCo; affects Sawyer |
+| CarRacing | Reward shaping unfinished |
+| Env CUDA-graph capture | Blocked by the cooperative blocked-Newton kernel |
+| nn Trainer capture | Blocked by `linalg.matmul`'s per-call split-K workspace |
+| NHWC conv | End-to-end migration designed but not landed |
+| Documentation | README, CLAUDE.md and package READMEs have drifted — see below |
+
+## Documentation drift
+
+Building this site surfaced a number of places where the repository's own docs
+no longer match the code. Corrections are welcome:
+
+- `README.md`'s nn `Trainer` example does not compile — the signature is
+  `Trainer[MODEL, NC, IN, BATCH, target, …]`, with no loss parameter
+- Several cited example paths do not exist
+- `CLAUDE.md` names an `nn/initializer/` and `nn/autodiff/` package; neither exists
+- `mojo_rl/physics3d/README.md` predates the field-layout migration
+- Published observation dimensions disagree with the source in five places — Humanoid is 45, not 376
+- `INSTALL.md` is a scratch file of profiling commands, not an install guide
+- Checkpoints are `storage-ckpt v3`; the prose says v2
+
+This documentation site is generated from the source, and its build fails on a
+broken repository path — see `docs-site/scripts/check-refs.mjs`.
+
+## Adding things
+
+- [A new environment](/environments/custom/)
+- [A new agent](/algorithms/custom/)
+- [A new network layer](/nn/modules/)
+
+## Working on the docs
+
+```bash
+cd docs-site
+pnpm install
+pnpm dev          # http://localhost:4321
+pnpm build        # runs check-refs, then builds
+```
+
+Every repo path cited in a page is validated at build time. If a page quotes
+code, take it from a file under `examples/` rather than writing it fresh —
+that is the difference between docs that survive a refactor and docs that do
+not.
+
+Demo videos are generated from `gifs/`:
+
+```bash
+node docs-site/scripts/build-media.mjs
+```
+
+:::note[The dev server caches content collections]
+If a frontmatter change appears not to land, restart the dev server before
+debugging it. The production build is authoritative.
+:::
+
+## Roadmap
+
+From the project's own [roadmap](https://github.com/denislabs/mojo-rl/blob/main/ROADMAP.md):
+
+**Stabilize and harden** — battle-test the 3D physics engine and the complex
+agents for community use.
+
+**Land the model-based agents** — finish AlphaZero, MuZero, DreamerV3 and
+TD-MPC2 in the fully-GPU pipeline.
+
+**Publish benchmarks** — rigorous comparisons against Gymnasium,
+Stable-Baselines3 and PyTorch.
+
+**Developer experience** — cleaner APIs, documentation, and example templates
+for new agents and environments.
+
+## Next
+
+- [Testing](/project/testing/) — the tiers and the discipline
+- [Algorithms overview](/algorithms/) — what exists today

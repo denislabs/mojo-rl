@@ -24,7 +24,7 @@ action lives on `DreamerV3Agent`); imagination from the final posterior carry.
 from std.random import random_float64
 from std.math import exp
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Initializer, Kaiming, Zero
@@ -60,10 +60,10 @@ from mojo_rl.deep_agents.dreamerv3.blocks import (
 
 
 @always_inline
-def _hp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _hp(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Sanctioned host-pointer view of a storage Tensor's CPU `data` — for the
     raw-pointer helpers (`twohot_pred`, sample_batch). CPU only."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
 
 
 @always_inline
@@ -113,7 +113,7 @@ struct DreamerV3Trainer[
     # trunc_normal_in (sigma = sqrt(1/fan_in), sqrt(2) smaller) — pass
     # `TruncNormalIn` for reference parity.
     NET_INIT: Initializer = Kaiming,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
 
@@ -272,7 +272,7 @@ struct DreamerV3Trainer[
         # a past -9-vs-(-20)-default split decoded reward ~5× small, starving
         # imagined returns.
         symexp_twohot_bins[Self.BINS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
             lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
         )
         var retnorm = PercentileNormalize.make(
@@ -323,15 +323,15 @@ struct DreamerV3Trainer[
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: Pointer[Scalar[DT], MutAnyOrigin],
+        act: Pointer[Scalar[DT], MutAnyOrigin],
         reward: Scalar[DT],
         done: Scalar[DT],
     ) raises:
         self.replay.record(obs, act, reward, done)
 
     def record_terminal(
-        mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        mut self, obs: Pointer[Scalar[DT], MutAnyOrigin]
     ) raises:
         """Store a genuine terminal observation (call right after `record(done=1)`).
         Lets the WM continue head learn `latent(terminal)→0`."""
@@ -434,7 +434,7 @@ struct DreamerV3Trainer[
         ignored (both sections always run) so profile with ac_start=0."""
         var out = InlineArray[Float64, 5](fill=0.0)
         if not self.can_train():
-            return out
+            return out^
         self._prof_sync()
         var t0 = perf_counter_ns()
         self.train_prologue(want_diag=False)
@@ -455,7 +455,7 @@ struct DreamerV3Trainer[
         self.ac_blk.step[Self.train_target](
             self.state, self.imagine, self.value, self.slowvalue, self.policy,
             self.rew, self.con, self.oval, self.opol, self.retnorm,
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.bins.unsafe_ptr()
             ),
             False,
@@ -468,7 +468,7 @@ struct DreamerV3Trainer[
         out[2] = Float64(t3 - t2) / 1e6
         out[3] = Float64(t4 - t3) / 1e6
         out[4] = Float64(t4 - t0) / 1e6
-        return out
+        return out^
 
     def train_prologue(mut self, want_diag: Bool) raises:
         """Eager per-step work that is NOT part of the captured device-kernel
@@ -541,11 +541,11 @@ struct DreamerV3Trainer[
 
     def load_minibatch(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)*OBS]
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T*ACT]
-        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
-        dne: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
-        fst: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)]
+        obs: Pointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)*OBS]
+        act: Pointer[Scalar[DT], MutAnyOrigin],   # [B*T*ACT]
+        rew: Pointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        dne: Pointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        fst: Pointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)]
     ) raises:
         """Load a FIXED minibatch into the WM/AC buffers, bypassing the replay
         draw. The CPU↔GPU parity gate uses this to feed both backends a
@@ -555,19 +555,19 @@ struct DreamerV3Trainer[
         comptime OBSD = Self.OBS
         comptime ACTD = Self.ACT
         for i in range(Self.B * Self.T):
-            self.state.mb_rew.data[i] = rew[i]
-            self.state.mb_dne.data[i] = dne[i]
+            self.state.mb_rew.data[i] = rew[unsafe_offset=i]
+            self.state.mb_dne.data[i] = dne[unsafe_offset=i]
         comptime if Self.train_target == "gpu":
             var sctx = self.ctx.value()
             for i in range(Self.B * (Self.T + 1) * OBSD):
-                self.wm_blk.mbobs_d.data[i] = obs[i]
+                self.wm_blk.mbobs_d.data[i] = obs[unsafe_offset=i]
             for i in range(Self.B * Self.T * ACTD):
-                self.wm_blk.mbact_d.data[i] = act[i]
+                self.wm_blk.mbact_d.data[i] = act[unsafe_offset=i]
             for i in range(Self.B * Self.T):
-                self.wm_blk.mbrew_d.data[i] = rew[i]
-                self.wm_blk.mbdne_d.data[i] = dne[i]
+                self.wm_blk.mbrew_d.data[i] = rew[unsafe_offset=i]
+                self.wm_blk.mbdne_d.data[i] = dne[unsafe_offset=i]
             for i in range(Self.B * (Self.T + 1)):
-                self.wm_blk.mbfst_d.data[i] = fst[i]
+                self.wm_blk.mbfst_d.data[i] = fst[unsafe_offset=i]
             # `upload_resident` (stable pointer) so a CUDA-graph that captured
             # these WM input buffers stays valid across replays — only contents
             # change. `upload` recreates the buffer (new pointer) → captured WM
@@ -590,11 +590,11 @@ struct DreamerV3Trainer[
             )
         else:
             for i in range(Self.B * (Self.T + 1) * OBSD):
-                self.state.mb_obs.data[i] = obs[i]
+                self.state.mb_obs.data[i] = obs[unsafe_offset=i]
             for i in range(Self.B * Self.T * ACTD):
-                self.state.mb_act.data[i] = act[i]
+                self.state.mb_act.data[i] = act[unsafe_offset=i]
             for i in range(Self.B * (Self.T + 1)):
-                self.state.mb_fst.data[i] = fst[i]
+                self.state.mb_fst.data[i] = fst[unsafe_offset=i]
         var rr: Scalar[DT] = 0.0
         for i in range(Self.B * Self.T):
             rr += self.state.mb_rew.data[i]
@@ -656,7 +656,7 @@ struct DreamerV3Trainer[
         self.ac_blk.step[Self.train_target](
             self.state, self.imagine, self.value, self.slowvalue, self.policy,
             self.rew, self.con, self.oval, self.opol, self.retnorm,
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.bins.unsafe_ptr()
             ),
             want_diag,
@@ -835,15 +835,15 @@ struct DreamerV3Trainer[
 
     def openloop_report(
         mut self,
-        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
-        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT] NORMALIZED [-1,1]
-        real_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [ctx+hor]
+        real_obs: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT] NORMALIZED [-1,1]
+        real_rew: Pointer[Scalar[DT], MutAnyOrigin],   # [ctx+hor]
         ctx_len: Int,
         hor: Int,
-        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop obs MSE (raw space)
-        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced obs MSE
-        out_ol_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop |reward err|
-        out_tf_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced |reward err|
+        out_ol_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop obs MSE (raw space)
+        out_tf_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced obs MSE
+        out_ol_rew: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop |reward err|
+        out_tf_rew: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced |reward err|
     ) raises:
         """Open-loop WM-accuracy probe (Finding-4 follow-up diagnostic).
 
@@ -880,7 +880,7 @@ struct DreamerV3Trainer[
         comptime FEATl = Self.FEAT
         comptime BINSl = Self.BINS
         comptime CARRY = 2 + D + SCl
-        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var bins = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             self.bins.unsafe_ptr()
         )
 
@@ -904,9 +904,9 @@ struct DreamerV3Trainer[
                     pa.data[k] = 0.0
             else:
                 for k in range(ACTD):
-                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+                    pa.data[k] = real_act[unsafe_offset=(t - 1) * ACTD + k]
             for k in range(OBSD):
-                obt.data[k] = real_obs[t * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=t * OBSD + k]
             self.enc.forward["cpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
                 rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
@@ -938,7 +938,7 @@ struct DreamerV3Trainer[
         for h in range(hor):
             var idx = ctx_len - 1 + h
             for k in range(ACTD):
-                pa.data[k] = real_act[idx * ACTD + k]
+                pa.data[k] = real_act[unsafe_offset=idx * ACTD + k]
             # ── open-loop: prior dynamics (imagine), no observation ──
             self.imagine.set_input["deter", 1](old, None)
             self.imagine.set_input["stoch", 1](ols, None)
@@ -957,16 +957,16 @@ struct DreamerV3Trainer[
             ref pred = self.dec.node_output["dec"]()
             var ms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _recon_decode[Self.RECON_SIGMOID](pred.data[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](pred.data[k]) - real_obs[unsafe_offset=(idx + 1) * OBSD + k]
                 ms += dv * dv
-            out_ol_obs[h] = ms / Scalar[DT](OBSD)
+            out_ol_obs[unsafe_offset=h] = ms / Scalar[DT](OBSD)
             self.rew.set_input["nd", 1](ond_t, None)
             self.rew.set_input["stoch_new", 1](osn_t, None)
             self.rew.set_input["rtgt", 1](dummy1, None)
             self.rew.forward[1, "cpu"](loss_t, None)
             ref rl = self.rew.node_output["rew"]()
-            var re = twohot_pred[BINSl](_hp(rl), 0, bins) - real_rew[idx]
-            out_ol_rew[h] = re if re >= Scalar[DT](0.0) else -re
+            var re = twohot_pred[BINSl](_hp(rl), 0, bins) - real_rew[unsafe_offset=idx]
+            out_ol_rew[unsafe_offset=h] = re if re >= Scalar[DT](0.0) else -re
             for k in range(D):
                 old.data[k] = ond_t.data[k]
             for k in range(SCl):
@@ -974,7 +974,7 @@ struct DreamerV3Trainer[
 
             # ── teacher-forced: re-observe the real obs (posterior path) ──
             for k in range(OBSD):
-                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=(idx + 1) * OBSD + k]
             self.enc.forward["cpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
                 rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
@@ -998,9 +998,9 @@ struct DreamerV3Trainer[
             ref tpred = self.dec.node_output["dec"]()
             var tms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _recon_decode[Self.RECON_SIGMOID](tpred.data[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](tpred.data[k]) - real_obs[unsafe_offset=(idx + 1) * OBSD + k]
                 tms += dv * dv
-            out_tf_obs[h] = tms / Scalar[DT](OBSD)
+            out_tf_obs[unsafe_offset=h] = tms / Scalar[DT](OBSD)
             # teacher-forced reward: head prediction on the REAL posterior state
             # vs real reward — isolates head calibration from dynamics drift.
             self.rew.set_input["nd", 1](tnd_t, None)
@@ -1008,8 +1008,8 @@ struct DreamerV3Trainer[
             self.rew.set_input["rtgt", 1](dummy1, None)
             self.rew.forward[1, "cpu"](loss_t, None)
             ref trl = self.rew.node_output["rew"]()
-            var tre = twohot_pred[BINSl](_hp(trl), 0, bins) - real_rew[idx]
-            out_tf_rew[h] = tre if tre >= Scalar[DT](0.0) else -tre
+            var tre = twohot_pred[BINSl](_hp(trl), 0, bins) - real_rew[unsafe_offset=idx]
+            out_tf_rew[unsafe_offset=h] = tre if tre >= Scalar[DT](0.0) else -tre
             for k in range(D):
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):
@@ -1017,14 +1017,14 @@ struct DreamerV3Trainer[
 
     def openloop_trace(
         mut self,
-        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
-        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        real_obs: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
         ctx_len: Int,
         hor: Int,
-        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
-        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
-        out_ol_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop continue prob = sigmoid(con logit)
-        out_tf_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced continue prob
+        out_ol_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+        out_ol_con: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop continue prob = sigmoid(con logit)
+        out_tf_con: Pointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced continue prob
     ) raises:
         """Per-component open-loop WM trace (CartPole fidelity diagnostic).
 
@@ -1071,9 +1071,9 @@ struct DreamerV3Trainer[
                     pa.data[k] = 0.0
             else:
                 for k in range(ACTD):
-                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+                    pa.data[k] = real_act[unsafe_offset=(t - 1) * ACTD + k]
             for k in range(OBSD):
-                obt.data[k] = real_obs[t * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=t * OBSD + k]
             self.enc.forward["cpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
                 rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
@@ -1103,7 +1103,7 @@ struct DreamerV3Trainer[
         for h in range(hor):
             var idx = ctx_len - 1 + h
             for k in range(ACTD):
-                pa.data[k] = real_act[idx * ACTD + k]
+                pa.data[k] = real_act[unsafe_offset=idx * ACTD + k]
             # ── open-loop: prior dynamics (imagine), no observation ──
             self.imagine.set_input["deter", 1](old, None)
             self.imagine.set_input["stoch", 1](ols, None)
@@ -1121,13 +1121,13 @@ struct DreamerV3Trainer[
             self.dec.forward[1, "cpu"](loss_t, None)
             ref pred = self.dec.node_output["dec"]()
             for k in range(OBSD):
-                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
+                out_ol_obs[unsafe_offset=h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
             self.con.set_input["nd", 1](ond_t, None)
             self.con.set_input["stoch_new", 1](osn_t, None)
             self.con.set_input["ctgt", 1](dummy1, None)
             self.con.forward[1, "cpu"](loss_t, None)
             ref ocon = self.con.node_output["con"]()
-            out_ol_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-ocon.data[0]))
+            out_ol_con[unsafe_offset=h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-ocon.data[0]))
             for k in range(D):
                 old.data[k] = ond_t.data[k]
             for k in range(SCl):
@@ -1135,7 +1135,7 @@ struct DreamerV3Trainer[
 
             # ── teacher-forced: re-observe the real obs (posterior path) ──
             for k in range(OBSD):
-                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=(idx + 1) * OBSD + k]
             self.enc.forward["cpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
                 rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
@@ -1158,13 +1158,13 @@ struct DreamerV3Trainer[
             self.dec.forward[1, "cpu"](loss_t, None)
             ref tpred = self.dec.node_output["dec"]()
             for k in range(OBSD):
-                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
+                out_tf_obs[unsafe_offset=h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
             self.con.set_input["nd", 1](tnd_t, None)
             self.con.set_input["stoch_new", 1](tsn_t, None)
             self.con.set_input["ctgt", 1](dummy1, None)
             self.con.forward[1, "cpu"](loss_t, None)
             ref tcon = self.con.node_output["con"]()
-            out_tf_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-tcon.data[0]))
+            out_tf_con[unsafe_offset=h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-tcon.data[0]))
             for k in range(D):
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):
@@ -1209,12 +1209,12 @@ struct DreamerV3Trainer[
 
     def openloop_heads_gpu(
         mut self,
-        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
-        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        real_obs: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
         ctx_len: Int,
         hor: Int,
-        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [hor*OBS] decoded obs
-        out_heads: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [hor*3] = [rew_hat, val_hat, con_prob] per step
+        out_ol_obs: Pointer[Scalar[DT], MutAnyOrigin],   # [hor*OBS] decoded obs
+        out_heads: Pointer[Scalar[DT], MutAnyOrigin],    # [hor*3] = [rew_hat, val_hat, con_prob] per step
     ) raises:
         """Open-loop PRIOR rollout with HEAD decodes (exploit forensics).
 
@@ -1242,7 +1242,7 @@ struct DreamerV3Trainer[
         comptime BINSl = Self.BINS
         comptime CARRY = 2 + D + SCl
         var ctx = self.ctx.value()
-        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var bins = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             self.bins.unsafe_ptr()
         )
 
@@ -1274,9 +1274,9 @@ struct DreamerV3Trainer[
                     pa.data[k] = 0.0
             else:
                 for k in range(ACTD):
-                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+                    pa.data[k] = real_act[unsafe_offset=(t - 1) * ACTD + k]
             for k in range(OBSD):
-                obt.data[k] = real_obs[t * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=t * OBSD + k]
             obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
             self.enc.forward["gpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
@@ -1308,7 +1308,7 @@ struct DreamerV3Trainer[
         for h in range(hor):
             var idx = ctx_len - 1 + h
             for k in range(ACTD):
-                pa.data[k] = real_act[idx * ACTD + k]
+                pa.data[k] = real_act[unsafe_offset=idx * ACTD + k]
             pa.upload(ctx)
             old.upload(ctx); ols.upload(ctx)
             self.imagine.set_input["deter", 1](old, self.ctx)
@@ -1331,7 +1331,7 @@ struct DreamerV3Trainer[
             ref pred = self.dec.node_output["dec"]()
             pred.download(ctx)
             for k in range(OBSD):
-                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](
+                out_ol_obs[unsafe_offset=h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](
                     pred.data[k]
                 )
             # reward head (twohot decode)
@@ -1341,7 +1341,7 @@ struct DreamerV3Trainer[
             self.rew.forward[1, "gpu"](loss_t, self.ctx)
             ref rl = self.rew.node_output["rew"]()
             rl.download(ctx)
-            out_heads[h * 3 + 0] = twohot_pred[BINSl](_hp(rl), 0, bins)
+            out_heads[unsafe_offset=h * 3 + 0] = twohot_pred[BINSl](_hp(rl), 0, bins)
             # value head (twohot decode) on feat = [nd, stoch_new]
             for k in range(D):
                 feat_t.data[k] = ond_t.data[k]
@@ -1352,7 +1352,7 @@ struct DreamerV3Trainer[
                 TensorRefs[1](feat_t), vscr, self.ctx
             )
             vscr.download(ctx)
-            out_heads[h * 3 + 1] = twohot_pred[BINSl](_hp(vscr), 0, bins)
+            out_heads[unsafe_offset=h * 3 + 1] = twohot_pred[BINSl](_hp(vscr), 0, bins)
             # continue head → prob
             self.con.set_input["nd", 1](ond_t, self.ctx)
             self.con.set_input["stoch_new", 1](osn_t, self.ctx)
@@ -1360,7 +1360,7 @@ struct DreamerV3Trainer[
             self.con.forward[1, "gpu"](loss_t, self.ctx)
             ref ocon = self.con.node_output["con"]()
             ocon.download(ctx)
-            out_heads[h * 3 + 2] = Scalar[DT](1.0) / (
+            out_heads[unsafe_offset=h * 3 + 2] = Scalar[DT](1.0) / (
                 Scalar[DT](1.0) + exp(-ocon.data[0])
             )
             for k in range(D):
@@ -1370,12 +1370,12 @@ struct DreamerV3Trainer[
 
     def openloop_decode_gpu(
         mut self,
-        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
-        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        real_obs: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: Pointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
         ctx_len: Int,
         hor: Int,
-        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
-        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+        out_ol_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: Pointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
     ) raises:
         """GPU twin of `openloop_trace`'s decode path (imagination-GIF probe).
 
@@ -1443,9 +1443,9 @@ struct DreamerV3Trainer[
                     pa.data[k] = 0.0
             else:
                 for k in range(ACTD):
-                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+                    pa.data[k] = real_act[unsafe_offset=(t - 1) * ACTD + k]
             for k in range(OBSD):
-                obt.data[k] = real_obs[t * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=t * OBSD + k]
             obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
             self.enc.forward["gpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
@@ -1481,7 +1481,7 @@ struct DreamerV3Trainer[
         for h in range(hor):
             var idx = ctx_len - 1 + h
             for k in range(ACTD):
-                pa.data[k] = real_act[idx * ACTD + k]
+                pa.data[k] = real_act[unsafe_offset=idx * ACTD + k]
             pa.upload(ctx)
             # ── open-loop: prior dynamics (imagine), no observation ──
             old.upload(ctx); ols.upload(ctx)
@@ -1504,7 +1504,7 @@ struct DreamerV3Trainer[
             ref pred = self.dec.node_output["dec"]()
             pred.download(ctx)
             for k in range(OBSD):
-                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
+                out_ol_obs[unsafe_offset=h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
             for k in range(D):
                 old.data[k] = ond_t.data[k]
             for k in range(SCl):
@@ -1512,7 +1512,7 @@ struct DreamerV3Trainer[
 
             # ── teacher-forced: re-observe the real obs (posterior path) ──
             for k in range(OBSD):
-                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+                obt.data[k] = real_obs[unsafe_offset=(idx + 1) * OBSD + k]
             obt.upload(ctx)
             self.enc.forward["gpu", 1](
                 child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
@@ -1540,7 +1540,7 @@ struct DreamerV3Trainer[
             ref tpred = self.dec.node_output["dec"]()
             tpred.download(ctx)
             for k in range(OBSD):
-                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
+                out_tf_obs[unsafe_offset=h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
             for k in range(D):
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):

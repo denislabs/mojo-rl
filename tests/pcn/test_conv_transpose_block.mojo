@@ -34,7 +34,7 @@ comptime PSZ = CB.PARAM_SIZE
 
 def _energy(
     x_small: LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin],
-    x_above: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    x_above: Pointer[Scalar[dtype], MutAnyOrigin],
     params: LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin],
     mut mu: LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     mut a: LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin],

@@ -27,7 +27,7 @@ Expected output:
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from mojo_rl.physics3d.parser import FlatModelDef
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -104,6 +104,19 @@ def test_xml_full_parser() raises:
     # Step 1: Dimension check
     # =========================================================================
     comptime pm = parse_xml(half_cheetah_xml)
+    comptime MD = Dims[
+        nq=pm.NQ,
+        nv=pm.NV,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        ngeom=pm.NGEOM,
+        nsite=0,
+        max_contacts=10,
+        nequality=0,
+        ntendon=0,
+        nexclude=0,
+        nmesh_verts=0,
+    ]
     print("=== Dimensions ===")
     print("NBODY  =", pm.NBODY, " (expected 8)")
     print("NJOINT =", pm.NJOINT, " (expected 9)")
@@ -125,9 +138,12 @@ def test_xml_full_parser() raises:
     # =========================================================================
     # Step 2: Full parse — dimensions from comptime pm, data at runtime
     # =========================================================================
-    var fmd = parse_xml_full[
-        pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT
-    ](half_cheetah_xml)
+    # ⚠ NON-GENERIC since 2026-08-05. `parse_xml_full` used to take the
+    # dimensions as comptime parameters solely to size `FlatModelDef`'s
+    # `InlineArray`s; it is `List`-backed now and compiles once per binary
+    # instead of once per model. The counts come off the Lists
+    # (`len(fmd.bodies)`, ...) rather than being declared up front.
+    var fmd = parse_xml_full(half_cheetah_xml)
 
     print("=== Body checks ===")
     # bodies[0] = torso (model body index 1, parent=worldbody=0)
@@ -191,25 +207,36 @@ def test_xml_full_parser() raises:
     # Step 3: Full round-trip — spec-direct fields build + fields FK (G4)
     # =========================================================================
     print("=== FK round-trip (fields) ===")
-    var mf = Model[
-        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM, 0, 0, 0, 0, 0,
-    ]()
-    build_model_fields_from_flat[
-        DType.float64, pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
-        0, 0, 0, 0, 0, 0, 0,  # ntex/nmat/nlight/ncam/nsite/neq/nexclude
-        0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
-        0, 0, 5, 0.0,  # no <compiler inertiafromgeom> in this inline XML
-    ](fmd, mf)
+    var mf = Model[DType.float64, MD]()
+    # ⚠ THE FlatModelDef DIMS ARE GONE from this parameter list — all fourteen.
+    # `FlatModelDef` is List-backed since 2026-08-05, so its counts come from
+    # the Lists. What remains is the MODEL side, which still sizes
+    # `fields.Model`'s tensors: NV/NBODY/NJOINT/NGEOM, then the record
+    # capacities, then the `<compiler>` build modes.
+    build_model_fields_from_flat[DType.float64](fmd, mf)
 
     print(
         "gravity_z     =",
         Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z]),
         " (expected -9.81)",
     )
-    print(
-        "torso body_id1 mass=",
-        Float64(mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_MASS]),
-        " (expected ~1.0 default)",
+    # ⚠ THIS LINE USED TO PRINT "(expected ~1.0 default)" AND ASSERT NOTHING,
+    # and the value it printed was wrong. The call site above hand-passed
+    # `IFG_MODE = 0` — inertiafromgeom OFF — for an XML that does not mention
+    # the attribute at all, and MuJoCo's default when it is absent is AUTO.
+    # So every body took the 1.0 fallback mass instead of the mass its geoms
+    # imply. Phase 1b reads the mode off `FlatModelDef` and the contradiction
+    # cannot be expressed any more; the number below is MuJoCo's, checked
+    # against `mjModel.body_mass[1]` for this exact XML.
+    var torso_mass = Float64(
+        mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_MASS]
+    )
+    print("torso body_id1 mass=", torso_mass, " (MuJoCo: 7.05533013836909)")
+    assert_true(
+        abs(torso_mass - 7.05533013836909) < 1e-12,
+        "torso mass "
+        + String(torso_mass)
+        + " != MuJoCo's 7.05533013836909 — inertiafromgeom regressed",
     )
     print(
         "torso pos_z   =",
@@ -217,11 +244,8 @@ def test_xml_full_parser() raises:
         " (expected 0.7)",
     )
 
-    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
-    forward_kinematics[
-        "cpu", DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
-        0, 0, 0, 0, 0, 1,
-    ](d, mf, None)
+    var d = Data[DType.float64, MD, 1]()
+    forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
     print("FK completed")
     print(
         "torso xpos_z  =",

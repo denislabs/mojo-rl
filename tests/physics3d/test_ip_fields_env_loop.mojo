@@ -20,12 +20,13 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_ip_fields_env_loop.moj
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.envs.phyics3d_obs import extract_obs_qpos_qvel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
@@ -42,6 +43,7 @@ comptime NSITE = IPM.NSITE
 comptime NEQ = IPM.MAX_EQUALITY
 comptime NTEN = IPM.MAX_TENDON
 comptime NEXCL = IPM.NEXCLUDE
+comptime MD = ModelDims[IPM]
 comptime BATCH = 2
 comptime OBS_DIM = NQ + NV  # obs_qpos_skip=0
 comptime FRAME_SKIP = 2
@@ -75,22 +77,19 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
-    IPM.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    IPM.init_fields[DTYPE](ctx, mf)
 
     var pole0 = List[Float64]()
     pole0.append(0.05)
     pole0.append(-0.12)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         d.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        BATCH=BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
     integ.prepare_gpu(ctx)
     var obs_t = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
     obs_t.upload(ctx)
@@ -98,9 +97,7 @@ def main() raises:
     var total_reward = List[Float64](length=BATCH, fill=0.0)
     var max_angle = List[Float64](length=BATCH, fill=0.0)
     for step in range(N_CTRL_STEPS):
-        extract_obs_qpos_qvel[
-            "gpu", DTYPE, NQ, NV, NBODY, MC, NSITE, 0, BATCH
-        ](d, obs_t, ctx)
+        extract_obs_qpos_qvel["gpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](d, obs_t, ctx)
         obs_t.download(ctx)
         for e in range(BATCH):
             var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
@@ -154,18 +151,13 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU closed loop == fields-GPU ---
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         dc.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        BATCH=BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
     var obs_c = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
     for _ in range(N_CTRL_STEPS):
-        extract_obs_qpos_qvel[
-            "cpu", DTYPE, NQ, NV, NBODY, MC, NSITE, 0, BATCH
-        ](dc, obs_c)
+        extract_obs_qpos_qvel["cpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](dc, obs_c)
         for e in range(BATCH):
             var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
             for i in range(OBS_DIM):

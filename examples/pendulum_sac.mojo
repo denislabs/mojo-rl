@@ -32,6 +32,7 @@ from mojo_rl.core import (
     TrainingMetrics,
 )
 from mojo_rl.agents import SACAgent
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -100,7 +101,7 @@ def main() raises:
         num_episodes=10,
         max_steps_per_episode=200,
     )
-    print("Evaluation average reward:", String(eval_reward)[byte=:8])
+    print("Evaluation average reward:", fit(String(eval_reward), 8))
 
     # Demo with rendering (if SDL2 available)
     print("\nRunning visual demo (close window to exit)...")

@@ -148,8 +148,8 @@ def _gen_rollout_into[
     SEQ_LEN_T: Int
 ](
     mut rng: PhiloxRandom,
-    actions_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    obs_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    actions_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    obs_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
     actions_offset: Int,
     obs_offset: Int,
 ):

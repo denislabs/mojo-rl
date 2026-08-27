@@ -516,7 +516,7 @@ def close_io(context: Ptr[IOStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CloseIO.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_CloseIO", def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Bool
     ]()(context)
     if not ret:
@@ -776,7 +776,7 @@ def flush_io(context: Ptr[IOStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushIO.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_FlushIO", def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Bool
     ]()(context)
     if not ret:
@@ -892,7 +892,7 @@ def save_file_io(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveFile_IO.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SaveFile_IO",
         def(
@@ -927,7 +927,7 @@ def save_file(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveFile.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SaveFile",
         def(
@@ -964,7 +964,7 @@ def read_u8(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU8.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU8",
         def(
@@ -1000,7 +1000,7 @@ def read_s8(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS8.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS8",
         def(
@@ -1040,7 +1040,7 @@ def read_u16_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU16LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU16LE",
         def(
@@ -1080,7 +1080,7 @@ def read_s16_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS16LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS16LE",
         def(
@@ -1120,7 +1120,7 @@ def read_u16_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU16BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU16BE",
         def(
@@ -1160,7 +1160,7 @@ def read_s16_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS16BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS16BE",
         def(
@@ -1200,7 +1200,7 @@ def read_u32_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU32LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU32LE",
         def(
@@ -1240,7 +1240,7 @@ def read_s32_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS32LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS32LE",
         def(
@@ -1280,7 +1280,7 @@ def read_u32_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU32BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU32BE",
         def(
@@ -1320,7 +1320,7 @@ def read_s32_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS32BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS32BE",
         def(
@@ -1360,7 +1360,7 @@ def read_u64_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU64LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU64LE",
         def(
@@ -1400,7 +1400,7 @@ def read_s64_le(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS64LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS64LE",
         def(
@@ -1440,7 +1440,7 @@ def read_u64_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU64BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadU64BE",
         def(
@@ -1480,7 +1480,7 @@ def read_s64_be(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS64BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadS64BE",
         def(
@@ -1509,7 +1509,7 @@ def write_u8(dst: Ptr[IOStream, MutAnyOrigin], value: UInt8) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU8.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU8",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt8) thin -> Bool,
@@ -1535,7 +1535,7 @@ def write_s8(dst: Ptr[IOStream, MutAnyOrigin], value: Int8) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS8.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS8",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int8) thin -> Bool,
@@ -1566,7 +1566,7 @@ def write_u16_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU16LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU16LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) thin -> Bool,
@@ -1597,7 +1597,7 @@ def write_s16_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS16LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS16LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) thin -> Bool,
@@ -1627,7 +1627,7 @@ def write_u16_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU16BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU16BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) thin -> Bool,
@@ -1657,7 +1657,7 @@ def write_s16_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS16BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS16BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) thin -> Bool,
@@ -1688,7 +1688,7 @@ def write_u32_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU32LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU32LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) thin -> Bool,
@@ -1719,7 +1719,7 @@ def write_s32_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS32LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS32LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) thin -> Bool,
@@ -1749,7 +1749,7 @@ def write_u32_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU32BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU32BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) thin -> Bool,
@@ -1779,7 +1779,7 @@ def write_s32_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS32BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS32BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) thin -> Bool,
@@ -1810,7 +1810,7 @@ def write_u64_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU64LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU64LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) thin -> Bool,
@@ -1841,7 +1841,7 @@ def write_s64_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS64LE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS64LE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) thin -> Bool,
@@ -1871,7 +1871,7 @@ def write_u64_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU64BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteU64BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) thin -> Bool,
@@ -1901,7 +1901,7 @@ def write_s64_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS64BE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteS64BE",
         def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) thin -> Bool,

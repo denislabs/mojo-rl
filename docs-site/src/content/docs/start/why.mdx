@@ -1,0 +1,101 @@
+---
+title: Why mojo-rl
+description: Why rebuild the whole reinforcement-learning stack in one language instead of stitching NumPy, PyTorch, MuJoCo and Gymnasium together.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## The problem: a stack held together by glue
+
+Reinforcement learning needs both halves of a loop — an environment that
+simulates a world, and an agent that learns to act in it — plus everything that
+makes learning work: autodiff, optimizers, replay buffers, planners.
+
+Almost nobody builds all of that. The standard approach assembles it:
+
+| Layer | Typical library | Written in |
+|---|---|---|
+| Arrays | NumPy | Python · C |
+| Neural networks | PyTorch | Python · C++ · CUDA |
+| Physics | MuJoCo | Python · C |
+| Environments | Gymnasium | Python |
+
+Four libraries, three languages, one Python process holding them together. That
+arrangement works, and it built the field. But it has three structural costs.
+
+**Performance cliffs.** Every language and library boundary adds overhead and
+data copies. A rollout that crosses NumPy → Gymnasium → MuJoCo → PyTorch pays
+for each crossing, per step, millions of times.
+
+**Fragile integration.** Versions drift independently. The CPU↔GPU round-trips
+that fall out of the boundaries are exactly the ones you most want to eliminate,
+and they are the hardest to reach — they live in someone else's code.
+
+**A ceiling on acceleration.** You cannot fuse physics, network evaluation and
+environment stepping into one GPU pipeline, because no single component owns all
+three. The best you can do is make each piece fast in isolation and pay the
+seams.
+
+## The thesis: one language, one pipeline
+
+mojo-rl rebuilds the stack — physics, neural networks, algorithms, rendering —
+from scratch in Mojo. Not as a wrapper over existing libraries: as one codebase
+the compiler sees whole.
+
+The payoff is that the entire training loop can live on the GPU:
+
+```
+env step → observe → network fwd/bwd → replay sample → target update
+```
+
+No host round-trips. The data never leaves the device.
+
+<CardGrid>
+	<Card title="Python-like syntax" icon="seti:python">
+		Mojo reads like Python. The RL code looks like the pseudocode in the papers.
+	</Card>
+	<Card title="Systems-level performance" icon="rocket">
+		Compiled, with manual control over memory layout and SIMD where it matters.
+	</Card>
+	<Card title="Native GPU" icon="setting">
+		Custom kernels target CUDA and Metal from the same source — no separate
+		backend to maintain.
+	</Card>
+	<Card title="Compile-time specialization" icon="puzzle">
+		Dimensions, network architectures and environments are type parameters, so
+		the compiler specializes the whole pipeline for the target device.
+	</Card>
+</CardGrid>
+
+## What that buys in practice
+
+Because the physics engine, the networks and the driver are all Mojo, a batched
+environment can be stepped by the same kernel launch sequence that trains on its
+output. Hundreds of environments simulate in parallel on-device, and the
+off-policy update reads from a replay buffer that was never copied to the host.
+
+On NVIDIA, the whole off-policy loop can additionally be captured as a CUDA
+graph and replayed — worth roughly **1.4×** on the SAC pipeline, on top of the
+savings from staying on-device.
+
+## What this is not
+
+This is not a claim that mojo-rl beats PyTorch at being PyTorch, or MuJoCo at
+being MuJoCo. Those are mature, heavily optimized, widely validated projects with
+years of work behind them, and mojo-rl leans on MuJoCo and Gymnasium as
+correctness references throughout — the physics tests compare against live
+MuJoCo, and the native environments are faithful ports of Gymnasium's dynamics.
+
+The claim is narrower and more interesting: when one language owns the whole
+loop, optimizations become reachable that no amount of tuning inside any single
+library can reach.
+
+It is also a young project. See the per-page maturity markers, and the
+[roadmap](https://github.com/denislabs/mojo-rl/blob/main/ROADMAP.md) for what is
+landing next.
+
+## Next
+
+- [Installation](/start/installation/) — pixi, and the GPU targets
+- [The layered stack](/concepts/architecture/) — how the pieces fit
+- [RL in five minutes](/start/rl-in-five-minutes/) — if the vocabulary above was new

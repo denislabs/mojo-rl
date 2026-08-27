@@ -21,7 +21,7 @@ Convention: `actions`/`rewards` are per (b, window-position) — flat [B·T], wi
 position p = b·T + j (j ∈ [0,T)). `actions` holds class indices as fp ints.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -63,17 +63,17 @@ def bc_mtp_loss[
     # scratch/IO buffers — the sanctioned raw-pointer boundary. They are bridged
     # into boundary `Tensor`s around the storage head forward/vjp, and the
     # cat/twohot host helpers read/write them directly, so they stay MutAnyOrigin.
-    h: UnsafePointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
-    actions: UnsafePointer[Scalar[DT], actions_o],    # [B*T] class ids (fp)
-    rewards: UnsafePointer[Scalar[DT], rewards_o],    # [B*T]
-    bins: UnsafePointer[Scalar[DT], bins_o],       # [NBINS]
+    h: Pointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
+    actions: Pointer[Scalar[DT], actions_o],    # [B*T] class ids (fp)
+    rewards: Pointer[Scalar[DT], rewards_o],    # [B*T]
+    bins: Pointer[Scalar[DT], bins_o],       # [NBINS]
     # scratch (caller-owned)
-    plog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NACT]
-    rlog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NBINS]
-    gpl: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [B*T, NMTP*NACT]
-    grl: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [B*T, NMTP*NBINS]
-    grad_h: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [B*T, D_IN]  (output)
-    grad_h_tmp: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B*T, D_IN]  (scratch)
+    plog: Pointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NACT]
+    rlog: Pointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NBINS]
+    gpl: Pointer[Scalar[DT], MutAnyOrigin],        # [B*T, NMTP*NACT]
+    grl: Pointer[Scalar[DT], MutAnyOrigin],        # [B*T, NMTP*NBINS]
+    grad_h: Pointer[Scalar[DT], MutAnyOrigin],     # [B*T, D_IN]  (output)
+    grad_h_tmp: Pointer[Scalar[DT], MutAnyOrigin], # [B*T, D_IN]  (scratch)
     unimix: Scalar[DT] = Scalar[DT](0.0),
     policy_weight: Scalar[DT] = Scalar[DT](1.0),
     reward_weight: Scalar[DT] = Scalar[DT](1.0),
@@ -93,24 +93,26 @@ def bc_mtp_loss[
     # unchanged.
     var h_t = Tensor.alloc(BT * DIN)
     for i in range(BT * DIN):
-        h_t.data[i] = h[i]
+        h_t.data[i] = h[unsafe_offset=i]
     var plog_t = Tensor.alloc(BT * PLOG)
     var rlog_t = Tensor.alloc(BT * RLOG)
     call_forward["cpu", BT](ph, TensorRefs[PH.ARITY](h_t), plog_t, None)
     call_forward["cpu", BT](rh, TensorRefs[RH.ARITY](h_t), rlog_t, None)
     for i in range(BT * PLOG):
-        plog[i] = plog_t.data[i]
+        plog[unsafe_offset=i] = plog_t.data[i]
     for i in range(BT * RLOG):
-        rlog[i] = rlog_t.data[i]
+        rlog[unsafe_offset=i] = rlog_t.data[i]
 
     # ── accumulate NLL + logit grads ────────────────────────────────────
     for i in range(BT * PLOG):
-        gpl[i] = Scalar[DT](0.0)
+        gpl[unsafe_offset=i] = Scalar[DT](0.0)
     for i in range(BT * RLOG):
-        grl[i] = Scalar[DT](0.0)
+        grl[unsafe_offset=i] = Scalar[DT](0.0)
 
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
+    var sm_a = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     var loss: Float64 = 0.0
     for b in range(B):
         for j in range(T):                       # window-position of the frame
@@ -122,7 +124,7 @@ def bc_mtp_loss[
                 var pos = b * T + tgt
                 # policy NLL
                 var pbase = bt * PLOG + n * NACT
-                var k = Int(Float64(actions[pos]) + 0.5)
+                var k = Int(Float64(actions[unsafe_offset=pos]) + 0.5)
                 var lp_ent = cat_fwd[NACT](plog, pbase, unimix, k, sm, pp)
                 loss += -Float64(lp_ent[0]) * Float64(policy_weight * inv)
                 cat_bwd[NACT](
@@ -131,15 +133,15 @@ def bc_mtp_loss[
                 )
                 # reward CE
                 var rbase = bt * RLOG + n * NBINS
-                var tr = rewards[pos]
+                var tr = rewards[unsafe_offset=pos]
                 loss += Float64(
                     twohot_loss[NBINS](rlog, rbase, bins, tr)
                 ) * Float64(reward_weight * inv)
                 twohot_loss_backward[NBINS](
                     rlog, rbase, bins, tr, reward_weight * inv, grl
                 )
-    sm.free()
-    pp.free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
 
     # ── backprop through both heads, sum grad wrt h_t ───────────────────
     # The NLL loop filled the raw `gpl`/`grl` logit-grads; bridge those into
@@ -148,10 +150,10 @@ def bc_mtp_loss[
     # resulting grad-wrt-h back to the raw `grad_h`/`grad_h_tmp` pointers.
     var gpl_t = Tensor.alloc(BT * PLOG)
     for i in range(BT * PLOG):
-        gpl_t.data[i] = gpl[i]
+        gpl_t.data[i] = gpl[unsafe_offset=i]
     var grl_t = Tensor.alloc(BT * RLOG)
     for i in range(BT * RLOG):
-        grl_t.data[i] = grl[i]
+        grl_t.data[i] = grl[unsafe_offset=i]
     var grad_h_t = Tensor.alloc(BT * DIN)
     var grad_h_tmp_t = Tensor.alloc(BT * DIN)
     call_vjp["cpu", BT](
@@ -162,11 +164,11 @@ def bc_mtp_loss[
         None,
     )  # grad_h from reward
     for i in range(BT * DIN):
-        grad_h[i] = grad_h_t.data[i]
+        grad_h[unsafe_offset=i] = grad_h_t.data[i]
     for i in range(BT * DIN):
-        grad_h_tmp[i] = grad_h_tmp_t.data[i]
+        grad_h_tmp[unsafe_offset=i] = grad_h_tmp_t.data[i]
     for i in range(BT * DIN):
-        grad_h[i] = grad_h[i] + grad_h_tmp[i]
+        grad_h[unsafe_offset=i] = grad_h[unsafe_offset=i] + grad_h_tmp[unsafe_offset=i]
     return loss
 
 
@@ -180,11 +182,11 @@ def bc_policy_only_loss[
     actions_o: Origin[mut=True],
 ](
     mut ph: PH,
-    h: UnsafePointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
-    actions: UnsafePointer[Scalar[DT], actions_o],       # [B*T] class ids (fp)
-    plog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # scratch [B*T, NMTP*NACT]
-    gpl: UnsafePointer[Scalar[DT], MutAnyOrigin],        # scratch [B*T, NMTP*NACT]
-    grad_h: UnsafePointer[Scalar[DT], MutAnyOrigin],     # THROWAWAY [B*T, D_IN]
+    h: Pointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
+    actions: Pointer[Scalar[DT], actions_o],       # [B*T] class ids (fp)
+    plog: Pointer[Scalar[DT], MutAnyOrigin],       # scratch [B*T, NMTP*NACT]
+    gpl: Pointer[Scalar[DT], MutAnyOrigin],        # scratch [B*T, NMTP*NACT]
+    grad_h: Pointer[Scalar[DT], MutAnyOrigin],     # THROWAWAY [B*T, D_IN]
     unimix: Scalar[DT] = Scalar[DT](0.0),
     policy_weight: Scalar[DT] = Scalar[DT](1.0),
 ) raises -> Float64:
@@ -203,17 +205,19 @@ def bc_policy_only_loss[
 
     var h_t = Tensor.alloc(BT * DIN)
     for i in range(BT * DIN):
-        h_t.data[i] = h[i]
+        h_t.data[i] = h[unsafe_offset=i]
     var plog_t = Tensor.alloc(BT * PLOG)
     call_forward["cpu", BT](ph, TensorRefs[PH.ARITY](h_t), plog_t, None)
     for i in range(BT * PLOG):
-        plog[i] = plog_t.data[i]
+        plog[unsafe_offset=i] = plog_t.data[i]
 
     for i in range(BT * PLOG):
-        gpl[i] = Scalar[DT](0.0)
+        gpl[unsafe_offset=i] = Scalar[DT](0.0)
 
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
+    var sm_a = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     var loss: Float64 = 0.0
     for b in range(B):
         for j in range(T):
@@ -224,23 +228,23 @@ def bc_policy_only_loss[
                     break
                 var pos = b * T + tgt
                 var pbase = bt * PLOG + n * NACT
-                var k = Int(Float64(actions[pos]) + 0.5)
+                var k = Int(Float64(actions[unsafe_offset=pos]) + 0.5)
                 var lp_ent = cat_fwd[NACT](plog, pbase, unimix, k, sm, pp)
                 loss += -Float64(lp_ent[0]) * Float64(policy_weight * inv)
                 cat_bwd[NACT](
                     sm, pp, unimix, k,
                     -policy_weight * inv, Scalar[DT](0.0), gpl, pbase,
                 )
-    sm.free()
-    pp.free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
 
     var gpl_t = Tensor.alloc(BT * PLOG)
     for i in range(BT * PLOG):
-        gpl_t.data[i] = gpl[i]
+        gpl_t.data[i] = gpl[unsafe_offset=i]
     var grad_h_t = Tensor.alloc(BT * DIN)
     call_vjp["cpu", BT](
         ph, TensorRefs[PH.ARITY](h_t), gpl_t, TensorRefs[PH.ARITY](grad_h_t), None
     )
     for i in range(BT * DIN):
-        grad_h[i] = grad_h_t.data[i]
+        grad_h[unsafe_offset=i] = grad_h_t.data[i]
     return loss

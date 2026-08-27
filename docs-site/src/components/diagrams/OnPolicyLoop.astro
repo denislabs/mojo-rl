@@ -1,0 +1,110 @@
+---
+/**
+ * OnPolicyLoop — PPO's collect-then-update cycle.
+ *
+ * The structural contrast with OffPolicyLoop is the rollout buffer: it is
+ * filled, consumed by several update epochs, then discarded. Nothing persists
+ * across iterations, which is what "on-policy" means operationally.
+ */
+interface Props {
+	formula?: string;
+	formulaTitle?: string;
+	/**
+	 * Rollout buffer caption. Keep under ~34 characters: SVG text does not wrap,
+	 * and the box is 220 units wide.
+	 */
+	rollout?: string;
+	/** Label on the buffer → actor edge. A2C passes a single-pass variant. */
+	updateLabel?: string;
+}
+
+const {
+	formula,
+	formulaTitle = 'clipped surrogate',
+	rollout = 'on-policy · discarded after K epochs',
+	updateLabel = 'minibatch × K epochs',
+} = Astro.props;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img" aria-label="PPO on-policy learning loop">
+		<defs>
+			<marker id="pl-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="pl-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="pl-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+		</defs>
+
+		<g class="dg-node dg-node--spark">
+			<rect x="330" y="20" width="220" height="78" rx="10" />
+			<text x="440" y="52" class="dg-title">Actor π</text>
+			<text x="440" y="74" class="dg-sub">stochastic policy</text>
+		</g>
+
+		<g class="dg-node dg-node--cyan">
+			<rect x="640" y="160" width="220" height="78" rx="10" />
+			<text x="750" y="192" class="dg-title">Environment</text>
+			<text x="750" y="214" class="dg-sub">batched, on GPU</text>
+		</g>
+
+		<g class="dg-node dg-node--green">
+			<rect x="330" y="300" width="220" height="78" rx="10" />
+			<text x="440" y="332" class="dg-title">Rollout buffer</text>
+			<text x="440" y="354" class="dg-sub">{rollout}</text>
+		</g>
+
+		<g class="dg-node dg-node--purple">
+			<rect x="20" y="160" width="220" height="78" rx="10" />
+			<text x="130" y="192" class="dg-title">Critic V + GAE(λ)</text>
+			<text x="130" y="214" class="dg-sub">advantage estimate</text>
+		</g>
+
+		<!-- actor → env -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#pl-cyan)"
+			d="M 550 59 L 750 59 L 750 160" />
+		<text x="596" y="46" class="dg-label dg-label--cyan">a ~ π(·|s)</text>
+
+		<!-- env → rollout -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#pl-cyan)"
+			d="M 750 238 L 750 339 L 550 339" />
+		<text x="588" y="364" class="dg-label dg-label--cyan">transition (s,a,r)</text>
+
+		<!-- rollout → actor -->
+		<path class="dg-edge dg-edge--spark" marker-end="url(#pl-spark)"
+			d="M 440 300 L 440 98" />
+		<text x="452" y="205" class="dg-label dg-label--spark">{updateLabel}</text>
+
+		<!-- rollout → critic -->
+		<path class="dg-edge dg-edge--purple" marker-end="url(#pl-purple)"
+			d="M 330 339 L 130 339 L 130 238" />
+		<text x="150" y="364" class="dg-label dg-label--purple">returns to regress</text>
+
+		<!-- critic → actor -->
+		<path class="dg-edge dg-edge--purple dg-edge--dashed" marker-end="url(#pl-purple)"
+			d="M 130 160 L 130 59 L 330 59" />
+		<text x="146" y="46" class="dg-label dg-label--purple">advantage Â</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">environment interaction</span>
+		<span class="diagram__key diagram__key--spark">policy update</span>
+		<span class="diagram__key diagram__key--purple">value / advantage</span>
+	</figcaption>
+
+	{
+		formula && (
+			<div class="diagram__formula">
+				<span class="diagram__formula-title">{formulaTitle}</span>
+				<code>{formula}</code>
+			</div>
+		)
+	}
+</figure>

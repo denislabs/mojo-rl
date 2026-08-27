@@ -13,7 +13,7 @@ def test_ram_mode() raises:
     var rom = load_rom(
         "roms/pong.bin"
     )
-    var env = AtariEnv[0](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[0](AtariGame.PONG, rom.data.value(), rom.size)
 
     # Check obs dimension
     assert_equal(env.obs_dim(), RAM_SIZE, "obs_dim should be 128")
@@ -61,7 +61,7 @@ def test_pixel_mode() raises:
     var rom = load_rom(
         "roms/pong.bin"
     )
-    var env = AtariEnv[1](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[1](AtariGame.PONG, rom.data.value(), rom.size)
 
     comptime EXPECTED_DIM: Int = 4 * OBS_WIDTH * OBS_HEIGHT  # 28224
 
@@ -114,7 +114,7 @@ def test_trait_conformance() raises:
     var rom = load_rom(
         "roms/pong.bin"
     )
-    var env = AtariEnv[0](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[0](AtariGame.PONG, rom.data.value(), rom.size)
 
     # These are the BoxDiscreteActionEnv methods
     _ = env.reset_obs_list()  # ContinuousStateEnv

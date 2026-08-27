@@ -1,0 +1,182 @@
+---
+title: Replay buffers
+description: StoreReplay and StoreReplayGpu — uniform and prioritized replay behind one comptime flag, with ERE, uint8 obs storage and CUDA-graph-safe sampling.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Off-policy agents sample past transitions from a replay buffer. In mojo-rl there
+are two of them — one per backend — and each covers both the uniform and the
+prioritized policy through a compile-time flag:
+
+```mojo
+StoreReplay    [OBS, ACT, CAP, PRIORITIZED = False]
+StoreReplayGpu [OBS, ACT, CAP, PRIORITIZED = False, OBS_STORE_DT = DT]
+```
+
+`CAP` is the ring capacity. Both are **rings, not append logs**: once full, the
+oldest row is overwritten. That is the difference from the
+[trajectory store](/data/trajectory-store/), which is append-only offline
+storage — they are different objects for different jobs.
+
+<Papers label="Papers">
+	<Paper
+		title="Prioritized Experience Replay"
+		authors="Schaul et al."
+		year="2015"
+		arxiv="1511.05952"
+		venue="ICLR 2016"
+		note="The sum-tree sampler and the importance-sampling correction."
+	/>
+	<Paper
+		title="Boosting Soft Actor-Critic: Emphasizing Recent Experience without Forgetting the Past"
+		authors="Wang, Ross"
+		year="2019"
+		arxiv="1906.04009"
+		note="Emphasizing Recent Experience (ERE), the shrinking-window policy."
+	/>
+</Papers>
+
+## Choosing one
+
+Agents take their sampling block as a compile-time parameter, so a call site
+picks the buffer by naming an alias — nothing inside SAC, TD3, DQN, C51 or DDPG
+changes:
+
+```mojo
+from mojo_rl.data.blocks import StoreUniformSampleCpuStep
+# or
+from mojo_rl.data.blocks import StoreUniformSampleGpuStep
+```
+
+Four aliases exist in `mojo_rl/data/blocks.mojo`, each taking
+`[OBS, ACT, BATCH, CAP]` in that order — deliberately the same order as the
+names they replaced, so a swap is a one-token edit:
+
+| Alias | Backend | Policy |
+|---|---|---|
+| `StoreUniformSampleCpuStep` | CPU | uniform |
+| `StorePerSampleCpuStep` | CPU | prioritized |
+| `StoreUniformSampleGpuStep` | GPU | uniform (+ ERE) |
+| `StorePerSampleGpuStep` | GPU | prioritized — takes a fifth optional `SDT` for uint8 obs |
+
+The older names in `mojo_rl/deep_agents/training/blocks/block_aliases.mojo`
+(`UniformSampleCpuStep`, `PerSampleGpuStep`, and the four `NStep…` variants)
+still work and now resolve to the same types, so existing code needs no edit.
+
+Prioritized replay is configured on the block, not the buffer:
+
+```mojo
+var blk = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP, True], BATCH]()
+blk.configure_per(alpha=Scalar[DT](0.6), beta=Scalar[DT](0.4))
+blk.setup(learning_starts=1000, ctx=ctx)
+```
+
+## Policy coverage
+
+| | uniform | prioritized | ERE |
+|---|---|---|---|
+| CPU | ✅ | ✅ (host sum-tree) | — |
+| GPU | ✅ (Philox per lane) | ✅ (device sum-tree) | ✅ |
+
+**ERE** — Emphasizing Recent Experience — samples from a window that shrinks by
+`eta` on every draw, biasing towards recent transitions:
+
+```mojo
+blk.configure_ere(enable=True, eta=Scalar[DT](0.996), c_min=1, k_max=1000)
+```
+
+It is GPU-only, because that is where the legacy implementation was. Calling it
+on a buffer that cannot honour it **raises** rather than silently sampling
+uniformly: a training run that asked for recency bias and quietly got uniform
+would converge differently with no signal at all. ERE combined with prioritized
+sampling also raises — that was never a legal combination.
+
+:::note[Host and device draw different sequences, and always did]
+The CPU path draws from the global host RNG; the GPU path runs one Philox stream
+per lane keyed on `seed + lane`. They are not expected to match, and comparing
+them would be meaningless. Each is pinned against its own reference sequence in
+`tests/data/test_sampler_golden.mojo`.
+:::
+
+## GPU specifics
+
+### Sampling stays CUDA-graph capturable
+
+`size` and the Philox `offset` live in **device buffers**, not host scalars. This
+is not fussiness. Under CUDA-graph capture a host scalar is baked into the
+captured graph, so a buffer captured during warmup would sample forever from the
+handful of rows that existed at capture time — training that appears to run and
+learns almost nothing.
+
+ERE deliberately keeps host scalars and is therefore not capturable, faithfully
+matching the legacy behaviour; its anneal would need a device-resident counter.
+
+### uint8 observation storage
+
+`OBS_STORE_DT = DType.uint8` quantises observations on the way in and
+dequantises on the way out. For pixel agents this decides whether the buffer
+fits in VRAM at all: Pong frames are 4×84×84 = 28,224 elements, so at
+`CAP = 100_000` the `obs` + `next_obs` pair is ~22.6 GB in float32 against
+~5.6 GB in uint8.
+
+The round trip is exact for `k/255` inputs — the values the pixel pipeline
+actually produces — which is what the gate asserts, rather than an approximate
+match inside a tolerance.
+
+### Storing a whole batch of environments
+
+A GPU-batched driver steps `N_ENVS` environments at once and pushes them in one
+kernel launch, with no host round trip:
+
+```mojo
+buf.add_batch[N_ENVS](ctx, prev_obs, action, reward, obs, terminated)
+```
+
+Note the last argument: replay stores **`terminated`**, not the combined `done`.
+Keeping them apart is what preserves the TD bootstrap on time-limit truncation
+while dropping it on real termination.
+
+MBPO additionally needs minibatches in raw device buffers rather than a
+`TrainerState`, which `sample[N]` and `sample_range[N]` provide; the latter
+restricts the draw to a row range, which is how the dynamics model gets a fixed
+train/holdout split.
+
+## n-step is an accumulator, not a sampler
+
+`NStepBuffer` and `GPUNStepBuffer` in
+`mojo_rl/deep_agents/data/n_step_replay.mojo` hold N pending transitions and
+emit one aggregated transition carrying a discounted return. Nothing about them
+samples — they sit at *write* time, in front of any of the buffers above. That
+is why n-step is a decorator block (`NStepSampleStep`) rather than a fifth
+index policy.
+
+## Gates
+
+| Gate | What it pins |
+|---|---|
+| `tests/data/test_sampler_golden.mojo` | Every index policy reproduces its reference sequence bit-for-bit under a fixed seed |
+| `tests/data/test_replay_seam.mojo` | CPU minibatches through the real sample block, including ring wraparound and a post-priority-update draw |
+| `tests/data/test_replay_gpu_seam.mojo` | Device uniform, ERE recency and anneal, the device sum-tree, uint8 exactness, and the batched store path |
+| `tests/data/test_resident_gather.mojo` | Device gather bit-exact against host on identical indices |
+| `tests/data/test_dqn_on_store_replay.mojo` | DQN trains end to end on it |
+
+The minibatch itself is asserted **bit-identical**, element by element, rather
+than compared as a reward curve. If the minibatch stream is byte-for-byte
+identical then the training trajectory is identical by construction — so curve
+equality follows instead of being sampled, and the check runs in seconds rather
+than hours.
+
+:::caution[Value parity is not capability parity]
+Four separate capabilities survived a green bit-identical gate while being
+broken or absent: CUDA-graph capture safety, `OBS_STORE_DT`, the host-tree
+prioritized variant, and — until recently — the batched `add_batch` path, which
+was never instantiated by any test and therefore never even compiled. Generic
+methods in Mojo are only type-checked when something instantiates them. When
+porting storage, enumerate the old type's public methods and check each one is
+exercised somewhere; matching numbers proves less than it appears to.
+:::

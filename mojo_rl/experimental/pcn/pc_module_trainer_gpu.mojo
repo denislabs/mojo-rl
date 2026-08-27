@@ -18,7 +18,7 @@ holder as persistent storage.
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.optimizer.optimizer import Optimizer

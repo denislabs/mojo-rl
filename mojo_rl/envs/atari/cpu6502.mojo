@@ -124,7 +124,7 @@ from .cartridge import rom_read, rom_write
 @always_inline
 def mem_read(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ) -> UInt8:
@@ -155,7 +155,7 @@ def mem_read(
 @always_inline
 def mem_write(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
     value: UInt8,
@@ -194,7 +194,7 @@ def mem_write(
 @always_inline
 def push_byte(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     value: UInt8,
 ):
@@ -206,7 +206,7 @@ def push_byte(
 @always_inline
 def pull_byte(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ) -> UInt8:
     """Pull a byte from the stack."""
@@ -217,7 +217,7 @@ def pull_byte(
 @always_inline
 def push_word(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     value: UInt16,
 ):
@@ -229,7 +229,7 @@ def push_word(
 @always_inline
 def pull_word(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ) -> UInt16:
     """Pull a 16-bit word from the stack (low byte first)."""
@@ -271,7 +271,7 @@ def update_nz(mut state: AtariState, value: UInt8):
 @always_inline
 def resolve_operand_addr(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     mode: UInt8,
     pc_after_opcode: UInt16,
@@ -342,7 +342,7 @@ def resolve_operand_addr(
 def _fetch_opcode_entry[
     ot_o: MutOrigin
 ](
-    opcode_byte: UInt8, op_table: UnsafePointer[OpcodeEntry, ot_o]
+    opcode_byte: UInt8, op_table: Pointer[OpcodeEntry, ot_o]
 ) -> OpcodeEntry:
     """Opcode-table lookup via a caller-provided table pointer.
 
@@ -355,7 +355,7 @@ def _fetch_opcode_entry[
     table to a device buffer and passes the device pointer. Same table contents
     either way → the CPU trajectory checksum is unchanged.
     """
-    return op_table[Int(opcode_byte)]
+    return op_table[unsafe_offset=Int(opcode_byte)]
 
 
 @no_inline
@@ -363,9 +363,9 @@ def execute_one[
     ot_o: MutOrigin
 ](
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, ot_o],
+    op_table: Pointer[OpcodeEntry, ot_o],
 ) -> UInt8:
     """Execute one instruction. Returns the number of CPU cycles consumed.
 
@@ -873,7 +873,7 @@ def _compare(mut state: AtariState, reg: UInt8, operand: UInt8):
 @always_inline
 def _branch(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ):
@@ -894,7 +894,7 @@ def _branch(
 
 def cpu_reset(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ):
     """Perform CPU reset — load PC from reset vector ($FFFC-$FFFD)."""
@@ -915,12 +915,12 @@ def cpu_reset(
     if rom_size <= 4096:
         for i in range(rom_size - 4):
             if (
-                rom[i] != 0xAD
-                or rom[i + 3] != 0xD0
-                or rom[i + 4] != 0xFB
+                rom[unsafe_offset=i] != 0xAD
+                or rom[unsafe_offset=i + 3] != 0xD0
+                or rom[unsafe_offset=i + 4] != 0xFB
             ):
                 continue
-            var a = ((Int(rom[i + 2]) << 8) | Int(rom[i + 1])) & 0x1FFF
+            var a = ((Int(rom[unsafe_offset=i + 2]) << 8) | Int(rom[unsafe_offset=i + 1])) & 0x1FFF
             if (
                 (a & 0x1000) == 0
                 and (a & 0x0080) != 0
@@ -940,7 +940,7 @@ def cpu_reset(
 
 def _run_scanline(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     overflow: Int = 0,
 ) -> Int:
@@ -1028,7 +1028,7 @@ def _run_scanline(
 
 def run_frame(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ):
     """Execute one full frame headlessly (no video output).
@@ -1245,7 +1245,7 @@ def _cycle_pixel[
     render_row: Int,
     pixel: Int,
     lit: UInt8,
-    buf: UnsafePointer[UInt8, o],
+    buf: Pointer[UInt8, o],
     palette: InlineArray[UInt32, 256],
 ):
     """Latch per-clock collisions and render one pixel from the counter lit-mask
@@ -1422,10 +1422,10 @@ def run_frame_cycle_accurate[
     ot_o: MutOrigin = MutAnyOrigin,
 ](
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
-    frame_buf: UnsafePointer[UInt8, fb_o],
-    op_table: UnsafePointer[OpcodeEntry, ot_o],
+    frame_buf: Pointer[UInt8, fb_o],
+    op_table: Pointer[OpcodeEntry, ot_o],
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
 
@@ -1839,9 +1839,9 @@ def run_frame_cycle_accurate[
 
 def run_frame_video(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+    frame_buf: Pointer[UInt8, MutAnyOrigin],
 ):
     """Render one VSYNC-aligned frame into frame_buf (BGRA).
 

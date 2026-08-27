@@ -13,6 +13,8 @@ broadphase_sap).
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
+from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import (
     support_sphere,
@@ -20,9 +22,33 @@ from mojo_rl.physics3d.collision.gjk_support import (
     support_mesh,
 )
 from mojo_rl.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
+from mojo_rl.physics3d.gpu.constants import mesh_max_edge
 
 comptime NMV = 8
 comptime L_MV = Layout.row_major(NMV, 3)
+# ⚠ NO EDGE GRAPH HERE, ON PURPOSE. `_support_mesh` hill-climbs the hull
+# adjacency when it exists and falls back to the exhaustive scan when
+# `edgeadr < 0` — which is how `fields/model.mojo` marks an unbuilt graph.
+# These fixtures are 8-vertex cubes, below `_HILLCLIMB_MIN`, so the scan is the
+# path under test either way; the tensors just have to be present and marked
+# absent. `test_gjk_hillclimb_support.mojo` is where the two paths are compared.
+comptime L_VEADR = Layout.row_major(NMV)
+comptime L_EDGES = Layout.row_major(mesh_max_edge(NMV))
+
+
+def _no_graph() raises -> TensorImpl[DType.float64]:
+    """An all -1 `mesh_vert_edgeadr` — i.e. "this mesh has no hull graph"."""
+    var t = TensorImpl[DType.float64].alloc(NMV)
+    for i in range(NMV):
+        t.data[i] = -1.0
+    return t^
+
+
+def _no_edges() raises -> TensorImpl[DType.float64]:
+    var t = TensorImpl[DType.float64].alloc(mesh_max_edge(NMV))
+    for i in range(mesh_max_edge(NMV)):
+        t.data[i] = -1.0
+    return t^
 
 
 def _mv_tensor(verts: List[Float64]) raises -> TensorImpl[DType.float64]:
@@ -37,19 +63,23 @@ def test_box_box_separated() raises:
     """Two boxes clearly separated — should report positive distance."""
     print("=== Test: box-box separated ===")
     var mv = _mv_tensor(List[Float64]())
-    var result = gjk_epa[DType.float64, NMV](
+    var _ng = _no_graph()
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
+    var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 2.0,  # box1 at z=2
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,  # radius, half_length (unused for box)
         0.5, 0.5, 0.5,  # half-extents
-        mv.lt["cpu", L_MV](), 0, 0,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 0,
         GEOM_BOX,
         0.0, 0.0, 0.0,  # box2 at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~1.0)")
     if result[0] < 0:
@@ -62,19 +92,23 @@ def test_box_box_overlapping() raises:
     """Two overlapping boxes — should report negative distance."""
     print("=== Test: box-box overlapping ===")
     var mv = _mv_tensor(List[Float64]())
-    var result = gjk_epa[DType.float64, NMV](
+    var _ng = _no_graph()
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
+    var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 0.3,  # box1 at z=0.3
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
-        mv.lt["cpu", L_MV](), 0, 0,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 0,
         GEOM_BOX,
         0.0, 0.0, 0.0,  # box2 at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~-0.7)")
     if result[0] >= 0:
@@ -97,19 +131,25 @@ def test_sphere_mesh_separated() raises:
                 cube_verts.append(Float64(sz) - 0.5)  # z: -0.5 to 0.5
 
     var mv = _mv_tensor(cube_verts)
-    var result = gjk_epa[DType.float64, NMV](
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
+    var result = gjk_epa[DType.float64](
         GEOM_SPHERE,
         0.0, 0.0, 3.0,  # sphere at z=3
         0.0, 0.0, 0.0, 1.0,
         0.1, 0.0,  # radius=0.1
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 0,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 0,
         GEOM_MESH,
         0.0, 0.0, 0.0,  # mesh at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
         0, 8,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~2.4)")
     if result[0] < 0:
@@ -133,21 +173,27 @@ def test_mesh_box_sawyer_case() raises:
                 mesh_verts.append((Float64(sz) - 0.5) * 0.06)
 
     var mv = _mv_tensor(mesh_verts)
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh geom: body_pos = (0, 0.6, 0.2), geom_local_offset = (0, 0, 0.03)
     # World pos ≈ (0, 0.6, 0.23)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,  # mesh world pos
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table box center
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,
         0.7, 0.4, 0.46,  # half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "contact_z=", Float64(result[3]),
@@ -175,20 +221,26 @@ def test_mesh_box_touching() raises:
                 mesh_verts.append((Float64(sz) - 0.5) * 0.04)
 
     var mv = _mv_tensor(mesh_verts)
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh at z=0.02 (bottom at z=0.0 = box top)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.0, 0.02,  # mesh at z=0.02
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.0, -0.5,  # box center at z=-0.5, half_z=0.5 → top at z=0.0
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         1.0, 1.0, 0.5,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~0.0)")
     if result[0] < -0.01:
@@ -212,21 +264,27 @@ def test_mesh_box_rotated() raises:
                 mesh_verts.append((Float64(sz) - 0.5) * 0.06)
 
     var mv = _mv_tensor(mesh_verts)
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Mesh at z=0.23 with 90° rotation (quat = [0.707, 0, 0, 0.707])
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         sq2, 0.0, 0.0, sq2,  # 90° rotation around X
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.2, mesh at z=0.23±0.03, box top at z=0.0)")
@@ -250,20 +308,26 @@ def test_mesh_box_asymmetric() raises:
                 mesh_verts.append((Float64(sz) - 0.5) * 0.05)
 
     var mv = _mv_tensor(mesh_verts)
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Very large box (table: 1.4m × 0.8m × 0.92m)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.205)")
@@ -290,25 +354,31 @@ def test_mesh_box_actual_sawyer() raises:
                 mesh_verts.append(zs[zi])
 
     var mv = _mv_tensor(mesh_verts)
+
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
     # Body 23 at (0, 0.6, 0.2), quat (0.707, 0, 0, 0.707)
     # Geom local offset (0, 0, 0.03) → world pos via quat_rotate + body_pos
     # With 90° X rotation: local (0,0,0.03) → world (0, -0.03, 0) + body → (0, 0.57, 0.2)
     # But _geom_world_pos also composes quaternions...
     # Let me use the approximate world position
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.57, 0.2,  # approximate world pos after rotation
         sq2, 0.0, 0.0, sq2,  # body 23 quat: 90° around X
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table collision box
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     # After 90° X rotation: mesh local z becomes world y, local y becomes world -z
     # Hull z-range [-0.003, 0.051] → world y offset
@@ -369,11 +439,17 @@ def test_support_with_180_quat() raises:
     print("  support(+Z) =", Float64(s2[0]), Float64(s2[1]), Float64(s2[2]))
 
     # Test box support for table along +Z (should be table top at z=0.0)
+    # ⚠ `corner` IS MuJoCo'S `obj->vertindex`, in and out. The reference uses
+    # that ONE field for both a mesh hull vertex and a box CORNER CODE, and
+    # EPA's discrete repeated-support-point break compares it, so `support_box`
+    # writes it. A caller that does not care still has to own the slot.
+    var box_corner = 0
     var b = support_box[DType.float64](
         0.0, 0.0, 1.0,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
-        0.7, 0.4, 0.46)
+        0.7, 0.4, 0.46,
+        box_corner)
     print("  box support(+Z) =", Float64(b[0]), Float64(b[1]), Float64(b[2]),
           "(expected z=0.0)")
 
@@ -396,6 +472,11 @@ def test_exact_sawyer_runtime() raises:
 
     var mv = _mv_tensor(mesh_verts)
 
+    var _ng = _no_graph()
+
+    var _ne = _no_edges()
+    var ws = ccd_ws_alloc[DType.float64]()
+
     # Body 23 runtime values:
     # xpos: (0.0053, 0.6013, 0.3151)
     # xquat: (0.028, -0.9996, -0.0005, 0.003)  (x,y,z,w)
@@ -413,19 +494,20 @@ def test_exact_sawyer_runtime() raises:
     print("  mesh world pos:", wx, wy, wz)
     print("  mesh world quat:", bqx, bqy, bqz, bqw)
 
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         wx, wy, wz,
         bqx, bqy, bqz, bqw,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 8,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR](), _ne.lt["cpu", L_EDGES](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table collision box
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
         0, 0,
+        ws.lt["cpu", L_CCD_WS1](), 0,
     )
     print("  dist=", Float64(result[0]),
           "normal=", Float64(result[4]), Float64(result[5]), Float64(result[6]))

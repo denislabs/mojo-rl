@@ -11,15 +11,15 @@ block carries its own device state, so the bundle is a plain owning `Tuple`.
 site parity; the caller assigns real per-instance blocks into `items[i]`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from .loss_block import LossBlock
 
 
 struct LossBlockBundle[*BLOCKS: LossBlock](
-    Defaultable & Movable & ImplicitlyDeletable
+    Defaultable & Movable & Deinitable
 ):
-    comptime N = Self.BLOCKS.size
+    comptime N = Self.BLOCKS.length
 
     var items: Tuple[*Self.BLOCKS]
 

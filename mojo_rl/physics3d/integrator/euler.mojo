@@ -21,7 +21,7 @@ vs legacy: 9 small per-stage kernel launches instead of 2 fused monoliths —
 each stage is independently gated; fusion is a later NVIDIA perf lever."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
@@ -40,19 +40,36 @@ from ..dynamics.ldl import (
     _ldl_solve_env,
 )
 from ..constraints.limits import solve_limits
+from ..constraints.friction_dof import solve_friction
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.warmstart import save_qacc_warmstart
+from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
 from ..types import ConeType
 from ..dynamics.rne import compute_bias_forces_rne
+from ..dynamics.rne_post import compute_rne_post
 from ..dynamics.fluid_forces import compute_fluid_forces
+from ..dynamics.gravcomp import compute_gravcomp_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, ContactScratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    ContactScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
+    MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_EULERDAMP_DISABLED,
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
     JOINT_IDX_TYPE,
@@ -71,53 +88,64 @@ comptime EU_TPB: Int = 64
 # ── armature: M diagonal += armature (verbatim step_kernel 6b) ────────────
 @always_inline
 def _armature_env[
-    DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_JOINTS: Layout,
+    L_M: Layout](
     env: Int,
+    dims: D,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
 ):
-    for j in range(NJOINT):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    for j in range(njoint):
         var jnt_type = Int(joints[j, JOINT_IDX_TYPE])
         var dof_adr = Int(joints[j, JOINT_IDX_DOF_ADR])
         var arm = joints[j, JOINT_IDX_ARMATURE]
         var diag_add = arm
         if jnt_type == JNT_FREE:
             for d in range(6):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += diag_add
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += diag_add
         elif jnt_type == JNT_BALL:
             for d in range(3):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += diag_add
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += diag_add
         else:
-            M[env, dof_adr * NV + dof_adr] += diag_add
+            M[env, dof_adr * nv + dof_adr] += diag_add
 
 
 # ── fnet assembly: qfrc - bias - damping - stiffness - friction ───────────
 # (verbatim step_kernel 9 + 8b; fluid 8c NOT ported — guarded at step())
 @always_inline
 def _fnet_passive_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qfrc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qfrc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    bias: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    bias: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
     # f_net = qfrc - bias
-    for i in range(NV):
+    for i in range(nv):
         var qfrc_v = rebind[Scalar[DTYPE]](qfrc[env, i])
         var bias_val = rebind[Scalar[DTYPE]](bias[env, i])
         fnet[env, i] = qfrc_v - bias_val
 
     # Damping: f -= damping * qvel (explicit part)
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type_d = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr_d = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
@@ -135,7 +163,7 @@ def _fnet_passive_env[
                 fnet[env, dof_adr_d + d] = cur - damp_d * v
 
     # Stiffness + frictionloss
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var qpos_adr = Int(
@@ -154,96 +182,78 @@ def _fnet_passive_env[
                 var qpos_d = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + d])
                 var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr + d])
                 fnet[env, dof_adr + d] = cur - stiff * (qpos_d - sref)
-        if floss > Scalar[DTYPE](0):
-            comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                var v = rebind[Scalar[DTYPE]](qvel[env, dof_adr + d])
-                var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr + d])
-                if v > VEL_THRESH:
-                    fnet[env, dof_adr + d] = cur - floss
-                elif v < -VEL_THRESH:
-                    fnet[env, dof_adr + d] = cur + floss
+        # frictionloss is NOT a passive force. It used to be applied here as an
+        # explicit Coulomb force with a 1e-4 velocity deadband, which cannot
+        # arrest motion — it overshoots zero and settles into a period-2 limit
+        # cycle, so a joint that should stop dead spins forever (dm_control's
+        # finger spinner: MuJoCo 1e-17 rad/s, ours a bit-constant +-0.0329).
+        # MuJoCo solves it as a CONSTRAINT ROW (`mjCNSTR_FRICTION_DOF`) whose
+        # force is bounded by frictionloss rather than fixed at it; that lives
+        # in `constraints/friction_dof.mojo` and runs beside the limit rows in
+        # every solver. `floss` is read there, not here.
+        _ = floss
 
 
 # ── qacc writeback: state qacc + qacc_constrained = qacc_ws ───────────────
 @always_inline
 def _qacc_writeback_env[
-    DTYPE: DType, NV: Int, BATCH: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_QACC_WS: Layout](
     env: Int,
-    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qacc_ws: LayoutTensor[DTYPE, L_QACC_WS, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QACC_WS, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QACC_WS, MutAnyOrigin
     ],
 ):
-    for i in range(NV):
+    var nv = dims.get_nv()
+    for i in range(nv):
         var qacc_val = rebind[Scalar[DTYPE]](qacc_ws[env, i])
         qacc[env, i] = qacc_val
         qacc_constrained[env, i] = qacc_val
 
 
-# ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
+# ── the integrate half of finalize, shared by both damping branches ───────
+#
+# ⚠ EXTRACTED, NOT COPIED. `mj_EulerSkip` has two branches — explicit when
+# `mjDSBL_EULERDAMP` is set (or no dof is damped) and implicit otherwise —
+# and they differ ONLY in how `qacc_final` is obtained. Writing the velocity
+# and position update once means the two cannot drift; this tree has been
+# bitten by a rule written inline twice before.
 @always_inline
-def _finalize_env[
-    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
+def _finalize_integrate_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
 ](
     env: Int,
     dt: Scalar[DTYPE],
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
-    ],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
-    ],
+    dims: DIMS,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
-    # Step 1: rhs = M * qacc_constrained (into fnet)
-    for i in range(NV):
-        var sum = Scalar[DTYPE](0)
-        for j in range(NV):
-            var M_ij = rebind[Scalar[DTYPE]](M[env, i * NV + j])
-            var qacc_j = rebind[Scalar[DTYPE]](qacc_constrained[env, j])
-            sum += M_ij * qacc_j
-        fnet[env, i] = sum
-
-    # Step 2: M_hat = M + dt*D (damping to diagonal)
-    for j in range(NJOINT):
-        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
-        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp > Scalar[DTYPE](0):
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                M[env, (dof_adr + d) * NV + (dof_adr + d)] += dt * damp
-
-    # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env[DTYPE, NV, BATCH](env, M, L, D)
-    _ldl_solve_env[DTYPE, NV, BATCH](env, L, D, fnet, qacc_ws)
-
-    # Step 5: v_new = v_old + dt * qacc_final (NaN guard + clamp)
-    for i in range(NV):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    # Step 5: v_new = v_old + dt * qacc_final.
+    #
+    # ⚠ THE BOUND IS `mjMAXVAL`, NOT A STABILITY BUDGET. MuJoCo's only
+    # velocity guard is `mj_checkVel`, which WARNS and resets the state
+    # when a dof goes NaN/inf or past 1e10; it never rescales one. A
+    # tighter saturation here is a silent physics change that only shows
+    # up on the models fast enough to reach it.
+    for i in range(nv):
         var old_qvel = rebind[Scalar[DTYPE]](qvel[env, i])
         var qacc_final = rebind[Scalar[DTYPE]](qacc_ws[env, i])
         qacc[env, i] = qacc_final
         var qvel_new = old_qvel + qacc_final * dt
-        var qvel_max = Scalar[DTYPE](100.0)
+        var qvel_max = Scalar[DTYPE](MJ_MAXVAL)
         if qvel_new != qvel_new:  # NaN guard
             qvel_new = Scalar[DTYPE](0.0)
         elif qvel_new > qvel_max:
@@ -254,7 +264,7 @@ def _finalize_env[
 
     # Integrate position (quaternion-aware for FREE; BALL not handled, as
     # in the legacy finalize)
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var jnt_qpos_adr = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
@@ -285,10 +295,117 @@ def _finalize_env[
             qpos[env, jnt_qpos_adr + 5] = norm[1]  # qy
             qpos[env, jnt_qpos_adr + 6] = norm[2]  # qz
 
+        # ⚠⚠ THIS BRANCH DID NOT EXIST, so a `<joint type="ball">` NEVER
+        # MOVED. Its three DOFs accumulated velocity that nothing applied to
+        # `qpos`, while the quaternion stayed at whatever the reset left —
+        # a joint that is free in the mass matrix and frozen on screen.
+        # `kinematics/integrate_pos.mojo` has carried the correct body since
+        # it was written and has no callers; the integrators each roll their
+        # own qpos loop and only FREE and HINGE/SLIDE were ever transcribed.
+        #
+        # ⚠ MuJoCo FALLS THROUGH from FREE into BALL (`mj_integratePos`) —
+        # the free joint's rotation IS this update on shifted addresses, which
+        # is why the two are the same four lines and must stay that way.
+        # qpos holds the quaternion w FIRST; `quat_math` takes and returns
+        # (x, y, z, w).
+        elif jnt_type == JNT_BALL:
+            var bqw = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 0])
+            var bqx = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 1])
+            var bqy = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 2])
+            var bqz = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr + 3])
+            var bwx = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 0])
+            var bwy = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 1])
+            var bwz = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr + 2])
+            var bres = quat_integrate(bqx, bqy, bqz, bqw, bwx, bwy, bwz, dt)
+            var bnorm = quat_normalize(bres[0], bres[1], bres[2], bres[3])
+            qpos[env, jnt_qpos_adr + 0] = bnorm[3]  # qw
+            qpos[env, jnt_qpos_adr + 1] = bnorm[0]  # qx
+            qpos[env, jnt_qpos_adr + 2] = bnorm[1]  # qy
+            qpos[env, jnt_qpos_adr + 3] = bnorm[2]  # qz
+
         elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
             var qp = rebind[Scalar[DTYPE]](qpos[env, jnt_qpos_adr])
             var qv = rebind[Scalar[DTYPE]](qvel[env, jnt_dof_adr])
             qpos[env, jnt_qpos_adr] = qp + qv * dt
+
+
+# ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
+@always_inline
+def _finalize_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_M: Layout](
+    env: Int,
+    dt: Scalar[DTYPE],
+    dims: DIMS,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    joints: LayoutTensor[
+        DTYPE, L_JOINTS, MutAnyOrigin
+    ],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, L_QVEL, MutAnyOrigin
+    ],
+    # ⚠⚠ `<option><flag eulerdamp="disable"/></option>` — mjDSBL_EULERDAMP.
+    # `mj_EulerSkip` puts its ENTIRE damping scan behind this flag and, when
+    # it is set, integrates velocity explicitly: `qvel += h * qacc`, with the
+    # `(M + h*diag(B))` solve below skipped, not merely fed a zero B. The two
+    # are far apart whenever `h*B` is comparable to `M`'s diagonal — on
+    # tetheria (`h = 0.01`, `dof_damping = 0.1`, `M_ii ~ 1.6e-03`) the solve
+    # returns 61.5% of the explicit velocity, which was that model's whole
+    # remaining residual.
+    eulerdamp_off: Bool,
+):
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    if eulerdamp_off:
+        # Explicit velocity integration — `mj_EulerSkip`'s `if (!dof_damping)`
+        # branch, which copies `d->qacc` and never touches `qH`.
+        for i in range(nv):
+            qacc_ws[env, i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        _finalize_integrate_env(
+            env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+        )
+        return
+    # Step 1: rhs = M * qacc_constrained (into fnet)
+    for i in range(nv):
+        var sum = Scalar[DTYPE](0)
+        for j in range(nv):
+            var M_ij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
+            var qacc_j = rebind[Scalar[DTYPE]](qacc_constrained[env, j])
+            sum += M_ij * qacc_j
+        fnet[env, i] = sum
+
+    # Step 2: M_hat = M + dt*D (damping to diagonal)
+    for j in range(njoint):
+        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
+        if damp > Scalar[DTYPE](0):
+            var nd = 1
+            if jnt_type == JNT_FREE:
+                nd = 6
+            elif jnt_type == JNT_BALL:
+                nd = 3
+            for d in range(nd):
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
+
+    # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
+    _ldl_factor_env(env, dims, M, L, D)
+    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
+
+    _finalize_integrate_env(
+        env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+    )
 
 
 # ── launchable kernels ────────────────────────────────────────────────────
@@ -303,7 +420,7 @@ def _armature_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _armature_env[DTYPE, NV, NJOINT, BATCH](env, joints, M)
+    _armature_env[DTYPE](env, Dims[nv=NV, njoint=NJOINT](), joints, M)
 
 
 def _fnet_passive_kernel[
@@ -321,8 +438,8 @@ def _fnet_passive_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, qpos, qvel, qfrc, joints, bias, fnet
+    _fnet_passive_env[DTYPE](
+        env, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qfrc, joints, bias, fnet
     )
 
 
@@ -338,8 +455,8 @@ def _qacc_writeback_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _qacc_writeback_env[DTYPE, NV, BATCH](
-        env, qacc_ws, qacc, qacc_constrained
+    _qacc_writeback_env[DTYPE](
+        env, Dims[nv=NV](), qacc_ws, qacc, qacc_constrained
     )
 
 
@@ -361,62 +478,75 @@ def _finalize_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    # ⚠ A SCALAR, NOT A `Bool`, so the launch does not need a second
+    # argument kind — every other model constant reaching a kernel here
+    # arrives the same way.
+    eulerdamp_off: Scalar[DTYPE],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _finalize_env[DTYPE, NQ, NV, NJOINT, BATCH](
-        env, dt, qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
-        qacc_constrained,
+    _finalize_env[DTYPE](
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
+        qacc_constrained, eulerdamp_off != Scalar[DTYPE](0),
     )
 
 
 # ── the stateful integrator ───────────────────────────────────────────────
 struct EulerIntegrator[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
+    RNE_POST: Bool = False,
+    MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
     PARALLEL_GPU=True: the GPU FK / body-velocity / cdof / CRBA /
     LDL-factor / M^-1 / RNE stages run their cooperative within-env (_mt)
     kernels (bit-exact vs serial; other stages stay serial). CPU ignores
-    it. CRBA_TREEWALK=True (requires PARALLEL_GPU): the GPU CRBA runs the
-    legacy-production tree-walk algorithm (O(NV·depth)) instead of the
-    dense one — float-tolerance-equal, NOT bit-exact vs dense. CPU stays
-    dense, like legacy."""
+    it. CRBA_TREEWALK=True: the CRBA runs the tree-walk algorithm
+    (O(NV·depth)) instead of the dense O(NV²·NBODY) one —
+    float-tolerance-equal, NOT bit-exact vs dense. ⚠ IT APPLIES ON BOTH
+    TARGETS NOW; it used to be GPU-only, which left every CPU caller on the
+    dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
-    var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
-    var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
-    ]
+    var scratch: DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH]
+    # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
+    # memory. Computed HERE (not by the caller) because this struct already
+    # carries every dimension it depends on, and via `je_budget` so the buffer
+    # and the kernel that indexes it cannot drift apart.
+    comptime JE_WS = je_ws_size[
+        Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.D.NTENDON, Self.D.NEQUALITY,
+        Self.D.MAX_CONTACTS, Self.MAX_CONDIM,
+    ]()
+
+    var cscratch: ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
-        comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "EulerIntegrator: CRBA_TREEWALK requires PARALLEL_GPU (the"
-            " tree-walk CRBA is inherently cooperative)"
-        )
-        self.scratch = DynamicsScratch[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ]()
+        """Dimensions from the comptime provider; raises on a dynamic one.
+
+        ⚠ THE DIMS OVERLOAD BELOW IS WHAT A RUNTIME-LOADED MODEL NEEDS. The
+        `step` body has been dimension-agnostic since 3a — it reads `d.dims`
+        and builds `RuntimeLayout`s — so the ONLY thing that stood between
+        this integrator and a `DynDims` model was this constructor, which
+        allocates its scratch through the nullary path and therefore through
+        `comptime_value()`. Same dual-constructor shape as `Model`, `Data`,
+        `SpecFields` and both scratches (3a/3b).
+        """
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in, and ALLOCATED FROM — the runtime path."""
+        self.scratch = DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH](dims)
         self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
-        ]()
+            Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS
+        ](dims)
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""
@@ -427,67 +557,44 @@ struct EulerIntegrator[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: Data[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
-            Self.NSITE, Self.BATCH,
-        ],
-        mut m: Model[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
-            Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
-            Self.NMESH_VERTS,
-        ],
+        mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
+        mut m: Model[Self.DTYPE, Self.D],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full contact-free Euler step."""
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
+        # `<option><flag eulerdamp="disable"/></option>`. Read HERE rather
+        # than inside `_finalize_env` so both targets get it from the same
+        # place and the GPU kernel takes it as a launch argument.
+        var eulerdamp_off = (
+            m.meta.data[MODEL_META_IDX_EULERDAMP_DISABLED]
+            != Scalar[Self.DTYPE](0)
+        )
 
-        forward_kinematics[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, ctx)
-        compute_body_velocities[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, ctx)
-        compute_subtree_com[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-        ](d, m, ctx)
-        compute_cdof[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, self.scratch, ctx)
-        compute_mass_matrix[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-            TREEWALK = Self.CRBA_TREEWALK,
-        ](d, m, self.scratch, ctx)
+        forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        compute_body_velocities[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        compute_subtree_com[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+        compute_cdof[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
+        compute_mass_matrix[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU, TREEWALK = Self.CRBA_TREEWALK](d, m, self.scratch, ctx)
 
-        comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
-        comptime L_M = Layout.row_major(Self.BATCH, Self.NV * Self.NV)
-        comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)
-        comptime L_QPOS = Layout.row_major(Self.BATCH, Self.NQ)
+        comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
+        comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
+        comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)
+        comptime L_QPOS = Layout.row_major(Self.BATCH, Self.D.NQ)
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
 
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var M_v = self.scratch.M.lt["cpu", L_M]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
-                ](e, joints_v, M_v)
+                    Self.DTYPE](e, dm, joints_v, M_v)
         else:
             ctx.value().enqueue_function[
-                _armature_kernel[Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH]
+                _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
             ](
                 m.joints.lt["gpu", L_JOINT](),
                 self.scratch.M.lt["gpu", L_M](),
@@ -495,36 +602,28 @@ struct EulerIntegrator[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
-        compute_m_inv[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
-        compute_bias_forces_rne[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, self.scratch, ctx)
+        ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
+        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
+        compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qfrc_v = d.qfrc.lt["cpu", L_NV]()
-            var joints_v2 = m.joints.lt["cpu", L_JOINT]()
-            var bias_v = self.scratch.bias.lt["cpu", L_NV]()
-            var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qfrc_v = d.qfrc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v2 = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var bias_v = self.scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
+            var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
-                ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
+                    Self.DTYPE](e, dm, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
@@ -538,27 +637,28 @@ struct EulerIntegrator[
             )
 
         # 8c. Fluid drag into fnet (no-op unless meta density/viscosity > 0).
-        compute_fluid_forces[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-        ](d, m, self.scratch, ctx)
+        compute_fluid_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+        # ⚠ AFTER the fluid call, not before: `mj_passive` adds `qfrc_fluid`
+        # into `qfrc_passive` and only then `qfrc_gravcomp`
+        # (engine_passive.c:1000-1022). No-op unless the model declares
+        # `<body gravcomp>`.
+        compute_gravcomp_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
-        ldl_solve[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         comptime if target == "cpu":
-            var qacc_ws_v = self.scratch.qacc_ws.lt["cpu", L_NV]()
-            var qacc_v = d.qacc.lt["cpu", L_NV]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var qacc_ws_v = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE, Self.NV, Self.BATCH](
-                    e, qacc_ws_v, qacc_v, qacc_c_v
+                _qacc_writeback_env[Self.DTYPE](
+                    e, dm, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
-                _qacc_writeback_kernel[Self.DTYPE, Self.NV, Self.BATCH]
+                _qacc_writeback_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
             ](
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
                 d.qacc.lt["gpu", L_NV](),
@@ -577,12 +677,7 @@ struct EulerIntegrator[
             # Auto broadphase = legacy production (SAP for NGEOM >= 16,
             # O(N^2) otherwise; same routing as the legacy step kernel's
             # detect_contacts_auto_gpu call).
-            detect_contacts_auto[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, ctx)
+            detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
             comptime assert (
                 Self.SOLVER == "pgs"
                 or Self.SOLVER == "newton"
@@ -593,68 +688,118 @@ struct EulerIntegrator[
                 " or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton[
-                    target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                    Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
-                    Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
-                ](d, m, self.scratch, self.cscratch, ctx)
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, NOSLIP_ITER=Self.NOSLIP_ITER, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
-                    solve_cg[
-                        target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                        Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                        Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                        Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                        Self.BATCH,
-                    ](d, m, self.scratch, self.cscratch, ctx)
+                    solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "island":
-                        solve_island_pgs[
-                            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                            Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                            Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                            Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                            Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                     else:
-                        solve_contacts[
-                            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                            Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                            Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                            Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                            Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
         else:
-            solve_limits[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, self.scratch, ctx)
+            solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+            # Dry-friction dof rows. With CONTACTS=False no solver runs, so
+            # this is the only place they can be applied; with contacts the
+            # solvers call `_friction_env` themselves beside their limit rows.
+            solve_friction[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+        # `qacc_warmstart = qacc` — the tail of `mj_forward`
+        # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
+        # saves the CONSTRAINT SOLVER's acceleration, and anything the
+        # integrator does to `qacc` afterwards never reaches `qacc_warmstart`.
+        save_qacc_warmstart[target, Self.DTYPE, BATCH=Self.BATCH](
+            d, self.scratch, ctx
+        )
+
+        # `mj_sensorAcc` sits exactly here in MuJoCo: after fwdConstraint,
+        # before the integrator. Every input the stage needs (FK products,
+        # solved contact forces, scratch.qacc_constrained) is valid at this
+        # point and stale one line later — `_finalize_env` overwrites
+        # d.qacc with the implicit-damping re-solve and moves qpos/qvel on.
+        comptime if Self.RNE_POST:
+            compute_rne_post[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
+
+            # ⚠ AND THE FK PRODUCTS THAT GO WITH THEM — defect 19.
+            #
+            # `cacc`/`cfrc_int` are only half of an acceleration-stage sensor:
+            # the other half is the site pose they are transported to and
+            # rotated into. Those live in `site_xpos`/`xquat`, which
+            # `Phyics3dEnv._fields_fk` moves to the POST-integration state
+            # after the substep loop (correctly — the position/velocity-stage
+            # observation dims need it, and dm_control's `mj_step1` does the
+            # same). Reading them at observation time therefore mixed
+            # pre-integration `cacc` with post-integration geometry.
+            #
+            # MuJoCo never has this problem because it evaluates the stage
+            # HERE and stores the finished sensor value. We cannot do that
+            # generically — the sensor set is per-CONFIG, not per-engine — so
+            # the inputs are frozen instead, at the same instant and under the
+            # same `RNE_POST` gate that writes `cacc`. A model without the
+            # stage pays nothing.
+            comptime N_SITE_ACC = Self.BATCH * Self.D.NSITE * 3
+            comptime N_QUAT_ACC = Self.BATCH * Self.D.NBODY * 4
+            comptime if target == "cpu":
+                comptime if N_SITE_ACC > 0:
+                    for i in range(N_SITE_ACC):
+                        d.site_xpos_acc.data[i] = d.site_xpos.data[i]
+                for i in range(N_QUAT_ACC):
+                    d.xquat_acc.data[i] = d.xquat.data[i]
+            else:
+                # Device-to-device, both buffers owned and the same length by
+                # construction. Mirrored on GPU rather than skipped: a snapshot
+                # that only exists on one target is the same silent-divergence
+                # shape this whole fix exists to remove.
+                # ⚠ `as_unsafe_any_origin()` — `copy_from_device` wants
+                # `MutAnyOrigin` and the buffer's pointer carries
+                # `origin_of(dev._value)`. Same spelling as
+                # `dreamerv3/param_sync.mojo`, which is the established caller.
+                #
+                # ⚠ COMPILES BUT IS NOT RUNTIME-GATED: no model with
+                # `RNE_POST` runs on GPU today (dog and quadruped are both
+                # CPU-only, because the batched facade carries no `act`). It is
+                # written rather than skipped so the device path cannot silently
+                # diverge the day one does, and it is flagged here rather than
+                # left to look tested.
+                var c = ctx.value()
+                comptime if N_SITE_ACC > 0:
+                    d.site_xpos_acc.copy_from_device(
+                        c,
+                        d.site_xpos.dev.value().unsafe_ptr().as_unsafe_any_origin(),
+                        N_SITE_ACC,
+                    )
+                d.xquat_acc.copy_from_device(
+                    c,
+                    d.xquat.dev.value().unsafe_ptr().as_unsafe_any_origin(),
+                    N_QUAT_ACC,
+                )
 
         comptime if target == "cpu":
-            var qpos_v3 = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v3 = d.qvel.lt["cpu", L_NV]()
-            var qacc_v3 = d.qacc.lt["cpu", L_NV]()
-            var joints_v3 = m.joints.lt["cpu", L_JOINT]()
-            var M_v3 = self.scratch.M.lt["cpu", L_M]()
-            var L_v3 = self.scratch.L.lt["cpu", L_M]()
-            var D_v3 = self.scratch.D.lt["cpu", L_NV]()
-            var fnet_v3 = self.scratch.fnet.lt["cpu", L_NV]()
-            var qacc_ws_v3 = self.scratch.qacc_ws.lt["cpu", L_NV]()
-            var qacc_c_v3 = self.scratch.qacc_constrained.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var qpos_v3 = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v3 = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v3 = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v3 = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var M_v3 = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
+            var L_v3 = self.scratch.L.lt_dyn["cpu", DYN2](rl_M)
+            var D_v3 = self.scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+            var fnet_v3 = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_ws_v3 = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v3 = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _finalize_env[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
-                ](
-                    e, dt, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
-                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3,
+                    Self.DTYPE](
+                    e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
+                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, eulerdamp_off,
                 )
         else:
             ctx.value().enqueue_function[
                 _finalize_kernel[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ]
             ](
                 dt,
@@ -668,6 +813,8 @@ struct EulerIntegrator[
                 self.scratch.fnet.lt["gpu", L_NV](),
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
                 self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                Scalar[Self.DTYPE](1) if eulerdamp_off
+                else Scalar[Self.DTYPE](0),
                 grid_dim=(BLOCKS,),
                 block_dim=(EU_TPB,),
             )

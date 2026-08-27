@@ -1,0 +1,230 @@
+---
+title: PPO
+description: Proximal Policy Optimization — clipped surrogate updates, GAE advantages, and why on-policy trades samples for stability.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import OnPolicyLoop from '~/components/diagrams/OnPolicyLoop.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+PPO is an **on-policy policy-gradient** method. It improves the policy in small,
+clipped steps to stay stable: collect a fresh rollout, estimate advantages, run
+several update epochs over that data, then throw it away.
+
+It needs more environment steps than SAC and is considerably harder to
+destabilise. With a batched GPU environment, the sample cost is usually the
+cheaper trade.
+
+<Demo name="lunar_lander_ppo_trained" caption="LunarLander — PPO" meta="8 obs · 4 discrete actions" />
+
+
+<Papers label="Papers">
+	<Paper
+		title="Proximal Policy Optimization Algorithms"
+		authors="Schulman et al."
+		year="2017"
+		arxiv="1707.06347"
+	/>
+	<Paper
+		title="High-Dimensional Continuous Control Using Generalized Advantage Estimation"
+		authors="Schulman et al."
+		year="2015"
+		arxiv="1506.02438"
+		venue="ICLR 2016"
+		note="GAE — the advantage estimator."
+	/>
+</Papers>
+
+## The learning loop
+
+<OnPolicyLoop
+	formula="L = E[ min( r·Â, clip(r, 1±ε)·Â ) ]     where r = π / π_old"
+	rollout="N steps × M envs · discarded"
+/>
+
+The structural difference from [SAC](/algorithms/sac/) is the buffer. SAC's
+replay persists for a million transitions and is sampled randomly. PPO's rollout
+buffer is filled, consumed by `N_EPOCHS` passes, and discarded. Nothing survives
+the iteration.
+
+**The clipped surrogate.** The update maximises the ratio `r = π(a|s) / π_old(a|s)`
+weighted by the advantage — but clipped to `[1−ε, 1+ε]`. Once the new policy has
+moved far enough from the old one, the gradient flattens, so no single update can
+take a destructive step. That clip is essentially the whole algorithm.
+
+**GAE advantages.** Generalized Advantage Estimation trades bias against variance
+with a parameter `λ`. At `λ=1` it is the raw Monte-Carlo return (unbiased, noisy);
+at `λ=0` it is the one-step TD error (biased, stable). `0.95` is the usual
+compromise.
+
+**Multiple epochs.** Because the clip bounds how far the policy can move, the
+same rollout can safely be reused for several gradient passes — which is what
+makes an on-policy method affordable at all.
+
+## Building it in mojo-rl
+
+From `examples/half_cheetah/ppo_half_cheetah_training.mojo`:
+
+```mojo
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import Tanh
+from mojo_rl.deep_agents.ppo import PPOAgent
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
+comptime HIDDEN = 256
+comptime ROLLOUT_LEN = 2_048
+comptime MINIBATCH = 64
+comptime N_EPOCHS = 10
+comptime LOG_STD_INIT: Scalar[DT] = -0.5
+comptime MAX_TORQUE: Scalar[DT] = 1.0
+
+comptime CriticNet = Sequential[
+    Linear[OBS_DIM, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, 1],
+]
+
+
+def main() raises:
+    var agent = PPOAgent[
+        "cpu",
+        ActorNet,
+        CriticNet,
+        OBS_DIM,
+        ACT_DIM,
+        ROLLOUT_LEN,
+        MINIBATCH,
+        N_EPOCHS,
+    ](
+        actor_lr=3e-4,
+        critic_lr=1e-3,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_eps=0.2,
+        entropy_coef=0.0,
+        action_scale=MAX_TORQUE,
+        log_std_init=LOG_STD_INIT,
+        max_grad_norm=0.5,
+    )
+
+    # CleanRL-style log-std init. The trainer leaves this to the caller because
+    # Mojo nightly cannot reflect into Sequential's variadic children
+    # generically. Index 4 is the GaussianHead.
+    agent.trainer.actor.children[4].set_log_std_init["cpu"](LOG_STD_INIT)
+
+    var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
+    _ = agent.train_single[HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]](
+        env, 1_000_000, print_every=50_000, verbose=True,
+    )
+```
+
+Note **`Tanh` activations**, not ReLU. That is the CleanRL convention for PPO on
+MuJoCo tasks and it matters — ReLU trunks are noticeably less stable here.
+
+### Compile-time parameters
+
+```mojo
+PPOAgent[train_target, ACTOR, CRITIC, OBS_DIM, ACT_DIM,
+         ROLLOUT_LEN, MINIBATCH, N_EPOCHS, N_ENVS = 1]
+```
+
+Unlike the off-policy agents, PPO takes its dimensions directly rather than
+through a sample block — there is no replay buffer to carry them. `ROLLOUT_LEN`,
+`MINIBATCH` and `N_EPOCHS` are compile-time because they determine buffer layout.
+
+### Key runtime arguments
+
+| Argument | Typical | Notes |
+|---|---|---|
+| `clip_eps` | `0.2` | the surrogate clip — the core knob |
+| `gae_lambda` | `0.95` | bias/variance trade |
+| `gamma` | `0.99` | discount |
+| `entropy_coef` | `0.0`–`0.01` | exploration bonus; `0.0` for MuJoCo |
+| `max_grad_norm` | `0.5` | canonical PPO gradient clip |
+| `log_std_init` | `-0.5` | initial policy standard deviation |
+
+:::tip[`max_grad_norm=0.5` is not optional]
+The canonical PPO gradient-norm clip closed a real gap here — on Pendulum at
+200k steps it moved the result from −230 to −135 at the same seed. It is in the
+original paper and it earns its place.
+:::
+
+## Batched GPU training
+
+For the batched driver, set `N_ENVS` and use `train`:
+
+```mojo
+comptime N_ENVS = 32
+comptime EnvT = Phyics3dBatchedEnv[HalfCheetahModel, HalfCheetahConfig, N_ENVS]
+
+var agent = PPOAgent[
+    "gpu", ActorNet, CriticNet, OBS_DIM, ACT_DIM,
+    ROLLOUT_LEN, MINIBATCH, N_EPOCHS, N_ENVS,
+](ctx=ctx, ...)
+```
+
+This is where PPO becomes practical: its appetite for samples is satisfied by
+stepping 32 environments per iteration on-device.
+
+## Discrete actions
+
+PPO handles both action types, through separate packages:
+
+```mojo
+from mojo_rl.deep_agents.ppo import PPOAgent               # continuous, Gaussian head
+from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent  # categorical head
+```
+
+`PPODiscreteAgent` has a `train_batched` entry point for GPU-batched discrete
+environments — the arcade games and Procgen.
+
+## Watch out for
+
+:::caution[Time limits break GAE]
+The classic PPO bug, and Pendulum is where it bites: the environment has **no
+terminal state**, so every episode ends by truncation. Treating that as
+termination truncates the value bootstrap and corrupts every advantage estimate
+in the rollout.
+
+Use `was_terminated()` rather than `done` when computing GAE. See
+[Traits](/concepts/traits/).
+:::
+
+**Observation normalization.** PPO is more sensitive to observation scale than
+off-policy methods, because the advantage estimates feed directly into the policy
+gradient. If a batched environment wrapper is applying normalization, make sure
+it is applied consistently between rollout collection and update.
+
+## A2C
+
+A2C is PPO with a single epoch and no clipping — a degenerate case, and
+implemented as such here:
+
+```mojo
+from mojo_rl.deep_agents.a2c import A2CAgent
+```
+
+Simpler, but strictly worse in practice. Use PPO unless you specifically want
+the comparison.
+
+## Where to run it
+
+```bash
+pixi run mojo run -I . examples/cartpole/cartpole_ppo.mojo
+pixi run mojo run -I . examples/half_cheetah/ppo_half_cheetah_training.mojo
+pixi run -e nvidia mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo
+```
+
+## Next
+
+- [SAC](/algorithms/sac/) — off-policy, for comparison
+- [MuZero](/algorithms/muzero/) — planning instead of pure policy gradient
+- [Algorithms overview](/algorithms/) — the full catalogue

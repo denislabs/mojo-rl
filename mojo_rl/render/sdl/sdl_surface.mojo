@@ -367,7 +367,7 @@ def set_surface_colorspace(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorspace.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorspace",
         def(
@@ -471,7 +471,7 @@ def set_surface_palette(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfacePalette.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfacePalette",
         def(
@@ -536,7 +536,7 @@ def add_surface_alternate_image(
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddSurfaceAlternateImage.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_AddSurfaceAlternateImage",
         def(
@@ -661,7 +661,7 @@ def lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LockSurface",
         def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Bool,
@@ -784,7 +784,7 @@ def save_bmp_io(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveBMP_IO.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SaveBMP_IO",
         def(
@@ -820,7 +820,7 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveBMP.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SaveBMP",
         def(
@@ -852,7 +852,7 @@ def set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceRLE.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceRLE",
         def(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) thin -> Bool,
@@ -912,7 +912,7 @@ def set_surface_color_key(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorKey.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorKey",
         def(
@@ -971,7 +971,7 @@ def get_surface_color_key(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceColorKey.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorKey",
         def(
@@ -1010,7 +1010,7 @@ def set_surface_color_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceColorMod",
         def(
@@ -1045,7 +1045,7 @@ def get_surface_color_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceColorMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorMod",
         def(
@@ -1083,7 +1083,7 @@ def set_surface_alpha_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceAlphaMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceAlphaMod",
         def(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) thin -> Bool,
@@ -1111,7 +1111,7 @@ def get_surface_alpha_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceAlphaMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceAlphaMod",
         def(
@@ -1146,7 +1146,7 @@ def set_surface_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceBlendMode",
         def(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) thin -> Bool,
@@ -1175,7 +1175,7 @@ def get_surface_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceBlendMode",
         def(
@@ -1247,7 +1247,7 @@ def get_surface_clip_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceClipRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetSurfaceClipRect",
         def(
@@ -1276,7 +1276,7 @@ def flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlipSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FlipSurface",
         def(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) thin -> Bool,
@@ -1487,7 +1487,7 @@ def convert_pixels(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertPixels.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ConvertPixels",
         def(
@@ -1552,7 +1552,7 @@ def convert_pixels_and_colorspace(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertPixelsAndColorspace.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ConvertPixelsAndColorspace",
         def(
@@ -1626,7 +1626,7 @@ def premultiply_alpha(
     Docs: https://wiki.libsdl.org/SDL3/SDL_PremultiplyAlpha.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_PremultiplyAlpha",
         def(
@@ -1677,7 +1677,7 @@ def premultiply_surface_alpha(
     Docs: https://wiki.libsdl.org/SDL3/SDL_PremultiplySurfaceAlpha.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_PremultiplySurfaceAlpha",
         def(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) thin -> Bool,
@@ -1717,7 +1717,7 @@ def clear_surface(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ClearSurface",
         def(
@@ -1764,7 +1764,7 @@ def fill_surface_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_FillSurfaceRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FillSurfaceRect",
         def(
@@ -1810,7 +1810,7 @@ def fill_surface_rects(
     Docs: https://wiki.libsdl.org/SDL3/SDL_FillSurfaceRects.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FillSurfaceRects",
         def(
@@ -1903,7 +1903,7 @@ def blit_surface(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurface",
         def(
@@ -1947,7 +1947,7 @@ def blit_surface_unchecked(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceUnchecked.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceUnchecked",
         def(
@@ -1992,7 +1992,7 @@ def blit_surface_scaled(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceScaled.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceScaled",
         def(
@@ -2039,7 +2039,7 @@ def blit_surface_unchecked_scaled(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceUncheckedScaled.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceUncheckedScaled",
         def(
@@ -2084,7 +2084,7 @@ def stretch_surface(
     Docs: https://wiki.libsdl.org/SDL3/SDL_StretchSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StretchSurface",
         def(
@@ -2130,7 +2130,7 @@ def blit_surface_tiled(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceTiled.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceTiled",
         def(
@@ -2181,7 +2181,7 @@ def blit_surface_tiled_with_scale(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceTiledWithScale.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurfaceTiledWithScale",
         def(
@@ -2245,7 +2245,7 @@ def blit_surface_9grid(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurface9Grid.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BlitSurface9Grid",
         def(
@@ -2413,7 +2413,7 @@ def read_surface_pixel(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadSurfacePixel.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadSurfacePixel",
         def(
@@ -2467,7 +2467,7 @@ def read_surface_pixel_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadSurfacePixelFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ReadSurfacePixelFloat",
         def(
@@ -2520,7 +2520,7 @@ def write_surface_pixel(
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteSurfacePixel.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteSurfacePixel",
         def(
@@ -2570,7 +2570,7 @@ def write_surface_pixel_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteSurfacePixelFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WriteSurfacePixelFloat",
         def(

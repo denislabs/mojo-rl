@@ -11,7 +11,7 @@ Validates:
 
 from std.math import isnan, isinf
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT

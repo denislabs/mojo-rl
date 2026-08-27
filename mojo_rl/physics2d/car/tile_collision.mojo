@@ -284,7 +284,7 @@ struct TileCollision:
         result[1] = fr_limit
         result[2] = rl_limit
         result[3] = rr_limit
-        return result
+        return result^
 
     # =========================================================================
     # Tile Visitation Tracking

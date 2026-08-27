@@ -27,7 +27,7 @@ lives in `tests/nn/test_dreamer4_train_online.mojo`.
 """
 
 from std.math import sqrt, log, cos
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -83,9 +83,9 @@ struct OnlineRng(Copyable, Movable):
 def _window_to_patches[
     B: Int, T: Int, IN_CH: Int, IMG: Int, TGT: Int, PATCH: Int
 ](
-    pix: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [B*T*(IN_CH*IMG*IMG)]
-    frames: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T*TGT*TGT] scratch
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B*T*NP*DP]
+    pix: Pointer[Scalar[DT], MutAnyOrigin],     # [B*T*(IN_CH*IMG*IMG)]
+    frames: Pointer[Scalar[DT], MutAnyOrigin],  # [B*T*TGT*TGT] scratch
+    patches: Pointer[Scalar[DT], MutAnyOrigin], # [B*T*NP*DP]
 ) raises:
     """Downscale the LATEST stacked frame of each (b,t) obs to TGT×TGT grayscale
     and patchify (mirrors end2end `_window_to_patches`)."""
@@ -94,20 +94,20 @@ def _window_to_patches[
     for b in range(B):
         for t in range(T):
             var bt = b * T + t
-            var fsrc = pix + bt * IMG_DIM + (IN_CH - 1) * IMG * IMG
-            downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
+            var fsrc = pix.unsafe_offset(bt * IMG_DIM + (IN_CH - 1) * IMG * IMG)
+            downscale_box[IMG, IMG, TGT, TGT](fsrc, frames.unsafe_offset(bt * TGT * TGT))
     temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches)
 
 
 def _frame_to_patches[
     IN_CH: Int, IMG: Int, TGT: Int, PATCH: Int
 ](
-    obs: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [IN_CH*IMG*IMG] single obs
-    frame: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [TGT*TGT] scratch
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin], # [NP*DP] out
+    obs: Pointer[Scalar[DT], MutAnyOrigin],     # [IN_CH*IMG*IMG] single obs
+    frame: Pointer[Scalar[DT], MutAnyOrigin],   # [TGT*TGT] scratch
+    patches: Pointer[Scalar[DT], MutAnyOrigin], # [NP*DP] out
 ) raises:
     """Downscale + patchify ONE obs frame (latest stacked channel)."""
-    var fsrc = obs + (IN_CH - 1) * IMG * IMG
+    var fsrc = obs.unsafe_offset((IN_CH - 1) * IMG * IMG)
     downscale_box[IMG, IMG, TGT, TGT](fsrc, frame)
     temporal_patchify[1, 1, TGT, TGT, PATCH](frame, patches)
 
@@ -115,7 +115,7 @@ def _frame_to_patches[
 def _push_frame[
     IN_CH: Int, IMG: Int, TGT: Int, PATCH: Int, T: Int, NP: Int, DP: Int
 ](
-    cur: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [IN_CH*IMG*IMG]
+    cur: Pointer[Scalar[DT], MutAnyOrigin],   # [IN_CH*IMG*IMG]
     mut fr1: Tensor,                                # [TGT*TGT] scratch
     mut pa1: Tensor,                                # [NP*DP] scratch
     mut win_patch: Tensor,                          # [T*NP*DP]
@@ -180,16 +180,16 @@ def _step_repeat[
 
 
 def _mmm(
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
+    p: Pointer[Scalar[DT], MutAnyOrigin], n: Int
 ) -> Tuple[Float64, Float64, Float64]:
     """(mean, min, max) over p[0:n]."""
     if n <= 0:
         return (0.0, 0.0, 0.0)
     var s: Float64 = 0.0
-    var mn = Float64(p[0])
+    var mn = Float64(p[unsafe_offset=0])
     var mx = mn
     for i in range(n):
-        var v = Float64(p[i])
+        var v = Float64(p[unsafe_offset=i])
         s += v
         if v < mn:
             mn = v
@@ -202,10 +202,10 @@ def _build_shortcut_schedule[
     B: Int, T: Int, B_SELF: Int, KMAX: Int, EMAX: Int, ND: Int
 ](
     mut rng: OnlineRng,
-    sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B*T]
-    sig_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T]
-    step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B*T]
-    z0: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T*ND]
+    sigma: Pointer[Scalar[DT], MutAnyOrigin],    # [B*T]
+    sig_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [B*T]
+    step_idx: Pointer[Scalar[DT], MutAnyOrigin], # [B*T]
+    z0: Pointer[Scalar[DT], MutAnyOrigin],       # [B*T*ND]
 ):
     """The shortcut-forcing per-(b,t) signal-level / step-size schedule + the
     τ=0 Gaussian noise seed (lifted from end2end Phase B)."""
@@ -222,17 +222,17 @@ def _build_shortcut_schedule[
             if j >= K:
                 j = K - 1
             var scale = KMAX // K
-            sigma[bt] = Scalar[DT](Float64(j) / Float64(K))
-            sig_idx[bt] = Scalar[DT](Float64(j * scale))
-            step_idx[bt] = Scalar[DT](Float64(stp))
+            sigma[unsafe_offset=bt] = Scalar[DT](Float64(j) / Float64(K))
+            sig_idx[unsafe_offset=bt] = Scalar[DT](Float64(j * scale))
+            step_idx[unsafe_offset=bt] = Scalar[DT](Float64(stp))
     for i in range(B * T * ND):
-        z0[i] = Scalar[DT](rng.gauss())
+        z0[unsafe_offset=i] = Scalar[DT](rng.gauss())
 
 
 @always_inline
-def _dptr(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _dptr(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw device pointer of a device-resident Tensor (recon-grad kernel ABI)."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         t.dev.value().unsafe_ptr()
     )
 
@@ -732,7 +732,7 @@ def run_online_dreamer4[
             var ht = agent.agent_out_ptr()
             var ht_t = Tensor.alloc(BATCH * AGD)
             for i in range(BATCH * AGD):
-                ht_t.data[i] = ht[i]
+                ht_t.data[i] = ht[unsafe_offset=i]
             var clog = Tensor.alloc(BATCH)
             var gcl = Tensor.alloc(BATCH)
             var gci = Tensor.alloc(BATCH * AGD)

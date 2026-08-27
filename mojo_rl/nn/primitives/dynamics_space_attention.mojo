@@ -22,7 +22,7 @@ Param-free (attention has no params); owns one inner `MaskedAttention` Module
 field → forward/vjp delegate; param/state walkers recurse into it.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

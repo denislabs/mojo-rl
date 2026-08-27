@@ -33,7 +33,7 @@ D. As a TRAIT method parameter (the actual question for multi-input
    differently in Mojo nightly.
 """
 
-from std.gpu.memory import AddressSpace
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -159,7 +159,7 @@ def smoke_c() raises:
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait BinaryOp(Defaultable & Movable & ImplicitlyDeletable):
+trait BinaryOp(Defaultable & Movable & Deinitable):
     def forward(
         mut self,
         in0: TileTensor[address_space=AddressSpace.GENERIC, ...],

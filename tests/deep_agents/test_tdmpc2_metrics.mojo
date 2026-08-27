@@ -50,7 +50,7 @@ def test_metrics() raises:
     for _ in range(8):
         _ = ag.train_step()
 
-    var none: Optional[UnsafePointer[NoOpLogger, MutAnyOrigin]] = None
+    var none: Optional[Pointer[NoOpLogger, MutAnyOrigin]] = None
     var m = ag.flush_metrics[NoOpLogger](none, 0)
 
     print(

@@ -1,7 +1,7 @@
 """GPU Mesh Generation.
 
 Generates indexed triangle list meshes for common 3D shapes.
-All meshes are returned as MeshData (vertices + UInt16 indices)
+All meshes are returned as MeshData (vertices + UInt32 indices)
 and are meant to be uploaded once at init time.
 """
 
@@ -51,14 +51,14 @@ def generate_sphere(segments: Int = 16, rings: Int = 12) -> MeshData:
             var next_ring = (j + 1) * (segments + 1) + i
 
             # Triangle 1
-            mesh.indices.append(UInt16(current))
-            mesh.indices.append(UInt16(next_ring))
-            mesh.indices.append(UInt16(current + 1))
+            mesh.indices.append(UInt32(current))
+            mesh.indices.append(UInt32(next_ring))
+            mesh.indices.append(UInt32(current + 1))
 
             # Triangle 2
-            mesh.indices.append(UInt16(current + 1))
-            mesh.indices.append(UInt16(next_ring))
-            mesh.indices.append(UInt16(next_ring + 1))
+            mesh.indices.append(UInt32(current + 1))
+            mesh.indices.append(UInt32(next_ring))
+            mesh.indices.append(UInt32(next_ring + 1))
 
     return mesh^
 
@@ -155,7 +155,7 @@ def _add_box_face(
     p3: Tuple[Float64, Float64, Float64],
 ):
     """Add a single box face (4 vertices, 2 triangles) to mesh."""
-    var base = UInt16(len(mesh.vertices))
+    var base = UInt32(len(mesh.vertices))
 
     mesh.vertices.append(
         GPUVertex(
@@ -238,9 +238,9 @@ def generate_capsule(
 
     # Top hemisphere indices - fan from apex
     for i in range(segments):
-        mesh.indices.append(UInt16(0))  # apex
-        mesh.indices.append(UInt16(1 + i))
-        mesh.indices.append(UInt16(1 + i + 1))
+        mesh.indices.append(UInt32(0))  # apex
+        mesh.indices.append(UInt32(1 + i))
+        mesh.indices.append(UInt32(1 + i + 1))
 
     # Top hemisphere indices - strips
     for j in range(1, hemi_rings):
@@ -248,13 +248,13 @@ def generate_capsule(
             var curr = 1 + (j - 1) * (segments + 1) + i
             var next_r = 1 + j * (segments + 1) + i
 
-            mesh.indices.append(UInt16(curr))
-            mesh.indices.append(UInt16(next_r))
-            mesh.indices.append(UInt16(curr + 1))
+            mesh.indices.append(UInt32(curr))
+            mesh.indices.append(UInt32(next_r))
+            mesh.indices.append(UInt32(curr + 1))
 
-            mesh.indices.append(UInt16(curr + 1))
-            mesh.indices.append(UInt16(next_r))
-            mesh.indices.append(UInt16(next_r + 1))
+            mesh.indices.append(UInt32(curr + 1))
+            mesh.indices.append(UInt32(next_r))
+            mesh.indices.append(UInt32(next_r + 1))
 
     # --- Cylinder ---
     var cyl_base_top = len(mesh.vertices)
@@ -308,13 +308,13 @@ def generate_capsule(
         var t = cyl_base_top + i
         var b = cyl_base_bot + i
 
-        mesh.indices.append(UInt16(t))
-        mesh.indices.append(UInt16(b))
-        mesh.indices.append(UInt16(t + 1))
+        mesh.indices.append(UInt32(t))
+        mesh.indices.append(UInt32(b))
+        mesh.indices.append(UInt32(t + 1))
 
-        mesh.indices.append(UInt16(t + 1))
-        mesh.indices.append(UInt16(b))
-        mesh.indices.append(UInt16(b + 1))
+        mesh.indices.append(UInt32(t + 1))
+        mesh.indices.append(UInt32(b))
+        mesh.indices.append(UInt32(b + 1))
 
     # --- Bottom hemisphere ---
     var bot_base = len(mesh.vertices)
@@ -354,20 +354,20 @@ def generate_capsule(
             var curr = bot_base + j * (segments + 1) + i
             var next_r = bot_base + (j + 1) * (segments + 1) + i
 
-            mesh.indices.append(UInt16(curr))
-            mesh.indices.append(UInt16(next_r))
-            mesh.indices.append(UInt16(curr + 1))
+            mesh.indices.append(UInt32(curr))
+            mesh.indices.append(UInt32(next_r))
+            mesh.indices.append(UInt32(curr + 1))
 
-            mesh.indices.append(UInt16(curr + 1))
-            mesh.indices.append(UInt16(next_r))
-            mesh.indices.append(UInt16(next_r + 1))
+            mesh.indices.append(UInt32(curr + 1))
+            mesh.indices.append(UInt32(next_r))
+            mesh.indices.append(UInt32(next_r + 1))
 
     # Bottom hemisphere indices - fan to apex
     var last_ring_base = bot_base + (hemi_rings - 1) * (segments + 1)
     for i in range(segments):
-        mesh.indices.append(UInt16(last_ring_base + i))
-        mesh.indices.append(UInt16(bot_apex))
-        mesh.indices.append(UInt16(last_ring_base + i + 1))
+        mesh.indices.append(UInt32(last_ring_base + i))
+        mesh.indices.append(UInt32(bot_apex))
+        mesh.indices.append(UInt32(last_ring_base + i + 1))
 
     return mesh^
 
@@ -410,9 +410,9 @@ def generate_cylinder(
 
     # Top cap indices (fan from center)
     for i in range(segments):
-        mesh.indices.append(UInt16(top_center))
-        mesh.indices.append(UInt16(top_center + 1 + i))
-        mesh.indices.append(UInt16(top_center + 1 + i + 1))
+        mesh.indices.append(UInt32(top_center))
+        mesh.indices.append(UInt32(top_center + 1 + i))
+        mesh.indices.append(UInt32(top_center + 1 + i + 1))
 
     # --- Cylinder side ---
     var cyl_base_top = len(mesh.vertices)
@@ -446,13 +446,13 @@ def generate_cylinder(
         var t = cyl_base_top + i
         var b = cyl_base_bot + i
 
-        mesh.indices.append(UInt16(t))
-        mesh.indices.append(UInt16(b))
-        mesh.indices.append(UInt16(t + 1))
+        mesh.indices.append(UInt32(t))
+        mesh.indices.append(UInt32(b))
+        mesh.indices.append(UInt32(t + 1))
 
-        mesh.indices.append(UInt16(t + 1))
-        mesh.indices.append(UInt16(b))
-        mesh.indices.append(UInt16(b + 1))
+        mesh.indices.append(UInt32(t + 1))
+        mesh.indices.append(UInt32(b))
+        mesh.indices.append(UInt32(b + 1))
 
     # --- Bottom disc cap ---
     var bot_center = len(mesh.vertices)
@@ -472,9 +472,9 @@ def generate_cylinder(
 
     # Bottom cap indices (fan from center, reversed winding)
     for i in range(segments):
-        mesh.indices.append(UInt16(bot_center))
-        mesh.indices.append(UInt16(bot_center + 1 + i + 1))
-        mesh.indices.append(UInt16(bot_center + 1 + i))
+        mesh.indices.append(UInt32(bot_center))
+        mesh.indices.append(UInt32(bot_center + 1 + i + 1))
+        mesh.indices.append(UInt32(bot_center + 1 + i))
 
     return mesh^
 
@@ -500,11 +500,11 @@ def generate_ground(size: Float32 = 10.0) -> MeshData:
     mesh.vertices.append(GPUVertex(-size, size, 0, 0, 0, 1, 0, 1))
 
     # Two triangles
-    mesh.indices.append(UInt16(0))
-    mesh.indices.append(UInt16(1))
-    mesh.indices.append(UInt16(2))
-    mesh.indices.append(UInt16(0))
-    mesh.indices.append(UInt16(2))
-    mesh.indices.append(UInt16(3))
+    mesh.indices.append(UInt32(0))
+    mesh.indices.append(UInt32(1))
+    mesh.indices.append(UInt32(2))
+    mesh.indices.append(UInt32(0))
+    mesh.indices.append(UInt32(2))
+    mesh.indices.append(UInt32(3))
 
     return mesh^

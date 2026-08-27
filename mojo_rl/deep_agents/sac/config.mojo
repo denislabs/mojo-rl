@@ -31,7 +31,7 @@ form halves the per-hidden-layer kernel-launch count on the eager GPU
 path.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -75,7 +75,7 @@ one of these."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait SACConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait SACConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a SAC-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

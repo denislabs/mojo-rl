@@ -13,8 +13,8 @@ from .h5_types import herr_t, hid_t, hsize_t
 
 def h5s_create_simple(
     rank: c_int,
-    dims: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    maxdims: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    dims: Pointer[mut=False, hsize_t, _],
+    maxdims: Pointer[mut=False, hsize_t, _],
 ) raises -> hid_t:
     """``H5Screate_simple(int rank, hsize_t *dims, hsize_t *maxdims) -> hid_t``.
 
@@ -22,16 +22,25 @@ def h5s_create_simple(
     mean "same as dims".
 
     Caller owns the returned id and must close it with ``h5s_close``.
+
+    ⚠ The array parameters are immutable and generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
         "H5Screate_simple",
         def(
             c_int,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> hid_t,
-    ]()(rank, dims, maxdims)
+    ]()(rank, dims.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin](), maxdims.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]())
 
 
 def h5s_close(space_id: hid_t) raises -> herr_t:
@@ -53,39 +62,57 @@ def h5s_get_simple_extent_ndims(space_id: hid_t) raises -> c_int:
 
 def h5s_get_simple_extent_dims(
     space_id: hid_t,
-    dims: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    maxdims: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    dims: Pointer[mut=True, hsize_t, _],
+    maxdims: Pointer[mut=True, hsize_t, _],
 ) raises -> c_int:
     """``H5Sget_simple_extent_dims(hid_t, hsize_t *dims, hsize_t *maxdims)``.
 
     Fills ``dims`` (and optionally ``maxdims``) with the dataspace shape.
     The caller is responsible for allocating buffers of size ``ndims``.
     Returns ndims on success, negative on error.
+
+    ⚠ The array parameters are generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
         "H5Sget_simple_extent_dims",
         def(
             hid_t,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> c_int,
-    ]()(space_id, dims, maxdims)
+    ]()(space_id, dims.unsafe_origin_cast[MutUntrackedOrigin](), maxdims.unsafe_origin_cast[MutUntrackedOrigin]())
 
 
 def h5s_select_hyperslab(
     space_id: hid_t,
     op: c_int,
-    start: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    stride: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    count: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    block: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    start: Pointer[mut=False, hsize_t, _],
+    stride: Pointer[mut=False, hsize_t, _],
+    count: Pointer[mut=False, hsize_t, _],
+    block: Pointer[mut=False, hsize_t, _],
 ) raises -> herr_t:
     """``H5Sselect_hyperslab(hid_t, H5S_seloper_t op, const hsize_t *start,
     *stride, *count, *block) -> herr_t``.
 
     Select a strided hyperslab on the dataspace. ``stride`` and ``block``
     may be null for contiguous selections.
+
+    ⚠ The array parameters are immutable and generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
@@ -93,9 +120,9 @@ def h5s_select_hyperslab(
         def(
             hid_t,
             c_int,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> herr_t,
-    ]()(space_id, op, start, stride, count, block)
+    ]()(space_id, op, start.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin](), stride.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin](), count.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin](), block.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]())

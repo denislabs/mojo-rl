@@ -10,7 +10,7 @@ Run: pixi run -e apple mojo run -I . tests/physics2d/test_car_multibody_gpu.mojo
 
 from std.math import sqrt
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics2d import dtype
 from mojo_rl.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
 from mojo_rl.physics2d.car import CarDynamicsMB, CarMBPhysicsKernel

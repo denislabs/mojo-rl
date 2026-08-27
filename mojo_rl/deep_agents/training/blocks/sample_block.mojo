@@ -31,14 +31,14 @@ the wrapping when needed.
 which requires the trait to advertise a no-arg constructor.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ...data.n_step_replay import GPUNStepBuffer
 from ..trainer_block import TrainerState
 
 
-trait SampleBlock(Defaultable, ImplicitlyDeletable, Movable):
+trait SampleBlock(Defaultable, Deinitable, Movable):
     comptime OBS: Int
     comptime ACT: Int
     comptime BATCH: Int

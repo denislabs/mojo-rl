@@ -987,7 +987,7 @@ def get_masks_for_pixel_format(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetMasksForPixelFormat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetMasksForPixelFormat",
         def(
@@ -1121,7 +1121,7 @@ def set_palette_colors(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetPaletteColors.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetPaletteColors",
         def(

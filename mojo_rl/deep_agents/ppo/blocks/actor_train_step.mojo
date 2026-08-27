@@ -6,7 +6,7 @@ which is dual-target. Reads (mb_obs, mb_act, mb_olp, mb_adv) from
 per-batch loss for logging.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -21,7 +21,7 @@ struct PPOActorTrainStep[
     ACT_: Int,
     MINIBATCH_: Int,
     ACTOR: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime MINIBATCH = Self.MINIBATCH_

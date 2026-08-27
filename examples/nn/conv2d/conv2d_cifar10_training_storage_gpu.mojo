@@ -11,7 +11,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/nn/conv2d/conv2d_cifar10
 
 from std.random import seed
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CIFAR10
 from mojo_rl.nn.constants import DT

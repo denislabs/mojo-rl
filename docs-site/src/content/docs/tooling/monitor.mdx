@@ -1,0 +1,117 @@
+---
+title: Training monitor
+description: A live dashboard for training runs — metrics streamed over HTTP from Mojo to a web app.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" note="A separate project; lives outside this repository." />
+
+Training runs on rented cloud GPUs emit thousands of metrics each. The monitor
+ingests, stores and charts them run by run, so a long job can be watched from
+anywhere instead of tailing a terminal.
+
+## The pipeline
+
+```
+mojo-rl logger  →  Cloudflare Worker  →  SQL database  →  React dashboard
+  POSTs metrics     Hono API + SPA        per-run storage    charts per run
+```
+
+Four pieces, one deployment, one URL:
+
+**The logger** is `RemoteLogger` in this repository — batched JSON over HTTP.
+See [Logging and metrics](/tooling/logging/).
+
+**The Worker** is a Cloudflare Worker running a Hono API and serving the static
+SPA. It registers runs, accepts metric batches and serves queries.
+
+**The database** stores every run's metrics and configuration.
+
+**The dashboard** is a React app: pick a run, chart any metric, smooth, compare
+by step or wall time.
+
+The stack is end-to-end TypeScript — the same systems thinking applied to the
+tooling as to the framework.
+
+## Connecting a run
+
+Put the URL and key in a `.env` at the repo root:
+
+```
+RL_MONITOR_URL=https://your-monitor-url
+RL_MONITOR_API_KEY=...
+```
+
+Then attach a `RemoteLogger`:
+
+```mojo
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
+
+var env_vars = load_dotenv()
+var logger = RemoteLogger(
+    server_url=env_vars.get("RL_MONITOR_URL", ""),
+    run_name="SAC HalfCheetah (GPU)",
+    buffer_size=64,
+    api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+)
+logger.set_config("algorithm", "SAC")
+logger.set_config("env", "HalfCheetah")
+```
+
+The run registers on first flush. Several GPU examples are wired for this
+already — `sac_half_cheetah_training_gpu.mojo` is the reference.
+
+## What it shows
+
+Per run, over steps or wall time:
+
+- **Episode reward** — per-episode, running average, best-so-far
+- **Q-values** — `mean_q`, `mean_next_q`, raw and smoothed
+- **TD targets** — target statistics
+- **Losses** — critic, actor, and any algorithm-specific term
+- **Configuration** — everything passed to `set_config`
+
+Adjustable smoothing, and a step/wall-time toggle.
+
+## Why it exists
+
+Two reasons, both practical.
+
+**Training happens elsewhere.** The [guidance for this project](/concepts/cpu-gpu/)
+is to develop on Apple Silicon and run real training on NVIDIA — usually a
+rented box. Once training is remote, terminal output is the wrong interface:
+SSH sessions drop, and scrollback is not a chart.
+
+**Failures are visible in metrics before they are visible in reward.** Most of
+the bugs catalogued in these docs — value explosion, target-network staleness,
+misaligned world-model targets — showed up first as a metric behaving oddly. A
+per-episode reward number would not have caught them.
+
+## The design system
+
+The monitor is where the **noeira** design system originated, and this
+documentation site mirrors it. If you change brand tokens, they live in
+`../mojo-rl-monitor/client/src/index.css` and are hand-mirrored into
+`docs-site/src/styles/noeira.css` — both need updating.
+
+:::note[Separate repository]
+The monitor is not part of mojo-rl and is not required to use it. Without a
+`.env`, `RemoteLogger` simply has nowhere to send; use
+[`CsvLogger`](/tooling/logging/) instead.
+:::
+
+## Offline alternatives
+
+```mojo
+var logger = CsvLogger("/tmp/run_metrics.csv", buffer_size=64)
+```
+
+CSV works everywhere and is the right choice for CI and headless boxes.
+`CompositeLogger` writes to both if you want a local copy of a remote run.
+
+## Next
+
+- [Logging and metrics](/tooling/logging/) — the logger API and what to watch
+- [Checkpoints](/concepts/checkpoints/) — persisting the run

@@ -15,7 +15,7 @@ helper user).
 
 from std.memory import alloc
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from layout import Layout, LayoutTensor
 

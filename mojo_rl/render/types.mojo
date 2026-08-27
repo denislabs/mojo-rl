@@ -3,22 +3,22 @@
 Simple value types with no SDL library dependency.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 
 struct SDLHandle(ImplicitlyCopyable, Movable):
     """Generic opaque handle for SDL objects."""
 
-    var ptr: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+    var ptr: Optional[Pointer[UInt8, MutUntrackedOrigin]]
 
     def __init__(out self):
         self.ptr = None
 
-    def __init__[o: Origin](out self, ptr: UnsafePointer[UInt8, o]):
-        self.ptr = rebind[UnsafePointer[UInt8, MutUntrackedOrigin]](ptr)
+    def __init__[o: Origin](out self, ptr: Pointer[UInt8, o]):
+        self.ptr = rebind[Pointer[UInt8, MutUntrackedOrigin]](ptr)
 
     def __init__(
-        out self, ptr: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+        out self, ptr: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     ):
         self.ptr = ptr
 

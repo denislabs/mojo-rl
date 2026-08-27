@@ -28,7 +28,7 @@ Reference: gymnasium/envs/box2d/car_racing.py
 from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 from std.memory import alloc
@@ -166,7 +166,7 @@ struct CarRacing[DTYPE: DType](
     var cached_state: CarRacingState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -322,7 +322,7 @@ struct CarRacing[DTYPE: DType](
         self._update_cached_state()
         return (self.cached_state, Scalar[Self.dtype](step_reward), self.done)
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         """Get current state."""
         return self.cached_state
 
@@ -670,7 +670,7 @@ struct CarRacing[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -681,7 +681,7 @@ struct CarRacing[DTYPE: DType](
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -697,7 +697,7 @@ struct CarRacing[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -807,7 +807,7 @@ struct CarRacing[DTYPE: DType](
             Layout.row_major(1, Self.STATE_SIZE),
             MutAnyOrigin,
         ](
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            rebind[Pointer[Scalar[dtype], MutAnyOrigin]](
                 self.state_buffer.unsafe_ptr()
             )
         )
@@ -825,7 +825,7 @@ struct CarRacing[DTYPE: DType](
             Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
         ](
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            rebind[Pointer[Scalar[dtype], MutAnyOrigin]](
                 self.tiles_buffer.unsafe_ptr()
             )
         )
@@ -1076,10 +1076,10 @@ struct CarRacing[DTYPE: DType](
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Perform one environment step with embedded track (GPUContinuousEnv trait).
@@ -1239,10 +1239,10 @@ struct CarRacing[DTYPE: DType](
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only done environments with new random tracks (GPUContinuousEnv trait).

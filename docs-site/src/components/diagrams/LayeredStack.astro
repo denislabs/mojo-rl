@@ -1,0 +1,104 @@
+---
+/**
+ * LayeredStack — the five layers, and which of them are RL-specific.
+ *
+ * The table on the page already lists the layers, so a diagram that only
+ * restated it would be decoration. The claim worth drawing is the one the prose
+ * makes in passing: dependencies point down only, so any lower slice is a
+ * usable library by itself. The colour split carries it — the bottom three
+ * layers know nothing about reinforcement learning and are the reason someone
+ * can take `nn` or `physics3d` without taking an agent.
+ */
+
+const LAYERS = [
+	{
+		name: 'Training drivers',
+		what: 'own the loop — off-policy and on-policy',
+		pkg: 'deep_agents/training/',
+		tone: 'spark',
+	},
+	{
+		name: 'RL agents',
+		what: '40+ algorithms behind one facade shape',
+		pkg: 'agents/ · deep_agents/',
+		tone: 'spark',
+	},
+	{
+		name: 'Deep learning',
+		what: 'Module / Param blocks, autodiff, optimizers',
+		pkg: 'nn/',
+		tone: 'cyan',
+	},
+	{
+		name: 'Physics',
+		what: '2D impulse · 3D generalized coordinates',
+		pkg: 'physics2d/ · physics3d/',
+		tone: 'cyan',
+	},
+	{
+		name: 'Environments & rendering',
+		what: '25+ worlds, SDL3 renderers, video capture',
+		pkg: 'envs/ · render/',
+		tone: 'cyan',
+	},
+];
+
+const ROW_H = 62;
+const ROW_Y = (i: number) => 92 + i * (ROW_H + 8);
+
+/** The standalone bracket spans the three cyan layers. */
+const BRACKET_TOP = ROW_Y(2);
+const BRACKET_BOT = ROW_Y(4) + ROW_H;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 486" role="img"
+		aria-label="The five layers of mojo-rl, from training drivers at the top down to environments and rendering. The bottom three layers — deep learning, physics, and environments and rendering — are general-purpose libraries usable without any reinforcement-learning code; the top two are RL-specific. Dependencies point downward only.">
+		<text x="20" y="30" class="dg-title dg-title--left">Five layers, one compilation unit</text>
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			Generic traits let the compiler specialize the whole pipeline for the target device.
+		</text>
+
+		{/* the standalone bracket */}
+		<path class="dg-edge dg-edge--cyan"
+			d={`M 196 ${BRACKET_TOP} L 184 ${BRACKET_TOP} L 184 ${BRACKET_BOT} L 196 ${BRACKET_BOT}`} />
+		<text x="20" y={(BRACKET_TOP + BRACKET_BOT) / 2 - 4} class="dg-sub dg-sub--left">
+			usable without
+		</text>
+		<text x="20" y={(BRACKET_TOP + BRACKET_BOT) / 2 + 16} class="dg-sub dg-sub--left">
+			any RL code
+		</text>
+
+		{
+			LAYERS.map((layer, i) => (
+				<g>
+					<g class={`dg-node dg-node--${layer.tone}`}>
+						<rect x="210" y={ROW_Y(i)} width="550" height={ROW_H} rx="9" />
+					</g>
+					<text x="230" y={ROW_Y(i) + 26} class="dg-title dg-title--left">
+						{layer.name}
+					</text>
+					<text x="230" y={ROW_Y(i) + 48} class="dg-sub dg-sub--left">
+						{layer.what}
+					</text>
+					{/* x=580: the longest description ends near 510 and the longest package
+					    string runs ~165 units, so this is the only column that clears both
+					    the text on its left and the box edge at 760. */}
+					<text x="580" y={ROW_Y(i) + 38} class={`dg-label dg-label--${layer.tone}`}>
+						{layer.pkg}
+					</text>
+				</g>
+			))
+		}
+
+		{/* Clear of the last box, which ends at 434. */}
+		<text x="20" y="462" class="dg-sub dg-sub--left">
+			Dependencies point down only — nothing below knows anything about what sits above it.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">RL-specific</span>
+		<span class="diagram__key diagram__key--cyan">general-purpose, usable standalone</span>
+	</figcaption>
+</figure>

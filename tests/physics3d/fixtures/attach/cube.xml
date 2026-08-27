@@ -1,0 +1,18 @@
+<mujoco model="cube">
+  <compiler angle="radian"/>
+  <default>
+    <default class="prop">
+      <geom rgba="0.8 0.2 0.2 1" friction="0.9 0.005 0.0001"/>
+    </default>
+  </default>
+  <asset>
+    <material name="skin" rgba="0.2 0.6 0.9 1"/>
+  </asset>
+  <worldbody>
+    <body name="root" pos="0 0 0.05">
+      <freejoint name="free"/>
+      <geom name="box" class="prop" type="box" size="0.05 0.05 0.05" material="skin"/>
+      <site name="tip" pos="0 0 0.05" size="0.005"/>
+    </body>
+  </worldbody>
+</mujoco>

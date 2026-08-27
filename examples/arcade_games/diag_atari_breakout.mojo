@@ -35,7 +35,7 @@ from mojo_rl.envs.atari.riot import set_action
 from std.memory import alloc
 
 
-def px_on(buf: UnsafePointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
+def px_on(buf: Pointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
     """True if pixel (x,y) is non-background (any color channel lit)."""
     var off = (y * FRAME_WIDTH + x) * 4
     var b = Int(buf[off + 0])
@@ -45,7 +45,7 @@ def px_on(buf: UnsafePointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
     return (r + g + b) > 60
 
 
-def brick_cell(buf: UnsafePointer[UInt8, MutAnyOrigin], col: Int, row: Int) -> Bool:
+def brick_cell(buf: Pointer[UInt8, MutAnyOrigin], col: Int, row: Int) -> Bool:
     """Sample the centre of brick cell (col,row). 18 cols x 6 rows.
 
     Breakout brick field: x ~ [8,152), y ~ [57,93). Each brick ~8px wide, 6px
@@ -64,7 +64,7 @@ def brick_cell(buf: UnsafePointer[UInt8, MutAnyOrigin], col: Int, row: Int) -> B
     return lit >= 6
 
 
-def find_ball_y(buf: UnsafePointer[UInt8, MutAnyOrigin], ball_x: Int) -> Int:
+def find_ball_y(buf: Pointer[UInt8, MutAnyOrigin], ball_x: Int) -> Int:
     """Scan column ball_x below the brick field for the ball; -1 if not found."""
     if ball_x < 0 or ball_x >= FRAME_WIDTH:
         return -1
@@ -74,7 +74,7 @@ def find_ball_y(buf: UnsafePointer[UInt8, MutAnyOrigin], ball_x: Int) -> Int:
     return -1
 
 
-def find_paddle_center(buf: UnsafePointer[UInt8, MutAnyOrigin]) -> Int:
+def find_paddle_center(buf: Pointer[UInt8, MutAnyOrigin]) -> Int:
     """Find the paddle's screen-x center by scanning the bottom band."""
     var best_len = 0
     var best_center = -1
@@ -97,7 +97,7 @@ def find_paddle_center(buf: UnsafePointer[UInt8, MutAnyOrigin]) -> Int:
     return best_center
 
 
-def dump_ascii(buf: UnsafePointer[UInt8, MutAnyOrigin], label: String):
+def dump_ascii(buf: Pointer[UInt8, MutAnyOrigin], label: String):
     """Coarse ASCII dump of the whole frame (every 2px x, 4px y)."""
     print("--- ASCII frame: " + label + " ---")
     for y in range(0, FRAME_HEIGHT, 4):
@@ -116,7 +116,15 @@ def main() raises:
     )
     env.reset()
 
-    var buf = alloc[UInt8](FRAME_WIDTH * FRAME_HEIGHT * 4)
+    # `.as_unsafe_any_origin()` at the SOURCE, not at each call: `alloc`
+    # hands back `MutUntrackedOrigin`, and every helper below (and
+    # `run_frame_video`) wants an Any origin. Converting once here is one
+    # edit instead of one per call site.
+    var buf = (
+        alloc[UInt8]({count = FRAME_WIDTH * FRAME_HEIGHT * 4})
+        .unsafe_leak()
+        .as_unsafe_any_origin()
+    )
 
     comptime COLS = 18
     comptime ROWS = 6
@@ -148,7 +156,10 @@ def main() raises:
         var served = False
         for _ in range(120):
             set_action(env.state, pa)
-            run_frame_video(env.state, env.rom, env.rom_size, buf)
+            run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
             if Int(env.state.enabl) != 0 or Int(env.state.enabl_old) != 0:
                 served = True
         print(
@@ -219,7 +230,10 @@ def main() raises:
             paddle_target = 255
         env.state.paddle_pos = UInt8(paddle_target)
 
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
         step += 1
 
         if step == 60 or step == 300 or step == 1200:

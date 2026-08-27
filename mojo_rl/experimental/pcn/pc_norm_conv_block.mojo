@@ -26,7 +26,7 @@ new. CPU; GPU deferred (raise-stubs) — the CIFAR experiment runs on CPU.
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sqrt
 
 

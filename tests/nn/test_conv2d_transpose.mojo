@@ -17,7 +17,7 @@ GPU gate :  pixi run -e apple mojo run -I . tests/nn/test_conv2d_transpose.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC

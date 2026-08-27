@@ -152,7 +152,7 @@ def get_date_time_locale_preferences(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDateTimeLocalePreferences.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetDateTimeLocalePreferences",
         def(
@@ -178,7 +178,7 @@ def get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCurrentTime.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetCurrentTime",
         def(ticks: Ptr[Int64, MutAnyOrigin]) thin -> Bool,
@@ -207,7 +207,7 @@ def time_to_date_time(
     Docs: https://wiki.libsdl.org/SDL3/SDL_TimeToDateTime.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_TimeToDateTime",
         def(
@@ -237,7 +237,7 @@ def date_time_to_time(
     Docs: https://wiki.libsdl.org/SDL3/SDL_DateTimeToTime.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_DateTimeToTime",
         def(

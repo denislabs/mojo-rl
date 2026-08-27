@@ -565,7 +565,7 @@ def reload_gamepad_mappings() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReloadGamepadMappings.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_ReloadGamepadMappings", def() thin -> Bool
     ]()()
     if not ret:
@@ -666,7 +666,7 @@ def set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadMapping.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetGamepadMapping",
         def(
@@ -1211,7 +1211,7 @@ def set_gamepad_player_index(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadPlayerIndex.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetGamepadPlayerIndex",
         def(gamepad: Ptr[Gamepad, MutAnyOrigin], player_index: c_int) thin -> Bool,
@@ -1914,7 +1914,7 @@ def get_gamepad_touchpad_finger(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadTouchpadFinger.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetGamepadTouchpadFinger",
         def(
@@ -1970,7 +1970,7 @@ def set_gamepad_sensor_enabled(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadSensorEnabled.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetGamepadSensorEnabled",
         def(
@@ -2051,7 +2051,7 @@ def get_gamepad_sensor_data(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadSensorData.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetGamepadSensorData",
         def(
@@ -2094,7 +2094,7 @@ def rumble_gamepad(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RumbleGamepad.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RumbleGamepad",
         def(
@@ -2141,7 +2141,7 @@ def rumble_gamepad_triggers(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RumbleGamepadTriggers.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RumbleGamepadTriggers",
         def(
@@ -2182,7 +2182,7 @@ def set_gamepad_led(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadLED.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetGamepadLED",
         def(
@@ -2215,7 +2215,7 @@ def send_gamepad_effect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SendGamepadEffect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SendGamepadEffect",
         def(

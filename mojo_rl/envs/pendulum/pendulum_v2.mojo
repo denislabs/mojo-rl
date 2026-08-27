@@ -21,7 +21,7 @@ Episode never terminates naturally (always runs for max_steps=200).
 from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.memory import alloc
 
@@ -51,6 +51,7 @@ from .constants import PConstants, PendulumLayout
 
 # Import global GPU constants
 from mojo_rl.physics2d import dtype, TPB
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -142,7 +143,7 @@ struct PendulumV2[DTYPE: DType](
     var rng_counter: UInt64
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -262,10 +263,10 @@ struct PendulumV2[DTYPE: DType](
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
@@ -419,10 +420,10 @@ struct PendulumV2[DTYPE: DType](
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only done environments (GPUContinuousEnv trait).
@@ -924,7 +925,7 @@ struct PendulumV2[DTYPE: DType](
         var result = self._step_with_torque(torque)
         return (self.get_state(), result[1], result[2])
 
-    def get_state(self) -> PendulumV2State[Self.dtype]:
+    def get_state(mut self) -> PendulumV2State[Self.dtype]:
         """Return current observation state."""
         return PendulumV2State[Self.dtype].from_theta(
             self.theta, self.theta_dot
@@ -1128,10 +1129,10 @@ struct PendulumV2[DTYPE: DType](
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
         info_lines.append(
-            "Angle: " + String(theta_f64 * 180.0 / pi)[byte=:6] + " deg"
+            "Angle: " + fit(String(theta_f64 * 180.0 / pi), 6) + " deg"
         )
-        info_lines.append("Vel: " + String(theta_dot_f64)[byte=:6])
-        info_lines.append("Torque: " + String(last_torque_f64)[byte=:5])
+        info_lines.append("Vel: " + fit(String(theta_dot_f64), 6))
+        info_lines.append("Torque: " + fit(String(last_torque_f64), 5))
         renderer.draw_info_box(info_lines)
 
         # Update display
@@ -1141,7 +1142,7 @@ struct PendulumV2[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1223,7 +1224,7 @@ struct PendulumV2[DTYPE: DType](
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -1239,7 +1240,7 @@ struct PendulumV2[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:

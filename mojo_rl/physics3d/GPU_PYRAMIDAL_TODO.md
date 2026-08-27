@@ -84,3 +84,110 @@ All 3/6 CPU vs GPU test failures were caused by Bug 4 (incorrect GPU `body_invwe
 - `test_pyramidal_cpu_vs_gpu.mojo` — PYRAMIDAL CPU vs GPU (3/6 pass, matches ELLIPTIC)
 - `test_pyramidal_vs_mujoco.mojo` — PYRAMIDAL CPU vs MuJoCo (4/4 pass)
 - `test_full_step_contact_cpu_vs_gpu.mojo` — ELLIPTIC CPU vs GPU (3/6 pass, same failures)
+
+---
+
+## 2026-07-31 — blocked kernel aligned with the per-env pyramidal path
+
+`_newton_blocked_fields_kernel` (the NVIDIA + PYRAMIDAL production path, one
+env per block, cooperative in shared memory) had drifted from
+`_newton_solve_env`. It built `ME = NE*MC + MAX_LIM` — contact edges and joint
+limits only — and classified every edge as ONE-SIDED, including
+`if force_sh[e] > 0` for the Hessian.
+
+Two row types were therefore missing on NVIDIA:
+
+* **dry-friction rows** (`mjCNSTR_FRICTION_DOF`) — added to the per-env path by
+  `04a7c508` and never mirrored here.
+* **tendon-limit rows** (`mjCNSTR_LIMIT_TENDON`) — added with the ball_in_cup
+  port.
+
+Aligned: `ME` now includes `MAX_FRIC + MAX_TLIM`; shared `kind_e_sh`, `R_e_sh`,
+`floss_e_sh`, `state_e_sh`; all six one-sided sites (initial force, Hessian,
+p0 derivatives, line-search reference cost, trial cost, accepted cost) go
+through `scalar_row_state` / `scalar_row_force` / `scalar_row_cost`. The
+host-side workaround that routed limited-tendon models AWAY from this kernel
+was deleted — the path is correct now rather than avoided.
+
+### How to test it
+
+```bash
+# The dedicated blocked-path tendon gate. Runs on Apple too (float32), but the
+# NVIDIA run is the one that matters — it is the production configuration.
+pixi run -e nvidia mojo run -I . tests/physics3d/test_newton_blocked_tendon_fields.mojo
+
+# Sibling gate: the pre-existing blocked kernel golden (walker2d, no tendons).
+# Proves the row-state refactor did not disturb one-sided rows.
+pixi run -e nvidia mojo run -I . tests/physics3d/test_newton_blocked_fields.mojo
+
+# The per-env pyramidal path, for the cross-check the two tests compare against.
+pixi run -e nvidia mojo run -I . tests/physics3d/test_newton_solve_fields.mojo
+
+# End-to-end model gate (per-env path; CPU, so NVIDIA adds nothing here).
+pixi run mojo run -I . tests/dm_control/test_ball_in_cup_vs_dm_control.mojo
+```
+
+### Status of verification
+
+| what | verified where |
+|---|---|
+| cooperative GPU carrying TENDON rows | ✅ Apple/Metal, `test_newton_blocked_tendon_fields`, rel err **0.0** |
+| blocked vs per-env agreement on tendon rows | ✅ same test, rel err **0.0** |
+| one-sided rows unchanged by the refactor | ✅ `test_newton_blocked_fields` golden unchanged |
+| tendon-row physics vs MuJoCo | ✅ 8.9e-16 (via `euler.mojo` routed at `solve_newton_blocked`) |
+
+### STILL OPEN
+
+Item 1 needs an NVIDIA box. Item 2 does NOT — it was mis-scoped as
+NVIDIA-only when first written. `solve_newton_blocked` runs on Metal at
+float32 (that is exactly how `test_newton_blocked_tendon_fields` gates the
+tendon rows), so the friction rows can be gated on Apple too, given a model
+that expresses them.
+
+1. **[NVIDIA] Shared-memory headroom on a large model.** `ME` drives
+   `Je_sh = ME * V_SIZE`, the dominant threadgroup term. Growth is ~10-13%
+   (dm_control humanoid `ME` 170 -> 201). Overflow is a LAUNCH FAILURE, which
+   is loud, not a wrong answer — but it would take humanoid off this kernel.
+   Run any humanoid GPU gate under `-e nvidia` and watch for a launch error.
+2. **[Apple is fine] Dry-friction rows are UNEXERCISED by any model.** Only `finger` sets
+   `frictionloss` and finger is ELLIPTIC, so it never reaches this kernel. The
+   friction rows here are written but ungated — the same "the gate cannot
+   express the defect" situation that has produced several silent bugs in this
+   engine. Closing this needs a purpose-built PYRAMIDAL model with
+   `frictionloss` (a two-body slider with friction and a ground contact is
+   enough); until then treat those rows as unverified.
+
+---
+
+## OPEN (unrelated to the solver): box-vs-plane contact count
+
+Found 2026-07-31 while building `tests/physics3d/test_friction_dof_rows_vs_mujoco.mojo`.
+
+For a box resting on a plane, **MuJoCo emits FOUR contacts** — one per bottom
+corner:
+
+```
+ncon = 4
+  [0] dist=-0.004 pos=(-0.05,-0.05,-0.002)
+  [1] dist=-0.004 pos=(+0.05,-0.05,-0.002)
+  [2] dist=-0.004 pos=(-0.05,+0.05,-0.002)
+  [3] dist=-0.004 pos=(+0.05,+0.05,-0.002)
+```
+
+Our narrow phase emitted **one** in the same pose. A single point cannot
+reproduce a four-corner pressure distribution, and a resting box diverges from
+MuJoCo by ~0.023 per step (worst |d(state)|, resynced) while the same rollout
+in flight is exact at 4e-19.
+
+**It is NOT a friction or solver bug** — the null test settles that: with
+`frictionloss="0"`, so no friction row exists at all, the contact-phase
+residual is 0.02337063116882 against 0.02337063116880 with friction. Identical
+to 13 digits.
+
+Sphere-vs-plane is exact (8.9e-16 after the `body_simple == 2` invweight fix),
+which is why the friction gate uses a sphere.
+
+Not chased because it is orthogonal to the tendon/friction work and no ported
+model rests a box flat on a plane (cartpole's cart has contacts disabled). Worth
+picking up before any domain that does — start by diffing `ncon` and contact
+positions for box-plane in `collision/collision_primitives.mojo`.

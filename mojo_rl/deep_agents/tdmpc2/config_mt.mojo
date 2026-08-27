@@ -9,7 +9,7 @@ config surface; the single-task `config.mojo` is untouched.
     ](ctx=ctx, lr=..., bce_coef=...)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 
@@ -29,6 +29,12 @@ def TDMPC2MultiTask[
     VMAX: Int = 10,
     H: Int = 3,
     QP: Float64 = 0.0,
+    # MPPI planning budget — read only by `select_action_mpc` / the
+    # `USE_MPC=True` drivers. Reference TD-MPC2 is 512/24/64/6.
+    NUM_SAMPLES: Int = 512,
+    NUM_PI_TRAJS: Int = 24,
+    NUM_ELITES: Int = 64,
+    NUM_ITERS: Int = 8 if MAX_ACT >= 20 else 6,
 ](
     ctx: Optional[DeviceContext] = None,
     lr: Scalar[DT] = Scalar[DT](3e-4),
@@ -41,15 +47,18 @@ def TDMPC2MultiTask[
     bce_coef: Scalar[DT] = Scalar[DT](0.0),
 ) raises -> TDMPC2MultiTaskAgent[
     target, MAX_OBS, ENC, MAX_ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
-    NUM_TASKS, TASK_EMB, QP,
+    NUM_TASKS, TASK_EMB, QP, NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS,
 ]:
     """Multi-task TD-MPC2: one task-conditioned world model + Q-ensemble over a
     set of envs (obs padded to MAX_OBS, actions to MAX_ACT, a learned per-task
-    embedding concatenated into every net). Acting is MPC-off. Dims default to
-    the reference config.yaml; scalars are overridable."""
+    embedding concatenated into every net). Acting is MPC-off by default;
+    `select_action_mpc` (and the `USE_MPC=True` drivers) plan with the
+    task-conditioned MPPI callback on the GPU target. Dims default to the
+    reference config.yaml; scalars are overridable."""
     return TDMPC2MultiTaskAgent[
         target, MAX_OBS, ENC, MAX_ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H,
-        CAP, NUM_TASKS, TASK_EMB, QP,
+        CAP, NUM_TASKS, TASK_EMB, QP, NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES,
+        NUM_ITERS,
     ].make(
         lr=lr, gamma=gamma, tau=tau, action_scale=action_scale,
         learning_starts=learning_starts, enc_lr_scale=enc_lr_scale,

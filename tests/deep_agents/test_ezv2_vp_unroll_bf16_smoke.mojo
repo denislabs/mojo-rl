@@ -17,7 +17,7 @@ Run (Apple, compile+finite smoke): pixi run -e apple mojo run -I . tests/deep_ag
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -111,17 +111,17 @@ def main() raises:
     value_prefix_from_rewards[K, HORIZON](reward_tgt, B)
 
     var cmask = List[Scalar[DT]](length=K * B, fill=1)
-    var cmask_ptr = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var cmask_ptr = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
         cmask.unsafe_ptr().as_unsafe_any_origin())
     var isw = List[Scalar[DT]](length=B, fill=1)
     var prio = List[Scalar[DT]](length=B, fill=0)
-    var isw_ptr = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var isw_ptr = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
         isw.unsafe_ptr().as_unsafe_any_origin())
-    var prio_ptr = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var prio_ptr = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
         prio.unsafe_ptr().as_unsafe_any_origin())
     var d_obs_ext = ctx.enqueue_create_buffer[DT]((K + 1) * B * OBS)
     ctx.enqueue_copy(d_obs_ext, obs_seq.unsafe_ptr())
-    var obsdev_ptr = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var obsdev_ptr = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
         d_obs_ext.unsafe_ptr().as_unsafe_any_origin())
 
     var first = Scalar[DT](0.0)

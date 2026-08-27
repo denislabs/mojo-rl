@@ -24,7 +24,7 @@ Run: pixi run -e apple  mojo run -I . tests/atari/diag_pong_wm_overfit.mojo
 
 from std.memory import alloc
 from std.random import seed, random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp

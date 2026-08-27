@@ -47,7 +47,7 @@ SAC's `min(Q1, Q2)` but the actor loss still averages over the online
 critics (the algorithmic difference).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -90,7 +90,7 @@ comptime REDQCritic[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait REDQConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a REDQ-family algorithm. Conformers
     are zero-field comptime tags — never instantiated at runtime; only
     their comptime members are read."""

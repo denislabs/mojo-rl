@@ -30,7 +30,7 @@ Profiling knobs (flip and re-profile to isolate cost):
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
@@ -42,6 +42,7 @@ from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
+from mojo_rl.core.fmt import fit
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
@@ -128,7 +129,7 @@ def main() raises:
 
         var elapsed = Float64(perf_counter_ns() - start) / 1e9
         print()
-        print("Total training wall-clock:", String(elapsed)[byte=:8], "s")
+        print("Total training wall-clock:", fit(String(elapsed), 8), "s")
         print("mean ep return (last 100):", agent.mean_return())
         print("episodes:", agent.ep_count())
         print("=== Done ===")

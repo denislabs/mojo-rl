@@ -9,8 +9,12 @@ the collect → record → train_step loop plus warmup, periodic deterministic e
 Built for the NVIDIA run (`pixi run -e nvidia`): on CUDA the GPU path is fast
 (low per-launch overhead + grouped multi-tensor Adam + big-matmul-dominated),
 whereas on Apple/Metal TD-MPC2 is kernel-launch-bound and CPU is faster (see
-tests/deep_agents/test_tdmpc2_perf.mojo). TD-MPC2 acts single-env (the MPPI
-planner + world-model BPTT are per-env), so there is no batched driver.
+tests/deep_agents/test_tdmpc2_perf.mojo).
+
+This script uses the SINGLE-env driver. `agent.train_batched[E: BatchedEnv,
+N_ENVS]` also exists now (added 2026-08-11): the MPPI planner has always been
+N_ENVS-batched, and the world-model update never depended on how the data was
+collected — see `examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo`.
 
 Acting mode (comptime `USE_MPC`):
   * False → `a = π(encode(obs))` (MPC-off, fast).
@@ -34,7 +38,7 @@ Run:
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
@@ -97,9 +101,9 @@ def main() raises:
     var env = Env()
     var eval_env = Env()
     # `.as_unsafe_any_origin()` — the facade takes
-    # Optional[UnsafePointer[EE, MutAnyOrigin]]; a tracked-origin pointer
+    # Optional[Pointer[EE, MutAnyOrigin]]; a tracked-origin pointer
     # doesn't convert (same idiom as logger_ptr below).
-    var eval_env_ptr = UnsafePointer(to=eval_env).as_unsafe_any_origin()
+    var eval_env_ptr = Pointer(to=eval_env).as_unsafe_any_origin()
 
     # Build through the Design-F preset (config.mojo): reads like a constructor,
     # applies the reference-tuned defaults (gamma 0.99 / tau 0.01 /
@@ -123,7 +127,7 @@ def main() raises:
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", "HalfCheetah")
     logger.set_config("mpc", String("1") if USE_MPC else String("0"))
-    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+    var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
     if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming to dashboard each", DIAG_EVERY, "steps")
     else:

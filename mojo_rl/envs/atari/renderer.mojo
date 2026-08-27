@@ -113,7 +113,7 @@ struct AtariRenderer(Movable):
     var texture: Optional[Ptr[Texture, MutUntrackedOrigin]]
 
     # Pixel buffer (BGRA, 160×210)
-    var pixel_buf: UnsafePointer[UInt8, MutUntrackedOrigin]
+    var pixel_buf: Pointer[UInt8, MutUntrackedOrigin]
 
     # Display settings
     var screen_width: Int
@@ -149,7 +149,9 @@ struct AtariRenderer(Movable):
         self.window = None
         self.sdl_renderer = None
         self.texture = None
-        self.pixel_buf = untracked(alloc[UInt8](FRAME_BUF_SIZE))
+        self.pixel_buf = untracked(
+            alloc[UInt8]({count = FRAME_BUF_SIZE}).unsafe_leak()
+        )
 
         self.screen_width = width
         self.screen_height = height
@@ -195,10 +197,10 @@ struct AtariRenderer(Movable):
         self.recorder = move.recorder^
         self.recording_counter = move.recording_counter
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.initialized:
             self.close()
-        self.pixel_buf.free()
+        self.pixel_buf.unsafe_free()
 
     def init_display(mut self) -> Bool:
         """Initialize SDL3 window, renderer, and streaming texture."""
@@ -378,7 +380,7 @@ struct AtariRenderer(Movable):
             else:
                 self.current_action = ACTION_NOOP
 
-    def get_pixel_buffer(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def get_pixel_buffer(self) -> Pointer[UInt8, MutAnyOrigin]:
         """Get the pixel buffer pointer for external rendering.
 
         Use with run_frame_video() which fills the buffer

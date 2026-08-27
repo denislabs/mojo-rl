@@ -9,6 +9,7 @@ Run with:
 
 from mojo_rl.envs import AcrobotEnv
 from mojo_rl.agents import QLearningAgent
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -47,7 +48,7 @@ def main() raises:
 
     var eval_reward = agent.evaluate(env, num_episodes=10)
     print()
-    print("Eval avg reward:", String(eval_reward)[byte=:8])
+    print("Eval avg reward:", fit(String(eval_reward), 8))
     print()
 
     # ==========================================================================
@@ -90,7 +91,7 @@ def main() raises:
             "| Steps:",
             steps,
             "| Reward:",
-            String(episode_reward)[byte=:10],
+            fit(String(episode_reward), 10),
         )
 
     env.stop_recording()

@@ -1,0 +1,127 @@
+---
+title: Validating the physics
+description: How the engines are checked against live MuJoCo, and what the reference implementations in the repo are for.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+A physics engine that is *nearly* right is worse than one that is obviously
+wrong, because the failure shows up as an agent that learns something slightly
+different. So `physics3d` is checked against **live MuJoCo** rather than against
+recorded fixtures.
+
+## The approach
+
+Tests build the same model in both engines, step both from an identical state,
+and compare. Because `mujoco` is a pixi dependency, the reference runs in the
+same process — the tests call `mj_step` directly.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_humanoid_fk_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_hopper_fk_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_ant_fk_vs_mujoco.mojo
+```
+
+Twelve of the ~54 physics3d tests compare against MuJoCo directly. The rest
+check internal invariants: bit-exactness between code paths, solver convergence,
+contact detection, batched-versus-single-environment parity.
+
+## What is compared
+
+| Test family | Checks |
+|---|---|
+| `*_fk_vs_mujoco` | forward kinematics — body positions and orientations |
+| `test_euler_fields_vs_mujoco` | a full integration step |
+| `test_fluid_fields_vs_mujoco` | Swimmer's viscous forces |
+| `test_inertiafromgeom_vs_mujoco` | derived inertia from geometry |
+| `test_humanoid_limits_fields_vs_mujoco` | joint limit constraints |
+| `test_env_fields_mujoco_roundtrip` | model build → simulate → compare |
+
+Forward kinematics is checked first and separately, because everything else
+depends on it. If body frames are wrong, every downstream comparison is
+meaningless.
+
+## Reference sources in the repo
+
+```
+references/
+├── mujoco-3.3.6/     matches the pixi-pinned runtime
+├── mujoco-main/      MuJoCo 3.5.0, latest
+├── Gymnasium-main/   environment dynamics reference
+├── dm_control-main/  DeepMind Control Suite
+└── mujoco_warp-main/ MuJoCo Warp
+```
+
+:::tip[Compare against 3.3.6 first]
+When debugging a MuJoCo mismatch, read `references/mujoco-3.3.6/` — it matches
+the version pixi installs, so it is what the tests actually run against.
+`mujoco-main` is for checking what changed upstream.
+:::
+
+These are read-only reference material, not dependencies.
+
+## Test tiers
+
+```bash
+pixi run test-smoke              # fast curated CPU gates — what CI runs
+pixi run test-cpu                # every non-GPU test; hours
+pixi run -e apple  test-gpu      # GPU tests on Metal
+pixi run -e nvidia test-gpu      # GPU tests on CUDA
+```
+
+`test-smoke` is self-contained: no `references/`, no ROMs, no GPU.
+
+:::caution[Some tests need MuJoCo, and some need CUDA]
+The `*_vs_mujoco` tests require `mujoco` in the active pixi environment.
+
+More importantly, a class of GPU behaviour is **only testable on NVIDIA**:
+CUDA-graph capture of the batched environment is a no-op on non-NVIDIA targets,
+so an Apple run proves nothing about it. Bit-exactness gates that pass on Metal
+should be re-run on CUDA before being trusted — different JIT, different
+floating-point corners.
+:::
+
+## Validating environments, not just physics
+
+The environments carry their own comparison path: the
+[Gymnasium wrappers](/environments/gymnasium/) run the Python original in the
+same process, so a native environment and its reference can be stepped side by
+side.
+
+The [Atari 2600 emulator](/environments/atari/) plays the same role for the
+[native arcade engines](/environments/arcade/) — the emulator runs original
+ROMs, so the reimplementations are checked against real hardware behaviour
+rather than against a plausible-looking training curve.
+
+## Where the engines deliberately differ
+
+Not every divergence is a bug. Documented ones:
+
+| Item | Difference |
+|---|---|
+| Humanoid observation | 45 dimensions, omitting contact forces and inertia (Gymnasium: 348–376) |
+| HalfCheetah angle penalty | `0.0`, matching dm_control, not the earlier `0.5` |
+| CarRacing friction | slip-based tire model, harder than Gymnasium's |
+| Sawyer contacts | elliptic cone; carries known drift from Metaworld |
+
+## Debugging a mismatch
+
+A workable order, learned the hard way:
+
+1. **Forward kinematics first.** If body frames differ, stop there.
+2. **Check the model build** — inertia, total mass, mesh hulls — before suspecting the solver.
+3. **Compare against 3.3.6**, not `main`.
+4. **Isolate the integrator.** Step once with contacts disabled.
+5. **Only then the solver.** Contact solving is the most likely place for a legitimate difference, since cone choice and iteration count both matter.
+
+For gradient-level debugging elsewhere in the stack, finite differences need
+`eps ≈ 1e-2` on deep chains, and must never run on TF32.
+
+## Next
+
+- [3D physics](/physics/physics3d/) — what is being validated
+- [2D physics](/physics/physics2d/) — the batched engine
+- [3D locomotion](/environments/3d-locomotion/) — the environments built on it

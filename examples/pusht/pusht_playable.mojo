@@ -65,8 +65,8 @@ def main() raises:
 
         # Mouse → world target
         _ = get_mouse_state(
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
         var wxy = env.screen_to_world(
             Int(mouse_x_ptr[]), Int(mouse_y_ptr[])

@@ -19,7 +19,7 @@ Requires roms/pong.bin.
 from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.atari_state import AtariState
@@ -36,14 +36,19 @@ from mojo_rl.envs.atari.riot import set_action
 # likely scaling wall (narrow the counters before pushing N_ENVS high).
 # ---------------------------------------------------------------------------
 def atari_frames_kernel(
-    states: UnsafePointer[AtariState, MutAnyOrigin],
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
-    rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
-    actions: UnsafePointer[UInt8, MutAnyOrigin],
-    n_envs: Int,
-    n_frames: Int,
+    states: Pointer[AtariState, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
+    rom_size_arg: Int64,
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
+    actions: Pointer[UInt8, MutAnyOrigin],
+    n_envs_arg: Int64,
+    n_frames_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var rom_size = Int(rom_size_arg)
+    var n_envs = Int(n_envs_arg)
+    var n_frames = Int(n_frames_arg)
     var i = Int(global_idx.x)
     if i < n_envs:
         var st = states[i].copy()
@@ -67,11 +72,11 @@ def atari_frames_kernel(
 # ---------------------------------------------------------------------------
 def run_frames_gpu(
     ctx: DeviceContext,
-    states: UnsafePointer[AtariState, MutAnyOrigin],
+    states: Pointer[AtariState, MutAnyOrigin],
     n_envs: Int,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    actions: UnsafePointer[UInt8, MutAnyOrigin],
+    actions: Pointer[UInt8, MutAnyOrigin],
     n_frames: Int,
 ) raises:
     comptime SB = size_of[AtariState]()
@@ -119,11 +124,11 @@ def run_frames_gpu(
     ctx.enqueue_function[atari_frames_kernel](
         d_states.unsafe_ptr().bitcast[AtariState](),
         d_rom.unsafe_ptr(),
-        rom_size,
+        Int64(rom_size),
         d_opt.unsafe_ptr().bitcast[OpcodeEntry](),
         d_act.unsafe_ptr(),
-        n_envs,
-        n_frames,
+        Int64(n_envs),
+        Int64(n_frames),
         grid_dim=blocks,
         block_dim=TPB,
     )
@@ -139,7 +144,12 @@ def main() raises:
     comptime assert has_accelerator(), "spike requires a GPU"
 
     var rom = load_rom("roms/pong.bin")
+    # Two names for one buffer, deliberately: `load_rom` owns the
+    # allocation so it hands back `MutUntrackedOrigin`, which is what
+    # `AtariEnvironment` stores in its field; every free helper here and
+    # in `cpu6502` takes an Any origin. Convert once, at the source.
     var rom_ptr = rom.data.value()
+    var rom_any = rom_ptr.as_unsafe_any_origin()
     var rom_size = rom.size
     print(
         "ROM:",
@@ -171,7 +181,7 @@ def main() raises:
         var st = cpu_states[i].copy()
         for _ in range(F):
             set_action(st, actions[i])
-            run_frame(st, rom_ptr, rom_size)
+            run_frame(st, rom_any, rom_size)
         cpu_states[i] = st^
 
     # ---- GPU ----
@@ -181,11 +191,11 @@ def main() raises:
     var ctx = DeviceContext()
     run_frames_gpu(
         ctx,
-        gpu_states.unsafe_ptr(),
+        gpu_states.unsafe_ptr().as_unsafe_any_origin(),
         N,
-        rom_ptr,
+        rom_any,
         rom_size,
-        actions.unsafe_ptr(),
+        actions.unsafe_ptr().as_unsafe_any_origin(),
         F,
     )
 

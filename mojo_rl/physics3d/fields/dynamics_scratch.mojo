@@ -13,21 +13,32 @@ is NOT here — it lands with the stateful solver/integrator structs that own
 it (later P2 slices).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 struct DynamicsScratch[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    # ⚠ NAMED `DIMS`, NOT `D` LIKE EVERY OTHER CONTAINER, because this struct
+    # already has a FIELD called `D` — the LDL diagonal, `[BATCH, NV]` — and
+    # the two collide in the struct's own scope ("invalid redefinition of
+    # 'D'"). The parameter is passed POSITIONALLY at all 79 call sites, so its
+    # name is invisible outside this file; `scratch.D` is read across the
+    # whole LDL and solver path and renaming THAT would be the wide change.
+    DIMS: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """Integrator-temps scratch: one owned tensor per array (12 tensors:
     the `integrator_workspace_size` inventory + m_inv for constraint
     solving)."""
+
+    # Body unchanged — see `Rk4Scratch`.
+    comptime NV = Self.DIMS.NV
+    comptime NBODY = Self.DIMS.NBODY
 
     comptime L_CDOF = Layout.row_major(Self.BATCH, Self.NV * 6)
     comptime L_CRB = Layout.row_major(Self.BATCH, Self.NBODY * 10)
@@ -48,20 +59,39 @@ struct DynamicsScratch[
     var rne_cfrc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var m_inv: TensorImpl[Self.DTYPE]  # [BATCH, NV*NV] (constraint solving)
 
+    # The provider as a VALUE (3a). ⚠ `Self.DIMS`, not `Self.D` — this
+    # struct's `D` is the LDL DIAGONAL FIELD (see the parameter's own
+    # comment above). See the same field on `Data`; six
+    # dispatchers (`ldl_*`, `lu_*`, `compute_m_inv*`) take this container and
+    # nothing else, so this is where their runtime layouts get their extents.
+    var dims: Self.DIMS
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.DIMS.comptime_value())
+
+    def __init__(out self, dims: Self.DIMS) raises:
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
+        self.dims = dims
         comptime B = Self.BATCH
-        self.cdof = TensorImpl[Self.DTYPE].alloc(B * Self.NV * 6)
-        self.crb = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
-        self.M = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
-        self.L = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
-        self.D = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.bias = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.fnet = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qacc_ws = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.qacc_constrained = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
-        self.rne_cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.rne_cfrc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
-        self.m_inv = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
+        self.cdof = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * 6)
+        self.crb = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 10)
+        self.M = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
+        self.L = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
+        self.D = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.bias = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.fnet = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qacc_ws = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.qacc_constrained = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
+        self.rne_cacc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.rne_cfrc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 6)
+        self.m_inv = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv() * dims.get_nv())
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —

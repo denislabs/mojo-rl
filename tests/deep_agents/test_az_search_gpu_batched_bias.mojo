@@ -21,7 +21,7 @@ Run (Apple Metal):
     pixi run -e apple mojo run -I . tests/deep_agents/test_az_search_gpu_batched_bias.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs
 from std.testing import assert_true
 from layout import Layout, LayoutTensor

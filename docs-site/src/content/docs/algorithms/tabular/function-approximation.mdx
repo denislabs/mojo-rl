@@ -1,0 +1,118 @@
+---
+title: Function approximation
+description: Tile coding and linear features — generalizing across continuous states without a neural network.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Once observations are continuous, a table no longer works — no two states repeat.
+Both approaches here stay **linear in the learned parameters**, which makes them
+convergent, fast, and far easier to reason about than a network.
+
+
+<Papers label="Reference">
+	<Paper
+		title="Generalization in Reinforcement Learning: Successful Examples Using Sparse Coarse Coding"
+		authors="Sutton"
+		year="1995"
+		url="https://papers.nips.cc/paper/1109-generalization-in-reinforcement-learning-successful-examples-using-sparse-coarse-coding"
+		venue="NeurIPS 1995"
+		note="Tile coding."
+	/>
+</Papers>
+
+## Tile coding
+
+Overlapping offset grids partition the state space. A state activates one tile
+per tiling, and its value is the sum of the active tiles' weights.
+
+The offsets are the trick: with several tilings, each shifted slightly, nearby
+states share most but not all of their active tiles. That gives generalization
+between neighbours and discrimination between distant states, with no gradient
+descent through a nonlinearity.
+
+| Agent |
+|---|
+| `TiledQLearningAgent` |
+| `TiledSARSAAgent` |
+| `TiledSARSALambdaAgent` |
+
+```mojo
+from mojo_rl.agents import TiledQLearningAgent
+from mojo_rl.core.tile_coding import TileCoding
+```
+
+Factory helpers exist for CartPole, MountainCar and Acrobot, so the tiling
+geometry does not have to be designed from scratch.
+
+Tile coding is the classical answer to
+[MountainCar](/environments/classic-control/) and remains excellent there:
+two dimensions, continuous, and needing exactly the kind of local generalization
+tilings provide.
+
+```bash
+pixi run mojo run -I . examples/mountain_car_tiled.mojo
+pixi run mojo run -I . examples/cartpole/cartpole_tiled.mojo
+```
+
+## Linear features
+
+| Agent | Features |
+|---|---|
+| `LinearQLearningAgent` | polynomial or RBF |
+| `LinearSARSAAgent` | on-policy variant |
+| `LinearSARSALambdaAgent` | with eligibility traces |
+
+```mojo
+from mojo_rl.agents import LinearQLearningAgent
+from mojo_rl.core.linear_fa import PolynomialFeatures, RBFFeatures, LinearWeights
+```
+
+`PolynomialFeatures` expands `[x, y]` into `[x, y, x², xy, y², …]`.
+`RBFFeatures` places Gaussian basis functions at configurable centres, giving
+smooth local responses — conceptually similar to tile coding but continuous
+rather than binary.
+
+```bash
+pixi run mojo run -I . examples/mountain_car_linear.mojo
+pixi run mojo run -I . examples/cartpole/cartpole_linear.mojo
+```
+
+## Writing a feature extractor
+
+`FeatureExtractor` is a trait, so a custom basis plugs into the same agents:
+
+```mojo
+from mojo_rl.core.linear_fa import FeatureExtractor
+```
+
+`LinearWeights` handles dense weight vectors for any extractor.
+
+## When to use which
+
+**Tile coding** — low-dimensional continuous state (2–6 dimensions), where you
+want fast, reliable learning and interpretable behaviour. Memory grows
+exponentially with dimension, which caps its range.
+
+**RBF features** — similar territory, smoother generalization, and you can place
+centres where they matter rather than on a grid.
+
+**Polynomial features** — when you expect the value function to be genuinely
+smooth and low-order. Rarely the best choice, but cheap.
+
+**A neural network** — anything higher-dimensional, or pixels. That is
+[DQN](/algorithms/dqn/) onward.
+
+The honest framing: these methods are not a stepping stone you outgrow. On a
+2D problem, tile coding will beat a small MLP on wall-clock time to a solved
+policy, and you will know why it worked.
+
+## Next
+
+- [Classical policy gradient](/algorithms/tabular/policy-gradient/) — learning the policy directly
+- [TD methods](/algorithms/tabular/td-methods/) — the exact tabular algorithms
+- [Classic control](/environments/classic-control/) — what these are for

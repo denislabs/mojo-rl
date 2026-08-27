@@ -15,7 +15,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_qderiv_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.fields import (
@@ -23,6 +23,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ImplicitScratch,
+    Dims,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -48,6 +49,23 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.nexclude
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTD,
+    nexclude=NEXCL,
+    nmesh_verts=0,
+    npair=Walker2dModel.NPAIR,
+    nact=Walker2dModel.NACT,
+    nten=Walker2dModel.NTEN_F,
+    nkey=Walker2dModel.NKEY,
+]
 comptime BATCH = 1
 
 
@@ -55,10 +73,10 @@ def main() raises:
     print("=== Stage-I qderiv parity: Walker2D NV=", NV, " ===")
     var ctx = DeviceContext()
 
-    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DT, 0](ctx, mf)
+    var mf = Model[DT, MD]()
+    Walker2dModel.init_fields[DT](ctx, mf)
 
-    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, MD, BATCH]()
     # Standing-ish pose + nonzero velocities so Coriolis/centrifugal is active.
     d.qpos.data[1] = 1.25  # rootz
     d.qpos.data[3] = -0.3
@@ -68,24 +86,16 @@ def main() raises:
     for i in range(NV):
         d.qvel.data[i] = Scalar[DT]((i * 5 + 3) % 7 - 3) * Scalar[DT](0.4)
 
-    var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
-    var isc = ImplicitScratch[DT, NV, NBODY, BATCH]()
+    var sc = DynamicsScratch[DT, MD, BATCH]()
+    var isc = ImplicitScratch[DT, MD, BATCH]()
 
     # ── fields CPU pipeline: FK -> subtree_com -> cdof -> qderiv ──────────
-    forward_kinematics[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, None)
-    compute_subtree_com[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, None)
-    compute_cdof[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, sc, None)
+    forward_kinematics["cpu", DT, BATCH=BATCH](d, mf, None)
+    compute_subtree_com["cpu", DT, BATCH=BATCH](d, mf, None)
+    compute_cdof["cpu", DT, BATCH=BATCH](d, mf, sc, None)
     for i in range(NV * NV):
         isc.qderiv.data[i] = 0
-    compute_rne_vel_derivative[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, sc, isc, None)
+    compute_rne_vel_derivative["cpu", DT, BATCH](d, mf, sc, isc, None)
 
     # ── ground-truth-lite: qderiv is non-trivially nonzero (Coriolis active) ─
     # (bit-exact-vs-legacy was validated at Stage I-2, git `a6804ab4`, before
@@ -109,22 +119,14 @@ def main() raises:
     sc.upload_all(ctx)
     isc.upload_all(ctx)
     # Re-run FK/subtree/cdof on GPU so xipos/xquat/cdof live on device.
-    forward_kinematics[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, ctx)
-    compute_subtree_com[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, ctx)
-    compute_cdof[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, sc, ctx)
+    forward_kinematics["gpu", DT, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com["gpu", DT, BATCH=BATCH](d, mf, ctx)
+    compute_cdof["gpu", DT, BATCH=BATCH](d, mf, sc, ctx)
     # zero qderiv on device then compute
     for i in range(NV * NV):
         isc.qderiv.data[i] = 0
     isc.qderiv.upload(ctx)
-    compute_rne_vel_derivative[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
-    ](d, mf, sc, isc, ctx)
+    compute_rne_vel_derivative["gpu", DT, BATCH](d, mf, sc, isc, ctx)
     isc.qderiv.download(ctx)
 
     var worst = Float64(0)

@@ -12,7 +12,7 @@ grad_output and sums their grad-inputs. (Branch vjps must not mutate grad_output
 — true for all real main/skip paths, which end in BN/Conv/Linear, not a gate.)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W

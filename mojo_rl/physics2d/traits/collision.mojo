@@ -11,7 +11,7 @@ from ..constants import (
     CONTACT_DATA_SIZE,
 )
 from layout import LayoutTensor, Layout
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait CollisionSystem(ImplicitlyCopyable):

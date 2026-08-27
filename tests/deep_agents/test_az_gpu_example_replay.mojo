@@ -15,7 +15,7 @@ Run (Apple Metal): pixi run -e apple mojo run -I . \
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

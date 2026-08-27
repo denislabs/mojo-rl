@@ -33,8 +33,8 @@ keeps the bespoke double-softplus soft-clamp NLL grad + per-dim bound Adam.
 
 from std.math import exp as fexp, log as flog, sqrt as fsqrt
 from std.gpu import global_idx, thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -280,7 +280,7 @@ struct DynamicsEnsembleBlock[
     BATCH: Int,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """N-member probabilistic dynamics ensemble.
 
     `DynNet.OUT_DIM` MUST equal `OUT_DIM == 2 * PRED_DIM` where

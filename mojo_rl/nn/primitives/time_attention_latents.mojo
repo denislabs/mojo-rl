@@ -29,7 +29,7 @@ device `Cache` — no `mptr`, no `Cache`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -60,7 +60,7 @@ def _tal_gather_kernel[
     var rem2 = rem // T
     var l = rem2 % L
     var b = rem2 // L
-    dst.ptr[idx] = rebind[Scalar[DT]](src.ptr[((b * T + t) * S + l) * D + d])
+    dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](src.ptr[unsafe_offset=((b * T + t) * S + l) * D + d])
 
 
 # Scatter packed (B·L, T·D) → full (B·T, S·D), zeroing non-latent (s≥L)
@@ -82,11 +82,11 @@ def _tal_scatter_kernel[
     var t = rem2 % T
     var b = rem2 // T
     if s < L:
-        dst.ptr[idx] = rebind[Scalar[DT]](
-            packed.ptr[(b * L + s) * T * D + t * D + d]
+        dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+            packed.ptr[unsafe_offset=(b * L + s) * T * D + t * D + d]
         )
     else:
-        dst.ptr[idx] = Scalar[DT](0.0)
+        dst.ptr[unsafe_offset=idx] = Scalar[DT](0.0)
 
 
 struct TimeAttentionLatents[

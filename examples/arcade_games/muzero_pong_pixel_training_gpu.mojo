@@ -31,9 +31,9 @@ Run:
     pixi run -e nvidia mojo run -I . examples/arcade_games/muzero_pong_pixel_training_gpu.mojo  # training
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core.dotenv import load_dotenv
@@ -41,6 +41,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero import MuZeroCNNConfig, MuZeroBatchedAgent
 from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -261,10 +262,10 @@ def main() raises:
         target_sync_interval=200,  # target-net reanalyze (A/B-validated stabiliser)
         eval_every=10_000,
         eval_episodes=10,  # mean of 10 complete greedy games
-        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+        eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
         diag_every=200,
         report_every=500,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
         # Prioritized Experience Replay (device sum-tree over the strided obs
@@ -285,5 +286,5 @@ def main() raises:
     print("-" * 70)
     print("MuZero Pong Pixel training complete")
     print("  final loss:", loss)
-    print("  training time:", String(elapsed_s)[byte=:8], "seconds")
+    print("  training time:", fit(String(elapsed_s), 8), "seconds")
     print("=" * 70)

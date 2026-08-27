@@ -36,6 +36,7 @@ from mojo_rl.experimental.pcn import (
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
 from mojo_rl.experimental.pcn.pc_norm_conv_block import NormConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime BATCH = 125
 comptime EPOCHS = 6
@@ -183,7 +184,7 @@ def main() raises:
 
     print("\n  test accuracy =", acc, " (", correct, "/",
           N_TEST_BATCHES * BATCH, ")")
-    print("  train time =", String(train_t)[byte=:7], "s")
+    print("  train time =", fit(String(train_t), 7), "s")
     print("  (unnorm 46.5% @4e-4 / diverges @1e-3 ; separate-norm-level ~0.36)")
     print("")
     if acc >= PASS_ACC:

@@ -119,7 +119,7 @@ struct VertexOut {
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
-    float4 params;  // x=shadow_intensity, y=bias
+    float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
 };
 
 float compute_shadow(float3 world_pos,
@@ -143,7 +143,13 @@ float compute_shadow(float3 world_pos,
 
     // 3x3 PCF for soft shadows
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 4096.0;
+    // ⚠ THE REAL MAP SIZE, from `<visual quality shadowsize=>`. This was
+    // hardcoded to 4096 while `quadruped escape` asks for 2048, so every PCF
+    // tap landed half a texel from where it meant to. Zero means "not set" —
+    // fall back rather than divide by it.
+    float smap = shadow.params.z > 0.5 ? shadow.params.z : 4096.0;
+    float texel_size = 1.0 / smap;
+
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -292,7 +298,7 @@ struct VertexOut {
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
-    float4 params;  // x=shadow_intensity, y=bias
+    float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
 };
 
 float compute_shadow_ground(float3 world_pos,
@@ -315,7 +321,13 @@ float compute_shadow_ground(float3 world_pos,
 
     // 3x3 PCF
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 4096.0;
+    // ⚠ THE REAL MAP SIZE, from `<visual quality shadowsize=>`. This was
+    // hardcoded to 4096 while `quadruped escape` asks for 2048, so every PCF
+    // tap landed half a texel from where it meant to. Zero means "not set" —
+    // fall back rather than divide by it.
+    float smap = shadow.params.z > 0.5 ? shadow.params.z : 4096.0;
+    float texel_size = 1.0 / smap;
+
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -412,16 +424,19 @@ fragment float4 ground_fragment(
         }
     }
 
-    // Distance fade for smooth ground edge
+    // Distance fade for a smooth ground edge. This one STAYS: without it the
+    // finite ground quad ends in a hard line against the sky.
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
 
-    // Semi-transparent ground to let reflections show through (rendered underneath)
-    // Textured ground should be more opaque to show the texture clearly
-    float base_alpha = is_textured ? 0.95 : 0.55;
-    float alpha = base_alpha * edge_fade;
-
-    return float4(base_color, alpha);
+    // ⚠ THE GROUND IS OPAQUE. It used to be alpha 0.55 (0.95 textured) so the
+    // reflection pass, drawn UNDERNEATH it, would show through — and what
+    // showed through was not only the reflection. Where no reflected geometry
+    // existed, the remaining 45% was the SKYBOX, so the starfield was visible
+    // THROUGH THE FLOOR. MuJoCo's floor is opaque and its `reflectance` blends
+    // the reflection ON TOP; `render_frame` now does the same, so nothing here
+    // needs to be see-through.
+    return float4(base_color, edge_fade);
 }
 """
 
@@ -576,11 +591,22 @@ fragment float4 reflection_fragment(
     total_ambient = min(total_ambient, 1.0);
     float3 color = in.obj_color.rgb * total_ambient + total_color;
 
-    // Darken and make semi-transparent for reflection effect
-    color *= 0.35;
-    float alpha = 0.35;
+    // ⚠ ALPHA IS THE REFLECTANCE, and it is the ONLY attenuation. The colour
+    // used to be pre-darkened (`color *= 0.35`) as well as blended at 0.35,
+    // which double-counted: MuJoCo's mirror term is
+    // `floor*(1-reflectance) + reflected*reflectance`, one factor, not two.
+    //
+    // 0.2 is dm_control's own number — `<material name="grid" reflectance=".2">`
+    // in `suite/common/materials.xml`, which every suite floor uses. It is a
+    // constant here rather than a uniform because no model we ship differs; a
+    // model that did would need it threaded through SceneUniforms.
+    float alpha = 0.2;
 
-    // Fade out near edges of ground
+    // Fade out near the edges of the ground. ⚠ LOAD-BEARING NOW THAT THIS PASS
+    // RUNS WITH THE DEPTH TEST OFF (see `render_frame` Phase B2): nothing else
+    // stops a reflection from painting onto the sky past the ground's rim. Its
+    // 6→10 fade sits INSIDE the ground's 8→12, so the reflection is always gone
+    // before the floor it is supposed to be lying on is.
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     alpha *= 1.0 - smoothstep(6.0, 10.0, dist);
 
@@ -622,15 +648,66 @@ struct VertexOut {
 struct SkyboxUniforms {
     float4 top_color;     // Gradient top color (rgb + alpha)
     float4 bottom_color;  // Gradient bottom color (rgb + alpha)
+    float4 mark_color;    // Starfield rgb, .w = density (0 disables)
+    float4 cam_right;     // Camera right basis, .w = tan(fovy/2)
+    float4 cam_up;        // Camera up basis,    .w = aspect
+    float4 cam_fwd;       // Camera forward basis
 };
+
+// Cheap 3D value hash. Stars must be a pure function of DIRECTION so they sit
+// still in the world while the camera moves; anything seeded by screen
+// position would slide across the sky and look like a camera bug.
+static inline float sky_hash(float3 p) {
+    p = fract(p * 0.3183099 + float3(0.71, 0.113, 0.419));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
 
 fragment float4 skybox_fragment(
     VertexOut in [[stage_in]],
     constant SkyboxUniforms &sky [[buffer(0)]]
 ) {
-    // Vertical gradient: uv.y=1 is top, uv.y=0 is bottom
-    float t = in.uv.y;
+    // ⚠ uv.y=0 is the TOP of the screen, not the bottom. `skybox_vertex`
+    // writes `uv.y = 1.0 - pos.y` while Metal NDC has y=+1 at the top, so the
+    // two cancel: uv.y runs 0 at the top to 1 at the bottom. This line used to
+    // read `t = in.uv.y` against a comment claiming the opposite, which put
+    // rgb2 at the zenith and rgb1 at the horizon — dm_control's sky
+    // (rgb1=".4 .6 .8", rgb2="0 0 0") came out black overhead and blue at the
+    // horizon, the exact inverse of MuJoCo, where rgb1 is the top.
+    float t = 1.0 - in.uv.y;
     float3 color = mix(sky.bottom_color.rgb, sky.top_color.rgb, t);
+
+    // MuJoCo's `mark="random"`: dots baked into the skybox texture, which over
+    // a dark gradient is a starfield. Rebuild the world-space view ray from
+    // the camera basis, then hash a coarse grid on the unit sphere so each
+    // cell holds at most one star and every star stays put in the world.
+    float density = sky.mark_color.w;
+    if (density > 0.0) {
+        float2 ndc = float2(in.uv.x, 1.0 - in.uv.y) * 2.0 - 1.0;
+        float tan_h = sky.cam_right.w;
+        float aspect = sky.cam_up.w;
+        float3 dir = normalize(
+            sky.cam_fwd.xyz
+            + sky.cam_right.xyz * (ndc.x * tan_h * aspect)
+            + sky.cam_up.xyz * (ndc.y * tan_h)
+        );
+        // 260 cells across the sphere's diameter: fine enough that stars read
+        // as points, coarse enough that neighbouring pixels share a cell and
+        // the dot has a body rather than aliasing to nothing.
+        float3 g = dir * 260.0;
+        float3 cell = floor(g);
+        if (sky_hash(cell) < density) {
+            float3 star = float3(sky_hash(cell + 11.3),
+                                 sky_hash(cell + 27.7),
+                                 sky_hash(cell + 43.1));
+            float d = length((g - cell) - star);
+            // Fade rather than cut, so a star does not pop as it crosses a
+            // pixel boundary.
+            float b = smoothstep(0.42, 0.0, d);
+            float mag = 0.35 + 0.65 * sky_hash(cell + 59.9);
+            color += sky.mark_color.rgb * (b * mag);
+        }
+    }
     return float4(color, 1.0);
 }
 """

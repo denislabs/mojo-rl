@@ -12,7 +12,7 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_classic/test_cpu_gpu_parity.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
 from mojo_rl.envs.craftax_classic.constants import (
@@ -171,7 +171,9 @@ def copy_state_into_gpu_buffer(
 def main() raises:
     print("Craftax-Classic Phase-5 CPU/GPU parity gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
 
     comptime BATCH_SIZE: Int = 1
     var ctx = DeviceContext()

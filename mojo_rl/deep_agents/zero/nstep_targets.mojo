@@ -29,12 +29,12 @@ from .signs import flip_for_perspective
 def compute_nstep_value_targets[
     K: Int, N: Int,
 ](
-    rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dones: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    root_values: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    to_play: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    rewards: Pointer[Scalar[DT], MutAnyOrigin],
+    dones: Pointer[Scalar[DT], MutAnyOrigin],
+    root_values: Pointer[Scalar[DT], MutAnyOrigin],
+    to_play: Pointer[Scalar[DT], MutAnyOrigin],
     gamma: Scalar[DT],
-    mut value_targets: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut value_targets: Pointer[Scalar[DT], MutAnyOrigin],
     last_valid: Int = K + N + 1,
 ):
     """Fill ``value_targets[0..K]`` for one trajectory window.
@@ -56,7 +56,7 @@ def compute_nstep_value_targets[
     naturally-ended episodes.
     """
     for k in range(K + 1):
-        var perspective = Int(to_play[k])
+        var perspective = Int(to_play[unsafe_offset=k])
         var n_return = Scalar[DT](0.0)
         var gamma_pow = Scalar[DT](1.0)
         var hit_terminal = False
@@ -68,16 +68,16 @@ def compute_nstep_value_targets[
                 n_lim = 0
         for i in range(n_lim):
             var step_idx = k + i
-            var r = rewards[step_idx]
+            var r = rewards[unsafe_offset=step_idx]
             # Flip the reward into the perspective player's frame.
             var r_flipped = Scalar[DT](
                 flip_for_perspective(
-                    Float64(r), Int(to_play[step_idx]), perspective
+                    Float64(r), Int(to_play[unsafe_offset=step_idx]), perspective
                 )
             )
             n_return += gamma_pow * r_flipped
             gamma_pow *= gamma
-            if dones[step_idx] > Scalar[DT](0.5):
+            if dones[unsafe_offset=step_idx] > Scalar[DT](0.5):
                 hit_terminal = True
                 break
         # Bootstrap with the MCTS root value n steps out, unless a terminal
@@ -87,21 +87,21 @@ def compute_nstep_value_targets[
             var boot_idx = k + n_lim
             if boot_idx > last_valid:
                 boot_idx = last_valid
-            var boot_v = root_values[boot_idx]
+            var boot_v = root_values[unsafe_offset=boot_idx]
             var boot_flipped = Scalar[DT](
                 flip_for_perspective(
-                    Float64(boot_v), Int(to_play[boot_idx]), perspective
+                    Float64(boot_v), Int(to_play[unsafe_offset=boot_idx]), perspective
                 )
             )
             n_return += gamma_pow * boot_flipped
-        value_targets[k] = n_return
+        value_targets[unsafe_offset=k] = n_return
 
 
 def extract_reward_targets[
     K: Int, N: Int,
 ](
-    rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mut reward_targets: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    rewards: Pointer[Scalar[DT], MutAnyOrigin],
+    mut reward_targets: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """Reward targets for the ``K`` dynamics steps: the raw reward received
     after each unrolled action (``reward_targets[k] = rewards[k]``). MuZero
@@ -110,7 +110,7 @@ def extract_reward_targets[
     two-hot transform is applied downstream at encode time.
     """
     for k in range(K):
-        reward_targets[k] = rewards[k]
+        reward_targets[unsafe_offset=k] = rewards[unsafe_offset=k]
 
 
 def value_prefix_from_rewards[

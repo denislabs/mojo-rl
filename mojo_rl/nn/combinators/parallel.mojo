@@ -21,7 +21,7 @@ kernels are parametrized by `ADT` (defaulting to DT → NoAMP unchanged).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
@@ -53,7 +53,7 @@ def _par_accum_kernel[
 # ── comptime variadic helpers ──────────────────────────────────────────
 def _total_out_dim[*BRANCHES: Module]() -> Int:
     var s = 0
-    comptime for i in range(BRANCHES.size):
+    comptime for i in range(BRANCHES.length):
         s += BRANCHES[i].OUT_DIM
     return s
 
@@ -73,8 +73,11 @@ def _par_write_kernel[
 ](
     slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
     packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
-    off: Int,
+    off_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var off = Int(off_arg)
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
@@ -87,8 +90,11 @@ def _par_read_kernel[
 ](
     packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
     slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
-    off: Int,
+    off_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var off = Int(off_arg)
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
@@ -135,7 +141,7 @@ def _par_split_kernel[
 
 struct Parallel[*BRANCHES: Module](Module):
     comptime ARITY = 1
-    comptime N = Self.BRANCHES.size
+    comptime N = Self.BRANCHES.length
     comptime IN = Self.BRANCHES[0].IN_DIMS[0]
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
@@ -212,7 +218,7 @@ struct Parallel[*BRANCHES: Module](Module):
                 ](
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
                     out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
-                    off,
+                    Int64(off),
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
@@ -257,7 +263,7 @@ struct Parallel[*BRANCHES: Module](Module):
                 ](
                     grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
-                    off,
+                    Int64(off),
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )

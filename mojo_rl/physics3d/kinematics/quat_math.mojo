@@ -11,7 +11,13 @@ Functions:
 - axis_angle_to_quat: Convert axis-angle to quaternion
 """
 
-from std.math import sqrt, sin, cos, acos, atan2
+from std.math import sqrt, sin, cos, acos, atan2, abs
+
+# MuJoCo's `mjMINVAL` (`mjmodel.h`). `mju_normalize4` skips the division when
+# `mju_abs(norm - 1) <= mjMINVAL`; the compiler's `mjuu_normvec` uses `mjEPS`
+# = 1e-14, ten times looser, on the same test. The RUNTIME value is the one
+# these two functions implement.
+comptime _MJMINVAL: Float64 = 1e-15
 
 
 # =============================================================================
@@ -161,6 +167,22 @@ def quat_normalize[
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Normalize a quaternion to unit length.
 
+    ⚠ THE DEGENERATE GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT — the
+    same fix `gpu_quat_normalize` got, one epsilon smaller. This was
+    `1.0 / sqrt(length_sq + 1e-12)`, which returns 0.9999999999995 for an
+    already-unit quaternion, so everything this touched came out 5.00e-13
+    short of unit.
+
+    IT MATTERED MORE THAN THE MAGNITUDE SUGGESTS because of where it sits:
+    all three integrators renormalize the free/ball-joint quaternion in `qpos`
+    through here after every step (`integrator/euler.mojo:278`,
+    `implicit.mojo:190`, `rk4.mojo:133`), and `quat_integrate` below calls it
+    again on the way in. So every free-jointed model carried a root quaternion
+    permanently below unit — and repeated renormalisation does NOT decay to
+    zero, it converges to the fixed point of `q -> q/sqrt(q^2 + 1e-12)`, which
+    is |q| = 0.9999999999995. Every vector rotated by the root quaternion was
+    scaled by 1 - 1e-12 forever.
+
     Args:
         qx: Quaternion x.
         qy: Quaternion y.
@@ -171,7 +193,30 @@ def quat_normalize[
         Normalized unit quaternion.
     """
     var length_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    var inv_length = Scalar[DTYPE](1.0) / sqrt(length_sq + Scalar[DTYPE](1e-12))
+    # ⚠⚠ THE NEAR-UNIT GUARD IS `mju_normalize4`'s, and the reasoning is
+    # written out in full on `gpu_quat_normalize` below — read it there. Short
+    # version: MuJoCo returns an already-unit quaternion UNTOUCHED
+    # (`engine_util_blas.c:258`), and moving one by an ulp made
+    # `_bb_post_filter`'s `==` duplicate removal inert.
+    #
+    # ⚠ THE TWO NORMALISERS MUST CARRY THE SAME RULE. This one runs on the CPU
+    # leg and `gpu_quat_normalize` on the other; a guard added to one only
+    # would make the two legs disagree about every body pose in the model,
+    # which is a worse failure than the one being fixed.
+    var length = sqrt(length_sq)
+    if abs(length - Scalar[DTYPE](1)) <= Scalar[DTYPE](_MJMINVAL):
+        return (qx, qy, qz, qw)
+
+    # Degenerate input keeps the OLD formula bit-for-bit, so this is a pure
+    # precision change. As with the GPU pair, that arm is believed unreachable
+    # — every caller passes a quaternion that is already unit to rounding.
+    var inv_length: Scalar[DTYPE]
+    if length_sq < Scalar[DTYPE](1e-6):
+        inv_length = Scalar[DTYPE](1.0) / sqrt(
+            length_sq + Scalar[DTYPE](1e-12)
+        )
+    else:
+        inv_length = Scalar[DTYPE](1.0) / length
     return (qx * inv_length, qy * inv_length, qz * inv_length, qw * inv_length)
 
 
@@ -267,14 +312,25 @@ def quat_integrate[
     wz: Scalar[DTYPE],
     dt: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
-    """Integrate quaternion with angular velocity.
+    """Integrate quaternion with angular velocity, EXACTLY as MuJoCo does.
 
-    Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * q(t) * omega
-    (RIGHT multiplication) where omega is the quaternion [wx, wy, wz, 0] —
-    i.e. the angular velocity is interpreted in the BODY-LOCAL frame,
-    matching MuJoCo's free/ball-joint qvel convention (mju_quatIntegrate).
-    (An earlier docstring claimed world-frame left-multiplication; the code
-    below has always been the local right-multiplication.)
+    `q(t+dt) = normalize(q(t)) * axisAngle(omega/|omega|, dt*|omega|)` —
+    a RIGHT multiplication, i.e. omega is in the BODY-LOCAL frame, matching
+    MuJoCo's free/ball-joint qvel convention.
+
+    Verbatim `mju_quatIntegrate` (engine_util_spatial.c:241): normalize the
+    axis, scale the angle by dt, build the rotation quaternion, normalize the
+    current quat, right-multiply. The rotation applied is the exact
+    exponential map, NOT a truncated series.
+
+    ⚠ This was a FIRST-ORDER approximation (`q + 0.5*dt*q*omega`, then
+    normalize) until 2026-07-30, which is a different integrator from
+    MuJoCo's for any free- or ball-jointed model. Cost: the root quaternion
+    was the single largest state discrepancy vs MuJoCo at EVERY step of a
+    dm_control humanoid rollout (1.1e-8 after one step, where the 21 hinge
+    DOFs sat at 4e-10), and it compounds. Only free-rooted models were
+    affected, and their gates were loose enough to miss it — the Ant Euler
+    gate budgets 1e-4 on qpos.
 
     Args:
         qx: Current orientation quaternion x.
@@ -289,23 +345,99 @@ def quat_integrate[
     Returns:
         Updated (normalized) quaternion.
     """
-    # Compute qdot = 0.5 * q * omega  (local-frame right multiplication)
-    # where omega = [wx, wy, wz, 0]
-    var half_dt = Scalar[DTYPE](0.5) * dt
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
+    # mju_normalize3 on the angular velocity; below mjMINVAL MuJoCo leaves the
+    # angle at 0, which makes the rotation the identity.
+    var wn = sqrt(wx * wx + wy * wy + wz * wz)
+    var q = quat_normalize(qx, qy, qz, qw)
+    if wn < Scalar[DTYPE](1e-15):
+        return q
 
-    var qdot_x = half_dt * (qw * wx + qy * wz - qz * wy)
-    var qdot_y = half_dt * (qw * wy - qx * wz + qz * wx)
-    var qdot_z = half_dt * (qw * wz + qx * wy - qy * wx)
-    var qdot_w = half_dt * (-qx * wx - qy * wy - qz * wz)
+    var angle = dt * wn
+    var half = Scalar[DTYPE](0.5) * angle
+    var s = Scalar[DTYPE](sin(half)) / wn  # fold the axis normalization in
+    var c = Scalar[DTYPE](cos(half))
 
-    # Integrate
-    var new_qx = qx + qdot_x
-    var new_qy = qy + qdot_y
-    var new_qz = qz + qdot_z
-    var new_qw = qw + qdot_w
+    var rx = wx * s
+    var ry = wy * s
+    var rz = wz * s
 
-    # Normalize
-    return quat_normalize(new_qx, new_qy, new_qz, new_qw)
+    # q * qrot — right multiplication (local frame).
+    return quat_mul(q[0], q[1], q[2], q[3], rx, ry, rz, c)
+
+
+def quat2vel[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    dt: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`mju_quat2Vel` — a rotation quaternion as an angular velocity.
+
+    Verbatim `engine_util_spatial.c:mju_quat2Vel`. The rotation is expressed as
+    `axis * angle / dt`, with the axis normalised out of the vector part and
+    the angle from `2*atan2(|v|, w)`.
+
+    ⚠ DO NOT "SIMPLIFY" THIS INTO `quat_to_axis_angle` ABOVE. That function
+    looks like the same thing and is not: it takes the angle from `acos(w)`
+    rather than `atan2(|v|, w)`, and it has NO `angle > pi` wrap. Both
+    differences change results, and the second changes them by a whole turn.
+
+    ⚠ THE `speed > pi` WRAP IS WHAT MAKES THIS SIGN-INVARIANT, and that
+    property is load-bearing for the IK caller. `q` and `-q` are the same
+    rotation, but `2*atan2(|v|, -w) = 2*pi - 2*atan2(|v|, w)`, so without the
+    wrap a negated quaternion would come back as the rotation the LONG WAY
+    ROUND — same axis flipped, angle `2*pi - a`. With the wrap the two agree
+    exactly. Measured against the runtime rather than argued: over 20000
+    random unit quaternions `max|quat2Vel(q) - quat2Vel(-q)|` is 8.9e-16, and
+    it is exactly 0 at the identity.
+
+    That invariance is why the IK error chain can feed this the site's world
+    quaternion composed directly (`xquat[body] * site_quat`) instead of
+    porting `mju_mat2Quat` to round-trip through `site_xmat` — the round trip
+    can only differ by an overall sign, which this function cannot see.
+
+    Args:
+        qx: Rotation quaternion x.
+        qy: Rotation quaternion y.
+        qz: Rotation quaternion z.
+        qw: Rotation quaternion w.
+        dt: Time to spread the rotation over; the IK caller passes 1.
+
+    Returns:
+        Angular velocity (vx, vy, vz).
+    """
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
+
+    # `mju_normalize3` on the vector part. ⚠ Below mjMINVAL it substitutes the
+    # axis (1,0,0) but STILL RETURNS THE ORIGINAL NORM, so `speed` is computed
+    # from the tiny norm rather than from zero. Reproduced exactly; at the
+    # identity both give 0 anyway, but only because the norm is what it is.
+    var norm = sqrt(qx * qx + qy * qy + qz * qz)
+    var ax = Scalar[DTYPE](1)
+    var ay = Scalar[DTYPE](0)
+    var az = Scalar[DTYPE](0)
+    if norm >= Scalar[DTYPE](1e-15):  # mjMINVAL
+        var inv = Scalar[DTYPE](1) / norm
+        ax = qx * inv
+        ay = qy * inv
+        az = qz * inv
+
+    var speed = Scalar[DTYPE](2) * Scalar[DTYPE](
+        atan2(Float64(norm), Float64(qw))
+    )
+    if speed > Scalar[DTYPE](3.14159265358979323846):
+        speed -= Scalar[DTYPE](2.0 * 3.14159265358979323846)
+    speed /= dt
+
+    return (ax * speed, ay * speed, az * speed)
 
 
 # =============================================================================
@@ -376,10 +508,22 @@ def gpu_axis_angle_to_quat[
     var s = Scalar[DTYPE](sin(half))
     var c = Scalar[DTYPE](cos(half))
 
+    # ⚠ THE ZERO-AXIS GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT. This
+    # was `1.0 / sqrt(len_sq + 1e-10)`, which for the unit axis every caller
+    # actually passes returns `1 - 5e-11` instead of `1` — see
+    # `gpu_quat_normalize` for the full story and the measurement.
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
-    var inv_len = Scalar[DTYPE](1.0 / sqrt(len_sq + 1e-10))
-
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    # Degenerate axis keeps the old formula, for the reason in
+    # `gpu_quat_normalize` — this change is about the epsilon, not about what
+    # a zero axis should mean. Like that one, this branch is unreached by every
+    # model in the suite: all three callers pass a joint AXIS, which is unit.
+    var inv_len: Scalar[DTYPE]
+    if len_sq < Scalar[DTYPE](1e-6):
+        inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq + Scalar[DTYPE](1e-10))
+    else:
+        inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq)
+
     result[0] = axis_x * inv_len * s
     result[1] = axis_y * inv_len * s
     result[2] = axis_z * inv_len * s
@@ -396,11 +540,90 @@ def gpu_quat_normalize[
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 4]:
-    """Normalize quaternion (GPU version)."""
-    var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    var inv_norm = Scalar[DTYPE](1.0 / sqrt(norm_sq + 1e-10))
+    """Normalize quaternion (GPU version).
 
+    ⚠ THE DEGENERATE GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT. This
+    was `1.0 / sqrt(norm_sq + 1e-10)`, which POISONS THE COMMON CASE to
+    protect a case that never happens: for an already-unit quaternion it
+    returns `1/sqrt(1 + 1e-10)` = 0.99999999995, so every quaternion this
+    function touched came out 5e-11 SHORT of unit, and every vector rotated by
+    one was scaled by `|q|^2` = 1 - 1e-10.
+
+    That is not rounding — it is a deterministic one-directional bias, and it
+    was the cause of BOTH of the ~1e-10 residuals that had been filed as
+    separate mysteries:
+
+      * task #48 — quadruped's forward kinematics reproducing MuJoCo to only
+        ~1e-10 where other models manage 1e-15, "showing up identically in
+        cvel, qfrc_bias and tendon_invweight0". Every body quaternion in the
+        chain is normalized here.
+      * task #49 — capsule contact normals ~1e-10 off MuJoCo's while every
+        sphere pair was exact. A capsule's world AXIS is its local quaternion
+        rotated by the body's; spheres have no axis to corrupt, which is
+        exactly why the error looked type-specific.
+
+    The observed body quaternion was 0.99999999995 to every digit of
+    `1/sqrt(1+1e-10)`. Branch on the degenerate case instead, so the
+    arithmetic is exact for the input every caller actually passes.
+    """
+    var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    # THE DEGENERATE BRANCH KEEPS THE OLD FORMULA ON PURPOSE, so that this
+    # change is a pure precision fix and nothing else. Below 1e-6 the result is
+    # bit-identical to what it always was; above it, exact.
+    #
+    # ⚠ CORRECTION (task #50, 2026-08-03): an earlier version of this comment
+    # claimed an A/B "proved the branch IS reached" because returning identity
+    # there moved `test_equality_tendon_fields`'s fingerprint by 0.83. THAT WAS
+    # WRONG — the A/B also changed the function's SHAPE (an early `return`
+    # inside the `if` versus a fallthrough assignment), which changes FP codegen
+    # in the NON-degenerate path, and this file's humanoid rests on four
+    # contacts whose force split is indeterminate and amplifies last-bit
+    # differences. The real test injects an absurd `inv_norm = -12345` into both
+    # degenerate branches and checks the fingerprint: it comes out UNCHANGED, so
+    # neither branch is reached at all, on the CPU or the GPU path. Instrumented
+    # CPU runs printed nothing either.
+    #
+    # So this branch is dead code for every model in the test suite, and the
+    # old `(0,0,0,0)`-for-zero-norm behaviour it preserves is not observable.
+    # Keep it anyway: it costs one comparison, and "unreachable in this suite"
+    # is not "unreachable". If you ever make it reachable, note that returning
+    # a ZERO quaternion is not a rotation and identity is the sane answer.
+    # ⚠⚠ AN ALREADY-UNIT QUATERNION IS RETURNED UNTOUCHED, AND THAT IS
+    # `mju_normalize4` (`engine_util_blas.c:258`), NOT an optimisation:
+    #
+    #     } else if (mju_abs(norm - 1) > mjMINVAL) { ... vec[i] *= normInv; }
+    #
+    # `mjuu_normvec` (`user_util.cc:162`) carries the same rule at compile
+    # time, with the comment "don't normalize if nrm is within mjEPS of 1".
+    # A quaternion written to full double precision is generally NOT exactly
+    # unit — `(0.8158341149610219, 0, 0, 0.5782859991956973)`, the yaw every
+    # Duplo brick in `reassemble_5` carries, has `norm^2 = 0.9999999999999999`
+    # — and renormalising it MOVES it by an ulp for nothing.
+    #
+    # ⚠ AN ULP IS NOT COSMETIC WHEN SOMETHING DOWNSTREAM COMPARES WITH `==`.
+    # `_bb_post_filter` (`collision/collision_primitives.mojo`) removes
+    # duplicate box/box manifold points with `pos[i] == pos[j]`, exactly as
+    # `engine_collision_box.c:1394` does, and that filter is only correct
+    # because MuJoCo's coincident points come out BIT-IDENTICAL. With this
+    # ulp in the body quaternion they came out one ulp apart, the filter went
+    # inert, and two stacked bricks handed the solver a DUPLICATED CONSTRAINT
+    # ROW — an exactly rank-deficient Hessian. Gated by
+    # `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+    var norm = sqrt(norm_sq)
+    if abs(norm - Scalar[DTYPE](1)) <= Scalar[DTYPE](_MJMINVAL):
+        result[0] = qx
+        result[1] = qy
+        result[2] = qz
+        result[3] = qw
+        return result^
+
+    var inv_norm: Scalar[DTYPE]
+    if norm_sq < Scalar[DTYPE](1e-6):
+        inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq + Scalar[DTYPE](1e-10))
+    else:
+        inv_norm = Scalar[DTYPE](1.0) / norm
+
     result[0] = qx * inv_norm
     result[1] = qy * inv_norm
     result[2] = qz * inv_norm

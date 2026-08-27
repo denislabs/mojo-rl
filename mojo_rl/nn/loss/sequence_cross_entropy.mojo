@@ -16,7 +16,7 @@ explicitly) — no softmax cache. Mirrors the device-resident accumulator
   backward: grad[r,c] = (softmax[r,c] - target[r,c]) / BT
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -26,7 +26,7 @@ from .cross_entropy import _ce_fwd_kernel, _ce_reduce_kernel, _ce_bwd_kernel
 
 
 struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     var partial: Tensor  # GPU [BT] per-row losses (lazy)
     var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]

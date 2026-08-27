@@ -40,12 +40,12 @@ from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _mean_perdim_std[ROWS: Int, DIM: Int](
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
 ) -> Float64:
     """Mean over the ``DIM`` features of the per-feature std across the ``ROWS``
     rows. Collapse signal: → 0 means every row maps to ~the same vector (the
@@ -54,11 +54,11 @@ def _mean_perdim_std[ROWS: Int, DIM: Int](
     for d in range(DIM):
         var m = 0.0
         for b in range(ROWS):
-            m += Float64(x[b * DIM + d])
+            m += Float64(x[unsafe_offset=b * DIM + d])
         m /= Float64(ROWS)
         var v = 0.0
         for b in range(ROWS):
-            var diff = Float64(x[b * DIM + d]) - m
+            var diff = Float64(x[unsafe_offset=b * DIM + d]) - m
             v += diff * diff
         v /= Float64(ROWS)
         acc += sqrt(v)
@@ -71,8 +71,8 @@ def _collapse_diag[
     mut rep: REP,
     mut proj: PROJM,
     obs0: List[Scalar[DT]],   # [B, OBS]
-    z_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B, LATENT] scratch
-    p_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B, PROJ] scratch
+    z_buf: Pointer[Scalar[DT], MutAnyOrigin],  # [B, LATENT] scratch
+    p_buf: Pointer[Scalar[DT], MutAnyOrigin],  # [B, PROJ] scratch
 ) raises -> Tuple[Float64, Float64]:
     """Probe representation collapse on a batch of real observations. Returns
     ``(latent_std, proj_norm_std)``:
@@ -93,21 +93,21 @@ def _collapse_diag[
     var z_tn = Tensor.alloc(B * LATENT)
     call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs_t), z_tn, None)
     for i in range(B * LATENT):
-        z_buf[i] = z_tn.data[i]
+        z_buf[unsafe_offset=i] = z_tn.data[i]
     var latent_std = _mean_perdim_std[B, LATENT](z_buf)
 
     var p_tn = Tensor.alloc(B * PROJ)
     call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](z_tn), p_tn, None)
     for i in range(B * PROJ):
-        p_buf[i] = p_tn.data[i]
+        p_buf[unsafe_offset=i] = p_tn.data[i]
     # L2-normalize each row before measuring spread (SimSiam convention).
     for b in range(B):
         var nrm = 0.0
         for d in range(PROJ):
-            nrm += Float64(p_buf[b * PROJ + d]) * Float64(p_buf[b * PROJ + d])
+            nrm += Float64(p_buf[unsafe_offset=b * PROJ + d]) * Float64(p_buf[unsafe_offset=b * PROJ + d])
         nrm = sqrt(nrm) + 1e-12
         for d in range(PROJ):
-            p_buf[b * PROJ + d] = Scalar[DT](Float64(p_buf[b * PROJ + d]) / nrm)
+            p_buf[unsafe_offset=b * PROJ + d] = Scalar[DT](Float64(p_buf[unsafe_offset=b * PROJ + d]) / nrm)
     var proj_norm_std = _mean_perdim_std[B, PROJ](p_buf)
     return (latent_std, proj_norm_std)
 
@@ -161,7 +161,7 @@ def run_ezv2_selfplay_cpu[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     var mcts = GenericCPUMCTS[
@@ -171,12 +171,12 @@ def run_ezv2_selfplay_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=untracked(UnsafePointer(to=rep)))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](net=untracked(Pointer(to=rep)))
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=untracked(UnsafePointer(to=pred)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=pred)), v_min=v_min, v_max=v_max
     )
 
     # training batch slabs (time-major) — owned Lists (RAII), fed to the List
@@ -186,7 +186,7 @@ def run_ezv2_selfplay_cpu[
     var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
     var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
     var t_rew = List[Scalar[DT]](length=K * B, fill=0)
-    var t_cmask = _a(K * B)   # consistency mask — cons_mask Optional[UnsafePointer]
+    var t_cmask = _a(K * B)   # consistency mask — cons_mask Optional[Pointer]
 
     # reanalyze scratch (owned Lists; read_obs/update_targets take Lists)
     var r_obs = List[Scalar[DT]](length=OBS, fill=0)
@@ -326,19 +326,19 @@ def run_ezv2_selfplay_cpu[
                 # root prediction (reuse d_z = h(obs0) from the probe).
                 var z_in = Tensor.alloc(B * LATENT)
                 for i in range(B * LATENT):
-                    z_in.data[i] = d_z[i]
+                    z_in.data[i] = d_z[unsafe_offset=i]
                 var pred_tn = Tensor.alloc(B * (ACT + BINS))
                 call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](z_in), pred_tn, None)
                 for i in range(B * (ACT + BINS)):
-                    d_pred[i] = pred_tn.data[i]
+                    d_pred[unsafe_offset=i] = pred_tn.data[i]
                 var dn = List[String]()
                 var dv = List[Float64]()
                 dn.append(String("loss")); dv.append(last_loss)
-                dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-                dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-                dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+                dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+                dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+                dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
                 dn.append(String("loss_consistency"))
-                dv.append(Float64(l_parts[3]))
+                dv.append(Float64(l_parts[unsafe_offset=3]))
                 dn.append(String("latent_std")); dv.append(cd[0])
                 dn.append(String("proj_norm_std")); dv.append(cd[1])
                 append_mz_train_diagnostics[ACT, BINS, B](
@@ -450,7 +450,7 @@ def run_ezv2_selfplay_cpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_cmask.free()
-    d_z.free(); d_p.free()
-    l_parts.free(); d_pred.free()
+    t_cmask.unsafe_free()
+    d_z.unsafe_free(); d_p.unsafe_free()
+    l_parts.unsafe_free(); d_pred.unsafe_free()
     return last_loss

@@ -16,7 +16,7 @@ Run (Apple Metal):
     pixi run -e apple mojo run -I . tests/deep_agents/test_mz_selfplay_gpu_batched_smoke.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
@@ -80,7 +80,7 @@ def main() raises:
         reanalyze_batch=B,   # > N_ENVS → exercises the multi-chunk reanalyze loop
         eval_every=150,
         eval_horizon=30,
-        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+        eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
         seed=7,
         verbose=True,
     )

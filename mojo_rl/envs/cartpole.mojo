@@ -43,7 +43,7 @@ from mojo_rl.render import (
 )
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 # =============================================================================
@@ -249,7 +249,7 @@ struct CartPoleEnv[DTYPE: DType](
     var num_bins: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 10):
@@ -332,7 +332,7 @@ struct CartPoleEnv[DTYPE: DType](
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
 
-    def get_state(self) -> CartPoleState:
+    def get_state(mut self) -> CartPoleState:
         """Return current discretized state."""
         return CartPoleState(index=self._discretize_obs())
 
@@ -596,7 +596,7 @@ struct CartPoleEnv[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -606,7 +606,7 @@ struct CartPoleEnv[DTYPE: DType](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -620,7 +620,7 @@ struct CartPoleEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -846,7 +846,10 @@ struct CartPoleEnv[DTYPE: DType](
         var reward = Scalar[gpu_dtype](1.0)
 
         rewards[i] = reward
-        dones[i] = Scalar[gpu_dtype](done)
+        # `done` is a Bool, and `Scalar[float](Bool)` no longer compiles —
+        # SIMD's Intable constructor now requires an integral dtype. Spell the
+        # 0/1 encoding out rather than casting through an integer.
+        dones[i] = Scalar[gpu_dtype](1.0) if done else Scalar[gpu_dtype](0.0)
 
     @staticmethod
     @always_inline
@@ -969,10 +972,10 @@ struct CartPoleEnv[DTYPE: DType](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
@@ -1054,7 +1057,9 @@ struct CartPoleEnv[DTYPE: DType](
                     or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
                     or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
                 )
-                terminated_out[i] = Scalar[gpu_dtype](is_terminated)
+                terminated_out[i] = Scalar[gpu_dtype](
+                    1.0
+                ) if is_terminated else Scalar[gpu_dtype](0.0)
                 # Extract observations (obs == first 4 state elements)
                 for d in range(OBS_DIM):
                     obs[i, d] = states[i, d]
@@ -1126,10 +1131,10 @@ struct CartPoleEnv[DTYPE: DType](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.

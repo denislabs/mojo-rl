@@ -38,7 +38,7 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.loss.two_hot import (
     fill_bins,
@@ -316,7 +316,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
     def _mk_in_dims() -> InlineArray[Int, 2]:
         var d = InlineArray[Int, 2](fill=1)
         d[0] = Self.BINS
-        return d
+        return d^
 
     var bins: Tensor  # [BINS] linspace(VMIN, VMAX); host + device
 

@@ -13,27 +13,47 @@ and the finalize); contacts/equality/tendons follow at P4."""
 
 from std.math import abs, pow
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
-    MODEL_META_IDX_SOLREF_LIMIT_0,
-    MODEL_META_IDX_SOLREF_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_0,
-    MODEL_META_IDX_SOLIMP_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_2,
-    MODEL_META_IDX_SOLIMP_LIMIT_3,
-    MODEL_META_IDX_SOLIMP_LIMIT_4,
     JOINT_IDX_TYPE,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    # ⚠ PER-JOINT limit solver params (defect 22). The `MODEL_META_IDX_SOL*
+    # _LIMIT_*` slots are deliberately NOT imported any more: `fields_build`
+    # fills them from JOINT 0 for the whole model, which is the free root on
+    # dog — unlimited, so the only joint that can never own a limit row.
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
 )
+
+from .constraint_data import solref_spring_damper
 
 comptime LIM_TPB: Int = 64
 
@@ -46,47 +66,63 @@ def _max_one[N: Int]() -> Int:
 @always_inline
 def _limits_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NJOINT: Int,
-    BATCH: Int,
     NUM_ITERATIONS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_META: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    meta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    meta: LayoutTensor[DTYPE, L_META, MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
     """Detect + PGS-solve active joint limits for one env (verbatim from
     detect_and_solve_limits_gpu)."""
-    comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    comptime LIM_CAP = 2 * cap[D.NJOINT]()
 
-    var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-    var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-        uninitialized=True
+    var limit_dof = Scratch[Int, LIM_CAP](2 * njoint, uninitialized=0)
+    # ⚠ THE OWNING JOINT, because solref/solimp are PER-JOINT (defect 22).
+    # These used to come from `meta`, which `fields_build` filled from JOINT 0
+    # for the whole model on the assumption of "uniform joint solimp across all
+    # current models". False on dog: 73 of its 74 joints are limited and all use
+    # solreflimit [0.01 1], while joint 0 is the FREE ROOT — unlimited, so the
+    # one joint whose parameters were broadcast is the only one that can never
+    # form a limit row. It carried the model defaults [0.02 1], making every
+    # limit 3.68x too soft (K 2770.08 where MuJoCo's efc_KBIP reads 10203.04).
+    var limit_jnt = Scratch[Int, LIM_CAP](2 * njoint, uninitialized=0)
+    var limit_sign = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var limit_dist_arr = Scratch[Scalar[DTYPE], LIM_CAP](
+        2 * njoint, uninitialized=0
     )
-    var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-        uninitialized=True
+    var K_limit = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var lambda_limit = Scratch[Scalar[DTYPE], LIM_CAP](
+        2 * njoint, uninitialized=0
     )
-    for i in range(MAX_LIMITS):
+    for i in range(2 * njoint):
         limit_dof[i] = 0
+        limit_jnt[i] = 0
         limit_sign[i] = Scalar[DTYPE](0)
         limit_dist_arr[i] = Scalar[DTYPE](0)
         K_limit[i] = Scalar[DTYPE](1)
         lambda_limit[i] = Scalar[DTYPE](0)
 
     var num_limits = 0
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         if jtype != JNT_HINGE and jtype != JNT_SLIDE:
             continue
@@ -100,23 +136,25 @@ def _limits_env[
             continue
         var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
         var dist_lo = pos - rmin
-        if dist_lo < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+        if dist_lo < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
+            limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](1)
             limit_dist_arr[num_limits] = dist_lo
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                m_inv[env, dof * NV + dof]
+                m_inv[env, dof * nv + dof]
             )
             if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
             num_limits += 1
         var dist_hi = rmax - pos
-        if dist_hi < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+        if dist_hi < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
+            limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](-1)
             limit_dist_arr[num_limits] = dist_hi
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                m_inv[env, dof * NV + dof]
+                m_inv[env, dof * nv + dof]
             )
             if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
@@ -125,31 +163,62 @@ def _limits_env[
     if num_limits == 0:
         return
 
-    var lr_tc = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_0])
-    var lr_dr = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_1])
-    var li_dmin = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_0])
-    var li_dmax = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_1])
-    var li_width = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_2])
-    var li_midpoint = rebind[Scalar[DTYPE]](
-        meta[MODEL_META_IDX_SOLIMP_LIMIT_3]
-    )
-    var li_power = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_4])
-    if li_width < Scalar[DTYPE](1e-6):
-        li_width = Scalar[DTYPE](1e-6)
-    if li_dmax < Scalar[DTYPE](1e-4):
-        li_dmax = Scalar[DTYPE](1e-4)
-    var l_K_spring = Scalar[DTYPE](1.0) / (
-        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
-    )
-    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+    comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
+    comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
 
-    var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
-    var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
-        uninitialized=True
+    var lim_bias = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var lim_inv_K = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    comptime MINVJ_LIM_CAP = 2 * cap[D.NJOINT]() * cap[D.NV]()
+    var lim_MinvJ = Scratch[Scalar[DTYPE], MINVJ_LIM_CAP](
+        2 * njoint * nv, uninitialized=0
     )
     for l in range(num_limits):
+        # PER-ROW solref/solimp, read from the joint that OWNS this row
+        # (defect 22). MuJoCo carries `jnt_solref[j]` / `jnt_solimp[j]` and
+        # builds each limit row from its own joint's values; these were already
+        # parsed and written into the joint record by `fields_build` and then
+        # read by nothing.
+        var lj = limit_jnt[l]
+        var lr_tc = rebind[Scalar[DTYPE]](joints[lj, JOINT_IDX_SOLREF_LIMIT_0])
+        var lr_dr = rebind[Scalar[DTYPE]](joints[lj, JOINT_IDX_SOLREF_LIMIT_1])
+        var li_dmin = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_0]
+        )
+        var li_dmax = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_1]
+        )
+        var li_width = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_2]
+        )
+        var li_midpoint = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_3]
+        )
+        var li_power = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_4]
+        )
+        if li_width < Scalar[DTYPE](1e-6):
+            li_width = Scalar[DTYPE](1e-6)
+        # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
+        # interpolating (engine_core_constraint.c:1284-1287) — see the same fix
+        # in contact_solve.mojo for why the dmin floor is the one that matters.
+        if li_dmin < MJ_MINIMP:
+            li_dmin = MJ_MINIMP
+        elif li_dmin > MJ_MAXIMP:
+            li_dmin = MJ_MAXIMP
+        if li_dmax < MJ_MINIMP:
+            li_dmax = MJ_MINIMP
+        elif li_dmax > MJ_MAXIMP:
+            li_dmax = MJ_MAXIMP
+        if li_power < Scalar[DTYPE](1):
+            li_power = Scalar[DTYPE](1)
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
+            lr_tc, lr_dr, li_dmax,
+            rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_TIMESTEP]),
+        )
+
         var penetration = -limit_dist_arr[l]
         if penetration < Scalar[DTYPE](0):
             penetration = Scalar[DTYPE](0)
@@ -193,9 +262,9 @@ def _limits_env[
         lim_inv_K[l] = Scalar[DTYPE](1.0) / (K_limit[l] + R_lim)
         var ldof = limit_dof[l]
         var lsign = limit_sign[l]
-        for i in range(NV):
-            lim_MinvJ[l * NV + i] = (
-                rebind[Scalar[DTYPE]](m_inv[env, i * NV + ldof]) * lsign
+        for i in range(nv):
+            lim_MinvJ[l * nv + i] = (
+                rebind[Scalar[DTYPE]](m_inv[env, i * nv + ldof]) * lsign
             )
 
     # PGS iterations (acceleration-level)
@@ -216,8 +285,8 @@ def _limits_env[
             var abs_l = abs(actual_l)
             if abs_l > max_lim_delta:
                 max_lim_delta = abs_l
-            for i in range(NV):
-                qacc_constrained[env, i] += lim_MinvJ[l * NV + i] * actual_l
+            for i in range(nv):
+                qacc_constrained[env, i] += lim_MinvJ[l * nv + i] * actual_l
         if max_lim_delta < Scalar[DTYPE](1e-4):
             break
 
@@ -245,72 +314,60 @@ def _limits_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-        env, qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
+    _limits_env[DTYPE, NUM_ITERATIONS](
+        env, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
     )
 
 
 def solve_limits[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     NUM_ITERATIONS: Int = 50,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-    ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Detect + solve joint limits into `scratch.qacc_constrained`, both
     targets, one body. NUM_ITERATIONS=50 matches the Newton solver's
     SOLVER_ITER_GPU."""
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_META = Layout.row_major(MODEL_META_SIZE)
-    comptime L_DW = Layout.row_major(NV)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_DW = Layout.row_major(D.NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
-        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_QPOS = rl2(BATCH, dm.get_nq())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_DW = rl1(dm.get_nv())
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-                e, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
+            _limits_env[DTYPE, NUM_ITERATIONS](
+                e, dm, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LIM_TPB - 1) // LIM_TPB
         c.enqueue_function[
             _limits_fields_kernel[
-                DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS
+                DTYPE, D.NQ, D.NV, D.NJOINT, BATCH, NUM_ITERATIONS
             ]
         ](
             d.qpos.lt["gpu", L_QPOS](),

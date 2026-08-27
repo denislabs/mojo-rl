@@ -18,7 +18,7 @@ Run:
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, pi
 from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
@@ -390,7 +390,7 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 20 == 0 or epoch == EPOCHS - 1:
             ctx.synchronize()
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
-            print("    ", epoch, "  ", String(elapsed)[byte=:7])
+            print("    ", epoch, "  ", fit(String(elapsed), 7))
 
     ctx.synchronize()
     var total_train_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -625,17 +625,17 @@ def main() raises:
             "    ",
             t,
             "    ",
-            String(imag_mean)[byte=:9],
+            fit(String(imag_mean), 9),
             "    ",
-            String(true_mean)[byte=:7],
+            fit(String(true_mean), 7),
             "  ",
-            String(mean_rel)[byte=:7],
+            fit(String(mean_rel), 7),
             "    ",
-            String(imag_var)[byte=:9],
+            fit(String(imag_var), 9),
             "  ",
-            String(true_var)[byte=:7],
+            fit(String(true_var), 7),
             "  ",
-            String(var_rel)[byte=:7],
+            fit(String(var_rel), 7),
         )
 
     var avg_mean_rel = mean_rel_err_total / Float64(SEQ_LEN)
@@ -657,3 +657,5 @@ def main() raises:
         raise Error("world-model dynamics GPU test failed")
 
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

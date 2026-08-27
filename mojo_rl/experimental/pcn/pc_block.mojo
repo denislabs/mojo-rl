@@ -19,9 +19,10 @@ For the readout, ε_L = target − output (target plays the role of x_above).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from std.sys import CompilationTarget
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -91,7 +92,7 @@ struct PCBlock[
             W_view
         )
         for j in range(Self.out_dim):
-            params.ptr[Self.in_dim * Self.out_dim + j] = Scalar[dtype](0)
+            params.ptr[unsafe_offset=Self.in_dim * Self.out_dim + j] = Scalar[dtype](0)
 
     # =========================================================================
     # Bottom-up prediction:  a_below = ACT(x_below);  μ = a_below @ W + b
@@ -124,13 +125,13 @@ struct PCBlock[
 
         # 2. μ = a_below @ W + b. W/b are sub-views of the param slab; build
         #    them like the GPU path (LayoutTensor over the slab ptr, no rebind),
-        #    and feed the matmul through `lt_to_tt` (no UnsafePointer dance).
+        #    and feed the matmul through `lt_to_tt` (no Pointer dance).
         var W = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
         ](params.ptr)
         var b_view = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.in_dim * Self.out_dim)
+        ](params.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
         try:
             max_matmul[target="cpu"](
                 lt_to_tt(mu), lt_to_tt(a_below), lt_to_tt(W), None
@@ -250,7 +251,7 @@ struct PCBlock[
         ](grads.ptr)
         var b_grad = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.in_dim * Self.out_dim)
+        ](grads.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # dE/dW = −(a_below^T @ eps_above), written into W_grad then negated.
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:
@@ -267,14 +268,14 @@ struct PCBlock[
                     Int32(Self.out_dim),
                     Int32(BATCH),
                     Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](a_below.ptr),
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](a_below.ptr),
                     Int32(Self.in_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](
                         eps_above.ptr
                     ),
                     Int32(Self.out_dim),
                     Float32(0.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr),
+                    rebind[Pointer[Float32, MutAnyOrigin]](grads.ptr),
                     Int32(Self.out_dim),
                 )
             except:
@@ -374,7 +375,7 @@ struct PCBlock[
         if idx >= BATCH * OUT:
             return
         var col = idx % OUT
-        mu.ptr[idx] = mu.ptr[idx] + rebind[Scalar[dtype]](b[col])
+        mu.ptr[unsafe_offset=idx] = mu.ptr[unsafe_offset=idx] + rebind[Scalar[dtype]](b[col])
 
     @staticmethod
     def _negate_kernel[
@@ -384,7 +385,7 @@ struct PCBlock[
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= N:
             return
-        buf.ptr[idx] = -buf.ptr[idx]
+        buf.ptr[unsafe_offset=idx] = -buf.ptr[unsafe_offset=idx]
 
     @staticmethod
     def _transpose_2d_kernel[
@@ -433,7 +434,7 @@ struct PCBlock[
         ](params.ptr)
         var b_view = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.in_dim * Self.out_dim)
+        ](params.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # max_matmul writes mu = a_below @ W (no bias), then a separate
         # bias-add kernel folds in b. Apple + NVIDIA (nn convention).
@@ -551,7 +552,7 @@ struct PCBlock[
         ](grads.ptr)
         var b_grad = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.in_dim * Self.out_dim)
+        ](grads.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # dW[IN, OUT] = -a_below^T[IN, BATCH] @ eps_above[BATCH, OUT]
         # max_matmul has no transpose_a, so materialize a_below^T into a

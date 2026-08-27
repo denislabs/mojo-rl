@@ -2,8 +2,9 @@
 
 Mirrors `references/tdmpc2-main/tdmpc2/common/layers.py`:
 
-  * `NormedLinear` = Linear → LayerNorm → Mish (reference `NormedLinear`
-    with the default `act=nn.Mish`).
+  * `NormedLinear` = Linear → LayerNormAct[Mish] (reference `NormedLinear`
+    with the default `act=nn.Mish`; the norm and the activation are FUSED into
+    one module — see `nn/primitives/layer_norm_act.mojo`).
   * `NormedLinearSimNorm` = Linear → LayerNorm → SimNorm — the final layer
     of the encoder/dynamics trunks (reference `mlp(..., act=SimNorm(cfg))`).
 
@@ -37,7 +38,8 @@ instability.
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.activations import Mish
+from mojo_rl.nn.primitives.layer_norm_act import LayerNormAct
+from mojo_rl.nn.primitives.ops.mish_op import MishOp
 from mojo_rl.nn.primitives.sim_norm import SimNorm
 from mojo_rl.nn.primitives.dropout import Dropout
 
@@ -47,15 +49,20 @@ from mojo_rl.nn.primitives.dropout import Dropout
 comptime QDROPOUT_SEED: UInt64 = 0xD40720C2
 
 
+# ⚠ `LayerNormAct` replaces the `LayerNorm, Mish` PAIR with one fused module.
+# The activation child carried no parameters, so the `Sequential` child indices
+# are unchanged (`0.weight 0.bias 1.gamma 1.beta`) and checkpoints still load.
+# The separate activation kernel was 19,200 launches and 89 ms — 3.0% of GPU
+# time on an RTX 5090 walker profile — for one scalar op per element.
 comptime NormedLinear[I: Int, O: Int] = Sequential[
-    Linear[I, O], LayerNorm[O], Mish[O],
+    Linear[I, O], LayerNormAct[O, MishOp],
 ]
 
 # NormedLinear with a Dropout between the Linear and the LayerNorm (reference
 # `NormedLinear(..., dropout=p)`: Linear → Dropout → LayerNorm → act). At p=0.0
 # the Dropout is identity, so this is numerically equal to `NormedLinear`.
 comptime NormedLinearDropout[I: Int, O: Int, QP: Float64] = Sequential[
-    Linear[I, O], Dropout[O, QP, QDROPOUT_SEED], LayerNorm[O], Mish[O],
+    Linear[I, O], Dropout[O, QP, QDROPOUT_SEED], LayerNormAct[O, MishOp],
 ]
 
 comptime NormedLinearSimNorm[I: Int, O: Int, SN: Int] = Sequential[

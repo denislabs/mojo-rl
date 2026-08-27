@@ -39,9 +39,9 @@ writes (defensive, though the packs no longer alias).
 from std.math import exp, tanh
 from linalg.matmul import matmul as max_matmul
 from std.gpu import thread_idx, block_idx, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -221,7 +221,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var d = InlineArray[Int, 2](fill=0)
         d[0] = Self.IN_
         d[1] = Self.HIDDEN
-        return d
+        return d^
 
     comptime W_IH_SIZE = Self.IN_ * (3 * Self.HIDDEN)
     comptime W_HH_SIZE = Self.HIDDEN * (3 * Self.HIDDEN)

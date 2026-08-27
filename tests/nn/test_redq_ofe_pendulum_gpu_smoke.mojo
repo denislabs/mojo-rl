@@ -22,7 +22,7 @@ Pendulum smoke (`test_redq_ofe_pendulum_smoke.mojo`) reaches
 −420/−151 at 5k steps; the GPU path is sound if it also clearly
 improves over the baseline."""
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.testing import assert_true
 

@@ -17,7 +17,7 @@ Run: rm -f mojo_rl.mojoc && \
 
 from std.testing import assert_true
 from std.math import isfinite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

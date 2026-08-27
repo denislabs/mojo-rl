@@ -10,7 +10,7 @@ Update: `if decay: g += wd·p ; p -= lr·g`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -29,9 +29,12 @@ def _sgd_kernel[
     grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     lr: Scalar[DT],
     wd: Scalar[DT],
-    apply_decay: Int,
+    apply_decay_arg: Int64,
 ):
     """Per-param update (one Param, comptime size N)."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var apply_decay = Int(apply_decay_arg)
     var i = Int(global_idx.x)
     if i < N:
         var d = grad[i]
@@ -41,21 +44,24 @@ def _sgd_kernel[
 
 
 def _grouped_sgd_kernel(
-    val: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    decay: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
+    val: Pointer[Scalar[DT], MutAnyOrigin],
+    grd: Pointer[Scalar[DT], MutAnyOrigin],
+    decay: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
     lr: Scalar[DT],
     wd: Scalar[DT],
 ):
     """Arena update (all params over runtime-length flat buffers)."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var i = Int(global_idx.x)
     if i >= total:
         return
-    var d = grd[i]
-    if decay[i] != Scalar[DT](0.0):
-        d += wd * val[i]
-    val[i] -= lr * d
+    var d = grd[unsafe_offset=i]
+    if decay[unsafe_offset=i] != Scalar[DT](0.0):
+        d += wd * val[unsafe_offset=i]
+    val[unsafe_offset=i] -= lr * d
 
 
 struct SGD(Movable, ParamVisitor, Optimizer):
@@ -102,7 +108,7 @@ struct SGD(Movable, ParamVisitor, Optimizer):
             self.arena.val.dev.value(),
             self.arena.grd.dev.value(),
             self.arena.decay_mask.dev.value(),
-            self.arena.total,
+            Int64(self.arena.total),
             self.lr,
             self.wd,
             grid_dim=nblk,
@@ -166,7 +172,7 @@ struct SGD(Movable, ParamVisitor, Optimizer):
                 grad.lt["gpu", layout](),
                 self.lr,
                 self.wd,
-                Int(apply_decay),
+                Int64(apply_decay),
                 grid_dim=nblk,
                 block_dim=256,
             )

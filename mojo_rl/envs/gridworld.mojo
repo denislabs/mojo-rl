@@ -131,7 +131,7 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
         self.state = GridState(0, 0)
         return self.state
 
-    def get_state(self) -> GridState:
+    def get_state(mut self) -> GridState:
         """Return current state."""
         return self.state
 

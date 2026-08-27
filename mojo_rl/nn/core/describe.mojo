@@ -13,7 +13,7 @@ multi-line table String (one `"<name>: <size>"` line per param, then a footer
 makes it testable. `print_describe` is a thin print convenience.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
 from .param import ParamVisitor

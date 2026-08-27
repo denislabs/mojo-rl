@@ -37,7 +37,7 @@ their network's ``WORKSPACE_SIZE_PER_SAMPLE``). This avoids the
 orchestrator having to peek at trait-internal model dimensions.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -101,7 +101,7 @@ struct GenericGPUMCTS[
     # orchestrators (sequential halving — no virtual loss, immune by
     # construction). Set UNSAFE_BATCHED=True only for diagnostics.
     UNSAFE_BATCHED: Bool = False,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU MCTS orchestrator for the MuZero batched single-player path.
 
     Comptime params:
@@ -1049,7 +1049,7 @@ struct GenericGPUMCTS[
             ep_steps,
             act_out_t,
             pol_out_t,
-            TEMP_THRESHOLD,
+            Int32(TEMP_THRESHOLD),
             rng_seed,
             Scalar[dtype](temp_min),
             grid_dim=(Self.ENV_BLOCKS,),

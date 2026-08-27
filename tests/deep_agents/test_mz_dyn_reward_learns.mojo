@@ -23,7 +23,7 @@ from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets_spatial import MZDynNetC4Spatial
 from mojo_rl.deep_agents.muzero.loss_ops import soft_ce_slice_loss_and_grad
 from mojo_rl.deep_agents.zero.twohot_targets import mz_two_hot_target_batch
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 struct RewW(ParamVisitor):

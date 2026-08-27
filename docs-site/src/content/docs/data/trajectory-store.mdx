@@ -1,0 +1,179 @@
+---
+title: Trajectory store
+description: A column-oriented HDF5 format for offline datasets and demonstrations, with an episode index, host and device residency, and four index policies.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+`TrajectoryStore` is the on-disk format for anything episodic that outlives a
+training run: offline datasets, demonstration capture, replay dumps, and the
+trajectory data behind zero-shot RL. It is one `.h5` file with named columns and
+an episode index.
+
+```
+__manifest__  uint8   (M,)           UTF-8 key=value schema block
+ep_len        int64   (N_ep,)        episode lengths
+ep_offset     int64   (N_ep,)        start row of each episode
+<column>      any     (N_rows, …)    one dataset per declared column
+```
+
+`action`, `reward`, `done` and `truncated` are reserved names. Everything else
+is declared by whoever writes the store — `qpos`/`qvel` for dm_control,
+`pixels`/`proprio`/`state` for PushT, `ram` for Atari.
+
+The layout is deliberately a superset of the schema the PushT expert dataset
+already uses, so LeRobot-style datasets stay cheap to ingest.
+
+## Writing
+
+Declare the columns, append rows, mark episode boundaries, close. Every dataset
+is created chunked with an **unlimited** leading axis, so a collection run
+streams to disk instead of buffering in RAM:
+
+```mojo
+from mojo_rl.data import ColumnSpec, TrajectoryStoreWriter
+
+var cols = List[ColumnSpec]()
+cols.append(ColumnSpec(String("state"), DType.float32, DIM))
+
+var w = TrajectoryStoreWriter(
+    String(path), cols^, env_id=String("walker-walk"), seed=99,
+)
+w.append[DType.float32](String("state"), buf.unsafe_ptr().as_unsafe_any_origin(), N_ROWS)
+w.end_episode()
+w.close()
+```
+
+Two invariants are enforced rather than documented:
+
+- **`dtype` is checked against the declared spec** on every `append`. A mismatch
+  raises instead of reinterpreting the bytes, which is the failure mode that
+  would otherwise corrupt a store silently.
+- **Every column must be appended in step.** They share one row axis, so letting
+  the counts drift would make the episode index meaningless. `end_episode` and
+  `close` both check.
+
+`ep_len`, `ep_offset` and the manifest are written at `close()`.
+
+A complete round trip — write, push, pull, reopen, verify — is in
+`examples/data/dataset_remote_smoke.mojo`.
+
+## Reading
+
+```mojo
+from mojo_rl.data import TrajectoryStore
+
+var s = TrajectoryStore(String(path))
+print(s.n_rows(), "rows,", s.n_episodes(), "episodes")
+
+var state = s.load_column[DType.float32](String("state"))   # whole column, resident
+s.read_range[DType.float32](String("state"), 0, 4096, buf)  # contiguous slab
+```
+
+The episode index is validated against the column length **on open**, not
+lazily: a store whose index disagrees with its columns produces samplers that
+read the wrong rows without ever raising.
+
+### Foreign files
+
+A file we did not write — a HuggingFace dataset with no manifest of ours — opens
+the same way. The schema is recovered by enumerating the datasets and
+introspecting each one's shape and dtype. This is gated against the real 44 GB
+`pusht_expert_train.h5`, not only against a fixture.
+
+## Residency
+
+Sampling reads from memory, never from disk. `ResidentColumn` loads a whole
+column and optionally mirrors it to the device:
+
+```mojo
+from mojo_rl.data import IndexBatch, ResidentColumn
+
+var col = ResidentColumn[DType.float32].load(store, String("qpos"))
+col.to_device(ctx)                              # optional — gather does it lazily
+col.gather_device(ctx, idx, dst, dst_elems)     # dst[i, :] = column[idx[i], :]
+```
+
+The device view uses a runtime layout — `Layout.row_major[N]()` with the real
+extents carried in a `RuntimeLayout` — because `n_rows` and `row_dim` are store
+metadata, not compile-time constants.
+
+`WindowedColumn` covers the case a column does not fit: it keeps a sliding slab
+resident and gathers within it.
+
+```mojo
+var w = WindowedColumn[DType.uint8].make(store, String("pixels"), window_rows)
+w.seek(store, start)        # position the window
+_ = w.advance(store)        # next non-overlapping window; False when exhausted
+```
+
+A gather outside the resident window **raises**. There is deliberately no
+refill-on-miss: a silent refill turns one stray index into a disk read per
+minibatch element, which is precisely the 4500× case
+[the measurements ruled out](/data/#residency-is-mandatory-and-it-was-measured).
+
+## Index policies
+
+A sampler produces an `IndexBatch` and knows nothing about columns. That is what
+makes them composable — the dual sampler a forward-backward representation needs
+is *two calls to the same policy*, not a new buffer.
+
+| Sampler | Draws | Notes |
+|---|---|---|
+| `UniformSampler` | host uniform rows | the baseline |
+| `UniformDeviceSampler` | device uniform rows | one Philox stream per lane, `seed + lane` |
+| `PrioritizedSampler` | host sum-tree | `note_added`, `update_priorities`, IS weights |
+| `SequenceWindowSampler` | window starts | `draw_starts` + `expand_window` |
+| `WindowSampler` | rows inside a resident window | pairs with `WindowedColumn` |
+
+:::caution[Sequence windows span episode boundaries by default]
+`SequenceWindowSampler` defaults to `within_episode=False`. That is not an
+oversight — DreamerV3 relies on it, resetting its recurrent carry at the seam
+from the per-frame `is_first` flags. Making non-spanning the default would
+silently change its training distribution, so a test pins the default. Consumers
+that treat a window as one trajectory opt in via `draw_starts_in_episodes`.
+:::
+
+## The HDF5 layer
+
+`mojo_rl/io/hdf5/` is a native FFI over libhdf5 — no Python in the read or write
+path. Each H5 sub-API lives in its own file, with `reader.mojo` and
+`writer.mojo` providing the `H5File` / `H5Dataset` / `H5Writer` surface the
+store consumes.
+
+Compression filters shipped by the `hdf5plugin` package (Blosc, LZ4, ZSTD) are
+registered at first open via `H5PLprepend`, so compressed third-party files
+decode without `HDF5_PLUGIN_PATH` being set in the environment.
+
+**Compression policy: off for float32 state columns.** Measured, `deflate=4`
+reads at 545 MiB/s against 4377 MiB/s raw — 8× slower on data that barely
+compresses. Shuffle+deflate is worth it for `uint8` pixel columns and nowhere
+else without measuring first.
+
+:::note[Two silent traps in the C API, both now handled]
+`H5T_NATIVE_FLOAT` is not a constant. It is a macro expanding to a global
+`hid_t` **variable** plus an `H5open()` call the preprocessor inserts — and an
+FFI caller gets neither. Before `H5open()` runs, every such global reads `-1`,
+and the failure surfaces much later as "not a datatype".
+
+Worse, `get_symbol` returns a pointer *to* the global, so the value is `p[][]`.
+Writing `Int(p[])` compiles and yields the symbol's **address** — a plausible
+large integer that is not the id. The first probe printed `4659917064` and
+looked entirely reasonable.
+
+`h5native.mojo` latches `H5open()` and resolves the ids properly. The write gate
+cross-checks against **h5py** rather than against our own reader: a round trip
+through one implementation proves nothing about the format.
+:::
+
+## Gates
+
+| Gate | What it pins |
+|---|---|
+| `tests/io/hdf5/test_writer_roundtrip.mojo` | Mojo and h5py agree on shape, dtype, chunking, `maxshape` and values, across chunk boundaries and with shuffle+deflate |
+| `tests/data/test_trajectory_store.mojo` | Manifest round trip, exact values, dtype mismatch raises, boundary logic, and ingest of a real foreign dataset |
+| `tests/data/test_resident_gather.mojo` | Device gather bit-exact against host — adversarial indices, duplicates, out-of-range raises |
+| `tests/data/test_windowed.mojo` | Windowed gather equals full residency across every window; out-of-window raises; `advance()` exhaustion |
+| `tests/data/test_sampler_golden.mojo` | Each index policy's sequence under a fixed seed |

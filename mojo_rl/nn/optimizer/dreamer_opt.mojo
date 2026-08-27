@@ -49,8 +49,8 @@ mode in this port — the legacy per-param path was the default too.
 
 from std.math import sqrt
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

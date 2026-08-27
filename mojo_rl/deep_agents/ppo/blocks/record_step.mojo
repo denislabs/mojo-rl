@@ -15,7 +15,7 @@ Layout: T-major. Slot at time t, env e:
 STORAGE migration: rollout buffers live host-side only (the GPU train_target
 only uploads the gathered minibatch), so every access here indexes the storage
 tensors' host `.data` Lists directly (no raw pointers). The driver-supplied
-obs/reward/done/next_obs pointers are the (UnsafePointer) trait ABI.
+obs/reward/done/next_obs pointers are the (Pointer) trait ABI.
 
 Driver contract:
   - `action_ptr` arg is the env-ready action vector — IGNORED (the
@@ -26,7 +26,7 @@ Driver contract:
     step — at rollout end it already holds the right per-env value.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ...training.onpolicy_state import OnPolicyState
@@ -36,7 +36,7 @@ struct PPORecordStep[
     OBS_: Int,
     ACT_: Int,
     ROLLOUT_LEN_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
@@ -62,10 +62,10 @@ struct PPORecordStep[
         mut state: OnPolicyState[
             Self.OBS, Self.ACT, Self.ROLLOUT_LEN, MINIBATCH, N_ENVS,
         ],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Push N_ENVS transitions into rollout buffers at row
         state.rollout_idx, advance the single shared cursor by 1."""
@@ -75,7 +75,7 @@ struct PPORecordStep[
         # Rollout buffers always live host-side (GPU train_target only
         # uploads the gathered minibatch), so we index the storage tensors'
         # host `.data` Lists directly — no raw pointers. The driver-supplied
-        # obs/reward/done pointers are the (UnsafePointer) trait ABI.
+        # obs/reward/done pointers are the (Pointer) trait ABI.
         ref obs_buf = state.obs_buf.data
         ref act_buf = state.act_buf.data
         ref olp_buf = state.olp_buf.data
@@ -90,16 +90,16 @@ struct PPORecordStep[
         var row_base = t * N_ENVS
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                obs_buf[(row_base + e) * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                obs_buf[(row_base + e) * Self.OBS + d] = obs_ptr[unsafe_offset=e * Self.OBS + d]
             for j in range(Self.ACT):
                 act_buf[(row_base + e) * Self.ACT + j] = ca[e * Self.ACT + j]
             olp_buf[row_base + e] = clp[e]
             val_buf[row_base + e] = cval[e]
-            rew_buf[row_base + e] = reward_ptr[e]
-            done_buf[row_base + e] = done_ptr[e]
+            rew_buf[row_base + e] = reward_ptr[unsafe_offset=e]
+            done_buf[row_base + e] = done_ptr[unsafe_offset=e]
             # term_buf stays at 0 unless caller marks terminal explicitly.
             for d in range(Self.OBS):
-                boot_buf[e * Self.OBS + d] = next_obs_ptr[e * Self.OBS + d]
+                boot_buf[e * Self.OBS + d] = next_obs_ptr[unsafe_offset=e * Self.OBS + d]
         state.rollout_idx += 1
 
     def mark_terminal[

@@ -17,11 +17,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_lu_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout
 
-from mojo_rl.physics3d.fields import DynamicsScratch
+from mojo_rl.physics3d.fields import DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.dynamics.lu import (
     lu_factor,
     lu_solve,
@@ -31,6 +31,7 @@ from mojo_rl.physics3d.dynamics.lu import (
 comptime DT = DType.float32
 comptime NV = 6
 comptime NBODY = 2
+comptime MD = Dims[nv=NV, nbody=NBODY]
 comptime BATCH = 2
 comptime M_SIZE = NV * NV
 comptime V_SIZE = NV
@@ -53,7 +54,7 @@ def main() raises:
     print("=== Stage-I lu parity (NV=", NV, " BATCH=", BATCH, ") ===")
     var ctx = DeviceContext()
 
-    var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
+    var sc = DynamicsScratch[DT, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NV):
             for j in range(NV):
@@ -61,9 +62,9 @@ def main() raises:
             sc.fnet.data[e * V_SIZE + i] = _fill_b(e, i)
 
     # ── fields-CPU factor + solve + M^-1 ──────────────────────────────────
-    lu_factor["cpu", DT, NV, NBODY, BATCH](sc)
-    lu_solve["cpu", DT, NV, NBODY, BATCH](sc)
-    compute_m_inv_from_lu["cpu", DT, NV, NBODY, BATCH](sc)
+    lu_factor["cpu", DT, BATCH=BATCH](sc)
+    lu_solve["cpu", DT, BATCH=BATCH](sc)
+    compute_m_inv_from_lu["cpu", DT, BATCH=BATCH](sc)
 
     # snapshot fields-CPU results (M/fnet are untouched by factor/solve)
     var xf_cpu = List[Scalar[DT]](length=BATCH * V_SIZE, fill=0)
@@ -110,9 +111,9 @@ def main() raises:
 
     # ── fields-GPU factor + solve + M^-1 vs fields-CPU ────────────────────
     sc.upload_all(ctx)  # push host M/fnet (+ all) to device
-    lu_factor["gpu", DT, NV, NBODY, BATCH](sc, ctx)
-    lu_solve["gpu", DT, NV, NBODY, BATCH](sc, ctx)
-    compute_m_inv_from_lu["gpu", DT, NV, NBODY, BATCH](sc, ctx)
+    lu_factor["gpu", DT, BATCH=BATCH](sc, ctx)
+    lu_solve["gpu", DT, BATCH=BATCH](sc, ctx)
+    compute_m_inv_from_lu["gpu", DT, BATCH=BATCH](sc, ctx)
     sc.qacc_ws.download(ctx)
     sc.m_inv.download(ctx)
 

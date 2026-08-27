@@ -31,11 +31,11 @@ from mojo_rl.nn.constants import DT
 from ..core.level_scheduler import LevelScheduler
 
 
-trait ProcgenGame(Copyable, Movable, ImplicitlyDeletable):
+trait ProcgenGame(Copyable, Movable, Deinitable):
     """Surface the generic Procgen env wrappers consume. See the module
     docstring for the per-game glue block this implies."""
 
-    comptime AssetsT: ImplicitlyDeletable & Movable
+    comptime AssetsT: Deinitable & Movable
     comptime DEFAULT_DIST: Int
     comptime GYM_MAX_STEPS: Int
 
@@ -192,7 +192,7 @@ struct ProcgenAction(Action):
 
 
 struct ProcgenGymEnv[G: ProcgenGame, DTYPE: DType = DT](
-    BoxDiscreteActionEnv & Movable & ImplicitlyDeletable
+    BoxDiscreteActionEnv & Movable & Deinitable
 ):
     """`BoxDiscreteActionEnv` adapter for training: normalized `3×84×84`
     NCHW float observation + 15-action discrete space.
@@ -272,7 +272,7 @@ struct ProcgenGymEnv[G: ProcgenGame, DTYPE: DType = DT](
         var res = self.step_obs(action.value)
         return (ProcgenState(0), res[1], res[2])
 
-    def get_state(self) -> ProcgenState:
+    def get_state(mut self) -> ProcgenState:
         return ProcgenState(0)
 
     def close(mut self):

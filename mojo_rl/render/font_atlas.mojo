@@ -902,6 +902,15 @@ def build_font_atlas_r8() -> List[UInt8]:
                 var atlas_y = glyph_row * 8 + row
                 var idx = atlas_y * 128 + atlas_x
                 atlas[idx] = UInt8(255) if bit != 0 else UInt8(0)
+
+    # ⚠ CELL 0 IS OVERWRITTEN AS A SOLID BLOCK. A screen-space UI needs filled
+    # rectangles, and the only 2D pipeline here is the font's textured-quad
+    # path — so a rect is a quad whose UVs point at an opaque texel. The atlas
+    # had none (two 0xFF bytes in the entire bitmap, both inside glyph shapes).
+    # ASCII 0 is NUL: no text draws it, so claiming it costs nothing.
+    for row in range(8):
+        for col in range(8):
+            atlas[row * 128 + col] = UInt8(255)
     return atlas^
 
 
@@ -922,3 +931,15 @@ def glyph_uv(c: UInt8) -> Tuple[Float32, Float32, Float32, Float32]:
     var u1 = u0 + 1.0 / 16.0
     var v1 = v0 + 1.0 / 8.0
     return (u0, v0, u1, v1)
+
+
+def solid_uv() -> Tuple[Float32, Float32, Float32, Float32]:
+    """UVs of an opaque texel, for filled rectangles.
+
+    Samples the MIDDLE of cell 0 rather than its full extent: at the cell
+    boundary a linear sampler blends into the neighbouring glyph, which shows
+    up as a faint fringe along a rectangle's edge.
+    """
+    var u = 4.0 / 128.0  # centre of the 8x8 cell at (0,0)
+    var v = 4.0 / 64.0
+    return (Float32(u), Float32(v), Float32(u), Float32(v))

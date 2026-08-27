@@ -25,8 +25,8 @@ legacy package (which gets deleted at the end of the migration).
 
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -892,14 +892,14 @@ struct Conv2D[
                         Int32(Self.COL),
                         Int32(Self.SO),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](go_b_p),
                         Int32(Self.SO),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             col.unsafe_ptr()
                         ),
                         Int32(Self.COL),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        rebind[Pointer[Float32, MutAnyOrigin]](
                             self.weight.grd.data.unsafe_ptr()
                         ),
                         Int32(Self.COL),
@@ -913,14 +913,14 @@ struct Conv2D[
                         Int32(Self.COL),
                         Int32(Self.OC_),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](go_b_p),
                         Int32(Self.SO),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             self.weight.val.data.unsafe_ptr()
                         ),
                         Int32(Self.COL),
                         Float32(0.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        rebind[Pointer[Float32, MutAnyOrigin]](
                             d_col.unsafe_ptr()
                         ),
                         Int32(Self.COL),

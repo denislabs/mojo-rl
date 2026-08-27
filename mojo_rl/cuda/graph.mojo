@@ -20,11 +20,12 @@ by pixi nvidia environment activation).
 
 from std.sys import has_nvidia_gpu_accelerator
 from std.ffi import OwnedDLHandle, c_int
-from std.memory import alloc
-from std.gpu.host import DeviceContext
+from std.memory import alloc, dealloc
+from std.os import getenv
+from max.gpu.host import DeviceContext
 
 
-comptime _CUptr = UnsafePointer[NoneType, MutUntrackedOrigin]
+comptime _CUptr = Pointer[NoneType, MutUntrackedOrigin]
 
 
 @always_inline
@@ -40,18 +41,42 @@ struct CUDAGraph(Movable):
     All CUDA driver calls go through the interceptor library wrappers.
     """
 
-    var _state: Int  # 0=init, 1=capturing, 2=captured
+    # 0=init, 1=capturing, 2=captured, 3=DISABLED (no usable Mojo stream)
+    var _state: Int
     var _num_nodes: Int
     var _graph: _CUptr
     var _exec: _CUptr
     var _mojo_stream: _CUptr
     var _replay_stream: _CUptr
     var _lib: OwnedDLHandle
-    # Cached `intercept_graph_launch` pointer — resolved once in `__init__`
-    # instead of re-`dlsym`'d on every replay (replays happen tens of
-    # thousands of times per run). NVIDIA-only; uninit + never called on
-    # non-NVIDIA (the replay methods comptime-return there).
-    var _launch_fn: def (_CUptr, _CUptr) thin -> c_int
+    # ⚠⚠ HOLDING THE CONTEXT IS LOAD-BEARING, NOT TIDINESS.
+    #
+    # Mojo destroys a value at its LAST USE, not at end of scope. A caller
+    # that writes
+    #
+    #     var g = CUDAGraph(ctx)     # <- last mention of ctx
+    #     g.begin_capture()
+    #
+    # has `ctx` destroyed the instant `__init__` returns, and MAX's
+    # DeviceContext destructor SYNCHRONIZES AND DESTROYS the stream we are
+    # about to capture. Every symptom in the 2026-08-09 arc came from that:
+    # `cuStreamDestroy` on our handle, `cuStreamSynchronize` arriving "during
+    # capture" (it is the destructor's), and driver SIGSEGVs in
+    # cuStreamBeginCapture / EndCapture / GetCaptureInfo (use-after-free on a
+    # freed stream, which is undefined and therefore inconsistent — rc=0 from
+    # one entry point, a fault from the next).
+    #
+    # `AsyncRT_DeviceContext_release` was frame #12 of the very first stack
+    # trace we looked at. Storing the context makes the graph's lifetime an
+    # upper bound on the context's, so no caller can arrange this by accident.
+    var _ctx: DeviceContext
+    # `intercept_graph_launch` used to be cached here as a raw function
+    # pointer. Mojo 1.0's `get_function` returns a `_DLCallable` whose origin
+    # is `origin_of(self._lib)` — it deliberately borrows the handle so the
+    # library cannot be unloaded mid-call — and that origin cannot be named in
+    # a field type, so the callable is resolved per replay instead. `dlsym` on
+    # an already-open handle is a hash lookup; against a graph launch plus a
+    # stream synchronize it is not measurable.
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Initialize CUDA graph capture.
@@ -60,6 +85,7 @@ struct CUDAGraph(Movable):
         Requires at least one prior kernel launch for stream discovery.
         On non-NVIDIA: disabled state, all methods are no-ops.
         """
+        self._ctx = ctx  # keep the context alive — see the field comment
         self._state = 0
         self._num_nodes = 0
         # Raw _CUptr fields: NVIDIA path overwrites via interceptor calls
@@ -69,45 +95,77 @@ struct CUDAGraph(Movable):
         self._mojo_stream = _uninit[_CUptr]()
         self._replay_stream = _uninit[_CUptr]()
 
-        self._launch_fn = _uninit[def (_CUptr, _CUptr) thin -> c_int]()
-
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
 
-            # Resolve the hot graph-launch symbol once (used by every replay).
+            # ⚠ ENABLED AGAIN AS OF THE LIFETIME FIX. This block briefly
+            # defaulted OFF, on the conclusion that MAX destroyed and
+            # synchronized the stream on its own and the borrowed-stream
+            # design was unsalvageable. That conclusion was WRONG. A probe
+            # with no CUDAGraph in the process (`probe_max_stream_lifetime`)
+            # showed MAX keeps ONE stream across repeated synchronizes and
+            # only tears it down when the DeviceContext dies — and the
+            # context was dying early because Mojo destroys a value at its
+            # LAST USE and `CUDAGraph` did not hold one. See the `_ctx` field.
             #
-            # NOTE: `get_function` returns a `_DLCallable` wrapper that keeps the
-            # handle's origin alive; the trailing `()` unwraps it to the raw
-            # function pointer. `_DLCallable.__call__` is variadic and DISCARDS
-            # its arguments, so `get_function[T](name)(a, b)` does NOT call the
-            # C function — it silently returns the unwrapped pointer and drops
-            # `a, b`. Always unwrap into a named binding, then call it.
-            self._launch_fn = self._lib.get_function[
-                def (_CUptr, _CUptr) thin -> c_int
-            ]("intercept_graph_launch")()
+            # MOJO_RL_CUDA_GRAPH=0 disables capture without a rebuild, for
+            # bisecting a suspected capture problem against a known-good run.
+            if getenv("MOJO_RL_CUDA_GRAPH", "1") == "0":
+                self._state = 3  # DISABLED by request
+                print(
+                    "[CUDAGraph] disabled by MOJO_RL_CUDA_GRAPH=0 — running"
+                    " steps directly (correct, no graph-replay speedup)."
+                )
+                return
 
+            # ⚠ `get_function`'s parameter is the symbol's RETURN type, and
+            # the returned `_DLCallable` IS the callable — there is no unwrap
+            # step. This file previously used the pre-1.0 spelling
+            # `get_function[def(A, B) thin -> R](name)()`, where the parameter
+            # was the whole function type and the trailing `()` unwrapped it.
+            # Under 1.0 that spelling still COMPILES — a function type is a
+            # valid `RegisterPassable` return type — but the trailing `()`
+            # CALLS the C function with no arguments and types its return value
+            # as a function pointer, which the next call then jumps into. See
+            # `tests/cuda/test_dlhandle_get_function_arity.mojo`.
+            #
             # Get Mojo's internal stream
-            var get_stream = self._lib.get_function[def() thin -> _CUptr](
-                "intercept_get_mojo_stream"
-            )()
+            var get_stream = self._lib.get_function[_CUptr]("intercept_get_mojo_stream")
             self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
+                # ⚠ THE COMMON CAUSE IS NOT "no kernel ran yet" ANY MORE.
+                # MAX 26.5.0rc2 DESTROYS its stream after `ctx.synchronize()`
+                # (measured 2026-08-09: `cuStreamDestroy` on exactly the
+                # handle the launch hook had just reported). The interceptor
+                # NULLs the handle when that happens, so a zero here means
+                # "the stream MAX was using is gone", and capture cannot
+                # proceed — there is no long-lived stream to borrow.
+                #
+                # Reaching this branch is therefore the EXPECTED outcome on
+                # this MAX, not an anomaly, and it must not crash: calling
+                # into the driver with the freed handle is the use-after-free
+                # that produced every fault in this arc.
+                self._state = 3  # DISABLED
                 print(
-                    "[CUDAGraph] WARNING: Mojo stream not discovered. "
-                    "Run at least one GPU kernel before creating CUDAGraph."
+                    "[CUDAGraph] DISABLED: no live Mojo stream to capture."
+                    " MAX destroys its stream after a synchronize, so the"
+                    " borrowed-stream design has nothing stable to capture."
+                    " Falling back to running the step directly — correct,"
+                    " just without the graph-replay speedup."
                 )
             else:
                 # Create replay stream
-                var stream_create = self._lib.get_function[
-                    def(UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-                ]("intercept_stream_create")()
-                var stream_buf = alloc[_CUptr](1)
-                stream_buf[] = _uninit[_CUptr]()
+                var stream_create = self._lib.get_function[c_int](
+                    "intercept_stream_create"
+                )
+                var stream_alloc = alloc[_CUptr]({count = 1})
+                var stream_buf = stream_alloc.unsafe_ptr()
+                stream_buf.unsafe_write(_uninit[_CUptr]())
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
-                stream_buf.free()
+                dealloc(stream_alloc^)
         else:
             self._lib = _uninit[OwnedDLHandle]()
 
@@ -116,6 +174,16 @@ struct CUDAGraph(Movable):
         comptime if not has_nvidia_gpu_accelerator():
             return
 
+        # ⚠ CHECK STATE FIRST. On the DISABLED path `_mojo_stream` was never
+        # assigned a real value, so reading it below would be reading
+        # uninitialized memory — and a non-zero garbage word would sail past
+        # the check and hand a junk pointer to the driver.
+        if self._state == 3:
+            raise Error(
+                "[CUDAGraph] disabled — capture is unavailable on this MAX."
+                " Callers should check is_disabled() and run their work"
+                " directly (maybe_capture_replay does)."
+            )
         if Int(self._mojo_stream) == 0:
             raise Error(
                 "[CUDAGraph] Mojo stream not discovered. "
@@ -126,20 +194,22 @@ struct CUDAGraph(Movable):
 
         # Destroy previous graph if re-capturing
         if self._state == 2:
-            var exec_destroy = self._lib.get_function[
-                def(_CUptr) thin -> c_int
-            ]("intercept_graph_exec_destroy")()
+            var exec_destroy = self._lib.get_function[c_int]("intercept_graph_exec_destroy")
             _ = exec_destroy(self._exec)
-            var graph_destroy = self._lib.get_function[
-                def(_CUptr) thin -> c_int
-            ]("intercept_graph_destroy")()
+            var graph_destroy = self._lib.get_function[c_int]("intercept_graph_destroy")
             _ = graph_destroy(self._graph)
             self._exec = _uninit[_CUptr]()
             self._graph = _uninit[_CUptr]()
 
-        var begin_capture = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_begin_capture"
-        )()
+        # ⚠ A PRE-CAPTURE `intercept_stream_synchronize` USED TO BE HERE AND
+        # WAS REMOVED — IT IS THE CALL THAT CRASHED. It was added to keep the
+        # interceptor's sync-suppression honest (drain before the window so
+        # answering "already idle" is true). The empty-capture probe then
+        # faulted inside the driver ON THAT VERY CALL, with no capture active,
+        # which is what proved the failure is not capture-specific: this shim
+        # cannot safely call the driver with MAX's stream handle at all.
+        # Do not reinstate it without fixing that first.
+        var begin_capture = self._lib.get_function[c_int]("intercept_stream_begin_capture")
         var r = begin_capture(self._mojo_stream)
         if r != 0:
             raise Error("[CUDAGraph] cuStreamBeginCapture failed: " + String(r))
@@ -153,15 +223,24 @@ struct CUDAGraph(Movable):
         if self._state != 1:
             raise Error("[CUDAGraph] Not capturing.")
 
-        # End capture
-        var graph_buf = alloc[_CUptr](1)
-        graph_buf[] = _uninit[_CUptr]()
-        var end_capture = self._lib.get_function[
-            def(_CUptr, UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-        ]("intercept_stream_end_capture")()
+        # End capture.
+        #
+        # Symbol resolution is hoisted ABOVE each allocation throughout this
+        # method. `get_function` raises if the symbol is missing, and an
+        # `Allocation` must be consumed on every path out of the scope — so a
+        # raising call sandwiched between the allocation and its `dealloc`
+        # leaks the buffer (and does not compile). Resolving first leaves no
+        # raising call in the window, which is why none of these need a
+        # `try`/`except`.
+        var end_capture = self._lib.get_function[c_int](
+            "intercept_stream_end_capture"
+        )
+        var graph_alloc = alloc[_CUptr]({count = 1})
+        var graph_buf = graph_alloc.unsafe_ptr()
+        graph_buf.unsafe_write(_uninit[_CUptr]())
         var r_end = end_capture(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
-        graph_buf.free()
+        dealloc(graph_alloc^)
 
         if r_end != 0:
             self._state = 0
@@ -170,14 +249,15 @@ struct CUDAGraph(Movable):
             )
 
         # Count nodes
-        var num_buf = alloc[UInt64](1)
-        num_buf[] = UInt64(0)
-        var get_nodes = self._lib.get_function[
-            def(_CUptr, UnsafePointer[UInt64, MutUntrackedOrigin]) thin -> c_int
-        ]("intercept_graph_get_nodes")()
+        var get_nodes = self._lib.get_function[c_int](
+            "intercept_graph_get_nodes"
+        )
+        var num_alloc = alloc[UInt64]({count = 1})
+        var num_buf = num_alloc.unsafe_ptr()
+        num_buf.unsafe_write(UInt64(0))
         _ = get_nodes(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
-        num_buf.free()
+        dealloc(num_alloc^)
 
         if self._num_nodes == 0:
             self._state = 0
@@ -187,14 +267,15 @@ struct CUDAGraph(Movable):
             )
 
         # Instantiate
-        var exec_buf = alloc[_CUptr](1)
-        exec_buf[] = _uninit[_CUptr]()
-        var instantiate = self._lib.get_function[
-            def(UnsafePointer[_CUptr, MutUntrackedOrigin], _CUptr) thin -> c_int
-        ]("intercept_graph_instantiate")()
+        var instantiate = self._lib.get_function[c_int](
+            "intercept_graph_instantiate"
+        )
+        var exec_alloc = alloc[_CUptr]({count = 1})
+        var exec_buf = exec_alloc.unsafe_ptr()
+        exec_buf.unsafe_write(_uninit[_CUptr]())
         var r_inst = instantiate(exec_buf, self._graph)
         self._exec = exec_buf[]
-        exec_buf.free()
+        dealloc(exec_alloc^)
 
         if r_inst != 0:
             self._state = 0
@@ -212,11 +293,10 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._replay_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._replay_stream)
 
-        var stream_sync = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_synchronize"
-        )()
+        var stream_sync = self._lib.get_function[c_int]("intercept_stream_synchronize")
         _ = stream_sync(self._replay_stream)
 
     def replay_async(self) raises:
@@ -228,7 +308,8 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._replay_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._replay_stream)
 
     def replay_on_mojo_stream(self) raises:
         """Replay on Mojo's main stream (implicit ordering with other kernels).
@@ -248,17 +329,27 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._mojo_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""
         comptime if not has_nvidia_gpu_accelerator():
             return
 
-        var stream_sync = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_synchronize"
-        )()
+        var stream_sync = self._lib.get_function[c_int]("intercept_stream_synchronize")
         _ = stream_sync(self._replay_stream)
+
+    def is_disabled(self) -> Bool:
+        """No usable stream — the caller must run its work directly.
+
+        True when construction found no live Mojo stream to capture. Callers
+        must check this INSTEAD OF assuming capture is available; see the note
+        in `__init__` for why this is the normal state under MAX 26.5.0rc2.
+        """
+        comptime if not has_nvidia_gpu_accelerator():
+            return False
+        return self._state == 3
 
     def is_captured(self) -> Bool:
         """Whether a graph is ready for replay."""
@@ -308,6 +399,17 @@ def maybe_capture_replay[
             STEP()
             ctx.synchronize()
             var g = CUDAGraph(ctx)
+
+            # ⚠ NO USABLE STREAM -> RUN DIRECTLY, FOREVER, WITHOUT CRASHING.
+            # `STEP()` has already run for this call, so returning here is
+            # correct, not a skipped update. The disabled graph is STORED so
+            # later calls take the `else` branch below instead of retrying
+            # construction (which would re-`synchronize()` every single call
+            # and re-print the warning).
+            if g.is_disabled():
+                graph = g^
+                return
+
             g.begin_capture()
             STEP()
             g.end_capture()
@@ -321,6 +423,9 @@ def maybe_capture_replay[
                 "nodes",
             )
             graph = g^
+        elif graph.value().is_disabled():
+            # Capture was never possible; the closure is the whole step.
+            STEP()
         else:
             graph.value().replay_on_mojo_stream()
     else:

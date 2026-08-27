@@ -21,17 +21,19 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_rk4_newton_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -44,18 +46,51 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime CONE = Walker2dModel.CONE_TYPE  # PYRAMIDAL (XML default)
 comptime BATCH = 2
 comptime N_STEPS = 3
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprint (frozen from the legacy-validated fields-GPU run) -----
+# Regenerated 2026-07-31 for the pyramidal contact-force RECORD fix. The
+# PYRAMIDAL contacts checksum moved ~2.17x; ELLIPTIC did not move at all, and
+# neither did any qacc/state checksum. That split is the whole story:
+# `mju_decodePyramid` makes a contact's normal force the SUM of its four edge
+# forces, and `newton_solve.mojo` was halving it. The solver works in edge
+# forces, so qacc was never affected — only the write-back to
+# `Data.contacts[CONTACT_IDX_FORCE_*]`, which the elliptic path writes
+# directly and therefore never had wrong. Verified by causation: with the
+# whole change stashed, this file's PYRAMIDAL qacc checksum is byte-identical
+# to the new one.
+#
+# ⚠ While regenerating, the OLD PYRAMIDAL qacc golden turned out to be STALE
+# on its own: baseline harvests 5707.35403907299 against a frozen
+# 5707.129324436188 (4e-5). It had drifted at some earlier commit and survived
+# because GOLD_RTOL is 1e-3. Refreshed here too, but note that a 1e-3 pin on a
+# self-golden cannot tell drift from a bug.
 comptime HARVEST = False  # True => print fingerprint + skip asserts (regen mode)
 comptime GOLD_NCON = 12  # contacts per step (uniform across the 3 steps)
-comptime GOLD_QPOS = 14.328573018196039
-comptime GOLD_QVEL = -40.97622882947326
-comptime GOLD_QACC = -5301.064523696899
-comptime GOLD_CON = 120760.72111796401
+comptime GOLD_QPOS = 14.328573160222732
+comptime GOLD_QVEL = -40.97618084400892
+comptime GOLD_QACC = -5301.061818122864
+#
+# ⚠ CON REFRESHED 2026-08-05 (239785.12210576795 -> 246045.58073905203, 2.6%),
+# and QPOS/QVEL/QACC UNTOUCHED — which is the justification, not a coincidence.
+# The element-order fix made `full_parser` group geoms by body as MuJoCo
+# numbers them, so the record EMISSION ORDER moved and an order-sensitive
+# checksum noticed. The trajectory did not move:
+#   * `GOLD_NCON` unchanged at 12 on every one of the 3 steps;
+#   * qpos, qvel and qacc are all checked BEFORE `con` and all PASS — the RK4
+#     rollout is identical;
+#   * walker2d has NO condim-1 geoms (all 8 condim 3, measured), so neither
+#     the frictionless-row fix nor the frictionless record guard reaches it;
+#   * and the resulting order IS MuJoCo's, verified on this same model by
+#     `test_walker2d_contacts_vs_mujoco.mojo` — zero position-matched
+#     body-pair mismatches, dist 1.2e-7, pos 7.6e-8.
+# A 2.6% move in a positionally-weighted checksum is what a permutation of 12
+# records looks like; the size of the jump carries no information about
+# severity, which is why the state checksums are the ones to read.
+comptime GOLD_CON = 246045.58073905203
 comptime GOLD_RTOL = 1e-3
 
 
@@ -73,11 +108,11 @@ def main() raises:
     print("--- RK4+Newton fields GOLDEN gate: Walker2D BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -96,17 +131,9 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
-        BATCH=BATCH,
-        SOLVER="newton",
-    ]()
+    var integ = RK4Integrator[DTYPE, MD, CONE, BATCH=BATCH, SOLVER="newton"]()
     integ.prepare_gpu(ctx)
-    var integ_c = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
-        BATCH=BATCH,
-        SOLVER="newton",
-    ]()
+    var integ_c = RK4Integrator[DTYPE, MD, CONE, BATCH=BATCH, SOLVER="newton"]()
 
     for step in range(N_STEPS):
         integ.step["gpu"](d, mf, ctx)
@@ -115,7 +142,7 @@ def main() raises:
         var ncon_seen = 0
         for e in range(BATCH):
             ncon_seen += Int(
-                d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
         if ncon_seen == 0:
             raise Error("no contacts at step " + String(step) + " — vacuous")
@@ -144,7 +171,7 @@ def main() raises:
             fp_qacc += Float64(d.qacc.data[e * NV + i]) * Float64(e * NV + i + 1)
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc):
             for k in range(CONTACT_SIZE):
                 fp_con += Float64(

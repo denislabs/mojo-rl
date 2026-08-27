@@ -285,6 +285,87 @@ def sphere_plane[
     return (dist, contact_x, contact_y, contact_z)
 
 
+@always_inline
+def ellipsoid_plane[
+    DTYPE: DType
+](
+    center_x: Scalar[DTYPE],
+    center_y: Scalar[DTYPE],
+    center_z: Scalar[DTYPE],
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    rx: Scalar[DTYPE],
+    ry: Scalar[DTYPE],
+    rz: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Ellipsoid-plane collision (ground plane with normal = +Z).
+
+    MuJoCo routes plane x ellipsoid through `mjc_PlaneConvex`, which asks the
+    convex geom for its SUPPORT POINT along -normal and reports that single
+    deepest point. An ellipsoid's support point is closed-form, so no ccd is
+    needed here.
+
+    For the ellipsoid `{c + R A u : |u| <= 1}` with `A = diag(rx, ry, rz)`,
+    the support along a world direction `w` is
+
+        d     = R^T w
+        point = c + R (A^2 d) / |A d|
+
+    Taking `w = (0, 0, -1)` maximises `-z`, i.e. finds the LOWEST point of the
+    ellipsoid, and `dist = point_z - ground_z` is then the exact analogue of
+    `sphere_plane`'s `(center_z - radius) - ground_z`.
+
+    A smooth strictly-convex surface touches a plane at one point, so one
+    contact is the whole story — unlike `box_plane`, which reports up to four.
+
+    Args:
+        center_x: Ellipsoid centre x.
+        center_y: Ellipsoid centre y.
+        center_z: Ellipsoid centre z.
+        qx: Orientation quaternion x.
+        qy: Orientation quaternion y.
+        qz: Orientation quaternion z.
+        qw: Orientation quaternion w.
+        rx: Semi-axis along local x.
+        ry: Semi-axis along local y.
+        rz: Semi-axis along local z.
+        ground_z: Z-height of the ground plane.
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z), matching
+        `sphere_plane`: dist is signed (negative = penetration) and the
+        contact point sits midway across the gap.
+    """
+    # d = R^T * (0, 0, -1)
+    var d = rotate_vector_by_quat_inverse[DTYPE](
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](-1),
+        qx, qy, qz, qw,
+    )
+    var ax = rx * d[0]
+    var ay = ry * d[1]
+    var az = rz * d[2]
+    var norm = sqrt(ax * ax + ay * ay + az * az)
+    # Degenerate only if a semi-axis is zero; fall back to the centre so the
+    # caller still gets a finite, obviously-non-penetrating distance.
+    if norm <= Scalar[DTYPE](1e-15):
+        return (center_z - ground_z, center_x, center_y, ground_z)
+    var inv = Scalar[DTYPE](1) / norm
+    # R * (A^2 d) / |A d|
+    var off = rotate_vector_by_quat[DTYPE](
+        rx * ax * inv, ry * ay * inv, rz * az * inv,
+        qx, qy, qz, qw,
+    )
+    var px = center_x + off[0]
+    var py = center_y + off[1]
+    var pz = center_z + off[2]
+
+    var dist = pz - ground_z
+    return (dist, px, py, ground_z + dist * Scalar[DTYPE](0.5))
+
+
 # =============================================================================
 # Capsule Collision Primitives (Phase 8)
 # =============================================================================
@@ -667,6 +748,12 @@ def capsule_capsule[
         b_half_len: Half-length of capsule B.
         b_radius: Radius of capsule B.
 
+    ⚠ THE NARROW PHASES DO NOT CALL THIS. `mjraw_CapsuleCapsule` emits TWO
+    points when the axes are parallel, and this returns one; both contact
+    detectors go through `capsule_capsule_manifold` below. This stays as the
+    plain single-point query — it is on the package's public surface and it is
+    what `cylinder_capsule` and the tools want.
+
     Returns:
         Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
         - dist: Signed distance (negative = penetration).
@@ -733,67 +820,295 @@ def capsule_capsule[
     var c2_y = closest[4]
     var c2_z = closest[5]
 
-    # Check if centerlines cross (closest points coincident).
-    # When this happens, sphere_sphere picks an arbitrary normal which
-    # makes the constraint solver push in the wrong direction.
-    # Instead, use cross(axis_a, axis_b) as the separation normal
-    # (perpendicular to both capsule axes) — matches MuJoCo mjc_CapsuleCapsule.
+    # The two closest points can COINCIDE — the capsule centrelines cross —
+    # and then the separation direction is genuinely undefined and has to be
+    # chosen by a rule. MuJoCo's rule lives in `mjraw_SphereSphere`
+    # (`engine_collision_primitive.c:261-268`), which is what its
+    # `mjraw_CapsuleCapsule` reduces to:
+    #
+    #     if (len < mjMINVAL) { cross(axis1, axis2); mju_normalize3(...); }
+    #
+    # i.e. CROSS OF THE TWO CAPSULE AXES first, and — because `mju_normalize3`
+    # rewrites a zero vector as (1,0,0) — plain +x when the axes are parallel.
+    #
+    # ⚠ THIS USED TO PICK `centre_B - centre_A` INSTEAD, deliberately, with the
+    # rationale that a cross-product normal is perpendicular to a planar arm's
+    # motion plane so "no DOF can resolve it". The comment above it claimed the
+    # code matched `mjc_CapsuleCapsule`; it did the opposite. The rationale is
+    # also wrong: an out-of-plane normal is not inert, it just means the pair
+    # acts through its FRICTION rows instead of its normal row, which is
+    # exactly what MuJoCo does. Keeping the normal in-plane changes the
+    # constraint COST, so the solver converges to a different minimiser —
+    # measured on dm_control manipulator `bring_peg` with the hand closed on
+    # itself (thumb2 x finger2, axes crossing, dist exactly -(r1+r2)):
+    # MuJoCo's normal is (0,1,0) and its normal-row Jacobian is ~0 (2.8e-18)
+    # where ours was (-0.995, 0, 0.0998) and large. qacc[thumb] came out -3859
+    # against MuJoCo's +1824 — a sign flip, and it read as a joint-LIMIT bug
+    # (task #41) for a whole arc because the limit row then correctly reports
+    # itself satisfied at the wrong minimiser.
     var dx = c2_x - c1_x
     var dy = c2_y - c1_y
     var dz = c2_z - c1_z
     var center_dist_sq = dx * dx + dy * dy + dz * dz
 
     if center_dist_sq < Scalar[DTYPE](1e-16):
-        # Degenerate: capsule centerlines cross or coincide.
-        # Strategy: use direction from capsule A center to capsule B center.
-        # This keeps the normal in the motion plane (critical for 2D chains
-        # where cross(axis_a, axis_b) is perpendicular to the plane and no
-        # DOF can resolve it).  Fall back to cross(axes) only if centers
-        # are also coincident.
-        var nx = b_x - a_x
-        var ny = b_y - a_y
-        var nz = b_z - a_z
-        var nlen_sq = nx * nx + ny * ny + nz * nz
+        var nx = a_ay * b_az - a_az * b_ay
+        var ny = a_az * b_ax - a_ax * b_az
+        var nz = a_ax * b_ay - a_ay * b_ax
+        var nlen = sqrt(nx * nx + ny * ny + nz * nz)
+        if nlen < Scalar[DTYPE](1e-15):
+            # `mju_normalize3` on a zero vector — parallel axes.
+            nx = Scalar[DTYPE](1)
+            ny = Scalar[DTYPE](0)
+            nz = Scalar[DTYPE](0)
+        else:
+            var inv_nlen = Scalar[DTYPE](1.0) / nlen
+            nx *= inv_nlen
+            ny *= inv_nlen
+            nz *= inv_nlen
 
-        if nlen_sq < Scalar[DTYPE](1e-16):
-            # Centers also coincident — use cross(axis_a, axis_b).
-            nx = a_ay * b_az - a_az * b_ay
-            ny = a_az * b_ax - a_ax * b_az
-            nz = a_ax * b_ay - a_ay * b_ax
-            nlen_sq = nx * nx + ny * ny + nz * nz
-
-        if nlen_sq < Scalar[DTYPE](1e-16):
-            # Parallel at same location — pick perpendicular to axis_a.
-            var abs_ax = abs(a_ax)
-            var abs_ay = abs(a_ay)
-            var abs_az = abs(a_az)
-            if abs_ax <= abs_ay and abs_ax <= abs_az:
-                nx = Scalar[DTYPE](0)
-                ny = -a_az
-                nz = a_ay
-            elif abs_ay <= abs_az:
-                nx = a_az
-                ny = Scalar[DTYPE](0)
-                nz = -a_ax
-            else:
-                nx = -a_ay
-                ny = a_ax
-                nz = Scalar[DTYPE](0)
-            nlen_sq = nx * nx + ny * ny + nz * nz
-
-        var inv_nlen = Scalar[DTYPE](1.0) / sqrt(nlen_sq)
-        nx *= inv_nlen
-        ny *= inv_nlen
-        nz *= inv_nlen
-
+        # `mjraw_SphereSphere`'s own point and depth at coincident centres:
+        # dist = -(r1 + r2), pos = p1 + n * (r1 + dist/2).
         var dist = -(a_radius + b_radius)
-        var mid_x = (c1_x + c2_x) * Scalar[DTYPE](0.5)
-        var mid_y = (c1_y + c2_y) * Scalar[DTYPE](0.5)
-        var mid_z = (c1_z + c2_z) * Scalar[DTYPE](0.5)
-        return (dist, mid_x, mid_y, mid_z, nx, ny, nz)
+        var off = a_radius + dist * Scalar[DTYPE](0.5)
+        return (
+            dist,
+            c1_x + nx * off,
+            c1_y + ny * off,
+            c1_z + nz * off,
+            nx,
+            ny,
+            nz,
+        )
 
     # Normal case: treat as sphere-sphere between the closest points
     return sphere_sphere(c1_x, c1_y, c1_z, a_radius, c2_x, c2_y, c2_z, b_radius)
+
+
+# ⚠ TWO, NOT ONE. `mjraw_CapsuleCapsule` emits a SECOND point whenever the two
+# axes are parallel, and it tries four candidate ends to find it. Two parallel
+# capsules resting on each other over a segment are exactly the case one point
+# cannot express — the same reason `CB_MAX_POINTS` is 2.
+comptime CC_MAX_POINTS: Int = 2
+
+
+@always_inline
+def _cc_sphere_sphere[
+    DTYPE: DType
+](
+    margin: Scalar[DTYPE],
+    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    a1x: Scalar[DTYPE], a1y: Scalar[DTYPE], a1z: Scalar[DTYPE],
+    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    a2x: Scalar[DTYPE], a2y: Scalar[DTYPE], a2z: Scalar[DTYPE],
+    slot: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+) -> Int:
+    """`mjraw_SphereSphere` writing into `slot`. Returns 0 or 1.
+
+    ⚠ IT REJECTS ON `margin`, and that rejection is what makes the parallel
+    branch's four-candidate search terminate — `mjraw_CapsuleCapsule` counts
+    the points that came back, not the ones it asked for.
+
+    `a1`/`a2` are the two geoms' UNIT z axes, used only when the two centres
+    coincide: MuJoCo takes their cross product and then `mju_normalize3`,
+    which rewrites a zero vector as `(1, 0, 0)`.
+    """
+    comptime MINV = Scalar[DTYPE](1e-15)
+    var dx = p1x - p2x
+    var dy = p1y - p2y
+    var dz = p1z - p2z
+    var cd_sq = dx * dx + dy * dy + dz * dz
+    var min_dist = margin + r1 + r2
+    if cd_sq > min_dist * min_dist:
+        return 0
+
+    var dist = sqrt(cd_sq) - r1 - r2
+    var nx = p2x - p1x
+    var ny = p2y - p1y
+    var nz = p2z - p1z
+    var ln = sqrt(nx * nx + ny * ny + nz * nz)
+    if ln >= MINV:
+        nx /= ln
+        ny /= ln
+        nz /= ln
+    else:
+        nx = a1y * a2z - a1z * a2y
+        ny = a1z * a2x - a1x * a2z
+        nz = a1x * a2y - a1y * a2x
+        var cl = sqrt(nx * nx + ny * ny + nz * nz)
+        if cl >= MINV:
+            nx /= cl
+            ny /= cl
+            nz /= cl
+        else:
+            nx = Scalar[DTYPE](1)
+            ny = Scalar[DTYPE](0)
+            nz = Scalar[DTYPE](0)
+
+    var off = r1 + dist * Scalar[DTYPE](0.5)
+    dist_out[slot] = dist
+    pos_out[3 * slot + 0] = p1x + nx * off
+    pos_out[3 * slot + 1] = p1y + ny * off
+    pos_out[3 * slot + 2] = p1z + nz * off
+    normal_out[3 * slot + 0] = nx
+    normal_out[3 * slot + 1] = ny
+    normal_out[3 * slot + 2] = nz
+    return 1
+
+
+@always_inline
+def _cc_clip[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`mju_clip(x, -1, 1)`."""
+    if x < Scalar[DTYPE](-1):
+        return Scalar[DTYPE](-1)
+    if x > Scalar[DTYPE](1):
+        return Scalar[DTYPE](1)
+    return x
+
+
+@always_inline
+def capsule_capsule_manifold[
+    DTYPE: DType
+](
+    a_x: Scalar[DTYPE], a_y: Scalar[DTYPE], a_z: Scalar[DTYPE],
+    a_qx: Scalar[DTYPE], a_qy: Scalar[DTYPE], a_qz: Scalar[DTYPE],
+    a_qw: Scalar[DTYPE],
+    a_half_len: Scalar[DTYPE], a_radius: Scalar[DTYPE],
+    b_x: Scalar[DTYPE], b_y: Scalar[DTYPE], b_z: Scalar[DTYPE],
+    b_qx: Scalar[DTYPE], b_qy: Scalar[DTYPE], b_qz: Scalar[DTYPE],
+    b_qw: Scalar[DTYPE],
+    b_half_len: Scalar[DTYPE], b_radius: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+) -> Int:
+    """Full contact MANIFOLD for a capsule/capsule pair — up to TWO points.
+
+    Verbatim port of `mjraw_CapsuleCapsule`
+    (`engine_collision_primitive.c:426`). `capsule_capsule` above is the
+    general branch's single point and stays for the callers that want a plain
+    query; THIS is what the narrow phases use.
+
+    ⚠⚠ THE PARALLEL BRANCH IS THE WHOLE POINT. When `|det| < mjMINVAL` the two
+    centrelines are parallel, one closest-point pair is not unique, and MuJoCo
+    walks FOUR candidates — `x1 = +1`, `x1 = -1`, `x2 = +1`, `x2 = -1` — each
+    paired with the other segment's clipped projection, stopping as soon as two
+    of them are within `margin`. `i2rt_yam` rests two parallel finger capsules
+    on each other and MuJoCo reports 2 contacts there where a single
+    closest-point query reports 1; the two engines then solve different
+    problems even though every number in the one shared contact agrees.
+
+    ⚠ THE AXES ARE SCALED BY HALF-LENGTH, so the segment parameters run over
+    [-1, 1] and every clip in the reference is `mju_clip(., -1, 1)`. Rescaling
+    them to unit vectors changes which branch each clip takes.
+
+    ⚠ `ma` and `mc` are divided by WITHOUT A GUARD, exactly as the reference
+    does: a zero-length capsule makes `det` zero AND `mc` zero. MuJoCo has the
+    same hole and no Menagerie model reaches it; a guard here would be a
+    silent divergence rather than a safety net.
+
+    Returns the number of points written. Normals point from capsule A to
+    capsule B, matching `capsule_capsule`.
+    """
+    comptime MINV = Scalar[DTYPE](1e-15)
+
+    var ua = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+        a_qx, a_qy, a_qz, a_qw,
+    )
+    var ub = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+        b_qx, b_qy, b_qz, b_qw,
+    )
+    var x1x = ua[0] * a_half_len
+    var x1y = ua[1] * a_half_len
+    var x1z = ua[2] * a_half_len
+    var x2x = ub[0] * b_half_len
+    var x2y = ub[1] * b_half_len
+    var x2z = ub[2] * b_half_len
+
+    var dfx = a_x - b_x
+    var dfy = a_y - b_y
+    var dfz = a_z - b_z
+
+    var ma = x1x * x1x + x1y * x1y + x1z * x1z
+    var mb = -(x1x * x2x + x1y * x2y + x1z * x2z)
+    var mc = x2x * x2x + x2y * x2y + x2z * x2z
+    var u = -(x1x * dfx + x1y * dfy + x1z * dfz)
+    var v = x2x * dfx + x2y * dfy + x2z * dfz
+    var det = ma * mc - mb * mb
+
+    var absdet = det if det >= Scalar[DTYPE](0) else -det
+    if absdet >= MINV:
+        var t1 = (mc * u - mb * v) / det
+        var t2 = (ma * v - mb * u) / det
+        if t1 > Scalar[DTYPE](1):
+            t1 = Scalar[DTYPE](1)
+            t2 = (v - mb) / mc
+        elif t1 < Scalar[DTYPE](-1):
+            t1 = Scalar[DTYPE](-1)
+            t2 = (v + mb) / mc
+        if t2 > Scalar[DTYPE](1):
+            t2 = Scalar[DTYPE](1)
+            t1 = _cc_clip[DTYPE]((u - mb) / ma)
+        elif t2 < Scalar[DTYPE](-1):
+            t2 = Scalar[DTYPE](-1)
+            t1 = _cc_clip[DTYPE]((u + mb) / ma)
+        return _cc_sphere_sphere[DTYPE](
+            margin,
+            a_x + x1x * t1, a_y + x1y * t1, a_z + x1z * t1, a_radius,
+            ua[0], ua[1], ua[2],
+            b_x + x2x * t2, b_y + x2y * t2, b_z + x2z * t2, b_radius,
+            ub[0], ub[1], ub[2],
+            0, dist_out, pos_out, normal_out,
+        )
+
+    # parallel axes — up to four candidates, first two hits win
+    var s2 = _cc_clip[DTYPE]((v - mb) / mc)
+    var n1 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x, a_y + x1y, a_z + x1z, a_radius, ua[0], ua[1], ua[2],
+        b_x + x2x * s2, b_y + x2y * s2, b_z + x2z * s2, b_radius,
+        ub[0], ub[1], ub[2],
+        0, dist_out, pos_out, normal_out,
+    )
+    s2 = _cc_clip[DTYPE]((v + mb) / mc)
+    var n2 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x - x1x, a_y - x1y, a_z - x1z, a_radius, ua[0], ua[1], ua[2],
+        b_x + x2x * s2, b_y + x2y * s2, b_z + x2z * s2, b_radius,
+        ub[0], ub[1], ub[2],
+        n1, dist_out, pos_out, normal_out,
+    )
+    if n1 + n2 >= 2:
+        return 2
+
+    var s1 = _cc_clip[DTYPE]((u - mb) / ma)
+    var n3 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x * s1, a_y + x1y * s1, a_z + x1z * s1, a_radius,
+        ua[0], ua[1], ua[2],
+        b_x + x2x, b_y + x2y, b_z + x2z, b_radius, ub[0], ub[1], ub[2],
+        n1 + n2, dist_out, pos_out, normal_out,
+    )
+    if n1 + n2 + n3 >= 2:
+        return 2
+
+    s1 = _cc_clip[DTYPE]((u + mb) / ma)
+    var n4 = _cc_sphere_sphere[DTYPE](
+        margin,
+        a_x + x1x * s1, a_y + x1y * s1, a_z + x1z * s1, a_radius,
+        ua[0], ua[1], ua[2],
+        b_x - x2x, b_y - x2y, b_z - x2z, b_radius, ub[0], ub[1], ub[2],
+        n1 + n2 + n3, dist_out, pos_out, normal_out,
+    )
+    return n1 + n2 + n3 + n4
 
 
 # =============================================================================
@@ -1437,6 +1752,17 @@ def box_sphere[
     var ny_local: Scalar[DTYPE]
     var nz_local: Scalar[DTYPE]
 
+    # ⚠ THE INTERIOR CASE NEEDS ITS OWN CONTACT POINT, not `dist/2` along the
+    # normal. `clamp_*` equals the sphere CENTRE once the centre is inside the
+    # box, so the exterior formula measures from the wrong origin and lands
+    # `face_gap` away from MuJoCo's point. Depth and normal stay correct, which
+    # is why a gate comparing only those two passes — see
+    # `tests/physics3d/test_capsule_box_sweep.mojo`, which did exactly that and
+    # missed this until stacker's held cube showed a 15% qacc error with every
+    # depth and normal matching.
+    var interior = False
+    var face_gap = Scalar[DTYPE](0)
+
     if dist_to_center > Scalar[DTYPE](1e-10):
         var inv_dist = Scalar[DTYPE](1.0) / dist_to_center
         nx_local = dx * inv_dist
@@ -1457,6 +1783,8 @@ def box_sphere[
             ny_local = Scalar[DTYPE](0.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_x - sph_radius
+            interior = True
+            face_gap = face_dist_x
         elif face_dist_y <= face_dist_z:
             # Y face is closest
             nx_local = Scalar[DTYPE](0.0)
@@ -1465,6 +1793,8 @@ def box_sphere[
             ) else Scalar[DTYPE](-1.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_y - sph_radius
+            interior = True
+            face_gap = face_dist_y
         else:
             # Z face is closest
             nx_local = Scalar[DTYPE](0.0)
@@ -1473,6 +1803,8 @@ def box_sphere[
                 0
             ) else Scalar[DTYPE](-1.0)
             dist = -face_dist_z - sph_radius
+            interior = True
+            face_gap = face_dist_z
 
     # Transform normal back to world frame
     var normal_world = rotate_vector_by_quat(
@@ -1490,13 +1822,485 @@ def box_sphere[
     var closest_y = box_y + closest_world[1]
     var closest_z = box_z + closest_world[2]
 
-    # Contact point is midpoint between surfaces
+    # Contact point is midpoint between surfaces.
+    #   exterior  `closest` is on the box surface, so mid = closest + n*dist/2,
+    #             which is `mjraw_SphereBox`'s 0.5*(clamped + deepest)
+    #   interior  `closest` IS the sphere centre, and MuJoCo's is
+    #             centre + nearest*(radius - face_gap)/2
+    #
+    # ⚠ `nearest` IS THE NEGATION OF OUR NORMAL. MuJoCo's interior normal points
+    # from the nearest face INTO the box (its convention is geom1 -> geom2, i.e.
+    # sphere -> box); ours points out of the box toward the sphere. So the
+    # offset along OUR normal is (face_gap - radius)/2, and writing MuJoCo's
+    # expression verbatim moves the point the wrong way by `face_gap` — the same
+    # distance the original `dist/2` was wrong by, in the opposite direction.
     var half_dist = Scalar[DTYPE](0.5) * dist
+    if interior:
+        half_dist = Scalar[DTYPE](0.5) * (face_gap - sph_radius)
     var contact_x = closest_x + nx * half_dist
     var contact_y = closest_y + ny * half_dist
     var contact_z = closest_z + nz * half_dist
 
     return (dist, contact_x, contact_y, contact_z, nx, ny, nz)
+
+
+@always_inline
+def _capsule_box_best_segment_pos[
+    DTYPE: DType
+](
+    pos_x: Scalar[DTYPE],
+    pos_y: Scalar[DTYPE],
+    pos_z: Scalar[DTYPE],
+    hax_x: Scalar[DTYPE],
+    hax_y: Scalar[DTYPE],
+    hax_z: Scalar[DTYPE],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+    cap_radius: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut cltype: Int,
+    mut clface: Int,
+    mut clcorner: Int,
+    mut cledge: Int,
+    mut bestboxpos: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """Where on a capsule's axis it comes closest to a box's SURFACE.
+
+    Everything is in the BOX'S LOCAL FRAME: the box is centred at the origin
+    with half-extents `(sx, sy, sz)`, and the capsule's axis segment is
+    `pos + halfaxis * s` for `s` in [-1, 1]. Returns that `s`.
+
+    This is `mjraw_CapsuleBox`'s search (`engine_collision_box.c`), which the
+    caller then reduces to box/sphere at the returned point exactly as MuJoCo
+    reduces to `mjraw_SphereBox`. Two families of candidate:
+
+      FACE  each ENDPOINT, clamped into the box. Accepted only when the
+            endpoint is outside along at most ONE axis, which is what makes it
+            a face (or interior) case rather than an edge or corner one — those
+            are covered exactly by the edge family below, and letting a corner
+            through here would return the distance to the corner while claiming
+            a face.
+      EDGE  all 12 box edges against the segment, as a segment/segment closest
+            point with both parameters clamped to [-1, 1]. An edge's midpoint
+            is a corner with the edge's own component zeroed, and it runs along
+            that axis with half-length `size[j]` — hence the `i & (1 << j)`
+            filter, which visits each edge once.
+
+    ⚠ NOT the point closest to the box's CENTRE. That is what this replaced and
+    the two agree only for face contacts; see task #45.
+
+    ⚠ THE DEGENERATE EDGE IS SKIPPED, NOT CLAMPED. When the capsule axis is
+    parallel to box axis `j`, `det` vanishes for that axis's four edges and
+    they carry no information — the other eight still do. Clamping a vanishing
+    determinant instead would return an arbitrary point on a parallel edge and
+    win the comparison with a bogus distance.
+
+    The `mut` outs are MuJoCo's classification of the winning candidate, which
+    `_capsule_box_second_pos` needs to place the SECOND contact:
+
+        cltype     -4 nothing found, -3/-1 an endpoint against a face,
+                   0..8 an edge (`s1 * 3 + s2` of the two clamp states)
+        clface     which box axis the winning endpoint was clamped on, -1 if
+                   the endpoint is inside the box
+        clcorner   which of the 8 corners the winning edge belongs to
+        cledge     which axis the winning edge runs along
+        bestboxpos where on that edge, in [-1, 1]
+    """
+    comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    cltype = -4
+    clface = -1
+    clcorner = 0
+    cledge = 0
+    bestboxpos = Scalar[DTYPE](0)
+
+    var best = Scalar[DTYPE](0)
+    # MuJoCo's `bestdistmax`, not an arbitrary large number: a candidate no
+    # closer than this is not accepted at all, which is what leaves `cltype` at
+    # -4 and means "no contact".
+    var best_d2 = margin + Scalar[DTYPE](2) * (
+        cap_radius
+        + sqrt(hax_x * hax_x + hax_y * hax_y + hax_z * hax_z)
+        + sx + sy + sz
+    )
+    var found = False
+
+    # ── faces: the two endpoints ────────────────────────────────────────────
+    var ends = [Scalar[DTYPE](-1), Scalar[DTYPE](1)]
+    for k in range(2):
+        var i = ends[k]
+        var ex = pos_x + hax_x * i
+        var ey = pos_y + hax_y * i
+        var ez = pos_z + hax_z * i
+
+        var cx = ex
+        var cy = ey
+        var cz = ez
+        var nclamp = 0
+        var caxis = -1
+        if cx < -sx:
+            cx = -sx
+            nclamp += 1
+            caxis = 0
+        elif cx > sx:
+            cx = sx
+            nclamp += 1
+            caxis = 0
+        if cy < -sy:
+            cy = -sy
+            nclamp += 1
+            caxis = 1
+        elif cy > sy:
+            cy = sy
+            nclamp += 1
+            caxis = 1
+        if cz < -sz:
+            cz = -sz
+            nclamp += 1
+            caxis = 2
+        elif cz > sz:
+            cz = sz
+            nclamp += 1
+            caxis = 2
+        if nclamp > 1:
+            continue
+
+        var dx = cx - ex
+        var dy = cy - ey
+        var dz = cz - ez
+        var d2 = dx * dx + dy * dy + dz * dz
+        if d2 < best_d2:
+            best_d2 = d2
+            best = i
+            found = True
+            cltype = -2 + Int(i)
+            clface = caxis
+
+    # ── edges: all 12, as segment vs segment ────────────────────────────────
+    var sizes = [sx, sy, sz]
+    var hax = [hax_x, hax_y, hax_z]
+    var pos = [pos_x, pos_y, pos_z]
+    for j in range(3):
+        var sj = sizes[j]
+        for i in range(8):
+            if (i & (1 << j)) != 0:
+                continue
+            # The edge's midpoint: a corner with component j zeroed.
+            var e0 = sx if (i & 1) != 0 else -sx
+            var e1 = sy if (i & 2) != 0 else -sy
+            var e2 = sz if (i & 4) != 0 else -sz
+            var edge = [e0, e1, e2]
+            edge[j] = Scalar[DTYPE](0)
+
+            var dif0 = edge[0] - pos[0]
+            var dif1 = edge[1] - pos[1]
+            var dif2 = edge[2] - pos[2]
+
+            var ma = sj * sj
+            var mb = -sj * hax[j]
+            var mc = hax_x * hax_x + hax_y * hax_y + hax_z * hax_z
+
+            var difs = [dif0, dif1, dif2]
+            var u = -sj * difs[j]
+            var v = hax_x * dif0 + hax_y * dif1 + hax_z * dif2
+
+            var det = ma * mc - mb * mb
+            if abs(det) < MINVAL:
+                continue
+            var idet = Scalar[DTYPE](1) / det
+
+            var x1 = (mc * u - mb * v) * idet
+            var x2 = (ma * v - mb * u) * idet
+            # `s1`/`s2` record WHICH END each parameter clamped to (0 low, 1
+            # unclamped, 2 high). MuJoCo packs them as `s1 * 3 + s2` into
+            # `cltype`, and the second-point logic reads that back to tell a
+            # corner contact from a mid-edge one.
+            var s1 = 1
+            var s2 = 1
+
+            if x1 > Scalar[DTYPE](1):
+                x1 = Scalar[DTYPE](1)
+                s1 = 2
+                x2 = (v - mb) / mc
+            elif x1 < Scalar[DTYPE](-1):
+                x1 = Scalar[DTYPE](-1)
+                s1 = 0
+                x2 = (v + mb) / mc
+
+            if x2 > Scalar[DTYPE](1):
+                x2 = Scalar[DTYPE](1)
+                s2 = 2
+                x1 = (u - mb) / ma
+                if x1 > Scalar[DTYPE](1):
+                    x1 = Scalar[DTYPE](1)
+                    s1 = 2
+                elif x1 < Scalar[DTYPE](-1):
+                    x1 = Scalar[DTYPE](-1)
+                    s1 = 0
+            elif x2 < Scalar[DTYPE](-1):
+                x2 = Scalar[DTYPE](-1)
+                s2 = 0
+                x1 = (u + mb) / ma
+                if x1 > Scalar[DTYPE](1):
+                    x1 = Scalar[DTYPE](1)
+                    s1 = 2
+                elif x1 < Scalar[DTYPE](-1):
+                    x1 = Scalar[DTYPE](-1)
+                    s1 = 0
+
+            # Vector from the point on the capsule to the point on the edge.
+            var g0 = dif0 - hax_x * x2
+            var g1 = dif1 - hax_y * x2
+            var g2 = dif2 - hax_z * x2
+            var gg = [g0, g1, g2]
+            gg[j] = gg[j] + sj * x1
+            var d2 = gg[0] * gg[0] + gg[1] * gg[1] + gg[2] * gg[2]
+
+            # The `- MINVAL` is MuJoCo's, and it matters: it stops a tie broken
+            # by round-off from moving the contact point between two edges that
+            # are exactly equidistant, which a numerically-parallel axis makes
+            # common.
+            if d2 < best_d2 - MINVAL:
+                best_d2 = d2
+                best = x2
+                found = True
+                bestboxpos = x1
+                var pk = s1 * 3 + s2
+                clcorner = i + (1 << j) * (pk // 6)
+                cledge = j
+                cltype = pk
+
+    if not found:
+        return Scalar[DTYPE](0)
+    return best
+
+
+# A capsule against a box gets at most two contacts: MuJoCo calls
+# `mjraw_SphereBox` once at `bestsegmentpos` and, when the geometry supports it,
+# once more at `bestsegmentpos + secondpos`.
+comptime CB_MAX_POINTS: Int = 2
+
+# `secondpos` is initialised out of range to mean "no second point"; MuJoCo
+# tests `secondpos > -3` afterwards.
+comptime _CB_NO_SECOND: Float64 = -4.0
+
+
+@always_inline
+def _sel3[
+    DTYPE: DType
+](i: Int, a: Scalar[DTYPE], b: Scalar[DTYPE], c: Scalar[DTYPE]) -> Scalar[
+    DTYPE
+]:
+    """Pick component `i` of a 3-vector held in three SCALARS.
+
+    ⚠⚠ THIS EXISTS BECAUSE A PER-THREAD ARRAY MISCOMPUTES ON METAL — defect
+    27. `_capsule_box_second_pos` held `s`/`hax`/`pos`/`axis` as
+    `InlineArray[Scalar, 3]` and indexed them by a runtime axis. Measured from
+    the LIVE GPU detection run, with the parameter and the array element
+    smuggled out side by side through the contact record:
+
+        hax_y (param)   CPU 0.059999994933605194   GPU 0.059999994933605194
+        hax[1] (array)  CPU 0.059999994933605194   GPU -0.0
+
+    The value arrives correctly and reads back as -0.0 from the array. That
+    made `e1 = 2*s/|hax|` a nan, so BOTH `if e1 < secondpos` clamps silently
+    failed and `secondpos` kept its initial `1 - bestsegmentpos` — a 0.27 swing
+    in a unit normal on the second manifold point, which is defect 27 entire.
+
+    Same class as the RK4 elliptic OOM and the 16-wide wrap arrays in
+    `_tendon_env`, whose comment already prescribes the cure: read components
+    INLINE and never buffer them. WRONG NUMBERS, not a crash.
+    """
+    if i == 0:
+        return a
+    if i == 1:
+        return b
+    return c
+
+
+@always_inline
+def _capsule_box_second_pos[
+    DTYPE: DType
+](
+    pos_x: Scalar[DTYPE],
+    pos_y: Scalar[DTYPE],
+    pos_z: Scalar[DTYPE],
+    hax_x: Scalar[DTYPE],
+    hax_y: Scalar[DTYPE],
+    hax_z: Scalar[DTYPE],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+    bestsegmentpos: Scalar[DTYPE],
+    bestboxpos: Scalar[DTYPE],
+    cltype: Int,
+    clface: Int,
+    clcorner: Int,
+    cledge: Int,
+) -> Scalar[DTYPE]:
+    """How far along the capsule axis MuJoCo puts its SECOND contact.
+
+    Returns an offset from `bestsegmentpos`, or `_CB_NO_SECOND` when the
+    geometry admits only one point. Port of the `cltype` dispatch in
+    `mjraw_CapsuleBox` (`engine_collision_box.c`, lines 400-568).
+
+    A capsule lying along a box FACE touches over a whole segment, and one
+    point cannot express that: it leaves the capsule free to pivot about the
+    single contact, exactly the failure a box on one contact point has. Which
+    of the three branches applies is decided by what the FIRST point was
+    closest to — a corner, an edge, or a face — and the answer is always
+    "walk along the capsule until it leaves the box, then clamp".
+    """
+    # NO PER-THREAD ARRAYS HERE — see `_sel3`. Components are selected inline
+    # from scalars; on Metal a 3-element per-thread array indexed by a runtime
+    # axis reads back garbage (defect 27).
+
+    # `axisdir` is the octant the capsule's half-axis points into; XORing it
+    # with `clcorner` is MuJoCo's trick for the RELATIVE orientation of the
+    # capsule and the closest corner.
+    var axisdir = 0
+    if hax_x > Scalar[DTYPE](0):
+        axisdir += 1
+    if hax_y > Scalar[DTYPE](0):
+        axisdir += 2
+    if hax_z > Scalar[DTYPE](0):
+        axisdir += 4
+
+    var hlen = sqrt(hax_x * hax_x + hax_y * hax_y + hax_z * hax_z)
+    if hlen <= Scalar[DTYPE](0):
+        return Scalar[DTYPE](_CB_NO_SECOND)
+    # MuJoCo's `axis` is the UNIT capsule direction; `halfaxis` is that scaled
+    # by the half-length. Only `axis` is compared against 0.5 below.
+    var axis_x = hax_x / hlen
+    var axis_y = hax_y / hlen
+    var axis_z = hax_z / hlen
+
+    var secondpos = Scalar[DTYPE](_CB_NO_SECOND)
+
+    if cltype >= 0 and (cltype // 3) != 1:
+        # The first point is at a CORNER of the box.
+        var c1 = axisdir ^ clcorner
+        # Pointing straight at or straight away from the corner: nothing else
+        # can touch.
+        if c1 == 0 or c1 == 7:
+            return Scalar[DTYPE](_CB_NO_SECOND)
+
+        var mul: Scalar[DTYPE]
+        var de: Scalar[DTYPE]
+        var dp: Scalar[DTYPE]
+        if c1 == 1 or c1 == 2 or c1 == 4:
+            mul = Scalar[DTYPE](1)
+            de = Scalar[DTYPE](1) - bestsegmentpos
+            dp = Scalar[DTYPE](1) + bestsegmentpos
+        else:
+            mul = Scalar[DTYPE](-1)
+            c1 = 7 - c1
+            dp = Scalar[DTYPE](1) - bestsegmentpos
+            de = Scalar[DTYPE](1) + bestsegmentpos
+
+        var ax = 0
+        var ax1 = 1
+        var ax2 = 2
+        if c1 == 2:
+            ax = 1
+            ax1 = 2
+            ax2 = 0
+        elif c1 == 4:
+            ax = 2
+            ax1 = 0
+            ax2 = 1
+
+        if _sel3[DTYPE](ax, axis_x, axis_y, axis_z) * _sel3[DTYPE](ax, axis_x, axis_y, axis_z) > Scalar[DTYPE](0.5):
+            # Second point along the box EDGE the capsule runs down.
+            secondpos = de
+            var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax, sx, sy, sz) / abs(_sel3[DTYPE](ax, hax_x, hax_y, hax_z))
+            if e1 < secondpos:
+                secondpos = e1
+            secondpos *= mul
+        else:
+            # Second point along a box FACE.
+            secondpos = dp
+            var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax1, sx, sy, sz) / abs(_sel3[DTYPE](ax1, hax_x, hax_y, hax_z))
+            if e1 < secondpos:
+                secondpos = e1
+            e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax2, sx, sy, sz) / abs(_sel3[DTYPE](ax2, hax_x, hax_y, hax_z))
+            if e1 < secondpos:
+                secondpos = e1
+            secondpos *= -mul
+
+    elif cltype >= 0:
+        # The first point is on the MIDDLE of a box edge.
+        var c1 = axisdir ^ clcorner
+        c1 &= 7 - (1 << cledge)
+        # A T configuration (capsule crossing the edge) has no second contact;
+        # only an X configuration does.
+        if c1 != 1 and c1 != 2 and c1 != 4:
+            return Scalar[DTYPE](_CB_NO_SECOND)
+
+        var ax = cledge
+        var ax1 = 1
+        var ax2 = 2
+        if cledge == 1:
+            ax1 = 2
+            ax2 = 0
+        elif cledge == 2:
+            ax1 = 0
+            ax2 = 1
+
+        # Whichever of the two adjacent faces the capsule lies flatter against.
+        if abs(_sel3[DTYPE](ax1, axis_x, axis_y, axis_z)) > abs(_sel3[DTYPE](ax2, axis_x, axis_y, axis_z)):
+            ax1 = ax2
+        ax2 = 3 - ax - ax1
+
+        var mul: Scalar[DTYPE]
+        if (c1 & (1 << ax2)) != 0:
+            mul = Scalar[DTYPE](1)
+            secondpos = Scalar[DTYPE](1) - bestsegmentpos
+        else:
+            mul = Scalar[DTYPE](-1)
+            secondpos = Scalar[DTYPE](1) + bestsegmentpos
+
+        var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax2, sx, sy, sz) / abs(_sel3[DTYPE](ax2, hax_x, hax_y, hax_z))
+        if e1 < secondpos:
+            secondpos = e1
+
+        var e2 = Scalar[DTYPE](1) + bestboxpos
+        if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):
+            e2 = Scalar[DTYPE](1) - bestboxpos
+
+        e1 = _sel3[DTYPE](ax, sx, sy, sz) * e2 / abs(_sel3[DTYPE](ax, hax_x, hax_y, hax_z))
+        if e1 < secondpos:
+            secondpos = e1
+        secondpos *= mul
+
+    elif cltype < 0:
+        # A capsule END is closest to a box FACE. Walk from the other end and
+        # clamp at the first side plane it crosses.
+        if clface == -1:
+            # The closest point is INSIDE the box; there is no second point.
+            return Scalar[DTYPE](_CB_NO_SECOND)
+        var mul = Scalar[DTYPE](-1)
+        if cltype == -3:
+            mul = Scalar[DTYPE](1)
+
+        secondpos = Scalar[DTYPE](2)
+        var t_x = pos_x - hax_x * mul
+        var t_y = pos_y - hax_y * mul
+        var t_z = pos_z - hax_z * mul
+
+        for i in range(3):
+            if i == clface:
+                continue
+            var e1 = (_sel3[DTYPE](i, sx, sy, sz) - _sel3[DTYPE](i, t_x, t_y, t_z)) / _sel3[DTYPE](i, hax_x, hax_y, hax_z) * mul
+            if e1 > Scalar[DTYPE](0) and e1 < secondpos:
+                secondpos = e1
+            e1 = (-_sel3[DTYPE](i, sx, sy, sz) - _sel3[DTYPE](i, t_x, t_y, t_z)) / _sel3[DTYPE](i, hax_x, hax_y, hax_z) * mul
+            if e1 > Scalar[DTYPE](0) and e1 < secondpos:
+                secondpos = e1
+        secondpos *= mul
+
+    return secondpos
 
 
 @always_inline
@@ -1533,12 +2337,17 @@ def box_capsule[
     Scalar[DTYPE],
     Scalar[DTYPE],
 ]:
-    """Box-capsule collision detection.
+    """Box-capsule collision detection — the PRIMARY point only.
 
     Algorithm:
     1. Transform capsule endpoints to box's local frame
     2. Find closest point on capsule segment to box (clamped)
     3. Treat as box-sphere with the closest point as sphere center
+
+    ⚠ THE NARROW PHASE NO LONGER CALLS THIS. `box_capsule_manifold` below emits
+    the whole manifold (this point plus MuJoCo's second one) and is what
+    `_capsule_box_contacts` uses. This stays because `cylinder_box` reduces a
+    cylinder to a virtual capsule and wants a single point.
 
     Returns:
         Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
@@ -1583,32 +2392,37 @@ def box_capsule[
         rel2_x, rel2_y, rel2_z, box_qx, box_qy, box_qz, box_qw
     )
 
-    # Segment direction in local frame
-    var seg_dx = local2[0] - local1[0]
-    var seg_dy = local2[1] - local1[1]
-    var seg_dz = local2[2] - local1[2]
+    # The capsule as (centre, half-axis) in the box's local frame, which is the
+    # parameterisation `_capsule_box_best_segment_pos` and MuJoCo both use:
+    # the segment is `pos + halfaxis * s` for s in [-1, 1].
+    var pos_x = (local1[0] + local2[0]) * Scalar[DTYPE](0.5)
+    var pos_y = (local1[1] + local2[1]) * Scalar[DTYPE](0.5)
+    var pos_z = (local1[2] + local2[2]) * Scalar[DTYPE](0.5)
+    var hax_x = (local1[0] - local2[0]) * Scalar[DTYPE](0.5)
+    var hax_y = (local1[1] - local2[1]) * Scalar[DTYPE](0.5)
+    var hax_z = (local1[2] - local2[2]) * Scalar[DTYPE](0.5)
 
-    # Find point on segment closest to box center (origin in local frame)
-    # Project origin onto segment: t = -dot(p1, d) / dot(d, d)
-    var seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz
-    var t: Scalar[DTYPE]
-
-    if seg_len_sq > Scalar[DTYPE](1e-10):
-        t = (
-            -(local1[0] * seg_dx + local1[1] * seg_dy + local1[2] * seg_dz)
-            / seg_len_sq
-        )
-        if t < Scalar[DTYPE](0.0):
-            t = Scalar[DTYPE](0.0)
-        elif t > Scalar[DTYPE](1.0):
-            t = Scalar[DTYPE](1.0)
-    else:
-        t = Scalar[DTYPE](0.5)
+    # ⚠ THE POINT ON THE SEGMENT CLOSEST TO THE BOX'S SURFACE, NOT TO ITS
+    # CENTRE. This used to project the box CENTRE onto the segment, which is a
+    # different point whenever the box's nearest feature is not the face that
+    # projection points at — i.e. for every edge and corner contact. It cost up
+    # to 24 mm of depth and a fully reversed normal; see task #45 and
+    # `tests/physics3d/test_capsule_box_sweep.mojo`.
+    var cltype = -4
+    var clface = -1
+    var clcorner = 0
+    var cledge = 0
+    var bestboxpos = Scalar[DTYPE](0)
+    var s = _capsule_box_best_segment_pos[DTYPE](
+        pos_x, pos_y, pos_z, hax_x, hax_y, hax_z, half_x, half_y, half_z,
+        cap_radius, Scalar[DTYPE](0),
+        cltype, clface, clcorner, cledge, bestboxpos,
+    )
 
     # Closest point on segment (in local frame)
-    var closest_seg_x = local1[0] + t * seg_dx
-    var closest_seg_y = local1[1] + t * seg_dy
-    var closest_seg_z = local1[2] + t * seg_dz
+    var closest_seg_x = pos_x + s * hax_x
+    var closest_seg_y = pos_y + s * hax_y
+    var closest_seg_z = pos_z + s * hax_z
 
     # Transform back to world frame for box-sphere test
     var closest_world = rotate_vector_by_quat(
@@ -1641,6 +2455,128 @@ def box_capsule[
         closest_z,
         cap_radius,
     )
+
+
+@always_inline
+def box_capsule_manifold[
+    DTYPE: DType
+](
+    # Box
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    # Capsule
+    cap_x: Scalar[DTYPE],
+    cap_y: Scalar[DTYPE],
+    cap_z: Scalar[DTYPE],
+    cap_qx: Scalar[DTYPE],
+    cap_qy: Scalar[DTYPE],
+    cap_qz: Scalar[DTYPE],
+    cap_qw: Scalar[DTYPE],
+    cap_half_len: Scalar[DTYPE],
+    cap_radius: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut dist_out: InlineArray[Scalar[DTYPE], CB_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS],
+) -> Int:
+    """Full contact MANIFOLD for a box/capsule pair — up to TWO points.
+
+    Port of `mjraw_CapsuleBox` (`references/mujoco-3.6.0`, identical in 3.3.6
+    and 3.5.1). `box_capsule` above is this routine's first point on its own,
+    and stays because `cylinder_box` reduces to it.
+
+    ⚠ EACH POINT CARRIES ITS OWN NORMAL, unlike `box_box_manifold` where a face
+    manifold shares one. MuJoCo runs `mjraw_SphereBox` independently at each
+    segment position, and the two spheres can land on different box features —
+    a capsule over an edge gets a face normal at one end and an edge normal at
+    the other. Hence `normal_out` is 3 * CB_MAX_POINTS, not 3.
+
+    Returns the number of points written. Normals point from the BOX to the
+    CAPSULE, matching `box_capsule`.
+    """
+    var cap_axis = rotate_vector_by_quat(
+        Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](1.0),
+        cap_qx, cap_qy, cap_qz, cap_qw,
+    )
+    var ep1 = rotate_vector_by_quat_inverse(
+        cap_x + cap_axis[0] * cap_half_len - box_x,
+        cap_y + cap_axis[1] * cap_half_len - box_y,
+        cap_z + cap_axis[2] * cap_half_len - box_z,
+        box_qx, box_qy, box_qz, box_qw,
+    )
+    var ep2 = rotate_vector_by_quat_inverse(
+        cap_x - cap_axis[0] * cap_half_len - box_x,
+        cap_y - cap_axis[1] * cap_half_len - box_y,
+        cap_z - cap_axis[2] * cap_half_len - box_z,
+        box_qx, box_qy, box_qz, box_qw,
+    )
+
+    var pos_x = (ep1[0] + ep2[0]) * Scalar[DTYPE](0.5)
+    var pos_y = (ep1[1] + ep2[1]) * Scalar[DTYPE](0.5)
+    var pos_z = (ep1[2] + ep2[2]) * Scalar[DTYPE](0.5)
+    var hax_x = (ep1[0] - ep2[0]) * Scalar[DTYPE](0.5)
+    var hax_y = (ep1[1] - ep2[1]) * Scalar[DTYPE](0.5)
+    var hax_z = (ep1[2] - ep2[2]) * Scalar[DTYPE](0.5)
+
+    var cltype = -4
+    var clface = -1
+    var clcorner = 0
+    var cledge = 0
+    var bestboxpos = Scalar[DTYPE](0)
+    var bestsegmentpos = _capsule_box_best_segment_pos[DTYPE](
+        pos_x, pos_y, pos_z, hax_x, hax_y, hax_z, half_x, half_y, half_z,
+        cap_radius, margin,
+        cltype, clface, clcorner, cledge, bestboxpos,
+    )
+    if cltype == -4:
+        return 0
+
+    var secondpos = _capsule_box_second_pos[DTYPE](
+        pos_x, pos_y, pos_z, hax_x, hax_y, hax_z, half_x, half_y, half_z,
+        bestsegmentpos, bestboxpos, cltype, clface, clcorner, cledge,
+    )
+
+    var n = 0
+    for k in range(2):
+        var t = bestsegmentpos
+        if k == 1:
+            if not (secondpos > Scalar[DTYPE](-3)):
+                break
+            t = bestsegmentpos + secondpos
+
+        var lw = rotate_vector_by_quat(
+            pos_x + hax_x * t, pos_y + hax_y * t, pos_z + hax_z * t,
+            box_qx, box_qy, box_qz, box_qw,
+        )
+        var r = box_sphere(
+            box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+            half_x, half_y, half_z,
+            box_x + lw[0], box_y + lw[1], box_z + lw[2],
+            cap_radius,
+        )
+        # `mjraw_SphereBox` returns nothing at all when the sphere is farther
+        # than `margin`; the second point can be rejected while the first is
+        # kept, so this is per-point and not a filter on the pair.
+        if r[0] > margin:
+            continue
+        dist_out[n] = r[0]
+        pos_out[3 * n + 0] = r[1]
+        pos_out[3 * n + 1] = r[2]
+        pos_out[3 * n + 2] = r[3]
+        normal_out[3 * n + 0] = r[4]
+        normal_out[3 * n + 1] = r[5]
+        normal_out[3 * n + 2] = r[6]
+        n += 1
+
+    return n
 
 
 @always_inline
@@ -2543,6 +3479,1123 @@ def box_box[
 
 
 # =============================================================================
+# box/box CONTACT MANIFOLD (port of MuJoCo's `_boxbox`, both paths)
+# =============================================================================
+
+# Upper bound on the points either path can produce before filtering, and a
+# real bound rather than a cap: at most 8 from clipping the incident face's
+# four edges against the reference face (2 crossings per edge), 4 from
+# reference-face corners inside the incident face, and 4 incident-face corners.
+comptime BB_MAX_POINTS: Int = 16
+
+# MuJoCo's mjMINVAL.
+comptime _BB_MINVAL: Float64 = 1e-15
+
+
+@always_inline
+def _bb_quat_mat[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE]
+) -> InlineArray[Scalar[DTYPE], 9]:
+    """Rotation matrix, ROW-MAJOR (`m[3 * row + col]`), matching MuJoCo's
+    `geom_xmat` layout so the transcribed index arithmetic carries over."""
+    var c0 = rotate_vector_by_quat(
+        Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), qx, qy, qz, qw
+    )
+    var c1 = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), qx, qy, qz, qw
+    )
+    var c2 = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), qx, qy, qz, qw
+    )
+    var m = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    m[0] = c0[0]
+    m[1] = c1[0]
+    m[2] = c2[0]
+    m[3] = c0[1]
+    m[4] = c1[1]
+    m[5] = c2[1]
+    m[6] = c0[2]
+    m[7] = c1[2]
+    m[8] = c2[2]
+    return m^
+
+
+@always_inline
+def _bb_outside_box[
+    DTYPE: DType
+](
+    px: Scalar[DTYPE],
+    py: Scalar[DTYPE],
+    pz: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+    mat: InlineArray[Scalar[DTYPE], 9],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+    inflate: Scalar[DTYPE],
+) -> Int:
+    """Port of `mju_outsideBox`: +1 outside the inflated box, -1 inside the
+    deflated box, 0 in the shell between them."""
+    var vx = px - bx
+    var vy = py - by
+    var vz = pz - bz
+    # mat^T * v — mat's COLUMNS are the box axes.
+    var lx = mat[0] * vx + mat[3] * vy + mat[6] * vz
+    var ly = mat[1] * vx + mat[4] * vy + mat[7] * vz
+    var lz = mat[2] * vx + mat[5] * vy + mat[8] * vz
+
+    var gx = sx * inflate
+    var gy = sy * inflate
+    var gz = sz * inflate
+    if lx > gx or lx < -gx or ly > gy or ly < -gy or lz > gz or lz < -gz:
+        return 1
+
+    var mx = sx / inflate
+    var my = sy / inflate
+    var mz = sz / inflate
+    if lx < mx and lx > -mx and ly < my and ly > -my and lz < mz and lz > -mz:
+        return -1
+    return 0
+
+
+@always_inline
+def _bb_post_filter[
+    DTYPE: DType
+](
+    n: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    a_x: Scalar[DTYPE],
+    a_y: Scalar[DTYPE],
+    a_z: Scalar[DTYPE],
+    mat1: InlineArray[Scalar[DTYPE], 9],
+    a_hx: Scalar[DTYPE],
+    a_hy: Scalar[DTYPE],
+    a_hz: Scalar[DTYPE],
+    b_x: Scalar[DTYPE],
+    b_y: Scalar[DTYPE],
+    b_z: Scalar[DTYPE],
+    mat2: InlineArray[Scalar[DTYPE], 9],
+    b_hx: Scalar[DTYPE],
+    b_hy: Scalar[DTYPE],
+    b_hz: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+) -> Int:
+    """`mjc_BoxBox`'s post-filter, shared by the face and edge-edge paths: drop
+    points that sit outside one box without being inside the other, then drop
+    exact duplicates. Without it either path emits points that are
+    geometrically off both boxes."""
+    var bad = InlineArray[Bool, BB_MAX_POINTS](fill=False)
+    var ratio = Scalar[DTYPE](1.01)
+    for i in range(n):
+        var o1 = _bb_outside_box[DTYPE](
+            pos_out[3 * i + 0],
+            pos_out[3 * i + 1],
+            pos_out[3 * i + 2],
+            a_x, a_y, a_z, mat1,
+            a_hx + margin, a_hy + margin, a_hz + margin,
+            ratio,
+        )
+        var o2 = _bb_outside_box[DTYPE](
+            pos_out[3 * i + 0],
+            pos_out[3 * i + 1],
+            pos_out[3 * i + 2],
+            b_x, b_y, b_z, mat2,
+            b_hx + margin, b_hy + margin, b_hz + margin,
+            ratio,
+        )
+        if (o1 == 1 and o2 != -1) or (o2 == 1 and o1 != -1):
+            bad[i] = True
+
+    for i in range(n - 1):
+        if bad[i]:
+            continue
+        for j in range(i + 1, n):
+            if bad[j]:
+                continue
+            if (
+                pos_out[3 * i + 0] == pos_out[3 * j + 0]
+                and pos_out[3 * i + 1] == pos_out[3 * j + 1]
+                and pos_out[3 * i + 2] == pos_out[3 * j + 2]
+            ):
+                bad[i] = True
+                break
+
+    # ⚠⚠ MuJoCo'S EIGHT-POINT OUTPUT CAP IS DELIBERATELY *NOT* PORTED, AND
+    # THAT IS A MEASURED DECISION. Its consolidation ends
+    # `if (ncon >= 8) break;` (`engine_collision_box.c:1410`) — `mjMAXCONPAIR`
+    # is 50 for the scratch buffer, but at most eight points ever reach
+    # `mjContact`. Adding the same cap here is faithful in isolation and buys
+    # NOTHING: `test_box_box_sweep`'s 400 poses put at most SIX points on any
+    # pair, and instrumented on the sawyer mesh scene the cap FIRED ZERO TIMES.
+    #
+    # It is not free, though. Merely adding the never-taken `break` moved
+    # `test_mesh_detection_fields`'s CPU-vs-GPU worst contact-record error from
+    # 4.30e-06 to 2.08e-04 — 48x, and through a 1e-4 tolerance — on the MESH
+    # manifold rows, which do not go through this function at all. A dead
+    # branch in a hot loop is enough to change Metal's float32 codegen. An
+    # unused `comptime` alone did NOT move it, so this is control flow, not
+    # arbitrary sensitivity.
+    #
+    # So the cap stays out until something reaches it. What the episode really
+    # exposed is that the mesh manifold's CPU/GPU agreement on that scene is
+    # luck at the 1e-4 level; see that test's own note.
+    var w = 0
+    for i in range(n):
+        if bad[i]:
+            continue
+        if w != i:
+            pos_out[3 * w + 0] = pos_out[3 * i + 0]
+            pos_out[3 * w + 1] = pos_out[3 * i + 1]
+            pos_out[3 * w + 2] = pos_out[3 * i + 2]
+            dist_out[w] = dist_out[i]
+        w += 1
+    return w
+
+
+@always_inline
+def _bb_edge_manifold[
+    DTYPE: DType
+](
+    code: Int,
+    margin: Scalar[DTYPE],
+    a_x: Scalar[DTYPE],
+    a_y: Scalar[DTYPE],
+    a_z: Scalar[DTYPE],
+    mat1: InlineArray[Scalar[DTYPE], 9],
+    size1: InlineArray[Scalar[DTYPE], 3],
+    size2: InlineArray[Scalar[DTYPE], 3],
+    pos21: InlineArray[Scalar[DTYPE], 3],
+    rot: InlineArray[Scalar[DTYPE], 9],
+    rotabs: InlineArray[Scalar[DTYPE], 9],
+    cle1: Int,
+    cle2: Int,
+    clnorm: InlineArray[Scalar[DTYPE], 3],
+    inflag: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3],
+) -> Int:
+    """The `code >= 12` half of `_boxbox` — the EDGE-EDGE manifold.
+
+    Port of `references/mujoco-3.6.0/src/engine/engine_collision_box.c`, label
+    `edgeedge:` (lines 986-1337). Verified identical in 3.3.6, 3.5.1 and 3.6.0,
+    so unlike the face path there is no version choice to make here.
+
+    Box 1 is always the reference box on this path (the face path switches),
+    and the winning axis is a cross product of one edge direction from each
+    box rather than a face normal, so the reference frame is built from the
+    box-1 FACE that the leading corner `cle1` belongs to (`clface`) and the
+    contact normal is `clnorm` carried into that frame — not the frame's +z.
+
+    Returns the number of points written; the caller still runs
+    `_bb_post_filter`.
+    """
+    var margin2 = margin * margin
+
+    var cc = code - 12
+    var q1 = cc // 3
+    var q2 = cc % 3
+
+    # The two box-2 axes spanning the incident face, and the two box-1 axes
+    # spanning the reference face. Each pair is then reordered so the FIRST is
+    # the one more aligned with the other box's edge.
+    var ax1 = 1
+    var ax2 = 2
+    if q2 == 1:
+        ax1 = 0
+        ax2 = 2
+    elif q2 == 2:
+        ax1 = 1
+        ax2 = 0
+    var pax1 = 1
+    var pax2 = 2
+    if q1 == 1:
+        pax1 = 0
+        pax2 = 2
+    elif q1 == 2:
+        pax1 = 1
+        pax2 = 0
+
+    if rotabs[3 * q1 + ax1] < rotabs[3 * q1 + ax2]:
+        ax1 = ax2
+        ax2 = 3 - q2 - ax1
+    # rottabs[3 * q2 + pax] is abs(rot[3 * pax + q2]).
+    if abs(rot[3 * pax1 + q2]) < abs(rot[3 * pax2 + q2]):
+        pax1 = pax2
+        pax2 = 3 - q1 - pax1
+
+    var clface = pax2 if (cle1 & (1 << pax2)) != 0 else pax2 + 3
+
+    # Same `rotmore` signed-permutation table as the face path, indexed by
+    # `clface` instead of `q1`.
+    var i0 = 0
+    var i1 = 1
+    var i2 = 2
+    var f0 = Scalar[DTYPE](1)
+    var f1 = Scalar[DTYPE](1)
+    var f2 = Scalar[DTYPE](1)
+    if clface == 0:
+        i0 = 2
+        f0 = Scalar[DTYPE](-1)
+        i2 = 0
+    elif clface == 1:
+        i1 = 2
+        f1 = Scalar[DTYPE](-1)
+        i2 = 1
+    elif clface == 3:
+        i0 = 2
+        i2 = 0
+        f2 = Scalar[DTYPE](-1)
+    elif clface == 4:
+        i1 = 2
+        i2 = 1
+        f2 = Scalar[DTYPE](-1)
+    elif clface == 5:
+        f0 = Scalar[DTYPE](-1)
+        f2 = Scalar[DTYPE](-1)
+
+    var p = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    p[0] = pos21[i0] * f0
+    p[1] = pos21[i1] * f1
+    p[2] = pos21[i2] * f2
+    var rnorm = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    rnorm[0] = clnorm[i0] * f0
+    rnorm[1] = clnorm[i1] * f1
+    rnorm[2] = clnorm[i2] * f2
+
+    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        r[0 * 3 + c] = rot[i0 * 3 + c] * f0
+        r[1 * 3 + c] = rot[i1 * 3 + c] * f1
+        r[2 * 3 + c] = rot[i2 * 3 + c] * f2
+    var rt = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            rt[3 * i + j] = r[3 * j + i]
+
+    # ⚠ MuJoCo applies rotmore^T here where the face path applies rotmore.
+    # Every entry in the table is an involution as a permutation, so abs()
+    # makes the two agree — transcribed in the transposed form anyway.
+    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    s[i0] = abs(size1[0])
+    s[i1] = abs(size1[1])
+    s[i2] = abs(size1[2])
+
+    var lx = s[0]
+    var ly = s[1]
+    var hz = s[2]
+    p[2] -= hz
+
+    # The two box-2 edges that straddle the winning axis: four corners, two per
+    # edge, differing only in the sign along `ax1`.
+    var crn = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var s_ax1 = Scalar[DTYPE](1) if (cle2 & (1 << ax1)) != 0 else Scalar[DTYPE](
+        -1
+    )
+    var s_ax2 = Scalar[DTYPE](1) if (cle2 & (1 << ax2)) != 0 else Scalar[DTYPE](
+        -1
+    )
+    for c in range(3):
+        var base = p[c]
+        base += rt[3 * ax1 + c] * size2[ax1] * s_ax1
+        base += rt[3 * ax2 + c] * size2[ax2] * s_ax2
+        crn[0 * 3 + c] = base + rt[3 * q2 + c] * size2[q2]
+        crn[1 * 3 + c] = base - rt[3 * q2 + c] * size2[q2]
+    for c in range(3):
+        var base = p[c]
+        base += rt[3 * ax1 + c] * size2[ax1] * (-s_ax1)
+        base += rt[3 * ax2 + c] * size2[ax2] * s_ax2
+        crn[2 * 3 + c] = base + rt[3 * q2 + c] * size2[q2]
+        crn[3 * 3 + c] = base - rt[3 * q2 + c] * size2[q2]
+
+    var axi = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        axi[0 * 3 + c] = crn[0 * 3 + c]
+        axi[1 * 3 + c] = crn[1 * 3 + c] - crn[0 * 3 + c]
+        axi[2 * 3 + c] = crn[2 * 3 + c] - crn[0 * 3 + c]
+
+    if abs(rnorm[2]) < Scalar[DTYPE](_BB_MINVAL):
+        return 0
+    var innorm = (Scalar[DTYPE](1) / rnorm[2]) * (
+        Scalar[DTYPE](-1) if inflag != 0 else Scalar[DTYPE](1)
+    )
+
+    # Project the four corners onto the reference plane ALONG the contact
+    # normal (not along z) — `pu` keeps the unprojected originals.
+    var pu = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    for i in range(4):
+        var c1 = -crn[3 * i + 2] * (Scalar[DTYPE](1) / rnorm[2])
+        for c in range(3):
+            pu[3 * i + c] = crn[3 * i + c]
+            crn[3 * i + c] = crn[3 * i + c] + rnorm[c] * c1
+
+    var pts = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        pts[0 * 3 + c] = crn[0 * 3 + c]
+        pts[1 * 3 + c] = crn[1 * 3 + c] - crn[0 * 3 + c]
+        pts[2 * 3 + c] = crn[2 * 3 + c] - crn[0 * 3 + c]
+
+    # Four edges of the projected quad, in both the projected (`lines`) and
+    # unprojected (`linesu`) frames. `m == 3` unconditionally on this path.
+    var lines = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var linesu = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        lines[0 * 6 + c] = pts[0 + c]
+        lines[0 * 6 + 3 + c] = pts[3 + c]
+        linesu[0 * 6 + c] = axi[0 + c]
+        linesu[0 * 6 + 3 + c] = axi[3 + c]
+
+        lines[1 * 6 + c] = pts[0 + c]
+        lines[1 * 6 + 3 + c] = pts[6 + c]
+        linesu[1 * 6 + c] = axi[0 + c]
+        linesu[1 * 6 + 3 + c] = axi[6 + c]
+
+        lines[2 * 6 + c] = pts[0 + c] + pts[3 + c]
+        lines[2 * 6 + 3 + c] = pts[6 + c]
+        linesu[2 * 6 + c] = axi[0 + c] + axi[3 + c]
+        linesu[2 * 6 + 3 + c] = axi[6 + c]
+
+        lines[3 * 6 + c] = pts[0 + c] + pts[6 + c]
+        lines[3 * 6 + 3 + c] = pts[3 + c]
+        linesu[3 * 6 + c] = axi[0 + c] + axi[6 + c]
+        linesu[3 * 6 + 3 + c] = axi[3 + c]
+
+    var pnt = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var depth = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var n = 0
+
+    # (1) clip each projected edge against the reference face's four sides.
+    for i in range(4):
+        for q in range(2):
+            var a = lines[6 * i + q]
+            var b = lines[6 * i + 3 + q]
+            var c = lines[6 * i + (1 - q)]
+            var d = lines[6 * i + 4 - q]
+            if abs(b) <= Scalar[DTYPE](_BB_MINVAL):
+                continue
+            for jj in range(2):
+                if n >= BB_MAX_POINTS:
+                    break
+                var j = Scalar[DTYPE](-1) if jj == 0 else Scalar[DTYPE](1)
+                var l = s[q] * j
+                var c1 = (l - a) / b
+                if c1 < Scalar[DTYPE](0) or c1 > Scalar[DTYPE](1):
+                    continue
+                var c2 = c + d * c1
+                if abs(c2) > s[1 - q]:
+                    continue
+                if (
+                    linesu[6 * i + 2] + linesu[6 * i + 5] * c1
+                ) * innorm > margin:
+                    continue
+                for cc2 in range(3):
+                    pnt[3 * n + cc2] = linesu[6 * i + cc2] * Scalar[DTYPE](
+                        0.5
+                    ) + linesu[6 * i + 3 + cc2] * (Scalar[DTYPE](0.5) * c1)
+                pnt[3 * n + q] += Scalar[DTYPE](0.5) * l
+                pnt[3 * n + (1 - q)] += Scalar[DTYPE](0.5) * c2
+                depth[n] = pnt[3 * n + 2] * innorm * Scalar[DTYPE](2)
+                n += 1
+    var nl = n
+
+    # (2) reference-face corners, mapped back through the quad's barycentric
+    # coordinates. ⚠ `det` is MuJoCo's `c1`, and MuJoCo REUSES that variable
+    # inside this loop — every corner after the first divides by a squared
+    # DISTANCE instead of the determinant. Reproduced deliberately: without it
+    # we emit 368 edge points over the sweep where the runtime emits 361.
+    var ea = pts[3 + 0]
+    var eb = pts[6 + 0]
+    var ec = pts[3 + 1]
+    var ed = pts[6 + 1]
+    var det = ea * ed - eb * ec
+    for i in range(4):
+        if n >= BB_MAX_POINTS:
+            break
+        var llx = lx if (i // 2) != 0 else -lx
+        var lly = ly if (i % 2) != 0 else -ly
+        var x = llx - pts[0]
+        var y = lly - pts[1]
+        var u = (x * ed - y * eb) / det
+        var v = (y * ea - x * ec) / det
+
+        if nl == 0:
+            if (
+                u < Scalar[DTYPE](0) or u > Scalar[DTYPE](1)
+            ) and (v < Scalar[DTYPE](0) or v > Scalar[DTYPE](1)):
+                continue
+        else:
+            if (
+                u < Scalar[DTYPE](0)
+                or u > Scalar[DTYPE](1)
+                or v < Scalar[DTYPE](0)
+                or v > Scalar[DTYPE](1)
+            ):
+                continue
+
+        if u < Scalar[DTYPE](0):
+            u = Scalar[DTYPE](0)
+        if u > Scalar[DTYPE](1):
+            u = Scalar[DTYPE](1)
+        if v < Scalar[DTYPE](0):
+            v = Scalar[DTYPE](0)
+        if v > Scalar[DTYPE](1):
+            v = Scalar[DTYPE](1)
+
+        var t0 = pu[0] * (Scalar[DTYPE](1) - u - v) + pu[3] * u + pu[6] * v
+        var t1 = pu[1] * (Scalar[DTYPE](1) - u - v) + pu[4] * u + pu[7] * v
+        var t2 = pu[2] * (Scalar[DTYPE](1) - u - v) + pu[5] * u + pu[8] * v
+
+        var gx = llx - t0
+        var gy = lly - t1
+        var gz = -t2
+        det = gx * gx + gy * gy + gz * gz
+        if t2 > Scalar[DTYPE](0) and det > margin2:
+            continue
+
+        pnt[3 * n + 0] = (llx + t0) * Scalar[DTYPE](0.5)
+        pnt[3 * n + 1] = (lly + t1) * Scalar[DTYPE](0.5)
+        pnt[3 * n + 2] = t2 * Scalar[DTYPE](0.5)
+        depth[n] = sqrt(det) * (
+            Scalar[DTYPE](-1) if t2 < Scalar[DTYPE](0) else Scalar[DTYPE](1)
+        )
+        n += 1
+    var nf = n
+
+    # (3) the projected incident corners themselves, clamped onto the
+    # reference face.
+    for i in range(4):
+        if n >= BB_MAX_POINTS:
+            break
+        var x = crn[3 * i + 0]
+        var y = crn[3 * i + 1]
+        if nl == 0:
+            if nf != 0:
+                if (x < -lx or x > lx) and (y < -ly or y > ly):
+                    continue
+        else:
+            if x < -lx or x > lx or y < -ly or y > ly:
+                continue
+
+        var acc = Scalar[DTYPE](0)
+        var tx = x * Scalar[DTYPE](0.5)
+        var ty = y * Scalar[DTYPE](0.5)
+        if x < -s[0]:
+            acc += (x + s[0]) * (x + s[0])
+            tx = -s[0] * Scalar[DTYPE](0.5)
+        elif x > s[0]:
+            acc += (x - s[0]) * (x - s[0])
+            tx = s[0] * Scalar[DTYPE](0.5)
+        if y < -s[1]:
+            acc += (y + s[1]) * (y + s[1])
+            ty = -s[1] * Scalar[DTYPE](0.5)
+        elif y > s[1]:
+            acc += (y - s[1]) * (y - s[1])
+            ty = s[1] * Scalar[DTYPE](0.5)
+        var pz = pu[3 * i + 2]
+        acc += pz * innorm * pz * innorm
+
+        if pz > Scalar[DTYPE](0) and acc > margin2:
+            continue
+
+        pnt[3 * n + 0] = tx + pu[3 * i + 0] * Scalar[DTYPE](0.5)
+        pnt[3 * n + 1] = ty + pu[3 * i + 1] * Scalar[DTYPE](0.5)
+        pnt[3 * n + 2] = pz * Scalar[DTYPE](0.5)
+        depth[n] = sqrt(acc) * (
+            Scalar[DTYPE](-1) if pz < Scalar[DTYPE](0) else Scalar[DTYPE](1)
+        )
+        n += 1
+
+    # Back to world. The reference box is always box 1 here, and the normal is
+    # `clnorm` rotated out of the reference frame, not the frame's +z.
+    var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for row in range(3):
+        rw[3 * row + 0] = mat1[3 * row + i0] * f0
+        rw[3 * row + 1] = mat1[3 * row + i1] * f1
+        rw[3 * row + 2] = mat1[3 * row + i2] * f2
+
+    var nsgn = Scalar[DTYPE](-1) if inflag != 0 else Scalar[DTYPE](1)
+    for row in range(3):
+        normal_out[row] = nsgn * (
+            rw[3 * row + 0] * rnorm[0]
+            + rw[3 * row + 1] * rnorm[1]
+            + rw[3 * row + 2] * rnorm[2]
+        )
+
+    for i in range(n):
+        var qx = pnt[3 * i + 0]
+        var qy = pnt[3 * i + 1]
+        var qz = pnt[3 * i + 2] + hz
+        pos_out[3 * i + 0] = rw[0] * qx + rw[1] * qy + rw[2] * qz + a_x
+        pos_out[3 * i + 1] = rw[3] * qx + rw[4] * qy + rw[5] * qz + a_y
+        pos_out[3 * i + 2] = rw[6] * qx + rw[7] * qy + rw[8] * qz + a_z
+        dist_out[i] = depth[i]
+
+    return n
+
+
+@always_inline
+def box_box_manifold[
+    DTYPE: DType
+](
+    # Box A (MuJoCo's geom 1)
+    a_x: Scalar[DTYPE],
+    a_y: Scalar[DTYPE],
+    a_z: Scalar[DTYPE],
+    a_qx: Scalar[DTYPE],
+    a_qy: Scalar[DTYPE],
+    a_qz: Scalar[DTYPE],
+    a_qw: Scalar[DTYPE],
+    a_hx: Scalar[DTYPE],
+    a_hy: Scalar[DTYPE],
+    a_hz: Scalar[DTYPE],
+    # Box B (MuJoCo's geom 2)
+    b_x: Scalar[DTYPE],
+    b_y: Scalar[DTYPE],
+    b_z: Scalar[DTYPE],
+    b_qx: Scalar[DTYPE],
+    b_qy: Scalar[DTYPE],
+    b_qz: Scalar[DTYPE],
+    b_qw: Scalar[DTYPE],
+    b_hx: Scalar[DTYPE],
+    b_hy: Scalar[DTYPE],
+    b_hz: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut n_out: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3],
+) -> Int:
+    """Full contact MANIFOLD for a colliding box pair.
+
+    Port of `_boxbox` — BOTH the face (`code < 12`) and edge-edge
+    (`code >= 12`) paths — plus the bad/duplicate removal that `mjc_BoxBox`
+    wraps around them
+    (`references/mujoco-3.6.0/src/engine/engine_collision_box.c`).
+
+    Returns MuJoCo's `code`, which tells the caller which path was taken:
+
+        -1        the boxes are separated; nothing written
+        0 .. 11   FACE axis — `n_out` contacts written, sharing `normal_out`
+        >= 12     EDGE-EDGE axis — likewise, built by `_bb_edge_manifold`
+
+    `normal_out` points from box A to box B, the convention every primitive in
+    this file follows.
+
+    ⚠ PORTED FROM 3.6.0, NOT FROM `references/mujoco-3.3.6/`. Those two differ
+    in exactly one line of this routine and it is the answer: 3.3.6 ends with
+    `con[i].dist = points[i][2]` where the value has already been halved to
+    place the contact POINT midway through the overlap, so every face contact
+    it reports is half as deep as it should be. 3.6.0 has
+    `con[i].dist = 2 * points[i][2]`. The pixi runtime we compare against is
+    MuJoCo 3.10.0 and it agrees with 3.6.0 (a box overlapping another by
+    exactly 4 mm reports dist = -0.004), so CLAUDE.md's "3.3.6 matches the pixi
+    version" is stale by several releases.
+
+    On a 400-pose sweep of two unequal boxes, 90 of the 217 contacting poses
+    take the face path (210 points) and 127 take edge-edge (361 points);
+    `tests/physics3d/test_box_box_sweep.mojo` gates both against MuJoCo.
+    """
+    n_out = 0
+
+    var mat1 = _bb_quat_mat[DTYPE](a_qx, a_qy, a_qz, a_qw)
+    var mat2 = _bb_quat_mat[DTYPE](b_qx, b_qy, b_qz, b_qw)
+
+    var size1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    size1[0] = a_hx
+    size1[1] = a_hy
+    size1[2] = a_hz
+    var size2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    size2[0] = b_hx
+    size2[1] = b_hy
+    size2[2] = b_hz
+
+    # pos21 = mat1^T (pos2 - pos1); pos12 = mat2^T (pos1 - pos2)
+    var dx = b_x - a_x
+    var dy = b_y - a_y
+    var dz = b_z - a_z
+    var pos21 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var pos12 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        pos21[i] = mat1[i] * dx + mat1[3 + i] * dy + mat1[6 + i] * dz
+        pos12[i] = -(mat2[i] * dx + mat2[3 + i] * dy + mat2[6 + i] * dz)
+
+    # rot = mat1^T mat2, row-major; rott = rot^T
+    var rot = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            var acc = Scalar[DTYPE](0)
+            for k in range(3):
+                acc += mat1[3 * k + i] * mat2[3 * k + j]
+            rot[3 * i + j] = acc
+    var rott = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rotabs = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            rott[3 * i + j] = rot[3 * j + i]
+            rotabs[3 * i + j] = abs(rot[3 * i + j])
+
+    var plen1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var plen2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        var s2 = Scalar[DTYPE](0)
+        var s1 = Scalar[DTYPE](0)
+        for j in range(3):
+            s2 += rotabs[3 * i + j] * size2[j]
+            s1 += rotabs[3 * j + i] * size1[j]
+        plen2[i] = s2
+        plen1[i] = s1
+
+    var penetration = margin
+    for i in range(3):
+        penetration += size1[i] * Scalar[DTYPE](3) + size2[i] * Scalar[DTYPE](
+            3
+        )
+
+    var code = -1
+    for i in range(3):
+        var c1 = -abs(pos21[i]) + size1[i] + plen2[i]
+        var c2 = -abs(pos12[i]) + size2[i] + plen1[i]
+        if c1 < -margin or c2 < -margin:
+            return -1
+        if c1 < penetration:
+            penetration = c1
+            code = i + (3 if pos21[i] < Scalar[DTYPE](0) else 0) + 0
+        if c2 < penetration:
+            penetration = c2
+            code = i + (3 if pos12[i] < Scalar[DTYPE](0) else 0) + 6
+
+    # ⚠⚠ THE FACE-VS-EDGE COMPARISON IS BELOW float32's NOISE FLOOR, AND
+    # MuJoCo'S GUARD AGAINST THAT IS A NO-OP AT float32.
+    #
+    # Every `c1`/`c2`/`c3` above and below is a DIFFERENCE of quantities ~10^4
+    # times larger: `-|pos21[i]| + size1[i] + plen2[i]`, with a Duplo base
+    # that is `-0.0192 + 0.0096 + 0.0096`. Catastrophic cancellation, so the
+    # result carries an absolute error of about one ulp OF THE OPERANDS —
+    # 9.3e-10 at float32 — while the result itself is ~1e-08. Measured on
+    # `reassemble_5`'s tower:
+    #
+    #     face_pen 1.2107193e-08   edge_pen 1.1175871e-08   diff 9.31e-10
+    #
+    # The two axes are the same number and which one "wins" is a coin flip.
+    # MuJoCo guards the tie with `c3 < penetration * (1 - 1e-12)`
+    # (`engine_collision_box.c:707`), a RELATIVE bias towards the face axis —
+    # and at float32 `1 - 1e-12` IS EXACTLY 1.0, so the bias disappears
+    # entirely. A relative bias could not fix it anyway: the noise here is 8%
+    # of the value, and grows without bound as the pair approaches touching.
+    #
+    # ⚠ IT IS NOT A COSMETIC MISPICK. When the edge axis wins, the manifold
+    # comes from `_bb_edge_manifold`, whose corner sources report
+    # `depth = sqrt(lateral_overshoot^2 + (pz*innorm)^2)` — a DISTANCE. On a
+    # near-parallel pair that distance is the box's own extent, so a pair
+    # separated by 3e-09 reported `dist = -0.0318` and `-0.0636`, i.e.
+    # `2 x half_x` and `2 x half_y`, with 176 N of normal force. That is what
+    # blew up `reassemble_5`'s float32 tower: `max|qacc|` 9.5 -> 27032 in one
+    # substep, from a tower still seated to 7e-09. float64 never sees it
+    # because there the same cancellation leaves 7e-18 of error against the
+    # same 1e-08, and the winner is decided by geometry rather than rounding.
+    #
+    # So the tie gets an ABSOLUTE floor sized to the cancellation: the edge
+    # axis must beat the face axis by more than the rounding error of the
+    # sums that produced them. `4 x eps x sum(|operands|)` is the standard
+    # bound for a three-term sum, with a factor of four for the products
+    # feeding `plen`.
+    #
+    # ⚠ float64 GETS ZERO AND KEEPS MuJoCo'S EXPRESSION BIT FOR BIT. The
+    # Menagerie board is measured at float64 and must not move; this is a
+    # float32 noise-floor repair, not a change of algorithm.
+    var tie_floor = Scalar[DTYPE](0)
+    comptime if DTYPE != DType.float64:
+        # float32's eps. Anything narrower is noisier still, so this is a
+        # lower bound rather than a wrong one; physics3d runs f32 and f64.
+        comptime _EPS32 = Scalar[DTYPE](1.1920929e-07)
+        var scale = Scalar[DTYPE](0)
+        for i in range(3):
+            scale += size1[i] + size2[i] + abs(pos21[i])
+        tie_floor = scale * _EPS32 * Scalar[DTYPE](4)
+
+    # The nine edge-edge axes. Whichever one wins carries state the manifold
+    # needs later: which corner of each box leads (`cle1`, `cle2`), the axis
+    # itself (`clnorm`), and which side of it box 2's centre sits on (`inflag`).
+    var cle1 = 0
+    var cle2 = 0
+    var clnorm = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var inflag = 0
+    for i in range(3):
+        for j in range(3):
+            var t0 = Scalar[DTYPE](0)
+            var t1 = Scalar[DTYPE](0)
+            var t2 = Scalar[DTYPE](0)
+            if i == 0:
+                t1 = -rott[3 * j + 2]
+                t2 = rott[3 * j + 1]
+            elif i == 1:
+                t0 = rott[3 * j + 2]
+                t2 = -rott[3 * j + 0]
+            else:
+                t0 = -rott[3 * j + 1]
+                t1 = rott[3 * j + 0]
+            var c1 = sqrt(t0 * t0 + t1 * t1 + t2 * t2)
+            if c1 < Scalar[DTYPE](_BB_MINVAL):
+                continue
+            t0 /= c1
+            t1 /= c1
+            t2 /= c1
+            var c2 = pos21[0] * t0 + pos21[1] * t1 + pos21[2] * t2
+            var c3 = Scalar[DTYPE](0)
+            for k in range(3):
+                if k != i:
+                    var tk = t0
+                    if k == 1:
+                        tk = t1
+                    elif k == 2:
+                        tk = t2
+                    c3 += size1[k] * abs(tk)
+            for k in range(3):
+                if k != j:
+                    c3 += size2[k] * rotabs[3 * i + (3 - k - j)] / c1
+            c3 -= abs(c2)
+            if c3 < -margin:
+                return -1
+            if c3 < penetration * (
+                Scalar[DTYPE](1) - Scalar[DTYPE](1e-12)
+            ) - tie_floor:
+                penetration = c3
+                code = 12 + i * 3 + j
+                cle1 = 0
+                for k in range(3):
+                    if k != i:
+                        var tk = t0
+                        if k == 1:
+                            tk = t1
+                        elif k == 2:
+                            tk = t2
+                        if (tk > Scalar[DTYPE](0)) != (c2 < Scalar[DTYPE](0)):
+                            cle1 += 1 << k
+                cle2 = 0
+                for k in range(3):
+                    if k != j:
+                        var e0 = rot[3 * i + (3 - k - j)] > Scalar[DTYPE](0)
+                        var e1 = c2 < Scalar[DTYPE](0)
+                        var e2 = ((k - j + 3) % 3) == 1
+                        if ((e0 != e1) != e2):
+                            cle2 += 1 << k
+                clnorm[0] = t0
+                clnorm[1] = t1
+                clnorm[2] = t2
+                inflag = 1 if c2 < Scalar[DTYPE](0) else 0
+
+    if code == -1:
+        return -1
+    if code >= 12:
+        n_out = _bb_edge_manifold[DTYPE](
+            code, margin,
+            a_x, a_y, a_z, mat1, size1, size2,
+            pos21, rot, rotabs, cle1, cle2, clnorm, inflag,
+            dist_out, pos_out, normal_out,
+        )
+        n_out = _bb_post_filter[DTYPE](
+            n_out, dist_out, pos_out,
+            a_x, a_y, a_z, mat1, a_hx, a_hy, a_hz,
+            b_x, b_y, b_z, mat2, b_hx, b_hy, b_hz,
+            margin,
+        )
+        return code
+
+    # ------------------------------------------------------------------
+    # Face path. `rotmore` is a signed permutation taking the winning face
+    # normal to +z; MuJoCo applies it through the `rotaxis` / `rotmatx` macros
+    # as an index-and-flip triple rather than a matrix product, and so does
+    # this.
+    # ------------------------------------------------------------------
+    var q1 = code % 6
+    var q2 = code // 6
+
+    var i0 = 0
+    var i1 = 1
+    var i2 = 2
+    var f0 = Scalar[DTYPE](1)
+    var f1 = Scalar[DTYPE](1)
+    var f2 = Scalar[DTYPE](1)
+    if q1 == 0:
+        i0 = 2
+        f0 = Scalar[DTYPE](-1)
+        i2 = 0
+    elif q1 == 1:
+        i1 = 2
+        f1 = Scalar[DTYPE](-1)
+        i2 = 1
+    elif q1 == 3:
+        i0 = 2
+        i2 = 0
+        f2 = Scalar[DTYPE](-1)
+    elif q1 == 4:
+        i1 = 2
+        i2 = 1
+        f2 = Scalar[DTYPE](-1)
+    elif q1 == 5:
+        f0 = Scalar[DTYPE](-1)
+        f2 = Scalar[DTYPE](-1)
+
+    # r = rotmore * (q2 ? rot^T : rot); p, tmp1 = rotmore * (vector)
+    var src = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var pv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var sv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    if q2 != 0:
+        for i in range(9):
+            src[i] = rott[i]
+        for i in range(3):
+            pv[i] = pos12[i]
+            sv[i] = size2[i]
+            s[i] = size1[i]
+    else:
+        for i in range(9):
+            src[i] = rot[i]
+        for i in range(3):
+            pv[i] = pos21[i]
+            sv[i] = size1[i]
+            s[i] = size2[i]
+
+    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        r[0 * 3 + c] = src[i0 * 3 + c] * f0
+        r[1 * 3 + c] = src[i1 * 3 + c] * f1
+        r[2 * 3 + c] = src[i2 * 3 + c] * f2
+
+    var p = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    p[0] = pv[i0] * f0
+    p[1] = pv[i1] * f1
+    p[2] = pv[i2] * f2
+    var tmp1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    tmp1[0] = sv[i0] * f0
+    tmp1[1] = sv[i1] * f1
+    tmp1[2] = sv[i2] * f2
+
+    # `rt` row i is the world direction of the incident box's local axis i.
+    var rt = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            rt[3 * i + j] = r[3 * j + i]
+
+    var ss = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        ss[i] = abs(tmp1[i])
+    var lx = ss[0]
+    var ly = ss[1]
+    var hz = ss[2]
+    p[2] -= hz
+
+    # The incident box's DEEPEST corner, and the two face edges leaving it.
+    var clcorner = 0
+    for i in range(3):
+        if r[6 + i] < Scalar[DTYPE](0):
+            clcorner += 1 << i
+
+    var pts = InlineArray[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        var acc = p[c]
+        for i in range(3):
+            var sgn = Scalar[DTYPE](1) if (clcorner & (1 << i)) != 0 else (
+                Scalar[DTYPE](-1)
+            )
+            acc += rt[3 * i + c] * s[i] * sgn
+        pts[c] = acc
+
+    var m = 1
+    for i in range(3):
+        if abs(r[6 + i]) < Scalar[DTYPE](0.5):
+            var sc = Scalar[DTYPE](-2) if (clcorner & (1 << i)) != 0 else (
+                Scalar[DTYPE](2)
+            )
+            for c in range(3):
+                pts[3 * m + c] = rt[3 * i + c] * s[i] * sc
+            m += 1
+    for c in range(3):
+        pts[3 * 3 + c] = pts[c] + pts[3 + c]
+        pts[3 * 4 + c] = pts[c] + pts[6 + c]
+    for c in range(3):
+        pts[3 * 5 + c] = pts[3 * 3 + c] + pts[6 + c]
+
+    # Four (origin, direction) edges of the incident face.
+    var lines = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var k = 0
+    if m > 1:
+        for c in range(3):
+            lines[6 * k + c] = pts[c]
+            lines[6 * k + 3 + c] = pts[3 + c]
+        k += 1
+    if m > 2:
+        for c in range(3):
+            lines[6 * k + c] = pts[c]
+            lines[6 * k + 3 + c] = pts[6 + c]
+        k += 1
+        for c in range(3):
+            lines[6 * k + c] = pts[3 * 3 + c]
+            lines[6 * k + 3 + c] = pts[6 + c]
+        k += 1
+        for c in range(3):
+            lines[6 * k + c] = pts[3 * 4 + c]
+            lines[6 * k + 3 + c] = pts[3 + c]
+        k += 1
+
+    var pnt = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var n = 0
+
+    # Clip each incident edge against the reference face's four side planes.
+    for i in range(k):
+        for q in range(2):
+            var a = lines[6 * i + q]
+            var b = lines[6 * i + 3 + q]
+            var c = lines[6 * i + (1 - q)]
+            var d = lines[6 * i + 4 - q]
+            if abs(b) <= Scalar[DTYPE](_BB_MINVAL):
+                continue
+            for jj in range(2):
+                if n >= BB_MAX_POINTS:
+                    break
+                var j = Scalar[DTYPE](-1) if jj == 0 else Scalar[DTYPE](1)
+                var l = ss[q] * j
+                # ⚠⚠ RECIPROCAL-THEN-MULTIPLY, NOT A DIVIDE, AND THE
+                # DIFFERENCE IS OBSERVABLE. MuJoCo writes
+                # `c1 = (l - a) * (1/b)` (`engine_collision_box.c:881`), and
+                # the very next line REJECTS the point when `c1 > 1`. On a
+                # face-to-face pose the exact answer IS 1: a divide returns
+                # exactly 1.0 and keeps the point, while `(l-a) * (1/b)` lands
+                # a hair above and drops it. We kept a point MuJoCo does not,
+                # duplicating a manifold corner. Gated by
+                # `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+                var c1 = (l - a) * (Scalar[DTYPE](1) / b)
+                if c1 < Scalar[DTYPE](0) or c1 > Scalar[DTYPE](1):
+                    continue
+                var c2 = c + d * c1
+                if abs(c2) > ss[1 - q]:
+                    continue
+                for cc in range(3):
+                    pnt[3 * n + cc] = (
+                        lines[6 * i + cc] + lines[6 * i + 3 + cc] * c1
+                    )
+                n += 1
+
+    # Reference-face corners that fall inside the incident face.
+    var ea = pts[3 + 0]
+    var eb = pts[6 + 0]
+    var ec = pts[3 + 1]
+    var ed = pts[6 + 1]
+    var det = ea * ed - eb * ec
+    if m > 2:
+        for i in range(4):
+            if n >= BB_MAX_POINTS:
+                break
+            var llx = lx if (i // 2) != 0 else -lx
+            var lly = ly if (i % 2) != 0 else -ly
+            var x = llx - pts[0]
+            var y = lly - pts[1]
+            # The same reciprocal-then-multiply, for the same reason: the
+            # test below is `u <= 0 || v <= 0 || u >= 1 || v >= 1`, and on a
+            # degenerate face these land exactly on the bounds.
+            var inv_det = Scalar[DTYPE](1) / det
+            var u = (x * ed - y * eb) * inv_det
+            var v = (y * ea - x * ec) * inv_det
+            if (
+                u <= Scalar[DTYPE](0)
+                or v <= Scalar[DTYPE](0)
+                or u >= Scalar[DTYPE](1)
+                or v >= Scalar[DTYPE](1)
+            ):
+                continue
+            pnt[3 * n + 0] = llx
+            pnt[3 * n + 1] = lly
+            pnt[3 * n + 2] = pts[2] + u * pts[3 + 2] + v * pts[6 + 2]
+            n += 1
+
+    # Incident-face corners that fall inside the reference face. ⚠ The deepest
+    # corner (i == 0) is added WITHOUT the bounds test — MuJoCo does the same,
+    # and the post-filter below is what removes it when it lies outside.
+    for i in range(1 << (m - 1)):
+        if n >= BB_MAX_POINTS:
+            break
+        var base = 0 if i == 0 else 3 * (i + 2)
+        var tx = pts[base + 0]
+        var ty = pts[base + 1]
+        if i != 0:
+            if tx <= -lx or tx >= lx:
+                continue
+            if ty <= -ly or ty >= ly:
+                continue
+        for cc in range(3):
+            pnt[3 * n + cc] = pts[base + cc]
+        n += 1
+
+    # Drop points above the reference face, then halve z to put the contact
+    # POINT midway through the overlap. `dist` keeps the full depth.
+    var depth = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var kept = 0
+    for i in range(n):
+        if pnt[3 * i + 2] > margin:
+            continue
+        depth[kept] = pnt[3 * i + 2]
+        pnt[3 * kept + 0] = pnt[3 * i + 0]
+        pnt[3 * kept + 1] = pnt[3 * i + 1]
+        pnt[3 * kept + 2] = pnt[3 * i + 2] * Scalar[DTYPE](0.5)
+        kept += 1
+    n = kept
+
+    # Back to world: rw = (q2 ? mat2 : mat1) * rotmore^T.
+    var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var mref = mat2.copy() if q2 != 0 else mat1.copy()
+    # rotmore^T has a single non-zero per column: column a is e_{idx[a]} * f_a.
+    for row in range(3):
+        rw[3 * row + 0] = mref[3 * row + i0] * f0
+        rw[3 * row + 1] = mref[3 * row + i1] * f1
+        rw[3 * row + 2] = mref[3 * row + i2] * f2
+
+    var nsgn = Scalar[DTYPE](-1) if q2 != 0 else Scalar[DTYPE](1)
+    normal_out[0] = nsgn * rw[2]
+    normal_out[1] = nsgn * rw[5]
+    normal_out[2] = nsgn * rw[8]
+
+    var ox = b_x if q2 != 0 else a_x
+    var oy = b_y if q2 != 0 else a_y
+    var oz = b_z if q2 != 0 else a_z
+
+    for i in range(n):
+        var lx_ = pnt[3 * i + 0]
+        var ly_ = pnt[3 * i + 1]
+        var lz_ = pnt[3 * i + 2] + hz
+        pos_out[3 * i + 0] = (
+            rw[0] * lx_ + rw[1] * ly_ + rw[2] * lz_ + ox
+        )
+        pos_out[3 * i + 1] = (
+            rw[3] * lx_ + rw[4] * ly_ + rw[5] * lz_ + oy
+        )
+        pos_out[3 * i + 2] = (
+            rw[6] * lx_ + rw[7] * ly_ + rw[8] * lz_ + oz
+        )
+        dist_out[i] = depth[i]
+
+    n_out = _bb_post_filter[DTYPE](
+        n, dist_out, pos_out,
+        a_x, a_y, a_z, mat1, a_hx, a_hy, a_hz,
+        b_x, b_y, b_z, mat2, b_hx, b_hy, b_hz,
+        margin,
+    )
+    return code
+
+
+# =============================================================================
 # Phase 10: Missing collision pairs
 # cylinder-box, cylinder-capsule, cylinder-cylinder
 # =============================================================================
@@ -2755,9 +4808,22 @@ def cylinder_box[
     For exact cylinder-box, a full SAT or GJK approach would be needed,
     but capsule approximation matches MuJoCo's practical behavior for
     typical robot geometries.
+
+    Returns the normal pointing from the CYLINDER to the BOX — first operand
+    to second, the convention every primitive in this file follows.
+
+    ⚠ The delegation below SWAPS the operands (`box_capsule` takes the box
+    first), so its normal comes back pointing box -> cylinder and has to be
+    negated. It was not, so this primitive returned the exact opposite of what
+    its own signature promises. Silent until 2026-08-01: no gate exercised a
+    cylinder-box pair against MuJoCo, and the two call sites in the narrow
+    phase BOTH consumed it, so they were consistently wrong with each other
+    and only a MuJoCo comparison could see it —
+    `tests/physics3d/test_narrow_phase_pairs.mojo` measured a direction error
+    of 2.0 on a unit vector, i.e. a full reversal, on its first run.
     """
     # Treat cylinder as capsule → reuse box_capsule
-    return box_capsule[DTYPE](
+    var r = box_capsule[DTYPE](
         b_x, b_y, b_z,
         b_qx, b_qy, b_qz, b_qw,
         hx, hy, hz,
@@ -2766,3 +4832,5 @@ def cylinder_box[
         cyl_hl,
         cyl_r,
     )
+    # dist and the contact point are direction-free; only the normal flips.
+    return (r[0], r[1], r[2], r[3], -r[4], -r[5], -r[6])

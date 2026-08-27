@@ -29,7 +29,7 @@ Watch for: loss falling smoothly, var_min rising > 0.1, gram_off < 0.5
 slow at this scale — NVIDIA is the intended target.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -99,8 +99,8 @@ comptime Trainer = LeWMTrainer[
 comptime OnlineBuf = OnlinePongSampler[ScriptedPongPolicy, B, T]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _train_loop[

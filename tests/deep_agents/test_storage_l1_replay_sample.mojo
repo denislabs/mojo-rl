@@ -14,13 +14,13 @@ Run:
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.data.cpu_replay import CPUReplay
-from mojo_rl.deep_agents.data.cpu_per_replay import CPUPrioritizedReplay
-from mojo_rl.deep_agents.data.gpu_replay import GPUReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay_gpu import StoreReplayGpu
 
 
 comptime OBS = 3
@@ -45,7 +45,7 @@ def _mk_act(base: Scalar[DT]) -> List[Scalar[DT]]:
 
 def test_cpu_uniform() raises:
     print("CPUReplay -> storage TrainerState ...")
-    var buf = CPUReplay[OBS, ACT, CAP].make()
+    var buf = StoreReplay[OBS, ACT, CAP, False].make()
     for k in range(64):
         var s = _mk_obs(Scalar[DT](k))
         var a = _mk_act(Scalar[DT](k))
@@ -66,7 +66,7 @@ def test_cpu_uniform() raises:
 
 def test_cpu_per() raises:
     print("CPUPrioritizedReplay -> storage TrainerState ...")
-    var buf = CPUPrioritizedReplay[OBS, ACT, CAP].make(batch_capacity=BATCH)
+    var buf = StoreReplay[OBS, ACT, CAP, True].make(batch_capacity=BATCH)
     buf.configure_per(alpha=0.6, beta=0.4, epsilon=1e-6)
     for k in range(64):
         var s = _mk_obs(Scalar[DT](k))
@@ -92,7 +92,7 @@ def test_cpu_per() raises:
 def test_gpu_uniform() raises:
     print("GPUReplay -> storage TrainerState (device gather) ...")
     var c = DeviceContext()
-    var buf = GPUReplay[OBS, ACT, CAP].make(ctx=Optional(c), batch_capacity=BATCH)
+    var buf = StoreReplayGpu[OBS, ACT, CAP, False].make(ctx=Optional(c), batch_capacity=BATCH)
     for k in range(64):
         var s = _mk_obs(Scalar[DT](k))
         var a = _mk_act(Scalar[DT](k))

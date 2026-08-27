@@ -1,0 +1,131 @@
+---
+/**
+ * CategoricalProjection — C51's distributional Bellman update, in three panels.
+ *
+ * The whole difficulty of C51 is one thing: the support is *fixed*, but
+ * `r + γz` is not a point of it. So the update has to land off the grid and
+ * then be pushed back on. Panel 2 exists purely to show that misalignment —
+ * without it the projection looks like an implementation detail rather than
+ * the reason the algorithm is shaped the way it is.
+ *
+ * Bar geometry is computed rather than hand-placed so the three panels share
+ * one grid and the offsets cannot drift apart under editing.
+ */
+
+/** Baseline and ceiling of the plotting area. */
+const BASE = 250;
+
+/** Panel origins (x) and width. Two 45px gutters hold the arrows. */
+const PANELS = [20, 315, 610];
+const PW = 250;
+
+/**
+ * Five atoms stands in for 51. Seven fit, but the gap between neighbours then
+ * renders at ~20px on a laptop — too tight for the split annotation below to be
+ * anything but a smudge. Legibility of that one detail is worth two bars.
+ */
+const ATOM_X = [30, 80, 130, 180, 230];
+const BAR_W = 20;
+
+/** Predicted next-state distribution, as bar heights in px. */
+const Z_NEXT = [14, 60, 112, 70, 22];
+
+/**
+ * The same masses after `r + γz`: γ < 1 contracts the spacing (50 → 45) and r
+ * shifts it right, so every bar now falls between two atoms.
+ */
+const SHIFT_X = ATOM_X.map((_, i) => 54 + i * 45);
+
+/** After projection: mass split onto the two neighbouring atoms. */
+const Z_PROJ = [8, 40, 100, 96, 34];
+
+/** The bar whose mass split is drawn explicitly, in panel 2. */
+const SPLIT = 2;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 330" role="img"
+		aria-label="C51 distributional Bellman update: the next-state distribution is shifted and scaled off the fixed atom grid, then projected back onto it">
+		<defs>
+			<marker id="cp-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+		</defs>
+
+		{
+			PANELS.map((px, panel) => (
+				<g>
+					<line class="dg-axis" x1={px} y1={BASE} x2={px + PW} y2={BASE} />
+					{ATOM_X.map((ax, i) => {
+						/* In the middle panel the two atoms receiving the split mass are
+						   drawn in the target colour, so the eye lands on the thing the
+						   caption and the bracket below are talking about. */
+						const receiving = panel === 1 && (i === SPLIT || i === SPLIT + 1);
+						return (
+							<line class={receiving ? 'dg-edge dg-edge--spark' : 'dg-tick'}
+								x1={px + ax} y1={BASE} x2={px + ax} y2={BASE + (receiving ? 12 : 7)} />
+						);
+					})}
+				</g>
+			))
+		}
+
+		<!-- panel 1 — the predicted next-state distribution, on the grid -->
+		<text x={PANELS[0] + 129} y="46" class="dg-title">Z(s′, a*)</text>
+		<text x={PANELS[0] + 129} y="68" class="dg-sub">predicted next-state return</text>
+		{
+			Z_NEXT.map((h, i) => (
+				<rect class="dg-fill-cyan" x={PANELS[0] + ATOM_X[i] - BAR_W / 2}
+					y={BASE - h} width={BAR_W} height={h} rx="2" />
+			))
+		}
+		<text x={PANELS[0] + 129} y={BASE + 32} class="dg-caption">on the atoms z₀ … z₅₀</text>
+
+		<!-- panel 2 — shifted and scaled, now between the atoms -->
+		<text x={PANELS[1] + 129} y="46" class="dg-title">r + γ·Z</text>
+		<text x={PANELS[1] + 129} y="68" class="dg-sub">lands between the atoms</text>
+		{
+			Z_NEXT.map((h, i) => (
+				<rect class="dg-ghost" x={PANELS[1] + SHIFT_X[i] - BAR_W / 2}
+					y={BASE - h} width={BAR_W} height={h} rx="2" />
+			))
+		}
+		{/* One mass, bracketed between the two atoms it is split across. Drawn as
+		    a span rather than two arrows: at render scale a pair of short
+		    diverging arrows reads as a zigzag, not as a division. */}
+		<path class="dg-edge dg-edge--spark"
+			d={`M ${PANELS[1] + ATOM_X[SPLIT]} ${BASE + 10} L ${PANELS[1] + ATOM_X[SPLIT]} ${BASE + 24}
+			    L ${PANELS[1] + ATOM_X[SPLIT + 1]} ${BASE + 24} L ${PANELS[1] + ATOM_X[SPLIT + 1]} ${BASE + 10}`} />
+		<circle cx={PANELS[1] + SHIFT_X[SPLIT]} cy={BASE + 24} r="4" class="dg-fill-spark" />
+		<text x={PANELS[1] + 129} y={BASE + 50} class="dg-caption">mass splits onto both</text>
+
+		<!-- panel 3 — projected back onto the fixed support -->
+		<text x={PANELS[2] + 129} y="46" class="dg-title">Φ (r + γ·Z)</text>
+		<text x={PANELS[2] + 129} y="68" class="dg-sub">projected back — the target</text>
+		{
+			Z_PROJ.map((h, i) => (
+				<rect class="dg-fill-spark" x={PANELS[2] + ATOM_X[i] - BAR_W / 2}
+					y={BASE - h} width={BAR_W} height={h} rx="2" />
+			))
+		}
+		<text x={PANELS[2] + 129} y={BASE + 32} class="dg-caption">cross-entropy vs Z(s, a)</text>
+
+		<!-- inter-panel arrows -->
+		<path class="dg-edge dg-edge--spark" marker-end="url(#cp-spark)"
+			d="M 276 170 L 306 170" />
+		<path class="dg-edge dg-edge--spark" marker-end="url(#cp-spark)"
+			d="M 571 170 L 601 170" />
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">prediction</span>
+		<span class="diagram__key diagram__key--spark">distributional target</span>
+		<span class="diagram__key diagram__key--muted">off-grid, before projection</span>
+	</figcaption>
+
+	<div class="diagram__formula">
+		<span class="diagram__formula-title">why the support range matters</span>
+		<code>every atom outside [v_min, v_max] is clipped onto the end atoms — mass piles up at the edges and the distribution stops being informative</code>
+	</div>
+</figure>

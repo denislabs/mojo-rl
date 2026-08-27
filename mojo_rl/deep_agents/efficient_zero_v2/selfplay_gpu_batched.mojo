@@ -35,10 +35,10 @@ Run (GPU env required): see `tests/deep_agents/test_ezv2_atari_batched_smoke.moj
 """
 
 from std.math import exp, log
-from std.memory import alloc, unsafe_memcpy
+from std.memory import unsafe_memcpy, alloc, dealloc
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -59,12 +59,12 @@ from ..zero.temperature import visit_temperature
 from ..muzero.selfplay_gpu_batched import _sample_action
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
-def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+def _ai(n: Int) -> Pointer[Int, MutAnyOrigin]:
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def run_ezv2_gumbel_selfplay_gpu_batched[
@@ -120,10 +120,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,
-    eval_env: Optional[UnsafePointer[ENV, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[ENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
     diag_sync: Bool = False,
 ) raises -> Float64:
@@ -204,7 +204,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # (cursor reset to 0, capacity retained → no reallocs after warmup). The
     # small label fields (act/rew/pol/val/tp/legal) stay Lists — a few appends/
     # step is negligible.
-    var eo_buf = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+    var eo_buf = List[Pointer[Scalar[DT], MutAnyOrigin]]()
     var eo_cap = List[Int]()                  # capacity in ELEMENTS
     var e_act = List[List[Scalar[DT]]]()
     var e_rew = List[List[Scalar[DT]]]()
@@ -254,340 +254,343 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # extra diag slots (diag_sync=True only): [11]/[13] pred/dyn pre-vjp drain,
     # [12]/[14] dyn/pred vjp GPU-drain, [15] fwd-scan GPU-drain, [16] target-
     # pre-pass GPU-drain; [7]/[10] then = pure host enqueue.
-    var phase_ns = alloc[Float64](18)
-    for i in range(18):
-        phase_ns[i] = 0.0
+    var phase_ns_a = alloc[Float64]({count = 18})
+    var phase_ns = phase_ns_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    try:
+        for i in range(18):
+            phase_ns[unsafe_offset=i] = 0.0
 
-    env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
+        env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
 
-    for it in range(iterations):
-        # ── 1. H2D the CPU env's live obs, batched Gumbel search ──
-        var _t0 = perf_counter_ns()
-        ctx.enqueue_copy(d_obs, env.obs_ptr())
-        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
-        planner.search_gpu[
-            type_of(rep_a),
-            type_of(dyn_a),
-            type_of(pred_a),
-        ](ctx, rep_a, dyn_a, pred_a, obs_t,
-          apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
-        mcts_seed += UInt32(1)
+        for it in range(iterations):
+            # ── 1. H2D the CPU env's live obs, batched Gumbel search ──
+            var _t0 = perf_counter_ns()
+            ctx.enqueue_copy(d_obs, env.obs_ptr())
+            var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
+            planner.search_gpu[
+                type_of(rep_a),
+                type_of(dyn_a),
+                type_of(pred_a),
+            ](ctx, rep_a, dyn_a, pred_a, obs_t,
+              apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+            mcts_seed += UInt32(1)
 
-        # ── 2. D2H improved policy + root value (obs already host) ──
-        ctx.enqueue_copy(h_pol, planner.policies_view())
-        ctx.enqueue_copy(h_val, planner.root_value_view())
-        ctx.synchronize()
-        ts_search += Float64(perf_counter_ns() - _t0)
+            # ── 2. D2H improved policy + root value (obs already host) ──
+            ctx.enqueue_copy(h_pol, planner.policies_view())
+            ctx.enqueue_copy(h_val, planner.root_value_view())
+            ctx.synchronize()
+            ts_search += Float64(perf_counter_ns() - _t0)
 
-        # ── 3. per env: sample, record the labelled step, stage the action ──
-        _t0 = perf_counter_ns()
-        var temp = visit_temperature(it, temperature_decay_steps)
-        var obs_host = env.obs_ptr()
-        var act_host = env.action_ptr()
-        for e in range(N_ENVS):
-            var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
-            # write the OBS-wide observation into the per-env raw buffer at the
-            # step cursor (ep_len[e]); grow capacity by doubling if needed
-            # (amortized O(1), no per-step full-buffer realloc). bulk unsafe_memcpy.
-            var off = ep_len[e] * OBS
-            if off + OBS > eo_cap[e]:
-                var newcap = eo_cap[e] * 2
-                if newcap < off + OBS:
-                    newcap = off + OBS
-                var nb = _a(newcap)
-                unsafe_memcpy(dest=nb, src=eo_buf[e], count=off)
-                eo_buf[e].free()
-                eo_buf[e] = nb
-                eo_cap[e] = newcap
-            unsafe_memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
-            e_act[e].append(Scalar[DT](action))
-            for a in range(ACT):
-                e_pol[e].append(h_pol[e * ACT + a])
-                e_legal[e].append(Scalar[DT](1.0))
-            e_val[e].append(h_val[e])
-            e_tp[e].append(Scalar[DT](0.0))
-            act_host[e] = Scalar[DT](action)
-        ts_collect += Float64(perf_counter_ns() - _t0)
+            # ── 3. per env: sample, record the labelled step, stage the action ──
+            _t0 = perf_counter_ns()
+            var temp = visit_temperature(it, temperature_decay_steps)
+            var obs_host = env.obs_ptr()
+            var act_host = env.action_ptr()
+            for e in range(N_ENVS):
+                var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
+                # write the OBS-wide observation into the per-env raw buffer at the
+                # step cursor (ep_len[e]); grow capacity by doubling if needed
+                # (amortized O(1), no per-step full-buffer realloc). bulk unsafe_memcpy.
+                var off = ep_len[e] * OBS
+                if off + OBS > eo_cap[e]:
+                    var newcap = eo_cap[e] * 2
+                    if newcap < off + OBS:
+                        newcap = off + OBS
+                    var nb = _a(newcap)
+                    unsafe_memcpy(dest=nb, src=eo_buf[e], count=off)
+                    eo_buf[e].unsafe_free()
+                    eo_buf[e] = nb
+                    eo_cap[e] = newcap
+                unsafe_memcpy(dest=eo_buf[e].unsafe_offset(off), src=obs_host.unsafe_offset(e * OBS), count=OBS)
+                e_act[e].append(Scalar[DT](action))
+                for a in range(ACT):
+                    e_pol[e].append(h_pol[unsafe_offset=e * ACT + a])
+                    e_legal[e].append(Scalar[DT](1.0))
+                e_val[e].append(h_val[unsafe_offset=e])
+                e_tp[e].append(Scalar[DT](0.0))
+                act_host[unsafe_offset=e] = Scalar[DT](action)
+            ts_collect += Float64(perf_counter_ns() - _t0)
 
-        # ── 4. step the CPU envs (host action → host reward/done/term) ──
-        _t0 = perf_counter_ns()
-        env.step_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
-        ts_env += Float64(perf_counter_ns() - _t0)
-        var rew_host = env.reward_ptr()
-        var done_host = env.done_ptr()
-        var term_host = env.terminated_ptr()
+            # ── 4. step the CPU envs (host action → host reward/done/term) ──
+            _t0 = perf_counter_ns()
+            env.step_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
+            ts_env += Float64(perf_counter_ns() - _t0)
+            var rew_host = env.reward_ptr()
+            var done_host = env.done_ptr()
+            var term_host = env.terminated_ptr()
 
-        # ── 5. accumulate, store + reset finished episodes ──
-        var _t_store0 = perf_counter_ns()
-        for e in range(N_ENVS):
-            e_rew[e].append(rew_host[e])
-            ep_return[e] += Float64(rew_host[e])
-            ep_len[e] += 1
-            var done = done_host[e] > Scalar[DT](0.5)
-            var terminated = term_host[e] > Scalar[DT](0.5)
-            if done or ep_len[e] >= max_ep_steps:
-                # eo_buf[e] is a raw growable pixel buffer; store_episode takes a
-                # List, so copy the resident obs into one (episodes end rarely).
-                var eo_l = List[Scalar[DT]](length=ep_len[e] * OBS, fill=0)
-                for i in range(ep_len[e] * OBS):
-                    eo_l[i] = eo_buf[e][i]
-                rb.store_episode(
-                    eo_l,
-                    e_act[e],
-                    e_rew[e],
-                    e_pol[e],
-                    e_val[e],
-                    e_tp[e],
-                    e_legal[e],
-                    ep_len[e],
-                    truncated=not terminated,
-                )
-                ep_returns.append(ep_return[e])
-                # reset cursors: obs buffer reused (capacity retained), labels cleared
-                e_act[e].clear(); e_rew[e].clear()
-                e_pol[e].clear(); e_val[e].clear(); e_tp[e].clear()
-                e_legal[e].clear()
-                ep_len[e] = 0
-                ep_return[e] = 0.0
-        ts_store += Float64(perf_counter_ns() - _t_store0)
-
-        var _t_rst0 = perf_counter_ns()
-        env.selective_reset_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
-        ts_env += Float64(perf_counter_ns() - _t_rst0)
-
-        var trained = rb.num_steps() >= learning_starts and rb.num_episodes() > 0
-
-        # ── 6. train (prioritized sample → weighted EZv2 unroll → writeback) ──
-        var _t_train0 = perf_counter_ns()
-        if trained:
-            if lr > Scalar[DT](0.0):
-                var tstep = train_steps
-                var cur_lr = lr
-                if lr_warmup_iters > 0 and tstep < lr_warmup_iters:
-                    cur_lr = lr * Scalar[DT](
-                        Float64(tstep + 1) / Float64(lr_warmup_iters)
+            # ── 5. accumulate, store + reset finished episodes ──
+            var _t_store0 = perf_counter_ns()
+            for e in range(N_ENVS):
+                e_rew[e].append(rew_host[unsafe_offset=e])
+                ep_return[e] += Float64(rew_host[unsafe_offset=e])
+                ep_len[e] += 1
+                var done = done_host[unsafe_offset=e] > Scalar[DT](0.5)
+                var terminated = term_host[unsafe_offset=e] > Scalar[DT](0.5)
+                if done or ep_len[e] >= max_ep_steps:
+                    # eo_buf[e] is a raw growable pixel buffer; store_episode takes a
+                    # List, so copy the resident obs into one (episodes end rarely).
+                    var eo_l = List[Scalar[DT]](length=ep_len[e] * OBS, fill=0)
+                    for i in range(ep_len[e] * OBS):
+                        eo_l[i] = eo_buf[e][unsafe_offset=i]
+                    rb.store_episode(
+                        eo_l,
+                        e_act[e],
+                        e_rew[e],
+                        e_pol[e],
+                        e_val[e],
+                        e_tp[e],
+                        e_legal[e],
+                        ep_len[e],
+                        truncated=not terminated,
                     )
-                orep.set_lr(cur_lr); odyn.set_lr(cur_lr); opred.set_lr(cur_lr)
-                oproj.set_lr(cur_lr); opredh.set_lr(cur_lr)
-            for _ in range(train_per_iter):
-                # CPU draws prioritized slots + targets, then gathers the obs
-                # slab on-device straight into scratch.d_obs (no host build/H2D).
-                var _tsamp = perf_counter_ns()
-                # The sample writes the PAPER PER priority |ν − z| into
-                # `t_prio` (it owns both ν = stored root search value and
-                # z = n-step target). The train step used to overwrite it
-                # with the value-head soft-CE — not the paper signal.
-                rb.sample_training_batch_seq_per_gpu[B, K, N](
-                    ctx, gamma, train_scratch.d_obs.dev.value(),
-                    d_obs_slots, h_obs_slots,
-                    t_act, t_pol, t_val, t_rew, t_isw, t_slots,
-                    cons_mask=t_cmask,
-                    out_prio=Optional(
-                        t_prio.unsafe_ptr().as_unsafe_any_origin()
-                    ),
-                )
-                ts_t_sample += Float64(perf_counter_ns() - _tsamp)
-                var _tstep = perf_counter_ns()
-                last_loss = Float64(
-                    ezv2_unroll_train_step_gpu[
-                        REP, DYN, PRED, PROJM, PREDH,
-                        B, K, OBS, ACT, LATENT, BINS,
-                    ](
-                        ctx, train_scratch, rep, dyn, pred, proj, predh,
-                        orep, odyn, opred, oproj, opredh,
-                        t_obs_dummy, t_act, t_pol, t_val, t_rew,
-                        v_min, v_max, value_coef, consistency_coef,
-                        cons_mask=t_cmask, loss_parts=l_parts,
-                        is_weights=Optional(
-                            t_isw.unsafe_ptr().as_unsafe_any_origin()
+                    ep_returns.append(ep_return[e])
+                    # reset cursors: obs buffer reused (capacity retained), labels cleared
+                    e_act[e].clear(); e_rew[e].clear()
+                    e_pol[e].clear(); e_val[e].clear(); e_tp[e].clear()
+                    e_legal[e].clear()
+                    ep_len[e] = 0
+                    ep_return[e] = 0.0
+            ts_store += Float64(perf_counter_ns() - _t_store0)
+
+            var _t_rst0 = perf_counter_ns()
+            env.selective_reset_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
+            ts_env += Float64(perf_counter_ns() - _t_rst0)
+
+            var trained = rb.num_steps() >= learning_starts and rb.num_episodes() > 0
+
+            # ── 6. train (prioritized sample → weighted EZv2 unroll → writeback) ──
+            var _t_train0 = perf_counter_ns()
+            if trained:
+                if lr > Scalar[DT](0.0):
+                    var tstep = train_steps
+                    var cur_lr = lr
+                    if lr_warmup_iters > 0 and tstep < lr_warmup_iters:
+                        cur_lr = lr * Scalar[DT](
+                            Float64(tstep + 1) / Float64(lr_warmup_iters)
+                        )
+                    orep.set_lr(cur_lr); odyn.set_lr(cur_lr); opred.set_lr(cur_lr)
+                    oproj.set_lr(cur_lr); opredh.set_lr(cur_lr)
+                for _ in range(train_per_iter):
+                    # CPU draws prioritized slots + targets, then gathers the obs
+                    # slab on-device straight into scratch.d_obs (no host build/H2D).
+                    var _tsamp = perf_counter_ns()
+                    # The sample writes the PAPER PER priority |ν − z| into
+                    # `t_prio` (it owns both ν = stored root search value and
+                    # z = n-step target). The train step used to overwrite it
+                    # with the value-head soft-CE — not the paper signal.
+                    rb.sample_training_batch_seq_per_gpu[B, K, N](
+                        ctx, gamma, train_scratch.d_obs.dev.value(),
+                        d_obs_slots, h_obs_slots,
+                        t_act, t_pol, t_val, t_rew, t_isw, t_slots,
+                        cons_mask=t_cmask,
+                        out_prio=Optional(
+                            t_prio.unsafe_ptr().as_unsafe_any_origin()
                         ),
-                        obs_on_device=True,
-                        phase_ns=phase_ns.as_unsafe_any_origin(),
-                        diag_sync=diag_sync,
                     )
+                    ts_t_sample += Float64(perf_counter_ns() - _tsamp)
+                    var _tstep = perf_counter_ns()
+                    last_loss = Float64(
+                        ezv2_unroll_train_step_gpu[
+                            REP, DYN, PRED, PROJM, PREDH,
+                            B, K, OBS, ACT, LATENT, BINS,
+                        ](
+                            ctx, train_scratch, rep, dyn, pred, proj, predh,
+                            orep, odyn, opred, oproj, opredh,
+                            t_obs_dummy, t_act, t_pol, t_val, t_rew,
+                            v_min, v_max, value_coef, consistency_coef,
+                            cons_mask=t_cmask, loss_parts=l_parts,
+                            is_weights=Optional(
+                                t_isw.unsafe_ptr().as_unsafe_any_origin()
+                            ),
+                            obs_on_device=True,
+                            phase_ns=phase_ns.as_unsafe_any_origin(),
+                            diag_sync=diag_sync,
+                        )
+                    )
+                    ts_t_step += Float64(perf_counter_ns() - _tstep)
+                    rb.update_priorities(t_slots, t_prio, B)
+                    train_steps += 1
+            ts_train += Float64(perf_counter_ns() - _t_train0)
+
+            # ── per-batch loss diagnostics → logger ──
+            if logger and diag_every > 0 and trained and (it + 1) % diag_every == 0:
+                var dn = List[String]()
+                var dv = List[Float64]()
+                dn.append(String("loss")); dv.append(last_loss)
+                dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+                dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+                dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
+                dn.append(String("loss_consistency")); dv.append(Float64(l_parts[unsafe_offset=3]))
+                logger.value()[].log_scalars(dn, dv, it + 1)
+
+            # ── reanalyze through the LIVE nets — WIDE searches (ratio≈1.0 when
+            #    reanalyze_batch≈B). Each chunk re-targets REANA_W positions in ONE
+            #    search + ONE sync, so the whole reanalyze_batch needs only
+            #    ceil(reanalyze_batch/REANA_W) wide searches. ──
+            var _t_reana0 = perf_counter_ns()
+            if reanalyze_every > 0 and trained and (it + 1) % reanalyze_every == 0:
+                var n_chunks = (reanalyze_batch + REANA_W - 1) // REANA_W
+                if n_chunks < 1:
+                    n_chunks = 1
+                for _c in range(n_chunks):
+                    var _trh = perf_counter_ns()
+                    var rpos_e = List[Int]()
+                    var rpos_o = List[Int]()
+                    for _ in range(REANA_W):
+                        var rpos = rb.sample_position()
+                        rpos_e.append(rpos[0])
+                        rpos_o.append(rpos[1])
+                    # gather the REANA_W positions' obs on-device into d_reana
+                    rb.gather_obs_for_positions[REANA_W](
+                        ctx, d_reana, d_reana_slots, h_reana_slots,
+                        rpos_e, rpos_o,
+                    )
+                    ts_re_host += Float64(perf_counter_ns() - _trh)
+                    var _trs = perf_counter_ns()
+                    var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
+                        MutAnyOrigin](d_reana.unsafe_ptr().as_unsafe_any_origin())
+                    reana_planner.search_gpu[
+                        type_of(rep_a),
+                        type_of(dyn_a),
+                        type_of(pred_a),
+                    ](ctx, rep_a, dyn_a, pred_a, reana_t,
+                      apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+                    mcts_seed += UInt32(1)
+                    ctx.enqueue_copy(h_pol_w.unsafe_ptr(), reana_planner.policies_view())
+                    ctx.enqueue_copy(h_val_w.unsafe_ptr(), reana_planner.root_value_view())
+                    ctx.synchronize()
+                    ts_re_search += Float64(perf_counter_ns() - _trs)
+                    var _trh2 = perf_counter_ns()
+                    for e in range(REANA_W):
+                        var pol_e = List[Scalar[DT]](length=ACT, fill=0)
+                        for a in range(ACT):
+                            pol_e[a] = h_pol_w[e * ACT + a]
+                        rb.update_targets(rpos_e[e], rpos_o[e], pol_e, h_val_w[e])
+                    ts_re_host += Float64(perf_counter_ns() - _trh2)
+            ts_reana += Float64(perf_counter_ns() - _t_reana0)
+
+            # ── batched greedy eval (CPU env) ──
+            if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
+                var cap = (
+                    eval_horizon if eval_horizon > 0
+                    else max_ep_steps * (eval_episodes + 1)
                 )
-                ts_t_step += Float64(perf_counter_ns() - _tstep)
-                rb.update_priorities(t_slots, t_prio, B)
-                train_steps += 1
-        ts_train += Float64(perf_counter_ns() - _t_train0)
-
-        # ── per-batch loss diagnostics → logger ──
-        if logger and diag_every > 0 and trained and (it + 1) % diag_every == 0:
-            var dn = List[String]()
-            var dv = List[Float64]()
-            dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
-            dn.append(String("loss_consistency")); dv.append(Float64(l_parts[3]))
-            logger.value()[].log_scalars(dn, dv, it + 1)
-
-        # ── reanalyze through the LIVE nets — WIDE searches (ratio≈1.0 when
-        #    reanalyze_batch≈B). Each chunk re-targets REANA_W positions in ONE
-        #    search + ONE sync, so the whole reanalyze_batch needs only
-        #    ceil(reanalyze_batch/REANA_W) wide searches. ──
-        var _t_reana0 = perf_counter_ns()
-        if reanalyze_every > 0 and trained and (it + 1) % reanalyze_every == 0:
-            var n_chunks = (reanalyze_batch + REANA_W - 1) // REANA_W
-            if n_chunks < 1:
-                n_chunks = 1
-            for _c in range(n_chunks):
-                var _trh = perf_counter_ns()
-                var rpos_e = List[Int]()
-                var rpos_o = List[Int]()
-                for _ in range(REANA_W):
-                    var rpos = rb.sample_position()
-                    rpos_e.append(rpos[0])
-                    rpos_o.append(rpos[1])
-                # gather the REANA_W positions' obs on-device into d_reana
-                rb.gather_obs_for_positions[REANA_W](
-                    ctx, d_reana, d_reana_slots, h_reana_slots,
-                    rpos_e, rpos_o,
+                var avg = _ez_eval_greedy_cpu_batched[
+                    ENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
+                    MAX_NODES, MAX_K, NUM_SIMS,
+                ](
+                    ctx, eval_env.value(), planner, rep_a, dyn_a, pred_a,
+                    d_obs, h_pol, eval_episodes, cap, eval_seed,
                 )
-                ts_re_host += Float64(perf_counter_ns() - _trh)
-                var _trs = perf_counter_ns()
-                var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
-                    MutAnyOrigin](d_reana.unsafe_ptr().as_unsafe_any_origin())
-                reana_planner.search_gpu[
-                    type_of(rep_a),
-                    type_of(dyn_a),
-                    type_of(pred_a),
-                ](ctx, rep_a, dyn_a, pred_a, reana_t,
-                  apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
-                mcts_seed += UInt32(1)
-                ctx.enqueue_copy(h_pol_w.unsafe_ptr(), reana_planner.policies_view())
-                ctx.enqueue_copy(h_val_w.unsafe_ptr(), reana_planner.root_value_view())
-                ctx.synchronize()
-                ts_re_search += Float64(perf_counter_ns() - _trs)
-                var _trh2 = perf_counter_ns()
-                for e in range(REANA_W):
-                    var pol_e = List[Scalar[DT]](length=ACT, fill=0)
-                    for a in range(ACT):
-                        pol_e[a] = h_pol_w[e * ACT + a]
-                    rb.update_targets(rpos_e[e], rpos_o[e], pol_e, h_val_w[e])
-                ts_re_host += Float64(perf_counter_ns() - _trh2)
-        ts_reana += Float64(perf_counter_ns() - _t_reana0)
+                eval_seed += UInt32(cap + 1)
+                print("  [eval] step", it + 1, "greedy_return", avg)
+                if logger:
+                    logger.value()[].log_scalar(String("eval_return"), avg, it + 1)
 
-        # ── batched greedy eval (CPU env) ──
-        if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
-            var cap = (
-                eval_horizon if eval_horizon > 0
-                else max_ep_steps * (eval_episodes + 1)
+            if verbose and (it + 1) % 100 == 0:
+                var avg = 0.0
+                var cnt = 0
+                var lo = len(ep_returns) - 10
+                if lo < 0:
+                    lo = 0
+                for ee in range(lo, len(ep_returns)):
+                    avg += ep_returns[ee]
+                    cnt += 1
+                if cnt > 0:
+                    avg /= Float64(cnt)
+                print("iter", it + 1, "env_steps", (it + 1) * N_ENVS,
+                      "loss", last_loss, "eps", rb.num_episodes(),
+                      "avg_return(10)", avg)
+                # cumulative wall breakdown (s) — localizes the bottleneck across
+                # search / collect(host obs) / env(emulation) / store / train / reana.
+                print("  [time s] search", ts_search / 1e9, "collect",
+                      ts_collect / 1e9, "env", ts_env / 1e9, "store",
+                      ts_store / 1e9, "train", ts_train / 1e9, "reana",
+                      ts_reana / 1e9)
+                # finer splits: train = sample(host) + step ; reana = host + search
+                print("    train: sample", ts_t_sample / 1e9, "step",
+                      ts_t_step / 1e9, "| reana: host", ts_re_host / 1e9,
+                      "search", ts_re_search / 1e9)
+                # train-step host-enqueue phases (s)
+                print("    step phases: setup", phase_ns[unsafe_offset=0] / 1e9, "fwd",
+                      phase_ns[unsafe_offset=1] / 1e9, "tgt", phase_ns[unsafe_offset=2] / 1e9, "rev",
+                      phase_ns[unsafe_offset=3] / 1e9, "repvjp+opt", phase_ns[unsafe_offset=4] / 1e9,
+                      "finalize/sync", phase_ns[unsafe_offset=5] / 1e9)
+                # reverse-scan per-model-call splits (s) — which nn call eats `rev`
+                print("    rev calls: pred.fwd", phase_ns[unsafe_offset=6] / 1e9, "pred.vjp",
+                      phase_ns[unsafe_offset=7] / 1e9, "cons", phase_ns[unsafe_offset=8] / 1e9, "dyn.fwd",
+                      phase_ns[unsafe_offset=9] / 1e9, "dyn.vjp", phase_ns[unsafe_offset=10] / 1e9)
+
+            if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
+                var ravg = 0.0
+                var rcnt = 0
+                var rlo = len(ep_returns) - 10
+                if rlo < 0:
+                    rlo = 0
+                for ee in range(rlo, len(ep_returns)):
+                    ravg += ep_returns[ee]
+                    rcnt += 1
+                if rcnt > 0:
+                    ravg /= Float64(rcnt)
+                var rn = List[String]()
+                var rv = List[Float64]()
+                rn.append(String("avg_return")); rv.append(ravg)
+                rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+                rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+                logger.value()[].log_scalars(rn, rv, it + 1)
+
+        # ── full-run cumulative timing summary (always prints, so the totals
+        #    aren't read off a mid-run snapshot) — wall split + per-iter avg. ──
+        if verbose:
+            var total = (
+                ts_search + ts_collect + ts_env + ts_store + ts_train + ts_reana
             )
-            var avg = _ez_eval_greedy_cpu_batched[
-                ENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
-                MAX_NODES, MAX_K, NUM_SIMS,
-            ](
-                ctx, eval_env.value(), planner, rep_a, dyn_a, pred_a,
-                d_obs, h_pol, eval_episodes, cap, eval_seed,
-            )
-            eval_seed += UInt32(cap + 1)
-            print("  [eval] step", it + 1, "greedy_return", avg)
-            if logger:
-                logger.value()[].log_scalar(String("eval_return"), avg, it + 1)
+            var n = Float64(iterations) if iterations > 0 else 1.0
+            print("=" * 60)
+            print("FULL-RUN timing over", iterations, "iters (cumulative s):")
+            print("  search", ts_search / 1e9, "collect", ts_collect / 1e9,
+                  "env", ts_env / 1e9, "store", ts_store / 1e9,
+                  "train", ts_train / 1e9, "reana", ts_reana / 1e9)
+            print("  train = sample", ts_t_sample / 1e9, "+ step", ts_t_step / 1e9,
+                  "| reana = host", ts_re_host / 1e9, "+ search", ts_re_search / 1e9)
+            print("  step phases (s): setup", phase_ns[unsafe_offset=0] / 1e9, "fwd",
+                  phase_ns[unsafe_offset=1] / 1e9, "tgt", phase_ns[unsafe_offset=2] / 1e9, "rev",
+                  phase_ns[unsafe_offset=3] / 1e9, "repvjp+opt", phase_ns[unsafe_offset=4] / 1e9,
+                  "finalize/sync", phase_ns[unsafe_offset=5] / 1e9)
+            print("  rev calls (s): pred.fwd", phase_ns[unsafe_offset=6] / 1e9, "pred.vjp",
+                  phase_ns[unsafe_offset=7] / 1e9, "cons", phase_ns[unsafe_offset=8] / 1e9, "dyn.fwd",
+                  phase_ns[unsafe_offset=9] / 1e9, "dyn.vjp", phase_ns[unsafe_offset=10] / 1e9)
+            if diag_sync:
+                print("  DIAG (diag_sync): pred.vjp host", phase_ns[unsafe_offset=7] / 1e9,
+                      "pred.vjp GPU", phase_ns[unsafe_offset=14] / 1e9,
+                      "| dyn.vjp host", phase_ns[unsafe_offset=10] / 1e9,
+                      "dyn.vjp GPU", phase_ns[unsafe_offset=12] / 1e9)
+                # pre-vjp drains = GPU work of the forward/cons/tiny-kernel ops
+                # enqueued before each vjp; leftover = pure host enqueue of the
+                # ~90 tiny element-wise kernels/step (rev minus everything timed).
+                var rev_timed = (phase_ns[unsafe_offset=6] + phase_ns[unsafe_offset=7] + phase_ns[unsafe_offset=8]
+                                 + phase_ns[unsafe_offset=9] + phase_ns[unsafe_offset=10] + phase_ns[unsafe_offset=11]
+                                 + phase_ns[unsafe_offset=12] + phase_ns[unsafe_offset=13] + phase_ns[unsafe_offset=14])
+                print("  DIAG drains: pred pre", phase_ns[unsafe_offset=11] / 1e9,
+                      "dyn pre", phase_ns[unsafe_offset=13] / 1e9,
+                      "| rev untimed (host enqueue of tiny kernels)",
+                      (phase_ns[unsafe_offset=3] - rev_timed) / 1e9)
+                print("  DIAG fwd/tgt GPU: fwd-scan (rep×1+dyn×K)",
+                      phase_ns[unsafe_offset=15] / 1e9,
+                      "target-prepass (rep×K+proj×K)", phase_ns[unsafe_offset=16] / 1e9)
+            print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
+                  "s/iter )")
+            print("=" * 60)
 
-        if verbose and (it + 1) % 100 == 0:
-            var avg = 0.0
-            var cnt = 0
-            var lo = len(ep_returns) - 10
-            if lo < 0:
-                lo = 0
-            for ee in range(lo, len(ep_returns)):
-                avg += ep_returns[ee]
-                cnt += 1
-            if cnt > 0:
-                avg /= Float64(cnt)
-            print("iter", it + 1, "env_steps", (it + 1) * N_ENVS,
-                  "loss", last_loss, "eps", rb.num_episodes(),
-                  "avg_return(10)", avg)
-            # cumulative wall breakdown (s) — localizes the bottleneck across
-            # search / collect(host obs) / env(emulation) / store / train / reana.
-            print("  [time s] search", ts_search / 1e9, "collect",
-                  ts_collect / 1e9, "env", ts_env / 1e9, "store",
-                  ts_store / 1e9, "train", ts_train / 1e9, "reana",
-                  ts_reana / 1e9)
-            # finer splits: train = sample(host) + step ; reana = host + search
-            print("    train: sample", ts_t_sample / 1e9, "step",
-                  ts_t_step / 1e9, "| reana: host", ts_re_host / 1e9,
-                  "search", ts_re_search / 1e9)
-            # train-step host-enqueue phases (s)
-            print("    step phases: setup", phase_ns[0] / 1e9, "fwd",
-                  phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
-                  phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
-                  "finalize/sync", phase_ns[5] / 1e9)
-            # reverse-scan per-model-call splits (s) — which nn call eats `rev`
-            print("    rev calls: pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
-                  phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
-                  phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
+        t_cmask.unsafe_free(); l_parts.unsafe_free()
 
-        if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
-            var ravg = 0.0
-            var rcnt = 0
-            var rlo = len(ep_returns) - 10
-            if rlo < 0:
-                rlo = 0
-            for ee in range(rlo, len(ep_returns)):
-                ravg += ep_returns[ee]
-                rcnt += 1
-            if rcnt > 0:
-                ravg /= Float64(rcnt)
-            var rn = List[String]()
-            var rv = List[Float64]()
-            rn.append(String("avg_return")); rv.append(ravg)
-            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
-            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
-            logger.value()[].log_scalars(rn, rv, it + 1)
-
-    # ── full-run cumulative timing summary (always prints, so the totals
-    #    aren't read off a mid-run snapshot) — wall split + per-iter avg. ──
-    if verbose:
-        var total = (
-            ts_search + ts_collect + ts_env + ts_store + ts_train + ts_reana
-        )
-        var n = Float64(iterations) if iterations > 0 else 1.0
-        print("=" * 60)
-        print("FULL-RUN timing over", iterations, "iters (cumulative s):")
-        print("  search", ts_search / 1e9, "collect", ts_collect / 1e9,
-              "env", ts_env / 1e9, "store", ts_store / 1e9,
-              "train", ts_train / 1e9, "reana", ts_reana / 1e9)
-        print("  train = sample", ts_t_sample / 1e9, "+ step", ts_t_step / 1e9,
-              "| reana = host", ts_re_host / 1e9, "+ search", ts_re_search / 1e9)
-        print("  step phases (s): setup", phase_ns[0] / 1e9, "fwd",
-              phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
-              phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
-              "finalize/sync", phase_ns[5] / 1e9)
-        print("  rev calls (s): pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
-              phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
-              phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
-        if diag_sync:
-            print("  DIAG (diag_sync): pred.vjp host", phase_ns[7] / 1e9,
-                  "pred.vjp GPU", phase_ns[14] / 1e9,
-                  "| dyn.vjp host", phase_ns[10] / 1e9,
-                  "dyn.vjp GPU", phase_ns[12] / 1e9)
-            # pre-vjp drains = GPU work of the forward/cons/tiny-kernel ops
-            # enqueued before each vjp; leftover = pure host enqueue of the
-            # ~90 tiny element-wise kernels/step (rev minus everything timed).
-            var rev_timed = (phase_ns[6] + phase_ns[7] + phase_ns[8]
-                             + phase_ns[9] + phase_ns[10] + phase_ns[11]
-                             + phase_ns[12] + phase_ns[13] + phase_ns[14])
-            print("  DIAG drains: pred pre", phase_ns[11] / 1e9,
-                  "dyn pre", phase_ns[13] / 1e9,
-                  "| rev untimed (host enqueue of tiny kernels)",
-                  (phase_ns[3] - rev_timed) / 1e9)
-            print("  DIAG fwd/tgt GPU: fwd-scan (rep×1+dyn×K)",
-                  phase_ns[15] / 1e9,
-                  "target-prepass (rep×K+proj×K)", phase_ns[16] / 1e9)
-        print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
-              "s/iter )")
-        print("=" * 60)
-
-    t_cmask.free(); l_parts.free()
-
-    h_pol.free(); h_val.free()
-    for e in range(N_ENVS):
-        eo_buf[e].free()
-    phase_ns.free()
+        h_pol.unsafe_free(); h_val.unsafe_free()
+        for e in range(N_ENVS):
+            eo_buf[e].unsafe_free()
+    finally:
+        dealloc(phase_ns_a^)
     return last_loss
 
 
@@ -609,7 +612,7 @@ def _ez_eval_greedy_cpu_batched[
     PA: PredictionGPU,
 ](
     ctx: DeviceContext,
-    eval_env: UnsafePointer[ENV, MutAnyOrigin],
+    eval_env: Pointer[ENV, MutAnyOrigin],
     mut planner: GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
     ],
@@ -617,7 +620,7 @@ def _ez_eval_greedy_cpu_batched[
     mut dyn_a: DA,
     mut pred_a: PA,
     d_obs: DeviceBuffer[DT],
-    h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_pol: Pointer[Scalar[DT], MutAnyOrigin],
     target_episodes: Int,
     max_steps: Int,
     rng_seed: UInt32,
@@ -653,16 +656,16 @@ def _ez_eval_greedy_cpu_batched[
         for e in range(N_ENVS):
             var best = 0
             for a in range(1, ACT):
-                if Float64(h_pol[e * ACT + a]) > Float64(h_pol[e * ACT + best]):
+                if Float64(h_pol[unsafe_offset=e * ACT + a]) > Float64(h_pol[unsafe_offset=e * ACT + best]):
                     best = a
-            act_host[e] = Scalar[DT](best)
+            act_host[unsafe_offset=e] = Scalar[DT](best)
         eval_env[].step_batch[N_ENVS](ctx=ctx, rng_seed=UInt64(es))
         var rew_host = eval_env[].reward_ptr()
         var done_host = eval_env[].done_ptr()
         for e in range(N_ENVS):
             if not counted[e]:
-                cur_ret[e] += Float64(rew_host[e])
-                if done_host[e] > Scalar[DT](0.5):
+                cur_ret[e] += Float64(rew_host[unsafe_offset=e])
+                if done_host[unsafe_offset=e] > Scalar[DT](0.5):
                     ret_sum += cur_ret[e]
                     counted[e] = True
                     done_count += 1

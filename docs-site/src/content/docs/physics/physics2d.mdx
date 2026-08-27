@@ -1,0 +1,126 @@
+---
+title: 2D physics engine
+description: GPU-batched impulse physics — contacts, revolute joints, articulated chains, a slip-based tire model and LIDAR.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+import BatchedStateLayout from '~/components/diagrams/BatchedStateLayout.astro';
+
+<Maturity level="stable" />
+
+`mojo_rl.physics2d` is a purpose-built impulse-based engine for
+[LunarLander, BipedalWalker and CarRacing](/environments/2d-physics/). It is not
+a general 2D physics library — it implements exactly what those three need,
+which is why it can be fully batched on GPU.
+
+<DemoGrid min="15rem">
+	<Demo name="lunar_lander_sac_trained" caption="LunarLander" meta="contact + terrain" />
+	<Demo name="bipedal_walker_sac_trained" caption="BipedalWalker" meta="revolute joints + LIDAR" />
+	<Demo name="rainbow_car_racing" caption="CarRacing" meta="tire slip model" />
+</DemoGrid>
+
+## The batched layout
+
+The design decision that shapes everything: state is stored **strided across the
+batch**, as `[BATCH, STATE_SIZE]`.
+
+<BatchedStateLayout />
+
+```
+mojo_rl/physics2d/
+├── layout.mojo      PhysicsLayout — compile-time offsets for bodies, contacts, joints
+├── state.mojo       the state slab
+├── config.mojo      compile-time configuration
+├── constants.mojo
+└── env_helpers.mojo
+```
+
+`PhysicsLayout` computes every field offset at compile time, so a kernel indexes
+directly into the slab with no runtime arithmetic and no per-body object to
+chase. One kernel launch advances every environment.
+
+`PhysicsKernel` exposes the whole step as a single `step_gpu()` call.
+
+## Components
+
+| Package | Contents |
+|---|---|
+| `integrators/` | semi-implicit Euler |
+| `collision/` | flat and edge terrain detection |
+| `solvers/` | impulse solver + unified constraint solver |
+| `joints/` | revolute joint solver |
+| `articulated/` | multi-body chains |
+| `car/` | slip-based tire friction |
+| `lidar/` | distance sensing |
+| `traits/` | shared solver traits (also used by physics3d) |
+
+## Impulse solving
+
+Contacts are resolved by applying impulses that correct velocity directly,
+rather than by integrating penalty forces. For the shallow contact stacks these
+environments produce, that is both cheaper and more stable than a full
+constraint formulation — and it parallelises cleanly across the batch, since
+each environment's contacts are independent.
+
+## Articulated chains
+
+BipedalWalker's legs are a connected multi-body system, not free rigid bodies.
+The `joints/` and `articulated/` packages solve revolute joint constraints along
+the chain, which is what keeps the limbs attached under load.
+
+The same machinery supports multi-body chains generally, so a new jointed
+2D robot does not need new solver code.
+
+## The tire model
+
+CarRacing's distinguishing feature. Rather than assuming a friction coefficient,
+the model computes **lateral and longitudinal slip** at each wheel and derives
+the friction force from it.
+
+The consequence is that the car behaves like a car: it can lose traction under
+hard cornering, oversteer, and spin. Throttle and steering interact.
+
+This makes CarRacing meaningfully harder than the Gymnasium original, and
+policies do not transfer between them.
+
+## LIDAR
+
+BipedalWalker's 10 rangefinder readings come from `lidar/`, casting rays against
+the terrain each step. They are what let the agent see upcoming ground rather
+than react to contact alone — and they are the reason the hardcore terrain
+variant is learnable at all.
+
+## Using it directly
+
+The environments are the intended interface, but the engine is usable on its
+own:
+
+```mojo
+from mojo_rl.physics2d import PhysicsLayout, PhysicsKernel
+```
+
+Define a layout for your bodies, contacts and joints; the kernel steps the
+batch.
+
+## Relationship to physics3d
+
+Two engines exist because the requirements genuinely differ.
+
+|  | `physics2d` | `physics3d` |
+|---|---|---|
+| Coordinates | maximal (world-space bodies) | generalized (joint space) |
+| Contacts | impulse | constraint solve (Newton/CG/PGS) |
+| Batching | designed in from the start | added over the field layout |
+| Model source | code | MJCF XML |
+| Scope | three environments | any articulated rigid body |
+
+`physics2d` trades generality for throughput. For LunarLander it is the right
+call — the dynamics are simple and the win is running 256 of them at once.
+
+## Next
+
+- [3D physics](/physics/physics3d/) — the generalized-coordinates engine
+- [2D physics environments](/environments/2d-physics/) — what runs on it
+- [CPU and GPU paths](/concepts/cpu-gpu/) — how batching works framework-wide

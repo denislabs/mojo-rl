@@ -25,7 +25,7 @@ hooks (`add_complete_return` + `ep_returns.append(mean_return())`), so
 this block stays trait-free.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
 
@@ -33,8 +33,8 @@ from mojo_rl.nn.constants import DT
 def accumulate_episode_returns[
     N_ENVS: Int,
 ](
-    rewards_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dones_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    rewards_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    dones_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     mut per_env: List[Scalar[DT]],
     mut completed: List[Scalar[DT]],
 ):
@@ -42,8 +42,8 @@ def accumulate_episode_returns[
     return accumulators; on done (> 0.5), append the finished return to
     `completed` (env order) and zero that env's accumulator."""
     for e in range(N_ENVS):
-        per_env[e] = per_env[e] + rewards_ptr[e]
-        if dones_ptr[e] > Scalar[DT](0.5):
+        per_env[e] = per_env[e] + rewards_ptr[unsafe_offset=e]
+        if dones_ptr[unsafe_offset=e] > Scalar[DT](0.5):
             completed.append(per_env[e])
             per_env[e] = Scalar[DT](0.0)
 
@@ -78,8 +78,8 @@ struct EpisodeReturnRing[N_ENVS: Int](Movable):
     def enqueue(
         mut self,
         ctx: DeviceContext,
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Enqueue this iteration's reward+done D2H into the next ring
         slot WITHOUT synchronizing. Caller must `drain` before the ring

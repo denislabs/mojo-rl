@@ -32,8 +32,8 @@ Run:
     pixi run -e nvidia mojo run -I . examples/atari/ezv2_pong_atari_value_prefix_gpu.mojo  # training
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -155,7 +155,7 @@ def main() raises:
             eval_episodes=10,
             diag_every=200,
             report_every=500,
-            logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+            logger=Pointer(to=logger).as_unsafe_any_origin(),
             seed=42,
             verbose=True,
         )

@@ -15,8 +15,10 @@ guarded dispatch so two DISTINCT fields are threaded. Adam via ctor+adopt+step;
 polyak via `Module.polyak_from`; storage CheckpointWriter/Reader (task_emb body
 appended last); action/record entry points take `List[Scalar[DT]]`.
 
-Acting is MPC-off (`a = π(encode([obs|task_emb]))`); the MPPI planner is NOT built
-for the multi-task path (deferred).
+Acting: MPC-off (`a = π(encode([obs|task_emb]))`) by default, or MPPI planning
+via `select_action_mpc` on the GPU target — the planner is task-conditioned
+through `TDMPC2RolloutCallbackGPUMT` (`callback_mt.mojo`), which splices the
+task embedding into every net input in the order `wm_graph_mt` uses.
 
 train_step: sample length-T windows + per-window task id (host) → t-major →
 gather task embeddings → TD targets (stop-grad) → WM BPTT (accumulates embedding
@@ -26,10 +28,11 @@ step → Polyak. The embedding table's `zero_grad`/`step` bracket the whole step
 
 from std.math import tanh
 from std.random import random_float64
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming, Zero
@@ -40,7 +43,20 @@ from mojo_rl.nn.core.checkpoint import (
 )
 
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
-from mojo_rl.core.logger import Logger
+from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.deep_agents.training.batched_env import BatchedEnv
+from mojo_rl.deep_agents.training.blocks.action_select import (
+    warmup_uniform_batched,
+)
+from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
+from max.gpu.host import HostBuffer
+from .agent import _crossed
+from .callback_mt import TDMPC2RolloutCallbackGPUMT
+from .batched_acting_mt import (
+    tdmpc2_mt_select_action_batched,
+    tdmpc2_mt_encode_batched,
+    mt_apply_mask_kernel,
+)
 from .metrics import TDMPC2Metrics
 
 from .nets_mt import (
@@ -73,7 +89,13 @@ struct TDMPC2MultiTaskAgent[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+    # MPPI planning budget. Defaulted and placed LAST so every existing
+    # call site keeps working; only `select_action_mpc` reads them.
+    NUM_SAMPLES: Int = 512,
+    NUM_PI_TRAJS: Int = 24,
+    NUM_ELITES: Int = 64,
+    NUM_ITERS: Int = 8 if MAX_ACT >= 20 else 6,
+](Movable & Deinitable):
     comptime EncT = TDMPC2EncoderMT[
         Self.MAX_OBS, Self.ENC, Self.LATENT, Self.SN, Self.TASK_EMB
     ]
@@ -97,6 +119,15 @@ struct TDMPC2MultiTaskAgent[
         Self.VMAX, Self.TASK_EMB, Self.QP,
     ]
     comptime EmbT = TaskEmbedding[Self.NUM_TASKS, Self.TASK_EMB]
+    comptime MPC_BT = Self.NUM_SAMPLES + Self.NUM_PI_TRAJS
+    comptime PlannerT = MPPIGPUBatched[
+        Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+        Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, 1,
+    ]
+    comptime MpcCB = TDMPC2RolloutCallbackGPUMT[
+        Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+        Self.VMAX, Self.TASK_EMB, NQ, Self.MPC_BT, Self.QP,
+    ]
     comptime PB = (Self.H + 1) * Self.B
     comptime AOBS = Self.MAX_OBS + Self.TASK_EMB
     comptime PIN = Self.LATENT + Self.TASK_EMB
@@ -158,6 +189,36 @@ struct TDMPC2MultiTaskAgent[
     var action_mask: List[Scalar[DT]]
     # Acting task id (set by the driver before select_action / record).
     var cur_task: Int
+
+    # ── batched-acting scratch — allocated ONCE (see batched_acting_mt) ───
+    var act_ob: Tensor
+    var act_ein: Tensor
+    var act_z: Tensor
+    var act_pin: Tensor
+    var act_pio: Tensor
+    var act_alp: Tensor
+    var act_tem: Tensor
+    var act_mask: Tensor
+    var act_tids: Tensor
+    # ── MPC (GPU only) — planner + rollout callback + landing buffers ────
+    # Built lazily on first plan; `_mpc_ready` rebuilds the callback if the
+    # agent has MOVED, since it holds raw pointers into our own modules.
+    var planner: Optional[Self.PlannerT]
+    var mpc_cb: Optional[Self.MpcCB]
+    var mpc_out: Optional[DeviceBuffer[DT]]
+    var mpc_host: Optional[HostBuffer[DT]]
+    var mpc_row: Tensor
+    # ⚠ A DEDICATED single-row task-id tensor. Reusing `act_tids` for both the
+    # 1-row gather (the planner's broadcast) and the N-row gather (the encode)
+    # resizes one tensor between 1 and N every iteration — and
+    # `Tensor.upload_resident` CANNOT GROW an existing device buffer:
+    # `ensure_gpu(ctx, self.n)` compares `self.n < n` after the host-side
+    # `ensure` already bumped `self.n`, so it silently keeps the old, smaller
+    # device buffer and the next copy dies with "Copy size exceeds Metal
+    # buffer length". Two tensors, two fixed sizes, no resize.
+    var mpc_tids: Tensor
+    var mpc_ob: Tensor
+    var mpc_z0: Tensor
 
     var gamma: Scalar[DT]
     var tau: Scalar[DT]
@@ -317,6 +378,12 @@ struct TDMPC2MultiTaskAgent[
                 Self.MAX_OBS, Self.MAX_ACT, Self.CAP
             ].new(),
             action_mask=amask^, cur_task=0,
+            act_ob=Tensor(), act_ein=Tensor(), act_z=Tensor(),
+            act_pin=Tensor(), act_pio=Tensor(), act_alp=Tensor(),
+            act_tem=Tensor(), act_mask=Tensor(), act_tids=Tensor(),
+            planner=None, mpc_cb=None, mpc_out=None, mpc_host=None,
+            mpc_row=Tensor(), mpc_tids=Tensor(),
+            mpc_ob=Tensor(), mpc_z0=Tensor(),
             gamma=gamma, tau=tau, bce_coef=bce_coef, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
             _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0),
@@ -415,6 +482,120 @@ struct TDMPC2MultiTaskAgent[
     ) raises:
         self.select_action(obs, act_out, explore=False)
 
+    # ── acting (MPC): plan with the task-conditioned world model ─────────
+
+    def mpc_start_episode(mut self) raises:
+        """Drop the planner's warm-start mean — call after an env reset, and
+        after a TASK switch: a plan carried over from another task's segment
+        is a mean optimized for a different reward."""
+        comptime if Self.target == "gpu":
+            if self.planner:
+                self.planner.value().start_episode(0)
+
+    def _mpc_ready(mut self, ctx: DeviceContext) raises:
+        """Build the planner + callback on first use, and REBUILD the callback
+        if this agent has moved since.
+
+        Same hazard as the single-task agent: `MpcCB` holds raw
+        `MutUntrackedOrigin` pointers into our own modules, which the compiler
+        will not flag when they go stale, so a cached callback that survived a
+        move would plan against freed memory and return plausible actions. The
+        guard compares the cached `dyn` pointer against a fresh one.
+        """
+        comptime A = Self.MAX_ACT
+        if not self.planner:
+            self.planner = Optional(Self.PlannerT(ctx))
+        var fresh = rebind[Pointer[Self.DynT, MutUntrackedOrigin]](
+            Pointer(to=self.dynamics)
+        )
+        var stale = True
+        if self.mpc_cb:
+            stale = self.mpc_cb.value().dyn != fresh
+        if stale:
+            self.mpc_cb = Optional(
+                Self.MpcCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, ctx,
+                )
+            )
+        if not self.mpc_out:
+            self.mpc_out = Optional(ctx.enqueue_create_buffer[DT](A))
+            self.mpc_host = Optional(ctx.enqueue_create_host_buffer[DT](A))
+
+    def select_action_mpc(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut act_out: List[Scalar[DT]],
+        explore: Bool = True,
+        num_iters: Int = 0,
+    ) raises:
+        """MPC acting for `cur_task`: plan in latent space with the
+        task-conditioned world model. GPU only.
+
+        `num_iters` overrides the comptime MPPI iteration budget for THIS call
+        (0 = use `NUM_ITERS`), mirroring the single-task agent. Cost is
+        near-linear in it and it is the only budget knob that can vary at
+        runtime — `NUM_SAMPLES` / `NUM_PI_TRAJS` size the planner's device
+        buffers at construction. Use it to trade plan quality for frame rate
+        in an interactive viewer.
+
+        ⚠ The task embedding is re-gathered and re-broadcast on EVERY call.
+        The table is trained, so a row captured once would plan against an
+        embedding the world model has already moved away from — the same
+        staleness the batched acting path avoids.
+        """
+        comptime assert Self.target == "gpu", (
+            "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
+        )
+        comptime A = Self.MAX_ACT
+        comptime MO = Self.MAX_OBS
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+        var ctx = self.ctx.value()
+        self._mpc_ready(ctx)
+
+        # tem row for cur_task → broadcast over the planning candidates.
+        self._mt_gather_row(self.cur_task, Optional(ctx))
+        self.mpc_cb.value().set_task_embedding(self.mpc_row, ctx)
+
+        # z0 = encode([obs | tem]) — the encoder is task-conditioned too, so
+        # the root latent needs the embedding before the plan starts.
+        self.mpc_row.download(ctx)
+        self.mpc_ob.ensure(Self.AOBS)
+        for i in range(MO):
+            self.mpc_ob.data[i] = obs[i]
+        for e in range(EMB):
+            self.mpc_ob.data[MO + e] = self.mpc_row.data[e]
+        self.mpc_ob.upload_resident(ctx)
+        self.mpc_z0.ensure_gpu(ctx, LAT)
+        self.encoder.forward[Self.target, 1](
+            TensorRefs[1](self.mpc_ob), self.mpc_z0, Optional(ctx)
+        )
+
+        var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
+            self.mpc_out.value()
+        )
+        self.planner.value().plan_gpu[Self.MpcCB](
+            ctx, self.mpc_cb.value(),
+            self.mpc_z0.lt["gpu", Layout.row_major(1, LAT)](),
+            out_lt,
+            gamma=Float64(self.gamma),
+            temperature=Float64(self.temperature),
+            action_scale=Float64(self.action_scale),
+            deterministic=not explore,
+            num_iters=num_iters,
+        )
+        ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
+        ctx.synchronize()
+        # The planner knows nothing about per-task action masks, so pad
+        # columns are zeroed here (a no-op when every task uses MAX_ACT).
+        for j in range(A):
+            act_out[j] = (
+                self.mpc_host.value().unsafe_ptr()[unsafe_offset=j]
+                * self.action_mask[self.cur_task * A + j]
+            )
+
     def record(
         mut self,
         ref obs: List[Scalar[DT]],
@@ -423,11 +604,11 @@ struct TDMPC2MultiTaskAgent[
         done: Scalar[DT],
     ) raises:
         self.replay.record_task(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=obs[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=obs[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=act[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=act[0])
             ),
             reward, done, self.cur_task,
         )
@@ -453,11 +634,41 @@ struct TDMPC2MultiTaskAgent[
     def pi_scale(self) -> Scalar[DT]:
         return self.pol_step.scale.value
 
+    def task_pi_scale(self, t: Int) -> Scalar[DT]:
+        """Per-task policy-loss scale — 1.0 until `set_per_task_pi_scale`
+        turns the table on. Log it: whether the per-task spreads actually
+        SEPARATE is what makes the experiment readable."""
+        return self.pol_step.task_scale(t)
+
+    def set_per_task_pi_scale(
+        mut self, enable: Bool, max_reweight: Scalar[DT] = Scalar[DT](10.0)
+    ):
+        """⚠ A DEVIATION FROM THE REFERENCE, off by default.
+
+        TD-MPC2 normalizes the policy loss by ONE running scale across every
+        task (`tdmpc2/tdmpc2.py:34` — a single `RunningScale`, even for MT80).
+        Enabling this gives each task its own, which makes each task's policy
+        gradient invariant to its OWN Q spread instead of the mixed-batch one.
+
+        Motivation (`docs/TDMPC2_MULTITASK_VALIDATION.md`): on walker
+        stand+walk+run the shared scale was set by the two solved tasks
+        (Q ~98) while run sat at ~16 and collapsed to the standing floor — with
+        a MATCHED run-weighted gradient budget (104k vs 99k), so it was not a
+        data problem.
+
+        `max_reweight` clamps the per-row weight symmetrically; a task whose Q
+        spread collapses toward zero would otherwise swamp the batch.
+
+        Leave it off to reproduce the reference and every result measured
+        before 2026-08-13."""
+        self.pol_step.per_task_scale = enable
+        self.pol_step.max_reweight = max_reweight
+
     def flush_metrics[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises -> TDMPC2Metrics:
         var n = self._n_diag if self._n_diag > 0 else 1
@@ -508,7 +719,7 @@ struct TDMPC2MultiTaskAgent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)
@@ -663,20 +874,20 @@ struct TDMPC2MultiTaskAgent[
         var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
         var tk = List[Scalar[DT]](length=BB, fill=0)
         self.replay.sample_batch_task[BB, HH](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ob[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ob[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ab[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ab[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=rb[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=rb[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=dbf[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=dbf[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=tk[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=tk[0])
             ),
         )
 
@@ -798,3 +1009,602 @@ struct TDMPC2MultiTaskAgent[
         self._td_max_last = td_mx
         self._n_diag += 1
         return True
+
+    # ── batched multi-task drivers ────────────────────────────────────────
+    #
+    # ⚠ SCOPE: this driver trains ONE task per call — a SEGMENT — and the
+    # example loops over tasks. That is genuinely multi-task learning rather
+    # than sequential fine-tuning, because the replay keeps every task and
+    # `train_step` samples windows uniformly across all of them: the gradient
+    # steps taken during task 2's segment still see tasks 0 and 1. What it is
+    # NOT is simultaneous collection: at any instant the acting policy is
+    # driving one task's envs.
+    #
+    # The reason is typing, not preference. Each dm_control task is a distinct
+    # `Phyics3dEnvConfig` and therefore a distinct env TYPE, so a simultaneous
+    # driver would have to be parameterized on one type per task. Segments
+    # need one, and the replay does the mixing.
+    #
+    # ⚠ REQUIRES `E.OBS_DIM == MAX_OBS` and `E.ACT_DIM == MAX_ACT`. The
+    # obs/action padding that lets tasks have DIFFERENT dims lives in the agent
+    # (and in `action_mask`), but nothing pads an env's slabs yet, so today the
+    # tasks must share dims — true for walker's stand/walk/run, which share one
+    # model. Heterogeneous bodies need a padding `BatchedEnv` wrapper first.
+
+    def _mt_prepare(
+        mut self, task_id: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        """Point the agent at `task_id` and refresh the acting-side task state.
+
+        ⚠ The embedding is RE-GATHERED every iteration, not once per segment:
+        `train_step` updates the task-embedding table, so a row cached at the
+        top of a segment would drive the whole segment with an embedding the
+        world model has already moved away from.
+        """
+        comptime tg = Self.target
+        comptime A = Self.MAX_ACT
+        self.cur_task = task_id
+        # The mask is constant for the whole segment (it is a property of the
+        # task, not of training), so this uploads once per call rather than
+        # per step — unlike the embedding, which the table keeps moving.
+        self.act_mask.ensure(A)
+        for j in range(A):
+            self.act_mask.data[j] = self.action_mask[task_id * A + j]
+        comptime if tg == "gpu":
+            self.act_mask.upload_resident(ctx.value())
+
+    def _mt_gather_emb[
+        N_ENVS: Int
+    ](mut self, task_id: Int, ctx: Optional[DeviceContext]) raises:
+        """`act_tem[n] = task_emb[task_id]` for all N lanes (one task per
+        segment, so every lane gathers the same row — which keeps the concat in
+        `batched_acting_mt` a plain elementwise copy)."""
+        comptime tg = Self.target
+        comptime EMB = Self.TASK_EMB
+        self.act_tids.ensure(N_ENVS)
+        for e in range(N_ENVS):
+            self.act_tids.data[e] = Scalar[DT](task_id)
+        comptime if tg == "gpu":
+            self.act_tids.upload_resident(ctx.value())
+        self.act_tem.ensure[tg](N_ENVS * EMB, ctx)
+        self.task_emb.gather[tg, N_ENVS](self.act_tids, self.act_tem, ctx)
+
+    def _mt_gather_row(
+        mut self, task_id: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        """Gather ONE `[TASK_EMB]` embedding row into `mpc_row` — what the
+        planner's rollout callback broadcasts over its candidates. Uses its own
+        fixed-size tensors (see the `mpc_tids` note)."""
+        comptime tg = Self.target
+        comptime EMB = Self.TASK_EMB
+        self.mpc_tids.ensure(1)
+        self.mpc_tids.data[0] = Scalar[DT](task_id)
+        comptime if tg == "gpu":
+            self.mpc_tids.upload_resident(ctx.value())
+        self.mpc_row.ensure[tg](EMB, ctx)
+        self.task_emb.gather[tg, 1](self.mpc_tids, self.mpc_row, ctx)
+
+    def evaluate_batched_mt[
+        E: BatchedEnv,
+        EVAL_ENVS: Int,
+        USE_MPC: Bool = False,
+    ](
+        mut self,
+        mut env: E,
+        task_id: Int,
+        *,
+        max_steps: Int = 1_000,
+        rng_seed: UInt64 = 12345,
+    ) raises -> Scalar[DT]:
+        """Deterministic eval of ONE task over `EVAL_ENVS` envs → mean return
+        over COMPLETED episodes (0.0 if none finished within `max_steps`).
+
+        `USE_MPC=True` evaluates the MPPI planner (GPU only) instead of the
+        policy prior — the two are different controllers and generally score
+        differently, so an eval number is only comparable to another taken in
+        the SAME mode."""
+        comptime tg = Self.target
+        comptime MO = Self.MAX_OBS
+        comptime A = Self.MAX_ACT
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+        comptime assert E.ENV_TARGET == tg, (
+            "evaluate_batched_mt: env target must equal the train target"
+        )
+        comptime assert E.OBS_DIM == MO and E.ACT_DIM == A, (
+            "evaluate_batched_mt: env dims must equal MAX_OBS / MAX_ACT"
+        )
+
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", "MPC eval is GPU-only"
+        var ctx = self.ctx
+        self._mt_prepare(task_id, ctx)
+
+        # An EVAL_ENVS-wide planner + callback (the agent's own pair is the
+        # N=1 one `select_action_mpc` uses). Built once per eval call, which is
+        # periodic — not per step.
+        comptime EV_BT = EVAL_ENVS * Self.MPC_BT
+        comptime EvPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, EVAL_ENVS,
+        ]
+        comptime EvCB = TDMPC2RolloutCallbackGPUMT[
+            Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN,
+            Self.VMIN, Self.VMAX, Self.TASK_EMB, NQ, EV_BT, Self.QP,
+        ]
+        var ev_planner: Optional[EvPlannerT] = None
+        var ev_cb: Optional[EvCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            ev_planner = Optional(EvPlannerT(c))
+            ev_cb = Optional(
+                EvCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(EVAL_ENVS):
+                ev_planner.value().start_episode(e)
+
+        env.reset_batch[EVAL_ENVS](ctx=ctx, rng_seed=rng_seed)
+
+        var per_env = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var rew_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var returns = List[Scalar[DT]]()
+
+        for s in range(max_steps):
+            comptime if USE_MPC:
+                # ⚠ Two gathers, and the ORDER matters. `set_task_embedding`
+                # broadcasts a ONE-row `[EMB]` tensor across the planning
+                # candidates, so `act_tem` must hold a single row at that
+                # moment; the encode below then needs it EVAL_ENVS rows wide.
+                self._mt_gather_row(task_id, ctx)
+                ev_cb.value().set_task_embedding(self.mpc_row, ctx.value())
+                self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
+                tdmpc2_mt_encode_batched[
+                    Self.EncT, tg, EVAL_ENVS, MO, LAT, EMB
+                ](
+                    self.encoder, self.act_ob, self.act_ein, self.act_z,
+                    self.act_tem,
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin
+                    ](env.obs_ptr()),
+                    ctx,
+                )
+                ev_planner.value().plan_gpu[EvCB](
+                    ctx.value(), ev_cb.value(),
+                    self.act_z.lt["gpu", Layout.row_major(EVAL_ENVS, LAT)](),
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS * A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    gamma=Float64(self.gamma),
+                    temperature=Float64(self.temperature),
+                    action_scale=Float64(self.action_scale),
+                    deterministic=True,
+                    rng_base_seed=UInt32(rng_seed) + UInt32(s),
+                )
+                ctx.value().enqueue_function[
+                    mt_apply_mask_kernel[EVAL_ENVS, A]
+                ](
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    self.act_mask.lt["gpu", Layout.row_major(A)](),
+                    grid_dim=(EVAL_ENVS * A + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
+            else:
+                self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
+                tdmpc2_mt_select_action_batched[
+                    Self.EncT, Self.PolicyT, tg, EVAL_ENVS, MO, A, LAT, EMB
+                ](
+                    self.encoder, self.policy, self.act_rsample,
+                    self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                    self.act_pio, self.act_alp, self.act_tem, self.act_mask,
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin
+                    ](env.obs_ptr()),
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    self.action_scale, False, ctx,
+                )
+            env.step_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1)
+            )
+            # Read done BEFORE selective_reset_batch — it zeroes the slab.
+            comptime if E.ENV_TARGET == "cpu":
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                for e in range(EVAL_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var rv = DeviceBuffer[DT](
+                    c, env.reward_ptr(), EVAL_ENVS, owning=False
+                )
+                var dv = DeviceBuffer[DT](
+                    c, env.done_ptr(), EVAL_ENVS, owning=False
+                )
+                c.enqueue_copy(rew_h.unsafe_ptr(), rv)
+                c.enqueue_copy(done_h.unsafe_ptr(), dv)
+                c.synchronize()
+            for e in range(EVAL_ENVS):
+                per_env[e] = per_env[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    returns.append(per_env[e])
+                    per_env[e] = Scalar[DT](0.0)
+            env.selective_reset_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1) * UInt64(7)
+            )
+
+        if len(returns) == 0:
+            return Scalar[DT](0.0)
+        var tot = Scalar[DT](0.0)
+        for i in range(len(returns)):
+            tot += returns[i]
+        return tot / Scalar[DT](len(returns))
+
+    def train_batched_mt[
+        E: BatchedEnv,
+        N_ENVS: Int = 1,
+        L: Logger = NoOpLogger,
+        USE_MPC: Bool = False,
+        EE: BatchedEnv = E,
+        EVAL_ENVS: Int = N_ENVS,
+    ](
+        mut self,
+        mut env: E,
+        task_id: Int,
+        total_env_steps: Int,
+        *,
+        rng_seed: UInt64 = 42,
+        updates_per_step: Int = 1,
+        print_every: Int = 20_000,
+        verbose: Bool = True,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        base_step: Int = 0,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_max_steps: Int = 1_000,
+        task_label: String = "",
+    ) raises -> Scalar[DT]:
+        """Collect ONE task's segment with N envs in lockstep, training on the
+        WHOLE replay → best eval return for this task.
+
+        The multi-task sibling of `TDMPC2Agent.train_batched`; see the block
+        comment above for what "segment" buys and costs. `total_env_steps`
+        counts steps across all envs, so the loop runs `total // N_ENVS`
+        iterations. Call once per task, in a loop, on the same agent — nets,
+        replay, embedding table and optimizers all persist across calls.
+
+        Every transition is stored with `task_id`, and the strided sampler
+        rejects windows that straddle a task change, so the batches this call
+        trains on mix tasks without mixing them WITHIN a window.
+        """
+        comptime tg = Self.target
+        comptime env_target = E.ENV_TARGET
+        comptime MO = Self.MAX_OBS
+        comptime A = Self.MAX_ACT
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime assert env_target == tg, (
+            "train_batched_mt: env target must equal the agent's train target"
+        )
+        comptime assert E.OBS_DIM == MO and E.ACT_DIM == A, (
+            "train_batched_mt: env dims must equal MAX_OBS / MAX_ACT — the"
+            " padding wrapper for heterogeneous tasks does not exist yet"
+        )
+        comptime assert Self.CAP % N_ENVS == 0, (
+            "train_batched_mt: replay CAP must be a multiple of N_ENVS"
+        )
+        if task_id < 0 or task_id >= Self.NUM_TASKS:
+            raise Error("train_batched_mt: task_id out of range")
+
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", (
+                "train_batched_mt[USE_MPC=True] requires target='gpu'"
+            )
+        var ctx = self.ctx
+        # ⚠ Not optional: N envs interleave into one ring, so windows must be
+        # walked with stride N or they hop between envs every frame.
+        self.replay.set_env_stride(N_ENVS)
+        self._mt_prepare(task_id, ctx)
+
+        var iters = total_env_steps // N_ENVS
+
+        # ── MPC: an N_ENVS-wide planner + callback, HOISTED out of the loop ──
+        # (`MpcCB.make` allocates nine device tensors; building one per step is
+        # the hot-loop allocation footgun.)
+        comptime TR_BT = N_ENVS * Self.MPC_BT
+        comptime TrPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, N_ENVS,
+        ]
+        comptime TrCB = TDMPC2RolloutCallbackGPUMT[
+            Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN,
+            Self.VMIN, Self.VMAX, Self.TASK_EMB, NQ, TR_BT, Self.QP,
+        ]
+        var tr_planner: Optional[TrPlannerT] = None
+        var tr_cb: Optional[TrCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            tr_planner = Optional(TrPlannerT(c))
+            tr_cb = Optional(
+                TrCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(N_ENVS):
+                tr_planner.value().start_episode(e)
+
+        var obs_h = List[Scalar[DT]](length=N_ENVS * MO, fill=Scalar[DT](0.0))
+        var act_h = List[Scalar[DT]](length=N_ENVS * A, fill=Scalar[DT](0.0))
+        var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var term_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+
+        env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
+        self._mt_stage_obs[E, N_ENVS](env, obs_h, ctx)
+        comptime if env_target != "cpu":
+            ctx.value().synchronize()
+
+        var per_env_ret = List[Scalar[DT]](
+            length=N_ENVS, fill=Scalar[DT](0.0)
+        )
+        var window = List[Scalar[DT]](length=100, fill=Scalar[DT](0.0))
+        var w_idx = 0
+        var w_cnt = 0
+        var best: Scalar[DT] = Scalar[DT](-1.0e30)
+        var t_start = perf_counter_ns()
+        var warm_off: UInt64 = 0
+        var warm_seed = rng_seed
+        var tag = task_label if task_label else String("task ") + String(task_id)
+
+        for it in range(iters):
+            var step = it * N_ENVS
+            var gstep = base_step + step
+
+            var act_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, A), MutAnyOrigin
+            ](env.action_ptr())
+
+            # ── 1. actions ───────────────────────────────────────────────
+            # ⚠ Gate on the REPLAY COUNT, not the per-call step counter:
+            # these drivers are called once per SEGMENT (a task's turn, or a
+            # ladder rung) and `step` restarts at 0 every call, so a step-based
+            # gate re-runs the random warmup at the top of every segment,
+            # quietly poisoning an agent that is already trained. On the first
+            # call the two are the same quantity; `replay.count()` is also
+            # exactly what `train_step` itself gates on.
+            if self.replay.count() < self.learning_starts:
+                warmup_uniform_batched[tg, N_ENVS, A](
+                    act_lt, self.action_scale, ctx, warm_seed, warm_off
+                )
+            else:
+                # Re-gather EVERY iteration: the table is being trained.
+                comptime if USE_MPC:
+                    # One row for the callback's broadcast, then N rows for
+                    # the encode — see the note in `evaluate_batched_mt`.
+                    self._mt_gather_row(task_id, ctx)
+                    tr_cb.value().set_task_embedding(
+                        self.mpc_row, ctx.value()
+                    )
+                    self._mt_gather_emb[N_ENVS](task_id, ctx)
+                    tdmpc2_mt_encode_batched[
+                        Self.EncT, tg, N_ENVS, MO, LAT, EMB
+                    ](
+                        self.encoder, self.act_ob, self.act_ein, self.act_z,
+                        self.act_tem,
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
+                        ](env.obs_ptr()),
+                        ctx,
+                    )
+                    tr_planner.value().plan_gpu[TrCB](
+                        ctx.value(), tr_cb.value(),
+                        self.act_z.lt["gpu", Layout.row_major(N_ENVS, LAT)](),
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS * A), MutAnyOrigin
+                        ](env.action_ptr()),
+                        gamma=Float64(self.gamma),
+                        temperature=Float64(self.temperature),
+                        action_scale=Float64(self.action_scale),
+                        deterministic=False,
+                        rng_base_seed=UInt32(rng_seed) + UInt32(it),
+                    )
+                    ctx.value().enqueue_function[
+                        mt_apply_mask_kernel[N_ENVS, A]
+                    ](
+                        act_lt,
+                        self.act_mask.lt["gpu", Layout.row_major(A)](),
+                        grid_dim=(N_ENVS * A + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                else:
+                    self._mt_gather_emb[N_ENVS](task_id, ctx)
+                    tdmpc2_mt_select_action_batched[
+                        Self.EncT, Self.PolicyT, tg, N_ENVS, MO, A, LAT, EMB
+                    ](
+                        self.encoder, self.policy, self.act_rsample,
+                        self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                        self.act_pio, self.act_alp, self.act_tem,
+                        self.act_mask,
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
+                        ](env.obs_ptr()),
+                        act_lt,
+                        self.action_scale, True, ctx,
+                    )
+
+            # ── 2. step ──────────────────────────────────────────────────
+            env.step_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed + UInt64(it + 1))
+
+            # ── 3. one D2H (BEFORE selective_reset zeroes `done`) ────────
+            comptime if env_target == "cpu":
+                var ap = env.action_ptr()
+                for k in range(N_ENVS * A):
+                    act_h[k] = ap[unsafe_offset=k]
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                var tp = env.terminated_ptr()
+                for e in range(N_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+                    term_h[e] = tp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var av = DeviceBuffer[DT](
+                    c, env.action_ptr(), N_ENVS * A, owning=False
+                )
+                var rv = DeviceBuffer[DT](
+                    c, env.reward_ptr(), N_ENVS, owning=False
+                )
+                var dv = DeviceBuffer[DT](
+                    c, env.done_ptr(), N_ENVS, owning=False
+                )
+                var tv = DeviceBuffer[DT](
+                    c, env.terminated_ptr(), N_ENVS, owning=False
+                )
+                c.enqueue_copy(act_h.unsafe_ptr(), av)
+                c.enqueue_copy(rew_h.unsafe_ptr(), rv)
+                c.enqueue_copy(done_h.unsafe_ptr(), dv)
+                c.enqueue_copy(term_h.unsafe_ptr(), tv)
+                c.synchronize()
+
+            # ── 4. record N transitions, lockstep, TAGGED with the task ──
+            for e in range(N_ENVS):
+                self.replay.record_task(
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=obs_h[e * MO])
+                    ),
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=act_h[e * A])
+                    ),
+                    rew_h[e],
+                    term_h[e],
+                    task_id,
+                )
+                per_env_ret[e] = per_env_ret[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    window[w_idx] = per_env_ret[e]
+                    w_idx = (w_idx + 1) % 100
+                    if w_cnt < 100:
+                        w_cnt += 1
+                    per_env_ret[e] = Scalar[DT](0.0)
+                    comptime if USE_MPC:
+                        tr_planner.value().start_episode(e)
+
+            # ── 5. reset finished lanes, stage the next `s` ──────────────
+            env.selective_reset_batch[N_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(it + 1) * UInt64(7)
+            )
+            self._mt_stage_obs[E, N_ENVS](env, obs_h, ctx)
+
+            # ── 6. updates (over the WHOLE replay — every task) ──────────
+            if self.replay.count() >= self.learning_starts:
+                for _ in range(updates_per_step):
+                    _ = self.train_step()
+
+            # ── 7. logging / checkpoint / eval ──────────────────────────
+            var prev = step
+            var now = step + N_ENVS
+            if diag_every > 0 and _crossed(prev, now, diag_every):
+                self.flush_metrics_through_logger[L](logger, gstep)
+                if Bool(logger):
+                    var lg = logger.value()
+                    if w_cnt > 0:
+                        var acc: Scalar[DT] = 0.0
+                        for k in range(w_cnt):
+                            acc += window[k]
+                        lg[].log_scalar(
+                            String("avg_reward/") + tag,
+                            Float64(acc / Scalar[DT](w_cnt)),
+                            gstep,
+                        )
+                    lg[].flush()
+
+            if (
+                checkpoint_every > 0
+                and checkpoint_path.byte_length() > 0
+                and _crossed(prev, now, checkpoint_every)
+            ):
+                self.save_state(checkpoint_path)
+
+            var do_eval = (
+                eval_every > 0
+                and Bool(eval_env)
+                and _crossed(prev, now, eval_every)
+            )
+            if do_eval:
+                var ep = eval_env.value()
+                var ret = self.evaluate_batched_mt[EE, EVAL_ENVS, USE_MPC](
+                    ep[], task_id,
+                    max_steps=eval_max_steps,
+                    rng_seed=rng_seed + UInt64(gstep),
+                )
+                if ret > best:
+                    best = ret
+                if Bool(logger):
+                    var lg = logger.value()
+                    lg[].log_scalar(
+                        String("eval/") + tag, Float64(ret), gstep
+                    )
+                if verbose:
+                    var el = Float64(perf_counter_ns() - t_start) / 1e9
+                    print(
+                        "  [", tag, "] step", gstep, " eval=", ret,
+                        " best=", best, " wm=", self.last_wm_loss(),
+                        " pi=", self.last_pi_loss(), " (", el, "s )",
+                    )
+            elif verbose and print_every > 0 and _crossed(
+                prev, now, print_every
+            ):
+                var el = Float64(perf_counter_ns() - t_start) / 1e9
+                var mean_ret: Scalar[DT] = 0.0
+                if w_cnt > 0:
+                    for k in range(w_cnt):
+                        mean_ret += window[k]
+                    mean_ret /= Scalar[DT](w_cnt)
+                print(
+                    "  [", tag, "] step", gstep, " mean_ret(100)=", mean_ret,
+                    " wm=", self.last_wm_loss(),
+                    " pi=", self.last_pi_loss(), " (", el, "s )",
+                )
+
+        if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+            self.save_state(checkpoint_path)
+        return best
+
+    def _mt_stage_obs[
+        E: BatchedEnv, N_ENVS: Int
+    ](
+        mut self,
+        mut env: E,
+        mut obs_h: List[Scalar[DT]],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Enqueue the [N, MAX_OBS] obs copy without synchronizing — it lands
+        before the next iteration's sync, so the loop pays ONE sync per
+        iteration. (Same idiom as the single-task driver.)"""
+        comptime MO = Self.MAX_OBS
+        comptime if E.ENV_TARGET == "cpu":
+            var op = env.obs_ptr()
+            for k in range(N_ENVS * MO):
+                obs_h[k] = op[unsafe_offset=k]
+        else:
+            var c = ctx.value()
+            var ov = DeviceBuffer[DT](
+                c, env.obs_ptr(), N_ENVS * MO, owning=False
+            )
+            c.enqueue_copy(obs_h.unsafe_ptr(), ov)

@@ -14,7 +14,7 @@ accumulated on-device on GPU; `read_loss_accum(ctx)` / `reset_loss_accum()`
 passthroughs drain it at flush.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -27,7 +27,7 @@ from ...training.trainer_block import TrainerState
 
 struct TD3DelayedActorPolyakStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, ACTOR: Module, CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

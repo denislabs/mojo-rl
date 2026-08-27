@@ -14,8 +14,8 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -34,6 +34,23 @@ comptime NBODY = HopperModel.NBODY  # 5
 comptime NJOINT = HopperModel.NJOINT  # 6
 comptime NGEOM = HopperModel.NGEOM  # 5
 comptime MAX_CONTACTS = HopperConfig.MAX_CONTACTS  # 20
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=HopperModel.NSITE,
+    max_contacts=MAX_CONTACTS,
+    nequality=HopperModel.MAX_EQUALITY,
+    ntendon=HopperModel.MAX_TENDON,
+    nexclude=HopperModel.NEXCLUDE,
+    nmesh_verts=0,
+    npair=HopperModel.NPAIR,
+    nact=HopperModel.NACT,
+    nten=HopperModel.NTEN_F,
+    nkey=HopperModel.NKEY,
+]
 
 # Tolerance for comparison (float64)
 comptime POS_TOL: Float64 = 1e-6
@@ -54,25 +71,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, HopperModel.MAX_EQUALITY,
-        HopperModel.MAX_TENDON, HopperModel.NSITE, HopperModel.NEXCLUDE, 0,
-    ]()
-    HopperModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HopperModel.NSITE, 1
-    ]()
+    var mf = Model[DTYPE, MD]()
+    HopperModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HopperModel.MAX_EQUALITY, HopperModel.MAX_TENDON, HopperModel.NSITE,
-        HopperModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

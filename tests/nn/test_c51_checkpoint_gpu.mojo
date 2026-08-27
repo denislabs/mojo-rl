@@ -12,7 +12,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_c51_checkpoint_gpu.mojo
 """
 
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_equal
 
 from mojo_rl.nn.constants import DT

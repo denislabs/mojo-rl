@@ -12,7 +12,7 @@ Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_agent_mpc_gp
 from std.random import seed
 from std.math import isfinite
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent

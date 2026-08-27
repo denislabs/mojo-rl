@@ -8,15 +8,15 @@ from .colors import SCREEN_W, SCREEN_H
 
 
 @always_inline
-def clear_frame(buf: UnsafePointer[UInt8, MutAnyOrigin]):
+def clear_frame(buf: Pointer[UInt8, MutAnyOrigin]):
     """Fill entire framebuffer with black (0)."""
     for i in range(SCREEN_W * SCREEN_H):
-        buf[i] = 0
+        buf[unsafe_offset=i] = 0
 
 
 @always_inline
 def draw_filled_rect(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
     w: Int,
@@ -34,12 +34,12 @@ def draw_filled_rect(
 
     for row in range(y0, y1):
         for col in range(x0, x1):
-            buf[row * SCREEN_W + col] = color
+            buf[unsafe_offset=row * SCREEN_W + col] = color
 
 
 @always_inline
 def draw_hline(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
     w: Int,
@@ -51,12 +51,12 @@ def draw_hline(
     var x0 = max(0, x)
     var x1 = min(SCREEN_W, x + w)
     for col in range(x0, x1):
-        buf[y * SCREEN_W + col] = color
+        buf[unsafe_offset=y * SCREEN_W + col] = color
 
 
 @always_inline
 def draw_dashed_vline(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y_start: Int,
     y_end: Int,
@@ -72,7 +72,7 @@ def draw_dashed_vline(
     var counter = 0
     while y < end:
         if counter < dash_len:
-            buf[y * SCREEN_W + x] = color
+            buf[unsafe_offset=y * SCREEN_W + x] = color
         counter += 1
         if counter >= dash_len + gap_len:
             counter = 0
@@ -81,7 +81,7 @@ def draw_dashed_vline(
 
 @always_inline
 def draw_digit(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
     digit: Int,
@@ -121,12 +121,12 @@ def draw_digit(
                         var px = x + col * scale + sx
                         var py = y + row * scale + sy
                         if 0 <= px < SCREEN_W and 0 <= py < SCREEN_H:
-                            buf[py * SCREEN_W + px] = color
+                            buf[unsafe_offset=py * SCREEN_W + px] = color
 
 
 @always_inline
 def draw_number(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
     number: Int,

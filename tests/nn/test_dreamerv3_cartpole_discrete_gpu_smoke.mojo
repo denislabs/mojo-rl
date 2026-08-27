@@ -14,7 +14,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_cartpole_discrete_g
 from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
@@ -44,7 +44,7 @@ comptime Ag = DreamerV3Agent[
 ]
 
 
-def _is_onehot(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Bool:
+def _is_onehot(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Bool:
     var ones = 0
     var zeros = 0
     for i in range(ACT):
@@ -55,7 +55,7 @@ def _is_onehot(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Bool:
     return ones == 1 and zeros == ACT - 1
 
 
-def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
+def _argmax(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Int:
     var k = 0
     var best = a[0]
     for i in range(1, ACT):

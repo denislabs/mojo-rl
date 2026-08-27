@@ -20,11 +20,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_rk4_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
@@ -35,6 +35,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -47,6 +48,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 3
 comptime N_STEPS = 3
 
@@ -95,11 +97,11 @@ def main() raises:
     print("--- RK4 full-step GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = _init_qpos(e, i)
@@ -114,15 +116,9 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ = RK4Integrator[DTYPE, MD, BATCH=BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ_c = RK4Integrator[DTYPE, MD, BATCH=BATCH]()
 
     for step in range(N_STEPS):
         integ.step["gpu", False](d, mf, ctx)

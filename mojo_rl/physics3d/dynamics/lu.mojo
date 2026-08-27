@@ -17,47 +17,54 @@ perf lever, not a correctness requirement.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch
+from ..fields import (
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 
 comptime LU_TPB: Int = 64
 
 
 @always_inline
-def _ensure_positive[N: Int]() -> Int:
-    return N if N > 0 else 1
-
-
-@always_inline
 def _lu_factor_env[
     DTYPE: DType,
-    NV: Int,
-    BATCH: Int,
+    DIMS: DimsLike,
+    L_M: Layout,
+    L_D: Layout,
 ](
     env: Int,
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: DIMS,
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
 ):
     """In-place LU factorization with partial pivoting for one env (verbatim
     from `lu_factor_gpu`). Copies M into the L slot and factorizes there;
     pivot indices (as floats) land in the D slot."""
+    var nv = dims.get_nv()
     # Copy M -> L (LU overwrites in-place in the L slot)
-    for i in range(NV * NV):
+    for i in range(nv * nv):
         L[env, i] = M[env, i]
 
     # Initialize pivots to identity
-    for i in range(NV):
+    for i in range(nv):
         D[env, i] = Scalar[DTYPE](i)
 
-    for k in range(NV):
-        # Find pivot: row with largest |value| in column k, rows k..NV-1
-        var max_val = abs(rebind[Scalar[DTYPE]](L[env, k * NV + k]))
+    for k in range(nv):
+        # Find pivot: row with largest |value| in column k, rows k..nv-1
+        var max_val = abs(rebind[Scalar[DTYPE]](L[env, k * nv + k]))
         var max_row = k
-        for i in range(k + 1, NV):
-            var val = abs(rebind[Scalar[DTYPE]](L[env, i * NV + k]))
+        for i in range(k + 1, nv):
+            var val = abs(rebind[Scalar[DTYPE]](L[env, i * nv + k]))
             if val > max_val:
                 max_val = val
                 max_row = i
@@ -65,51 +72,54 @@ def _lu_factor_env[
         # Swap rows k and max_row
         if max_row != k:
             D[env, k] = Scalar[DTYPE](max_row)
-            for j in range(NV):
-                var tmp = L[env, k * NV + j]
-                L[env, k * NV + j] = L[env, max_row * NV + j]
-                L[env, max_row * NV + j] = tmp
+            for j in range(nv):
+                var tmp = L[env, k * nv + j]
+                L[env, k * nv + j] = L[env, max_row * nv + j]
+                L[env, max_row * nv + j] = tmp
 
         # Regularize near-zero pivot
-        var pivot = rebind[Scalar[DTYPE]](L[env, k * NV + k])
+        var pivot = rebind[Scalar[DTYPE]](L[env, k * nv + k])
         if abs(pivot) < Scalar[DTYPE](1e-30):
-            L[env, k * NV + k] = Scalar[DTYPE](1e-30)
+            L[env, k * nv + k] = Scalar[DTYPE](1e-30)
             pivot = Scalar[DTYPE](1e-30)
 
         # Compute multipliers + update trailing submatrix
         var inv_pivot = Scalar[DTYPE](1) / pivot
-        for i in range(k + 1, NV):
+        for i in range(k + 1, nv):
             var lik = (
-                rebind[Scalar[DTYPE]](L[env, i * NV + k]) * inv_pivot
+                rebind[Scalar[DTYPE]](L[env, i * nv + k]) * inv_pivot
             )
-            L[env, i * NV + k] = lik
-            for j in range(k + 1, NV):
-                var cur = rebind[Scalar[DTYPE]](L[env, i * NV + j])
-                var ukj = rebind[Scalar[DTYPE]](L[env, k * NV + j])
-                L[env, i * NV + j] = cur - lik * ukj
+            L[env, i * nv + k] = lik
+            for j in range(k + 1, nv):
+                var cur = rebind[Scalar[DTYPE]](L[env, i * nv + j])
+                var ukj = rebind[Scalar[DTYPE]](L[env, k * nv + j])
+                L[env, i * nv + j] = cur - lik * ukj
 
 
 @always_inline
 def _lu_solve_env[
     DTYPE: DType,
-    NV: Int,
-    BATCH: Int,
+    DIMS: DimsLike,
+    L_L: Layout,
+    L_D: Layout,
 ](
     env: Int,
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    b: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    x: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: DIMS,
+    L: LayoutTensor[DTYPE, L_L, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    b: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    x: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
 ):
     """Solve A*x = b using the LU factors + pivots for one env (verbatim from
     `lu_solve_workspace_gpu`). L holds the in-place LU, D holds the pivots."""
-    comptime V_SIZE = _ensure_positive[NV]()
+    var nv = dims.get_nv()
+    comptime V_CAP = cap[DIMS.NV]()
 
     # Copy b, then apply the row permutation from the pivots
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
-    for i in range(NV):
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
         y[i] = b[env, i]
-    for i in range(NV):
+    for i in range(nv):
         var piv_i = Int(rebind[Scalar[DTYPE]](D[env, i]))
         if piv_i != i:
             var tmp = y[i]
@@ -117,16 +127,16 @@ def _lu_solve_env[
             y[piv_i] = tmp
 
     # Forward substitution: L * y = Pb (L has unit diagonal)
-    for i in range(NV):
+    for i in range(nv):
         for j in range(i):
-            y[i] = y[i] - L[env, i * NV + j] * y[j]
+            y[i] = y[i] - L[env, i * nv + j] * y[j]
 
     # Backward substitution: U * x = y
-    for i in range(NV - 1, -1, -1):
+    for i in range(nv - 1, -1, -1):
         var s = y[i]
-        for j in range(i + 1, NV):
-            s = s - L[env, i * NV + j] * x[env, j]
-        var diag = rebind[Scalar[DTYPE]](L[env, i * NV + i])
+        for j in range(i + 1, nv):
+            s = s - L[env, i * nv + j] * x[env, j]
+        var diag = rebind[Scalar[DTYPE]](L[env, i * nv + i])
         if abs(diag) > Scalar[DTYPE](1e-30):
             x[env, i] = s / diag
         else:
@@ -136,27 +146,30 @@ def _lu_solve_env[
 @always_inline
 def _lu_m_inv_col_env[
     DTYPE: DType,
-    NV: Int,
-    BATCH: Int,
+    DIMS: DimsLike,
+    L_L: Layout,
+    L_D: Layout,
 ](
     env: Int,
     j_col: Int,
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: DIMS,
+    L: LayoutTensor[DTYPE, L_L, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_L, MutAnyOrigin],
 ):
     """One column of M^-1 from LU factors (solve A*col = e_j). Verbatim from
     `compute_M_inv_from_lu_gpu`'s column body."""
-    comptime V_SIZE = _ensure_positive[NV]()
-    var e = InlineArray[L.element_type, V_SIZE](uninitialized=True)
-    var col = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var nv = dims.get_nv()
+    comptime V_CAP = cap[DIMS.NV]()
+    var e = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var col = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
 
-    for i in range(NV):
+    for i in range(nv):
         e[i] = 0
     e[j_col] = 1
 
     # Apply permutation
-    for i in range(NV):
+    for i in range(nv):
         var piv_i = Int(rebind[Scalar[DTYPE]](D[env, i]))
         if piv_i != i:
             var tmp = e[i]
@@ -164,42 +177,45 @@ def _lu_m_inv_col_env[
             e[piv_i] = tmp
 
     # Forward substitution: L * y = Pe (L has unit diagonal)
-    var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
-    for i in range(NV):
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
         var s = e[i]
         for k in range(i):
-            s = s - L[env, i * NV + k] * y[k]
+            s = s - L[env, i * nv + k] * y[k]
         y[i] = s
 
     # Backward substitution: U * col = y
-    for i in range(NV - 1, -1, -1):
+    for i in range(nv - 1, -1, -1):
         var s = y[i]
-        for k in range(i + 1, NV):
-            s = s - L[env, i * NV + k] * col[k]
-        var diag = rebind[Scalar[DTYPE]](L[env, i * NV + i])
+        for k in range(i + 1, nv):
+            s = s - L[env, i * nv + k] * col[k]
+        var diag = rebind[Scalar[DTYPE]](L[env, i * nv + i])
         if abs(diag) > Scalar[DTYPE](1e-30):
             col[i] = s / diag
         else:
             col[i] = 0
 
-    for i in range(NV):
-        m_inv[env, i * NV + j_col] = col[i]
+    for i in range(nv):
+        m_inv[env, i * nv + j_col] = col[i]
 
 
 @always_inline
 def _lu_m_inv_env[
     DTYPE: DType,
-    NV: Int,
-    BATCH: Int,
+    DIMS: DimsLike,
+    L_L: Layout,
+    L_D: Layout,
 ](
     env: Int,
-    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dims: DIMS,
+    L: LayoutTensor[DTYPE, L_L, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_L, MutAnyOrigin],
 ):
     """Full dense M^-1 via per-column LU solves."""
-    for j_col in range(NV):
-        _lu_m_inv_col_env[DTYPE, NV, BATCH](env, j_col, L, D, m_inv)
+    var nv = dims.get_nv()
+    for j_col in range(nv):
+        _lu_m_inv_col_env[DTYPE](env, j_col, dims, L, D, m_inv)
 
 
 # ── launchable kernels (serial: one thread per env) ───────────────────────
@@ -215,7 +231,7 @@ def _lu_factor_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_factor_env[DTYPE, NV, BATCH](env, M, L, D)
+    _lu_factor_env[DTYPE](env, Dims[nv=NV](), M, L, D)
 
 
 def _lu_solve_fields_kernel[
@@ -231,7 +247,7 @@ def _lu_solve_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_solve_env[DTYPE, NV, BATCH](env, L, D, b, x)
+    _lu_solve_env[DTYPE](env, Dims[nv=NV](), L, D, b, x)
 
 
 def _lu_m_inv_fields_kernel[
@@ -246,34 +262,31 @@ def _lu_m_inv_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_m_inv_env[DTYPE, NV, BATCH](env, L, D, m_inv)
+    _lu_m_inv_env[DTYPE](env, Dims[nv=NV](), L, D, m_inv)
 
 
 # ── single-body dispatch wrappers (mirror ldl) ─────────────────────
-def lu_factor[
-    target: StaticString,
-    DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    BATCH: Int = 1,
-](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+def lu_factor[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """M -> LU factors in L + pivots in D (owned scratch), both targets."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var M_v = scratch.M.lt["cpu", L_M]()
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _lu_factor_env[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
+            _lu_factor_env[DTYPE](e, dm, M_v, L_v, D_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
-        c.enqueue_function[_lu_factor_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_lu_factor_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.M.lt["gpu", L_M](),
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
@@ -282,31 +295,28 @@ def lu_factor[
         )
 
 
-def lu_solve[
-    target: StaticString,
-    DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    BATCH: Int = 1,
-](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+def lu_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`qacc_ws = A^-1 fnet` via LU factors in L + pivots in D, both targets."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
-        var b_v = scratch.fnet.lt["cpu", L_NV]()
-        var x_v = scratch.qacc_ws.lt["cpu", L_NV]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+        var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
+        var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _lu_solve_env[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
+            _lu_solve_env[DTYPE](e, dm, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
-        c.enqueue_function[_lu_solve_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_lu_solve_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.fnet.lt["gpu", L_NV](),
@@ -319,27 +329,29 @@ def lu_solve[
 def compute_m_inv_from_lu[
     target: StaticString,
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
     BATCH: Int = 1,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """LU factors (L) + pivots (D) -> m_inv (owned scratch), both targets."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         for e in range(BATCH):
-            _lu_m_inv_env[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
+            _lu_m_inv_env[DTYPE](e, dm, L_v, D_v, mi_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
-        c.enqueue_function[_lu_m_inv_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_lu_m_inv_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.m_inv.lt["gpu", L_M](),

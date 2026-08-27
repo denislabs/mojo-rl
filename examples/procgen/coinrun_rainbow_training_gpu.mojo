@@ -29,8 +29,8 @@ the CNN q-net + optimizer are checkpointed to CKPT_PATH.
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer, ArcPointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer, ArcPointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -41,6 +41,7 @@ from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
 from mojo_rl.envs.procgen.games import CoinrunGymEnv, CoinrunAssets
 from mojo_rl.envs.procgen.games.coinrun import DIST_EASY
+from mojo_rl.core.fmt import fit
 
 comptime ASSET_ROOT = String("assets/procgen/")
 
@@ -187,18 +188,18 @@ def main() raises:
                 print_every=20_000,
                 verbose=True,
                 nstep_gamma=Scalar[DT](0.99),
-                logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+                logger=Pointer(to=logger).as_unsafe_any_origin(),
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),
-                eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+                eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
                 eval_every=100_000,
                 eval_episodes=N_ENVS,
             )
             var elapsed = Float64(perf_counter_ns() - start) / 1e9
             logger.close()
             print("-" * 70)
-            print("Done in", String(elapsed)[byte=:8], "s")
+            print("Done in", fit(String(elapsed), 8), "s")
             print("Final mean return (last 10):", agent.mean_return())
             print("Episodes:", agent.ep_count())
         except e:

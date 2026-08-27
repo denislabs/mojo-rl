@@ -13,7 +13,7 @@ Run:
 
 from std.math import isnan, isinf
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.linear import Linear

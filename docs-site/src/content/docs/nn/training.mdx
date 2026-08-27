@@ -1,0 +1,177 @@
+---
+title: Training
+description: The supervised Trainer, whole-dataset GPU runs, mixed precision, CUDA-graph capture, and the bundled datasets.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" note="CUDA-graph capture in the nn Trainer is off by default — see below." />
+
+`Trainer` is the supervised training loop: classification and regression on a
+dataset, distinct from the RL drivers in
+[`deep_agents/training`](/concepts/architecture/).
+
+```mojo
+from mojo_rl.nn.training.trainer import Trainer
+```
+
+## The signature
+
+```mojo
+Trainer[
+    MODEL: Module,
+    NC: Int,                 # number of classes / output width
+    IN: Int,                 # input dimension
+    BATCH: Int,
+    target: StaticString,    # "cpu" | "gpu"
+    POLICY: AMPPolicy = NoAMP,
+    OPT: Optimizer = Adam,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
+]
+```
+
+Construct with `make`, passing the initializer:
+
+```mojo
+var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu"].make[Kaiming](
+    Optional(ctx), lr=1e-3
+)
+```
+
+The trainer owns the model's parameters, the optimizer state and the loss.
+
+## Whole-dataset GPU training
+
+`train_gpu` uploads the dataset to the device **once** and runs the entire
+training loop on-device, slicing each batch as a zero-copy sub-buffer view:
+
+```mojo
+var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
+    ds.train_images, train_y,      # training inputs, one-hot targets
+    ds.test_images, ds.test_labels,
+    Optional(ctx),
+    epochs=5,
+    shuffle=True,                  # on-device per-epoch shuffle
+)
+
+for acc in result.epoch_test_top1:
+    print(acc)
+```
+
+No per-batch host-to-device transfer. The shuffle is a device kernel, so it does
+not force a round trip either.
+
+For finer control there is `train_epoch` and `eval_top1`.
+
+## Mixed precision (AMP)
+
+Set the `POLICY` parameter to run in bf16:
+
+```mojo
+var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu", BF16Policy].make[Kaiming](
+    Optional(ctx), lr=1e-3
+)
+```
+
+The design is **bf16-only true autocast** — no loss scaling, because bf16's
+exponent range makes it unnecessary. Activations are *stored* at the flow dtype,
+which is where the memory saving comes from: a module declares
+`comptime ACT_DT = bfloat16` and combinators derive theirs from their children,
+typing inter-module buffers accordingly.
+
+Casts happen only at boundaries. The fp32 path (`ACT_DT == DT`) is the existing
+code with no casts and no extra buffers — bit-identical to a non-AMP build.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/nn/mlp/mlp_mnist_bf16_amp_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/nn/resnet/resnet20_cifar10_bf16_amp_gpu.mojo
+```
+
+## CUDA-graph capture
+
+`USE_TRAIN_CUDA_GRAPH=True` captures the per-batch device compute — zero-grad,
+forward, loss accumulate, `vjp`, optimizer step — as a graph and replays it. The
+batch build stays eager, and the captured graph reads fixed buffers.
+
+:::caution[Off by default, and for a specific reason]
+On NVIDIA the nn GEMM (`linalg.matmul`) allocates a **split-K workspace per
+call**, which is illegal under stream capture. Enabling capture can abort in a
+shape-dependent way.
+
+It is fp32-only and contiguous-sweep only — no shuffle or augmentation under
+capture. On non-NVIDIA targets the flag is a no-op and the run is bit-identical.
+
+The RL drivers in `deep_agents/training` are a different code path and *do*
+capture by default; see [CPU and GPU paths](/concepts/cpu-gpu/).
+:::
+
+## Other trainers
+
+| Trainer | Purpose |
+|---|---|
+| `AutoregressiveTrainer` | sequence models — GPT on TinyShakespeare |
+| `Augmenter` | data augmentation for image training |
+
+## Datasets
+
+```mojo
+from mojo_rl.nn.datasets import MNIST, CIFAR10, TinyShakespeare
+```
+
+| Dataset | Notes |
+|---|---|
+| `MNIST` | 60k train / 10k test, 28×28 grayscale |
+| `CIFAR10` | 50k / 10k, 32×32 colour — Hugging Face parquet by default |
+| `TinyShakespeare` | character-level text |
+| `lewm_pusht` | PushT demonstrations, for the world-model work |
+
+Datasets download on first use and cache locally.
+
+These are supervised data — images plus labels, or a token stream — and they stay
+here rather than moving to the [trajectory store](/data/trajectory-store/) on
+purpose: they have no episode axis, so they are not trajectories. Episodic data
+(offline RL datasets, demonstrations, replay dumps) belongs in
+[the data layer](/data/) instead.
+
+:::caution[pyarrow crashes the embedded interpreter]
+The CIFAR-10 loader reads Hugging Face parquet, and `pyarrow` cannot run inside
+Mojo's embedded Python — it must be **subprocess-isolated**. This is handled in
+the loader; it matters if you write your own parquet-backed dataset.
+
+More generally, Python temporaries created inside a Mojo function are not
+released until the function **returns**. A long-running loop holding
+`PythonObject`s leaks in a way that RSS sampling will not reveal. Keep hot
+Python loops short, or move them into an `exec`'d block.
+:::
+
+## Worked examples
+
+```bash
+# MLP
+examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+examples/nn/mlp/mlp_mnist_training_storage_cpu.mojo
+
+# convolutional
+examples/nn/conv2d/conv2d_mnist_training_storage_gpu.mojo
+examples/nn/resnet/resnet20_cifar10_training_storage_gpu.mojo
+
+# transformer
+examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo
+examples/nn/vit/vit_cifar_training_storage_gpu.mojo
+```
+
+## Benchmarking discipline
+
+:::tip[Benchmark on NVIDIA; treat Apple as a parity target]
+Kernel performance rankings **invert** between Metal and CUDA. An optimization
+that wins on one can lose on the other, and Apple's small-N kernel launch
+overhead distorts microbenchmarks further.
+
+Use Apple to prove correctness and NVIDIA to prove speed.
+:::
+
+## Next
+
+- [Optimizers and losses](/nn/optimizers/) — what the Trainer drives
+- [Checkpoints](/concepts/checkpoints/) — saving the result
+- [Modules and Params](/nn/modules/) — the storage being trained

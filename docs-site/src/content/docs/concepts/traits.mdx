@@ -1,0 +1,189 @@
+---
+title: Traits
+description: The interfaces between layers — Env, Agent, Module — and the environment trait hierarchy that decides which algorithms apply.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import EnvTraitGrid from '~/components/diagrams/EnvTraitGrid.astro';
+
+<Maturity level="stable" />
+
+Traits are how the layers meet. A training driver is written against
+`GPUContinuousEnv`, not against HalfCheetah; `SACAgent` is written against
+`Module`, not against a specific network. Because these are compile-time
+interfaces, the indirection costs nothing at runtime.
+
+## `Env` — the base environment
+
+Every environment implements `Env`, which fixes the associated types and the
+core loop:
+
+```mojo
+trait Env:
+    comptime dtype: DType
+    comptime StateType: State
+    comptime ActionType: Action
+
+    def step(mut self, action: Self.ActionType, verbose: Bool = False)
+        -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
+        """Take an action and return (next_state, reward, done)."""
+
+    def reset(mut self) -> Self.StateType: ...
+    def get_state(self) -> Self.StateType: ...
+    def close(mut self): ...
+    def was_terminated(self) -> Bool: ...
+```
+
+`was_terminated()` deserves attention. It is `True` only for genuine
+termination — the pole fell, the walker became unhealthy, the goal was reached —
+and `False` when an episode ended because it hit a time limit. Bootstrapping
+must treat these differently: a truncated episode should still bootstrap from
+its final state, a terminated one should not. Collapsing the two into a single
+`done` flag is a classic silent-degradation bug, which is why the distinction is
+in the trait.
+
+## The environment hierarchy
+
+`Env` splits along two independent axes — how states are represented, and how
+actions are. Two binary axes give four combinations, and three of them are
+named traits:
+
+<EnvTraitGrid />
+
+The combination you implement determines which algorithms will accept your
+environment — the compiler enforces it. A tabular agent simply will not
+instantiate against an environment that cannot produce a state index.
+
+The empty cell is not an oversight. A discrete state space with continuous
+actions would mean a finite set of situations each admitting a continuum of
+responses, which none of the environments here need, so no trait exists for it.
+
+One more trait sits across the grid rather than inside it:
+`TerminationAwareEnv`, for continuous tasks that need the terminated/truncated
+split described above. The MuJoCo-style locomotion environments implement it.
+
+What each axis requires:
+
+```mojo
+trait DiscreteStateEnv(Env):
+    def state_to_index(self, state: Self.StateType) -> Int: ...
+    def num_states(self) -> Int: ...
+
+trait ContinuousStateEnv(Env):
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]: ...
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]: ...
+    def obs_dim(self) -> Int: ...
+
+trait DiscreteActionEnv(Env):
+    def action_from_index(self, action_idx: Int) -> Self.ActionType: ...
+    def num_actions(self) -> Int: ...
+
+trait ContinuousActionEnv(Env):
+    def action_dim(self) -> Int: ...
+    def action_low(self) -> Scalar[Self.dtype]: ...
+    def action_high(self) -> Scalar[Self.dtype]: ...
+```
+
+## The GPU environment traits
+
+`GPUDiscreteEnv` and `GPUContinuousEnv` are separate traits rather than
+extensions of the CPU ones, because a batched device environment has a genuinely
+different interface: it steps `N` environments at once, writes observations into
+device tensors, and handles per-environment resets internally.
+
+An environment implementing one of these can be wrapped by a `BatchedEnv`
+adapter — `Phyics3dBatchedEnv`, `BatchedGpuDiscreteEnv` — and handed to a
+batched training driver. See [CPU and GPU paths](/concepts/cpu-gpu/).
+
+## Supporting traits
+
+| Trait | Purpose |
+|---|---|
+| `State` | Environment state — `Copyable`, `Movable`, `ImplicitlyCopyable` |
+| `Action` | Marker trait for actions |
+| `RenderableEnv` | Environment that can draw itself |
+| `TwoPlayerDiscreteEnv` | Board games — adds turn and player tracking |
+| `GPUTwoPlayerDiscreteEnv` | Batched self-play on device |
+| `CurriculumScheduler` | Curriculum learning |
+| `Saveable` | Checkpointable state |
+
+## `Agent` — the base agent
+
+```mojo
+trait Agent:
+    comptime StateType: State
+    comptime ActionType: Action
+
+    def select_action(self, state: Self.StateType) -> Self.ActionType: ...
+    def update(mut self, state: Self.StateType, action: Self.ActionType,
+               reward: Float64, next_state: Self.StateType, done: Bool): ...
+    def reset(mut self): ...
+```
+
+`TabularAgent` narrows this for Q-table agents, working in integer indices and
+adding the epsilon-greedy contract:
+
+```mojo
+trait TabularAgent:
+    def select_action(self, state_idx: Int) -> Int: ...
+    def update(mut self, state: Int, action: Int, reward: Float64,
+               next_state: Int, done: Bool): ...
+    def get_best_action(self, state_idx: Int) -> Int: ...
+    def decay_epsilon(mut self): ...
+    def get_epsilon(self) -> Float64: ...
+```
+
+`get_best_action` is the greedy policy used for evaluation; `select_action`
+explores. Every tabular agent decays epsilon by a multiplicative factor per
+episode, floored at a minimum — 0.995 and 0.01 by default.
+
+Deep agents do not implement `Agent` directly. They use the facade pattern
+instead: a per-algorithm package exposing an `XxxAgent` over a trainer plus a
+shared driver, because a deep agent's `train()` needs to own the loop (replay
+sampling, target updates, device staging) rather than being called per
+transition.
+
+## `Module` — the neural-network interface
+
+```mojo
+trait Module:
+    comptime ARITY: Int        # number of inputs
+    comptime IN_DIMS: ...      # input dimensions
+    comptime OUT_DIM: Int      # output dimension
+
+    fn make[target: StaticString, INIT: Initializer](...) -> Self
+    fn forward(...)            # over TensorPack
+    fn vjp(...)                # vector-Jacobian product (backward)
+```
+
+A `Module` owns its weights as `Param` fields, each holding a value tensor and a
+gradient tensor. The default `for_each_param` implementation discovers those
+fields automatically, which is how optimizers and checkpointing work without
+registration boilerplate.
+
+`forward` and `vjp` both operate over `TensorPack`, which is what lets
+combinators like `Parallel` handle modules with different arities uniformly.
+
+Because `Module` is a trait rather than a base class, composition is
+type-level — see [compile-time composition](/concepts/compile-time-composition/).
+
+## Implementing your own
+
+The two extension points most people want:
+
+**A new environment** — pick the trait combination that matches your state and
+action spaces, define `State` and `Action` structs, and implement the required
+methods. The [environments guide](/concepts/architecture/) covers the families
+you might model yours on.
+
+**A new deep agent** — create a package under `mojo_rl/deep_agents/<algo>/` with
+a trainer and a facade, mirroring an existing one such as `dqn/` or
+`ppo_discrete/`, and reuse a driver from `deep_agents/training/`. Networks arrive
+as compile-time parameters; the shared `primitives/`, `loss/` and `data/`
+packages supply Gaussian heads, losses and replay buffers.
+
+## Next
+
+- [Compile-time composition](/concepts/compile-time-composition/) — how these traits get instantiated
+- [CPU and GPU paths](/concepts/cpu-gpu/) — the GPU trait variants in use
+- [Checkpoints](/concepts/checkpoints/) — what `Saveable` buys you

@@ -1,0 +1,490 @@
+"""`dm_control` `reacher` task configs — port of `suite/reacher.py` (`Reacher`).
+
+One parameterized config covers both registered tasks, which differ only in
+the target radius:
+
+    easy = DMReacherConfig[TARGET_SIZE=0.05]     (_BIG_TARGET)
+    hard = DMReacherConfig[TARGET_SIZE=0.015]    (_SMALL_TARGET)
+
+    observation = [qpos (2), to_target (2), qvel (2)]                     (6)
+    to_target   = geom_xpos['target'][:2] - geom_xpos['finger'][:2]
+    reward      = tolerance(||to_target||, (0, target_size + finger_size))
+    reset       = randomize_limited_and_rotational_joints, then a uniform
+                  target at angle ~ U(0, 2pi), radius ~ U(.05, .20)
+    episode     = 1000 control steps (20 s / 0.02 s), no early termination
+
+The reward has NO margin, so it is a hard indicator: exactly 1 while the
+finger overlaps the target and exactly 0 otherwise. Both tasks are sparse, and
+`hard` is sparse over a 1.5 cm disc — an untrained policy returns a flat zero
+for a long time, as in the reference.
+
+The per-episode target lives on a MOCAP BODY rather than in `model.geom_pos`;
+see `reacher_xml` for why, and note the consequence here: the reset hook
+writes `d.mocap_pos`/`d.mocap_quat`, and the facade's `_sync_mocap_to_fields`
+turns that into the body world pose. Nothing else in the config touches it.
+"""
+
+from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
+from std.math import pi, sqrt, sin, cos
+
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
+from mojo_rl.physics3d.kinematics.geom_xpos import (
+    geom_xpos,
+    geom_xpos_gpu,
+)
+from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from layout import Layout, LayoutTensor
+
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
+    CONTACT_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+)
+
+from .reacher_xml import (
+    DMReacherModel,
+    FINGER_GEOM_IDX,
+    TARGET_GEOM_IDX,
+    TARGET_BODY_IDX,
+    FINGER_SIZE,
+    TARGET_Z,
+)
+
+from ...phyics3d_env_config import Phyics3dEnvConfig
+from ..rewards import tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN
+from ..dtype_math import sin_dt, cos_dt
+from ..gpu_reset import (
+    reset_seed,
+    randomize_limited_and_rotational_joints_gpu,
+)
+
+
+# `initialize_episode`: angle ~ U(0, 2pi), radius ~ U(.05, .20).
+comptime TARGET_RADIUS_MIN: Float64 = 0.05
+comptime TARGET_RADIUS_MAX: Float64 = 0.20
+
+
+struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
+    # === Physics ===
+    # reacher.py passes no control_timestep, so one env step is one physics
+    # step of 0.02 s.
+    comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
+    # The per-episode target lives on a MOCAP body (the G4 workaround),
+    # so the batched env must sync it into the body pose — blocker H.
+    comptime USES_MOCAP: Bool = True
+    # _DEFAULT_TIME_LIMIT = 20 s / 0.02 s = 1000 steps.
+    comptime MAX_STEPS: Int = 1000
+    comptime INTEGRATOR_WS_EXTRA: Int = 0
+    comptime SYNC_FK_AFTER_STEP: Bool = True
+    # `<option timestep="0.02">` names no integrator => MuJoCo's Euler default.
+    comptime INTEGRATOR: StaticString = "euler"
+
+    # === CPU: Observation ===
+    @staticmethod
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        """`Reacher.get_observation`: position, to_target, velocity."""
+        for i in range(D.NQ):
+            obs.append(d.qpos.data[i])
+
+        # `Physics.finger_to_target` — the XY components only.
+        var tp = geom_xpos(d, m_geoms, TARGET_GEOM_IDX)
+        var fp = geom_xpos(d, m_geoms, FINGER_GEOM_IDX)
+        obs.append(Scalar[DTYPE](tp[0] - fp[0]))
+        obs.append(Scalar[DTYPE](tp[1] - fp[1]))
+
+        for i in range(D.NV):
+            obs.append(d.qvel.data[i])
+        return True
+
+    # === CPU: Reset ===
+    @staticmethod
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+    ):
+        """`Reacher.initialize_episode`: joints first, then the target.
+
+        `shoulder` is unlimited and `wrist` is limited, so both branches of
+        `randomize_limited_and_rotational_joints` are live here — the first
+        domain in the port where that is true.
+        """
+        var njoint = len(m_joints) // MODEL_JOINT_SIZE
+        for j in range(njoint):
+            var jtype = Int(m_joints[j * MODEL_JOINT_SIZE + JOINT_IDX_TYPE])
+            if jtype != JNT_HINGE and jtype != JNT_SLIDE:
+                continue
+            var adr = Int(m_joints[j * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR])
+            var lo = Float64(
+                m_joints[j * MODEL_JOINT_SIZE + JOINT_IDX_RANGE_MIN]
+            )
+            var hi = Float64(
+                m_joints[j * MODEL_JOINT_SIZE + JOINT_IDX_RANGE_MAX]
+            )
+            var limited = lo > -1e9 and hi < 1e9
+            if limited:
+                d.qpos.data[adr] = Scalar[DTYPE](
+                    lo + random_float64() * (hi - lo)
+                )
+            elif jtype == JNT_HINGE:
+                d.qpos.data[adr] = Scalar[DTYPE](
+                    -pi + random_float64() * 2.0 * pi
+                )
+
+        # Target position. The reference writes model.geom_pos; we write the
+        # per-env mocap pose instead (see the module docstring). Note the
+        # reference's x uses SIN and y uses COS — not the usual convention,
+        # but it only rotates the distribution, which is uniform in angle.
+        var angle = random_float64() * 2.0 * pi
+        var radius = TARGET_RADIUS_MIN + random_float64() * (
+            TARGET_RADIUS_MAX - TARGET_RADIUS_MIN
+        )
+        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 0] = Scalar[DTYPE](
+            radius * sin(angle)
+        )
+        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 1] = Scalar[DTYPE](
+            radius * cos(angle)
+        )
+        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 2] = Scalar[DTYPE](TARGET_Z)
+        # Identity orientation, [x, y, z, w].
+        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 0] = Scalar[DTYPE](0)
+        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 1] = Scalar[DTYPE](0)
+        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 2] = Scalar[DTYPE](0)
+        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 3] = Scalar[DTYPE](1)
+
+    # === CPU: Reward ===
+    @staticmethod
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        prev_x: Scalar[DTYPE],
+        actions: List[Float64],
+        step_count: Int,
+        frame_skip: Int,
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        # `radii = geom_size[['target', 'finger'], 0].sum()`, and
+        # `tolerance(dist, (0, radii))` with the default margin of 0 — a hard
+        # indicator, so this reward is exactly 0 or exactly 1.
+        var tp = geom_xpos(d, m_geoms, TARGET_GEOM_IDX)
+        var fp = geom_xpos(d, m_geoms, FINGER_GEOM_IDX)
+        var dx = tp[0] - fp[0]
+        var dy = tp[1] - fp[1]
+        var dist = sqrt(dx * dx + dy * dy)
+        var radii = Self.TARGET_SIZE + FINGER_SIZE
+
+        # dm_control tasks never terminate early.
+        return (Scalar[DTYPE](tolerance(dist, 0.0, radii, 0.0)), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # FIRST MOCAP DOMAIN ON THE GPU. `init_qpos_gpu` writes the per-episode
+    # target into `mocap_pos`/`mocap_quat`, and `Phyics3dBatchedEnv`'s
+    # `_sync_mocap_batch` turns that into the body world pose before FK —
+    # blocker H. Without that sync the target sat at its XML pose for every
+    # episode of every lane: a silently EASIER task, never a crash.
+    # =====================================================================
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`Reacher.get_observation`: whole qpos, finger->target XY, qvel."""
+        for i in range(NQ_F):
+            obs[env, i] = qpos[env, i]
+        var tp = geom_xpos_gpu[DTYPE](
+            xpos, xquat, geoms, env, TARGET_GEOM_IDX
+        )
+        var fp = geom_xpos_gpu[DTYPE](
+            xpos, xquat, geoms, env, FINGER_GEOM_IDX
+        )
+        obs[env, NQ_F] = tp[0] - fp[0]
+        obs[env, NQ_F + 1] = tp[1] - fp[1]
+        for i in range(NV_F):
+            obs[env, NQ_F + 2 + i] = qvel[env, i]
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Reacher.get_reward` — a HARD indicator (margin 0): exactly 0 or 1."""
+        var tp = geom_xpos_gpu[DTYPE](
+            xpos, xquat, geoms, env, TARGET_GEOM_IDX
+        )
+        var fp = geom_xpos_gpu[DTYPE](
+            xpos, xquat, geoms, env, FINGER_GEOM_IDX
+        )
+        var dx = tp[0] - fp[0]
+        var dy = tp[1] - fp[1]
+        var dist = sqrt(dx * dx + dy * dy)
+        comptime radii = Self.TARGET_SIZE + FINGER_SIZE
+        var r = tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+            dist,
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](radii),
+            Scalar[DTYPE](0.0),
+        )
+        return (r, False)
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+        NBODY_M: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_M, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """Random arm pose + a random per-episode TARGET on the mocap body.
+
+        ⚠ The reference's x uses SIN and y uses COS — not the usual
+        convention, but it only rotates a distribution that is uniform in
+        angle, so it is reproduced rather than "fixed".
+        """
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ_F, NJOINT_F, RANDOMIZE_UNLIMITED_HINGES=True
+        ](qpos, joints, env, seed)
+
+        # A SEPARATE Philox draw from the joint randomizer's: the target angle
+        # and radius are independent of the arm pose in the reference.
+        var rng = PhiloxRandom(
+            seed=reset_seed(env, seed) ^ UInt64(0x9E3779B97F4A7C15), offset=0
+        )
+        var u = rng.step_uniform()
+        var angle = Scalar[DTYPE](u[0]) * Scalar[DTYPE](2.0 * pi)
+        var radius = Scalar[DTYPE](TARGET_RADIUS_MIN) + Scalar[DTYPE](
+            u[1]
+        ) * Scalar[DTYPE](TARGET_RADIUS_MAX - TARGET_RADIUS_MIN)
+        mocap_pos[env, TARGET_BODY_IDX * 3 + 0] = radius * sin_dt[DTYPE](angle)
+        mocap_pos[env, TARGET_BODY_IDX * 3 + 1] = radius * cos_dt[DTYPE](angle)
+        mocap_pos[env, TARGET_BODY_IDX * 3 + 2] = Scalar[DTYPE](TARGET_Z)
+        # Identity orientation, [x, y, z, w].
+        mocap_quat[env, TARGET_BODY_IDX * 4 + 0] = Scalar[DTYPE](0)
+        mocap_quat[env, TARGET_BODY_IDX * 4 + 1] = Scalar[DTYPE](0)
+        mocap_quat[env, TARGET_BODY_IDX * 4 + 2] = Scalar[DTYPE](0)
+        mocap_quat[env, TARGET_BODY_IDX * 4 + 3] = Scalar[DTYPE](1)
+
+    # === CPU: Float getters ===
+    @staticmethod
+    def get_timestep() -> Float64:
+        return Float64(DMReacherModel.TIMESTEP)

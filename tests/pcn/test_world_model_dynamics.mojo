@@ -247,8 +247,8 @@ def main() raises:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
                 "    ", epoch, "  ",
-                String(last_loss)[byte=:11], "  ",
-                String(elapsed)[byte=:7],
+                fit(String(last_loss), 11), "  ",
+                fit(String(elapsed), 7),
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -417,12 +417,12 @@ def main() raises:
 
         print(
             "    ", t,
-            "    ", String(imag_mean)[byte=:9],
-            "    ", String(true_mean)[byte=:7],
-            "  ", String(mean_rel)[byte=:7],
-            "    ", String(imag_var)[byte=:9],
-            "  ", String(true_var)[byte=:7],
-            "  ", String(var_rel)[byte=:7],
+            "    ", fit(String(imag_mean), 9),
+            "    ", fit(String(true_mean), 7),
+            "  ", fit(String(mean_rel), 7),
+            "    ", fit(String(imag_var), 9),
+            "  ", fit(String(true_var), 7),
+            "  ", fit(String(var_rel), 7),
         )
 
     var avg_mean_rel = mean_rel_err_total / Float64(SEQ_LEN)
@@ -489,9 +489,9 @@ def main() raises:
 
         print(
             "    ", t,
-            "    ", String(kl_model)[byte=:9],
-            "       ", String(kl_persist)[byte=:9],
-            "       ", String(kl_persist - kl_model)[byte=:9],
+            "    ", fit(String(kl_model), 9),
+            "       ", fit(String(kl_persist), 9),
+            "       ", fit(String(kl_persist - kl_model), 9),
         )
 
     var avg_kl_model = kl_model_total / Float64(SEQ_LEN)
@@ -536,3 +536,5 @@ def main() raises:
     mc_mean.free()
     mc_var.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

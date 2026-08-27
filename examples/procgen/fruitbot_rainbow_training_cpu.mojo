@@ -16,7 +16,7 @@ Run:
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -30,6 +30,7 @@ from mojo_rl.deep_agents.training import run_offpolicy_discrete_train
 
 from mojo_rl.envs.procgen.games import FruitbotGymEnv
 from mojo_rl.envs.procgen.games.fruitbot import DIST_EASY
+from mojo_rl.core.fmt import fit
 
 comptime ASSET_ROOT = String("assets/procgen/")
 
@@ -139,15 +140,15 @@ def main() raises:
         NUM_STEPS,
         print_every=2_000,
         verbose=True,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         diag_every=2_000,
-        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+        eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
         eval_every=20_000,
         eval_episodes=3,
     )
     var elapsed = Float64(perf_counter_ns() - start) / 1e9
     logger.close()
     print("-" * 70)
-    print("Done in", String(elapsed)[byte=:6], "s")
+    print("Done in", fit(String(elapsed), 6), "s")
     print("Final mean return (last 10):", trainer.mean_return())
     print("Episodes:", trainer.ep_count())

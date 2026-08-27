@@ -24,7 +24,7 @@ Run (Apple, smoke): pixi run -e apple mojo run -I . examples/nn/resnet/resnet20_
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CIFAR10
 from mojo_rl.nn.constants import DT

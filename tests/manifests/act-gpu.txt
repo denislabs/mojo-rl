@@ -1,0 +1,11 @@
+# ACT GPU manifest — `pixi run -e apple test-act-gpu` (or -e nvidia).
+#
+# GPU paths are gated against the CPU paths, which carry the comparison against
+# the reference. Prerequisite (for the cross-attention gate's fixed inputs):
+#
+#   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+
+# The attention leaf: forward, backward, masked and unmasked.
+tests/nn/test_cross_attention_gpu.mojo
+# The whole model: forward, one Adam step, BN state, and predict().
+tests/deep_agents/act/test_act_gpu_vs_cpu.mojo

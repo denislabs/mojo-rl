@@ -26,7 +26,7 @@ Flow per self-play step:
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -131,7 +131,7 @@ def _gather_rows_kernel[
     var b = t // W
     var d = t % W
     var seed = rebind[Scalar[DType.uint64]](rng[0])
-    var slot = Int(_xs64(seed ^ UInt64(b + 1)) % UInt64(Int(size)))
+    var slot = Int(_xs64(seed ^ UInt64(b + 1)) % UInt64(size))
     dst[b, d] = rebind[Scalar[DT]](ring[slot, d])
 
 
@@ -146,7 +146,7 @@ def _advance_rng_kernel(
 
 struct GpuMCTSExampleReplay[
     OBS: Int, ACT: Int, CAP: Int, N_ENVS: Int, MAX_TRAJ: Int
-](Movable, ImplicitlyDeletable, Sized):
+](Movable, Deinitable, Sized):
     comptime TGT = Self.ACT + 1
 
     var ctx: DeviceContext

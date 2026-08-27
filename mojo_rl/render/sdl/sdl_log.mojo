@@ -262,7 +262,7 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetLogPriorityPrefix.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetLogPriorityPrefix",
         def(

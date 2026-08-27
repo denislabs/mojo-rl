@@ -12,8 +12,8 @@ from std.math import abs, pi
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -32,6 +32,23 @@ comptime NBODY = HalfCheetahModel.NBODY  # 7
 comptime NJOINT = HalfCheetahModel.NJOINT  # 9
 comptime NGEOM = HalfCheetahModel.NGEOM  # 9
 comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS  # 20
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=HalfCheetahModel.NSITE,
+    max_contacts=MAX_CONTACTS,
+    nequality=HalfCheetahModel.MAX_EQUALITY,
+    ntendon=HalfCheetahModel.MAX_TENDON,
+    nexclude=HalfCheetahModel.NEXCLUDE,
+    nmesh_verts=0,
+    npair=HalfCheetahModel.NPAIR,
+    nact=HalfCheetahModel.NACT,
+    nten=HalfCheetahModel.NTEN_F,
+    nkey=HalfCheetahModel.NKEY,
+]
 
 # Tolerance for comparison (float64)
 comptime POS_TOL: Float64 = 1e-6
@@ -52,25 +69,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, HalfCheetahModel.MAX_EQUALITY,
-        HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE, HalfCheetahModel.NEXCLUDE, 0,
-    ]()
-    HalfCheetahModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, 1
-    ]()
+    var mf = Model[DTYPE, MD]()
+    HalfCheetahModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HalfCheetahModel.MAX_EQUALITY, HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
-        HalfCheetahModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

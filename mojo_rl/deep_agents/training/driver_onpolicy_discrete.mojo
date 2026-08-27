@@ -21,7 +21,7 @@ consumer needs it — single-env covers CartPole / classic-control.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -115,7 +115,7 @@ def run_onpolicy_discrete_train[
     *,
     print_every: Int = 1_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -320,7 +320,7 @@ def run_onpolicy_discrete_train_batched[
     rng_seed: UInt64 = UInt64(42),
     print_every: Int = 5_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",

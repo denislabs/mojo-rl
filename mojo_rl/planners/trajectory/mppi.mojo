@@ -23,7 +23,7 @@ Reference: Hansen et al., 2023 — TD-MPC2.
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -100,7 +100,7 @@ struct MPPICPU[
     NUM_PI_TRAJS: Int,
     NUM_ITERATIONS: Int,
     NUM_ELITES: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """CPU MPPI planner — reference implementation + test path.
 
     All hyperparameters that affect storage layout
@@ -406,7 +406,7 @@ struct MPPIGPUBatched[
     NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     N_ENVS: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU-batched MPPI planner — plans for all ``N_ENVS`` envs in one
     kernel grid per horizon step.
 
@@ -566,6 +566,7 @@ struct MPPIGPUBatched[
         action_scale: Float64 = 1.0,
         deterministic: Bool = False,
         rng_base_seed: UInt32 = 42,
+        num_iters: Int = 0,
     ) raises:
         """Plan one timestep for all N_ENVS envs.
 
@@ -640,8 +641,15 @@ struct MPPIGPUBatched[
         ](self.weights_buf)
 
         # ── 3. Main MPPI iterations ──────────────────────────────
+        # `num_iters` overrides `NUM_ITERATIONS` at RUNTIME (0 = use the
+        # comptime default). Iteration count is the one budget knob that can be
+        # runtime: it is purely a loop bound, whereas NUM_SAMPLES /
+        # NUM_PI_TRAJS size every device buffer in `__init__` and cannot change
+        # without reallocating. Cost is very close to linear in it, so this is
+        # the lever for trading plan quality against frame rate.
         var temp_scalar = Scalar[dtype](temperature)
-        for mppi_iter in range(Self.NUM_ITERATIONS):
+        var n_iters = num_iters if num_iters > 0 else Self.NUM_ITERATIONS
+        for mppi_iter in range(n_iters):
             var rng_seed = rng_base_seed + UInt32(
                 mppi_iter
                 * Self.BATCH_TOTAL
@@ -788,6 +796,16 @@ def _run_mppi_iteration[
     inside the inliner's safe range, and lets future planners reuse
     the same iteration body without copy-paste.
     """
+    # ⚠ `mppi_broadcast_z0_zero_returns_batched_kernel` and `mppi_copy_z_kernel`
+    # are indexed ONE THREAD PER ELEMENT (see their docstrings), so they need a
+    # grid over BATCH_TOTAL * LATENT_DIM, NOT the row-count `MPPI_BLOCKS` the
+    # rest of the kernels here use. Launching them with `MPPI_BLOCKS` would
+    # silently copy only the first `TPB * MPPI_BLOCKS` elements — a partially
+    # rolled latent, which reads as a planner that plans badly rather than as a
+    # crash.
+    comptime Z_ELEMS = BATCH_TOTAL * LATENT_DIM
+    comptime Z_BLOCKS = (Z_ELEMS + TPB - 1) // TPB
+
     # 1. Broadcast z0 + zero returns
     comptime broadcast_z0_zero = (
         mppi_broadcast_z0_zero_returns_batched_kernel[
@@ -798,7 +816,7 @@ def _run_mppi_iteration[
         z0_tensor,
         z_tensor,
         returns_tensor,
-        grid_dim=(MPPI_BLOCKS,),
+        grid_dim=(Z_BLOCKS,),
         block_dim=(TPB,),
     )
 
@@ -847,7 +865,9 @@ def _run_mppi_iteration[
             std_tensor,
             act_step_tensor,
             all_actions_tensor,
-            t,
+            # Int32, not `t`: `Int` is not `DevicePassable` (rc2). The kernel
+            # param is Int32 and the CALL SITE has to say so.
+            Int32(t),
             Scalar[DType.uint32](step_seed),
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
@@ -871,11 +891,11 @@ def _run_mppi_iteration[
             block_dim=(TPB,),
         )
 
-        # 2e. Copy z_next → z (planner)
+        # 2e. Copy z_next → z (planner). Element-indexed → `Z_BLOCKS`.
         ctx.enqueue_function[copy_z](
             z_tensor,
             z_next_tensor,
-            grid_dim=(MPPI_BLOCKS,),
+            grid_dim=(Z_BLOCKS,),
             block_dim=(TPB,),
         )
 
@@ -918,14 +938,21 @@ def _run_mppi_iteration[
     )
 
     # 6. Weighted mean/std refit
+    # ⚠ ONE BLOCK PER OUTPUT, not per thread. `MEAN_STD_BLOCKS` sized the grid
+    # from the OUTPUT count (N_ENVS*H*ACT = 144 at the walker's dims), which is
+    # smaller than one block — so the old launch was a single block reducing
+    # 268 samples serially, 1.4% of GPU time for 144 numbers. The parallelism
+    # has to come from the reduction, so the grid is the output count and each
+    # block reduces with `TPB` threads. `MEAN_STD_BLOCKS` is now unused here.
+    comptime MEAN_STD_DIMS = N_ENVS * HORIZON * ACTION_DIM
     comptime weighted_mean_std = mppi_weighted_mean_std_kernel[
-        dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM
+        dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM, TPB
     ]
     ctx.enqueue_function[weighted_mean_std](
         weights_tensor,
         all_actions_tensor,
         mean_tensor,
         std_tensor,
-        grid_dim=(MEAN_STD_BLOCKS,),
+        grid_dim=(MEAN_STD_DIMS,),
         block_dim=(TPB,),
     )

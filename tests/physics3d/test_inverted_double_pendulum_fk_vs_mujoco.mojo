@@ -22,8 +22,9 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -43,6 +44,7 @@ comptime NBODY = InvertedDoublePendulumModel.NBODY  # 4
 comptime NJOINT = InvertedDoublePendulumModel.NJOINT  # 3
 comptime NGEOM = InvertedDoublePendulumModel.NGEOM  # 5
 comptime MAX_CONTACTS = InvertedDoublePendulumModel.MAX_CONTACTS  # 5
+comptime MD = ModelDims[InvertedDoublePendulumModel]
 
 # Tolerance for comparison (float64)
 comptime POS_TOL: Float64 = 1e-6
@@ -63,25 +65,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, InvertedDoublePendulumModel.MAX_EQUALITY,
-        InvertedDoublePendulumModel.MAX_TENDON, InvertedDoublePendulumModel.NSITE, InvertedDoublePendulumModel.NEXCLUDE, 0,
-    ]()
-    InvertedDoublePendulumModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, InvertedDoublePendulumModel.NSITE, 1
-    ]()
+    var mf = Model[DTYPE, MD]()
+    InvertedDoublePendulumModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        InvertedDoublePendulumModel.MAX_EQUALITY, InvertedDoublePendulumModel.MAX_TENDON, InvertedDoublePendulumModel.NSITE,
-        InvertedDoublePendulumModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

@@ -25,7 +25,7 @@ Reads dreamerv3_carracing_pixel_gpu.ckpt.
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp

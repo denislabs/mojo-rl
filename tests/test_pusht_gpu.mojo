@@ -10,8 +10,8 @@ Run with:
     pixi run -e nvidia mojo run -I . tests/test_pusht_gpu.mojo  (CUDA)
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import UnsafePointer
+from max.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import Pointer
 from mojo_rl.physics2d import dtype, SHAPE_MAX_SIZE
 from mojo_rl.envs.pusht import (
     PushTV2,

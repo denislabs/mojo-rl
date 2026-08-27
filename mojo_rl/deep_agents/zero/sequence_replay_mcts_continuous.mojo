@@ -24,15 +24,15 @@ from mojo_rl.nn.constants import DT
 from .nstep_targets import compute_nstep_value_targets
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) feeding the shared
     `compute_nstep_value_targets` (raw-pointer, used by every replay incl.
     un-migrated GPU). Function-local: alloc'd + freed in one call."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
-    Movable, ImplicitlyDeletable
+    Movable, Deinitable
 ):
     """Ring of continuous MCTS-labelled steps + episode index. ``CAP`` = max
     resident steps. Host-side (the GPU search feeds it via host copies).
@@ -123,16 +123,16 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         field: List[Scalar[DT]],
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut out: Pointer[Scalar[DT], MutAnyOrigin],
         out_base: Int,
     ):
         """Read one scalar ring cell at episode-relative ``offset`` (absorbing
         zeros past the episode end). ``out`` is the local per-window scratch."""
         if offset >= self.ep_len[ep_idx]:
-            out[out_base] = Scalar[DT](0.0)
+            out[unsafe_offset=out_base] = Scalar[DT](0.0)
             return
         var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
-        out[out_base] = field[slot]
+        out[unsafe_offset=out_base] = field[slot]
 
     def _sample_step_uniform(mut self) -> Tuple[Int, Int]:
         """Pick a resident (episode, offset) with every resident **step**
@@ -160,7 +160,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         mut value_tgt: List[Scalar[DT]],  # [K+1, B]
         mut reward_tgt: List[Scalar[DT]], # [K, B]
         cons_mask: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+            Pointer[Scalar[DT], MutAnyOrigin]
         ] = None,                                                # [K, B]
     ):
         """Fill the continuous EZv2 time-major unroll batch for ``B`` windows.
@@ -205,23 +205,23 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
             if cons_mask:
                 var cm = cons_mask.value()
                 for k in range(K):
-                    cm[k * B + b] = (
+                    cm[unsafe_offset=k * B + b] = (
                         Scalar[DT](1.0) if s + k + 1 < L else Scalar[DT](0.0)
                     )
 
             for h in range(HR):
                 self._read1(self.rew, e, s + h, w_rew, h)
                 if s + h >= L:
-                    w_done[h] = Scalar[DT](1.0)
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)
                 else:
                     self._read1(self.done, e, s + h, w_done, h)
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     self._read1(self.val, e, s + h, w_val, h)
-                    w_tp[h] = Scalar[DT](0.0)   # single-player
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)   # single-player
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
@@ -229,7 +229,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
 
             # policy-clone targets (chosen action at s+k, absorbing-zero).
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 var pbase = k * B * Self.ACT_DIM + b * Self.ACT_DIM
                 if s + k >= L:
                     for d in range(Self.ACT_DIM):
@@ -250,9 +250,9 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
                     var slot = (self.ep_start[e] + s + k) % Self.CAP
                     for d in range(Self.ACT_DIM):
                         actions[abase + d] = self.act[slot * Self.ACT_DIM + d]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.unsafe_free(); w_done.unsafe_free(); w_val.unsafe_free(); w_tp.unsafe_free(); w_vt.unsafe_free()
 
     # ──────────────────────────────────────────────────────────────────
     # Reanalyze hooks — refresh stale targets with a fresher (target) model

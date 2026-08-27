@@ -18,7 +18,7 @@ from mojo_rl.envs.pusht.offline_sampler import PushTOfflineSampler
 
 
 def insertion_sort_u64(
-    buf: UnsafePointer[Scalar[DType.uint64], MutAnyOrigin], n: Int
+    buf: Pointer[Scalar[DType.uint64], MutAnyOrigin], n: Int
 ):
     for i in range(1, n):
         var x = buf[i]

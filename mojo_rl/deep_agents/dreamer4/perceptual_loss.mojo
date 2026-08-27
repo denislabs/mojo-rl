@@ -22,7 +22,7 @@ CPU-only (the tokenizer recon loss runs host-side). Returns the scalar loss and
 fills `grad_pred_patches`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -34,9 +34,9 @@ from .shortcut_loss import _mao
 
 
 @always_inline
-def _gp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _gp(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw device pointer of a device-resident Tensor (GPU kernel ABI)."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         t.dev.value().unsafe_ptr()
     )
 
@@ -44,10 +44,10 @@ def _gp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 def perceptual_feature_loss[
     BT: Int, C_IMG: Int, H: Int, W: Int, PATCH: Int
 ](
-    pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred_patches: Pointer[Scalar[DT], MutAnyOrigin],
+    target_patches: Pointer[Scalar[DT], MutAnyOrigin],
     mut backbone: CifarBackbone[H, W],
-    grad_pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_pred_patches: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises -> Float64:
     comptime assert C_IMG == 1 or C_IMG == 3, (
         "perceptual_feature_loss: C_IMG must be 1 (grayscale) or 3 (RGB)"
@@ -143,13 +143,13 @@ def perceptual_feature_loss[
 def masked_recon_plus_perceptual_loss[
     BT: Int, C_IMG: Int, H: Int, W: Int, PATCH: Int
 ](
-    pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    keep: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred_patches: Pointer[Scalar[DT], MutAnyOrigin],
+    target_patches: Pointer[Scalar[DT], MutAnyOrigin],
+    keep: Pointer[Scalar[DT], MutAnyOrigin],
     mut backbone: CifarBackbone[H, W],
     perc_weight: Float64,
-    grad_pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT (combined)
-    grad_perc_scratch: UnsafePointer[Scalar[DT], MutAnyOrigin],  # scratch [BT*NP*DP]
+    grad_pred_patches: Pointer[Scalar[DT], MutAnyOrigin],  # OUT (combined)
+    grad_perc_scratch: Pointer[Scalar[DT], MutAnyOrigin],  # scratch [BT*NP*DP]
 ) raises -> Tuple[Float64, Float64]:
     """Dreamer 4 tokenizer recon objective `L = L_MSE + w·L_perceptual` (paper
     eq. 5, w=0.2). Writes the COMBINED patch-space gradient into
@@ -170,7 +170,7 @@ def masked_recon_plus_perceptual_loss[
     )
     var w = Scalar[DT](perc_weight)
     for i in range(BT * NP * DP):
-        grad_pred_patches[i] = grad_pred_patches[i] + w * grad_perc_scratch[i]
+        grad_pred_patches[unsafe_offset=i] = grad_pred_patches[unsafe_offset=i] + w * grad_perc_scratch[unsafe_offset=i]
     return (mse, perc)
 
 
@@ -182,10 +182,10 @@ def masked_recon_plus_perceptual_loss[
 def perceptual_feature_loss_gpu[
     BT: Int, C_IMG: Int, H: Int, W: Int, PATCH: Int
 ](
-    pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],    # HOST
-    target_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],  # HOST
+    pred_patches: Pointer[Scalar[DT], MutAnyOrigin],    # HOST
+    target_patches: Pointer[Scalar[DT], MutAnyOrigin],  # HOST
     mut backbone: CifarBackbone[H, W],                        # GPU-resident
-    grad_pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT host
+    grad_pred_patches: Pointer[Scalar[DT], MutAnyOrigin],  # OUT host
     dctx: DeviceContext,
 ) raises -> Float64:
     """GPU counterpart of `perceptual_feature_loss`: identical math, but the
@@ -292,7 +292,7 @@ def masked_recon_plus_perceptual_loss_gpu[
 ](
     mut pred: Tensor,        # DEVICE pred (downloaded to host here)
     mut target: Tensor,      # host `.data` + device `.dev` target patches
-    keep_dev: UnsafePointer[Scalar[DT], MutAnyOrigin],  # DEVICE MAE keep flags
+    keep_dev: Pointer[Scalar[DT], MutAnyOrigin],  # DEVICE MAE keep flags
     mut backbone: CifarBackbone[H, W],                  # GPU-resident
     perc_weight: Float64,
     mut gpred: Tensor,       # OUT: DEVICE combined grad (fed to tok.vjp["gpu"])

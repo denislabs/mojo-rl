@@ -69,7 +69,7 @@ comptime PONG_DT = DType.float32
 # ============================================================================
 
 
-trait PongActionPolicy(Movable & ImplicitlyDeletable):
+trait PongActionPolicy(Movable & Deinitable):
     """Maps the current env to a discrete action in {0=NOOP, 1=UP, 2=DOWN}.
 
     Implementations may read ``env.inner.state`` (scripted) or
@@ -130,7 +130,7 @@ struct OnlinePongSampler[
     # Conv2D expects, so the downstream kernel only normalises (no permute).
     comptime INPUT_LAYOUT_HWC: Bool = False
 
-    # PongPixelEnv owns raw frame buffers + a custom __del__, so it is Movable
+    # PongPixelEnv owns raw frame buffers + a custom __deinit__, so it is Movable
     # but NOT Copyable — we hold a List of freshly-constructed (moved, not
     # copied) envs rather than InlineArray(fill=...). One shared policy serves
     # the whole pool: select_action takes the env as an arg and reads global
@@ -163,7 +163,7 @@ struct OnlinePongSampler[
     def _quantize_into(
         self,
         obs: List[Scalar[PONG_DT]],
-        dst: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+        dst: Pointer[Scalar[DType.uint8], MutAnyOrigin],
     ):
         for i in range(PONG_FRAME_BYTES):
             var v = obs[i] * 255.0 + 0.5
@@ -171,7 +171,7 @@ struct OnlinePongSampler[
                 v = 0.0
             elif v > 255.0:
                 v = 255.0
-            dst[i] = UInt8(Int(v))
+            dst[unsafe_offset=i] = UInt8(Int(v))
 
     # ------------------------------------------------------------------
     # OfflineBuffer contract.
@@ -180,8 +180,8 @@ struct OnlinePongSampler[
         mut self,
         batch: Int,
         seq: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         """Roll the env pool forward ``T`` steps, one clean window per env.
 
@@ -201,8 +201,8 @@ struct OnlinePongSampler[
         var act_stride = Self.T * PONG_NUM_ACTIONS
 
         for b in range(Self.B):
-            var pix_dst = pixels_out + b * pix_stride
-            var act_dst = actions_out + b * act_stride
+            var pix_dst = pixels_out.unsafe_offset(b * pix_stride)
+            var act_dst = actions_out.unsafe_offset(b * act_stride)
 
             # Roll one window for env b, rejecting boundary-bridging windows.
             for _attempt in range(Self.MAX_RETRIES):
@@ -215,12 +215,12 @@ struct OnlinePongSampler[
                     var a = self.policy.select_action(self.envs[b])
 
                     # Pixels: quantize obs_t into slot t.
-                    self._quantize_into(obs, pix_dst + t * PONG_FRAME_BYTES)
+                    self._quantize_into(obs, pix_dst.unsafe_offset(t * PONG_FRAME_BYTES))
                     # Actions: one-hot a_t into slot t.
                     for k in range(PONG_NUM_ACTIONS):
-                        act_dst[t * PONG_NUM_ACTIONS + k] = 0.0
+                        act_dst[unsafe_offset=t * PONG_NUM_ACTIONS + k] = 0.0
                     if a >= 0 and a < PONG_NUM_ACTIONS:
-                        act_dst[t * PONG_NUM_ACTIONS + a] = 1.0
+                        act_dst[unsafe_offset=t * PONG_NUM_ACTIONS + a] = 1.0
 
                     var result = self.envs[b].step_obs(a)
                     var done = result[2]

@@ -1,0 +1,118 @@
+---
+/**
+ * PlannerContract — the split that makes `mojo_rl.planners` reusable.
+ *
+ * Every planner in the package is written against a callback trait rather than
+ * against a world model. The planner owns the optimization loop and its host
+ * scratch; the callback owns the model, its device buffers, and one step of
+ * rollout. That is why the same MPPI struct drives TD-MPC2's learned latent
+ * dynamics and a closed-form LQ oracle in a unit test.
+ *
+ * The three tiers are drawn as a ladder because they *are* one: each asks the
+ * model for strictly more than the one above it, and a planner only imposes the
+ * tier it actually needs.
+ */
+
+/**
+ * Held in bindings: `RolloutCallback{CPU,GPU}` contains a literal `{`, which
+ * in Astro markup opens a JS expression and fails the compile.
+ */
+const TIERS = [
+	{
+		trait: 'ScorePlanCallback',
+		crosses: 'one whole plan  →  one scalar',
+		users: 'CEM · random shooter',
+		tone: 'cyan',
+	},
+	{
+		trait: 'RolloutCallback{CPU,GPU}',
+		crosses: '(z, a)  →  (z′, r),  plus a terminal value',
+		users: 'MPPI',
+		tone: 'spark',
+	},
+	{
+		trait: 'RolloutJacobianCallback{CPU,GPU}',
+		crosses: 'plus ∂f/∂z, ∂f/∂u and the cost Hessians',
+		users: 'iLQR',
+		tone: 'purple',
+	},
+];
+
+const ROW_Y = [204, 262, 320];
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 440" role="img"
+		aria-label="The planner owns the optimization loop and host scratch; the callback owns the world model and its device buffers. Three callback tiers ask the model for progressively more: a plan score, a rollout step, and derivatives.">
+		<defs>
+			<marker id="pc-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="pc-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+		</defs>
+
+		<!-- ── the boundary ──────────────────────────────────────────────── -->
+		<g class="dg-node dg-node--spark">
+			<rect x="40" y="44" width="290" height="100" rx="10" />
+			<text x="185" y="74" class="dg-title">the planner</text>
+			<text x="185" y="98" class="dg-sub">candidate generation · refit rule</text>
+			<text x="185" y="120" class="dg-sub">host scratch only</text>
+		</g>
+
+		<g class="dg-node dg-node--cyan">
+			<rect x="550" y="44" width="290" height="100" rx="10" />
+			<text x="695" y="74" class="dg-title">your callback</text>
+			<text x="695" y="98" class="dg-sub">world model · device buffers</text>
+			<text x="695" y="120" class="dg-sub">all GPU work lives here</text>
+		</g>
+
+		<path class="dg-edge dg-edge--spark" marker-end="url(#pc-spark)"
+			d="M 338 78 L 542 78" />
+		<text x="440" y="68" class="dg-caption">candidate actions</text>
+
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#pc-cyan)"
+			d="M 542 116 L 338 116" />
+		<text x="440" y="136" class="dg-caption">scores · next state · reward</text>
+
+		<!-- ── the three tiers ───────────────────────────────────────────── -->
+		<text x="56" y="186" class="dg-caption dg-sub--left">contract</text>
+		<text x="366" y="186" class="dg-caption dg-sub--left">what crosses the boundary</text>
+		<text x="700" y="186" class="dg-caption dg-sub--left">asked for by</text>
+
+		{
+			TIERS.map((tier, i) => (
+				<g>
+					<g class={`dg-node dg-node--${tier.tone}`}>
+						<rect x="40" y={ROW_Y[i]} width="800" height="46" rx="8" />
+					</g>
+					<text x="56" y={ROW_Y[i] + 29} class="dg-sub dg-sub--left dg-mono">
+						{tier.trait}
+					</text>
+					<text x="366" y={ROW_Y[i] + 29} class="dg-sub dg-sub--left">
+						{tier.crosses}
+					</text>
+					<text x="700" y={ROW_Y[i] + 29} class="dg-sub dg-sub--left">
+						{tier.users}
+					</text>
+				</g>
+			))
+		}
+
+		<text x="40" y="398" class="dg-sub dg-sub--left">
+			A planner imposes only the tier it needs, so a model that never plans with iLQR
+		</text>
+		<text x="40" y="420" class="dg-sub dg-sub--left">
+			never implements the derivative surface. Implementing more than one is allowed.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">planner side</span>
+		<span class="diagram__key diagram__key--cyan">model side</span>
+		<span class="diagram__key diagram__key--purple">gradient-aware extension</span>
+	</figcaption>
+</figure>

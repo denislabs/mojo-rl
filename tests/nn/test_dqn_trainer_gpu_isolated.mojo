@@ -6,7 +6,7 @@ end-to-end GPU smoke crashes.
 from std.math import isnan, isinf
 from std.memory import alloc
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
@@ -126,13 +126,13 @@ def test_select_action_only() raises:
         # Allocate device-side scratches manually.
         var obs_dev = ctx.enqueue_create_buffer[DT](OBS_DIM)
         var act_dev = ctx.enqueue_create_buffer[DT](1)
-        var obs_host: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS_DIM).as_unsafe_any_origin()
-        var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1).as_unsafe_any_origin()
+        var obs_host: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS_DIM).as_unsafe_any_origin()
+        var act_host: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1).as_unsafe_any_origin()
         for d in range(OBS_DIM):
             obs_host[d] = Scalar[DT](0.1 * Float64(d))
         ctx.enqueue_copy(obs_dev, obs_host)
-        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs_dev.unsafe_ptr().as_unsafe_any_origin())
-        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_dev.unsafe_ptr().as_unsafe_any_origin())
+        var obs_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs_dev.unsafe_ptr().as_unsafe_any_origin())
+        var act_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](act_dev.unsafe_ptr().as_unsafe_any_origin())
         # Warmup path (step_idx < learning_starts) → random action.
         trainer.select_action_batched[1](obs_p, act_p, 0)
         ctx.synchronize()

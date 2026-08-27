@@ -19,7 +19,7 @@ the device ops never compile into the CPU path.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
@@ -107,15 +107,18 @@ struct ParamArena(Movable & ParamVisitor):
 
 
 def _polyak_kernel(
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    online: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
+    target: Pointer[Scalar[DT], MutAnyOrigin],
+    online: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
     tau: Scalar[DT],
 ):
     """target[i] = (1-τ)·target[i] + τ·online[i] over the whole value arena."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var i = Int(global_idx.x)
     if i < total:
-        target[i] = (Scalar[DT](1.0) - tau) * target[i] + tau * online[i]
+        target[unsafe_offset=i] = (Scalar[DT](1.0) - tau) * target[unsafe_offset=i] + tau * online[unsafe_offset=i]
 
 
 def polyak_arenas(
@@ -137,7 +140,7 @@ def polyak_arenas(
     ctx.enqueue_function[_polyak_kernel](
         target.val.dev.value(),
         online.val.dev.value(),
-        target.total,
+        Int64(target.total),
         tau,
         grid_dim=nblk,
         block_dim=TPB,

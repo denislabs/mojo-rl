@@ -14,7 +14,7 @@ See `td_target_step.mojo` for the bootstrap math.
 
 from std.math import min
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -81,7 +81,7 @@ struct TDTargetStepMT[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime AOBS = Self.MAX_OBS + Self.TASK_EMB
     comptime PIN = Self.LATENT + Self.TASK_EMB          # policy input width
     comptime ZA = Self.LATENT + Self.MAX_ACT + Self.TASK_EMB

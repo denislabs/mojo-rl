@@ -18,7 +18,7 @@ without breaking CUDA-graph capture. CPU always uses the host `multiplier`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W

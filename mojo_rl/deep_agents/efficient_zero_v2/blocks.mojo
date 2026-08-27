@@ -37,7 +37,7 @@ from std.math import exp, log
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
@@ -65,10 +65,10 @@ from ..zero.twohot_targets import mz_two_hot_target_batch
 from .nets_atari import EZRewardLSTMAtari
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw host scratch for optional unroll outputs (loss_parts) — function-local;
-    the unroll's optional-output params are Optional[UnsafePointer]."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    the unroll's optional-output params are Optional[Pointer]."""
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 # ── PER kernels (6c-2) ──────────────────────────────────────────────────
@@ -155,8 +155,8 @@ def ezv2_unroll_train_step_cpu[
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     max_grad_norm: Float64 = 0.0,
-    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    cons_mask: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU EZv2 unroll training step (MuZero BPTT + SimSiam consistency).
 
@@ -295,9 +295,9 @@ def ezv2_unroll_train_step_cpu[
             call_forward["cpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, None)
             for i in range(B * PROJ):
                 cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
-            var mk = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
+            var mk = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
             if cons_mask:
-                mk = cons_mask.value() + (k - 1) * B
+                mk = cons_mask.value().unsafe_offset((k - 1) * B)
             var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk.data, cons_t_l, cscale, gpk.data, mask=mk
             )
@@ -389,10 +389,10 @@ def ezv2_unroll_train_step_cpu[
     if loss_parts:
         var lp = loss_parts.value()
         var inv = Scalar[DT](1.0) / Scalar[DT](B)
-        lp[0] = l_pol * inv   # policy
-        lp[1] = l_val * inv   # value
-        lp[2] = l_rew * inv   # reward
-        lp[3] = l_cons * inv  # consistency
+        lp[unsafe_offset=0] = l_pol * inv   # policy
+        lp[unsafe_offset=1] = l_val * inv   # value
+        lp[unsafe_offset=2] = l_rew * inv   # reward
+        lp[unsafe_offset=3] = l_cons * inv  # consistency
     return loss / Scalar[DT](B)
 
 
@@ -443,8 +443,8 @@ def ezv2_unroll_train_step_cpu_vp[
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     max_grad_norm: Float64 = 0.0,
-    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    cons_mask: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU EZv2 **value-prefix** unroll training step. Mirrors
     `ezv2_unroll_train_step_cpu` but with the stateful LSTM reward head; see the
@@ -590,9 +590,9 @@ def ezv2_unroll_train_step_cpu_vp[
             call_forward["cpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, None)
             for i in range(B * PROJ):
                 cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
-            var mk = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
+            var mk = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
             if cons_mask:
-                mk = cons_mask.value() + (k - 1) * B
+                mk = cons_mask.value().unsafe_offset((k - 1) * B)
             var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk.data, cons_t_l, cscale, gpk.data, mask=mk)
             loss += l_cons_k; l_cons += l_cons_k
@@ -679,10 +679,10 @@ def ezv2_unroll_train_step_cpu_vp[
     if loss_parts:
         var lp = loss_parts.value()
         var inv = Scalar[DT](1.0) / Scalar[DT](B)
-        lp[0] = l_pol * inv
-        lp[1] = l_val * inv
-        lp[2] = l_rew * inv
-        lp[3] = l_cons * inv
+        lp[unsafe_offset=0] = l_pol * inv
+        lp[unsafe_offset=1] = l_val * inv
+        lp[unsafe_offset=2] = l_rew * inv
+        lp[unsafe_offset=3] = l_cons * inv
     return loss / Scalar[DT](B)
 
 
@@ -741,12 +741,12 @@ def ezv2_unroll_train_step_gpu[
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     max_grad_norm: Float64 = 0.0,
-    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    cons_mask: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
     obs_on_device: Bool = False,
-    phase_ns: Optional[UnsafePointer[Float64, MutAnyOrigin]] = None,
+    phase_ns: Optional[Pointer[Float64, MutAnyOrigin]] = None,
     diag_sync: Bool = False,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
@@ -833,7 +833,7 @@ def ezv2_unroll_train_step_gpu[
     # zero the 4 loss-component accumulators (policy|value|reward|consistency)
     var h_loss = scratch.h_loss.value()
     for i in range(4 * B):
-        h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
+        h_loss.unsafe_ptr()[unsafe_offset=i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d.dev.value(), h_loss)
 
     # device-view layouts (built off the storage Tensors via .lt / .lt_at)
@@ -1086,7 +1086,7 @@ def ezv2_unroll_train_step_gpu[
         var op = out_prio.value()
         var hpp = scratch.h_prio.value().unsafe_ptr()
         for b in range(B):
-            op[b] = hpp[b]
+            op[unsafe_offset=b] = hpp[unsafe_offset=b]
 
     # ── reduce loss: 4 contiguous [B] blocks policy|value|reward|consistency ──
     var hp = h_loss.unsafe_ptr()
@@ -1095,17 +1095,17 @@ def ezv2_unroll_train_step_gpu[
     var l_rew = Scalar[DT](0.0)
     var l_cons = Scalar[DT](0.0)
     for b in range(B):
-        l_pol += hp[b]
-        l_val += hp[B + b]
-        l_rew += hp[2 * B + b]
-        l_cons += hp[3 * B + b]
+        l_pol += hp[unsafe_offset=b]
+        l_val += hp[unsafe_offset=B + b]
+        l_rew += hp[unsafe_offset=2 * B + b]
+        l_cons += hp[unsafe_offset=3 * B + b]
     var inv = Scalar[DT](1.0) / Scalar[DT](B)
     if loss_parts:
         var lp = loss_parts.value()
-        lp[0] = l_pol * inv
-        lp[1] = l_val * inv
-        lp[2] = l_rew * inv
-        lp[3] = l_cons * inv
+        lp[unsafe_offset=0] = l_pol * inv
+        lp[unsafe_offset=1] = l_val * inv
+        lp[unsafe_offset=2] = l_rew * inv
+        lp[unsafe_offset=3] = l_cons * inv
     return (l_pol + l_val + l_rew + l_cons) * inv
 
 
@@ -1156,11 +1156,11 @@ def ezv2_unroll_train_step_gpu_vp[
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     max_grad_norm: Float64 = 0.0,
-    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    obs_dev: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    cons_mask: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    obs_dev: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU EZv2 **value-prefix** unroll training step — device mirror of
     `ezv2_unroll_train_step_cpu_vp`. Returns mean total loss; mutates all six
@@ -1252,7 +1252,7 @@ def ezv2_unroll_train_step_gpu_vp[
     var loss_d = Tensor.alloc_gpu(ctx, 4 * B)
     var h_loss = ctx.enqueue_create_host_buffer[DT](4 * B)
     for i in range(4 * B):
-        h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
+        h_loss.unsafe_ptr()[unsafe_offset=i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d.dev.value(), h_loss)
     # PER scratch (gated): IS weights H2D'd once; priority CE + D2H mirror.
     var has_isw = Bool(is_weights)
@@ -1576,18 +1576,18 @@ def ezv2_unroll_train_step_gpu_vp[
         var op = out_prio.value()
         var hpp = h_prio.unsafe_ptr()
         for b in range(B):
-            op[b] = hpp[b]
+            op[unsafe_offset=b] = hpp[unsafe_offset=b]
     var hp = h_loss.unsafe_ptr()
     var l_pol = Scalar[DT](0.0)
     var l_val = Scalar[DT](0.0)
     var l_rew = Scalar[DT](0.0)
     var l_cons = Scalar[DT](0.0)
     for b in range(B):
-        l_pol += hp[b]; l_val += hp[B + b]
-        l_rew += hp[2 * B + b]; l_cons += hp[3 * B + b]
+        l_pol += hp[unsafe_offset=b]; l_val += hp[unsafe_offset=B + b]
+        l_rew += hp[unsafe_offset=2 * B + b]; l_cons += hp[unsafe_offset=3 * B + b]
     var inv = Scalar[DT](1.0) / Scalar[DT](B)
     if loss_parts:
         var lp = loss_parts.value()
-        lp[0] = l_pol * inv; lp[1] = l_val * inv
-        lp[2] = l_rew * inv; lp[3] = l_cons * inv
+        lp[unsafe_offset=0] = l_pol * inv; lp[unsafe_offset=1] = l_val * inv
+        lp[unsafe_offset=2] = l_rew * inv; lp[unsafe_offset=3] = l_cons * inv
     return (l_pol + l_val + l_rew + l_cons) * inv

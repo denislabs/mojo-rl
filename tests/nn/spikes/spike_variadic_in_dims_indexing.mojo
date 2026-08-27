@@ -7,7 +7,7 @@ Two questions:
       approach can replace the IN/IN1/IN2/IN3_DIM ladder entirely.
 """
 
-from std.gpu.memory import AddressSpace
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 from mojo_rl.nn.constants import DT
 
@@ -17,7 +17,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────
 
 
-struct HeteroDimsProbe[ACT_: Int](Movable & ImplicitlyDeletable):
+struct HeteroDimsProbe[ACT_: Int](Movable & Deinitable):
     comptime ARITY = 4
     comptime IN_DIMS: InlineArray[Int, 4] = Self._build()
 
@@ -50,7 +50,7 @@ def test_q1_heterogeneous() raises:
 # ──────────────────────────────────────────────────────────────────
 
 
-struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDeletable):
+struct ComptimeIndexProbe[*DIMS: Int](Movable & Deinitable):
     comptime ARITY = Self.DIMS.size
 
     def __init__(out self):
@@ -61,12 +61,12 @@ struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDeletable):
     def test_via_variadic[BATCH: Int]() raises:
         comptime for k in range(Self.ARITY):
             comptime dim_k = Self.DIMS[k]
-            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
+            var stub_ptr = Pointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
             var t = TileTensor(stub_ptr, row_major[BATCH, dim_k]())
             print("  variadic[", k, "] dim =", dim_k)
 
 
-struct InlineArrayIndexProbe(Movable & ImplicitlyDeletable):
+struct InlineArrayIndexProbe(Movable & Deinitable):
     """Does IN_DIMS[k] for comptime k produce a comptime value?"""
     comptime IN_DIMS: InlineArray[Int, 3] = Self._build()
 
@@ -86,7 +86,7 @@ struct InlineArrayIndexProbe(Movable & ImplicitlyDeletable):
     def test_inline_array_index[BATCH: Int]() raises:
         comptime for k in range(3):
             comptime dim_k = Self.IN_DIMS[k]   # ← THE QUESTION
-            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
+            var stub_ptr = Pointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
             var t = TileTensor(stub_ptr, row_major[BATCH, dim_k]())
             print("  IN_DIMS[", k, "] dim =", dim_k)
 

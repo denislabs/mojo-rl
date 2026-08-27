@@ -42,8 +42,9 @@ Kernels:
 """
 
 from layout import LayoutTensor, Layout
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
 from std.math import exp, log, sqrt, cos, isnan, isinf
 from std.random.philox import Random as PhiloxRandom
 
@@ -70,15 +71,24 @@ def mppi_broadcast_z0_zero_returns_batched_kernel[
     """Fused: broadcast per-env ``z0`` to every candidate row + zero
     the returns accumulator. One kernel launch replaces the legacy
     two-kernel pair.
+
+    ⚠ ONE THREAD PER ELEMENT — same fix, and same reason, as
+    ``mppi_copy_z_kernel``: the row-per-thread form ran a private
+    512-float loop per thread on a 9-block grid, measured at 92 us x
+    800 launches = 2.4% of GPU time on an RTX 5090 to write 4.4 MB.
+    The ``returns`` zeroing rides along on the ``k == 0`` threads so
+    this stays a single launch.
     """
+    comptime N = BATCH_TOTAL * LATENT_DIM
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= BATCH_TOTAL:
+    if i >= N:
         return
 
-    var env_idx = i // TOTAL_SAMPLES
-    for k in range(LATENT_DIM):
-        z_all[i, k] = z0[env_idx, k]
-    returns[i] = Scalar[dtype](0.0)
+    var row = i // LATENT_DIM
+    var k = i % LATENT_DIM
+    z_all[row, k] = z0[row // TOTAL_SAMPLES, k]
+    if k == 0:
+        returns[row] = Scalar[dtype](0.0)
 
 
 # =============================================================================
@@ -114,7 +124,11 @@ def mppi_sample_actions_batched_kernel[
         Layout.row_major(BATCH_TOTAL * HORIZON * ACTION_DIM),
         MutAnyOrigin,
     ],
-    step: Int,
+    # ⚠ Int32, NOT Int: `Int`/`UInt` do not conform to `DevicePassable` since
+    # Mojo 1.0.0rc2, so an `Int` here fails to compile AT THE LAUNCH SITE with
+    # a constraint error inside `SIMD`. The call site must pass `Int32(t)` too
+    # — a bare `t` re-introduces the same failure through implicit conversion.
+    step: Int32,
     rng_seed: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
     """Sample actions for every env's MPPI candidates at one horizon
@@ -137,6 +151,7 @@ def mppi_sample_actions_batched_kernel[
 
     var env_idx = i // TOTAL_SAMPLES
     var local_s = i % TOTAL_SAMPLES
+    var step_i = Int(step)
 
     for j in range(ACTION_DIM):
         var philox = PhiloxRandom(
@@ -157,7 +172,7 @@ def mppi_sample_actions_batched_kernel[
             act = pi_mean + noise * Scalar[dtype](0.1)
         else:
             var mean_idx = (
-                env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+                env_idx * HORIZON * ACTION_DIM + step_i * ACTION_DIM + j
             )
             var mu = Scalar[dtype](mean[mean_idx][0])
             var sigma = Scalar[dtype](std[mean_idx][0])
@@ -169,7 +184,7 @@ def mppi_sample_actions_batched_kernel[
             act = Scalar[dtype](1.0)
 
         act_step[i, j] = act
-        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
+        all_actions[i * HORIZON * ACTION_DIM + step_i * ACTION_DIM + j] = act
 
 
 @always_inline
@@ -215,12 +230,24 @@ def mppi_copy_z_kernel[
 
     Used between horizon steps to roll ``z_next`` back into ``z``
     for the next step's input.
+
+    ⚠ ONE THREAD PER ELEMENT, not per row. The row-per-thread version
+    (``for k in range(LATENT_DIM)``) gave each thread a 512-float
+    private run, so adjacent threads touched addresses 512 floats
+    apart — fully uncoalesced — and the grid was only
+    ``ceil(BATCH_TOTAL / TPB)`` = 9 blocks on a card with ~170 SMs.
+    Measured on an RTX 5090 at BATCH_TOTAL=2144: 104 us per launch,
+    2400 launches, **8.0% of all GPU time** to move 8.8 MB, i.e.
+    ~84 GB/s on a ~1.5 TB/s part. Flat indexing makes the access
+    contiguous across a warp and the grid 4288 blocks.
     """
+    comptime N = TOTAL_SAMPLES * LATENT_DIM
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= TOTAL_SAMPLES:
+    if i >= N:
         return
-    for k in range(LATENT_DIM):
-        dst[i, k] = src[i, k]
+    dst[i // LATENT_DIM, i % LATENT_DIM] = src[
+        i // LATENT_DIM, i % LATENT_DIM
+    ]
 
 
 # =============================================================================
@@ -387,6 +414,7 @@ def mppi_weighted_mean_std_kernel[
     TOTAL_SAMPLES: Int,
     HORIZON: Int,
     ACTION_DIM: Int,
+    BLOCK_SIZE: Int,
 ](
     weights: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
@@ -405,54 +433,105 @@ def mppi_weighted_mean_std_kernel[
 ) where dtype.is_floating_point():
     """Refit ``(mean, std)`` per env using elite-weighted actions.
 
-    One thread per ``(env, t, a)`` triplet, reducing over
-    ``TOTAL_SAMPLES``. Std is clamped to ``[STD_MIN=0.05,
-    STD_MAX=2.0]`` (TD-MPC2 reference defaults). The ``+1e-8`` inside
-    ``sqrt`` keeps gradients well-defined at near-zero variance —
-    safe because elite weights are guaranteed non-degenerate by
-    ``mppi_softmax_weights_kernel``'s normalization.
-    """
-    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
-    if tid >= TOTAL_DIMS:
-        return
+    ONE BLOCK per ``(env, t, a)`` triplet, reducing over ``TOTAL_SAMPLES``
+    inside the block. Std is clamped to ``[STD_MIN=0.05, STD_MAX=2.0]``
+    (TD-MPC2 reference defaults). The ``+1e-8`` inside ``sqrt`` keeps gradients
+    well-defined at near-zero variance — safe because elite weights are
+    guaranteed non-degenerate by ``mppi_softmax_weights_kernel``.
 
-    var env_idx = tid // (HORIZON * ACTION_DIM)
-    var rem = tid % (HORIZON * ACTION_DIM)
+    ⚠ THE OUTPUT COUNT IS SMALLER THAN ONE BLOCK, so a thread-per-output grid
+    cannot be widened. At the walker's dims ``TOTAL_DIMS = 8*3*6 = 144``, and
+    the previous one-thread-per-output form launched
+    ``ceil(144 / 256) = 1 BLOCK`` — one SM of ~170 on an RTX 5090 — with each
+    thread running two serial 268-iteration passes. Measured at 53.3 us x 800
+    launches = 42.6 ms, **1.4% of all GPU time** to produce 144 numbers.
+    Widening the grid is not an option here; the parallelism has to come from
+    the REDUCTION, hence block-per-output. 144 blocks x BLOCK_SIZE threads,
+    each thread covering ``ceil(268 / BLOCK_SIZE)`` samples.
+
+    ⚠ The tree reduction changes the fp32 SUMMATION ORDER versus the old
+    serial loop, so refit means/stds move by ~1 ulp and a long MPPI rollout
+    will diverge from previously recorded numbers. That is a reordering, not a
+    regression — but it does mean this kernel is not bit-comparable across the
+    change.
+    """
+    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
+    var out_idx = Int(block_idx.x)
+    if out_idx >= TOTAL_DIMS:
+        return
+    var tid = Int(thread_idx.x)
+
+    var env_idx = out_idx // (HORIZON * ACTION_DIM)
+    var rem = out_idx % (HORIZON * ACTION_DIM)
     var t = rem // ACTION_DIM
     var a = rem % ACTION_DIM
 
     var w_off = env_idx * TOTAL_SAMPLES
-    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+    # Fold the fixed (t, a) offset in once — the per-sample stride is then a
+    # flat `HORIZON * ACTION_DIM`.
+    var act_off = (
+        env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+        + t * ACTION_DIM
+        + a
+    )
+    comptime ASTRIDE = HORIZON * ACTION_DIM
 
-    var wm = Scalar[dtype](0.0)
-    for s in range(TOTAL_SAMPLES):
-        var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](
-            all_actions[
-                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-            ][0]
+    var smem = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # ── pass 1: weighted mean ────────────────────────────────────────
+    var acc = Scalar[dtype](0.0)
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        acc += Scalar[dtype](weights[w_off + s][0]) * Scalar[dtype](
+            all_actions[act_off + s * ASTRIDE][0]
         )
-        wm += w * act
-    mean_out[tid] = wm
+        s += BLOCK_SIZE
+    smem[tid] = acc
+    barrier()
 
-    var wv = Scalar[dtype](0.0)
-    for s in range(TOTAL_SAMPLES):
-        var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](
-            all_actions[
-                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-            ][0]
-        )
-        var diff = act - wm
-        wv += w * diff * diff
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = smem[tid] + smem[tid + stride]
+        barrier()
+        stride >>= 1
 
-    var std_val = sqrt(wv + Scalar[dtype](1e-8))
-    if std_val < Scalar[dtype](0.05):
-        std_val = Scalar[dtype](0.05)
-    if std_val > Scalar[dtype](2.0):
-        std_val = Scalar[dtype](2.0)
-    std_out[tid] = std_val
+    var wm = Scalar[dtype](smem[0][0])
+    # ⚠ Every thread must READ smem[0] before pass 2 overwrites smem[tid].
+    barrier()
+
+    # ── pass 2: weighted variance about that mean ────────────────────
+    var acc2 = Scalar[dtype](0.0)
+    s = tid
+    while s < TOTAL_SAMPLES:
+        var diff = Scalar[dtype](
+            all_actions[act_off + s * ASTRIDE][0]
+        ) - wm
+        acc2 += Scalar[dtype](weights[w_off + s][0]) * diff * diff
+        s += BLOCK_SIZE
+    smem[tid] = acc2
+    barrier()
+
+    stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = smem[tid] + smem[tid + stride]
+        barrier()
+        stride >>= 1
+
+    if tid == 0:
+        mean_out[out_idx] = wm
+        var std_val = sqrt(Scalar[dtype](smem[0][0]) + Scalar[dtype](1e-8))
+        if std_val < Scalar[dtype](0.05):
+            std_val = Scalar[dtype](0.05)
+        if std_val > Scalar[dtype](2.0):
+            std_val = Scalar[dtype](2.0)
+        std_out[out_idx] = std_val
 
 
 # =============================================================================

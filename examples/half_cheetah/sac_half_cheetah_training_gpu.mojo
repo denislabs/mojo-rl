@@ -43,7 +43,7 @@ Run:
     pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
@@ -79,7 +79,7 @@ comptime N_ENVS = 32
 comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
-comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime DIAG_EVERY = 1000  # full metric-bundle flush cadence (mean_q, …)
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 # Written by the batched trainer; loaded by `sac_half_cheetah_nn_eval_cpu.mojo`
 # (same fused-`LinearReLU` architecture, so the param layout matches).
@@ -142,7 +142,7 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+        var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
         # GPU training: the DeviceContext MUST be threaded through the agent

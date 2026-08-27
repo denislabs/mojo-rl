@@ -1,7 +1,7 @@
 """Test native Space Invaders — CPU + GPU."""
 
 from mojo_rl.envs.arcade_games.space_invaders import SpaceInvadersEnv
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 comptime dtype = DType.float32
 comptime BATCH_SIZE = 64

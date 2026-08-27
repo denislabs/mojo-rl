@@ -1,0 +1,104 @@
+---
+title: Gymnasium wrappers
+description: Running Python Gymnasium environments from Mojo — mainly to validate the native ports against their references.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" note="Python interop — expect Gymnasium's speed, not the native ports'." />
+
+Wrappers that drive Python [Gymnasium](https://gymnasium.farama.org/)
+environments from Mojo. Their primary job is **validation**: the native
+environments are faithful ports, and these let you run both from one process and
+compare.
+
+```mojo
+from mojo_rl.envs.gymnasium import (
+    GymnasiumClassicControl,
+    GymnasiumBox2D,
+    GymnasiumToyText,
+    GymnasiumMuJoCo,
+)
+```
+
+| Wrapper | Covers |
+|---|---|
+| `gymnasium_classic_control` | CartPole, MountainCar, Pendulum, Acrobot |
+| `gymnasium_box2d` | LunarLander, BipedalWalker, CarRacing |
+| `gymnasium_toy_text` | FrozenLake, Taxi, Blackjack, CliffWalking |
+| `gymnasium_mujoco` | HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, … |
+
+```bash
+pixi run mojo run -I . examples/gymnasium_demo.mojo
+```
+
+Gymnasium, Box2D and MuJoCo are pixi dependencies, so nothing extra to install.
+
+
+<Papers label="Reference">
+	<Paper
+		title="Gymnasium: A Standard Interface for Reinforcement Learning Environments"
+		authors="Towers, Kwiatkowski, Terry et al."
+		year="2024"
+		arxiv="2407.17032"
+		note="The API the native environments are ported against."
+	/>
+</Papers>
+
+## What they are for
+
+**Verifying a port.** When a native environment's dynamics look wrong, stepping
+both from the same state and diffing is the fastest way to find out. Several
+tests do exactly this, and the physics3d suite compares against live MuJoCo the
+same way.
+
+**Reaching environments not yet ported.** Gymnasium has far more environments
+than mojo-rl implements natively. If you need one of them, the wrapper gets you
+there today.
+
+**Sanity-checking a result.** A suspiciously good score on a native environment
+is worth re-running on the reference.
+
+## What they are not for
+
+**Training at scale.** These call into Python through interop, so you get
+Gymnasium's single-environment CPU throughput plus a boundary crossing per step —
+precisely the cost the [native environments](/environments/) exist to remove.
+They cannot be GPU-batched.
+
+Use the native implementation for anything that matters:
+
+| Instead of | Use |
+|---|---|
+| `GymnasiumClassicControl("CartPole-v1")` | `CartPoleEnv[DT]` |
+| `GymnasiumMuJoCo("HalfCheetah-v5")` | `Phyics3dBatchedEnv[HalfCheetahModel, …]` |
+| `GymnasiumBox2D("LunarLander-v3")` | `LunarLander[DT]` |
+
+## Known divergences
+
+The native ports match Gymnasium's dynamics, but a few observation conventions
+differ deliberately. Two worth knowing:
+
+- **Humanoid** — 45 dimensions here versus Gymnasium's 348–376. mojo-rl observes
+  position and velocity only, omitting contact forces and inertia terms.
+- **CarRacing** — a slip-based tire model rather than Gymnasium's simpler
+  friction, which makes the task genuinely harder. Policies do not transfer.
+
+Where a divergence exists it is noted on that environment's page. Do not assume a
+published Gymnasium score is a target for the native version without checking.
+
+:::caution[Python interop gotchas]
+Two failure modes are known and unrelated to Gymnasium itself. Python
+temporaries created inside a Mojo function are not released until the function
+**returns** — a long-running loop holding PythonObjects leaks in a way invisible
+to RSS sampling, so keep hot Python loops short or move them into an `exec`'d
+block. And `pyarrow` crashes the embedded interpreter, so anything touching it
+must run in a subprocess.
+:::
+
+## Next
+
+- [Environments overview](/environments/) — the native catalogue
+- [Classic control](/environments/classic-control/) — the ported originals

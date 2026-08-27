@@ -20,7 +20,7 @@ layout). `MODE` selects the encoder/decoder/wm_agent mask (see
 recurse into it (no-op, but kept for uniformity).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

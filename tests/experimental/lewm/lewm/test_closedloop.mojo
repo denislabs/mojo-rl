@@ -10,7 +10,7 @@ returns finite metrics — the real solve is the NVIDIA paper-WM run.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_closedloop.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.testing import assert_true
 

@@ -16,10 +16,12 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -392,7 +394,7 @@ def main():
         num_iters
     )
     print("  " + String(Int(cpu_single)) + " forward passes/sec")
-    print("  " + String(1e9 / cpu_single)[byte=:6] + " ns per forward pass")
+    print("  " + fit(String(1e9 / cpu_single), 6) + " ns per forward pass")
     print()
 
     # CPU batched
@@ -432,7 +434,7 @@ def main():
         var launch_overhead_ns = benchmark_kernel_launch_overhead(
             ctx, num_iters
         )
-        print("  " + String(launch_overhead_ns)[byte=:8] + " ns per kernel launch")
+        print("  " + fit(String(launch_overhead_ns), 8) + " ns per kernel launch")
         print(
             "  Max "
             + String(Int(1e9 / launch_overhead_ns))
@@ -458,9 +460,9 @@ def main():
         print("-" * 70)
         print("Summary: GPU vs CPU speedup")
         print("-" * 70)
-        print("  Batch 64:  GPU is " + String(gpu_b64 / cpu_b64)[byte=:4] + "x CPU")
+        print("  Batch 64:  GPU is " + fit(String(gpu_b64 / cpu_b64), 4) + "x CPU")
         print(
-            "  Batch 256: GPU is " + String(gpu_b256 / cpu_b256)[byte=:4] + "x CPU"
+            "  Batch 256: GPU is " + fit(String(gpu_b256 / cpu_b256), 4) + "x CPU"
         )
 
         print()
@@ -468,12 +470,12 @@ def main():
         print("Analysis:")
         print(
             "  - Single forward pass on CPU: ~"
-            + String(1e6 / cpu_single)[byte=:4]
+            + fit(String(1e6 / cpu_single), 4)
             + " microseconds"
         )
         print(
             "  - Kernel launch overhead: ~"
-            + String(launch_overhead_ns / 1000)[byte=:4]
+            + fit(String(launch_overhead_ns / 1000), 4)
             + " microseconds"
         )
         print("  - If kernel launch > forward pass time, GPU loses!")

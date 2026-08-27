@@ -24,6 +24,10 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 
 from std.collections import InlineArray
 
+from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION, ACT_KIND_VELOCITY
+from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
+from ..types import ConeType, SolverType, IntegratorType
+
 
 # =============================================================================
 # ParsedModel — result of parsing
@@ -53,8 +57,28 @@ struct ParsedModel:
     var NSITE: Int  # number of <site> entries in <worldbody>
     var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
     var NEXCLUDE: Int  # number of <exclude> entries in <contact>
-    var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
+    var NPAIR: Int  # number of <pair> entries in <contact>
+    var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
+    # ⚠ NO `ANGLE_DEG`. It was carried here and READ NOWHERE, and it is the
+    # one field `mjModel` does not retain — MuJoCo's compiler converts angles
+    # to radians and discards the unit. Phase 1b generates this struct from
+    # MuJoCo, so a field only our own scanner can produce would have had to be
+    # invented by the generator. Angle units are still resolved where they are
+    # actually needed, by `_compiler_angle_is_deg` at the point of use.
     var TIMESTEP: Float64  # <option timestep="..."/>
+    var MAX_CONDIM: Int  # largest `condim=` anywhere in the file (>= 3)
+    var NOSLIP_ITER: Int  # <option noslip_iterations="..."/>, 0 = pass off
+    var CCD_TOL: Float64  # <option ccd_tolerance="..."/>, MuJoCo default 1e-6
+    var CCD_ITER: Int  # <option ccd_iterations="..."/>, MuJoCo default 35
+    # ⚠ THE THREE `<option>` SETTINGS THAT DECIDE WHICH SOLVER THE MODEL WANTS,
+    # and that no parser read until 2026-08-19 — so every caller stated them by
+    # hand (`cone_type=` in 32 def files) or, on the runtime path, could not
+    # state them at all. Defaults are MuJoCo's, which for SOLVER is NEWTON and
+    # for CONE is PYRAMIDAL — both the opposite of what this tree habitually
+    # builds.
+    var CONE: Int  # <option cone="pyramidal|elliptic"/>
+    var SOLVER: Int  # <option solver="PGS|CG|Newton"/>
+    var INTEGRATOR: Int  # <option integrator="Euler|RK4|implicit*"/>
 
     def __init__(
         out self,
@@ -71,8 +95,16 @@ struct ParsedModel:
         nsite: Int = 0,
         neq: Int = 0,
         nexclude: Int = 0,
-        angle_deg: Bool = False,
+        npair: Int = 0,
+        ntendon: Int = 0,
         timestep: Float64 = 0.01,
+        max_condim: Int = 3,
+        noslip_iter: Int = 0,
+        ccd_tol: Float64 = MJ_CCD_TOLERANCE,
+        ccd_iter: Int = MJ_CCD_ITERATIONS,
+        cone: Int = ConeType.PYRAMIDAL,
+        solver: Int = SolverType.NEWTON,
+        integrator: Int = IntegratorType.EULER,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -87,8 +119,16 @@ struct ParsedModel:
         self.NSITE = nsite
         self.NEQ = neq
         self.NEXCLUDE = nexclude
-        self.ANGLE_DEG = angle_deg
+        self.NPAIR = npair
+        self.NTENDON = ntendon
         self.TIMESTEP = timestep
+        self.MAX_CONDIM = max_condim
+        self.NOSLIP_ITER = noslip_iter
+        self.CCD_TOL = ccd_tol
+        self.CCD_ITER = ccd_iter
+        self.CONE = cone
+        self.SOLVER = solver
+        self.INTEGRATOR = integrator
 
     def __str__(self) -> String:
         return (
@@ -180,16 +220,49 @@ def _extract_section(xml: String, tag: String) -> String:
 
     Returns empty string if the section is not found.
     Handles `<tag>` and `<tag ...>` (with attributes).
+
+    ⚠ SELF-CLOSING `<tag ... />` elements are skipped rather than taken as the
+    section opener. MJCF puts per-class defaults in exactly that form, so
+    `<default class="coupling"><equality solimp=... solref=.../></default>`
+    (dm_control's quadruped) otherwise made this return everything from the
+    DEFAULT block to the real `</equality>` — a section starting in the middle
+    of `<default>` and containing the whole `<worldbody>`. Also skips a name
+    that is a strict prefix of another tag, which the old bare `find` did not:
+    `<tendon` matched `<tendonlimited` shaped names.
     """
     var open_marker = "<" + tag
     var close_marker = "</" + tag + ">"
-    var start = xml.find(open_marker)
-    if start == -1:
-        return String("")
-    var end = xml.find(close_marker, start)
-    if end == -1:
-        return String("")
-    return String(xml[byte = start : end + close_marker.byte_length()])
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var start = xml.find(open_marker, scan)
+        if start == -1:
+            return String("")
+        # Reject substring matches: the char after the name must end the name.
+        var after_pos = start + open_marker.byte_length()
+        if after_pos < n:
+            var ch = String(xml[byte = after_pos : after_pos + 1])
+            if (
+                ch != " "
+                and ch != ">"
+                and ch != "/"
+                and ch != "\n"
+                and ch != "\t"
+                and ch != "\r"
+            ):
+                scan = after_pos
+                continue
+        var tag_end = xml.find(">", start)
+        if tag_end == -1:
+            return String("")
+        if _is_self_closing(xml, start, tag_end):
+            scan = tag_end + 1
+            continue
+        var end = xml.find(close_marker, start)
+        if end == -1:
+            return String("")
+        return String(xml[byte = start : end + close_marker.byte_length()])
+    return String("")
 
 
 # =============================================================================
@@ -274,11 +347,38 @@ def _digit_value(c: String) -> Int:
     return digits.find(c)
 
 
+def _pow10(k: Int) -> Float64:
+    """10^k, exactly, for 0 <= k <= 22.
+
+    Every power of ten up to 10^22 is representable in Float64 (10^22 = 2^22 *
+    5^22 and 5^22 < 2^53), and each step of the loop lands on a representable
+    value, so the product is exact. Past 22 it is no longer exact — MJCF
+    numbers never reach there, and the alternative (repeated *0.1) is far
+    worse, being inexact from the very first step.
+    """
+    var p = Float64(1.0)
+    for _ in range(k):
+        p *= 10.0
+    return p
+
+
 def _parse_float(s: String) -> Float64:
     """Parse a float string such as "0.7", "-3.14", "1e-3" to Float64.
 
     Uses slice-based character iteration (s[i:i+1]) — comptime-safe.
     No stdlib float parsing is used.
+
+    All digits go into ONE integer-valued mantissa which is scaled by a single
+    power of ten at the end, so the result is the correctly-rounded double
+    whenever the mantissa fits in 2^53 and the decimal exponent is within
+    +-22 — true of every number in an MJCF file.
+
+    This used to accumulate the fraction as `sum(digit * mul)` with
+    `mul *= 0.1`, which is inexact from the first digit: 0.1 is not
+    representable, so `<option timestep="0.02"/>` parsed to
+    0.020000000000000004, one ULP high. That is a systematic ~1e-16 relative
+    error on every float in every model, and it compounds over a rollout —
+    which is exactly the regime the dm_control parity tests measure.
     """
     var t = _trim(s)
     if t.byte_length() == 0:
@@ -308,28 +408,45 @@ def _parse_float(s: String) -> Float64:
     else:
         int_end = t.byte_length()
 
-    var int_part = Float64(0)
+    # One shared mantissa for the integer and fractional digits; `frac_digits`
+    # counts how far the decimal point must move back at the end. Digits past
+    # the 17th cannot change a Float64, so they are counted (to keep the
+    # exponent right) but not accumulated — that also keeps the mantissa
+    # under 2^53, where the integer arithmetic below stays exact.
+    comptime MAX_MANTISSA_DIGITS = 17
+    var mantissa = Float64(0)
+    var ndigits = 0
+
     for i in range(start, int_end):
         var d = _digit_value(String(t[byte = i : i + 1]))
         if d >= 0:
-            int_part = int_part * 10.0 + Float64(d)
+            if ndigits < MAX_MANTISSA_DIGITS:
+                mantissa = mantissa * 10.0 + Float64(d)
+                ndigits += 1
+            else:
+                # A dropped INTEGER digit still scales the value.
+                mantissa *= 10.0
 
     # Fractional part
-    var frac_part = Float64(0)
+    var frac_digits = 0
     if dot_pos != -1:
         var frac_end: Int
         if exp_pos != -1:
             frac_end = exp_pos
         else:
             frac_end = t.byte_length()
-        var frac_mul = Float64(0.1)
         for i in range(dot_pos + 1, frac_end):
             var d = _digit_value(String(t[byte = i : i + 1]))
             if d >= 0:
-                frac_part += Float64(d) * frac_mul
-                frac_mul *= 0.1
+                if ndigits < MAX_MANTISSA_DIGITS:
+                    mantissa = mantissa * 10.0 + Float64(d)
+                    ndigits += 1
+                    frac_digits += 1
+                # A dropped FRACTIONAL digit is simply below precision.
 
-    var result = int_part + frac_part
+    var result = mantissa
+    if frac_digits > 0:
+        result /= _pow10(frac_digits)
 
     # Exponent part
     if exp_pos != -1:
@@ -346,13 +463,13 @@ def _parse_float(s: String) -> Float64:
             var d = _digit_value(String(t[byte = i : i + 1]))
             if d >= 0:
                 exp_val = exp_val * 10 + d
-        var pow10 = Float64(1.0)
-        for _ in range(exp_val):
-            if exp_neg:
-                pow10 *= 0.1
-            else:
-                pow10 *= 10.0
-        result *= pow10
+        # Scale by a single exact power of ten — DIVIDING for a negative
+        # exponent rather than multiplying by an inexact 0.1^k.
+        var pow10 = _pow10(exp_val)
+        if exp_neg:
+            result /= pow10
+        else:
+            result *= pow10
 
     if neg:
         return -result
@@ -421,11 +538,47 @@ def _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
     return (x, y, z)
 
 
+# MuJoCo's `mjEPS` (`user_util.h:31`), the COMPILE-TIME tolerance. The runtime
+# `mju_normalize4` uses `mjMINVAL` = 1e-15 for the same near-unit test; the two
+# thresholds differ by 10x in the reference and are kept distinct here.
+comptime _MJEPS_COMPILE: Float64 = 1e-14
+
+
 def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Parse MuJoCo "w x y z" quaternion string into internal (qx, qy, qz, qw).
 
     MuJoCo XML stores all quaternion attributes (body quat, geom quat, iquat,
     joint quat) in (w, x, y, z) order. Our internal representation is (x, y, z, w).
+
+    The result is NORMALIZED, as MuJoCo's compiler does to every quat it
+    reads (`mjuu_normvec`, `user_util.cc:149`). Hand-written MJCF is
+    routinely a hair off unit length — dm_control's humanoid writes
+    `quat="1.000 0 -.002 0"` on `lower_waist`, norm 1.000002 — and an
+    unnormalized quat scales every vector it rotates by |q|^2, which leaked
+    ~4e-6 of relative error into that body's whole subtree. Normalizing at
+    parse time keeps it out of the kinematics rather than papering over it
+    downstream. Degenerate (all-zero) input falls back to identity.
+
+    ⚠⚠ ...EXCEPT WHEN IT IS ALREADY UNIT, WHICH IS NOT AN OPTIMISATION.
+    `mjuu_normvec` divides only when `std::abs(nrm - 1) > mjEPS`, under the
+    comment "don't normalize if nrm is within mjEPS of 1", and `mjEPS` is
+    1e-14 — TEN TIMES LOOSER than the runtime `mjMINVAL` that
+    `mju_normalize4` uses for the same test. A quaternion written to full
+    double precision is generally not exactly unit: the yaw every Duplo brick
+    in `reassemble_5` carries, `0.8158341149610219 0 0 0.5782859991956973`,
+    has norm 0.9999999999999999, and MuJoCo stores it back VERBATIM.
+
+    ⚠ AN ULP HERE IS NOT COSMETIC. `_bb_post_filter` removes duplicate box/box
+    manifold points with `pos[i] == pos[j]`, faithfully copying
+    `engine_collision_box.c:1394` — and that filter only works because
+    MuJoCo's coincident points are BIT-IDENTICAL. Renormalising a unit
+    quaternion moved a body pose by an ulp, the filter went inert, and two
+    stacked bricks handed the solver a duplicated constraint row. Gated by
+    `tests/physics3d/test_box_box_degenerate_stack.mojo`.
+
+    ⚠ THE DIVISION IS A DIVISION, NOT A RECIPROCAL MULTIPLY. `mjuu_normvec`
+    writes `vec[i] /= nrm`; `mju_normalize4` writes `vec[i] *= 1/norm`. They
+    do not agree in the last bit, and this is the compile-time one.
     """
     var parts = List[String]()
     _split_spaces(s, parts)
@@ -441,7 +594,16 @@ def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
         qy = _parse_float(parts[2])
     if len(parts) >= 4:
         qz = _parse_float(parts[3])
-    return (qx, qy, qz, qw)
+    var n = _sqrt_f64(qw * qw + qx * qx + qy * qy + qz * qz)
+    if n <= Float64(0):
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    # `mjuu_normvec`'s guard, at its own threshold. See the docstring.
+    var dev = n - Float64(1)
+    if dev < Float64(0):
+        dev = -dev
+    if dev <= _MJEPS_COMPILE:
+        return (qx, qy, qz, qw)
+    return (qx / n, qy / n, qz / n, qw / n)
 
 
 def _sqrt_f64(x: Float64) -> Float64:
@@ -458,12 +620,205 @@ def _sqrt_f64(x: Float64) -> Float64:
     return g
 
 
+comptime _PI_F64: Float64 = 3.14159265358979323846
+comptime _TWO_PI_F64: Float64 = 6.28318530717958647692
+
+
+def _sin_cos_f64(x: Float64) -> Tuple[Float64, Float64]:
+    """Return (sin x, cos x) for x in radians — comptime-safe, no stdlib math.
+
+    Range-reduces to [-pi, pi], evaluates the Taylor series at x/8 (where
+    |x/8| <= pi/8 and the 5/6-term truncation is ~1e-15), then applies the
+    double-angle identities three times to climb back. Reducing by 4 instead
+    of 8 leaves ~4e-11 at cheetah's `euler="0 -218 0"` — visible against
+    MuJoCo's geom_quat.
+
+    The reduction is not cosmetic: an un-reduced series is only accurate near
+    zero, and cheetah's `euler="0 -218 0"` geoms need sin/cos at a half-angle
+    of ~1.9 rad, where the plain 6-term series is off by ~5e-6 — three orders
+    of magnitude above our parity gates.
+
+    The reduction loop is deliberately fixed-trip with no early exit: a
+    data-dependent `while` with a `break` is the shape that blows up Mojo
+    compile times (see `scripts/audit_while_compile_risk.py`). 64 subtractions
+    cover |x| up to ~400 rad, far beyond any angle an MJCF file states.
+    """
+    var r = x
+    for _ in range(64):
+        if r > _PI_F64:
+            r = r - _TWO_PI_F64
+        elif r < -_PI_F64:
+            r = r + _TWO_PI_F64
+
+    var t = r * Float64(0.125)
+    var t2 = t * t
+    # sin(t) = t - t³/6 + t⁵/120 - t⁷/5040 + t⁹/362880
+    var s = (
+        t
+        - t * t2 / Float64(6)
+        + t * t2 * t2 / Float64(120)
+        - t * t2 * t2 * t2 / Float64(5040)
+        + t * t2 * t2 * t2 * t2 / Float64(362880)
+    )
+    # cos(t) = 1 - t²/2 + t⁴/24 - t⁶/720 + t⁸/40320 - t¹⁰/3628800
+    var c = (
+        Float64(1)
+        - t2 / Float64(2)
+        + t2 * t2 / Float64(24)
+        - t2 * t2 * t2 / Float64(720)
+        + t2 * t2 * t2 * t2 / Float64(40320)
+        - t2 * t2 * t2 * t2 * t2 / Float64(3628800)
+    )
+    # (sin t, cos t) -> 2t -> 4t -> 8t = r
+    for _ in range(3):
+        var s2 = Float64(2) * s * c
+        var c2 = Float64(1) - Float64(2) * s * s
+        s = s2
+        c = c2
+    return (s, c)
+
+
+def _quat_mul(
+    aw: Float64,
+    ax: Float64,
+    ay: Float64,
+    az: Float64,
+    bw: Float64,
+    bx: Float64,
+    by: Float64,
+    bz: Float64,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Hamilton product a ⊗ b, both and the result in (w, x, y, z) order.
+
+    Matches MuJoCo's `mjuu_mulquat`; kept in MuJoCo's (w,x,y,z) ordering so the
+    euler accumulation below can be read against `ResolveOrientation` directly.
+    """
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _z2quat(
+    vx: Float64, vy: Float64, vz: Float64
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Minimal rotation taking +Z to `v` → quaternion (qx, qy, qz, qw).
+
+    Mirrors MuJoCo's `mjuu_z2quat`. Used by both `zaxis="..."` and the capsule
+    `fromto="..."` shorthand, which both mean "point local +Z along this vector".
+    """
+    var norm = _sqrt_f64(vx * vx + vy * vy + vz * vz)
+    if norm < Float64(1e-10):
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    var nx = vx / norm
+    var ny = vy / norm
+    var nz = vz / norm
+
+    # Half-angle form of the axis-angle rotation about z × v = (-ny, nx, 0):
+    #   qw = sqrt((1+nz)/2),  (qx, qy) = (-ny, nx) / sqrt(2*(1+nz))
+    if nz > Float64(1) - Float64(1e-12):
+        # Already +Z.
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    if nz < Float64(-1) + Float64(1e-12):
+        # Antiparallel: 180° about X (MuJoCo's degenerate-cross fallback).
+        return (Float64(1), Float64(0), Float64(0), Float64(0))
+
+    var denom = _sqrt_f64(Float64(2) * (Float64(1) + nz))
+    var qx = -ny / denom
+    var qy = nx / denom
+    var qz = Float64(0)
+    var qw = _sqrt_f64((Float64(1) + nz) * Float64(0.5))
+    var qlen = _sqrt_f64(qx * qx + qy * qy + qz * qz + qw * qw)
+    if qlen > Float64(1e-10):
+        qx = qx / qlen
+        qy = qy / qlen
+        qw = qw / qlen
+    return (qx, qy, qz, qw)
+
+
+def _euler_to_quat(
+    ex: Float64, ey: Float64, ez: Float64, seq: String = "xyz"
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Convert MuJoCo `euler` (radians, in `seq` order) → quaternion (qx,qy,qz,qw).
+
+    Follows `ResolveOrientation` in MuJoCo's `user_objects.cc`: accumulate one
+    elemental rotation per character of the sequence, post-multiplying for
+    lowercase axes (moving/intrinsic) and pre-multiplying for uppercase
+    (fixed/extrinsic). `seq` comes from `<compiler eulerseq="...">`, default
+    "xyz".
+    """
+    var angles = [ex, ey, ez]
+    var qw = Float64(1)
+    var qx = Float64(0)
+    var qy = Float64(0)
+    var qz = Float64(0)
+
+    for i in range(3):
+        var axis = String(seq[byte = i : i + 1]) if seq.byte_length() > i else ""
+        var sc = _sin_cos_f64(angles[i] * Float64(0.5))
+        var sa = sc[0]
+        var rw = sc[1]
+        var rx = Float64(0)
+        var ry = Float64(0)
+        var rz = Float64(0)
+        if axis == "x" or axis == "X":
+            rx = sa
+        elif axis == "y" or axis == "Y":
+            ry = sa
+        elif axis == "z" or axis == "Z":
+            rz = sa
+
+        var out: Tuple[Float64, Float64, Float64, Float64]
+        if axis == "x" or axis == "y" or axis == "z":
+            # Moving axes: post-multiply.
+            out = _quat_mul(qw, qx, qy, qz, rw, rx, ry, rz)
+        else:
+            # Fixed axes: pre-multiply.
+            out = _quat_mul(rw, rx, ry, rz, qw, qx, qy, qz)
+        qw = out[0]
+        qx = out[1]
+        qy = out[2]
+        qz = out[3]
+
+    var qlen = _sqrt_f64(qw * qw + qx * qx + qy * qy + qz * qz)
+    if qlen > Float64(1e-10):
+        qw = qw / qlen
+        qx = qx / qlen
+        qy = qy / qlen
+        qz = qz / qlen
+    return (qx, qy, qz, qw)
+
+
+def _parse_euler_to_quat(
+    s: String,
+    deg_factor: Float64 = 1.0,
+    seq: String = "xyz",
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Parse MuJoCo euler="ax ay az" → quaternion (qx,qy,qz,qw).
+
+    deg_factor: pass pi/180 when the model uses angle="degree", else 1.0.
+    """
+    var v = _parse_vec3(s)
+    return _euler_to_quat(
+        v[0] * deg_factor, v[1] * deg_factor, v[2] * deg_factor, seq
+    )
+
+
+def _parse_zaxis_to_quat(
+    s: String,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Parse MuJoCo zaxis="x y z" → quaternion (qx,qy,qz,qw)."""
+    var v = _parse_vec3(s)
+    return _z2quat(v[0], v[1], v[2])
+
+
 def _axisangle_to_quat(
     ax: Float64, ay: Float64, az: Float64, angle: Float64
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     """Convert axis-angle (ax,ay,az,angle_rad) to quaternion (qx,qy,qz,qw).
 
-    Uses Taylor series for sin/cos — comptime-safe without math stdlib.
     Normalises the axis before conversion.
     """
     # Normalise axis
@@ -477,26 +832,9 @@ def _axisangle_to_quat(
         ny = ay / norm
         nz = az / norm
 
-    # sin(angle/2) and cos(angle/2) via Taylor series
-    var a = angle * Float64(0.5)
-    # cos(a) = 1 - a²/2 + a⁴/24 - a⁶/720 + a⁸/40320 - a¹⁰/3628800
-    var a2 = a * a
-    var cos_a = (
-        Float64(1)
-        - a2 / Float64(2)
-        + a2 * a2 / Float64(24)
-        - a2 * a2 * a2 / Float64(720)
-        + a2 * a2 * a2 * a2 / Float64(40320)
-        - a2 * a2 * a2 * a2 * a2 / Float64(3628800)
-    )
-    # sin(a) = a - a³/6 + a⁵/120 - a⁷/5040 + a⁹/362880
-    var sin_a = (
-        a
-        - a * a2 / Float64(6)
-        + a * a2 * a2 / Float64(120)
-        - a * a2 * a2 * a2 / Float64(5040)
-        + a * a2 * a2 * a2 * a2 / Float64(362880)
-    )
+    var sc = _sin_cos_f64(angle * Float64(0.5))
+    var sin_a = sc[0]
+    var cos_a = sc[1]
     return (nx * sin_a, ny * sin_a, nz * sin_a, cos_a)
 
 
@@ -571,10 +909,20 @@ def _fromto_to_pos_quat(
     var my = (y1 + y2) * Float64(0.5)
     var mz = (z1 + z2) * Float64(0.5)
 
-    # Direction vector
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var dz = z2 - z1
+    # Direction vector — FROM minus TO, matching MuJoCo's mjCGeom::Compile
+    # (`vec = {fromto[0]-fromto[3], ...}` then `mjuu_z2quat(quat, vec)`).
+    #
+    # We used `to - from` until 2026-07-29, which points local +Z the other
+    # way. For a capsule or cylinder that is the SAME SOLID — flipping the
+    # long axis end for end changes nothing about the shape, the inertia
+    # tensor or the contact geometry — which is why every FK and inertia gate
+    # passed either way. It shows up only when the geom quaternion itself is
+    # compared, as `tests/dm_control/test_cheetah_vs_dm_control.mojo` does
+    # against `model.geom_quat`. Matching MuJoCo exactly is free here, so do
+    # it rather than leave a sign trap for whoever next reads a geom's frame.
+    var dx = x1 - x2
+    var dy = y1 - y2
+    var dz = z1 - z2
     var length = _sqrt_f64(dx * dx + dy * dy + dz * dz)
     var half_length = length * Float64(0.5)
 
@@ -591,45 +939,11 @@ def _fromto_to_pos_quat(
             Float64(0),
         )
 
-    var ndx = dx / length
-    var ndy = dy / length
-    var ndz = dz / length
+    # Quaternion rotating Z=(0,0,1) onto the capsule direction — the same
+    # "minimal rotation from +Z" MuJoCo applies for `zaxis`.
+    var q = _z2quat(dx, dy, dz)
 
-    # Quaternion to rotate Z=(0,0,1) to direction (ndx,ndy,ndz)
-    # Using half-angle formulas (sqrt only, no trig):
-    #   cos(θ/2) = sqrt((1+ndz)/2),  rotation axis = (-ndy, ndx, 0) / sin(θ)
-    #   qx = -ndy / sqrt(2*(1+ndz)),  qy = ndx / sqrt(2*(1+ndz)),  qz=0, qw=sqrt((1+ndz)/2)
-    var qx: Float64
-    var qy: Float64
-    var qz: Float64
-    var qw: Float64
-
-    if ndz > Float64(0.9999):
-        # Already pointing in +Z direction
-        qx = Float64(0)
-        qy = Float64(0)
-        qz = Float64(0)
-        qw = Float64(1)
-    elif ndz < Float64(-0.9999):
-        # Pointing in -Z direction: 180° rotation around X
-        qx = Float64(1)
-        qy = Float64(0)
-        qz = Float64(0)
-        qw = Float64(0)
-    else:
-        var denom = _sqrt_f64(Float64(2) * (Float64(1) + ndz))
-        qx = -ndy / denom
-        qy = ndx / denom
-        qz = Float64(0)
-        qw = _sqrt_f64((Float64(1) + ndz) * Float64(0.5))
-        # Normalise
-        var qlen = _sqrt_f64(qx * qx + qy * qy + qz * qz + qw * qw)
-        if qlen > Float64(1e-10):
-            qx = qx / qlen
-            qy = qy / qlen
-            qw = qw / qlen
-
-    return (mx, my, mz, qx, qy, qz, qw, half_length, Float64(0))
+    return (mx, my, mz, q[0], q[1], q[2], q[3], half_length, Float64(0))
 
 
 def _find_body_index_by_name(worldbody: String, body_name: String) -> Int:
@@ -653,25 +967,45 @@ def _find_body_index_by_name(worldbody: String, body_name: String) -> Int:
 
 
 def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
-    """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1.
+    """0-based index of `<joint name="joint_name">` in MuJoCo order, or -1.
+
+    ⚠ WAS A PLAIN TEXT COUNT, WHICH IS THE WRONG ORDER. `_fill_model` ends by
+    grouping `result.joints` by body (`_stable_group_by_body_joints`), and this
+    lookup runs AFTER that — so a text ordinal indexed a permuted array. See
+    `_index_by_name_grouped`.
     """
-    var search_name = 'name="' + joint_name + '"'
-    var count = 0
-    var scan_pos = 0
-    var searching = True
-    while searching:
-        var joint_pos = worldbody.find("<joint", scan_pos)
-        if joint_pos == -1:
-            return -1
-        var tag_end = worldbody.find(">", joint_pos)
-        if tag_end == -1:
-            return -1
-        var tag = String(worldbody[byte = joint_pos : tag_end + 1])
-        if tag.find(search_name) != -1:
-            return count
-        count += 1
-        scan_pos = tag_end + 1
-    return -1
+    return _index_by_name_grouped(worldbody, "<joint", joint_name)
+
+
+def _find_site_index_by_name(worldbody: String, site_name: String) -> Int:
+    """0-based index of `<site name="site_name">` in MuJoCo order, or -1.
+
+    Added for `<spatial>` tendons, whose waypoints are named site references.
+
+    ⚠ THE OLD DOCSTRING'S CLAIM WAS TRUE WHEN WRITTEN AND STOPPED BEING TRUE.
+    It said site indices "are assigned by `_fill_model`'s worldbody walk in
+    exactly this order, so counting `<site` tags here reproduces them" — and
+    then `_stable_group_by_body_sites` was added to the end of that same walk
+    and nobody came back to this. A comment asserting agreement with another
+    function is a claim with a shelf life.
+    """
+    return _index_by_name_grouped(worldbody, "<site", site_name)
+
+
+def _find_geom_index_by_name(worldbody: String, geom_name: String) -> Int:
+    """0-based index of `<geom name="geom_name">` in MuJoCo order, or -1.
+
+    Added for `<contact><pair geom1= geom2=>`, whose two references are named
+    geoms.
+
+    Body-grouped for the same reason the joint and site resolvers are:
+    `_fill_model` ends with `_stable_group_by_body_geoms(result.geoms)`, so a
+    raw text ordinal would index a permuted array. The failure would be quiet
+    and total — a pair is a geom-index pair and nothing downstream re-checks it,
+    so a mis-resolved index collides two unrelated geoms with the pair's
+    parameters and drops the one the model asked for.
+    """
+    return _index_by_name_grouped(worldbody, "<geom", geom_name)
 
 
 def _count_joints_with_type(xml: String, joint_type: String) -> Int:
@@ -703,48 +1037,116 @@ def _count_joints_with_type(xml: String, joint_type: String) -> Int:
 # =============================================================================
 
 
+def _last_compiler_attr(xml: String, name: String) -> String:
+    """`<compiler name="...">` from the LAST tag that STATES it, else "".
+
+    ⚠⚠ THE LAST ONE THAT STATES IT, WHICH IS NOT THE FIRST TAG AND NOT THE
+    LAST TAG. Every reader here used to take `xml.find("<compiler")` — the
+    FIRST element — and a model assembled from `<include>`s routinely has
+    several. Measured against the 3.10.0 runtime on a hinge with
+    `range="-1.5 1.5"`:
+
+        <compiler angle="radian"/> then <compiler angle="degree"/>  -> degree
+        <include (radian)/>        then <compiler angle="degree"/>  -> degree
+        <compiler meshdir=.../>    then <include (radian)/>         -> radian
+        <compiler angle="radian"/> then <compiler meshdir=.../>     -> radian
+
+    So: later declarations override earlier ones, and a later tag that OMITS
+    the attribute does NOT reset it to the default. "The included file wins"
+    is the wrong rule — putting the `<include>` first makes the parent win.
+
+    ⚠ THIS IS NOT A STYLE POINT. aloha's `scene.xml` opens with
+    `<compiler meshdir="assets" texturedir="assets"/>` — no `angle` — and then
+    includes `aloha.xml`, which says `angle="radian"`. Reading the first tag
+    gives DEGREE, so every joint range in the model was divided by 57.3: the
+    waist compiled to +-0.0548 rad instead of +-3.14159, and the arms sat far
+    outside limits they should never have touched.
+    """
+    var out = String("")
+    var pos = 0
+    while True:
+        var t = xml.find("<compiler", pos)
+        if t == -1:
+            break
+        var tag_end = xml.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(xml[byte = t : tag_end + 1])
+        var v = _trim(_extract_attr(tag, name))
+        if v.byte_length() > 0:
+            out = v
+        pos = tag_end + 1
+    return out
+
+
+def _compiler_angle_is_deg(xml: String) -> Bool:
+    """Return True when the model's angles are in degrees.
+
+    Value-argument twin of `_xml_compiler_angle_is_deg`; see that docstring
+    for why the default is DEGREE. Both exist because some call sites have the
+    XML as a comptime parameter and some as a value — but the rule must only
+    be written once, which is what let the wrong default sit in four separate
+    inline copies of this check.
+    """
+    var angle_val = _last_compiler_attr(xml, "angle")
+    if angle_val.byte_length() == 0:
+        return True
+    return angle_val == "degree"
+
+
+def _compiler_deg_factor(xml: String) -> Float64:
+    """Radians-per-unit for the model's angle attributes: pi/180 or 1.0."""
+    return Float64(
+        3.141592653589793 / 180.0
+    ) if _compiler_angle_is_deg(xml) else Float64(1.0)
+
+
 def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
-    """Return True when <compiler angle="degree"/> is present. Comptime-safe."""
-    var t = xml.find("<compiler")
-    if t == -1:
-        return False
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return False
-    var tag = String(xml[byte = t : tag_end + 1])
-    var angle_val = _extract_attr(tag, "angle")
-    return _trim(angle_val) == "degree"
+    """Return True when the model's angles are in degrees. Comptime-safe.
+
+    MuJoCo's MJCF default is `angle="degree"` (`user_init.c`:
+    `spec->compiler.degree = 1`; only the URDF loader forces radian), so a
+    missing `<compiler>` element — or one without the attribute — means
+    DEGREE, not radian.
+
+    Fixed 2026-07-29, same shape as the `inertiafromgeom` default bug. It
+    stayed hidden because every Gym-derived env XML in the repo states `angle`
+    explicitly; dm_control's walker/cheetah/hopper omit it and state their
+    joint ranges in degrees, so walker's ankles came out with a +-45 RADIAN
+    range — effectively unlimited.
+    """
+    var angle_val = _last_compiler_attr(xml, "angle")
+    if angle_val.byte_length() == 0:
+        return True
+    return angle_val == "degree"
 
 
 def _xml_compiler_inertiafromgeom[xml: String]() -> Int:
-    """Return inertiafromgeom mode. 0=false, 1=true, 2=auto. Comptime-safe."""
-    var t = xml.find("<compiler")
-    if t == -1:
-        return 0
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return 0
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _trim(_extract_attr(tag, "inertiafromgeom"))
+    """Return inertiafromgeom mode. 0=false, 1=true, 2=auto. Comptime-safe.
+
+    MuJoCo's default is "auto" (derive a body's mass/inertia from its geoms
+    UNLESS the body carries an explicit <inertial>), so a missing <compiler>
+    element — or a <compiler> without the attribute — means auto, NOT false.
+
+    Fixed 2026-07-29: both fell through to 0 (=false), which silently gave
+    every body a default inertia. It went unnoticed because all Gym-derived
+    env XMLs state `inertiafromgeom="true"` explicitly; the dm_control suite
+    XMLs state nothing, and pendulum came out with ~1/21 of its true inertia.
+    """
+    var val = _last_compiler_attr(xml, "inertiafromgeom")
     if val == "true":
         return 1
     elif val == "auto":
         return 2
-    return 0
+    elif val == "false":
+        return 0
+    return 2
 
 
 def _xml_compiler_settotalmass[xml: String]() -> Float64:
     """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return Float64(-1.0)
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return Float64(-1.0)
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _extract_attr(tag, "settotalmass")
-    var trimmed = _trim(val)
+    var trimmed = _last_compiler_attr(xml, "settotalmass")
     if trimmed.byte_length() == 0:
         return Float64(-1.0)
     return _parse_float(trimmed)
@@ -754,15 +1156,7 @@ def _xml_compiler_inertiagrouprange[xml: String]() -> Tuple[Int, Int]:
     """Return (group_min, group_max) from <compiler inertiagrouprange="min max"/>.
     Defaults to (0, 5) if absent. Comptime-safe.
     """
-    var t = xml.find("<compiler")
-    if t == -1:
-        return (0, 5)
-    var tag_end = xml.find(">", t)
-    if tag_end == -1:
-        return (0, 5)
-    var tag = String(xml[byte = t : tag_end + 1])
-    var val = _extract_attr(tag, "inertiagrouprange")
-    var trimmed = _trim(val)
+    var trimmed = _last_compiler_attr(xml, "inertiagrouprange")
     if trimmed.byte_length() == 0:
         return (0, 5)
     var parts = List[String]()
@@ -776,7 +1170,7 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     """Return (ctrl_min, ctrl_max) from <default><motor ctrlrange="lo hi"/>.
     Defaults to (-1.0, 1.0) if absent. Comptime-safe.
     """
-    var def_sec = _extract_section(xml, "default")
+    var def_sec = _root_defaults(xml)
     if def_sec.byte_length() == 0:
         return (-1.0, 1.0)
     var t = def_sec.find("<motor")
@@ -794,6 +1188,36 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     if len(parts) >= 2:
         return (_parse_float(parts[0]), _parse_float(parts[1]))
     return (-1.0, 1.0)
+
+
+def _xml_default_motor_gear[xml: String]() -> Float64:
+    """Return `gear` from `<default><motor gear="..."/>`, else MuJoCo's 1.0.
+
+    The twin of `_xml_default_motor_ctrlrange`, which existed from the start —
+    `gear` did not, so a model that put its gear in the default class (the
+    dm_control `point_mass` does: `<motor gear=".1" .../>`) silently actuated
+    at gear 1.0, a 10x force error with no diagnostic. Found 2026-07-29.
+
+    Both twins now route through `_root_defaults`, which strips the named
+    `<default class="...">` blocks — without it a `<motor>` inside a class
+    would be applied globally, AND a top-level `<motor>` declared after the
+    first class block would be missed entirely. swimmer is the second model to
+    pay for that, at 2000x; see `_strip_nested_defaults`.
+    """
+    var def_sec = _root_defaults(xml)
+    if def_sec.byte_length() == 0:
+        return Float64(1.0)
+    var t = def_sec.find("<motor")
+    if t == -1:
+        return Float64(1.0)
+    var tag_end = def_sec.find(">", t)
+    if tag_end == -1:
+        return Float64(1.0)
+    var tag = String(def_sec[byte = t : tag_end + 1])
+    var g = _extract_attr(tag, "gear")
+    if g.byte_length() == 0:
+        return Float64(1.0)
+    return _parse_float(g)
 
 
 def _xml_nth_fixed_tag[xml: String, n: Int]() -> String:
@@ -882,11 +1306,66 @@ def _xml_fixed_tendon_coef[xml: String, n: Int, j: Int]() -> Float64:
 # =============================================================================
 
 
+def _is_self_closing(xml: String, tag_start: Int, tag_end: Int) -> Bool:
+    """True when `xml[tag_start..tag_end]` is a `<tag ... />` element.
+
+    `tag_end` is the index of the closing `>`. Trailing whitespace between the
+    `/` and the `>` is tolerated (`<equality ... / >` is legal XML).
+    """
+    var i = tag_end - 1
+    while i > tag_start:
+        var ch = String(xml[byte = i : i + 1])
+        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+            i -= 1
+            continue
+        return ch == "/"
+    return False
+
+
+def _extract_section_all(xml: String, tag: String) -> String:
+    """Every occurrence of `<tag>...</tag>`, merged into ONE section.
+
+    ⚠⚠ MJCF ALLOWS A SECTION TO APPEAR MORE THAN ONCE and MuJoCo merges the
+    repeats. `_extract_section` returns the FIRST and stops, so a model with
+    two `<worldbody>` blocks lost everything in the second — silently, since a
+    shorter model is not an error. Found when the studio's prop writer emitted
+    two: a five-prop scene loaded as a bare floor, nbody 1.
+
+    ⚠ THE RESULT IS RE-WRAPPED IN ONE PAIR OF TAGS rather than concatenated
+    whole. `<worldbody>A</worldbody><worldbody>B</worldbody>` would make every
+    depth-counting walk downstream see a close before it expected one; a
+    single `<worldbody>AB</worldbody>` is what MuJoCo's merge produces
+    semantically and what those walks already handle.
+
+    ⚠ ATTRIBUTES ON THE OPENING TAG ARE DROPPED, so this is for ACCUMULATOR
+    sections only — never `<option>` or `<compiler>`, whose content IS their
+    attributes and which are singletons anyway.
+    """
+    var inner = _extract_section_inner(xml, tag)
+    if inner.byte_length() == 0:
+        # Preserve the old answer exactly for the absent case: "" rather than
+        # an empty pair of tags, which several callers test for.
+        return _extract_section(xml, tag)
+    return "<" + tag + ">" + inner + "</" + tag + ">"
+
+
 def _extract_section_inner(xml: String, tag: String) -> String:
     """Return the inner content of <tag ...>...</tag>, excluding the outermost tags.
 
     Handles nested same-name tags (e.g., <default><default class="x">...</default></default>)
     by depth-counting. Handles multiple top-level occurrences by concatenating.
+
+    ⚠ SELF-CLOSING tags of the same name are skipped rather than treated as
+    section openers, and are not counted as nested opens. Without that, a
+    `<default class="coupling"><equality solimp="..." solref="..."/></default>`
+    — MJCF's way of putting equality defaults in a class, which dm_control's
+    quadruped uses — made `_extract_section_inner(xml, "equality")` return ""
+    for the WHOLE FILE: it latched onto the self-closing `<equality/>` as the
+    opener, then never found a matching close because the depth counter had
+    incremented on a tag that closes itself. `merge_mjcf` then emitted an empty
+    `<equality>` section and the four leg-coupling constraints vanished with no
+    diagnostic. This is the same shape as the `<tendon>`-dropped-by-merge_mjcf
+    bug of 2026-07-30, in the same function, from a different trigger.
     """
     var result = String("")
     var open_marker = "<" + tag
@@ -907,6 +1386,10 @@ def _extract_section_inner(xml: String, tag: String) -> String:
         var tag_end = xml.find(">", start)
         if tag_end == -1:
             break
+        # Self-closing `<tag ... />` opens no section — skip it entirely.
+        if _is_self_closing(xml, start, tag_end):
+            scan = tag_end + 1
+            continue
         var inner_start = tag_end + 1
         # Find matching closing tag (depth-counted)
         var depth = 1
@@ -922,7 +1405,14 @@ def _extract_section_inner(xml: String, tag: String) -> String:
                 if np < xml.byte_length():
                     var nc = String(xml[byte=np : np + 1])
                     if nc == " " or nc == ">" or nc == "/" or nc == "\n" or nc == "\t":
-                        depth += 1
+                        # A self-closing nested tag needs no matching close,
+                        # so counting it would leave depth permanently high
+                        # and swallow the real closing tag.
+                        var no_end = xml.find(">", next_open)
+                        if no_end == -1 or not _is_self_closing(
+                            xml, next_open, no_end
+                        ):
+                            depth += 1
                 search_pos = next_open + open_marker.byte_length()
             else:
                 depth -= 1
@@ -934,6 +1424,300 @@ def _extract_section_inner(xml: String, tag: String) -> String:
         if depth > 0:
             break  # Unmatched tags
     return result
+
+
+def _strip_nested_defaults(sec: String) -> String:
+    """Remove nested `<default class="...">...</default>` sub-blocks.
+
+    Comptime twin of `full_parser._strip_nested_defaults`, which the runtime
+    parser has had since 2026-07-29. This side did not, so every lookup below
+    that scanned the `<default>` section with a bare `find("<tag")` picked up
+    the FIRST NAMED CLASS's element whenever the top-level one was declared
+    after it — and MJCF puts no ordering constraint on that.
+
+    dm_control's swimmer is the model that exposes it. Its `<default>` is
+
+        <default>
+          <default class="swimmer"> <joint ... limited="true" .../> ... </default>
+          <default class="free">    <joint limited="false" .../>       </default>
+          <motor gear="5e-4" ctrllimited="true" ctrlrange="-1 1"/>
+        </default>
+
+    so the top-level `<motor>` comes LAST. `_extract_section` is not depth
+    aware either, so it used to hand back a section truncated at the first
+    inner `</default>` — with no `<motor>` in it at all. Gear silently fell
+    back to MuJoCo's 1.0 against an actual 5e-4: a 2000x actuator force error,
+    which is the whole dynamics of the domain. The same truncation made
+    `def_limited` read the swimmer class's `limited="true"`, marking the three
+    unlimited root DOFs as limited with an empty (0, 0) range.
+
+    Nesting is depth-tracked so a class containing sub-classes is removed
+    whole (swimmer's `class="swimmer"` contains `inertial` and `visual`).
+    """
+    var out = String("")
+    var i = 0
+    var n = sec.byte_length()
+    while i < n:
+        var open_t = sec.find("<default", i)
+        if open_t == -1:
+            out += String(sec[byte=i:n])
+            break
+        out += String(sec[byte=i:open_t])
+        # Walk forward to this block's matching </default>.
+        var depth_ = 0
+        var j = open_t
+        while j < n:
+            var next_open = sec.find("<default", j + 1)
+            var next_close = sec.find("</default>", j + 1)
+            if next_close == -1:
+                j = n
+                break
+            if next_open != -1 and next_open < next_close:
+                depth_ += 1
+                j = next_open
+                continue
+            if depth_ == 0:
+                j = next_close + 10  # len("</default>")
+                break
+            depth_ -= 1
+            j = next_close
+        i = j
+    return out
+
+
+def _root_defaults(xml: String) -> String:
+    """The TOP-LEVEL `<default>` content only — named classes stripped.
+
+    Every `<default>` lookup in this file must go through here rather than
+    `_extract_section(xml, "default")`; see `_strip_nested_defaults` for the
+    2000x actuator error the bare version cost.
+    """
+    return _strip_nested_defaults(_extract_section_inner(xml, "default"))
+
+
+def _class_attr(
+    xml: String, cls: String, tag_name: String, attr: String
+) -> String:
+    """`attr` of the first `<tag_name>` directly inside `<default class="cls">`.
+
+    The counterpart to `_root_defaults` for NAMED classes. Until quadruped
+    nothing on this side of the parser needed one: `_root_defaults` exists
+    precisely to keep class blocks from leaking into the global lookups, and
+    every earlier model put its actuator attributes at the top level.
+
+    quadruped does not. Its twelve actuators carry nothing but a name, a
+    transmission and `class="yaw_act"` / `"lift_act"` / `"extend_act"`, and
+    each of those classes supplies exactly one attribute (`ctrlrange`) on top
+    of the top-level `<general>` default that supplies all the rest. Reading
+    only root defaults would give all twelve the same ctrlrange of (-1, 1),
+    which is right for four of them and wrong for eight.
+
+    ⚠ WHY THIS IS ONE FUNCTION AND NOT THREE COMPOSED ONES. The obvious
+    factoring — return the class section, pull the tag out of it, then
+    `_extract_attr` that tag — DOES NOT COMPILE. Slicing a `String` that was
+    itself built by slicing another `String` defeats the comptime interpreter:
+    `String(tag[byte=a:b])` fails with "interpreting memcpy can't get dst
+    memory from the interpreter / write clobbers a pointer region". The
+    failure is selective in a way that makes it easy to misread — a lookup
+    that MISSES in the intermediate string is fine, and only one that HITS
+    (and therefore reaches the slice) fails, so seven of eight attribute
+    lookups compiled happily. Everything here is therefore index arithmetic
+    over the ORIGINAL `xml`, with exactly one slice at the end.
+
+    Elements inside a NESTED `<default class="...">` are skipped, so a class
+    that contains sub-classes resolves to its own child rather than theirs.
+
+    An EMPTY `cls` means the top-level `<default>` block — the one with no
+    `class` attribute. That is the terminator of the inheritance chain in
+    `_class_attr_inherited`, and doing it here rather than via
+    `_root_defaults` is not a style choice: `_root_defaults` returns a String
+    built by SLICING, and slicing that again is precisely the comptime failure
+    this docstring warns about above. Index arithmetic over the original
+    `xml`, one slice at the end, is the only shape that survives.
+    """
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var t = xml.find("<default", scan)
+        if t == -1:
+            return String("")
+        var te = xml.find(">", t)
+        if te == -1:
+            return String("")
+        if _trim(_extract_attr(String(xml[byte = t : te + 1]), "class")) != cls:
+            scan = te + 1
+            continue
+
+        # This block's inner span, as indices into `xml`.
+        var inner = te + 1
+        var depth = 0
+        var j = inner
+        var stop = -1
+        while j < n:
+            var no = xml.find("<default", j)
+            var nc = xml.find("</default>", j)
+            if nc == -1:
+                break
+            if no != -1 and no < nc:
+                depth += 1
+                j = no + 8  # len("<default")
+                continue
+            if depth == 0:
+                stop = nc
+                break
+            depth -= 1
+            j = nc + 10  # len("</default>")
+        if stop < 0:
+            return String("")
+
+        # First `<tag_name>` at depth 0 within [inner, stop).
+        var marker = "<" + tag_name
+        var p = inner
+        while p < stop:
+            var tt = _find_tag(xml, marker, p)
+            if tt == -1 or tt >= stop:
+                return String("")
+            # Depth of `tt` relative to `inner`: count nested opens before it.
+            var d = 0
+            var k = inner
+            while k < tt:
+                var o2 = xml.find("<default", k)
+                var c2 = xml.find("</default>", k)
+                if o2 != -1 and o2 < tt and (c2 == -1 or o2 < c2):
+                    d += 1
+                    k = o2 + 8
+                    continue
+                if c2 != -1 and c2 < tt:
+                    d -= 1
+                    k = c2 + 10
+                    continue
+                break
+            if d != 0:
+                p = tt + 1
+                continue
+            var tte = xml.find(">", tt)
+            if tte == -1 or tte > stop:
+                return String("")
+            return _extract_attr(String(xml[byte = tt : tte + 1]), attr)
+        return String("")
+    return String("")
+
+
+def _class_parent(xml: String, cls: String) -> String:
+    """The class enclosing `<default class="cls">`, or "" if it is top level.
+
+    MJCF default classes NEST and INHERIT, which `_class_attr` alone does not
+    express — it answers "what does this exact block say", not "what does an
+    element in this class end up with". quadruped's legs need the difference:
+
+        <default>
+          <default class="body">                     <- type, size, material
+            <default class="hip">  <geom fromto=.../>   <- fromto only
+            <default class="knee"> ...
+
+    and a leg geom is the bare tag `<geom name="thigh_front_left"/>` under a
+    body carrying `childclass="hip"`. Its `type` lives two levels up. Walking
+    parents is the only way to reach it.
+
+    ⚠ Index arithmetic over the ORIGINAL `xml`, with single slices, for the
+    reason spelled out at length in `_class_attr`: slicing a String that was
+    itself produced by slicing another String defeats the comptime
+    interpreter, and it fails only on the paths that HIT.
+    """
+    if cls.byte_length() == 0:
+        return String("")
+    var n = xml.byte_length()
+    # Spans of the currently-open `<default ...>` tags, outermost first.
+    var open_start = InlineArray[Int, 32](fill=-1)
+    var open_end = InlineArray[Int, 32](fill=-1)
+    var depth = 0
+    var i = 0
+    while i < n:
+        var t = xml.find("<default", i)
+        var c = xml.find("</default>", i)
+        if t == -1 and c == -1:
+            break
+        if t != -1 and (c == -1 or t < c):
+            var te = xml.find(">", t)
+            if te == -1:
+                break
+            if depth < 32:
+                open_start[depth] = t
+                open_end[depth] = te
+            depth += 1
+            if (
+                _trim(_extract_attr(String(xml[byte = t : te + 1]), "class"))
+                == cls
+            ):
+                # Enclosing block is one level out; the top-level `<default>`
+                # carries no class, so its name comes back "" — exactly the
+                # terminator the caller wants.
+                if depth >= 2 and open_start[depth - 2] >= 0:
+                    return _trim(
+                        _extract_attr(
+                            String(
+                                xml[
+                                    byte = open_start[depth - 2] : open_end[
+                                        depth - 2
+                                    ]
+                                    + 1
+                                ]
+                            ),
+                            "class",
+                        )
+                    )
+                return String("")
+            i = te + 1
+        else:
+            if depth > 0:
+                depth -= 1
+            i = c + 10  # len("</default>")
+    return String("")
+
+
+# ═══ THE `<default>` INDEX CLUSTER — DELETED (phase 1a.5c) ═════════════════
+#
+# `_DefaultsIndex`, `_build_defaults_index`, `_class_attr_indexed`,
+# `_class_parent_indexed`, `_class_attr_inherited_indexed`, `_AttrCache`,
+# `_attr_3way_cached`, `_ClassAttrCache`, plus the rescanning
+# `_class_attr_inherited` and `_attr_3way` they replaced.
+#
+# Written FOR `parse_xml_model_data`'s actuator loop and
+# `parse_xml_render_data`'s geom loop, where they killed ~340 O(n) document
+# re-walks per model. Phase 1a.4e deleted the first caller and 1a.5c the
+# second, leaving the whole cluster reachable only from its own equivalence
+# test — a gate proving an optimisation still matched a scan that no longer
+# exists. Both are gone.
+#
+# ⚠ The `<default>` chain itself is NOT gone and is not optional: it is what
+# `full_parser` resolves at runtime, and every time a parser skipped it the
+# result was a silent wrong value rather than a missing one — geom `type`
+# (quadruped's legs), actuator classes, joint limits, geom `material`. The
+# index was an optimisation; the semantics live in `full_parser`.
+
+
+def _first_tag(sec: String, tag_name: String) -> String:
+    """The first `<tag_name ...>` element in `sec`, or empty."""
+    if sec.byte_length() == 0:
+        return String("")
+    var t = _find_tag(sec, "<" + tag_name, 0)
+    if t == -1:
+        return String("")
+    var te = sec.find(">", t)
+    if te == -1:
+        return String("")
+    return String(sec[byte = t : te + 1])
+
+
+def _nth_float(s: String, n: Int, fallback: Float64) -> Float64:
+    """`n`-th whitespace-separated float of `s`, or `fallback`."""
+    if s.byte_length() == 0:
+        return fallback
+    var parts = List[String]()
+    _split_spaces(s, parts)
+    if n >= len(parts):
+        return fallback
+    return _parse_float(parts[n])
 
 
 def _extract_singleton_tag(xml: String, tag: String) -> String:
@@ -949,6 +1733,48 @@ def _extract_singleton_tag(xml: String, tag: String) -> String:
     if end == -1:
         return String("")
     return String(xml[byte=pos : end + 1])
+
+
+def _append_singleton_tags(
+    xml: String, tag: String, mut out: List[String]
+):
+    """Append EVERY `<tag .../>` in `xml`, in document order.
+
+    ⚠⚠ `_extract_singleton_tag` RETURNS ONLY THE FIRST, and that is what made
+    `<compiler>` a lie. `resolve_includes` splices the included files into ONE
+    document and then calls `merge_mjcf` with a SINGLE argument, so a
+    per-input "find the singleton" returns the host's tag and every included
+    file's is silently discarded — the merge that `_merge_singleton_attrs`
+    performs so carefully never sees them.
+
+    Measured on Menagerie's aloha: `scene.xml` opens with
+    `<compiler meshdir="assets" texturedir="assets"/>` and then includes
+    `aloha.xml`, whose `<compiler angle="radian"/>` was dropped. MJCF's
+    default is DEGREE, so every angular joint range in the model was divided
+    by 57.3 — the waist compiled to +-0.0548 rad instead of +-3.14159 — and
+    the arms sat far outside limits they should never have reached. The
+    resulting limit forces gave `qacc` ~2200 rad/s^2 where MuJoCo has 0.15.
+
+    ⚠ THE DELIMITER CHECK IS NOT OPTIONAL: a bare `find` for `"<size"` would
+    also match `<sizefoo`, and this function is used for `<size>` too.
+    """
+    var marker = "<" + tag
+    var pos = 0
+    while True:
+        var t = xml.find(marker, pos)
+        if t == -1:
+            return
+        var after = t + marker.byte_length()
+        var ok = after >= xml.byte_length()
+        if not ok:
+            var ch = String(xml[byte = after : after + 1])
+            ok = ch == " " or ch == "/" or ch == ">" or ch == "\n" or ch == "\t" or ch == "\r"
+        var end = xml.find(">", t)
+        if end == -1:
+            return
+        if ok:
+            out.append(String(xml[byte = t : end + 1]))
+        pos = end + 1
 
 
 def _merge_singleton_attrs(tags: List[String], tag_name: String) -> String:
@@ -1057,6 +1883,72 @@ def _strip_wrapper(xml: String) -> String:
     return result
 
 
+def _normalize_freejoint(xml: String) -> String:
+    """Rewrite `<freejoint .../>` as `<joint type="free" .../>`.
+
+    MJCF accepts both spellings for a 6-DOF root; MuJoCo's compiler treats
+    `<freejoint>` as sugar. Our scanners look for the literal `"<joint"` in
+    roughly twenty places, so supporting the alias at each of them would be
+    both invasive and easy to miss one of. Normalizing the TEXT once, before
+    anything scans it, covers every site at a stroke.
+
+    This matters because the failure was silent: an unrecognized `<freejoint>`
+    is not an error, it simply yields a model with no root joint — the body
+    welds to the world and nq/nv come out 7/6 short, which then shows up as a
+    dimension mismatch far from the cause. In-scope users are dm_control's
+    humanoid and quadruped (dog and humanoid_CMU are descoped).
+
+    EVERY ATTRIBUTE A CLASS COULD SUPPLY IS PINNED, and that is the whole
+    point of the distinction MuJoCo draws between the two spellings. Its docs
+    say of `<freejoint>`: "The alternative is to set type='free' in a regular
+    joint element, but then the joint will inherit any defaults defined for
+    joints, which is usually undesirable." The compiler implements that
+    literally — `xml_native_reader.cc:3570` calls `mjs_addFreeJoint(body)`,
+    whose comment reads "create free joint without defaults", so the joint
+    keeps the values `mjs_defaultJoint` memset in (`user_init.c:96`) no matter
+    what the enclosing class says. A bare `<joint type="free">` under
+    humanoid's `<default class="body"><joint armature=".01" damping=".2"
+    stiffness="1" limited="true"/>` would give the ROOT an armature, a damper,
+    a spring pulling it toward the origin, and a limit — MuJoCo reports 0 for
+    all of them. Writing the defaults out explicitly reproduces that, because
+    an attribute on the element beats the class.
+
+    ⚠ THE LIST HAS TO BE COMPLETE, not just the passive scalars. It used to
+    stop at armature/damping/stiffness/springref/frictionloss, so quadruped's
+    root inherited `solimplimit="0 .99 .01"` from `<default class="body">` and
+    reported `jnt_solimp[0] = (0, .99, .01, .5, 2)` where MuJoCo reports the
+    global `(.9, .95, .001, .5, 2)`. That one is INERT — a free joint is never
+    `limited`, so no limit row is ever built and nothing reads its solimp —
+    but `ref` under the same class would not have been, and the omission was
+    only ever going to be found by a model-constant diff. The solref/solimp
+    numbers are `mj_defaultSolRefImp` (`engine_init.c:32`).
+
+    Other attributes are carried through untouched; the injected ones go
+    immediately after the tag name, which is safe because `<freejoint>` admits
+    only name/group/align, and `_extract_attr` takes the first match anyway.
+    `ref` precedes `springref` for the same reason, though `_extract_attr`
+    requires a separator before the name and so would not confuse them.
+    """
+    var result = String("")
+    var scan = 0
+    var xlen = xml.byte_length()
+    while scan < xlen:
+        var fj = xml.find("<freejoint", scan)
+        if fj == -1:
+            result = result + String(xml[byte=scan:xlen])
+            break
+        result = (
+            result
+            + String(xml[byte=scan:fj])
+            + '<joint type="free" limited="false" armature="0" damping="0"'
+            + ' stiffness="0" ref="0" springref="0" frictionloss="0"'
+            + ' range="0 0" margin="0" solreflimit="0.02 1"'
+            + ' solimplimit="0.9 0.95 0.001 0.5 2"'
+        )
+        scan = fj + 10  # len("<freejoint")
+    return result
+
+
 def _strip_include_tags(xml: String) -> String:
     """Remove all <include file="..."/> tags from XML."""
     var result = String("")
@@ -1076,12 +1968,423 @@ def _strip_include_tags(xml: String) -> String:
     return result
 
 
+def _dedupe_last_wins(inner: String) -> String:
+    """Keep only the LAST element of each name in `inner`, in document order.
+
+    `<visual>`'s children (`global`, `quality`, `headlight`, `map`, `scale`,
+    `rgba`) are SINGLETONS in the MJCF schema, but `merge_mjcf` treats
+    `<visual>` as an accumulator and concatenates every input's children. A
+    model that declares its own `<visual><map .../></visual>` on top of the
+    shared `common/visual.xml` therefore produced two `<map>` elements, and
+    MuJoCo rejects that outright:
+
+        XML Error: Schema violation: unique element 'map' found 2 times
+
+    Nothing in OUR engine reads `<visual>`, so the merged models ran fine and
+    this stayed invisible until quadruped — the first merged model with its
+    own `<visual>` — needed to be loaded BY MUJOCO for a parity gate. An MJCF
+    we cannot round-trip into MuJoCo is an MJCF we cannot gate.
+
+    Last-wins matches `<include>` ordering (the model's own section comes
+    after the shared one). It is element replacement, not MuJoCo's
+    attribute-wise merge: an attribute set only by the EARLIER element is
+    dropped rather than kept. That is exact for every current caller (the
+    shared `<map znear>` is a strict subset of quadruped's `<map znear zfar>`)
+    and stays cosmetic regardless, since only the renderer reads these.
+
+    Bails out unchanged on anything that is not a flat list of self-closing
+    elements — better today's invalid XML than a silently mangled section.
+    """
+    var starts = List[Int]()
+    var ends = List[Int]()
+    var name_starts = List[Int]()
+    var name_ends = List[Int]()
+
+    var i = 0
+    var n = inner.byte_length()
+    # BOUNDED, not `while i < n`. An unbounded data-dependent loop inside a
+    # nested comptime callee is a known compile-time explosion in this tree
+    # (see sensors/subtree.mojo's `walk_to_root` for the reproducer). Each
+    # iteration consumes at least one byte, so `n` is an exact bound.
+    for _ in range(n):
+        if i >= n:
+            break
+        var t = inner.find("<", i)
+        if t == -1:
+            break
+        if t + 4 <= n and String(inner[byte = t : t + 4]) == "<!--":
+            var c = inner.find("-->", t)
+            if c == -1:
+                return inner
+            i = c + 3
+            continue
+        var te = inner.find(">", t)
+        if te == -1:
+            return inner
+        if not _is_self_closing(inner, t, te):
+            return inner
+        var ns = t + 1
+        var ne = ns
+        while ne < te:
+            var ch = String(inner[byte = ne : ne + 1])
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r" or ch == "/":
+                break
+            ne += 1
+        if ne == ns:
+            return inner
+        starts.append(t)
+        ends.append(te + 1)
+        name_starts.append(ns)
+        name_ends.append(ne)
+        i = te + 1
+
+    var out = String("")
+    for a in range(len(starts)):
+        var la = name_ends[a] - name_starts[a]
+        var dup = False
+        for b in range(a + 1, len(starts)):
+            if name_ends[b] - name_starts[b] != la:
+                continue
+            var same = True
+            for k in range(la):
+                var ca = String(
+                    inner[byte = name_starts[a] + k : name_starts[a] + k + 1]
+                )
+                var cb = String(
+                    inner[byte = name_starts[b] + k : name_starts[b] + k + 1]
+                )
+                if ca != cb:
+                    same = False
+                    break
+            if same:
+                dup = True
+                break
+        if not dup:
+            out = out + "    " + String(inner[byte = starts[a] : ends[a]]) + "\n"
+    return out
+
+
+def _mjcf_sections() -> List[String]:
+    """Every top-level MJCF section, for `resolve_includes`' strictness check.
+
+    ⚠ THE LIST IS LONGER THAN `merge_mjcf`'S ACCUMULATORS, ON PURPOSE. It is
+    what a merge is CHECKED against, not what it handles — a section here that
+    `merge_mjcf` does not accumulate is exactly the case that must RAISE
+    rather than vanish. `<compiler>` and `<option>` are absent because they
+    are SINGLETONS that `merge_mjcf` folds attribute-wise, so "present in an
+    input, present in the output" is the wrong test for them.
+    """
+    var s = List[String]()
+    s.append(String("asset")); s.append(String("default"))
+    s.append(String("worldbody")); s.append(String("tendon"))
+    s.append(String("actuator")); s.append(String("equality"))
+    s.append(String("visual")); s.append(String("sensor"))
+    s.append(String("contact")); s.append(String("keyframe"))
+    s.append(String("statistic")); s.append(String("custom"))
+    s.append(String("extension")); s.append(String("deformable"))
+    s.append(String("size"))
+    # ⚠ `deformable` IS THE ONE MERGE_MJCF DOES NOT CARRY. It stays on this
+    # list precisely so a model that has one RAISES at the merge instead of
+    # losing it — that is what this check is for. Every other entry is
+    # accumulated, so their presence here is a regression guard rather than a
+    # known gap.
+    return s^
+
+
+def _has_section(xml: String, name: String) -> Bool:
+    return xml.find("<" + name + ">") != -1 or xml.find("<" + name + " ") != -1
+
+
+def _file_stem(path: String) -> String:
+    """`a/b/head_visual.stl` -> `head_visual`. MuJoCo's default asset name.
+
+    Path AND extension are stripped, in that order — see the note at
+    `full_parser`'s `<mesh>` loop for why getting either wrong is silent.
+
+    ⚠ IT LIVES HERE, not in `full_parser`, because THREE places need the same
+    answer: the parser that names the asset, and `expander.check_references`
+    which must know that a nameless `<mesh file=>` DECLARES that name. A
+    second copy would be the two-parser hazard in miniature — 43 of the 57
+    Menagerie scenes reference an asset by its implied stem.
+    """
+    var base = path
+    var cut = path.rfind("/")
+    if cut >= 0:
+        base = String(path[byte = cut + 1 : path.byte_length()])
+    var dot = base.rfind(".")
+    if dot <= 0:
+        return base^
+    return String(base[byte=0:dot])
+
+
+def _rebase_files(xml: String, dir: String) -> String:
+    """Make every `file=` in a spliced fragment resolve against `dir`.
+
+    ⚠⚠ WITHOUT THIS A SPLICED MESH SILENTLY VANISHES. `parse_xml_full` gets
+    ONE base directory — the HOST's — while an included or attached file's
+    paths are relative to ITS OWN. A mesh geom whose asset fails to resolve
+    draws nothing and collides with nothing, and raises neither.
+
+    Measured on Menagerie's `ms_human_700`, whose `assets/asset/*.xml` write
+    `file="../geometry/sacrum.stl"` — right from `assets/asset/`, and
+    `ms_human_700/../geometry/` from the model root. All 189 meshes resolved
+    to nothing: the model loaded with its 81 bodies and 700 tendons and drew
+    ONLY THE TENDONS.
+
+    ⚠ `dir` MUST BE RELATIVE TO THE HOST'S BASE, not to the process CWD. The
+    parser prefixes the host base itself, so passing an already-based
+    directory doubles it — the same double-path bug the studio's prop writer
+    had.
+
+    ⚠ RUN IT AFTER `<include>` RESOLUTION, never before: `<include file=>` is
+    also a `file=`, and rebasing one that has not been followed yet points it
+    somewhere that does not exist.
+    """
+    if dir.byte_length() == 0:
+        return xml
+    var out = String("")
+    var scan = 0
+    while True:
+        var at = xml.find('file="', scan)
+        if at == -1:
+            out += String(xml[byte=scan : xml.byte_length()])
+            break
+        var vs = at + 6
+        var ve = xml.find('"', vs)
+        if ve == -1:
+            out += String(xml[byte=scan : xml.byte_length()])
+            break
+        var val = String(xml[byte=vs:ve])
+        out += String(xml[byte=scan:vs])
+        # Absolute paths escape, as everywhere else in this parser.
+        if val.byte_length() > 0 and not val.startswith("/"):
+            out += dir + "/" + val
+        else:
+            out += val
+        out += '"'
+        scan = ve + 1
+    return out^
+
+
+def _include_body(text: String, path: String) raises -> String:
+    """The children of an included file's root element, comments removed.
+
+    MuJoCo's rule: `<include>` is REPLACED BY the children of the included
+    file's `<mujoco>` (or `<mujocoinclude>`) root, at the tag's position. The
+    root itself contributes nothing — its attributes are not merged into the
+    host's.
+
+    ⚠ COMMENTS COME OFF HERE, not after splicing, so a commented-out
+    `<include>` in an included file is not followed. `merge_mjcf` strips them
+    at the end of `resolve_includes` regardless, so this changes no output —
+    only what the splice scan can see.
+    """
+    var s = _strip_xml_comments(text)
+    if _find_tag(s, "<mujoco", 0) == -1 and _find_tag(s, "<mujocoinclude", 0) == -1:
+        raise Error(
+            "physics3d: <include file='" + path + "'> — the included file has"
+            " no <mujoco> or <mujocoinclude> root element. MuJoCo requires"
+            " one, and its children are what gets spliced."
+        )
+    return _strip_wrapper(s)
+
+
+def _splice_includes(xml: String, base_dir: String, depth: Int) raises -> String:
+    """Replace each `<include>` with the included file's root children, IN PLACE.
+
+    ⚠⚠ IN PLACE IS THE WHOLE POINT, and the previous implementation was not.
+    It routed every include through `merge_mjcf`, which merges TOP-LEVEL
+    SECTIONS — so an include was effectively hoisted to the document root no
+    matter where it appeared. Two consequences, one loud and one silent:
+
+      * ordering. Included bodies landed BEFORE any the host declared above
+        the tag, so body ids diverged from MuJoCo's. That one printed a
+        warning and was tolerated.
+
+      * ⚠⚠ NESTING. Menagerie's `ms_human_700` puts an `<include>` INSIDE a
+        `<body>`, and the included file's root child is a bare `<body>` with
+        no `<worldbody>` around it — not a section `merge_mjcf` knows, so it
+        was DROPPED WITHOUT A DIAGNOSTIC. The flattened model had 1 body and
+        57 joints where MuJoCo builds 81 bodies and 700 tendons. What surfaced
+        was 3160 dangling name references, which is `check_references` doing
+        its job on a document that really was missing the declarations — and
+        it reads like a defect in the fixture rather than in the flattener.
+
+    The included text is spliced raw and recursed into, so an include nested
+    inside an included body works the same way at any depth.
+    """
+    if xml.find("<include") == -1:
+        return xml
+    if depth > 8:
+        raise Error(
+            "physics3d: <include> nested more than 8 deep — a cycle, or a"
+            " model this parser should not be asked to flatten."
+        )
+
+    var out = String("")
+    var scan = 0
+    while True:
+        var inc = _find_tag(xml, "<include", scan)
+        if inc == -1:
+            break
+        var inc_end = xml.find(">", inc)
+        if inc_end == -1:
+            raise Error("physics3d: unterminated <include> tag.")
+        var tag = String(xml[byte=inc : inc_end + 1])
+        var fname = _trim(_extract_attr(tag, "file"))
+        if fname.byte_length() == 0:
+            raise Error("physics3d: <include> with no file= attribute.")
+
+        # ⚠ RELATIVE TO THE FILE THAT INCLUDES IT, which is MuJoCo's rule and
+        # is not the same as the top-level model directory once includes nest.
+        var path = fname
+        if not fname.startswith("/") and base_dir.byte_length() > 0:
+            path = base_dir + "/" + fname
+        var f: FileHandle
+        try:
+            f = open(path, "r")
+        except:
+            raise Error(
+                "physics3d: <include file='" + fname + "'> — cannot open '"
+                + path + "'."
+            )
+        var text = f.read()
+        f.close()
+        var sub_base = base_dir
+        var cut = path.rfind("/")
+        if cut > 0:
+            sub_base = String(path[byte=0:cut])
+
+        out += String(xml[byte=scan:inc])
+        # ⚠⚠ ASSET PATHS ARE REBASED BY THE INCLUDE'S OWN DIRECTORY, and the
+        # prefix is the include's RELATIVE dir, not `sub_base` — the parser
+        # applies the host's base itself, so an already-based prefix doubles
+        # it. `ms_human_700` writes `file="../geometry/sacrum.stl"` inside
+        # `assets/asset/*.xml`; without this every one of its 189 meshes
+        # resolved to `ms_human_700/../geometry/` and drew nothing, leaving a
+        # model of 81 bodies and 700 tendons rendering ONLY the tendons.
+        #
+        # ⚠ AFTER the recursion, so a nested include has already prefixed its
+        # own directory and the two compose.
+        var rel_dir = String("")
+        var slash = fname.rfind("/")
+        if slash > 0:
+            rel_dir = String(fname[byte=0:slash])
+        out += _rebase_files(
+            _splice_includes(_include_body(text, path), sub_base, depth + 1),
+            rel_dir,
+        )
+        scan = inc_end + 1
+
+    out += String(xml[byte=scan : xml.byte_length()])
+    return out^
+
+
+def resolve_includes(xml: String, base_dir: String) raises -> String:
+    """Splice every `<include file=...>` in, recursively. MuJoCo's semantics.
+
+    ⚠⚠ WITHOUT THIS, A MENAGERIE `scene.xml` IS UNLOADABLE, and the failure
+    does not look like a missing feature. `_strip_include_tags` removed the
+    tag and nothing read the file, so the scene kept its own `<contact>` —
+    which names geoms declared in the ROBOT file — and the parser raised
+    "`<pair>` references unknown geom2='torso_collision_0'". A reference
+    error, pointing at a geom that exists, from a file that never loaded.
+    `scene.xml` is the conventional entry point for every Menagerie model, so
+    this is the first thing anyone opening one hits.
+
+    TWO STEPS, and they do different jobs:
+
+      1. `_splice_includes` — MuJoCo's actual semantics. The include tag is
+         replaced by the included root's children AT ITS POSITION, so an
+         include inside a `<body>` nests, and document order is preserved.
+
+      2. `merge_mjcf` over the single spliced document — COLLAPSES the
+         repeated top-level sections that step 1 necessarily produces
+         (`<worldbody>` from the host and from each included file, and so on)
+         into one of each, in document order.
+
+    ⚠ STEP 2 IS FOR OUR PARSER, NOT FOR CORRECTNESS. MuJoCo accepts repeated
+    sections; `full_parser` reads seven of them with `_extract_section_all`
+    and the rest with `_extract_section`, which takes the FIRST AND STOPS.
+    Handing it a document with two `<default>` blocks would silently lose one
+    — the exact shape of every dropped-section bug in this file's history. The
+    collapse keeps the input to the parser in the single-section form it has
+    always assumed, so the include change cannot leak into those readers.
+
+    ⚠⚠ STRICT. `merge_mjcf` drops any section not in its accumulator list
+    WITHOUT A DIAGNOSTIC — three sections have been lost that way historically
+    (`<tendon>`, `<option>`'s `<flag>` children, `<contact>`), each to a
+    docstring claim that outlived its limitation. So every section present in
+    the spliced document is checked for in the output, and a missing one
+    RAISES naming itself.
+    """
+    if xml.find("<include") == -1:
+        return xml
+
+    var spliced = _splice_includes(_strip_xml_comments(xml), base_dir, 0)
+    var merged = merge_mjcf(spliced)
+
+    # ⚠⚠ THE STRICTNESS CHECK. See the docstring: `merge_mjcf` drops silently.
+    for sec in _mjcf_sections():
+        if _has_section(spliced, sec) and not _has_section(merged, sec):
+            raise Error(
+                "physics3d: <include> merge DROPPED the <" + sec + ">"
+                " section. `merge_mjcf` accumulates a fixed list and this is"
+                " not on it — add it there rather than accepting the loss."
+            )
+    return merged
+
+
 def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 
-    Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
-    Accumulator tags (<asset>, <default>, <worldbody>, <actuator>, <equality>,
-    <sensor>): inner content concatenated from all inputs.
+    ⚠ THIS IS NO LONGER HOW `<include>` WORKS. `resolve_includes` splices an
+    include at its position (`_splice_includes`) and then calls this ONCE, on
+    the single spliced document, purely to COLLAPSE the repeated top-level
+    sections that splicing produces into one of each. Merging two documents is
+    still what `expand_attach` needs, so both callers are live — but "merge
+    the host with the included file" is the wrong model of an include, and
+    believing it cost `ms_human_700` its 80 bodies.
+
+
+    Singletons (attributes merged, last wins per attr): <option>, <compiler>,
+    <statistic>, <size>.
+    Accumulators (inner content concatenated from all inputs): <asset>,
+    <default>, <worldbody>, <tendon>, <actuator>, <equality>, <visual>,
+    <sensor>, <contact>, <keyframe>, <custom>, <extension>, and <option>'s
+    <flag> children.
+
+    ⚠⚠ THAT IS NOW EVERY TOP-LEVEL MJCF SECTION, which is the point: the list
+    used to be partial, and each gap was found only when a model needed it.
+    `resolve_includes` cross-checks every section present in an input against
+    the merged output and RAISES naming a missing one, so the next gap is loud
+    at the merge rather than silent until a physics number is wrong.
+
+    ⚠ ANYTHING NOT IN THAT LIST WOULD STILL BE SILENTLY DROPPED HERE. No
+    section is dropped deliberately any more — <contact> was, on the stale
+    grounds of "no exclude/pair support yet", until 2026-08-03; see the note
+    at `all_contact` below. `<pair>` inside it was likewise unparsed until
+    2026-08-12; `full_parser._fill_pairs` reads it now, and carrying the
+    section here is what makes that work for an included model — Menagerie
+    declares its pairs in `scene.xml` and the geoms they name in the robot
+    file it includes.
+
+    <sensor> was in that dropped list until 2026-07-31. Our parser ignores the
+    section either way — the ported configs read the underlying fields through
+    physics3d/sensors/ — but dropping it made the merged XML UNLOADABLE as a
+    reference: MuJoCo built a model with nsensor == 0, so no parity gate could
+    ask it what a sensor should read. Accumulating it costs nothing and makes
+    the merged text a faithful copy of what the model declares.
+
+    <keyframe> joined on 2026-08-13, for ToddlerBot — which declares
+    `<key name="home">` in the INCLUDED robot file while the scene is what
+    gets loaded, so the section never survived the merge. Its qpos differs
+    from qpos0 in 26 of 51 slots by up to 1.5708 rad, and nothing raised.
+
+    This list used to CLAIM <sensor> was accumulated while omitting <tendon>,
+    which was both wrong and the reason a dropped `<tendon>` went unnoticed
+    until fish needed one. Keep it honest: if you add an accumulator, add it
+    here; if a section is dropped on purpose, say so.
 
     Each input can be a full <mujoco>...</mujoco> or a <mujocoinclude> fragment.
     <include file="..."/> tags are stripped (already resolved by caller).
@@ -1101,17 +2404,126 @@ def merge_mjcf(*xmls: String) -> String:
     var all_actuator = String("")
     var all_equality = String("")
     var all_visual = String("")
+    # <tendon> was missing from this list until 2026-07-30, so the whole
+    # section was DROPPED from every merged model. Latent for a long time
+    # because the only other merged model with tendons is dm_control's
+    # point_mass, which deliberately rewrites its two identity-coefficient
+    # fixed tendons as plain joint motors. fish is the first model that needs
+    # them for real, and lost BOTH: the `fins_flap` actuator's tendon
+    # transmission (which then failed the G3 transmission guard loudly) and
+    # the `fins_sym` passive spring (which would have failed NOTHING — a
+    # missing passive force is just a slightly different fish).
+    var all_tendon = String("")
+    # Carried for the MuJoCo side of parity gates (see the docstring); our own
+    # parser never looks at it.
+    var all_sensor = String("")
+    # <keyframe> — ToddlerBot declares `<key name="home">` in the INCLUDED
+    # robot file, not the scene, so before this the section was dropped by the
+    # merge before any parser could see it. Silent, like every other dropped
+    # section: a model with no keyframe is a model that resets to qpos0.
+    var all_keyframe = String("")
+    # <contact> joined the accumulators on 2026-08-03, for humanoid_CMU. The
+    # docstring above had said "no exclude/pair support yet" since the function
+    # was written, and by then that was FALSE at both ends: `full_parser`
+    # `_fill_excludes` populates the record and `contact_detection` skips the
+    # excluded pair (`MODEL_META_IDX_NEXCLUDE`). Only the merge was missing, so
+    # a merged model reported `nexclude == 0` against MuJoCo's real count and
+    # collided bodies MuJoCo never collides — silently, since a dropped section
+    # is not an error. This is the THIRD section dropped this way (<tendon>,
+    # then <option>'s <flag> children, now <contact>); the pattern each time is
+    # a stale claim in the docstring outliving the limitation that justified it.
+    # `<pair>` inside the section was ALSO silently ignored until 2026-08-12,
+    # when `_fill_pairs` and the three detection loops landed. Carrying the
+    # text here is what makes that work for a merged model, which is the case
+    # that matters: Menagerie declares its pairs in `scene.xml` and the geoms
+    # they name in the robot file it includes.
+    var all_contact = String("")
+    # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
+    # inside it. Those were silently dropped before 2026-07-29, which quietly
+    # disabled `<flag contact="disable"/>` for every merged model — cartpole
+    # then launched its cart off the rails it is meant to overlap.
+    var all_option_flags = String("")
+    # ⚠⚠ THE FOUR SECTIONS ADDED 2026-08-19, AND THE REASON IS THE PATTERN
+    # ABOVE, NOT A MODEL THAT NEEDED THEM. Every previous entry in this list
+    # arrived the same way: a section was dropped, nothing raised, and it was
+    # found months later by a model that happened to need it (<tendon> by
+    # fish, <option>'s <flag> by cartpole, <contact> by humanoid_CMU,
+    # <keyframe> by ToddlerBot). Four MJCF sections were still missing, and
+    # they are not rare — MEASURED across the trees available here:
+    #
+    #     <statistic>  24 Menagerie files, 11 of ours
+    #     <size>        2 Menagerie files,  6 of ours
+    #     <custom>      4 Menagerie files,  2 of ours
+    #     <extension>   1 Menagerie file
+    #
+    # so the next dropped-section bug was already written and waiting for
+    # whoever first merged one of those. Carrying them costs nothing: our
+    # parser reads none of them, and the point (as with <sensor>) is that the
+    # merged text stays a FAITHFUL copy of what the model declares, so MuJoCo
+    # can load it as a parity reference.
+    #
+    # `<statistic>` and `<size>` are attribute-only SINGLETONS, merged like
+    # <option>/<compiler>; `<custom>` and `<extension>` have children and
+    # accumulate.
+    var statistic_tags = List[String]()
+    var size_tags = List[String]()
+    var all_custom = String("")
+    var all_extension = String("")
 
     for i in range(len(xmls)):
-        var stripped = _strip_include_tags(_strip_wrapper(xmls[i]))
+        # ⚠⚠ COMMENTS COME OFF FIRST, AND THAT IS A FIX, NOT HYGIENE.
+        # `_extract_section_inner` depth-counts `"<" + tag` over RAW TEXT, so a
+        # comment that merely MENTIONS a section tag was counted as an opener,
+        # the depth never balanced, and the section was emitted EMPTY. Measured
+        # on three fixtures differing by one comment line:
+        #
+        #   two nested default classes, no comments        -> <default> present
+        #   + "<!-- an ordinary remark, no brackets -->"   -> <default> present
+        #   + "<!-- ... top-level <default>; ... -->"      -> <default> ABSENT
+        #
+        # MuJoCo then rejects the merged model with "unknown default class
+        # name". ⚠ NESTING IS IRRELEVANT — the bug was filed as "merge_mjcf
+        # cannot do nested defaults" and that is false; it handles them fine.
+        #
+        # This is the THIRD instance of the same shape in this function, after
+        # a self-closing `<equality/>` inside a default class emptying
+        # `<equality>` for a whole file (quadruped's leg couplings) and
+        # `<tendon>` missing from the accumulator list entirely (fish). Both
+        # parsers already strip comments at their entry points —
+        # `parse_xml_model_data` always has, and `full_parser` was fixed for
+        # this exact class after a commented-out `<site>` in Gymnasium's
+        # `half_cheetah.xml` was parsed as a REAL site. `merge_mjcf` was the
+        # last one reading raw text.
+        #
+        # ⚠ It runs BEFORE `_strip_wrapper` / `_strip_include_tags` on purpose:
+        # a commented-out `<mujoco>` or `<include>` would mislead those two the
+        # same way.
+        #
+        # ⚠ NOT A FULL TOKENISER. A `<` inside a string ATTRIBUTE VALUE would
+        # still miscount. No model in the tree has one, and all three recorded
+        # instances are comments; widening this to real tokenisation is a
+        # separate job with a separate justification.
+        #
+        # `<freejoint>` -> `<joint type="free">` before ANY scanning, so the
+        # ~20 `find("<joint")` sites downstream all see it. See
+        # `_normalize_freejoint` for why this is textual rather than per-site.
+        var stripped = _normalize_freejoint(
+            _strip_include_tags(_strip_wrapper(_strip_xml_comments(xmls[i])))
+        )
 
         # Singleton tags
-        var opt = _extract_singleton_tag(stripped, "option")
-        if opt.byte_length() > 0:
-            option_tags.append(opt)
-        var comp = _extract_singleton_tag(stripped, "compiler")
-        if comp.byte_length() > 0:
-            compiler_tags.append(comp)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "option", option_tags)
+        # Carry any <flag .../> children of this fragment's <option>.
+        all_option_flags = all_option_flags + _extract_section_inner(
+            stripped, "option"
+        )
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "compiler", compiler_tags)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "statistic", statistic_tags)
+        # ⚠ ALL of them, not the first — see `_append_singleton_tags`.
+        _append_singleton_tags(stripped, "size", size_tags)
 
         # Accumulator sections (extract inner content, handle multiple occurrences)
         all_assets = all_assets + _extract_section_inner(stripped, "asset")
@@ -1119,7 +2531,17 @@ def merge_mjcf(*xmls: String) -> String:
         all_worldbody = all_worldbody + _extract_section_inner(stripped, "worldbody")
         all_actuator = all_actuator + _extract_section_inner(stripped, "actuator")
         all_equality = all_equality + _extract_section_inner(stripped, "equality")
+        all_tendon = all_tendon + _extract_section_inner(stripped, "tendon")
+        all_sensor = all_sensor + _extract_section_inner(stripped, "sensor")
+        all_contact = all_contact + _extract_section_inner(stripped, "contact")
+        all_keyframe = all_keyframe + _extract_section_inner(
+            stripped, "keyframe"
+        )
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
+        all_custom = all_custom + _extract_section_inner(stripped, "custom")
+        all_extension = all_extension + _extract_section_inner(
+            stripped, "extension"
+        )
 
     # Build merged XML
     var result = String('<mujoco model="merged">\n')
@@ -1129,13 +2551,42 @@ def merge_mjcf(*xmls: String) -> String:
     if merged_compiler.byte_length() > 0:
         result = result + "  " + merged_compiler + "\n"
 
+    var merged_statistic = _merge_singleton_attrs(statistic_tags, "statistic")
+    if merged_statistic.byte_length() > 0:
+        result = result + "  " + merged_statistic + "\n"
+
+    var merged_size = _merge_singleton_attrs(size_tags, "size")
+    if merged_size.byte_length() > 0:
+        result = result + "  " + merged_size + "\n"
+
     var merged_option = _merge_singleton_attrs(option_tags, "option")
     if merged_option.byte_length() > 0:
-        result = result + "  " + merged_option + "\n"
+        if _trim(all_option_flags).byte_length() > 0:
+            # Re-open the self-closing merged tag so the <flag> children fit.
+            var slash = merged_option.rfind("/>")
+            var open_tag = (
+                String(merged_option[byte=0:slash]) + ">" if slash
+                != -1 else merged_option
+            )
+            result = (
+                result
+                + "  "
+                + open_tag
+                + "\n"
+                + all_option_flags
+                + "\n  </option>\n"
+            )
+        else:
+            result = result + "  " + merged_option + "\n"
 
     # Visual
     if _trim(all_visual).byte_length() > 0:
-        result = result + "  <visual>\n" + all_visual + "  </visual>\n"
+        result = (
+            result
+            + "  <visual>\n"
+            + _dedupe_last_wins(all_visual)
+            + "  </visual>\n"
+        )
 
     # Defaults
     if _trim(all_defaults).byte_length() > 0:
@@ -1150,6 +2601,11 @@ def merge_mjcf(*xmls: String) -> String:
         result = result + "  <worldbody>\n" + all_worldbody + "  </worldbody>\n"
 
     # Actuator
+    # Emitted BEFORE <actuator> so the merged text reads like a hand-written
+    # model; the parser resolves `tendon="..."` by name either way.
+    if _trim(all_tendon).byte_length() > 0:
+        result = result + "  <tendon>\n" + all_tendon + "  </tendon>\n"
+
     if _trim(all_actuator).byte_length() > 0:
         result = result + "  <actuator>\n" + all_actuator + "  </actuator>\n"
 
@@ -1157,8 +2613,290 @@ def merge_mjcf(*xmls: String) -> String:
     if _trim(all_equality).byte_length() > 0:
         result = result + "  <equality>\n" + all_equality + "  </equality>\n"
 
+    # Sensor (reference-only; see the docstring)
+    if _trim(all_sensor).byte_length() > 0:
+        result = result + "  <sensor>\n" + all_sensor + "  </sensor>\n"
+
+    # Contact — <exclude> and <pair> are both parsed and honoured.
+    if _trim(all_contact).byte_length() > 0:
+        result = result + "  <contact>\n" + all_contact + "  </contact>\n"
+
+    # Keyframe — emitted LAST, where hand-written models put it. Joined the
+    # accumulators on 2026-08-13 for ToddlerBot, whose `<key name="home">`
+    # lives in the INCLUDED robot file rather than the scene, so without this
+    # the section never reached any parser. Fourth section to be dropped this
+    # way after <tendon>, <option>'s <flag> children and <contact>.
+    if _trim(all_keyframe).byte_length() > 0:
+        result = result + "  <keyframe>\n" + all_keyframe + "  </keyframe>\n"
+
+    # ⚠ AFTER THE PHYSICS SECTIONS, because nothing reads them and MJCF is
+    # order-insensitive between top-level sections. See the note where these
+    # are declared for why they are carried at all.
+    if _trim(all_custom).byte_length() > 0:
+        result = result + "  <custom>\n" + all_custom + "  </custom>\n"
+    if _trim(all_extension).byte_length() > 0:
+        result = (
+            result + "  <extension>\n" + all_extension + "  </extension>\n"
+        )
+
     result = result + "</mujoco>"
     return result
+
+
+def _scan_max_condim(xml: String) -> Int:
+    """Largest `condim=` in the file, floored at 3.
+
+    Sizes the PYRAMIDAL edge list, which needs `2*(dim-1)` rows per contact.
+    ⚠ THIS DELIBERATELY SCANS THE WHOLE FILE, `<default>` blocks included, and
+    does not try to work out which classes are actually used. Over-estimating
+    is SAFE — the builder zeroes the slots a contact does not need, so the only
+    cost is a few unused rows — while under-estimating is SILENT: the extra
+    friction rows get built into a workspace nothing reads, and the model spins
+    and rolls without resistance. A conservative bound is the whole point.
+
+    (Getting this wrong once already cost a full debugging arc: see
+    tests/physics3d/test_rolling_friction_vs_mujoco.mojo.)
+    """
+    # ⚠ BOTH QUOTE STYLES. This searched only `condim="` until 2026-08-19, so
+    # `condim='6'` — which MJCF admits and which nothing in the tree happens to
+    # use — scanned as the floor of 3. That is the SILENT under-estimate this
+    # docstring calls out two paragraphs up: the model would spin and roll
+    # without resistance and nothing would say so. Found by comparing this
+    # scanner against the runtime one, which reads the PARSED attribute and is
+    # therefore quote-agnostic; they disagreed 3 vs 6 on a single-quoted
+    # fixture. No asset in the tree changes (audited: zero files), so this is
+    # robustness, not a behaviour change.
+    var best = 3
+    for q in range(2):
+        var needle = 'condim="' if q == 0 else "condim='"
+        var quote = '"' if q == 0 else "'"
+        var nlen = needle.byte_length()
+        var pos = 0
+        best = _scan_condim_pass(xml, needle, quote, nlen, pos, best)
+    return best
+
+
+def _scan_condim_pass(
+    xml: String, needle: String, quote: String, nlen: Int, pos_in: Int,
+    best_in: Int,
+) -> Int:
+    """One quote style's pass for `_scan_max_condim`."""
+    var best = best_in
+    var pos = pos_in
+    while True:
+        var hit = xml.find(needle, pos)
+        if hit < 0:
+            break
+        var vs = hit + nlen
+        var ve = xml.find(quote, vs)
+        if ve < 0:
+            break
+        var val = 0
+        var ok = ve > vs
+        for i in range(vs, ve):
+            var ch = Int(xml.as_bytes()[i])
+            if ch < ord("0") or ch > ord("9"):
+                ok = False
+                break
+            val = val * 10 + (ch - ord("0"))
+        if ok and val > best:
+            best = val
+        pos = ve + 1
+    return best
+
+
+def _scan_noslip_iterations(xml: String) -> Int:
+    """`<option noslip_iterations="N">`, or 0 if absent (MuJoCo's default).
+
+    MuJoCo runs `mj_solNoSlip` after the main solver whenever this is > 0. It
+    is a friction-only Gauss-Seidel sweep with the normal forces frozen, and
+    it is NOT a rounding refinement: on dm_control's dog — the one suite model
+    that sets it — turning it off moves MuJoCo's own rollout by `max|d(qvel)|`
+    2.9e-2 on the FIRST contacting step.
+
+    ⚠ THE LEDGER CLOSED THIS FEATURE ON A GREP THAT WAS WRONG. `docs/
+    DM_CONTROL_PORT.md` decision 4 read "`grep -r noslip references/
+    dm_control-main/` returns nothing in the suite" — `dog.xml` line 6 has set
+    `noslip_iterations="4"` the whole time. The conclusion was accidentally
+    right (dog was descoped) and the evidence was not.
+
+    Unlike `_scan_max_condim`, this reads only the REAL `<option>` element:
+    an over-estimate here is not free — it would run a solver pass MuJoCo does
+    not run — so a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return 0
+    var s = _trim(_extract_attr(opt, "noslip_iterations"))
+    if s.byte_length() == 0:
+        return 0
+    var val = 0
+    for i in range(s.byte_length()):
+        var ch = Int(s.as_bytes()[i])
+        if ch < ord("0") or ch > ord("9"):
+            return 0
+        val = val * 10 + (ch - ord("0"))
+    return val
+
+
+def _scan_ccd_tolerance(xml: String) -> Float64:
+    """`<option ccd_tolerance="X">`, or MuJoCo's 1e-6 default.
+
+    EPA's stopping rule: it breaks when the gap between its lower bound (the
+    closest polytope face's distance) and its running upper bound falls below
+    this. `mjc_penetration` copies it into `mjCCDConfig.tolerance` and also
+    uses it as MPR's, so one number governs both.
+
+    ⚠ TIGHTER IS NOT SAFER HERE. The stopping rule decides WHICH boundary face
+    EPA settles on, and the contact NORMAL is that face's, so running past the
+    reference does not converge toward it. We hardcoded 1e-8 — tighter than
+    MuJoCo's — and a model setting this was ignored outright.
+
+    ⚠ THE DEFAULT IS NOT DOCUMENTED IN THE ENGINE SOURCE, only in the USD
+    schema (`src/experimental/usd/mjcPhysics/schema.usda`: `ccd_tolerance =
+    1e-06`, `ccd_iterations = 35`). Confirmed against the 3.10.0 runtime on a
+    model whose `<option>` sets neither — `m.opt.ccd_tolerance` reads 1e-06 and
+    `m.opt.ccd_iterations` reads 35 — because a schema file in an
+    `experimental/` directory is not evidence about the runtime by itself, and
+    no reference tree here matches that runtime
+    (`feedback_reference_tree_version_drift`).
+
+    Like `_scan_noslip_iterations` this reads only the REAL `<option>`
+    element: a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return MJ_CCD_TOLERANCE
+    var s = _trim(_extract_attr(opt, "ccd_tolerance"))
+    if s.byte_length() == 0:
+        return MJ_CCD_TOLERANCE
+    var v = _parse_float(s)
+    # A zero or negative tolerance would make the loop run to its iteration
+    # cap on every pair. MuJoCo does not guard this, but MuJoCo also does not
+    # have our fixed polytope caps, so the failure mode differs: fall back
+    # rather than silently changing what the caps mean.
+    if v <= 0.0:
+        return MJ_CCD_TOLERANCE
+    return v
+
+
+def _scan_ccd_iterations(xml: String) -> Int:
+    """`<option ccd_iterations="N">`, or MuJoCo's 35 default.
+
+    The EPA expansion cap. Ours is additionally bounded by `EPA_V_CAP` /
+    `EPA_F_CAP`, which MuJoCo has no equivalent of — it grows the polytope on
+    the heap — so a model asking for more iterations than the arrays can hold
+    gets the arrays' limit. That is a real difference and it is why `gjk.mojo`
+    takes the min explicitly rather than trusting the parsed value.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return MJ_CCD_ITERATIONS
+    var s = _trim(_extract_attr(opt, "ccd_iterations"))
+    if s.byte_length() == 0:
+        return MJ_CCD_ITERATIONS
+    var val = 0
+    for i in range(s.byte_length()):
+        var ch = Int(s.as_bytes()[i])
+        if ch < ord("0") or ch > ord("9"):
+            return MJ_CCD_ITERATIONS
+        val = val * 10 + (ch - ord("0"))
+    if val <= 0:
+        return MJ_CCD_ITERATIONS
+    return val
+
+
+def _lower(s: String) -> String:
+    """ASCII lowercase. MuJoCo matches `<option solver>` and `integrator`
+    case-insensitively and writes them capitalised ("PGS", "Newton", "RK4"),
+    so a byte-exact compare against a lowercase literal would miss every real
+    model. `cone` is lowercase in MuJoCo's own schema and is compared directly.
+    """
+    var out = String("")
+    for i in range(s.byte_length()):
+        var c = Int(s.as_bytes()[i])
+        if c >= ord("A") and c <= ord("Z"):
+            out += chr(c + 32)
+        else:
+            out += chr(c)
+    return out
+
+
+def _scan_cone(xml: String) -> Int:
+    """`<option cone="pyramidal|elliptic">`, MuJoCo's default PYRAMIDAL.
+
+    ⚠⚠ THIS WAS TRANSCRIBED BY HAND INTO 32 DEF FILES AND CHECKED BY NOTHING.
+    `cone_type` is a `ModelDefFromXML` parameter, so every model def states its
+    own cone as a literal and nothing compared that literal with the XML it
+    names. All 161 in-tree instantiations happen to agree today (audited), but
+    the RUNTIME path could not agree even in principle: it has no parsed value
+    to agree with, so the studio ran every model it opened on ELLIPTIC —
+    including the menagerie models that ask for pyramidal.
+
+    ⚠ THE DEFAULT IS PYRAMIDAL, which is the opposite of what the manipulation
+    suite made habitual: 21 of the def files say ELLIPTIC because their XML
+    says so, not because it is the default.
+
+    Like `_scan_noslip_iterations` this reads only the REAL `<option>` element:
+    a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return ConeType.PYRAMIDAL
+    var v = _trim(_extract_attr(opt, "cone"))
+    if v == String("elliptic"):
+        return ConeType.ELLIPTIC
+    # ⚠ AN UNRECOGNISED VALUE FALLS BACK TO THE DEFAULT rather than guessing.
+    # MuJoCo's compiler rejects the file outright; we cannot, because this runs
+    # at comptime inside a dimension counter, and a wrong cone is a quieter
+    # failure than a missing model.
+    return ConeType.PYRAMIDAL
+
+
+def _scan_solver(xml: String) -> Int:
+    """`<option solver="PGS|CG|Newton">`, MuJoCo's default NEWTON.
+
+    ⚠⚠ THE DEFAULT IS NEWTON AND OURS WAS PGS. `m.opt.solver` reads 2 on a
+    model whose `<option>` says nothing, while `EulerIntegrator`'s `SOLVER`
+    parameter defaults to `"pgs"` — so every tool that does not pass one runs a
+    solver the reference does not use. Measured on spot, whose friction rows
+    are stiff (`impratio=100`): PGS moves the normal force 3.3% between
+    impratio 1 and 100 where the reference moves it 62%.
+
+    ⚠ MuJoCo MATCHES THE NAME CASE-INSENSITIVELY in its own parser; the values
+    it writes are "PGS", "CG" and "Newton".
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return SolverType.NEWTON
+    var v = _lower(_trim(_extract_attr(opt, "solver")))
+    if v == String("pgs"):
+        return SolverType.PGS
+    if v == String("cg"):
+        return SolverType.CG
+    return SolverType.NEWTON
+
+
+def _scan_integrator(xml: String) -> Int:
+    """`<option integrator="Euler|RK4|implicit|implicitfast">`, default EULER.
+
+    ⚠ NOT READ BY ANY TOOL YET, and stated here so that stops being invisible:
+    the studio builds an `EulerIntegrator` for every model it opens, including
+    spot, which asks for `implicitfast`. MuJoCo's implicit integrators fold the
+    damping terms into the mass matrix, which is what lets a model with stiff
+    actuator velocity feedback stay stable at its declared timestep.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return IntegratorType.EULER
+    var v = _lower(_trim(_extract_attr(opt, "integrator")))
+    if v == String("rk4"):
+        return IntegratorType.RK4
+    if v == String("implicitfast"):
+        return IntegratorType.IMPLICITFAST
+    if v == String("implicit"):
+        return IntegratorType.IMPLICIT
+    return IntegratorType.EULER
 
 
 def parse_xml(xml: String) -> ParsedModel:
@@ -1183,7 +2921,24 @@ def parse_xml(xml: String) -> ParsedModel:
     """
 
     # ---- Strip XML comments to avoid counting commented-out tags ------------
-    var xml_clean = _strip_xml_comments(xml)
+    #
+    # ⚠⚠ `_normalize_freejoint` RUNS HERE, NOT ONLY IN `merge_mjcf`. It used to
+    # live only there, so `<freejoint/>` was rewritten for models built by the
+    # composer and INVISIBLE to every model handed straight to `parse_xml`.
+    # The failure is silent and total: `<freejoint` matches none of the ~20
+    # `find("<joint")` sites, so NJOINT/NQ/NV come out 0, the body welds to the
+    # world, and `pair_body_filtered`'s first clause (`weld_i == weld_j`)
+    # then discards EVERY contact pair it is in. Measured on a free sphere
+    # overlapping a static box: MuJoCo 1 contact, ours 0, and the body could
+    # not have moved either since it had no dofs.
+    #
+    # Every model shipped today goes through `merge_mjcf` first and is
+    # unaffected — the exposure is single-file MJCF, which is exactly the shape
+    # Menagerie / SO-ARM / ToddlerBot ports arrive in.
+    #
+    # Idempotent: after one pass no `<freejoint` remains, so the composer path
+    # normalizing first and this normalizing again is a no-op.
+    var xml_clean = _strip_xml_comments(_normalize_freejoint(xml))
 
     # ---- Isolate sections to avoid counting <default> entries ---------------
     var worldbody = _extract_section(xml_clean, "worldbody")
@@ -1228,22 +2983,28 @@ def parse_xml(xml: String) -> ParsedModel:
 
     # ---- Equality constraints (<equality> section) --------------------------
     var eq_sec = _extract_section(xml_clean, "equality")
-    var neq = _count_tag(eq_sec, "weld") + _count_tag(eq_sec, "connect")
+    # ⚠ `<joint>` HERE IS `mjEQ_JOINT`, NOT A `<worldbody>` joint — `eq_sec`
+    # is the `<equality>` section only, so there is no collision. Omitting it
+    # sizes the equality slab too small and `_fill_equality`'s records fall off
+    # the end of `MAX_EQUALITY` silently (see the `neq`-vs-`max_equality`
+    # trap). `<tendon>` equalities are NOT counted: they live on the tendon
+    # record, flagged by `TENDON_IDX_IS_EQUALITY`, not in this slab.
+    var neq = (
+        _count_tag(eq_sec, "weld")
+        + _count_tag(eq_sec, "connect")
+        + _count_tag(eq_sec, "joint")
+    )
 
     # ---- Contact exclusions (<contact> section) -----------------------------
     var contact_sec = _extract_section(xml_clean, "contact")
     var nexclude = _count_tag(contact_sec, "exclude")
+    var npair = _count_tag(contact_sec, "pair")
 
-    # ---- Compiler angle units -----------------------------------------------
-    var angle_deg = False
-    var compiler_t = xml_clean.find("<compiler")
-    if compiler_t != -1:
-        var compiler_end = xml_clean.find(">", compiler_t)
-        if compiler_end != -1:
-            var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                angle_deg = True
+    # ---- Tendons (<tendon> section) -----------------------------------------
+    var tendon_sec = _extract_section(xml_clean, "tendon")
+    var ntendon = _count_tag(tendon_sec, "fixed") + _count_tag(
+        tendon_sec, "spatial"
+    )
 
     # ---- Timestep (<option timestep="..."/>) --------------------------------
     var timestep = Float64(0.002)  # MuJoCo default
@@ -1270,8 +3031,16 @@ def parse_xml(xml: String) -> ParsedModel:
         nsite,
         neq,
         nexclude,
-        angle_deg,
+        npair,
+        ntendon,
         timestep,
+        _scan_max_condim(xml),
+        _scan_noslip_iterations(xml),
+        _scan_ccd_tolerance(xml),
+        _scan_ccd_iterations(xml),
+        _scan_cone(xml),
+        _scan_solver(xml),
+        _scan_integrator(xml),
     )
 
 
@@ -1280,134 +3049,487 @@ def parse_xml(xml: String) -> ParsedModel:
 # =============================================================================
 
 
-struct ComptimeActData(Copyable, Movable):
-    """Precomputed actuator/joint data for GPU kernel use.
+comptime MAX_COMPTIME_TENDONS: Int = 16
 
-    Stores results of XML parsing in InlineArrays so that GPU kernels can
-    access them via compile-time array indexing (no String operations needed).
+# Joint wraps per FIXED tendon, and per actuator transmission (a joint
+# transmission is the degenerate one-wrap case).
+#
+# ⚠ THIS WAS A BARE `4` AND IT SILENTLY TRUNCATED. dm_control's dog wraps 11
+# and 10 joints on `caudal_extend` / `caudal_bend` — its tail — so those two
+# actuators drove a THIRD of the joints they should, while the parse wrote
+# `tendon_trn_n = 4` and every consumer read a complete tendon. Six of dog's
+# eight tendons wrap exactly 4, which is why nothing noticed.
+#
+# The third silent truncation of this shape in the dm_control arc, after
+# `MAX_COMPTIME_TENDONS` (8 -> 16) and `MAX_NAMED_DEFAULTS` (16 -> 128). Per
+# section 4.3 of `docs/DM_CONTROL_PORT_PHASE2.md`, WIDENING IS THE EASY HALF:
+# `ComptimeActData.tendon_wrap_overflow` counts what would not fit and
+# `ModelDefFromXML.init_fields` RAISES on it, so the next model to outgrow
+# this fails to build instead of running wrong.
+comptime MAX_COMPTIME_TENDON_WRAPS: Int = 16
+"""Cap on `<fixed>` tendons the comptime parser records (quadruped needs 12)."""
 
-    Usage:
-        comptime _acd = parse_xml_model_data(Self.xml)
-        # In GPU kernel:  Self._acd.motor_gears[i]  (no String ops)
-    """
+# ⚠ SIX RENDER CAPS WERE DELETED HERE (phase 1a.5c), with the fixed arrays
+# they bounded: MAX_COMPTIME_RENDER_GEOMS (448), _SITES (192), _MESHES (32),
+# MAX_COMPTIME_TEXTURES (16), MAX_COMPTIME_MATERIALS (32) and
+# MAX_COMPTIME_SPATIAL_TENDONS (4) / _TENDON_SITES (16).
+#
+# Their notes are worth keeping as a class of bug rather than as constants.
+# Every one of them was widened at least once AFTER a model outgrew it, and
+# the failure was never a missing element:
+#
+#   * materials 8 -> 32. dm_control's shared asset block declares THIRTEEN
+#     materials and every suite model includes it. Ids came from a scan that
+#     knew nothing about the cap and were bounds-checked against `nmat`, an
+#     INDEPENDENT uncapped count — so `mid = 9` passed `mid < nmat` and then
+#     indexed an 8-slot array. point_mass, fish and reacher aborted on sight;
+#     models whose materials happened to land under 8 merely rendered wrong.
+#   * geoms 64 -> 160 -> 448 and sites 16 -> 48 -> 192, for dog and then for
+#     manipulation's brick tasks (reassemble_5: 431 geoms, 181 sites).
+#   * meshes 16 -> 32. SO-ARM100 declares 18, so two were dropped silently
+#     and any geom naming them did not draw.
+#
+# `RenderFields` is `List`-backed and sized by what the model has, so none of
+# this is expressible any more. The remaining MAX_COMPTIME_* constants below
+# belong to `parse_xml`, which still runs.
 
-    var motor_gears: InlineArray[Float64, 32]
-    var motor_dof_adr: InlineArray[Int, 32]
-    var motor_ctrl_min: InlineArray[Float64, 32]
-    var motor_ctrl_max: InlineArray[Float64, 32]
-    var joint_is_limited: InlineArray[Bool, 32]
-    var joint_qpos_adr: InlineArray[Int, 32]
-    var joint_range_min: InlineArray[Float64, 32]
-    var joint_range_max: InlineArray[Float64, 32]
-    var inertiafromgeom: Bool
-    var settotalmass: Float64
-    # Initial qpos values from <custom><numeric name="init_qpos" data="..."/>.
-    # nq == 0 means no init_qpos was found; use qpos0 defaults instead.
-    var qpos0: InlineArray[Float64, 64]
-    var nq: Int
-    # qpos address of the first free joint (-1 if no free joint present).
-    var free_joint_qpos_adr: Int
+# Body NAMES are deliberately NOT recorded here.
+#
+# A `<skin>`'s bones name the bodies they follow, so binding one needs names —
+# but every way of writing them into this comptime struct is a compile failure in
+# the interpreter, and the failures point at the standard library rather than at
+# the cause. Measured, in order:
+#
+#   · storing a CONSTANT at the DFS site compiles; storing ANY slice there does
+#     not, including a fixed `worldbody[byte=p:p+4]`. So it is the slice.
+#   · hoisting to a top-level pass does not help, on `worldbody` or on
+#     `xml_clean`, with `_extract_attr` or with pure index arithmetic.
+#   · shrinking the array from 96 entries to 8 does not help either.
+#   · the `<texture>` loop below stores `_extract_attr(tag, "name")` from the
+#     same depth and DOES compile, so this is not the slice-depth family in
+#     `feedback_comptime_nested_string_slice_fails`. Whatever separates them was
+#     not worth more bisecting.
+#
+# `ModelDefFromXML.body_names()` extracts them from the model's XML AT RUNTIME
+# instead, where none of this applies — see its note. The XML is already carried
+# as a comptime parameter, so nothing extra is stored to make that possible.
 
-    def __init__(out self):
-        """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False.
-        """
-        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
-        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
-        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
-        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
-        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
-        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
-        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
-        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
-        self.inertiafromgeom = False
-        self.settotalmass = Float64(-1.0)
-        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
-        self.nq = 0
-        self.free_joint_qpos_adr = -1
+comptime MAX_COMPTIME_KEYFRAMES: Int = 8
+"""Cap on `<keyframe><key>` entries the comptime parser records.
 
-    def __init__(out self, *, copy: Self):
-        # InlineArray is not ImplicitlyCopyable; copy element-by-element.
-        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
-        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
-        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
-        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
-        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
-        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
-        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
-        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
-        self.inertiafromgeom = copy.inertiafromgeom
-        self.settotalmass = copy.settotalmass
-        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
-        self.nq = copy.nq
-        self.free_joint_qpos_adr = copy.free_joint_qpos_adr
-        for i in range(32):
-            self.motor_gears[i] = copy.motor_gears[i]
-            self.motor_dof_adr[i] = copy.motor_dof_adr[i]
-            self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
-            self.motor_ctrl_max[i] = copy.motor_ctrl_max[i]
-            self.joint_is_limited[i] = copy.joint_is_limited[i]
-            self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
-            self.joint_range_min[i] = copy.joint_range_min[i]
-            self.joint_range_max[i] = copy.joint_range_max[i]
-        for i in range(64):
-            self.qpos0[i] = copy.qpos0[i]
+⚠ MEASURED with MuJoCo, not grep — a `<key>` inside an XML comment is a real
+hazard here: `rethink_robotics_sawyer/sawyer.xml` carries a commented-out
+second `<key name="home">` whose qpos is one slot LONGER than nq, and a text
+scan reads it as a live over-length keyframe.
 
-    def __init__(out self, *, deinit move: Self):
-        self.motor_gears = move.motor_gears^
-        self.motor_dof_adr = move.motor_dof_adr^
-        self.motor_ctrl_min = move.motor_ctrl_min^
-        self.motor_ctrl_max = move.motor_ctrl_max^
-        self.joint_is_limited = move.joint_is_limited^
-        self.joint_qpos_adr = move.joint_qpos_adr^
-        self.joint_range_min = move.joint_range_min^
-        self.joint_range_max = move.joint_range_max^
-        self.inertiafromgeom = move.inertiafromgeom
-        self.settotalmass = move.settotalmass
-        self.qpos0 = move.qpos0^
-        self.nq = move.nq
-        self.free_joint_qpos_adr = move.free_joint_qpos_adr
+Across all of Menagerie the histogram is `{1: 105, 2: 14, 3: 1}` — the maximum
+is THREE (`franka_emika_panda/mjx_single_cube.xml`). 8 is headroom over that
+rather than a slot above it, per `MAX_COMPTIME_NQ`'s note. Exceeding it sets
+`bad_keyframe_code = 1` and `ModelDefFromXML` fails the build, rather than the
+silent truncation `MAX_COMPTIME_TENDONS` and `MAX_COMPTIME_ACTUATORS` both
+shipped with.
 
+⚠ These arrays are `NKEYS * NQ0` and are materialized by the comptime
+interpreter; raising this is not free. Measure the build time if you do."""
+
+comptime MAX_COMPTIME_ACTUATORS: Int = 64
+"""Cap on actuators the comptime parser records (humanoid_CMU needs 56).
+
+⚠ COUNT THESE WITH MuJoCo, NOT WITH grep. `grep -c '<motor '` on
+humanoid_CMU.xml says 57 and `mjModel.nu` says 56 — the extra match is the
+`<motor ctrllimited=... />` inside `<default class="main">`. Every count in
+these three docstrings was off by the number of same-named elements sitting in
+default blocks until it was checked against a compiled model.
+
+Widened 32 -> 64 on 2026-08-03 for dm_control's humanoid_CMU. The old bound
+was a SILENT TRUNCATION of exactly the shape `MAX_COMPTIME_TENDONS` had before
+2026-07-31: the scan below is `while act_count < CAP`, so a model with more
+actuators than the cap simply stopped recording, while `ParsedModel.nact`
+counted the tags INDEPENDENTLY and came out right. The env would therefore
+expose the full action space and silently apply zero force through every
+actuator past the cap. `ModelDefFromXML` now asserts `nact <=
+MAX_COMPTIME_ACTUATORS` so the next model to outgrow this fails to compile.
+
+Measured with MuJoCo 3.10.0: humanoid_CMU `nu` 56, dog `nu` 38 — both fit. If
+a later model does not, RAISE THIS AND MEASURE THE BUILD TIME; these arrays are
+materialized by the comptime interpreter."""
+
+comptime MAX_COMPTIME_JOINTS: Int = 96
+"""Cap on joints the comptime parser records (dog needs 75, humanoid_CMU 57).
+
+(humanoid_CMU: 1 free + 56 hinges. `grep -c '<joint '` says 60: four of those
+are the `<joint>` elements of `main`, `stiff_low`, `stiff_medium` and
+`stiff_high`.)
+
+Same silent-truncation shape as `MAX_COMPTIME_ACTUATORS` above, and the payload
+is worse: `joint_qpos_adr` / `joint_is_limited` / `joint_range_*` feed the JOINT
+LIMIT rows, so a joint past the cap keeps its degree of freedom and quietly
+loses its stops. Asserted in `ModelDefFromXML` against `njoint`.
+
+Widened 64 -> 96 on 2026-08-03 for dm_control's dog (Phase 4). ⚠ dog is TWO
+models, and only one of them was measured when this note first said "75":
+
+    stand / walk / trot / run   njnt 74   nq 80    (`make_model` deletes the
+                                                    ball, and with it a free
+                                                    joint worth 1 jnt / 7 qpos)
+    fetch                       njnt 75   nq 87    (ball kept)
+
+Both were counted with `mjModel`, not grep. 96 leaves headroom over the larger
+of the two rather than sitting one slot above it — see `MAX_COMPTIME_NQ`'s note
+on why a one-slot margin is not a margin."""
+
+comptime MAX_COMPTIME_NQ: Int = 128
+"""Cap on `qpos0` slots the comptime parser records.
+
+⚠ humanoid_CMU does NOT need this widening — its `nq` is 63, ONE SLOT under the
+old bound of 64. It was widened on the strength of a miscount and is kept
+because dog's `nq` is 80 (stand/walk/trot/run) or 87 (fetch) and genuinely does
+not fit, and because the failure mode below is the worst of the three. One slot
+is not a margin.
+
+Widened 64 -> 128 on 2026-08-03. ⚠ THIS ONE IS NOT A TRUNCATING SCAN — the
+writes are `data.qpos0[qpos_adr] = ...` indexed by the joint's own qpos address,
+so a model with `nq` past the cap indexes OUT OF BOUNDS rather than stopping
+early. Asserted against `nq` in `ModelDefFromXML`. dog is the model that exceeds 64.
+
+Note the SEPARATE 64-geom cap in `ComptimeRenderData` below: that one is
+RENDER data, not physics (`fields.Model` is parameterized by NGEOM and comes
+from the runtime `full_parser`), so exceeding it costs geoms in the viewer and
+nothing in the dynamics. dog has 290 geoms as authored (296 with the ball) and
+blows straight past it; humanoid_CMU has 50 and does not. ⚠ After the Phase 4
+mesh-inertia bake the ported dog carries 128 geoms, not 290 — the 162 bone
+meshes are non-colliding and are deleted once their inertia is stated
+explicitly."""
+
+
+# ═══ `ComptimeActData` / `parse_xml_model_data` DELETED (phase 1a.4e) ═══════
+#
+# 1269 lines: a struct of ~20 `InlineArray`s and the ~800-line scan that
+# filled it, both INTERPRETED AT COMPTIME for every model that named a
+# `ModelDefFromXML`. It was the actuator tables, the reference pose, the
+# keyframes and the joint limit tables — everything `SpecFields` now holds,
+# built at runtime by `full_parser` + `fields_build.build_spec_fields`.
+#
+# ⚠ THE HELPERS BELOW IT SURVIVE because `parse_xml` and
+# `parse_xml_render_data` still use them. `_attr_3way_cached` and
+# `_DefaultsIndex` were written FOR this scan (they replaced ~340 O(n)
+# re-walks per model); if `_rcd` goes the same way in 1a.5, check whether
+# anything still calls them before assuming they are load-bearing.
+#
+# ⚠ Two known defects died with it rather than being fixed, because the code
+# that had them is gone and the runtime path does not: its joint scan read
+# `limited`/`range` off the ELEMENT TAG only (so quadruped reported 0 of 17
+# limited joints, and so_arm100 0 of 6), and `_normalize_freejoint` was
+# missing from its entry point (so ten single-file manipulation models got
+# `free_joint_qpos_adr = -1` and a zero reset quaternion). Both are recorded
+# in the assessment doc, §10.13 and §10.15, so the shapes stay findable.
 
 def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
-    """Return DOF address of joint with the given name in worldbody DFS order.
+    """A named joint's DOF address in MuJoCo's element order, or -1.
 
-    Scans joints in DFS order, accumulating DOF count until the target joint
-    is found. Returns -1 if the joint name is not found.
+    Delegates to `_xml_joint_adr_grouped`, which explains why the obvious
+    linear text scan this used to be is WRONG: MuJoCo groups joints by body,
+    and dog is the model where that stops coinciding with text order.
+    """
+    return _xml_joint_adr_grouped(xml, jname, False)
+
+
+def _find_tag(sec: String, marker: String, start: Int) -> Int:
+    """Index of the next REAL `marker` tag at or after `start`, else -1.
+
+    "Real" means the character after the marker ends the element name, so
+    `<position` does not match `<positionfoo` (and, historically, `<motor`
+    must not match a longer name either).
+    """
+    var pos = start
+    var n = sec.byte_length()
+    var mlen = marker.byte_length()
+    while pos < n:
+        var t = sec.find(marker, pos)
+        if t == -1:
+            return -1
+        var after_pos = t + mlen
+        if after_pos >= n:
+            return t
+        var after = String(sec[byte=after_pos : after_pos + 1])
+        if (
+            after == " "
+            or after == ">"
+            or after == "/"
+            or after == "\n"
+            or after == "\t"
+        ):
+            return t
+        pos = after_pos
+    return -1
+
+
+def _xml_joint_adr_grouped(xml: String, jname: String, want_qpos: Bool) -> Int:
+    """A named joint's qpos/dof address in MuJoCo's element order.
+
+    ⚠ MuJoCo'S ORDER IS NOT XML TEXT ORDER. It emits joints GROUPED BY BODY —
+    all of body 0's, then body 1's, declaration order preserved inside each —
+    and the two coincide only when every body declares its own joints BEFORE
+    its nested `<body>` children. dm_control's dog does not: its `skull`
+    declares 42 teeth after its child bodies, and its spine bodies nest before
+    they joint. `full_parser` already reorders for exactly this reason
+    (`_stable_group_by_body_joints`, defect 7) — this is the same correction on
+    the COMPTIME side, which resolves actuator and tendon transmissions.
+
+    THE DEFECT THIS FIXES. The comptime scanners walked the text linearly, so
+    every one of dog's 38 actuators wrote its force at the wrong dof: `hip_L_
+    supinate` drove dof 8 where MuJoCo drives 17, and the tail tendons drove a
+    descending run of the wrong joints entirely. It is invisible at `ctrl = 0`
+    — which is why the whole step measured exact and only a DRIVEN rollout
+    diverged.
+
+    Body ids are assigned in DFS order at each `<body` open, which is MuJoCo's
+    body order, so accumulating widths over `(body_id, text_index)` reproduces
+    the compiled layout. `want_qpos` picks NQ widths (free 7, ball 4) over NV
+    ones (6, 3); they differ only for those two types.
     """
     var wb = _extract_section(xml, "worldbody")
-    var scan_pos = 0
-    var dof_adr = 0
+    var n = wb.byte_length()
     var search_name = 'name="' + jname + '"'
-    while True:
-        var t = wb.find("<joint", scan_pos)
+
+    # Pass 1: every joint in text order, tagged with the body it belongs to.
+    var jbody = List[Int]()
+    var jwidth = List[Int]()
+    var target = -1
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body, which cannot carry a joint
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(wb, "<body", pos)
+        var t_joint = _find_tag(wb, "<joint", pos)
+        var t_close = wb.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_joint), t_close)
         if t == -1:
             break
-        if wb.byte_length() > t + 6:
-            var after = String(wb[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                scan_pos = t + 6
-                continue
         var tag_end = wb.find(">", t)
         if tag_end == -1:
             break
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(wb[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
+        else:
+            var tag = String(wb[byte = t : tag_end + 1])
+            var jtype = _trim(_extract_attr(tag, "type"))
+            var w = 1
+            if jtype == "ball":
+                w = 4 if want_qpos else 3
+            elif jtype == "free":
+                w = 7 if want_qpos else 6
+            if target < 0 and tag.find(search_name) != -1:
+                target = len(jbody)
+            jbody.append(cur)
+            jwidth.append(w)
+        pos = tag_end + 1
+
+    if target < 0:
+        return -1
+
+    # Pass 2: sum the widths of every joint that MuJoCo emits before this one.
+    var adr = 0
+    var tbody = jbody[target]
+    for i in range(len(jbody)):
+        if jbody[i] < tbody or (jbody[i] == tbody and i < target):
+            adr += jwidth[i]
+    return adr
+
+
+def names_in_element_order(worldbody: String, marker: String) -> List[String]:
+    """Every `marker` element's `name=`, INDEXED BY ITS MuJoCo ELEMENT ID.
+
+    ⚠ THIS IS THE WALK; `_index_by_name_grouped` is now a lookup into it. It
+    used to be the other way round, and the studio is why it flipped: an
+    outliner, a selection that survives an edit, and a state remap across a
+    rebuild all need the whole table, and rebuilding it by calling the
+    resolver once per element would have been a second implementation of the
+    ordering rule below. This tree loses more to two spellings of one quantity
+    than to anything else.
+
+    THE ORDERING RULE. MuJoCo emits `<joint>`s, `<site>`s and `<geom>`s
+    GROUPED BY BODY — all of body 0's, then body 1's, declaration order
+    preserved inside each — so counting tags in raw text order is only right
+    when every body declares its own elements BEFORE its nested `<body>`
+    children. `_fill_model` ends by applying exactly this grouping
+    (`_stable_group_by_body_*`), and this mirrors it.
+
+    ⚠ `<worldbody>`'s OWN sites belong to body 0 and therefore come FIRST,
+    ahead of every site declared inside a body, however early in the text
+    those world-level sites appear. That is the whole of the finger /
+    manipulator / stacker divergence: their `target` and `palm_touch` sites
+    move.
+
+    ⚠ SCANS `marker` ONLY, mirroring what the array builder scans.
+    `_fill_model` looks for `"<joint"` and nothing else, so this must too —
+    `<freejoint>` is already rewritten to `<joint type="free">` by
+    `merge_mjcf` before either is reached, and adding a second marker here
+    would number joints DIFFERENTLY from the array being indexed. A resolver
+    has to mirror its builder, not MuJoCo.
+
+    ⚠ AN UNNAMED ELEMENT GETS "", NOT A SYNTHESISED NAME. MJCF does not
+    require `name=`, most geoms in this tree have none, and inventing `geom7`
+    here would make an export claim a name the source never had. The studio
+    synthesises where it must (§1.3), at the point of export, where the
+    invention is visible.
+    """
+    var n = worldbody.byte_length()
+    var ebody = List[Int]()
+    var enames = List[String]()
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(worldbody, "<body", pos)
+        var t_elem = _find_tag(worldbody, marker, pos)
+        var t_close = worldbody.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_elem), t_close)
+        if t == -1:
+            break
+        var tag_end = worldbody.find(">", t)
+        if tag_end == -1:
+            break
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(worldbody[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
+        else:
+            var tag = String(worldbody[byte = t : tag_end + 1])
+            enames.append(_trim(_extract_attr(tag, "name")))
+            ebody.append(cur)
+        pos = tag_end + 1
+
+    # Stable sort by body: element `i` lands at the count of elements that
+    # precede it — a lower body, or the same body earlier in the text.
+    var out = List[String](length=len(ebody), fill=String(""))
+    for target in range(len(ebody)):
+        var idx = 0
+        var tbody = ebody[target]
+        for i in range(len(ebody)):
+            if ebody[i] < tbody or (ebody[i] == tbody and i < target):
+                idx += 1
+        out[idx] = enames[target]
+    return out^
+
+
+def body_names_in_order(worldbody: String) -> List[String]:
+    """Body names by MuJoCo body id. Index 0 is the worldbody.
+
+    ⚠ NOT `names_in_element_order(wb, "<body")`. Bodies are NOT regrouped —
+    they are numbered in document order, which is what
+    `_find_body_index_by_name` counts — and they are 1-BASED, because index 0
+    is the worldbody, which has no `<body>` tag. Sending them through the
+    grouped walk would renumber them by their own parent and shift everything
+    by one.
+    """
+    var out = List[String]()
+    out.append(String("world"))
+    var scan_pos = 0
+    while True:
+        var body_pos = worldbody.find("<body", scan_pos)
+        if body_pos == -1:
+            return out^
+        var tag_end = worldbody.find(">", body_pos)
+        if tag_end == -1:
+            return out^
+        var tag = String(worldbody[byte = body_pos : tag_end + 1])
+        out.append(_trim(_extract_attr(tag, "name")))
+        scan_pos = tag_end + 1
+
+
+def _index_by_name_grouped(worldbody: String, marker: String, name: String) -> Int:
+    """Ordinal of the named element in MuJoCo's ELEMENT order, or -1.
+
+    A lookup into `names_in_element_order`, which carries the ordering rule
+    and the four warnings that go with it.
+
+    ⚠ FIRST INDEX WINS, where this used to take the first DOCUMENT occurrence.
+    The two differ only for a duplicated name, which MJCF forbids and MuJoCo
+    rejects at compile time, so no model can tell them apart — but the
+    difference is real and is written down rather than discovered later.
+    """
+    var names = names_in_element_order(worldbody, marker)
+    for i in range(len(names)):
+        if names[i] == name:
+            return i
+    return -1
+
+
+def _min_valid_pos(a: Int, b: Int) -> Int:
+    """The smaller of two find() results, ignoring -1."""
+    if a == -1:
+        return b
+    if b == -1:
+        return a
+    return a if a < b else b
+
+
+def _xml_find_joint_ref(xml: String, jname: String, deg_factor: Float64) -> Float64:
+    """A named joint's `ref` (MuJoCo `qpos0`), in radians for angular joints.
+
+    Only hinge/ball ranges and refs get the deg->rad conversion, matching
+    `mjCJoint::Compile`; a slide `ref` is in metres. Returns 0 when the joint
+    or the attribute is absent, which IS MuJoCo's default reference pose.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = _find_tag(wb, "<joint", scan_pos)
+        if t == -1:
+            return 0.0
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            return 0.0
         var tag = String(wb[byte = t : tag_end + 1])
         if tag.find(search_name) != -1:
-            return dof_adr
-        var jtype = _extract_attr(tag, "type")
-        if jtype == "ball":
-            dof_adr += 3
-        elif jtype == "free":
-            dof_adr += 6
-        else:  # hinge, slide, or default (hinge)
-            dof_adr += 1
+            var rs = _extract_attr(tag, "ref")
+            if rs.byte_length() == 0:
+                return 0.0
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            return _parse_float(rs) * (deg_factor if angular else 1.0)
         scan_pos = tag_end + 1
-    return -1
+
+
+def _xml_find_joint_qpos_adr(xml: String, jname: String) -> Int:
+    """Return the QPOS address of a named joint, in worldbody DFS order.
+
+    The twin of `_xml_find_joint_dof_adr`; they differ only for `free` (7 vs 6)
+    and `ball` (4 vs 3) joints. A position servo needs BOTH — its `length` is a
+    qpos read and its force lands on a dof — and fish is the first model where
+    they diverge, since its root is a free joint ahead of every actuated hinge.
+    """
+    return _xml_joint_adr_grouped(xml, jname, True)
 
 
 def _xml_find_joint_index(xml: String, jname: String) -> Int:
@@ -1447,1416 +3569,141 @@ def _xml_find_joint_index(xml: String, jname: String) -> Int:
     return -1
 
 
-def parse_xml_model_data(xml: String) -> ComptimeActData:
-    """Parse XML and return actuator/joint data as InlineArrays.
+struct _JointAdrTable(Copyable, Movable):
+    """Every joint's qpos/dof address and `ref`, from ONE worldbody walk.
 
-    Designed to be called at struct-level comptime:
-
-        comptime _acd = parse_xml_model_data(Self.xml)
-
-    GPU kernels then access Self._acd.motor_gears[i] etc. without String ops,
-    bypassing the GPU kernel compiler's limitation with String operations.
-    """
-    var data = ComptimeActData()
-
-    var xml_clean = _strip_xml_comments(xml)
-
-    # ---- Compiler flags -------------------------------------------------------
-    var angle_deg = False
-    var compiler_t = xml_clean.find("<compiler")
-    if compiler_t != -1:
-        var compiler_end = xml_clean.find(">", compiler_t)
-        if compiler_end != -1:
-            var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                angle_deg = True
-            var ifg = _extract_attr(ctag, "inertiafromgeom")
-            if _trim(ifg) == "true":
-                data.inertiafromgeom = True
-            var stm = _extract_attr(ctag, "settotalmass")
-            var stm_trimmed = _trim(stm)
-            if stm_trimmed.byte_length() > 0:
-                data.settotalmass = _parse_float(stm_trimmed)
-
-    var deg_factor = Float64(
-        3.141592653589793 / 180.0
-    ) if angle_deg else Float64(1.0)
-
-    # ---- Default motor ctrlrange (used as fallback for per-motor values) ------
-    var def_ctrl_min = Float64(-1.0)
-    var def_ctrl_max = Float64(1.0)
-    var def_sec_motor = _extract_section(xml_clean, "default")
-    if def_sec_motor.byte_length() > 0:
-        var mt = def_sec_motor.find("<motor")
-        if mt != -1:
-            var mte = def_sec_motor.find(">", mt)
-            if mte != -1:
-                var mtag = String(def_sec_motor[byte = mt : mte + 1])
-                var mcr = _extract_attr(mtag, "ctrlrange")
-                if mcr.byte_length() > 0:
-                    var mparts = List[String]()
-                    _split_spaces(mcr, mparts)
-                    if len(mparts) >= 2:
-                        def_ctrl_min = _parse_float(mparts[0])
-                        def_ctrl_max = _parse_float(mparts[1])
-
-    # ---- Motor data -----------------------------------------------------------
-    var act_sec = _extract_section(xml_clean, "actuator")
-    var act_pos = 0
-    var act_count = 0
-    while act_count < 32:
-        var t = act_sec.find("<motor", act_pos)
-        if t == -1:
-            break
-        if act_sec.byte_length() > t + 6:
-            var after = String(act_sec[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                act_pos = t + 6
-                continue
-        var tag_end = act_sec.find(">", t)
-        if tag_end != -1:
-            var tag = String(act_sec[byte = t : tag_end + 1])
-            var g = _extract_attr(tag, "gear")
-            if g.byte_length() > 0:
-                data.motor_gears[act_count] = _parse_float(g)
-            else:
-                data.motor_gears[act_count] = Float64(1.0)
-            var jname = _extract_attr(tag, "joint")
-            if jname.byte_length() > 0:
-                data.motor_dof_adr[act_count] = _xml_find_joint_dof_adr(
-                    xml_clean, jname
-                )
-            # Per-motor ctrlrange (overrides default)
-            var cr = _extract_attr(tag, "ctrlrange")
-            if cr.byte_length() > 0:
-                var parts = List[String]()
-                _split_spaces(cr, parts)
-                if len(parts) >= 2:
-                    data.motor_ctrl_min[act_count] = _parse_float(parts[0])
-                    data.motor_ctrl_max[act_count] = _parse_float(parts[1])
-                else:
-                    data.motor_ctrl_min[act_count] = def_ctrl_min
-                    data.motor_ctrl_max[act_count] = def_ctrl_max
-            else:
-                data.motor_ctrl_min[act_count] = def_ctrl_min
-                data.motor_ctrl_max[act_count] = def_ctrl_max
-        act_count += 1
-        act_pos = t + 6
-
-    # ---- Default joint limited from <default> section -------------------------
-    var def_limited = False
-    var def_sec = _extract_section(xml_clean, "default")
-    if def_sec.byte_length() > 0:
-        var jpos = def_sec.find("<joint")
-        if jpos != -1:
-            var tag_end = def_sec.find(">", jpos)
-            if tag_end != -1:
-                var tag = String(def_sec[byte = jpos : tag_end + 1])
-                var lim = _extract_attr(tag, "limited")
-                if lim == "true" or lim == "1":
-                    def_limited = True
-
-    # ---- Joint data -----------------------------------------------------------
-    var wb = _extract_section(xml_clean, "worldbody")
-    var jnt_pos = 0
-    var jnt_count = 0
-    var qpos_adr = 0
-    while jnt_count < 32:
-        var t = wb.find("<joint", jnt_pos)
-        if t == -1:
-            break
-        if wb.byte_length() > t + 6:
-            var after = String(wb[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                jnt_pos = t + 6
-                continue
-        data.joint_qpos_adr[jnt_count] = qpos_adr
-        var tag_end = wb.find(">", t)
-        if tag_end != -1:
-            var tag = String(wb[byte = t : tag_end + 1])
-            # Limited
-            var lim = _extract_attr(tag, "limited")
-            if lim == "true" or lim == "1":
-                data.joint_is_limited[jnt_count] = True
-            elif lim == "false" or lim == "0":
-                data.joint_is_limited[jnt_count] = False
-            else:
-                data.joint_is_limited[jnt_count] = def_limited
-            # Range
-            var range_str = _extract_attr(tag, "range")
-            if range_str.byte_length() > 0:
-                var parts = List[String]()
-                _split_spaces(range_str, parts)
-                if len(parts) >= 1:
-                    data.joint_range_min[jnt_count] = (
-                        _parse_float(parts[0]) * deg_factor
-                    )
-                if len(parts) >= 2:
-                    data.joint_range_max[jnt_count] = (
-                        _parse_float(parts[1]) * deg_factor
-                    )
-            # Extract ref value (MuJoCo joint reference → qpos0 for slide/hinge)
-            var ref_str = _extract_attr(tag, "ref")
-            if ref_str.byte_length() > 0:
-                data.qpos0[qpos_adr] = _parse_float(ref_str)
-            # Advance qpos_adr, track free joint
-            var jtype = _extract_attr(tag, "type")
-            if jtype == "free":
-                if data.free_joint_qpos_adr == -1:
-                    data.free_joint_qpos_adr = qpos_adr
-                # Extract enclosing body's pos for free joint initial translation.
-                # Find the last <body before position t by scanning forward.
-                var last_body_start = -1
-                var bscan = 0
-                while True:
-                    var bp = wb.find("<body", bscan)
-                    if bp == -1 or bp >= t:
-                        break
-                    last_body_start = bp
-                    bscan = bp + 5
-                if last_body_start >= 0:
-                    var be = wb.find(">", last_body_start)
-                    if be != -1:
-                        var btag = String(
-                            wb[byte = last_body_start : be + 1]
-                        )
-                        var bpos = _extract_attr(btag, "pos")
-                        if bpos.byte_length() > 0:
-                            var bparts = List[String]()
-                            _split_spaces(bpos, bparts)
-                            if len(bparts) >= 3:
-                                data.qpos0[qpos_adr + 0] = _parse_float(
-                                    bparts[0]
-                                )
-                                data.qpos0[qpos_adr + 1] = _parse_float(
-                                    bparts[1]
-                                )
-                                data.qpos0[qpos_adr + 2] = _parse_float(
-                                    bparts[2]
-                                )
-                # qw=1 (identity quaternion) set later in fallback block
-                qpos_adr += 7
-            elif jtype == "ball":
-                qpos_adr += 4
-            else:
-                qpos_adr += 1
-        jnt_count += 1
-        jnt_pos = t + 6
-
-    # ---- init_qpos from <custom><numeric name="init_qpos" data="..."/> -------
-    var custom_sec = _extract_section(xml_clean, "custom")
-    if custom_sec.byte_length() > 0:
-        var num_pos = 0
-        while True:
-            var t = custom_sec.find("<numeric", num_pos)
-            if t == -1:
-                break
-            var tag_end = custom_sec.find(">", t)
-            if tag_end == -1:
-                break
-            var tag = String(custom_sec[byte = t : tag_end + 1])
-            var nname = _extract_attr(tag, "name")
-            if _trim(nname) == "init_qpos":
-                var ndata = _extract_attr(tag, "data")
-                var parts = List[String]()
-                _split_spaces(ndata, parts)
-                var count = len(parts)
-                if count > 64:
-                    count = 64
-                for i in range(count):
-                    data.qpos0[i] = _parse_float(parts[i])
-                data.nq = count
-                break
-            num_pos = t + 7
-
-    # If no explicit init_qpos was found, use qpos0 values from joint ref
-    # attributes (already stored above).  Set nq so reset_data applies them.
-    if data.nq == 0 and qpos_adr > 0:
-        data.nq = qpos_adr
-        # For free joints, ensure qw=1 (identity quaternion)
-        if data.free_joint_qpos_adr >= 0:
-            data.qpos0[data.free_joint_qpos_adr + 3] = 1.0
-
-    return data^
-
-
-# =============================================================================
-# ComptimeRenderData — pre-computed rendering data from XML
-# =============================================================================
-
-
-struct ComptimeRenderData(Copyable, Movable):
-    """Precomputed rendering data for ModelRenderer use.
-
-    Stores results of lightweight XML parsing in InlineArrays so that
-    rendering functions can access them without re-parsing the full XML.
-    Avoids the comptime interpreter crash caused by calling parse_xml_full
-    multiple times for large models (25+ bodies).
-
-    Usage:
-        comptime _rcd = parse_xml_render_data(Self.xml)
-        # In rendering functions:  Self._rcd.geom_type[i]  (no re-parse)
+    Replaces ~340 O(n) re-walks per model in `parse_xml_model_data` (each of
+    which copied the whole <worldbody> and allocated a String per tag) with one
+    walk plus linear lookups over ~75 entries.
     """
 
-    # Counts
-    var ngeom: Int
-    var nlight: Int
-    var ncam: Int
-    var ntex: Int
-    var nmat: Int
-    var nsite: Int
-
-    # Geoms (max 64)
-    var geom_body_id: InlineArray[Int, 64]
-    var geom_type: InlineArray[Int, 64]
-    var geom_pos_x: InlineArray[Float64, 64]
-    var geom_pos_y: InlineArray[Float64, 64]
-    var geom_pos_z: InlineArray[Float64, 64]
-    var geom_quat_x: InlineArray[Float64, 64]
-    var geom_quat_y: InlineArray[Float64, 64]
-    var geom_quat_z: InlineArray[Float64, 64]
-    var geom_quat_w: InlineArray[Float64, 64]
-    var geom_radius: InlineArray[Float64, 64]
-    var geom_half_length: InlineArray[Float64, 64]
-    var geom_half_x: InlineArray[Float64, 64]
-    var geom_half_y: InlineArray[Float64, 64]
-    var geom_half_z: InlineArray[Float64, 64]
-    var geom_rgba_r: InlineArray[Float64, 64]
-    var geom_rgba_g: InlineArray[Float64, 64]
-    var geom_rgba_b: InlineArray[Float64, 64]
-    var geom_rgba_a: InlineArray[Float64, 64]
-    var geom_material_id: InlineArray[Int, 64]
-    var geom_mesh_id: InlineArray[Int, 64]  # index into mesh_names[], -1 if not mesh
-
-    # Mesh assets (max 16) — name and file path for STL loading
-    var nmesh: Int
-    var mesh_names: InlineArray[String, 16]
-    var mesh_files: InlineArray[String, 16]
-
-    # Lights (max 8)
-    var light_dir_x: InlineArray[Float64, 8]
-    var light_dir_y: InlineArray[Float64, 8]
-    var light_dir_z: InlineArray[Float64, 8]
-    var light_diffuse_r: InlineArray[Float64, 8]
-    var light_diffuse_g: InlineArray[Float64, 8]
-    var light_diffuse_b: InlineArray[Float64, 8]
-    var light_specular_r: InlineArray[Float64, 8]
-    var light_specular_g: InlineArray[Float64, 8]
-    var light_specular_b: InlineArray[Float64, 8]
-    var light_ambient_r: InlineArray[Float64, 8]
-    var light_ambient_g: InlineArray[Float64, 8]
-    var light_ambient_b: InlineArray[Float64, 8]
-    var light_directional: InlineArray[Bool, 8]
-    var light_castshadow: InlineArray[Bool, 8]
-    var light_exponent: InlineArray[Float64, 8]
-
-    # Cameras (max 8)
-    var cam_pos_x: InlineArray[Float64, 8]
-    var cam_pos_y: InlineArray[Float64, 8]
-    var cam_pos_z: InlineArray[Float64, 8]
-    var cam_quat_x: InlineArray[Float64, 8]
-    var cam_quat_y: InlineArray[Float64, 8]
-    var cam_quat_z: InlineArray[Float64, 8]
-    var cam_quat_w: InlineArray[Float64, 8]
-    var cam_fovy: InlineArray[Float64, 8]
-    var cam_mode: InlineArray[Int, 8]
-    var cam_body_id: InlineArray[Int, 8]
-
-    # Textures (max 8)
-    var tex_type: InlineArray[Int, 8]
-    var tex_builtin: InlineArray[Int, 8]
-    var tex_rgb1_r: InlineArray[Float64, 8]
-    var tex_rgb1_g: InlineArray[Float64, 8]
-    var tex_rgb1_b: InlineArray[Float64, 8]
-    var tex_rgb2_r: InlineArray[Float64, 8]
-    var tex_rgb2_g: InlineArray[Float64, 8]
-    var tex_rgb2_b: InlineArray[Float64, 8]
-    var tex_names: InlineArray[String, 8]  # texture name (for material lookup)
-    var tex_files: InlineArray[String, 8]  # texture file path (PNG)
-
-    # Materials (max 8)
-    var mat_rgba_r: InlineArray[Float64, 8]
-    var mat_rgba_g: InlineArray[Float64, 8]
-    var mat_rgba_b: InlineArray[Float64, 8]
-    var mat_rgba_a: InlineArray[Float64, 8]
-    var mat_shininess: InlineArray[Float64, 8]
-    var mat_specular: InlineArray[Float64, 8]
-    var mat_reflectance: InlineArray[Float64, 8]
-    var mat_tex_id: InlineArray[Int, 8]  # index into tex_names[], -1 if no texture
-    var mat_texrepeat_u: InlineArray[Float64, 8]  # texture repeat U (default 1.0)
-    var mat_texrepeat_v: InlineArray[Float64, 8]  # texture repeat V (default 1.0)
-
-    # Sites (max 16)
-    var site_body_id: InlineArray[Int, 16]
-    var site_pos_x: InlineArray[Float64, 16]
-    var site_pos_y: InlineArray[Float64, 16]
-    var site_pos_z: InlineArray[Float64, 16]
-    var site_size_0: InlineArray[Float64, 16]
-
-    # Visual settings from <visual> section
-    var vis_znear: Float64  # <map znear="..."/>  (camera near plane)
-    var vis_fogstart: Float64  # <map fogstart="..."/>
-    var vis_fogend: Float64  # <map fogend="..."/>
-    var vis_shadowsize: Int  # <quality shadowsize="..."/>
-    var vis_headlight_ambient_r: Float64  # <headlight ambient="r g b"/>
-    var vis_headlight_ambient_g: Float64
-    var vis_headlight_ambient_b: Float64
-    var vis_has_headlight: Bool  # True if <headlight> was found
+    var names: List[String]
+    var qadr: List[Int]
+    var dadr: List[Int]
+    var refs: List[Float64]
 
     def __init__(out self):
-        """Initialize with safe defaults."""
-        self.ngeom = 0
-        self.nlight = 0
-        self.ncam = 0
-        self.ntex = 0
-        self.nmat = 0
-        self.nsite = 0
+        self.names = List[String]()
+        self.qadr = List[Int]()
+        self.dadr = List[Int]()
+        self.refs = List[Float64]()
 
-        self.geom_body_id = InlineArray[Int, 64](fill=0)
-        self.geom_type = InlineArray[Int, 64](fill=1)  # SPHERE default
-        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
-        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
-        self.geom_material_id = InlineArray[Int, 64](fill=-1)
-        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
-        self.nmesh = 0
-        self.mesh_names = InlineArray[String, 16](fill=String(""))
-        self.mesh_files = InlineArray[String, 16](fill=String(""))
+    def qpos_adr(self, jname: String) -> Int:
+        """-1 when absent, matching `_xml_find_joint_qpos_adr`."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.qadr[i]
+        return -1
 
-        self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
-        self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
-        self.light_dir_z = InlineArray[Float64, 8](fill=-1.0)
-        self.light_diffuse_r = InlineArray[Float64, 8](fill=0.7)
-        self.light_diffuse_g = InlineArray[Float64, 8](fill=0.7)
-        self.light_diffuse_b = InlineArray[Float64, 8](fill=0.7)
-        self.light_specular_r = InlineArray[Float64, 8](fill=0.3)
-        self.light_specular_g = InlineArray[Float64, 8](fill=0.3)
-        self.light_specular_b = InlineArray[Float64, 8](fill=0.3)
-        self.light_ambient_r = InlineArray[Float64, 8](fill=0.0)
-        self.light_ambient_g = InlineArray[Float64, 8](fill=0.0)
-        self.light_ambient_b = InlineArray[Float64, 8](fill=0.0)
-        self.light_directional = InlineArray[Bool, 8](fill=False)
-        self.light_castshadow = InlineArray[Bool, 8](fill=True)
-        self.light_exponent = InlineArray[Float64, 8](fill=10.0)
+    def dof_adr(self, jname: String) -> Int:
+        """-1 when absent, matching `_xml_find_joint_dof_adr`."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.dadr[i]
+        return -1
 
-        self.cam_pos_x = InlineArray[Float64, 8](fill=0.0)
-        self.cam_pos_y = InlineArray[Float64, 8](fill=0.0)
-        self.cam_pos_z = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_x = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_y = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_z = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_w = InlineArray[Float64, 8](fill=1.0)
-        self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
-        self.cam_mode = InlineArray[Int, 8](fill=0)
-        self.cam_body_id = InlineArray[Int, 8](fill=0)
-
-        self.tex_type = InlineArray[Int, 8](fill=0)
-        self.tex_builtin = InlineArray[Int, 8](fill=0)
-        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
-        self.tex_names = InlineArray[String, 8](fill=String(""))
-        self.tex_files = InlineArray[String, 8](fill=String(""))
-
-        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
-        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
-        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
-        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
-        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
-        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
-        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
-
-        self.site_body_id = InlineArray[Int, 16](fill=0)
-        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
-        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
-
-        # Visual defaults (MuJoCo defaults)
-        self.vis_znear = 0.01  # MuJoCo default
-        self.vis_fogstart = 3.0
-        self.vis_fogend = 10.0
-        self.vis_shadowsize = 4096  # MuJoCo default
-        self.vis_headlight_ambient_r = 0.1
-        self.vis_headlight_ambient_g = 0.1
-        self.vis_headlight_ambient_b = 0.1
-        self.vis_has_headlight = False
-
-    def __init__(out self, *, copy: Self):
-        """Copy constructor — element-by-element InlineArray copy."""
-        self.ngeom = copy.ngeom
-        self.nlight = copy.nlight
-        self.ncam = copy.ncam
-        self.ntex = copy.ntex
-        self.nmat = copy.nmat
-        self.nsite = copy.nsite
-
-        self.geom_body_id = InlineArray[Int, 64](fill=0)
-        self.geom_type = InlineArray[Int, 64](fill=1)
-        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
-        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
-        self.geom_material_id = InlineArray[Int, 64](fill=-1)
-        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
-        for i in range(64):
-            self.geom_body_id[i] = copy.geom_body_id[i]
-            self.geom_type[i] = copy.geom_type[i]
-            self.geom_pos_x[i] = copy.geom_pos_x[i]
-            self.geom_pos_y[i] = copy.geom_pos_y[i]
-            self.geom_pos_z[i] = copy.geom_pos_z[i]
-            self.geom_quat_x[i] = copy.geom_quat_x[i]
-            self.geom_quat_y[i] = copy.geom_quat_y[i]
-            self.geom_quat_z[i] = copy.geom_quat_z[i]
-            self.geom_quat_w[i] = copy.geom_quat_w[i]
-            self.geom_radius[i] = copy.geom_radius[i]
-            self.geom_half_length[i] = copy.geom_half_length[i]
-            self.geom_half_x[i] = copy.geom_half_x[i]
-            self.geom_half_y[i] = copy.geom_half_y[i]
-            self.geom_half_z[i] = copy.geom_half_z[i]
-            self.geom_rgba_r[i] = copy.geom_rgba_r[i]
-            self.geom_rgba_g[i] = copy.geom_rgba_g[i]
-            self.geom_rgba_b[i] = copy.geom_rgba_b[i]
-            self.geom_rgba_a[i] = copy.geom_rgba_a[i]
-            self.geom_material_id[i] = copy.geom_material_id[i]
-            self.geom_mesh_id[i] = copy.geom_mesh_id[i]
-        self.nmesh = copy.nmesh
-        self.mesh_names = InlineArray[String, 16](fill=String(""))
-        self.mesh_files = InlineArray[String, 16](fill=String(""))
-        for i in range(16):
-            self.mesh_names[i] = copy.mesh_names[i]
-            self.mesh_files[i] = copy.mesh_files[i]
-
-        self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
-        self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
-        self.light_dir_z = InlineArray[Float64, 8](fill=-1.0)
-        self.light_diffuse_r = InlineArray[Float64, 8](fill=0.7)
-        self.light_diffuse_g = InlineArray[Float64, 8](fill=0.7)
-        self.light_diffuse_b = InlineArray[Float64, 8](fill=0.7)
-        self.light_specular_r = InlineArray[Float64, 8](fill=0.3)
-        self.light_specular_g = InlineArray[Float64, 8](fill=0.3)
-        self.light_specular_b = InlineArray[Float64, 8](fill=0.3)
-        self.light_ambient_r = InlineArray[Float64, 8](fill=0.0)
-        self.light_ambient_g = InlineArray[Float64, 8](fill=0.0)
-        self.light_ambient_b = InlineArray[Float64, 8](fill=0.0)
-        self.light_directional = InlineArray[Bool, 8](fill=False)
-        self.light_castshadow = InlineArray[Bool, 8](fill=True)
-        self.light_exponent = InlineArray[Float64, 8](fill=10.0)
-        for i in range(8):
-            self.light_dir_x[i] = copy.light_dir_x[i]
-            self.light_dir_y[i] = copy.light_dir_y[i]
-            self.light_dir_z[i] = copy.light_dir_z[i]
-            self.light_diffuse_r[i] = copy.light_diffuse_r[i]
-            self.light_diffuse_g[i] = copy.light_diffuse_g[i]
-            self.light_diffuse_b[i] = copy.light_diffuse_b[i]
-            self.light_specular_r[i] = copy.light_specular_r[i]
-            self.light_specular_g[i] = copy.light_specular_g[i]
-            self.light_specular_b[i] = copy.light_specular_b[i]
-            self.light_ambient_r[i] = copy.light_ambient_r[i]
-            self.light_ambient_g[i] = copy.light_ambient_g[i]
-            self.light_ambient_b[i] = copy.light_ambient_b[i]
-            self.light_directional[i] = copy.light_directional[i]
-            self.light_castshadow[i] = copy.light_castshadow[i]
-            self.light_exponent[i] = copy.light_exponent[i]
-
-        self.cam_pos_x = InlineArray[Float64, 8](fill=0.0)
-        self.cam_pos_y = InlineArray[Float64, 8](fill=0.0)
-        self.cam_pos_z = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_x = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_y = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_z = InlineArray[Float64, 8](fill=0.0)
-        self.cam_quat_w = InlineArray[Float64, 8](fill=1.0)
-        self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
-        self.cam_mode = InlineArray[Int, 8](fill=0)
-        self.cam_body_id = InlineArray[Int, 8](fill=0)
-        for i in range(8):
-            self.cam_pos_x[i] = copy.cam_pos_x[i]
-            self.cam_pos_y[i] = copy.cam_pos_y[i]
-            self.cam_pos_z[i] = copy.cam_pos_z[i]
-            self.cam_quat_x[i] = copy.cam_quat_x[i]
-            self.cam_quat_y[i] = copy.cam_quat_y[i]
-            self.cam_quat_z[i] = copy.cam_quat_z[i]
-            self.cam_quat_w[i] = copy.cam_quat_w[i]
-            self.cam_fovy[i] = copy.cam_fovy[i]
-            self.cam_mode[i] = copy.cam_mode[i]
-            self.cam_body_id[i] = copy.cam_body_id[i]
-
-        self.tex_type = InlineArray[Int, 8](fill=0)
-        self.tex_builtin = InlineArray[Int, 8](fill=0)
-        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
-        self.tex_names = InlineArray[String, 8](fill=String(""))
-        self.tex_files = InlineArray[String, 8](fill=String(""))
-        for i in range(8):
-            self.tex_type[i] = copy.tex_type[i]
-            self.tex_builtin[i] = copy.tex_builtin[i]
-            self.tex_rgb1_r[i] = copy.tex_rgb1_r[i]
-            self.tex_rgb1_g[i] = copy.tex_rgb1_g[i]
-            self.tex_rgb1_b[i] = copy.tex_rgb1_b[i]
-            self.tex_rgb2_r[i] = copy.tex_rgb2_r[i]
-            self.tex_rgb2_g[i] = copy.tex_rgb2_g[i]
-            self.tex_rgb2_b[i] = copy.tex_rgb2_b[i]
-            self.tex_names[i] = copy.tex_names[i]
-            self.tex_files[i] = copy.tex_files[i]
-
-        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
-        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
-        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
-        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
-        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
-        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
-        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
-        for i in range(8):
-            self.mat_rgba_r[i] = copy.mat_rgba_r[i]
-            self.mat_rgba_g[i] = copy.mat_rgba_g[i]
-            self.mat_rgba_b[i] = copy.mat_rgba_b[i]
-            self.mat_rgba_a[i] = copy.mat_rgba_a[i]
-            self.mat_shininess[i] = copy.mat_shininess[i]
-            self.mat_specular[i] = copy.mat_specular[i]
-            self.mat_reflectance[i] = copy.mat_reflectance[i]
-            self.mat_tex_id[i] = copy.mat_tex_id[i]
-            self.mat_texrepeat_u[i] = copy.mat_texrepeat_u[i]
-            self.mat_texrepeat_v[i] = copy.mat_texrepeat_v[i]
-
-        self.site_body_id = InlineArray[Int, 16](fill=0)
-        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
-        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
-        for i in range(16):
-            self.site_body_id[i] = copy.site_body_id[i]
-            self.site_pos_x[i] = copy.site_pos_x[i]
-            self.site_pos_y[i] = copy.site_pos_y[i]
-            self.site_pos_z[i] = copy.site_pos_z[i]
-            self.site_size_0[i] = copy.site_size_0[i]
-
-        # Visual settings
-        self.vis_znear = copy.vis_znear
-        self.vis_fogstart = copy.vis_fogstart
-        self.vis_fogend = copy.vis_fogend
-        self.vis_shadowsize = copy.vis_shadowsize
-        self.vis_headlight_ambient_r = copy.vis_headlight_ambient_r
-        self.vis_headlight_ambient_g = copy.vis_headlight_ambient_g
-        self.vis_headlight_ambient_b = copy.vis_headlight_ambient_b
-        self.vis_has_headlight = copy.vis_has_headlight
-
-    def __init__(out self, *, deinit move: Self):
-        self.ngeom = move.ngeom
-        self.nlight = move.nlight
-        self.ncam = move.ncam
-        self.ntex = move.ntex
-        self.nmat = move.nmat
-        self.nsite = move.nsite
-        self.geom_body_id = move.geom_body_id^
-        self.geom_type = move.geom_type^
-        self.geom_pos_x = move.geom_pos_x^
-        self.geom_pos_y = move.geom_pos_y^
-        self.geom_pos_z = move.geom_pos_z^
-        self.geom_quat_x = move.geom_quat_x^
-        self.geom_quat_y = move.geom_quat_y^
-        self.geom_quat_z = move.geom_quat_z^
-        self.geom_quat_w = move.geom_quat_w^
-        self.geom_radius = move.geom_radius^
-        self.geom_half_length = move.geom_half_length^
-        self.geom_half_x = move.geom_half_x^
-        self.geom_half_y = move.geom_half_y^
-        self.geom_half_z = move.geom_half_z^
-        self.geom_rgba_r = move.geom_rgba_r^
-        self.geom_rgba_g = move.geom_rgba_g^
-        self.geom_rgba_b = move.geom_rgba_b^
-        self.geom_rgba_a = move.geom_rgba_a^
-        self.geom_material_id = move.geom_material_id^
-        self.geom_mesh_id = move.geom_mesh_id^
-        self.nmesh = move.nmesh
-        self.mesh_names = move.mesh_names^
-        self.mesh_files = move.mesh_files^
-        self.light_dir_x = move.light_dir_x^
-        self.light_dir_y = move.light_dir_y^
-        self.light_dir_z = move.light_dir_z^
-        self.light_diffuse_r = move.light_diffuse_r^
-        self.light_diffuse_g = move.light_diffuse_g^
-        self.light_diffuse_b = move.light_diffuse_b^
-        self.light_specular_r = move.light_specular_r^
-        self.light_specular_g = move.light_specular_g^
-        self.light_specular_b = move.light_specular_b^
-        self.light_ambient_r = move.light_ambient_r^
-        self.light_ambient_g = move.light_ambient_g^
-        self.light_ambient_b = move.light_ambient_b^
-        self.light_directional = move.light_directional^
-        self.light_castshadow = move.light_castshadow^
-        self.light_exponent = move.light_exponent^
-        self.cam_pos_x = move.cam_pos_x^
-        self.cam_pos_y = move.cam_pos_y^
-        self.cam_pos_z = move.cam_pos_z^
-        self.cam_quat_x = move.cam_quat_x^
-        self.cam_quat_y = move.cam_quat_y^
-        self.cam_quat_z = move.cam_quat_z^
-        self.cam_quat_w = move.cam_quat_w^
-        self.cam_fovy = move.cam_fovy^
-        self.cam_mode = move.cam_mode^
-        self.cam_body_id = move.cam_body_id^
-        self.tex_type = move.tex_type^
-        self.tex_builtin = move.tex_builtin^
-        self.tex_rgb1_r = move.tex_rgb1_r^
-        self.tex_rgb1_g = move.tex_rgb1_g^
-        self.tex_rgb1_b = move.tex_rgb1_b^
-        self.tex_rgb2_r = move.tex_rgb2_r^
-        self.tex_rgb2_g = move.tex_rgb2_g^
-        self.tex_rgb2_b = move.tex_rgb2_b^
-        self.tex_names = move.tex_names^
-        self.tex_files = move.tex_files^
-        self.mat_rgba_r = move.mat_rgba_r^
-        self.mat_rgba_g = move.mat_rgba_g^
-        self.mat_rgba_b = move.mat_rgba_b^
-        self.mat_rgba_a = move.mat_rgba_a^
-        self.mat_shininess = move.mat_shininess^
-        self.mat_specular = move.mat_specular^
-        self.mat_reflectance = move.mat_reflectance^
-        self.mat_tex_id = move.mat_tex_id^
-        self.mat_texrepeat_u = move.mat_texrepeat_u^
-        self.mat_texrepeat_v = move.mat_texrepeat_v^
-        self.site_body_id = move.site_body_id^
-        self.site_pos_x = move.site_pos_x^
-        self.site_pos_y = move.site_pos_y^
-        self.site_pos_z = move.site_pos_z^
-        self.site_size_0 = move.site_size_0^
-
-        # Visual settings
-        self.vis_znear = move.vis_znear
-        self.vis_fogstart = move.vis_fogstart
-        self.vis_fogend = move.vis_fogend
-        self.vis_shadowsize = move.vis_shadowsize
-        self.vis_headlight_ambient_r = move.vis_headlight_ambient_r
-        self.vis_headlight_ambient_g = move.vis_headlight_ambient_g
-        self.vis_headlight_ambient_b = move.vis_headlight_ambient_b
-        self.vis_has_headlight = move.vis_has_headlight
+    def ref(self, jname: String) -> Float64:
+        """0.0 when absent, which IS MuJoCo's default reference pose."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.refs[i]
+        return 0.0
 
 
-# =============================================================================
-# Render data helper functions (copied from full_parser.mojo for independence)
-# =============================================================================
+def _build_joint_adr_table(xml: String, deg_factor: Float64) -> _JointAdrTable:
+    """One walk of <worldbody>, emitting every joint's addresses.
 
-
-def _rcd_geom_type_from_str(s: String) -> Int:
-    """Convert geom type string to integer constant.
-    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5."""
-    var t = _trim(s)
-    if t == "plane":
-        return 0
-    elif t == "sphere":
-        return 1
-    elif t == "capsule":
-        return 2
-    elif t == "box":
-        return 3
-    elif t == "cylinder":
-        return 4
-    elif t == "mesh":
-        return 5
-    return 1  # default = sphere
-
-
-def _rcd_parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
-    """Parse "r g b a" string into four Float64 values."""
-    var parts = List[String]()
-    _split_spaces(s, parts)
-    var r = Float64(1)
-    var g = Float64(1)
-    var b = Float64(1)
-    var a = Float64(1)
-    if len(parts) >= 1:
-        r = _parse_float(parts[0])
-    if len(parts) >= 2:
-        g = _parse_float(parts[1])
-    if len(parts) >= 3:
-        b = _parse_float(parts[2])
-    if len(parts) >= 4:
-        a = _parse_float(parts[3])
-    return (r, g, b, a)
-
-
-def _rcd_parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
-    """Parse "r g b" string into three Float64 values."""
-    var parts = List[String]()
-    _split_spaces(s, parts)
-    var r = Float64(0)
-    var g = Float64(0)
-    var b = Float64(0)
-    if len(parts) >= 1:
-        r = _parse_float(parts[0])
-    if len(parts) >= 2:
-        g = _parse_float(parts[1])
-    if len(parts) >= 3:
-        b = _parse_float(parts[2])
-    return (r, g, b)
-
-
-def _rcd_xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
-    """Convert xyaxes="x1 x2 x3 y1 y2 y3" to quaternion (qx, qy, qz, qw)."""
-    var parts = List[String]()
-    _split_spaces(s, parts)
-    if len(parts) < 6:
-        return (Float64(0), Float64(0), Float64(0), Float64(1))
-    var xx = _parse_float(parts[0])
-    var xy = _parse_float(parts[1])
-    var xz = _parse_float(parts[2])
-    var yx = _parse_float(parts[3])
-    var yy = _parse_float(parts[4])
-    var yz = _parse_float(parts[5])
-    var xn = _sqrt_f64(xx * xx + xy * xy + xz * xz)
-    if xn > 0.0:
-        xx /= xn
-        xy /= xn
-        xz /= xn
-    var zx = xy * yz - xz * yy
-    var zy = xz * yx - xx * yz
-    var zz = xx * yy - xy * yx
-    var zn = _sqrt_f64(zx * zx + zy * zy + zz * zz)
-    if zn > 0.0:
-        zx /= zn
-        zy /= zn
-        zz /= zn
-    yx = zy * xz - zz * xy
-    yy = zz * xx - zx * xz
-    yz = zx * xy - zy * xx
-    var trace = xx + yy + zz
-    var qx: Float64
-    var qy: Float64
-    var qz: Float64
-    var qw: Float64
-    if trace > 0.0:
-        var s2 = _sqrt_f64(trace + 1.0) * 2.0
-        qw = 0.25 * s2
-        qx = (zy - yz) / s2
-        qy = (xz - zx) / s2
-        qz = (yx - xy) / s2
-    elif xx > yy and xx > zz:
-        var s2 = _sqrt_f64(1.0 + xx - yy - zz) * 2.0
-        qw = (zy - yz) / s2
-        qx = 0.25 * s2
-        qy = (xy + yx) / s2
-        qz = (xz + zx) / s2
-    elif yy > zz:
-        var s2 = _sqrt_f64(1.0 + yy - xx - zz) * 2.0
-        qw = (xz - zx) / s2
-        qx = (xy + yx) / s2
-        qy = 0.25 * s2
-        qz = (yz + zy) / s2
-    else:
-        var s2 = _sqrt_f64(1.0 + zz - xx - yy) * 2.0
-        qw = (yx - xy) / s2
-        qx = (xz + zx) / s2
-        qy = (yz + zy) / s2
-        qz = 0.25 * s2
-    return (qx, qy, qz, qw)
-
-
-def _rcd_find_material_index_by_name(asset_sec: String, name: String) -> Int:
-    """Return 0-based index of <material name="name"> in asset_sec, or -1."""
-    var search = 'name="' + name + '"'
-    var scan_pos = 0
-    var count = 0
-    while True:
-        var t = asset_sec.find("<material", scan_pos)
-        if t == -1:
-            break
-        var tag_end = asset_sec.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(asset_sec[byte = t : tag_end + 1])
-        if tag.find(search) != -1:
-            return count
-        count += 1
-        scan_pos = tag_end + 1
-    return -1
-
-
-def _rcd_tex_type_from_str(s: String) -> Int:
-    var t = _trim(s)
-    if t == "skybox":
-        return 1  # TEX_SKYBOX
-    elif t == "cube":
-        return 3  # TEX_CUBE
-    return 0  # TEX_2D
-
-
-def _rcd_tex_builtin_from_str(s: String) -> Int:
-    var t = _trim(s)
-    if t == "gradient":
-        return 1  # TEX_BUILTIN_GRADIENT
-    elif t == "checker":
-        return 2  # TEX_BUILTIN_CHECKER
-    elif t == "flat":
-        return 3  # TEX_BUILTIN_FLAT
-    return 0  # TEX_BUILTIN_NONE
-
-
-def _rcd_cam_mode_from_str(s: String) -> Int:
-    var t = _trim(s)
-    if t == "track":
-        return 1
-    elif t == "trackcom":
-        return 2
-    elif t == "targetbody":
-        return 3
-    elif t == "targetbodycom":
-        return 4
-    return 0
-
-
-def _rcd_min_valid(a: Int, b: Int) -> Int:
-    """Return the smaller of a and b, treating -1 as +infinity."""
-    if a == -1:
-        return b
-    if b == -1:
-        return a
-    if a < b:
-        return a
-    return b
-
-
-# =============================================================================
-# parse_xml_render_data — lightweight rendering-only XML parser
-# =============================================================================
-
-
-def parse_xml_render_data(xml: String) -> ComptimeRenderData:
-    """Parse XML and return rendering data as InlineArrays.
-
-    Designed to be called at struct-level comptime:
-
-        comptime _rcd = parse_xml_render_data(Self.xml)
-
-    Extracts ONLY rendering-relevant data (geoms, lights, cameras, textures,
-    materials, sites) in a single pass, avoiding the comptime interpreter crash
-    caused by multiple parse_xml_full calls for large models.
+    ⚠ TRANSCRIBED FROM `_xml_joint_adr_grouped`, PASS FOR PASS. MuJoCo emits
+    joints GROUPED BY BODY -- all of body 0's, then body 1's, declaration order
+    preserved inside each -- and that coincides with text order only when every
+    body declares its joints before its nested <body> children. dm_control's
+    dog does not. Changing the rule here changes every actuator and tendon
+    transmission in the tree; the gate that catches it is
+    `test_dog_actuator_transmission`'s `max|d(moment)|`.
     """
-    var data = ComptimeRenderData()
-    var xml_clean = _strip_xml_comments(xml)
+    var out = _JointAdrTable()
+    var wb = _extract_section(xml, "worldbody")
+    var n = wb.byte_length()
 
-    # ---- Compiler angle units ------------------------------------------------
-    var deg_factor = Float64(1.0)
-    var compiler_t = xml_clean.find("<compiler")
-    if compiler_t != -1:
-        var compiler_end = xml_clean.find(">", compiler_t)
-        if compiler_end != -1:
-            var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                deg_factor = Float64(3.141592653589793) / Float64(180.0)
-
-    # ---- Default geom rgba from <default> section ----------------------------
-    var def_rgba_r = Float64(-1.0)
-    var def_rgba_g = Float64(-1.0)
-    var def_rgba_b = Float64(-1.0)
-    var def_rgba_a = Float64(-1.0)
-    var def_sec = _extract_section(xml_clean, "default")
-    if def_sec.byte_length() > 0:
-        var gpos = def_sec.find("<geom")
-        if gpos != -1:
-            var tag_end = def_sec.find(">", gpos)
-            if tag_end != -1:
-                var gtag = String(def_sec[byte = gpos : tag_end + 1])
-                var rgba_s = _extract_attr(gtag, "rgba")
-                if rgba_s.byte_length() > 0:
-                    var cv = _rcd_parse_rgba4(rgba_s)
-                    def_rgba_r = cv[0]
-                    def_rgba_g = cv[1]
-                    def_rgba_b = cv[2]
-                    def_rgba_a = cv[3]
-
-    # ---- Parse <asset> section: textures and materials -----------------------
-    var asset_sec = _extract_section(xml_clean, "asset")
-
-    # Textures
-    var tex_pos = 0
-    var tex_count = 0
-    while tex_count < 8:
-        var t = asset_sec.find("<texture", tex_pos)
+    # Pass 1: every joint in text order, tagged with the body it belongs to.
+    var jbody = List[Int]()
+    var jqw = List[Int]()
+    var jdw = List[Int]()
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body, which cannot carry a joint
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(wb, "<body", pos)
+        var t_joint = _find_tag(wb, "<joint", pos)
+        var t_close = wb.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_joint), t_close)
         if t == -1:
             break
-        var tag_end = asset_sec.find(">", t)
+        var tag_end = wb.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(asset_sec[byte = t : tag_end + 1])
-        data.tex_type[tex_count] = _rcd_tex_type_from_str(
-            _extract_attr(tag, "type")
-        )
-        data.tex_builtin[tex_count] = _rcd_tex_builtin_from_str(
-            _extract_attr(tag, "builtin")
-        )
-        var rgb1_s = _extract_attr(tag, "rgb1")
-        if rgb1_s.byte_length() > 0:
-            var c = _rcd_parse_rgb3(rgb1_s)
-            data.tex_rgb1_r[tex_count] = c[0]
-            data.tex_rgb1_g[tex_count] = c[1]
-            data.tex_rgb1_b[tex_count] = c[2]
-        var rgb2_s = _extract_attr(tag, "rgb2")
-        if rgb2_s.byte_length() > 0:
-            var c = _rcd_parse_rgb3(rgb2_s)
-            data.tex_rgb2_r[tex_count] = c[0]
-            data.tex_rgb2_g[tex_count] = c[1]
-            data.tex_rgb2_b[tex_count] = c[2]
-        var tex_name_s = _extract_attr(tag, "name")
-        if tex_name_s.byte_length() > 0:
-            data.tex_names[tex_count] = tex_name_s
-        var tex_file_s = _extract_attr(tag, "file")
-        if tex_file_s.byte_length() > 0:
-            data.tex_files[tex_count] = tex_file_s
-        tex_count += 1
-        tex_pos = tag_end + 1
-    data.ntex = tex_count
-
-    # Materials
-    var mat_pos = 0
-    var mat_count = 0
-    while mat_count < 8:
-        var t = asset_sec.find("<material", mat_pos)
-        if t == -1:
-            break
-        var tag_end = asset_sec.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(asset_sec[byte = t : tag_end + 1])
-        var rgba_s = _extract_attr(tag, "rgba")
-        if rgba_s.byte_length() > 0:
-            var c = _rcd_parse_rgba4(rgba_s)
-            data.mat_rgba_r[mat_count] = c[0]
-            data.mat_rgba_g[mat_count] = c[1]
-            data.mat_rgba_b[mat_count] = c[2]
-            data.mat_rgba_a[mat_count] = c[3]
-        var shin_s = _extract_attr(tag, "shininess")
-        if shin_s.byte_length() > 0:
-            data.mat_shininess[mat_count] = _parse_float(shin_s)
-        var spec_s = _extract_attr(tag, "specular")
-        if spec_s.byte_length() > 0:
-            data.mat_specular[mat_count] = _parse_float(spec_s)
-        var refl_s = _extract_attr(tag, "reflectance")
-        if refl_s.byte_length() > 0:
-            data.mat_reflectance[mat_count] = _parse_float(refl_s)
-        # Resolve material → texture reference
-        var mat_tex_name = _extract_attr(tag, "texture")
-        if mat_tex_name.byte_length() > 0:
-            for ti in range(data.ntex):
-                if data.tex_names[ti] == mat_tex_name:
-                    data.mat_tex_id[mat_count] = ti
-                    break
-        # Parse texrepeat (default 1 1)
-        var tr_s = _extract_attr(tag, "texrepeat")
-        if tr_s.byte_length() > 0:
-            var tv = _parse_vec3(tr_s)  # reuse vec3 parser, only need first 2
-            data.mat_texrepeat_u[mat_count] = tv[0]
-            data.mat_texrepeat_v[mat_count] = tv[1]
-        mat_count += 1
-        mat_pos = tag_end + 1
-    data.nmat = mat_count
-
-    # Meshes (name → file path)
-    var mesh_pos = 0
-    while True:
-        var t = asset_sec.find("<mesh", mesh_pos)
-        if t == -1:
-            break
-        var tag_end = asset_sec.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(asset_sec[byte=t : tag_end + 1])
-        var mesh_name = _extract_attr(tag, "name")
-        var mesh_file = _extract_attr(tag, "file")
-        if mesh_name.byte_length() > 0 and data.nmesh < 16:
-            data.mesh_names[data.nmesh] = mesh_name
-            data.mesh_files[data.nmesh] = mesh_file
-            data.nmesh += 1
-        mesh_pos = tag_end + 1
-
-    # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
-    var worldbody = _extract_section(xml_clean, "worldbody")
-    var body_id_stack = InlineArray[Int, 65](fill=0)
-    var depth = 0
-    var body_count = 0
-    var geom_count = 0
-    var light_count = 0
-    var cam_count = 0
-    var site_count = 0
-    var scan_pos = 0
-    var wlen = worldbody.byte_length()
-
-    while scan_pos < wlen:
-        var next_body_open = worldbody.find("<body", scan_pos)
-        var next_body_close = worldbody.find("</body>", scan_pos)
-        var next_geom = worldbody.find("<geom", scan_pos)
-        var next_light = worldbody.find("<light", scan_pos)
-        var next_cam = worldbody.find("<camera", scan_pos)
-        var next_site = worldbody.find("<site", scan_pos)
-        if (
-            next_body_open == -1
-            and next_body_close == -1
-            and next_geom == -1
-            and next_light == -1
-            and next_cam == -1
-            and next_site == -1
-        ):
-            break
-        var earliest = _rcd_min_valid(
-            _rcd_min_valid(
-                _rcd_min_valid(next_body_open, next_body_close),
-                _rcd_min_valid(next_geom, next_light),
-            ),
-            _rcd_min_valid(next_cam, next_site),
-        )
-        if earliest == next_body_open:
-            depth += 1
-            body_count += 1
-            body_id_stack[depth] = body_count
-            var tag_end = worldbody.find(">", next_body_open)
-            scan_pos = tag_end + 1 if tag_end != -1 else wlen
-        elif earliest == next_body_close:
-            if depth > 0:
-                depth -= 1
-            scan_pos = next_body_close + 7
-        elif earliest == next_geom:
-            var current_body = body_id_stack[depth]
-            var tag = _extract_opening_tag(worldbody, next_geom)
-            if geom_count < 64:
-                data.geom_body_id[geom_count] = current_body
-                data.geom_type[geom_count] = _rcd_geom_type_from_str(
-                    _extract_attr(tag, "type")
-                )
-                # Mesh reference: mesh="name" → lookup in mesh assets
-                if data.geom_type[geom_count] == 5:  # GEOM_MESH
-                    var mesh_ref = _extract_attr(tag, "mesh")
-                    if mesh_ref.byte_length() > 0:
-                        for mi in range(data.nmesh):
-                            if data.mesh_names[mi] == mesh_ref:
-                                data.geom_mesh_id[geom_count] = mi
-                                break
-                var fromto_s = _extract_attr(tag, "fromto")
-                if fromto_s.byte_length() > 0:
-                    var ft = _fromto_to_pos_quat(fromto_s)
-                    data.geom_pos_x[geom_count] = ft[0]
-                    data.geom_pos_y[geom_count] = ft[1]
-                    data.geom_pos_z[geom_count] = ft[2]
-                    data.geom_quat_x[geom_count] = ft[3]
-                    data.geom_quat_y[geom_count] = ft[4]
-                    data.geom_quat_z[geom_count] = ft[5]
-                    data.geom_quat_w[geom_count] = ft[6]
-                    data.geom_half_length[geom_count] = ft[7]
-                else:
-                    var pos_s = _extract_attr(tag, "pos")
-                    if pos_s.byte_length() > 0:
-                        var pv = _parse_vec3(pos_s)
-                        data.geom_pos_x[geom_count] = pv[0]
-                        data.geom_pos_y[geom_count] = pv[1]
-                        data.geom_pos_z[geom_count] = pv[2]
-                    var quat_s = _extract_attr(tag, "quat")
-                    if quat_s.byte_length() > 0:
-                        var qv = _parse_quat(quat_s)
-                        data.geom_quat_x[geom_count] = qv[0]
-                        data.geom_quat_y[geom_count] = qv[1]
-                        data.geom_quat_z[geom_count] = qv[2]
-                        data.geom_quat_w[geom_count] = qv[3]
-                    else:
-                        var aa_s = _extract_attr(tag, "axisangle")
-                        if aa_s.byte_length() > 0:
-                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                            data.geom_quat_x[geom_count] = aq[0]
-                            data.geom_quat_y[geom_count] = aq[1]
-                            data.geom_quat_z[geom_count] = aq[2]
-                            data.geom_quat_w[geom_count] = aq[3]
-                var size_s = _extract_attr(tag, "size")
-                if size_s.byte_length() > 0:
-                    var size_parts = List[String]()
-                    _split_spaces(size_s, size_parts)
-                    var s0 = Float64(0)
-                    var s1 = Float64(0)
-                    var s2 = Float64(0)
-                    if len(size_parts) >= 1:
-                        s0 = _parse_float(size_parts[0])
-                    if len(size_parts) >= 2:
-                        s1 = _parse_float(size_parts[1])
-                    if len(size_parts) >= 3:
-                        s2 = _parse_float(size_parts[2])
-                    var gt = data.geom_type[geom_count]
-                    if gt == 1:  # SPHERE
-                        data.geom_radius[geom_count] = s0
-                        data.geom_half_x[geom_count] = s0
-                        data.geom_half_y[geom_count] = s0
-                        data.geom_half_z[geom_count] = s0
-                    elif gt == 2:  # CAPSULE
-                        data.geom_radius[geom_count] = s0
-                        # Only use size[1] as half-length if no fromto was
-                        # specified (fromto already set the correct value).
-                        if len(size_parts) >= 2 and fromto_s.byte_length() == 0:
-                            data.geom_half_length[geom_count] = s1
-                    elif gt == 3:  # BOX
-                        data.geom_half_x[geom_count] = s0
-                        data.geom_half_y[geom_count] = s1
-                        data.geom_half_z[geom_count] = s2
-                        data.geom_radius[geom_count] = _sqrt_f64(
-                            s0 * s0 + s1 * s1 + s2 * s2
-                        )
-                    elif gt == 4:  # CYLINDER
-                        data.geom_radius[geom_count] = s0
-                        if fromto_s.byte_length() == 0:
-                            data.geom_half_length[geom_count] = s1
-                    elif gt == 0:  # PLANE
-                        data.geom_half_x[geom_count] = s0
-                        data.geom_half_y[geom_count] = s1
-                    else:
-                        data.geom_radius[geom_count] = s0
-                var rgba_s = _extract_attr(tag, "rgba")
-                if rgba_s.byte_length() > 0:
-                    var cv = _rcd_parse_rgba4(rgba_s)
-                    data.geom_rgba_r[geom_count] = cv[0]
-                    data.geom_rgba_g[geom_count] = cv[1]
-                    data.geom_rgba_b[geom_count] = cv[2]
-                    data.geom_rgba_a[geom_count] = cv[3]
-                elif def_rgba_r >= Float64(0):
-                    data.geom_rgba_r[geom_count] = def_rgba_r
-                    data.geom_rgba_g[geom_count] = def_rgba_g
-                    data.geom_rgba_b[geom_count] = def_rgba_b
-                    data.geom_rgba_a[geom_count] = def_rgba_a
-            geom_count += 1
-            var tag_end = worldbody.find(">", next_geom)
-            scan_pos = tag_end + 1 if tag_end != -1 else wlen
-        elif earliest == next_light:
-            var tag = _extract_opening_tag(worldbody, next_light)
-            if light_count < 8:
-                var dir_s = _extract_attr(tag, "dir")
-                if dir_s.byte_length() > 0:
-                    var dv = _parse_vec3(dir_s)
-                    data.light_dir_x[light_count] = dv[0]
-                    data.light_dir_y[light_count] = dv[1]
-                    data.light_dir_z[light_count] = dv[2]
-                var diff_s = _extract_attr(tag, "diffuse")
-                if diff_s.byte_length() > 0:
-                    var c = _rcd_parse_rgb3(diff_s)
-                    data.light_diffuse_r[light_count] = c[0]
-                    data.light_diffuse_g[light_count] = c[1]
-                    data.light_diffuse_b[light_count] = c[2]
-                var spec_s = _extract_attr(tag, "specular")
-                if spec_s.byte_length() > 0:
-                    var c = _rcd_parse_rgb3(spec_s)
-                    data.light_specular_r[light_count] = c[0]
-                    data.light_specular_g[light_count] = c[1]
-                    data.light_specular_b[light_count] = c[2]
-                var amb_s = _extract_attr(tag, "ambient")
-                if amb_s.byte_length() > 0:
-                    var c = _rcd_parse_rgb3(amb_s)
-                    data.light_ambient_r[light_count] = c[0]
-                    data.light_ambient_g[light_count] = c[1]
-                    data.light_ambient_b[light_count] = c[2]
-                data.light_directional[light_count] = (
-                    _extract_attr(tag, "directional") == "true"
-                )
-                if _extract_attr(tag, "castshadow") == "false":
-                    data.light_castshadow[light_count] = False
-                var exp_s = _extract_attr(tag, "exponent")
-                if exp_s.byte_length() > 0:
-                    data.light_exponent[light_count] = _parse_float(exp_s)
-            light_count += 1
-            var tag_end = worldbody.find(">", next_light)
-            scan_pos = tag_end + 1 if tag_end != -1 else wlen
-        elif earliest == next_cam:
-            var current_body = body_id_stack[depth]
-            var tag = _extract_opening_tag(worldbody, next_cam)
-            if cam_count < 8:
-                data.cam_body_id[cam_count] = current_body
-                var pos_s = _extract_attr(tag, "pos")
-                if pos_s.byte_length() > 0:
-                    var pv = _parse_vec3(pos_s)
-                    data.cam_pos_x[cam_count] = pv[0]
-                    data.cam_pos_y[cam_count] = pv[1]
-                    data.cam_pos_z[cam_count] = pv[2]
-                var quat_s = _extract_attr(tag, "quat")
-                if quat_s.byte_length() > 0:
-                    var qv = _parse_quat(quat_s)
-                    data.cam_quat_x[cam_count] = qv[0]
-                    data.cam_quat_y[cam_count] = qv[1]
-                    data.cam_quat_z[cam_count] = qv[2]
-                    data.cam_quat_w[cam_count] = qv[3]
-                else:
-                    var aa_s = _extract_attr(tag, "axisangle")
-                    if aa_s.byte_length() > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                        data.cam_quat_x[cam_count] = aq[0]
-                        data.cam_quat_y[cam_count] = aq[1]
-                        data.cam_quat_z[cam_count] = aq[2]
-                        data.cam_quat_w[cam_count] = aq[3]
-                    else:
-                        var xy_s = _extract_attr(tag, "xyaxes")
-                        if xy_s.byte_length() > 0:
-                            var xq = _rcd_xyaxes_to_quat(xy_s)
-                            data.cam_quat_x[cam_count] = xq[0]
-                            data.cam_quat_y[cam_count] = xq[1]
-                            data.cam_quat_z[cam_count] = xq[2]
-                            data.cam_quat_w[cam_count] = xq[3]
-                var fovy_s = _extract_attr(tag, "fovy")
-                if fovy_s.byte_length() > 0:
-                    data.cam_fovy[cam_count] = _parse_float(fovy_s)
-                var mode_s = _extract_attr(tag, "mode")
-                if mode_s.byte_length() > 0:
-                    data.cam_mode[cam_count] = _rcd_cam_mode_from_str(mode_s)
-            cam_count += 1
-            var tag_end = worldbody.find(">", next_cam)
-            scan_pos = tag_end + 1 if tag_end != -1 else wlen
-        elif earliest == next_site:
-            var current_body = body_id_stack[depth]
-            var tag = _extract_opening_tag(worldbody, next_site)
-            if site_count < 16:
-                data.site_body_id[site_count] = current_body
-                var pos_s = _extract_attr(tag, "pos")
-                if pos_s.byte_length() > 0:
-                    var pv = _parse_vec3(pos_s)
-                    data.site_pos_x[site_count] = pv[0]
-                    data.site_pos_y[site_count] = pv[1]
-                    data.site_pos_z[site_count] = pv[2]
-                var size_s = _extract_attr(tag, "size")
-                if size_s.byte_length() > 0:
-                    var sparts = List[String]()
-                    _split_spaces(size_s, sparts)
-                    if len(sparts) >= 1:
-                        data.site_size_0[site_count] = _parse_float(sparts[0])
-            site_count += 1
-            var tag_end = worldbody.find(">", next_site)
-            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(wb[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
         else:
-            scan_pos = earliest + 1
+            var tag = String(wb[byte = t : tag_end + 1])
+            var jtype = _trim(_extract_attr(tag, "type"))
+            var qw = 1
+            var dw = 1
+            if jtype == "ball":
+                qw = 4
+                dw = 3
+            elif jtype == "free":
+                qw = 7
+                dw = 6
+            out.names.append(_trim(_extract_attr(tag, "name")))
+            # `ref`, by `_xml_find_joint_ref`'s rule: deg->rad for angular
+            # joints only, because a slide ref is in metres.
+            var rs = _extract_attr(tag, "ref")
+            var rv = Float64(0.0)
+            if rs.byte_length() > 0:
+                var angular = jtype == "" or jtype == "hinge" or jtype == "ball"
+                rv = _parse_float(rs) * (deg_factor if angular else 1.0)
+            out.refs.append(rv)
+            jbody.append(cur)
+            jqw.append(qw)
+            jdw.append(dw)
+        pos = tag_end + 1
 
-    data.ngeom = geom_count
-    data.nlight = light_count
-    data.ncam = cam_count
-    data.nsite = site_count
-
-    # ---- Parse <visual> section: map, quality, headlight ----------------------
-    var visual_sec = _extract_section(xml_clean, "visual")
-    if visual_sec.byte_length() > 0:
-        # <map znear="..." fogstart="..." fogend="..."/>
-        var map_pos = visual_sec.find("<map")
-        if map_pos != -1:
-            var map_end = visual_sec.find(">", map_pos)
-            if map_end != -1:
-                var map_tag = String(visual_sec[byte = map_pos : map_end + 1])
-                var znear_s = _extract_attr(map_tag, "znear")
-                if znear_s.byte_length() > 0:
-                    data.vis_znear = _parse_float(znear_s)
-                var fogstart_s = _extract_attr(map_tag, "fogstart")
-                if fogstart_s.byte_length() > 0:
-                    data.vis_fogstart = _parse_float(fogstart_s)
-                var fogend_s = _extract_attr(map_tag, "fogend")
-                if fogend_s.byte_length() > 0:
-                    data.vis_fogend = _parse_float(fogend_s)
-        # <quality shadowsize="..."/>
-        var qual_pos = visual_sec.find("<quality")
-        if qual_pos != -1:
-            var qual_end = visual_sec.find(">", qual_pos)
-            if qual_end != -1:
-                var qual_tag = String(visual_sec[byte = qual_pos : qual_end + 1])
-                var ss_s = _extract_attr(qual_tag, "shadowsize")
-                if ss_s.byte_length() > 0:
-                    data.vis_shadowsize = Int(_parse_float(ss_s))
-        # <headlight ambient="r g b"/>
-        var hl_pos = visual_sec.find("<headlight")
-        if hl_pos != -1:
-            var hl_end = visual_sec.find(">", hl_pos)
-            if hl_end != -1:
-                var hl_tag = String(visual_sec[byte = hl_pos : hl_end + 1])
-                var amb_s = _extract_attr(hl_tag, "ambient")
-                if amb_s.byte_length() > 0:
-                    var c = _rcd_parse_rgb3(amb_s)
-                    data.vis_headlight_ambient_r = c[0]
-                    data.vis_headlight_ambient_g = c[1]
-                    data.vis_headlight_ambient_b = c[2]
-                    data.vis_has_headlight = True
-
-    # ---- Post-pass: resolve geom material="name" references ------------------
-    var geom_scan = 0
-    var geom_idx = 0
-    while geom_scan < wlen and geom_idx < geom_count and geom_idx < 64:
-        var t = worldbody.find("<geom", geom_scan)
-        if t == -1:
-            break
-        var tag_end = worldbody.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(worldbody[byte = t : tag_end + 1])
-        var mat_name = _extract_attr(tag, "material")
-        if mat_name.byte_length() > 0:
-            var mid = _rcd_find_material_index_by_name(asset_sec, mat_name)
-            data.geom_material_id[geom_idx] = mid
-            var has_explicit_rgba = _extract_attr(tag, "rgba").byte_length() > 0
-            if not has_explicit_rgba and mid >= 0 and mid < mat_count:
-                data.geom_rgba_r[geom_idx] = data.mat_rgba_r[mid]
-                data.geom_rgba_g[geom_idx] = data.mat_rgba_g[mid]
-                data.geom_rgba_b[geom_idx] = data.mat_rgba_b[mid]
-                data.geom_rgba_a[geom_idx] = data.mat_rgba_a[mid]
-        geom_idx += 1
-        geom_scan = tag_end + 1
-
-    return data^
-
-
-# =============================================================================
-# Comptime scalar helpers for GPU kernels in ModelDefFromXML
-# =============================================================================
+    # Pass 2: for each joint, sum the widths of every joint MuJoCo emits first.
+    for i in range(len(jbody)):
+        var qa = 0
+        var da = 0
+        for j in range(len(jbody)):
+            if jbody[j] < jbody[i] or (jbody[j] == jbody[i] and j < i):
+                qa += jqw[j]
+                da += jdw[j]
+        out.qadr.append(qa)
+        out.dadr.append(da)
+    return out^
 
 
 def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
     """Return gear ratio for the n-th <motor> in <actuator> section.
 
-    Returns 1.0 if not found or no gear attribute. Comptime-safe.
+    Falls back to `<default><motor gear="..."/>` and then to MuJoCo's 1.0.
+    Comptime-safe.
     """
+    comptime def_gear = _xml_default_motor_gear[xml]()
     var sec = _extract_section(xml, "actuator")
     var pos = 0
     var count = 0
@@ -2879,15 +3726,15 @@ def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
         if count == n:
             var tag_end = sec.find(">", t)
             if tag_end == -1:
-                return Float64(1.0)
+                return def_gear
             var tag = String(sec[byte = t : tag_end + 1])
             var g = _extract_attr(tag, "gear")
             if g.byte_length() == 0:
-                return Float64(1.0)
+                return def_gear
             return _parse_float(g)
         count += 1
         pos = t + 6
-    return Float64(1.0)
+    return def_gear
 
 
 def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
@@ -3015,7 +3862,7 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
     """
     # Read default from <default> section
     var def_limited = False
-    var def_sec = _extract_section(xml, "default")
+    var def_sec = _root_defaults(xml)
     if def_sec.byte_length() > 0:
         var jpos = def_sec.find("<joint")
         if jpos != -1:
@@ -3055,6 +3902,9 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
                 return True
             elif lim == "false" or lim == "0":
                 return False
+            # `compiler/autolimits` — see the twin in `parse_xml_model_data`.
+            if _extract_attr(tag, "range").byte_length() > 0:
+                return True
             return def_limited
         count += 1
         scan_pos = t + 6
@@ -3064,8 +3914,9 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
 def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     """Return range_min for the n-th joint in worldbody DFS order (radians).
 
-    Automatically converts from degrees when <compiler angle="degree"/> is set.
-    Returns 0.0 if no range attribute. Comptime-safe.
+    Converts from degrees for ANGULAR joints when the model is in degree mode
+    (MuJoCo's default) — a slide range stays in metres, matching
+    mjCJoint::Compile. Returns 0.0 if no range attribute. Comptime-safe.
     """
     comptime deg_factor = (
         3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
@@ -3096,10 +3947,13 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
             var range_str = _extract_attr(tag, "range")
             if range_str.byte_length() == 0:
                 return Float64(0.0)
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            var rf = deg_factor if angular else 1.0
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 1:
-                return _parse_float(parts[0]) * deg_factor
+                return _parse_float(parts[0]) * rf
             return Float64(0.0)
         count += 1
         scan_pos = t + 6
@@ -3109,8 +3963,9 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
 def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
     """Return range_max for the n-th joint in worldbody DFS order (radians).
 
-    Automatically converts from degrees when <compiler angle="degree"/> is set.
-    Returns 0.0 if no range attribute. Comptime-safe.
+    Converts from degrees for ANGULAR joints when the model is in degree mode
+    (MuJoCo's default) — a slide range stays in metres, matching
+    mjCJoint::Compile. Returns 0.0 if no range attribute. Comptime-safe.
     """
     comptime deg_factor = (
         3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
@@ -3141,10 +3996,13 @@ def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
             var range_str = _extract_attr(tag, "range")
             if range_str.byte_length() == 0:
                 return Float64(0.0)
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            var rf = deg_factor if angular else 1.0
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 2:
-                return _parse_float(parts[1]) * deg_factor
+                return _parse_float(parts[1]) * rf
             return Float64(0.0)
         count += 1
         scan_pos = t + 6

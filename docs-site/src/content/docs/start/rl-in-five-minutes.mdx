@@ -1,0 +1,125 @@
+---
+title: RL in five minutes
+description: The agent–environment loop, and the vocabulary the rest of these docs assume.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import AgentEnvLoop from '~/components/diagrams/AgentEnvLoop.astro';
+
+<Maturity level="stable" />
+
+If terms like *policy*, *return* and *off-policy* are already familiar, skip to
+[the layered stack](/concepts/architecture/). This page exists so the rest of the
+documentation can use them without stopping to explain.
+
+## The loop
+
+Reinforcement learning has exactly two participants.
+
+The **environment** is the world: a physics simulation, a game, a grid. It holds
+some state, accepts an action, and answers with a new state and a scalar reward.
+
+The **agent** is a policy — a rule for choosing what to do next given what it can
+see.
+
+<AgentEnvLoop />
+
+That exchange repeats. The agent acts, observes the consequence, and adjusts its
+policy to collect more reward over time. Millions of iterations later, the
+adjustments amount to a skill.
+
+Building an RL framework means building **both sides of this loop**, plus
+everything that makes the adjusting work.
+
+## The vocabulary
+
+**Observation** — what the agent sees each step. Sometimes the full state
+(CartPole's 4 numbers), sometimes a partial view (a stack of 84×84 pixels).
+Dimensions are written `OBS_DIM` throughout the codebase.
+
+**Action** — what the agent does. *Discrete* actions are a finite set (CartPole:
+push left or right). *Continuous* actions are vectors of real numbers
+(HalfCheetah: 6 joint torques). This distinction decides which algorithms apply,
+and it shows up in the trait hierarchy as `DiscreteActionEnv` versus
+`ContinuousActionEnv`.
+
+**Reward** — a scalar per step. Not a score you read out at the end: the *only*
+signal the agent gets about whether it is doing well.
+
+**Episode** — one run from reset to termination. The pole falls, the lander
+crashes, the goal is reached.
+
+**Return** — the sum of rewards over an episode, usually discounted by a factor
+`gamma` (typically 0.99) so that sooner reward counts for more. This is the
+quantity everything maximises. When docs report "mean return", this is it.
+
+**Policy** — the agent's action-choosing rule, written `π`. It might be a
+lookup table, a linear function, or a neural network.
+
+**Value** — expected future return. `V(s)` from a state; `Q(s, a)` from a state
+having taken an action. Most algorithms work by learning a value estimate and
+acting greedily with respect to it.
+
+**Terminated vs. truncated** — an episode that genuinely ended (the pole fell)
+versus one that hit a step limit. These must be handled differently: a
+time-limit cutoff should still bootstrap from the final state, a real
+termination should not. Getting this wrong silently degrades learning, which is
+why `Env` in mojo-rl exposes `was_terminated()` separately from `done`.
+
+## The families of algorithm
+
+mojo-rl's algorithms span the full range, and understanding the axis they vary
+along makes the [algorithm index](/concepts/architecture/) legible.
+
+**Tabular** — store one value per state-action pair in a table. Q-Learning,
+SARSA. Exact and easy to reason about; only works when states are few enough to
+enumerate.
+
+**Value-based, deep** — replace the table with a neural network that maps
+observations to a value per action. DQN and its descendants (Double, Dueling,
+Noisy, C51, Rainbow). Discrete actions only, because you need a `max` over
+actions.
+
+**Policy gradient** — learn the policy directly instead of deriving it from
+values. REINFORCE, A2C, PPO. Handles continuous actions naturally.
+
+**Continuous control, off-policy** — learn both a policy and value estimates,
+and reuse old experience from a replay buffer. DDPG, TD3, SAC. The
+sample-efficiency workhorses for robotics-style tasks.
+
+**Model-based** — learn a model of the environment and plan or train inside it.
+TD-MPC2, DreamerV3, MuZero. The most sample-efficient and the most complex.
+
+## On-policy and off-policy
+
+This distinction determines a lot of framework structure, so it is worth
+pinning down.
+
+**On-policy** algorithms learn only from data the current policy generated. PPO
+collects a fresh rollout, runs several update epochs over it, then throws it
+away. Simple and stable; needs a lot of environment interaction.
+
+**Off-policy** algorithms learn from any past experience, kept in a replay
+buffer. SAC samples a random minibatch from the last million transitions on
+every update. Far more sample-efficient; more ways to become unstable.
+
+mojo-rl reflects this in its training drivers: `run_onpolicy_*` for the first
+family, `run_offpolicy_*` for the second, each with CPU and GPU, single-env and
+batched variants.
+
+## What "batched" means here
+
+A single environment stepping on a GPU wastes it. Instead, mojo-rl runs many
+copies of an environment simultaneously — `N_ENVS = 32` in the quickstart — as
+one wide tensor operation. The physics engines are written for this: state is
+laid out as `[BATCH, STATE_SIZE]`, and one kernel launch advances every
+environment.
+
+This is why environment count appears as a compile-time parameter rather than a
+runtime loop, and why observations reach the agent as batches.
+
+## Next
+
+- [Quickstart: tabular](/start/quickstart-tabular/) — see the loop run
+- [The layered stack](/concepts/architecture/) — how mojo-rl organises all of this
+- [Traits](/concepts/traits/) — the interfaces the vocabulary above maps onto

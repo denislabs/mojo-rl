@@ -13,7 +13,7 @@ Run (NVIDIA, after lewm_pusht_train_gpu_paper_cls.mojo):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_decode_gpu_cls.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -89,8 +89,8 @@ comptime Decoder = LeWMDecoderTrainer[
 ]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def main() raises:
@@ -124,7 +124,7 @@ def main() raises:
         var act_t = TileTensor(src.act_ptr(), row_major[B, ACTIN]())
         _ = wm.eval_loss(pix_t, act_t)
         ref emb_tensor = wm.graph.node_output["emb"]()
-        var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var emb_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             emb_tensor.dev.value().unsafe_ptr()
         )
         var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
@@ -144,28 +144,28 @@ def main() raises:
         if step % VIZ_EVERY == 0 or step == STEPS:
             dec.recon_into(
                 emb_t,
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     recon_host.unsafe_ptr()
                 ),
             )
             unpatchify["cpu", N_VIZ, IN_CH, IMG, PATCH_D](
                 None,
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     recon_host.unsafe_ptr()
                 ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     recon_img.unsafe_ptr()
                 ),
             )
-            # D2H the first N_VIZ original frames (host idiom: UnsafePointer
+            # D2H the first N_VIZ original frames (host idiom: Pointer
             # dst + non-owning device src).
             var orig_dev = DeviceBuffer[DT](
                 ctx,
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.pix_ptr()),
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](src.pix_ptr()),
                 N_VIZ * IMG_DIM, owning=False,
             )
             ctx.enqueue_copy(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     orig_img.unsafe_ptr()
                 ),
                 orig_dev,

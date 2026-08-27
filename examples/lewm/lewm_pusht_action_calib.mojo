@@ -71,7 +71,7 @@ struct _Reg(Copyable, Movable):
 
 
 def _agent_centroid(
-    pix: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+    pix: Pointer[Scalar[DType.uint8], MutAnyOrigin],
     frame_off: Int,
     mut cx: Float64,
     mut cy: Float64,

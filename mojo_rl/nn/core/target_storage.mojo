@@ -19,7 +19,7 @@ See `nn/core/target_tag.mojo` for the underlying constants and
 `target_tag_for[target]()` mapping.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
 from .target_tag import (
@@ -36,7 +36,7 @@ from .target_tag import (
 
 
 @fieldwise_init
-struct TargetStorage(Movable & ImplicitlyDeletable):
+struct TargetStorage(Movable & Deinitable):
     """Bundles `target_tag` + `ctx` into one composable field. Every
     nn leaf retrofit owns exactly one of these.
 

@@ -523,7 +523,9 @@ def test_move_walks_on_grass(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Classic Phase-3A achievement gate")
     print("=" * 50)
-    var counts = [0, 0]  # [passed, failed]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]  # [passed, failed]
 
     test_collect_wood(counts)
     test_place_table(counts)

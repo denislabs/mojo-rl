@@ -22,7 +22,7 @@ Run (Apple):
 from std.memory import alloc, memset
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
@@ -36,6 +36,7 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime BATCH = 64
 comptime EPOCHS = 3
@@ -204,7 +205,7 @@ def main() raises:
                 ctx.synchronize()
                 var elapsed = Float64(perf_counter_ns() - t0) / 1e9
                 print("    ", epoch, "  ", batch_idx, "  ",
-                      String(elapsed)[byte=:7])
+                      fit(String(elapsed), 7))
         ctx.synchronize()
 
     # ── Eval ──────────────────────────────────────────────────────────────────
@@ -238,7 +239,7 @@ def main() raises:
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
     print("\n  test accuracy =", acc, " (", correct, "/",
           N_TEST_BATCHES * BATCH, ")")
-    print("  total train+eval time =", String(total_t)[byte=:7], "s")
+    print("  total train+eval time =", fit(String(total_t), 7), "s")
 
     print("")
     if acc >= PASS_ACC:

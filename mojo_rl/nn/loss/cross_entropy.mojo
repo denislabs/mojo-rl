@@ -11,8 +11,8 @@ RECOMPUTES the softmax from `logits` (passed explicitly) — no softmax cache.
 
 from std.math import exp, log
 from std.gpu import global_idx, thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -88,7 +88,7 @@ def _ce_bwd_kernel[
             grad[b, c] = (sm - rebind[Scalar[DT]](targets[b, c])) * inv_b
 
 
-struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
+struct CrossEntropyLoss[NC_: Int](Movable & Deinitable):
     var partial: Tensor  # GPU [BATCH] per-row losses (lazy)
     var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]
     var _acc_sum: Scalar[DT]

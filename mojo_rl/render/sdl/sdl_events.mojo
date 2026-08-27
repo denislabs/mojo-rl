@@ -1677,7 +1677,7 @@ def wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitEvent.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_WaitEvent", def(event: Ptr[Event, MutAnyOrigin]) thin -> Bool
     ]()(event)
     if not ret:
@@ -1755,7 +1755,7 @@ def push_event(event: Ptr[Event, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PushEvent.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_PushEvent", def(event: Ptr[Event, MutAnyOrigin]) thin -> Bool
     ]()(event)
     if not ret:
@@ -1854,7 +1854,7 @@ def get_event_filter(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetEventFilter.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetEventFilter",
         def(
@@ -1900,7 +1900,7 @@ def add_event_watch(
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddEventWatch.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_AddEventWatch",
         def(filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]) thin -> Bool,

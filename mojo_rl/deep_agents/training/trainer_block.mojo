@@ -20,7 +20,7 @@ into the storage Module `forward`/`vjp` via `TensorRefs`. `make[target]`
 allocates on the chosen target (CPU list / GPU buffer).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -30,7 +30,7 @@ struct TrainerState[
     OBS: Int,
     ACT: Int,
     BATCH: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     # Canonical minibatch six-pack (owned storage Tensors).
     var mb_s:  Tensor   # [BATCH * OBS]
     var mb_a:  Tensor   # [BATCH * ACT]

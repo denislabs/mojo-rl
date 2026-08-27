@@ -28,7 +28,7 @@ N_ENVS > 1 is reached via the BatchedEnv driver.
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -40,7 +40,7 @@ struct OnPolicyState[
     ROLLOUT_LEN: Int,
     MINIBATCH: Int,
     N_ENVS: Int = 1,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     # ── Rollout buffers (ROLLOUT_LEN × N_ENVS, T-major) ─────────────
     var obs_buf: Tensor
     var act_buf: Tensor
@@ -77,7 +77,7 @@ struct OnPolicyState[
     var mb_gi: Tensor
 
     # Int32 shuffle/gather index array (Tensor is DT-only, so raw ptr).
-    var indices: Optional[UnsafePointer[Int32, MutUntrackedOrigin]]
+    var indices: Optional[Pointer[Int32, MutUntrackedOrigin]]
 
     # Rollout cursor.
     var rollout_idx: Int
@@ -165,6 +165,6 @@ struct OnPolicyState[
         s.mb_v = Self._mk[target](Self.MINIBATCH * 1, ctx)
         s.mb_gv = Self._mk[target](Self.MINIBATCH * 1, ctx)
         s.mb_gi = Self._mk[target](Self.MINIBATCH * Self.OBS, ctx)
-        s.indices = alloc[Int32](RN)
+        s.indices = alloc[Int32]({count = RN}).unsafe_leak()
         s.ctx = ctx
         return s^

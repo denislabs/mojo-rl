@@ -27,8 +27,8 @@ paper=16) is independent of the encoder's patch size.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -140,7 +140,7 @@ def _patchify_kernel[
         + (ph * PATCH_D + i) * IMG
         + (pw * PATCH_D + j)
     )
-    dst.ptr[idx] = rebind[Scalar[DT]](img.ptr[src])
+    dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](img.ptr[unsafe_offset=src])
 
 
 def _unpatchify_kernel[
@@ -180,15 +180,15 @@ def _unpatchify_kernel[
         + i * PATCH_D
         + j
     )
-    img.ptr[idx] = rebind[Scalar[DT]](patches.ptr[psrc])
+    img.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](patches.ptr[unsafe_offset=psrc])
 
 
 def patchify[
     target: StaticString, BATCH: Int, C: Int, IMG: Int, PATCH_D: Int
 ](
     ctx: Optional[DeviceContext],
-    img: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    img: Pointer[Scalar[DT], MutAnyOrigin],
+    dst_buf: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     comptime GRID = IMG // PATCH_D
     comptime PATCH_PX = C * PATCH_D * PATCH_D
@@ -216,7 +216,7 @@ def patchify[
                                 + (ph * PATCH_D + i) * IMG
                                 + (pw * PATCH_D + j)
                             )
-                            dst_buf[dst] = img[src]
+                            dst_buf[unsafe_offset=dst] = img[unsafe_offset=src]
     else:
         var c = ctx.value()
         var img_lt = LayoutTensor[
@@ -236,8 +236,8 @@ def unpatchify[
     target: StaticString, BATCH: Int, C: Int, IMG: Int, PATCH_D: Int
 ](
     ctx: Optional[DeviceContext],
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    img: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    patches: Pointer[Scalar[DT], MutAnyOrigin],
+    img: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     comptime GRID = IMG // PATCH_D
     comptime PATCH_PX = C * PATCH_D * PATCH_D
@@ -262,7 +262,7 @@ def unpatchify[
                             + j
                         )
                         var dst = b * IMGN + c * (IMG * IMG) + y * IMG + x
-                        img[dst] = patches[psrc]
+                        img[unsafe_offset=dst] = patches[unsafe_offset=psrc]
     else:
         var cc = ctx.value()
         var p_lt = LayoutTensor[

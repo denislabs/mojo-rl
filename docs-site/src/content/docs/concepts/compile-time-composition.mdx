@@ -1,0 +1,150 @@
+---
+title: Compile-time composition
+description: Why networks, environments and dimensions are types rather than objects — the idiom that makes the rest of mojo-rl legible.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+This is the one idea that makes the rest of the framework make sense. If you
+arrive from PyTorch, the first mojo-rl training script will look strange for
+exactly one reason: **the network is a type, not an object.**
+
+```mojo
+comptime QNet = Sequential[
+    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, NUM_ACTIONS],
+]
+
+var agent = DQNAgent["cpu", UniformSampleCpuStep[OBS_DIM, 1, BATCH, CAPACITY], QNet](
+    lr=1e-3, gamma=0.99, epsilon=1.0,
+)
+```
+
+`QNet` is not a variable holding a model. It is a type, built at compile time,
+passed to `DQNAgent` as a parameter in square brackets alongside the target
+device and the replay-buffer block.
+
+## The two kinds of brackets
+
+Mojo separates compile-time parameters from runtime arguments, and mojo-rl leans
+on that separation hard:
+
+```mojo
+DQNAgent[  "cpu",  SampleBlock,  QNet  ](  lr=1e-3,  gamma=0.99  )
+        └─────── compile time ────────┘  └──── runtime ────┘
+```
+
+**Square brackets** carry structure: the device target, network architectures,
+dimensions, replay-buffer capacity, environment count. Everything the compiler
+needs to lay out memory and pick kernels.
+
+**Parentheses** carry values you might tune between runs: learning rates,
+discount factors, exploration schedules.
+
+The rule of thumb: if changing it should change the generated code, it goes in
+brackets. If it is just a number the algorithm reads, it goes in parentheses.
+
+## Why do it this way
+
+**No runtime graph.** There is nothing to construct, traverse or dispatch
+through. The forward pass of `QNet` is compiled straight-line code — the
+compiler knows every shape, so it can fuse, unroll and vectorize across layer
+boundaries. `MatMul + Bias + Activation` collapses into one GPU kernel because
+by the time codegen runs, nothing about the composition is dynamic.
+
+**Shapes are checked before you run.** A dimension mismatch between two `Linear`
+layers is a compile error, not a shape error 40 minutes into training.
+
+**Zero-cost generics.** `SACAgent` is written once against the `Module` trait and
+specialized per instantiation. There is no virtual dispatch in the inner loop and
+no abstraction penalty for the layering.
+
+**The whole pipeline specializes together.** Because the environment is also a
+compile-time parameter, the compiler sees the physics kernels, the network and
+the optimizer as one unit and can specialize the lot for the target device.
+
+## Dimensions come from configs
+
+Hard-coding `17` and `6` for HalfCheetah's observation and action dimensions
+would be fragile. Every environment publishes a config struct instead:
+
+```mojo
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
+```
+
+These are compile-time constants, so they flow into network definitions
+directly:
+
+```mojo
+comptime CriticNet = Sequential[
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
+```
+
+Switch `HalfCheetahConfig` to `HumanoidConfig` and the same lines produce a
+network for a 376-dimensional observation and 17 actions. Nothing else changes.
+
+## Composition without a class hierarchy
+
+Combinators are types that take types:
+
+```mojo
+from mojo_rl.nn.combinators import Sequential, Residual, Repeat
+
+comptime Block = Residual[Sequential[Linear[D, D], ReLU[D], Linear[D, D]]]
+comptime Trunk = Repeat[Block, 6]        # six residual blocks
+```
+
+`Repeat[Block, 6]` produces six specialized copies at compile time. There is no
+loop at runtime and no list of layers to iterate.
+
+Because `Module` is a trait, anything satisfying it composes with everything
+else. A `StochasticActor` wrapping two `LinearReLU`s is a `Module`; so is the
+whole thing; so it can be handed to any agent that wants an actor.
+
+## Fusion is a naming convention
+
+Two adjacent primitives that could fuse have a fused counterpart, and choosing it
+is how you opt in:
+
+```mojo
+Linear[D, H], ReLU[H]   # two modules, two kernels
+LinearReLU[D, H]        # one module, one fused kernel
+```
+
+`LinearReLU` is what the GPU examples use throughout. It matters most in the
+inner loop of an off-policy update, where the same small MLP is evaluated
+millions of times.
+
+## What you give up
+
+Honesty about the trade-off, since it is real.
+
+**Compile times.** Deep parameterization means the compiler does more work, and
+large agent instantiations can take a while to build. Long compile times are a
+known cost of this design, and the codebase carries workarounds (extracting
+helper functions) where instantiation depth has caused compiler blowups.
+
+**No runtime architecture changes.** You cannot build a network from a config
+file read at startup, or grow a layer mid-training. Architecture search means
+recompiling per candidate.
+
+**Error messages.** A mistake deep inside a nested generic instantiation can
+produce a long, structural error. Reading it means reading from the *innermost*
+frame outward — the leaf is where the real mismatch lives.
+
+For a framework whose point is that the whole loop compiles into one pipeline,
+these are the right trade-offs. They would be the wrong ones for a library
+optimising for interactive experimentation.
+
+## Next
+
+- [Traits](/concepts/traits/) — `Module`, `Env` and `Agent`, the interfaces being composed
+- [CPU and GPU paths](/concepts/cpu-gpu/) — how the `"cpu"` / `"gpu"` target parameter works
+- [Quickstart: GPU training](/start/quickstart-gpu/) — the idiom in a complete script

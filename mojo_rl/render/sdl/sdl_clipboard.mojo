@@ -94,7 +94,7 @@ def set_clipboard_text(var text: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetClipboardText.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardText",
         def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
@@ -158,7 +158,7 @@ def set_primary_selection_text(var text: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetPrimarySelectionText.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetPrimarySelectionText",
         def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
@@ -287,7 +287,7 @@ def set_clipboard_data(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetClipboardData.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardData",
         def(
@@ -315,7 +315,7 @@ def clear_clipboard_data() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearClipboardData.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ClearClipboardData", def() thin -> Bool]()()
+    var ret = _get_dylib_function[lib, "SDL_ClearClipboardData", def() thin -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

@@ -4,7 +4,7 @@ Vertex structs, uniform buffer layouts, mesh handles, and conversion helpers
 for the SDL3 GPU-accelerated renderer.
 """
 
-from std.memory import UnsafePointer, unsafe_memcpy
+from std.memory import Pointer, unsafe_memcpy
 from std.math import sqrt, tan, sin, cos
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
@@ -164,19 +164,42 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
 
 
 struct SkyboxUniforms(ImplicitlyCopyable, Movable):
-    """Skybox uniforms: 32 bytes.
+    """Skybox uniforms: 96 bytes.
 
     Layout (std140):
       top_color: vec4 (16 bytes) - gradient top color
       bottom_color: vec4 (16 bytes) - gradient bottom color
+      mark_color: vec4 (16 bytes) - starfield rgb + density in .w (0 = off)
+      cam_right: vec4 (16 bytes) - camera right basis, .w = tan(fovy/2)
+      cam_up: vec4 (16 bytes) - camera up basis, .w = aspect
+      cam_fwd: vec4 (16 bytes) - camera forward basis, .w unused
+
+    ⚠ THE CAMERA BASIS IS HERE FOR THE STARS, AND ONLY FOR THEM. The gradient
+    needs nothing but a screen-space y, but stars have to be fixed to the WORLD
+    or they swim across the sky as the camera turns — which reads as a bug in
+    the camera, not in the sky. Three basis vectors plus tan(fovy/2) and the
+    aspect are enough for the fragment to rebuild the view ray per pixel, and
+    are cheaper than shipping and inverting a view-projection matrix.
+
+    ⚠ MUST MATCH `SkyboxUniforms` in gpu_shaders.mojo field for field. Metal
+    reads this buffer positionally; a field added on one side only is not a
+    compile error anywhere, it is garbage in the shader.
     """
 
     var top_color: InlineArray[Float32, 4]
     var bottom_color: InlineArray[Float32, 4]
+    var mark_color: InlineArray[Float32, 4]
+    var cam_right: InlineArray[Float32, 4]
+    var cam_up: InlineArray[Float32, 4]
+    var cam_fwd: InlineArray[Float32, 4]
 
     def __init__(out self):
         self.top_color = InlineArray[Float32, 4](fill=Float32(0))
         self.bottom_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.mark_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_right = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_up = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_fwd = InlineArray[Float32, 4](fill=Float32(0))
         # Default: white top, dark blue bottom
         self.top_color[0] = 0.8
         self.top_color[1] = 0.85
@@ -190,10 +213,18 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.top_color = copy.top_color.copy()
         self.bottom_color = copy.bottom_color.copy()
+        self.mark_color = copy.mark_color.copy()
+        self.cam_right = copy.cam_right.copy()
+        self.cam_up = copy.cam_up.copy()
+        self.cam_fwd = copy.cam_fwd.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.top_color = move.top_color^
         self.bottom_color = move.bottom_color^
+        self.mark_color = move.mark_color^
+        self.cam_right = move.cam_right^
+        self.cam_up = move.cam_up^
+        self.cam_fwd = move.cam_fwd^
 
 
 struct LineUniforms(ImplicitlyCopyable, Movable):
@@ -225,7 +256,8 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
 
     Layout (std140):
       light_view_proj: mat4 (64 bytes) - light's orthographic VP matrix
-      params: vec4 (16 bytes) - x=shadow_intensity, y=bias, z=unused, w=unused
+      params: vec4 (16 bytes) - x=shadow_intensity, y=bias,
+                                z=shadow map resolution, w=unused
     """
 
     var light_view_proj: InlineArray[Float32, 16]
@@ -234,9 +266,13 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
     def __init__(out self):
         self.light_view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.params = InlineArray[Float32, 4](fill=Float32(0))
-        # Defaults: intensity=0.5, bias=0.005
+        # Defaults: intensity=0.5, bias=0.005, map size 4096.
+        # ⚠ `bias` IS THE HEAD-ON VALUE ONLY. The shader scales it by the
+        # receiver's slope; see `compute_shadow` for why a constant is wrong on
+        # a steep surface.
         self.params[0] = 0.5
         self.params[1] = 0.005
+        self.params[2] = 4096.0
 
     def __init__(out self, *, copy: Self):
         self.light_view_proj = copy.light_view_proj.copy()
@@ -254,11 +290,22 @@ struct MeshData(Movable):
     """CPU-side mesh data for upload to GPU."""
 
     var vertices: List[GPUVertex]
-    var indices: List[UInt16]
+    var indices: List[UInt32]
+    """⚠⚠ 32-BIT, AND IT WAS 16 UNTIL A ROBOT'S FACE WENT MISSING. `UInt16`
+    caps a mesh at 65,535 vertices, and an index past that WRAPS rather than
+    failing: the triangles beyond it are drawn connecting the wrong points, so
+    the mesh renders PARTIALLY. Menagerie's ToddlerBot head is 62,912
+    triangles = 188,736 vertices, and about a third of it drew — the model
+    appeared with no face and one eye. Nothing raised, and every other check
+    passed (the asset resolved, the file loaded, the body was at MuJoCo's
+    exact position), because the loss happens inside a single mesh.
+
+    Our own assets are all under the limit, which is why this survived: it
+    takes a ~3 MB STL to reach it."""
 
     def __init__(out self):
         self.vertices = List[GPUVertex]()
-        self.indices = List[UInt16]()
+        self.indices = List[UInt32]()
 
     def __init__(out self, *, deinit move: Self):
         self.vertices = move.vertices^
@@ -268,13 +315,13 @@ struct MeshData(Movable):
         return len(self.vertices) * 32  # sizeof(GPUVertex)
 
     def index_byte_size(self) -> Int:
-        return len(self.indices) * 2  # sizeof(UInt16)
+        return len(self.indices) * 4  # sizeof(UInt32)
 
 
 struct MeshHandle(Copyable, Movable):
     """GPU-side mesh reference.
 
-    Mojo nightly removed nullable UnsafePointer, so there is no longer a
+    Mojo nightly removed nullable Pointer, so there is no longer a
     no-arg constructor that produces a sentinel "empty" handle. Callers
     that need a deferred-init field should wrap this in
     ``Optional[MeshHandle]`` and assign once a real mesh is uploaded.

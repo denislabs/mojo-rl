@@ -29,9 +29,9 @@ def main() raises:
     _ = env.reset()
     var net = Net.make["cpu", Kaiming]()
 
-    var rep = AZRepCPU[Env, OBS](env=untracked(UnsafePointer(to=env)))
+    var rep = AZRepCPU[Env, OBS](env=untracked(Pointer(to=env)))
     var pred = AZPredCPU[Env, OBS, ACT, Net](
-        env=untracked(UnsafePointer(to=env)), net=untracked(UnsafePointer(to=net))
+        env=untracked(Pointer(to=env)), net=untracked(Pointer(to=net))
     )
 
     # AZRepCPU snapshots the live env state into the latent the planner threads.

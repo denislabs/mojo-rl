@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.call import call_forward, call_vjp
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -42,8 +42,8 @@ from ..zero.temperature import visit_temperature
 from ..zero.mz_diagnostics import append_mz_train_diagnostics
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def run_ezv2_gumbel_selfplay_gpu[
@@ -97,7 +97,7 @@ def run_ezv2_gumbel_selfplay_gpu[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     comptime N_ENVS = 1
@@ -309,11 +309,11 @@ def run_ezv2_gumbel_selfplay_gpu[
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
             dn.append(String("loss_consistency"))
-            dv.append(Float64(l_parts[3]))
+            dv.append(Float64(l_parts[unsafe_offset=3]))
             append_mz_train_diagnostics[ACT, BINS, B](
                 h_diag_pred, t_pol, t_val, v_min, v_max, dn, dv
             )
@@ -443,6 +443,6 @@ def run_ezv2_gumbel_selfplay_gpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_cmask.free()
-    l_parts.free(); h_diag_pred.free()
+    t_cmask.unsafe_free()
+    l_parts.unsafe_free(); h_diag_pred.unsafe_free()
     return last_loss

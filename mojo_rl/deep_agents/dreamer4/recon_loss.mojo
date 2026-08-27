@@ -15,8 +15,8 @@ arithmetic; returns the scalar loss and fills `grad_pred`.
 
 from std.math import max, log10
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -25,38 +25,38 @@ from mojo_rl.nn.constants import DT, TPB
 def masked_recon_loss[
     NP: Int, DP: Int, BATCH: Int
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    keep: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred: Pointer[Scalar[DT], MutAnyOrigin],
+    target: Pointer[Scalar[DT], MutAnyOrigin],
+    keep: Pointer[Scalar[DT], MutAnyOrigin],
+    grad_pred: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises -> Float64:
     # Count masked patches (keep == 0) across the whole B·T batch.
     var n_masked = 0
     for j in range(BATCH * NP):
-        if keep[j] == Scalar[DT](0.0):
+        if keep[unsafe_offset=j] == Scalar[DT](0.0):
             n_masked += 1
     var denom = Float64(max(n_masked, 1) * DP)
 
     var loss: Float64 = 0.0
     for bt in range(BATCH):
         for i in range(NP):
-            var masked = keep[bt * NP + i] == Scalar[DT](0.0)
+            var masked = keep[unsafe_offset=bt * NP + i] == Scalar[DT](0.0)
             for d in range(DP):
                 var idx = bt * NP * DP + i * DP + d
                 if masked:
-                    var diff = Float64(pred[idx]) - Float64(target[idx])
+                    var diff = Float64(pred[unsafe_offset=idx]) - Float64(target[unsafe_offset=idx])
                     loss += diff * diff
-                    grad_pred[idx] = Scalar[DT](2.0 * diff / denom)
+                    grad_pred[unsafe_offset=idx] = Scalar[DT](2.0 * diff / denom)
                 else:
-                    grad_pred[idx] = Scalar[DT](0.0)
+                    grad_pred[unsafe_offset=idx] = Scalar[DT](0.0)
     return loss / denom
 
 
 def full_recon_psnr[
     NP: Int, DP: Int, BATCH: Int
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred: Pointer[Scalar[DT], MutAnyOrigin],
+    target: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises -> Float64:
     """Full-frame reconstruction PSNR over ALL patches (eval; run with MAE
     p=0). Assumes pixels in [0,1] (peak = 1): PSNR = -10·log10(MSE)."""
@@ -64,7 +64,7 @@ def full_recon_psnr[
     comptime n = BATCH * NP * DP
     var sse: Float64 = 0.0
     for i in range(n):
-        var d = Float64(pred[i]) - Float64(target[i])
+        var d = Float64(pred[unsafe_offset=i]) - Float64(target[unsafe_offset=i])
         sse += d * d
     var mse = sse / Float64(n)
     if mse <= 1e-12:
@@ -91,23 +91,23 @@ def _masked_grad_kernel[
     if idx >= N:
         return
     var patch = idx // DP
-    if rebind[Scalar[DT]](keep.ptr[patch]) == Scalar[DT](0.0):
-        grad_pred.ptr[idx] = (
+    if rebind[Scalar[DT]](keep.ptr[unsafe_offset=patch]) == Scalar[DT](0.0):
+        grad_pred.ptr[unsafe_offset=idx] = (
             Scalar[DT](2.0)
-            * (rebind[Scalar[DT]](pred.ptr[idx]) - rebind[Scalar[DT]](target.ptr[idx]))
+            * (rebind[Scalar[DT]](pred.ptr[unsafe_offset=idx]) - rebind[Scalar[DT]](target.ptr[unsafe_offset=idx]))
             / denom
         )
     else:
-        grad_pred.ptr[idx] = Scalar[DT](0.0)
+        grad_pred.ptr[unsafe_offset=idx] = Scalar[DT](0.0)
 
 
 def masked_recon_grad_gpu[
     NP: Int, DP: Int, BATCH: Int
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    keep: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred: Pointer[Scalar[DT], MutAnyOrigin],
+    target: Pointer[Scalar[DT], MutAnyOrigin],
+    keep: Pointer[Scalar[DT], MutAnyOrigin],
+    grad_pred: Pointer[Scalar[DT], MutAnyOrigin],
     ctx: DeviceContext,
 ) raises:
     comptime N = BATCH * NP * DP

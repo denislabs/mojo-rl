@@ -43,7 +43,7 @@ References:
 from std.gpu import block_dim, block_idx, thread_idx
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
@@ -1113,7 +1113,10 @@ def gpu_mcts_extract_actions_temp_kernel[
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
-    temp_threshold: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    temp_threshold: Int32,
     rng_seed: Scalar[DType.uint32],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ) where dtype.is_floating_point():
@@ -1184,7 +1187,7 @@ def gpu_mcts_extract_actions_temp_kernel[
 
     # ── Temperature-controlled action selection ──
     var temp: Scalar[dtype]
-    if move_count < temp_threshold:
+    if move_count < Int(temp_threshold):
         temp = Scalar[dtype](1.0)
     else:
         temp = temp_min
@@ -1527,7 +1530,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     # from caching global memory reads across loop iterations.
     # Each thread gets ACT+1 slots: [tid*(ACT+1) .. tid*(ACT+1)+ACT) = per-action visits,
     # slot [tid*(ACT+1)+ACT] = total visits sum.
-    from std.gpu.memory import AddressSpace
+    from max.gpu.memory import AddressSpace
     comptime SLOTS_PER_THREAD = ACT + 1
     var s_root = LayoutTensor[
         dtype,

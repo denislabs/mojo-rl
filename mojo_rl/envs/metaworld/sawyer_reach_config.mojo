@@ -8,15 +8,20 @@ Reference: Metaworld-master/metaworld/envs/sawyer_reach_v3.py
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 
 from .sawyer_reach_xml import SawyerReachModel
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_GEOM_SIZE,
+    MODEL_SITE_SIZE,
+    CONTACT_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
@@ -61,7 +66,30 @@ def _clamp(val: Float64, lo: Float64, hi: Float64) -> Float64:
 
 struct SawyerReachConfig(Phyics3dEnvConfig):
     # === Physics ===
+    # Sawyer is the ONLY ported model with collidable mesh geoms: `l6` (the
+    # forearm, contype=4 conaffinity=2) and `eGripperBase` (the gripper shell,
+    # contype=1 conaffinity=1). Their exact convex hulls are 345 and 883
+    # vertices — 1228 total, 3684 scalars. 2048 leaves ~65% headroom, and
+    # `fields_build` raises with the exact requirement if a mesh is added.
+    #
+    # ⚠ NOT 5597. That figure is the total for ALL TWELVE mesh geoms and comes
+    # from the capacity ERROR printed BEFORE non-collidable meshes were
+    # skipped; ten of those twelve are visual and are no longer loaded. Sizing
+    # off a pre-filter measurement over-allocates by ~4.5x. The raw STL counts
+    # (l6 3021, eGripperBase 6693) are a different number again — the hull is a
+    # small subset of the mesh, so neither raw verts nor the old total is the
+    # quantity to size against.
+    #
+    # ⚠ WITHOUT THIS THE GRIPPER DOES NOT COLLIDE. `Phyics3dEnv` used to
+    # hardcode 0, so every mesh pair was skipped and the arm passed through
+    # objects — which is precisely what a manipulation task cannot tolerate.
+    # 5597 * 3 * 8 B = 134 KiB, one copy in `Model` (not batched), so the cost
+    # is compile time on the mesh branch, not memory.
+    comptime NMESH_VERTS: Int = 2048
+
     comptime FRAME_SKIP: Int = 5  # MetaWorld frame_skip
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     comptime MAX_STEPS: Int = 500  # MetaWorld max_path_length
 
     # Dimensions
@@ -73,15 +101,13 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     # === CPU: Custom observation extraction ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract MetaWorld-style observation: hand + gripper + obj + goal."""
@@ -103,15 +129,12 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     # === CPU: Custom reset — set mocap position + warmup arm ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
     ):
         # Set initial mocap position (MetaWorld hand_init_pos = [0, 0.6, 0.2])
         d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 0] = Scalar[DTYPE](0.0)
@@ -149,30 +172,23 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     # === CPU: Pre-step hook ===
     @staticmethod
-    def pre_step_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    def pre_step_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         pass
 
     # === CPU: Custom action application (mocap position control) ===
     @staticmethod
-    def custom_apply_actions_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    def custom_apply_actions_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        m_tendons: List[Scalar[DTYPE]],
+        m_actuators: List[Scalar[DTYPE]],
+        m_act_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         """Apply 4D action as mocap position delta + gripper control."""
@@ -213,15 +229,12 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward + termination ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -291,6 +304,11 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NV_F: Int,
         NBODY_F: Int,
         ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -303,6 +321,29 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         ],
         xipos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
@@ -319,6 +360,27 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
         env: Int,
         step_count: Int,
         frame_skip: Int,
@@ -332,11 +394,37 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         DTYPE: DType,
         BATCH_SIZE: Int,
         NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+        NBODY_M: Int,
+        NGEOM_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_M, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
         env: Int,
+        seed: Int,
     ):
         pass
 
@@ -349,6 +437,11 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NV_F: Int,
         NBODY_F: Int,
         OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -359,8 +452,61 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
         ],
         env: Int,
     ) -> Bool:

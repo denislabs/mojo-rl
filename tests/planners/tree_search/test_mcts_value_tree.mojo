@@ -57,7 +57,7 @@ comptime NUM_LEAVES: Int = 8  # = BRANCH ** DEPTH
 
 @fieldwise_init
 struct TreeRepresentation(
-    Movable, ImplicitlyDeletable, Representation,
+    Movable, Deinitable, Representation,
 ):
     """Root state: depth=0, path_index=0."""
 
@@ -74,7 +74,7 @@ struct TreeRepresentation(
 
 
 @fieldwise_init
-struct TreeDynamics(Movable, ImplicitlyDeletable, Dynamics):
+struct TreeDynamics(Movable, Deinitable, Dynamics):
     """Advance one level: depth += 1, path_index = path_index * BRANCH + a.
 
     Reward is the leaf value at depth=DEPTH and 0 otherwise. This makes
@@ -108,7 +108,7 @@ struct TreeDynamics(Movable, ImplicitlyDeletable, Dynamics):
 
 
 @fieldwise_init
-struct TreePrediction(Movable, ImplicitlyDeletable, Prediction):
+struct TreePrediction(Movable, Deinitable, Prediction):
     """Uniform prior. Value is the leaf value at leaf depth, 0 elsewhere.
 
     Putting the value at the leaf gives MCTS a non-zero bootstrap when

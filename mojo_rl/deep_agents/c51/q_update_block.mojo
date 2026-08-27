@@ -27,7 +27,7 @@ GPU. PER weights/td_residuals are `Optional[LayoutTensor]` (mirror
 
 from std.math import exp as fexp, log as flog
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -129,7 +129,7 @@ struct C51QUpdateBlock[
     OBS: Int,
     NA: Int,
     N_ATOMS: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     var ce_loss: CrossEntropyLoss[Self.N_ATOMS]
     var gather_slice: GatherActionSlice[Self.NA, Self.N_ATOMS]
 

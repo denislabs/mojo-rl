@@ -1,0 +1,211 @@
+---
+title: MuZero
+description: Planning with a learned model — MCTS over latent states, trained end to end from outcomes without ever being told the rules.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import MctsSearch from '~/components/diagrams/MctsSearch.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Works and converges; the GPU MCTS path has sharp edges — see the caveats." />
+
+MuZero plans ahead **without being told the rules**. It learns its own model of
+the world in a latent space, runs Monte-Carlo tree search over that model to pick
+actions, and trains everything end to end from observed outcomes.
+
+The conceptual leap: the model does not have to predict *observations*. It only
+has to predict the quantities search needs — policy, value and reward. That is a
+far easier learning problem than reconstructing pixels.
+
+
+<Papers label="Reference">
+	<Paper
+		title="Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model"
+		authors="Schrittwieser et al."
+		year="2019"
+		arxiv="1911.08265"
+		venue="Nature 2020"
+	/>
+</Papers>
+
+## Three networks
+
+| Network | Signature | Job |
+|---|---|---|
+| **h** · representation | `obs → s⁰` | encode a real observation into a root latent |
+| **g** · dynamics | `(s, a) → s′, r` | step the latent forward, predict reward |
+| **f** · prediction | `s → policy, value` | evaluate a latent |
+
+Only `h` ever sees a real observation. Everything below the root is imagined.
+
+## Search
+
+<MctsSearch />
+
+One simulation is four steps:
+
+1. **Select** — descend the tree by the PUCT rule, balancing value against prior and visit count
+2. **Expand** — add a child by applying the dynamics net `g`
+3. **Evaluate** — score the new node with the prediction net `f`
+4. **Back up** — propagate the value along the visited path
+
+```
+a* = argmax  Q(s,a) + c · P(s,a) · √(ΣN) / (1 + N)
+```
+
+After ~25–50 simulations, the **visit counts** `N(s,a)` become the policy played
+in the real environment — and also the target the policy network is trained
+toward. Search improves the policy; the policy then guides better search.
+
+## Training
+
+Trajectories go into a replay buffer and are trained by **K-step unroll**: encode
+the observation at some timestep, then apply `g` K times following the actions
+actually taken, and at every step match
+
+- **π** → the MCTS visit distribution
+- **v** → the n-step return
+- **r** → the observed reward
+
+Value and reward are predicted as **categorical distributions** over `BINS` atoms
+rather than scalars, which is markedly more stable.
+
+## Building it in mojo-rl
+
+```mojo
+from std.gpu.host import DeviceContext
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.deep_agents.muzero import MuZeroAgent
+from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from mojo_rl.envs.cartpole import CartPoleEnv
+
+comptime OBS = 4
+comptime ACT = 2
+comptime LATENT = 128
+comptime BINS = 51
+comptime H = 128
+
+comptime Env = CartPoleEnv[DType.float64]
+comptime Rep  = MZRepNet[OBS, LATENT, H]
+comptime Dyn  = MZDynNet[LATENT, ACT, BINS, H]
+comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
+
+comptime Agent = MuZeroAgent[
+    "gpu", Env,
+    Rep, Dyn, Pred,
+    OBS, ACT, LATENT, BINS,
+    NUM_SIMS=24, MAX_NODES=128, CAP=50_000, B=128, K=5, N=10, MAX_K=2,
+]
+
+
+def main() raises:
+    var ctx = DeviceContext()
+    var env = Env()
+    var agent = Agent(
+        ctx=ctx,
+        lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.997),
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](20.0),
+        value_coef=Scalar[DT](1.0),
+        max_grad_norm=Scalar[DT](10.0),
+    )
+
+    _ = agent.train(env, iterations=60_000, verbose=True)
+```
+
+### The parameters that matter
+
+| Parameter | Meaning |
+|---|---|
+| `LATENT` | latent state width |
+| `BINS` | atoms in the categorical value/reward heads |
+| `NUM_SIMS` | MCTS simulations per real action |
+| `MAX_NODES` | tree capacity — must exceed what `NUM_SIMS` can expand |
+| `K` | unroll length during training |
+| `N` | n-step return horizon |
+| `v_min` / `v_max` | value support range |
+
+:::caution[The value support must cover the actual returns]
+`v_min`/`v_max` bound the categorical value head. On CartPole with `gamma=0.997`
+the true value reaches roughly 259 in raw units; a ±10 support **saturates** and
+the agent stalls. ±20 in h-space works.
+
+This is the same failure mode as C51's support range on [DQN](/algorithms/dqn/) —
+distributional heads silently degrade rather than erroring when their support is
+wrong, which makes it a costly mistake to debug.
+:::
+
+## GPU MCTS
+
+Search runs on-device through
+[`mojo_rl.planners.tree_search`](/planners/tree-search/), batched across
+**environments** — one tree each, advanced in lockstep. Simulations within a
+tree stay sequential.
+
+:::caution[Do not batch simulations under PUCT]
+`GenericGPUMCTS` takes a `BATCH_SIMS` parameter that selects several leaves per
+round. Above 1 it is **biased, not merely approximate** — CartPole root values
+come out 1.2–1.7 too high — and it is gated behind an explicit
+`UNSAFE_BATCHED=True`. The default of 1 is near-exact against the CPU search.
+
+For batched simulations, use the Gumbel orchestrators, which are immune by
+construction. [The batching hazard](/planners/tree-search/#the-batching-hazard)
+has the mechanism.
+:::
+
+CUDA-graph capture is enabled for the training step but **hard-gated off** for
+MCTS — capturing the search kernels is not currently safe.
+
+## Watch out for
+
+:::caution[Board games sample uniformly]
+Prioritized replay is wrong for two-player games. The zero-series papers sample
+uniformly from self-play games, and PER degrades results — pass `use_per=False`.
+Paper-correct, not a workaround.
+:::
+
+**Target-network copies must include normalization state.** When promoting a
+network during self-play, a hard copy that misses BatchNorm running statistics
+produces a network that looks fine and evaluates terribly. Symptoms resemble a
+bad training signal.
+
+**Reanalyze.** Periodically re-running search on old trajectories with the
+current network refreshes their policy targets and improves sample efficiency
+substantially — `reanalyze_every=1` in the CartPole recipe.
+
+## The family
+
+```mojo
+from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+from mojo_rl.deep_agents.muzero import MuZeroAgent
+from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
+```
+
+**AlphaZero** — same search, but with a *known* simulator instead of a learned
+dynamics net. Simpler, and only applicable when you have the rules.
+
+**EfficientZero V2** — MuZero plus self-supervised consistency loss, value
+prefix and sampled actions for continuous control. More sample-efficient, more
+moving parts.
+
+All three share the `zero/` package and the GPU MCTS kernels.
+
+## Where to run it
+
+```bash
+pixi run -e nvidia mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/muzero_pong_pixel_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_muzero_gumbel.mojo
+```
+
+CartPole is the right first target — small enough to converge quickly, and the
+tuned recipe in that example documents the reasoning behind each knob.
+
+## Next
+
+- [DreamerV3](/algorithms/dreamerv3/) — the other model-based approach, learning in imagination rather than searching
+- [Board games](/environments/board-games/) — what self-play trains on
+- [Algorithms overview](/algorithms/) — the full catalogue

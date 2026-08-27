@@ -131,8 +131,8 @@ def _gen_rollout_into[
     SEQ_LEN_T: Int
 ](
     mut rng: PhiloxRandom,
-    actions_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    obs_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    actions_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    obs_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
     actions_offset: Int,
     obs_offset: Int,
 ):
@@ -665,9 +665,9 @@ def main() raises:
         mse_openloop_persist += step_persist
         print(
             "    ", t,
-            "  ", String(step_mse)[byte=:9],
-            "  ", String(step_persist)[byte=:9],
-            "  ", String(step_mse / step_persist if step_persist > 0 else 1.0)[byte=:6],
+            "  ", fit(String(step_mse), 9),
+            "  ", fit(String(step_persist), 9),
+            "  ", fit(String(step_mse / step_persist if step_persist > 0 else 1.0), 6),
         )
 
         # Open-loop: prev_z = z_pred (predicted, NOT filtered).
@@ -729,3 +729,5 @@ def main() raises:
     s_pred_buf.free()
     a_s_pred_buf.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

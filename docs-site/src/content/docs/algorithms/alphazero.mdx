@@ -1,0 +1,241 @@
+---
+title: AlphaZero
+description: MCTS over a known simulator, guided by a policy-value network trained purely from self-play.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import ArenaSelfPlay from '~/components/diagrams/ArenaSelfPlay.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Tic-Tac-Toe and Connect Four are exercised; Go and Chess far less so." />
+
+AlphaZero searches a **known simulator** with MCTS, guided by a network that
+supplies a policy prior and a value estimate. No dynamics model is learned —
+the rules are given.
+
+```mojo
+from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+```
+
+<DemoGrid min="14rem">
+	<Demo name="tic_tac_toe_playable" caption="Tic-Tac-Toe" meta="the correctness gate" />
+	<Demo name="connect_four_playable" caption="Connect Four" meta="the real target" />
+</DemoGrid>
+
+
+<Papers label="Papers">
+	<Paper
+		title="Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm"
+		authors="Silver et al."
+		year="2017"
+		arxiv="1712.01815"
+	/>
+	<Paper
+		title="Mastering the game of Go without human knowledge"
+		authors="Silver et al."
+		year="2017"
+		url="https://www.nature.com/articles/nature24270"
+		venue="Nature"
+		note="AlphaGo Zero — the self-play loop."
+	/>
+	<Paper
+		title="Policy improvement by planning with Gumbel"
+		authors="Danihelka et al."
+		year="2022"
+		url="https://openreview.net/forum?id=bERaNdoegnO"
+		venue="ICLR 2022"
+		note="The Gumbel variant."
+	/>
+</Papers>
+
+## The loop
+
+Self-play generates its own training data, and there is no external reward
+signal beyond the game outcome:
+
+1. **Play** a game against yourself. At each move, run MCTS from the current position, using the network's policy as a prior and its value in place of a rollout.
+2. **Act** on the search's visit counts, with temperature for exploration early in the game.
+3. **Store** every position with its visit distribution and the eventual game result.
+4. **Train** the network: policy toward the visit counts, value toward the outcome.
+5. Repeat.
+
+The self-improvement is the point. Search makes the policy better than the raw
+network; training on search results makes the network better; better priors make
+the next search stronger.
+
+Why it works at all is worth one sentence: **search is a policy improvement
+operator**. The visit distribution after a few hundred simulations is a strictly
+better policy than the network's raw prior, because it has actually looked ahead.
+So training the network toward its own search output is not circular — it is
+distilling a better policy back into the thing that produced it, and the loop
+climbs.
+
+## The arena gate
+
+<ArenaSelfPlay />
+
+The loop above, run literally, has a failure mode: a learner that gets
+transiently worse still generates the next batch of self-play, and the poisoned
+data makes it worse still. Full AlphaZero closes that with a **best/learner
+split**.
+
+A frozen **best** net generates every self-play game — all MCTS expansion, all
+priors and values. A separate **learner** trains on that data and touches
+nothing else. Every `arena_every` iterations the learner plays the best in the
+Arena, and only if it wins a clear majority of decisive games is it copied over
+the best and allowed to generate.
+
+Three details in that gate matter:
+
+**The match runs at full MCTS strength, not argmax.** The winner is going to be
+used as net-plus-search, so that is the condition it should be judged in.
+Argmax evaluation also never consults the value head, which is half of what
+search depends on.
+
+**Both colours, from random openings.** Board games are not symmetric in
+practice, and a fixed opening measures one line rather than strength.
+
+**A clear majority, not a bare one.** A 51% result over a small match is noise,
+and promoting on noise reintroduces exactly the drift the gate exists to stop.
+
+`train_arena` runs this; plain `train` runs the ungated loop, which is faster
+and fine for Tic-Tac-Toe.
+
+## Symmetry augmentation
+
+Board games have symmetry groups the network does not know about. Every recorded
+`(obs, π)` is replayed under each of them, with the scalar outcome `z` copied
+unchanged because it is symmetry-invariant.
+
+This multiplies the effective data by the group order at no simulation cost,
+which is a large factor when self-play is the expensive part. `AUG` is a
+compile-time parameter; passing `IdentityAugmenter` turns it off.
+
+:::caution[Use the game's actual symmetry group, not D4 by reflex]
+Tic-Tac-Toe's board is square, so the full dihedral group applies — four
+rotations and their reflections, eight in all, via `BoardAugmenter`.
+
+**Connect Four's does not.** The board is 6×7, so no rotation maps it to itself,
+and gravity breaks vertical flips. Its only symmetry is the left↔right column
+flip — a group of order two, `HFlipColumnAugmenter`. Applying D4 here would
+train the network on positions that cannot occur.
+
+The augmenter is per-game for exactly this reason.
+:::
+
+## AlphaZero or MuZero?
+
+Simple rule: **if you have the rules, use AlphaZero.**
+
+|  | AlphaZero | [MuZero](/algorithms/muzero/) |
+|---|---|---|
+| Dynamics | the real simulator | learned latent model |
+| Networks | one (policy + value) | three (h, g, f) |
+| Reward model | not needed | learned |
+| Applies to | games with known rules | anything |
+
+MuZero's learned model is what lets it work on Atari, where "the rules" are not
+available. On a board game that flexibility is pure cost — a learned dynamics
+model can only approximate a simulator you already have exactly.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+
+var agent = AlphaZeroAgent[
+    "gpu", Env, Net,
+    N_ENVS=64,          # self-play games stepped together
+    NUM_SIMS=500,       # MCTS simulations per move
+    MAX_NODES=1024,     # tree capacity — must exceed what NUM_SIMS can expand
+    BATCH=128,
+    CAP=1_000_000,      # replay capacity, in augmented positions
+    MAX_TRAJ=42,        # longest possible game
+](ctx, lr=0.002)
+```
+
+The environment must satisfy `GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv`,
+which is what lets MCTS expand nodes by *calling the rules* rather than a
+learned model.
+
+`MAX_NODES` is the one that bites: it has to exceed the number of nodes
+`NUM_SIMS` can create, and the search does not grow the tree to fit.
+
+**`NUM_SIMS` is not a knob to economise on.** Dropping Connect Four from 500 to
+100 gives visibly weaker MCTS targets — and since those targets *are* the
+training signal, a cheap search does not just play worse, it teaches worse.
+
+```bash
+pixi run mojo run -I . examples/board_games/tictactoe_alphazero_v2_cpu.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_v2.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_gumbel.mojo
+```
+
+**Tic-Tac-Toe is the correctness gate.** The game is small enough to solve
+completely, so a correct implementation converges to perfect play and every
+self-play game draws. If yours does not, the bug is real and visible — do not
+move to Connect Four until it does.
+
+**Connect Four is the real target**, and the game the GPU MCTS work was tuned
+against.
+
+The Gumbel variant uses Gumbel top-k action selection, which is more
+sample-efficient at low simulation counts.
+
+## Watch out for
+
+:::caution[Sample uniformly — prioritized replay is wrong here]
+The zero-series papers sample uniformly from self-play games. PER degrades
+results on board games: pass `use_per=False`. This is paper-correct behaviour,
+not a workaround.
+:::
+
+:::caution[Clip the gradient, or the arena stops promoting]
+Running the Connect Four ResNet without gradient clipping reproduces a specific,
+recognisable failure: policy cross-entropy descends, bottoms out around move
+2000, then **climbs back toward uniform** — entropy rising, win-rate against a
+random opponent sliding 69% → 62% — and the arena rejects every challenger after
+the first promotion.
+
+The fix is `max_grad_norm=1.0` on the training call, with AdamW and
+`weight_decay=1e-4` to regularise the 5-block torso. Clipping is the larger of
+the two.
+
+Note what the symptom looks like from outside: *the gate appears to be working*.
+It is rejecting challengers because they are genuinely worse, and the cause is
+upstream in the optimizer.
+:::
+
+:::caution[Network promotion must copy normalization state]
+When promoting a trained network to be the self-play network, a hard copy that
+misses BatchNorm running statistics produces a network that looks fine and
+evaluates catastrophically.
+
+This caused a real promotion collapse here. The symptom resembles a bad training
+signal; the cause is stale normalization state.
+:::
+
+:::tip[Compare strength with a KL gap, not raw cross-entropy]
+Raw policy cross-entropy is not a reliable measure of self-play progress — it
+moves with the visit-count distribution's sharpness, which changes with
+temperature and simulation count.
+
+The KL gap between the search policy and the network prior is the more honest
+signal: it measures how much search is still improving on the network.
+:::
+
+**Do not raise `BATCH_SIMS` above 1 under PUCT.** Selecting several leaves per
+round against a frozen tree distorts Connect Four visit-policy targets by up to
+2× per action — and those targets *are* the training signal. It is gated behind
+`UNSAFE_BATCHED=True` for that reason; the Gumbel orchestrators are the safe way
+to batch. See [the batching
+hazard](/planners/tree-search/#the-batching-hazard).
+
+## Next
+
+- [MuZero](/algorithms/muzero/) — the same search over a learned model
+- [EfficientZero V2](/algorithms/efficient-zero-v2/) — MuZero made more sample-efficient
+- [Board games](/environments/board-games/) — what self-play trains on

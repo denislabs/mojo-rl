@@ -1,0 +1,119 @@
+---
+title: Planners
+description: mojo_rl.planners — trajectory optimizers and tree search, written against callback traits rather than against any particular world model.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import PlannerContract from '~/components/diagrams/PlannerContract.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<Maturity level="beta" note="MPPI and the MCTS variants are in production use; iLQR is tested but not yet driven by any agent." />
+
+Most RL agents decide by evaluating a policy network. A few decide by **running
+an optimization at every step** — searching over action sequences, or over a
+tree of imagined futures, and executing the first action of whatever wins.
+`mojo_rl.planners` is where that search lives, separately from the agents that
+use it.
+
+```mojo
+from mojo_rl.planners.trajectory import MPPIGPUBatched, ContinuousCEMOptimizer
+from mojo_rl.planners.tree_search import GenericCPUMCTS, GumbelGPUMCTS
+```
+
+## The contract
+
+A planner never touches a world model directly. It is written against a
+**callback trait**, and the agent supplies the implementation:
+
+<PlannerContract />
+
+This split is why the same `MPPICPU` struct drives TD-MPC2's learned latent
+dynamics in production and a closed-form linear-quadratic oracle in
+`tests/planners/trajectory/test_mppi_lqr.mojo`. Neither the planner nor the test
+knows about the other.
+
+Two consequences worth stating plainly:
+
+**The planner owns host scratch only.** Sampling buffers, elite rankings and
+refit state live in `List`s on the planner struct. Every device buffer — model
+weights, latent rollouts, reward reductions — belongs to the callback. When a
+planner is constructed the scratch is sized once and reused across calls.
+
+**A conforming GPU callback adds no host sync.** The performance contract is
+that a planner may enqueue all `HORIZON` rollout steps without an intervening
+round-trip. A callback that reads a value back to the host mid-rollout is
+correct but will destroy the throughput the batched planners exist for.
+
+## What is in it
+
+<CardGrid>
+	<Card title="Trajectory optimization" icon="rocket">
+		[Random shooter, CEM, MPPI, iLQR](/planners/trajectory/) — search over
+		action *sequences* over a fixed horizon. Continuous and discrete
+		variants, CPU and GPU.
+	</Card>
+	<Card title="Tree search" icon="puzzle">
+		[MCTS](/planners/tree-search/) — search over a *tree* of imagined
+		futures. PUCT and Gumbel selection, discrete and sampled-continuous,
+		with a batched GPU orchestrator.
+	</Card>
+</CardGrid>
+
+## Who uses what
+
+The package is more evenly built than it is evenly adopted, and it is worth
+knowing which paths are load-bearing:
+
+| Planner | Driven by |
+|---|---|
+| `MPPIGPUBatched` | [TD-MPC2](/algorithms/tdmpc2/) — the production MPC path |
+| `MPPICPU` | TD-MPC2 evaluation, and the LQ property tests |
+| `GenericGPUMCTS`, `GumbelGPUMCTS` | [MuZero](/algorithms/muzero/), [AlphaZero](/algorithms/alphazero/) |
+| `SampledGumbelGPUMCTS` | [EfficientZero V2](/algorithms/efficient-zero-v2/), continuous actions |
+| `ContinuousCEMOptimizer` | LeWM, in `mojo_rl/experimental/` |
+| `CategoricalCEMOptimizer`, `CategoricalRandomShooter` | LeWM evaluation, model-quality diagnostics |
+| `ILQRCPU`, `ILQRGPUBatched` | **nothing yet** — tested, not adopted |
+
+:::note[iLQR is implemented, not integrated]
+Both the CPU and GPU iLQR planners exist, and both are checked against an
+analytic finite-horizon Riccati solution
+(`tests/planners/trajectory/test_ilqr_lqr_oracle.mojo`). No agent calls them.
+If you use iLQR you are the first, and the missing piece is a world model that
+implements the derivative surface — see
+[trajectory optimization](/planners/trajectory/#ilqr).
+:::
+
+## Package layout
+
+```
+mojo_rl/planners/
+├── common/       value encoding, noise sampling, action bounds, MinMaxStats
+├── trajectory/   CEM, random shooter, MPPI, iLQR + their callback traits
+├── tree_search/  MCTS strategies, model traits, CPU and GPU orchestrators
+└── testing/      stub world models with closed-form optima
+```
+
+`testing/` deserves a mention: it holds world models whose optimal plan is known
+analytically — a linear-quadratic system, a pendulum stabilizer, a two-arm
+bandit, a tree with known values. They are what make it possible to test a
+planner for *correctness* rather than for "loss went down", and they are the
+right starting point for a new planner or a new callback.
+
+## Planning against a learned model
+
+One caution that applies to everything here. A planner is an amplifier: it will
+find whatever the model says is good, including the places where the model is
+wrong. The longer the horizon, the more thoroughly it exploits the error.
+
+Two mitigations run through the package. A **terminal value** appended to the
+horizon hands the far future to a critic trained on real data, which is what
+lets [TD-MPC2](/algorithms/tdmpc2/) plan usefully at `horizon = 3`. And a
+**policy prior** seeds part of the sample budget with trajectories the policy
+already believes in, so the search starts somewhere plausible rather than
+uniformly at random.
+
+## Next
+
+- [Trajectory optimization](/planners/trajectory/) — the sequence optimizers
+- [Tree search](/planners/tree-search/) — MCTS and its variants
+- [TD-MPC2](/algorithms/tdmpc2/) — the planner-driven agent in the clearest form

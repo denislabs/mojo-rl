@@ -39,7 +39,7 @@ CPU + GPU (the leaves + the pool-seed / grad-accumulate run on device).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import Pointer
 from layout import Layout, LayoutTensor
 
@@ -53,6 +53,7 @@ from ..core.param import ParamVisitor
 from ..core.graph_visitor import GraphVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
+from .graph_module2 import TwoInputGraph
 from .graph_decl import GraphDecl
 
 
@@ -68,8 +69,11 @@ def _cg_accum_kernel[
         dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
-struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
-    comptime N = Self.DECLS.size
+struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph):
+    # `TwoInputGraph` already implies `Defaultable & Movable & Deinitable`. It
+    # is the bound `GraphModule2` needs to drive a graph generically — see
+    # `combinators/graph_module2.mojo` for why `Module` cannot serve.
+    comptime N = Self.DECLS.length
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
     comptime MAXARITY = Self._max_arity()
     # The graph's activation dtype = the output node's; all COMPUTE nodes
@@ -325,7 +329,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     # wants its own (==Self.ACT_DT) — rebind the pack + out slot.
                     externals[ei].forward[target, B, POLICY=POLICY](
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](inrefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](inrefs^)
                         ),
                         rebind[TensorImpl[cei]](self.pool[i]),
                         ctx,
@@ -341,7 +345,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         inrefs[k] = Pointer(to=self.pool[sk])
                     self.children[i].forward[target, B, POLICY=POLICY](
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](inrefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](inrefs^)
                         ),
                         rebind[TensorImpl[ci]](self.pool[i]),
                         ctx,
@@ -435,11 +439,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         girefs[k] = Pointer(to=self.tmp[k])
                     externals[ei].vjp[target, B, POLICY=POLICY](
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](firefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](firefs^)
                         ),
                         rebind[TensorImpl[cei]](self.gpool[i]),
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](girefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](girefs^)
                         ),
                         ctx,
                     )
@@ -466,11 +470,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         girefs[k] = Pointer(to=self.tmp[k])
                     self.children[i].vjp[target, B, POLICY=POLICY](
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](firefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](firefs^)
                         ),
                         rebind[TensorImpl[ci]](self.gpool[i]),
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](girefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](girefs^)
                         ),
                         ctx,
                     )

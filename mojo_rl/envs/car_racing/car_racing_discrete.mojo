@@ -25,7 +25,7 @@ from CarDynamicsMB. See project_car_racing_audit memory.
 from std.math import sqrt, sin, cos, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.core import GPUDiscreteEnv
@@ -442,8 +442,8 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[Pointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var st = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)](states)
         var dn = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE)](dones)
@@ -480,8 +480,8 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[Pointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var st = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)](states)
         var ac = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1)](actions)

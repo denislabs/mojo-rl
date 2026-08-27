@@ -9,14 +9,14 @@ lives here and survives the legacy framework deletion.
 The codebase erases pointer origins to `MutAnyOrigin` constantly (the variadic-
 TileTensor limitation is irreducible — see audit §B0). Before this helper that
 meant ~800 inline copies of the verbose
-    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](view.ptr)
+    rebind[Pointer[Scalar[DT], MutAnyOrigin]](view.ptr)
 drowning the actual math. `mptr` collapses each to `mptr(view.ptr)` (or
 `mptr(view)` straight from a TileTensor). Dtype-generic, so it also absorbs the
 bf16 AMP rebinds. The unsafe step now lives in ONE place.
 """
 
-from std.gpu.memory import AddressSpace
-from std.memory import UnsafePointer
+from max.gpu.memory import AddressSpace
+from std.memory import Pointer
 from layout import TileTensor
 
 from ..constants import DT
@@ -25,22 +25,22 @@ from ..constants import DT
 @always_inline
 def mptr[
     dt: DType, o: Origin
-](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+](p: Pointer[Scalar[dt], o]) -> Pointer[Scalar[dt], MutAnyOrigin]:
     """Erase a `Scalar[dt]` pointer's origin to `MutAnyOrigin`. Replaces
-    the inline `rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)` dance."""
-    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+    the inline `rebind[Pointer[Scalar[dt], MutAnyOrigin]](p)` dance."""
+    return rebind[Pointer[Scalar[dt], MutAnyOrigin]](p)
 
 
 @always_inline
 def mptr[
     dt: DType
-](mut lst: List[Scalar[dt]]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+](mut lst: List[Scalar[dt]]) -> Pointer[Scalar[dt], MutAnyOrigin]:
     """Erased base pointer of a host `List` — `mptr(buf)` instead of
     `buf.unsafe_ptr()`.
 
     As of the 2026-07 nightly `List.unsafe_ptr()` returns a *safe* pointer
     (`_safe=True`) with a tracked origin, which no longer binds to the
-    `UnsafePointer[..., MutAnyOrigin]` parameters that the replay buffers,
+    `Pointer[..., MutAnyOrigin]` parameters that the replay buffers,
     batched envs, and kernel ABIs declare. `unsafe_bitcast` is the only
     documented way back to the unsafe form; this keeps that step in one place
     instead of spelling `.unsafe_bitcast[Scalar[dt]]().as_unsafe_any_origin()`
@@ -51,12 +51,12 @@ def mptr[
 @always_inline
 def untracked[
     T: AnyType, o: Origin
-](p: UnsafePointer[T, o]) -> UnsafePointer[T, MutUntrackedOrigin]:
+](p: Pointer[T, o]) -> Pointer[T, MutUntrackedOrigin]:
     """Re-key a pointer's origin to `MutUntrackedOrigin` for storage in a
     struct field (AnyOrigin is banned in fields as of Mojo 1.0; the field owner
     manages the lifetime explicitly). Generic over the pointee `T` so it covers
     both `Scalar` data pointers and borrowed-Module / `env` pointers."""
-    return rebind[UnsafePointer[T, MutUntrackedOrigin]](p)
+    return rebind[Pointer[T, MutUntrackedOrigin]](p)
 
 
 @always_inline
@@ -67,7 +67,7 @@ def mptr(
         origin=MutAnyOrigin,
         ...,
     ],
-) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Erased base pointer of a TileTensor view — `mptr(view)` instead of
     `rebind[...](view.ptr)`."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.ptr)
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](t.ptr)

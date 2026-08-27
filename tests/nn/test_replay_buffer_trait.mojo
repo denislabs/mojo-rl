@@ -12,8 +12,8 @@ from std.testing import assert_equal, assert_true
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.data.cpu_replay import CPUReplay
-from mojo_rl.deep_agents.data.cpu_per_replay import CPUPrioritizedReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay import StoreReplay
 
 
 comptime OBS = 3
@@ -37,7 +37,7 @@ def drive[R: ReplayBuffer](mut buf: R, mut state: TrainerState[R.OBS, R.ACT, BAT
 
 def main() raises:
     seed(42)
-    var buf = CPUReplay[OBS, ACT, CAP].make()
+    var buf = StoreReplay[OBS, ACT, CAP, False].make()
     var state = TrainerState[OBS, ACT, BATCH].make["cpu"]()
     drive(buf, state)
     assert_equal(buf.count(), 20)
@@ -47,7 +47,7 @@ def main() raises:
     print("  CPUReplay conforms: count=", buf.count(), " mb_s[0]=", v0)
 
     # CPUPrioritizedReplay conforms through the SAME generic drive[R].
-    var per = CPUPrioritizedReplay[OBS, ACT, CAP].make()
+    var per = StoreReplay[OBS, ACT, CAP, True].make()
     per.configure_per(alpha=0.6, beta=0.4, epsilon=1e-6)
     var pstate = TrainerState[OBS, ACT, BATCH].make["cpu"]()
     drive(per, pstate)

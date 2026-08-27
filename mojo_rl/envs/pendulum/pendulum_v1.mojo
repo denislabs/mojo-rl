@@ -152,7 +152,7 @@ struct PendulumEnv[DTYPE: DType](
     var num_bins_velocity: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, *, copy: Self):
@@ -331,7 +331,7 @@ struct PendulumEnv[DTYPE: DType](
 
         return (PendulumState(index=self._discretize_obs()), reward, self.done)
 
-    def get_state(self) -> PendulumState:
+    def get_state(mut self) -> PendulumState:
         """Return current discretized state."""
         return PendulumState(index=self._discretize_obs())
 
@@ -622,10 +622,10 @@ struct PendulumEnv[DTYPE: DType](
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
         info_lines.append(
-            "Angle: " + String(theta_f64 * 180.0 / pi)[byte=:6] + " deg"
+            "Angle: " + fit(String(theta_f64 * 180.0 / pi), 6) + " deg"
         )
-        info_lines.append("Vel: " + String(theta_dot_f64)[byte=:6])
-        info_lines.append("Torque: " + String(last_torque_f64)[byte=:5])
+        info_lines.append("Vel: " + fit(String(theta_dot_f64), 6))
+        info_lines.append("Torque: " + fit(String(last_torque_f64), 5))
         renderer.draw_info_box(info_lines)
 
         # Update display
@@ -635,7 +635,7 @@ struct PendulumEnv[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     def is_done(self) -> Bool:
@@ -794,7 +794,7 @@ struct PendulumEnv[DTYPE: DType](
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -810,7 +810,7 @@ struct PendulumEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -836,3 +836,5 @@ struct PendulumEnv[DTYPE: DType](
 
     def renderer_step_once(self) -> Bool:
         return False
+
+from mojo_rl.core.fmt import fit

@@ -223,7 +223,7 @@ struct GymMuJoCoEnv(
         """
         return (GymMuJoCoState(index=0), 0.0, self.done)
 
-    def get_state(self) -> GymMuJoCoState:
+    def get_state(mut self) -> GymMuJoCoState:
         """Return current state."""
         return GymMuJoCoState(index=0)
 

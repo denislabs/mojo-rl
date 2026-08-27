@@ -18,7 +18,7 @@ The warmup-uniform branch stays in each trainer (it precedes this call).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import random_float64
 
 from mojo_rl.nn.constants import DT, TPB

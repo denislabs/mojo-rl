@@ -15,7 +15,7 @@ the bootstrap values back on host. The GAE recurrence reads/writes the rollout
 buffers' host `.data` (sanctioned host loops).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -29,7 +29,7 @@ struct PPOGAEStep[
     OBS_: Int,
     ROLLOUT_LEN_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
 

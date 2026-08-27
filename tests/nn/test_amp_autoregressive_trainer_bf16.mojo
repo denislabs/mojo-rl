@@ -17,7 +17,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_autoregressive_trainer_bf
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, train_val_split
 from mojo_rl.nn.constants import DT

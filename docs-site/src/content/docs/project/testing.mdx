@@ -1,0 +1,128 @@
+---
+title: Testing
+description: The three test tiers, what CI runs, and the discipline for validating a change.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+619 test files across 16 directories. Because running them all takes hours, they
+are organised into **tiers** by cost.
+
+## The tiers
+
+```bash
+pixi run test-smoke              # curated fast CPU gates — what CI runs per push
+pixi run examples-compile        # compile-probe the root examples
+pixi run test-cpu                # every non-GPU test — hours
+pixi run -e apple  test-gpu      # GPU tests on Metal
+pixi run -e nvidia test-gpu      # GPU tests on CUDA
+```
+
+**`test-smoke`** runs a curated manifest (`tests/manifests/smoke.txt`) and is
+deliberately self-contained: no `references/`, no ROMs, no GPU. It is the gate
+on every push.
+
+**`examples-compile`** type-checks the root examples without running them.
+Examples rot faster than tests because nothing forces them to compile — this
+catches it cheaply.
+
+**`test-cpu`** discovers everything non-GPU under `tests/`. Run before a large
+merge; CI runs it weekly.
+
+**`test-gpu`** discovers `*_gpu.mojo`. Never runs in CI — there are no free GPU
+runners — so it is a local or rented-box task.
+
+## Running one test
+
+```bash
+pixi run mojo run -I . tests/nn/test_mnist_loader.mojo
+pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
+pixi run -e nvidia mojo run -I . tests/deep_agents/test_storage_sac_gpu_pendulum.mojo
+```
+
+## What lives where
+
+| Directory | Covers |
+|---|---|
+| `physics3d/` | 54 files — MuJoCo comparison, solvers, collision, integrators |
+| `nn/` | modules, autodiff, optimizers, checkpoints |
+| `deep_agents/` | agent convergence and parity |
+| `envs/` | environment dynamics |
+| `arcade_games/` · `atari/` | game engines and emulator |
+| `board_games/` · `planners/` | self-play and MCTS |
+| `physics2d/` · `render/` · `io/` · `core/` | the rest |
+
+## CI
+
+`.github/workflows/ci.yml`:
+
+| Trigger | Job |
+|---|---|
+| push / PR to `dev` or `main` | `smoke` + `examples-compile` |
+| weekly cron (Sun 03:17 UTC) | `cpu-full` |
+| manual dispatch | either tier |
+
+The pixi environment is cached on `pixi.lock`, so steady-state runs skip the
+toolchain download. The `cpu-full` job is `continue-on-error` — parts of the
+long tail need local-only assets and fail on a runner; the summary still shows
+*what* is red and whether that changed week to week.
+
+## The discipline
+
+Two rules that have repeatedly paid off in this project.
+
+:::tip[Search at smoke scale, SARSA at scale]
+Prove an algorithm on something small and exactly solvable before spending GPU
+hours. CartPole for anything discrete, Pendulum for continuous, Tic-Tac-Toe for
+self-play — all fast, all with a known correct answer.
+
+A model-based agent that cannot solve CartPole has a bug, not a tuning problem.
+:::
+
+:::caution[Apple proves correctness; NVIDIA proves speed and CUDA behaviour]
+Passing on Metal is not evidence about CUDA. Different JIT, different
+floating-point corners — and some paths do not execute on Apple at all.
+CUDA-graph capture of a batched environment is a **no-op** on non-NVIDIA, so an
+Apple run says nothing about whether capture works.
+
+Bit-exactness gates that pass on Metal should be re-run on CUDA before being
+trusted. Conversely, never benchmark on Apple and generalize: kernel rankings
+invert between the two.
+:::
+
+## Validating physics changes
+
+Physics has its own comparison path against live MuJoCo — see
+[Validating the physics](/physics/validation/). Order matters when chasing a
+mismatch: forward kinematics first, then the model build, then the integrator,
+then the solver.
+
+## Gradient checking
+
+Finite differences work, with two constraints:
+
+- **`eps ≈ 1e-2` for deep chains.** Smaller steps drown in accumulated float error.
+- **Never on TF32.** The reduced mantissa makes the comparison meaningless. Force fp32.
+
+## Known failures
+
+Some tests are known-red rather than regressions:
+
+- `tests/physics3d/test_equality_tendon_fields.mojo` and `test_crba_treewalk_fields.mojo` fail on CUDA
+- `tests/deep_agents/test_storage_sac_gpu_pendulum.mojo` pre-existing-fails on Apple
+- Parts of `test-cpu` need `references/` or ROMs and fail on a bare runner
+
+Check against this list before assuming a change caused a failure.
+
+## Adding a test
+
+Put it in the directory matching the subsystem. If it is fast, CPU-only and
+self-contained, add it to `tests/manifests/smoke.txt` so CI runs it on every
+push — that is the only tier with a real feedback loop.
+
+## Next
+
+- [Contributing](/project/contributing/) — the development workflow
+- [Validating the physics](/physics/validation/) — the MuJoCo comparison suite

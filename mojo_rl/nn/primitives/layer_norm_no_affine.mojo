@@ -17,8 +17,8 @@ Backward (no gamma): grad_in = inv_std·(g − mean(g) − x̂·mean(g·x̂)), g
 
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

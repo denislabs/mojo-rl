@@ -20,8 +20,8 @@ std≈0.02, independent of fan-in); otherwise the leaf-supplied `INIT` fills the
 """
 
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.math import sqrt as fsqrt, log, cos, sin
 from std.random import random_float64
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -73,10 +73,10 @@ def _lt_forward_kernel[
     var bt = idx // OUT_DIM
     var pos = idx % OUT_DIM
     if pos >= NEW_OFF and pos < NEW_OFF + NEW_N:
-        output.ptr[idx] = rebind[Scalar[DT]](param.ptr[pos - NEW_OFF])
+        output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](param.ptr[unsafe_offset=pos - NEW_OFF])
     else:
-        output.ptr[idx] = rebind[Scalar[DT]](
-            input.ptr[bt * IN_N + (pos - IN_OFF)]
+        output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+            input.ptr[unsafe_offset=bt * IN_N + (pos - IN_OFF)]
         )
 
 
@@ -93,8 +93,8 @@ def _lt_grad_input_kernel[
         return
     var bt = idx // IN_N
     var k = idx % IN_N
-    grad_input.ptr[idx] = rebind[Scalar[DT]](
-        grad_output.ptr[bt * OUT_DIM + IN_OFF + k]
+    grad_input.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+        grad_output.ptr[unsafe_offset=bt * OUT_DIM + IN_OFF + k]
     )
 
 
@@ -115,12 +115,12 @@ def _lt_grad_param_kernel[
     var bi = t
     while bi < BATCH:
         acc += rebind[Scalar[DT]](
-            grad_output.ptr[bi * OUT_DIM + NEW_OFF + col]
+            grad_output.ptr[unsafe_offset=bi * OUT_DIM + NEW_OFF + col]
         )
         bi += LT_RTPB
     var total = block.sum[block_size=LT_RTPB, broadcast=False](val=acc)
     if t == 0:
-        grad_param.ptr[col] = rebind[Scalar[DT]](grad_param.ptr[col]) + total[0]
+        grad_param.ptr[unsafe_offset=col] = rebind[Scalar[DT]](grad_param.ptr[unsafe_offset=col]) + total[0]
 
 
 struct LearnedTokens[

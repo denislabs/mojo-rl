@@ -19,7 +19,7 @@ keeps native `Scalar[DT]` values (no text), so the copy is BIT-IDENTICAL (unlike
 a save/load checkpoint round-trip, which goes through float text).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor

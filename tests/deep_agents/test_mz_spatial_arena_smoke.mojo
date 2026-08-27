@@ -9,7 +9,7 @@ arena's `hard_copy_params` over the graph. Asserts a finite loss.
     pixi run -e apple mojo run -I . tests/deep_agents/test_mz_spatial_arena_smoke.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

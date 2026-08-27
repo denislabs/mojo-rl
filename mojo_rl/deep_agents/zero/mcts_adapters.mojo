@@ -22,7 +22,7 @@ module; MuZero's representation/dynamics adapters land in Phase B.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -48,7 +48,7 @@ def _copy2d_kernel[B: Int, D: Int](
 
 @fieldwise_init
 struct AZPredGPU[OBS: Int, ACT: Int, NET: Module, o: Origin[mut=True]](
-    ImplicitlyDeletable, Movable, PredictionGPU
+    Deinitable, Movable, PredictionGPU
 ):
     """AlphaZero prediction adapter: ``obs → policy_logits ⊕ raw_value``.
 
@@ -75,13 +75,13 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module, o: Origin[mut=True]](
     comptime ACTION_DIM: Int = Self.ACT
     comptime PRED_OUT_DIM: Int = Self.ACT + 1
 
-    var net: UnsafePointer[Self.NET, Self.o]
+    var net: Pointer[Self.NET, Self.o]
     var sc_in: Tensor   # owned input scratch (reused across predict calls)
     var sc_out: Tensor  # owned output scratch
 
     @staticmethod
     def make(ref[Self.o] net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
+        return Self(net=Pointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
     def predict_gpu[
         B: Int
@@ -122,7 +122,7 @@ struct AZEnvGPU[
     STATE: Int,
     OBSD: Int,
     A: Int,
-](EnvStepGPU, ImplicitlyDeletable, Movable):
+](EnvStepGPU, Deinitable, Movable):
     """AlphaZero env-step adapter — true game rules as MCTS leaf expansion.
 
     Stateless wrapper over the env's static ``step_kernel_gpu``. The planner

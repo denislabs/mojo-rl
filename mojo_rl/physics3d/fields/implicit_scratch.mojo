@@ -18,10 +18,12 @@ Only the persistent cross-body arrays live here; the tiny 6×6 / 6-vector
 loop temporaries stay as InlineArrays inside the kernel (GPU-safe).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
+
+from .dims import DimsLike
 
 
 @always_inline
@@ -31,12 +33,22 @@ def _pos(n: Int) -> Int:
 
 struct ImplicitScratch[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """RNE-velocity-derivative scratch: one owned tensor per `ws_implicit_*`
-    region (9 tensors)."""
+    region (9 tensors).
+
+    ⚠ Second container on `D` (1c.3). Unlike `Rk4Scratch` it DOES escape into
+    a signature — `qderiv.compute_qderiv`, one site — so that signature is
+    part of this change. It is still spellable with a local `Dims[...]`
+    adapter rather than dragging `compute_qderiv`'s callers along, because
+    `Dims[nv=9, nbody=8]` names one type however it is written.
+    """
+
+    # Body unchanged — see `Rk4Scratch` for why the aliases are here.
+    comptime NV = Self.D.NV
+    comptime NBODY = Self.D.NBODY
 
     var cinert: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*10]
     var cdof_sc: TensorImpl[Self.DTYPE]  # [BATCH, NV*6]
@@ -48,25 +60,42 @@ struct ImplicitScratch[
     var dcfrcbody: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6*NV]
     var qderiv: TensorImpl[Self.DTYPE]  # [BATCH, NV*NV]
 
+    # The provider as a VALUE (3a). See the same field on `Data`; six
+    # dispatchers (`ldl_*`, `lu_*`, `compute_m_inv*`) take this container and
+    # nothing else, so this is where their runtime layouts get their extents.
+    var dims: Self.D
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
+        self.dims = dims
         comptime B = Self.BATCH
-        self.cinert = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NBODY * 10))
-        self.cdof_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * 6))
-        self.cvel_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NBODY * 6))
-        self.cdof_dot = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * 6))
+        self.cinert = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nbody() * 10))
+        self.cdof_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * 6))
+        self.cvel_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nbody() * 6))
+        self.cdof_dot = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * 6))
         self.dcvel = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
         self.dcdofdot = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NV * 6 * Self.NV)
+            _pos(B * dims.get_nv() * 6 * dims.get_nv())
         )
         self.dcacc = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
         self.dcfrcbody = TensorImpl[Self.DTYPE].alloc(
-            _pos(B * Self.NBODY * 6 * Self.NV)
+            _pos(B * dims.get_nbody() * 6 * dims.get_nv())
         )
-        self.qderiv = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * Self.NV))
+        self.qderiv = TensorImpl[Self.DTYPE].alloc(_pos(B * dims.get_nv() * dims.get_nv()))
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —

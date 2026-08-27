@@ -35,6 +35,7 @@ from mojo_rl.core import (
     TrainingMetrics,
 )
 from mojo_rl.agents import DDPGAgent, TD3Agent
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -112,8 +113,8 @@ def main() raises:
 
     print("")
     print("DDPG results:")
-    print("  Mean reward:", String(metrics_ddpg.mean_reward())[byte=:8])
-    print("  Max reward:", String(metrics_ddpg.max_reward())[byte=:8])
+    print("  Mean reward:", fit(String(metrics_ddpg.mean_reward()), 8))
+    print("  Max reward:", fit(String(metrics_ddpg.max_reward()), 8))
     print("")
 
     # ========================================================================
@@ -165,8 +166,8 @@ def main() raises:
 
     print("")
     print("TD3 results:")
-    print("  Mean reward:", String(metrics_td3.mean_reward())[byte=:8])
-    print("  Max reward:", String(metrics_td3.max_reward())[byte=:8])
+    print("  Mean reward:", fit(String(metrics_td3.mean_reward()), 8))
+    print("  Max reward:", fit(String(metrics_td3.max_reward()), 8))
     print("")
 
     # ========================================================================
@@ -180,15 +181,15 @@ def main() raises:
     print("-" * 60)
     print(
         "DDPG      |",
-        String(metrics_ddpg.mean_reward())[byte=:8],
+        fit(String(metrics_ddpg.mean_reward()), 8),
         "   |",
-        String(metrics_ddpg.max_reward())[byte=:8],
+        fit(String(metrics_ddpg.max_reward()), 8),
     )
     print(
         "TD3       |",
-        String(metrics_td3.mean_reward())[byte=:8],
+        fit(String(metrics_td3.mean_reward()), 8),
         "   |",
-        String(metrics_td3.max_reward())[byte=:8],
+        fit(String(metrics_td3.max_reward()), 8),
     )
     print("")
     print("Good: avg reward > -300 | Excellent: avg reward > -200")
@@ -208,8 +209,8 @@ def main() raises:
         env_td3, features, num_episodes=10, max_steps_per_episode=200
     )
 
-    print("DDPG eval avg reward:", String(eval_ddpg)[byte=:8])
-    print("TD3 eval avg reward:", String(eval_td3)[byte=:8])
+    print("DDPG eval avg reward:", fit(String(eval_ddpg), 8))
+    print("TD3 eval avg reward:", fit(String(eval_td3), 8))
     print("")
 
     # ========================================================================

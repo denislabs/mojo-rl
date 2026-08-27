@@ -20,7 +20,7 @@ softmax+mix already in `onehot_kl.mojo`; kept here as standalone scalar
 helpers for the imag-loss per-(b,t) policy term and for unit FD-gradcheck.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from std.math import log, exp
 
 from mojo_rl.nn.constants import DT
@@ -35,27 +35,27 @@ def cat_softmax_mix[
     out_sm_o: Origin[mut=True],
     out_p_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
-    out_sm: UnsafePointer[Scalar[DT], out_sm_o],  # [C] pre-mix softmax
-    out_p: UnsafePointer[Scalar[DT], out_p_o],  # [C] unimix-mixed probs
+    out_sm: Pointer[Scalar[DT], out_sm_o],  # [C] pre-mix softmax
+    out_p: Pointer[Scalar[DT], out_p_o],  # [C] unimix-mixed probs
 ):
     """Softmax(logits[base:base+C]) → out_sm, then unimix → out_p."""
-    var mx = logits[base]
+    var mx = logits[unsafe_offset=base]
     for c in range(1, C):
-        if logits[base + c] > mx:
-            mx = logits[base + c]
+        if logits[unsafe_offset=base + c] > mx:
+            mx = logits[unsafe_offset=base + c]
     var s = Scalar[DT](0.0)
     for c in range(C):
-        var e = exp(logits[base + c] - mx)
-        out_sm[c] = e
+        var e = exp(logits[unsafe_offset=base + c] - mx)
+        out_sm[unsafe_offset=c] = e
         s += e
     var one_m_u = Scalar[DT](1.0) - u
     var uc = u / Scalar[DT](C)
     for c in range(C):
-        out_sm[c] = out_sm[c] / s
-        out_p[c] = one_m_u * out_sm[c] + uc
+        out_sm[unsafe_offset=c] = out_sm[unsafe_offset=c] / s
+        out_p[unsafe_offset=c] = one_m_u * out_sm[unsafe_offset=c] + uc
 
 
 @always_inline
@@ -63,24 +63,26 @@ def cat_sample[
     C: Int,
     logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
     u01: Scalar[DT],  # uniform in [0,1)
 ) -> Int:
     """Inverse-CDF categorical sample from unimix(softmax(logits))."""
-    var sm = alloc[Scalar[DT]](C)
-    var pp = alloc[Scalar[DT]](C)
+    var sm_a = alloc[Scalar[DT]]({count = C})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = C})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     cat_softmax_mix[C](logits, base, u, sm, pp)
     var acc = Scalar[DT](0.0)
     var k = C - 1
     for c in range(C):
-        acc += pp[c]
+        acc += pp[unsafe_offset=c]
         if u01 < acc:
             k = c
             break
-    sm.free()
-    pp.free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
     return k
 
 
@@ -88,13 +90,13 @@ def cat_sample[
 def cat_argmax[
     C: Int,
     logits_o: Origin[mut=True],
-](logits: UnsafePointer[Scalar[DT], logits_o], base: Int) -> Int:
+](logits: Pointer[Scalar[DT], logits_o], base: Int) -> Int:
     """Greedy class = argmax logits (= argmax unimix probs)."""
     var k = 0
-    var best = logits[base]
+    var best = logits[unsafe_offset=base]
     for c in range(1, C):
-        if logits[base + c] > best:
-            best = logits[base + c]
+        if logits[unsafe_offset=base + c] > best:
+            best = logits[unsafe_offset=base + c]
             k = c
     return k
 
@@ -106,19 +108,19 @@ def cat_fwd[
     out_sm_o: Origin[mut=True],
     out_p_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
     k: Int,  # sampled class index
-    out_sm: UnsafePointer[Scalar[DT], out_sm_o],  # [C] scratch (pre-mix)
-    out_p: UnsafePointer[Scalar[DT], out_p_o],  # [C] scratch (mixed)
+    out_sm: Pointer[Scalar[DT], out_sm_o],  # [C] scratch (pre-mix)
+    out_p: Pointer[Scalar[DT], out_p_o],  # [C] scratch (mixed)
 ) -> Tuple[Scalar[DT], Scalar[DT]]:
     """Returns (logp(k), entropy). Fills out_sm/out_p for the backward."""
     cat_softmax_mix[C](logits, base, u, out_sm, out_p)
-    var logp = log(out_p[k])
+    var logp = log(out_p[unsafe_offset=k])
     var ent = Scalar[DT](0.0)
     for m in range(C):
-        ent += -out_p[m] * log(out_p[m])
+        ent += -out_p[unsafe_offset=m] * log(out_p[unsafe_offset=m])
     return Tuple(logp, ent)
 
 
@@ -129,15 +131,15 @@ def cat_bwd[
     p_o: Origin[mut=True],
     grad_logits_o: Origin[mut=True],
 ](
-    sm: UnsafePointer[
+    sm: Pointer[
         Scalar[DT], sm_o
     ],  # [C] pre-mix softmax (from fwd)
-    p: UnsafePointer[Scalar[DT], p_o],  # [C] mixed probs (from fwd)
+    p: Pointer[Scalar[DT], p_o],  # [C] mixed probs (from fwd)
     u: Scalar[DT],
     k: Int,  # sampled class index
     d_logp: Scalar[DT],  # upstream ∂L/∂logp
     d_ent: Scalar[DT],  # upstream ∂L/∂entropy
-    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
+    grad_logits: Pointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
     base: Int,
 ):
     """Accumulate ∂L/∂logits at [base:base+C] from logp(k) + entropy paths."""
@@ -145,12 +147,12 @@ def cat_bwd[
     # entropy: Σ_m sm_m·(log p_m + 1) is shared across j
     var ent_dot = Scalar[DT](0.0)
     for m in range(C):
-        ent_dot += sm[m] * (log(p[m]) + Scalar[DT](1.0))
-    var inv_pk = Scalar[DT](1.0) / p[k]
+        ent_dot += sm[unsafe_offset=m] * (log(p[unsafe_offset=m]) + Scalar[DT](1.0))
+    var inv_pk = Scalar[DT](1.0) / p[unsafe_offset=k]
     for j in range(C):
         var delta_kj = Scalar[DT](1.0) if j == k else Scalar[DT](0.0)
         # d logp(k)/d logits_j = (1/p_k)·(1-u)·sm_k·(δ_kj − sm_j)
-        var dlogp = inv_pk * one_m_u * sm[k] * (delta_kj - sm[j])
+        var dlogp = inv_pk * one_m_u * sm[unsafe_offset=k] * (delta_kj - sm[unsafe_offset=j])
         # d ent/d logits_j = -(1-u)·sm_j·[ (log p_j+1) − ent_dot ]
-        var dent = -one_m_u * sm[j] * ((log(p[j]) + Scalar[DT](1.0)) - ent_dot)
-        grad_logits[base + j] += d_logp * dlogp + d_ent * dent
+        var dent = -one_m_u * sm[unsafe_offset=j] * ((log(p[unsafe_offset=j]) + Scalar[DT](1.0)) - ent_dot)
+        grad_logits[unsafe_offset=base + j] += d_logp * dlogp + d_ent * dent

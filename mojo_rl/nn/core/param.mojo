@@ -14,13 +14,13 @@ flat side-table in the optimizer) keeps the storage design stateless at the
 visitor and rides the param walk for checkpointing (Stage 4).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 
 
-trait ParamVisitor(ImplicitlyDeletable):
+trait ParamVisitor(Deinitable):
     def visit[target: StaticString, N: Int](
         mut self,
         name: String,
@@ -49,7 +49,7 @@ trait ParamVisitor(ImplicitlyDeletable):
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait IsParam(Movable & ImplicitlyDeletable):
+trait IsParam(Movable & Deinitable):
     """Marker — a field-type the param-walker should visit."""
 
     def param_name(self) -> StaticString:

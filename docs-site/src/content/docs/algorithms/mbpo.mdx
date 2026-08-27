@@ -1,0 +1,208 @@
+---
+title: MBPO
+description: Model-Based Policy Optimization — SAC trained on short synthetic rollouts from a learned dynamics ensemble.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import BranchedRollout from '~/components/diagrams/BranchedRollout.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Learns, but still short of the reference on HalfCheetah — see the open gap below." />
+
+**Model-Based Policy Optimization** is [SAC](/algorithms/sac/) plus a learned
+dynamics model that manufactures extra training data.
+
+```mojo
+from mojo_rl.deep_agents.mbpo import MBPOAgent
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="When to Trust Your Model: Model-Based Policy Optimization"
+		authors="Janner, Fu, Zhang, Levine"
+		year="2019"
+		arxiv="1906.08253"
+		venue="NeurIPS 2019"
+	/>
+	<Paper
+		title="Deep Reinforcement Learning in a Handful of Trials using Probabilistic Dynamics Models"
+		authors="Chua, Calandra, McAllister, Levine"
+		year="2018"
+		arxiv="1805.12114"
+		venue="NeurIPS 2018"
+		note="PETS — the probabilistic ensemble MBPO's dynamics model comes from."
+	/>
+</Papers>
+
+## The idea
+
+Train a **probabilistic dynamics ensemble** on real transitions. Then branch
+short imagined rollouts from real states, and train SAC on a mixture of real and
+synthetic data.
+
+<BranchedRollout />
+
+The gain is straightforward: each real transition seeds many synthetic ones, so
+the policy sees far more data than the environment provided.
+
+**Short rollouts are the entire trick.** Model error compounds with every
+imagined step — a 5-step branch stays close enough to reality to help, while a
+50-step branch trains the policy on fiction. MBPO's contribution over earlier
+model-based methods is largely the insight that rollout length should be short
+and that branching from real states beats rolling from an initial state.
+
+Both halves of that sentence do work, and the second is the one people skip.
+Rolling from an initial state gives you a trajectory whose *every* state after
+the first is imagined, so error accumulates over the full episode and the state
+distribution drifts away from anything the model was trained on. Branching
+re-anchors to ground truth at every branch point: the imagined states are never
+more than `k` steps from a state the environment actually produced. Error is
+bounded by `k`, not by episode length — which is why `k` can be as low as **1**
+and the method still pays, and it is `k = 1` that the shipped HalfCheetah
+configuration uses.
+
+This is [Dyna-Q](/algorithms/tabular/td-methods/) with a neural dynamics model
+and a continuous-control learner.
+
+## The dynamics ensemble
+
+Each member predicts a **distribution** over the next state and reward, trained
+with `GaussianNLLLoss`:
+
+```mojo
+from mojo_rl.nn.loss.gaussian_nll_loss import GaussianNLLLoss
+```
+
+Two kinds of uncertainty come out of this, and both matter:
+
+- **Aleatoric** — each member's predicted variance, capturing genuine environment stochasticity
+- **Epistemic** — disagreement *between* members, capturing where the model has not seen data
+
+Disagreement is the useful signal: it says where imagined rollouts should not be
+trusted.
+
+The HalfCheetah configuration follows the reference: **7 members**, of which the
+**5 best** on a held-out split are kept as elites and used for rollouts; 200-unit
+Swish MLPs; and a per-member output layout of `2 · (1 + OBS_DIM)` —
+
+```
+[ r_mean, r_logvar, Δobs_mean[OBS_DIM], Δobs_logvar[OBS_DIM] ]
+```
+
+Two details in there are easy to miss and both are load-bearing.
+
+**The model predicts a state *delta*, not the next state.** Regressing `s′`
+directly means most of the network's capacity goes into reproducing `s`. The
+residual is small, roughly zero-mean, and far better conditioned.
+
+**The elite is redrawn per transition, not per rollout.** Assigning one elite to
+a whole batch of rollouts means consecutive synthetic transitions all carry the
+same member's particular bias, which shows up downstream as oscillating
+Q-values. Sampling a member independently for every transition averages that out.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.mbpo import MBPOAgent
+```
+
+MBPO composes an SAC trainer with the ensemble and a synthetic replay buffer, so
+the SAC hyperparameters carry over unchanged, plus the model-specific ones —
+ensemble size, rollout length, real-to-synthetic ratio, model retrain cadence.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/half_cheetah/mbpo_half_cheetah_nn_gpu.mojo
+pixi run mojo run -I . examples/half_cheetah/mbpo_half_cheetah_training.mojo
+pixi run mojo run -I . examples/pendulum/pendulum_mbpo_training.mojo
+```
+
+The CPU and GPU HalfCheetah examples deliberately use **different**
+hyperparameters, and copying one into the other makes things worse. The GPU
+example can afford the reference data regime — 100k fresh rollouts per model
+retrain, and a 5% real fraction in the SAC minibatch — which keeps the synthetic
+buffer in-distribution. At the CPU rollout budget that same recipe amplifies
+stale-synthetic drift instead, so the CPU example runs a conservative
+configuration with a much higher real fraction.
+
+## Watch out for
+
+:::caution[Regularise the dynamics model, or the whole method is decorative]
+The characteristic failure is not the critic. It is a dynamics ensemble that
+**overfits its training buffer, becomes over-confident, and is then optimistic
+exactly where the policy has wandered off-distribution** — so the critic learns
+inflated values and the policy learns to exploit the model.
+
+It is hard to catch because the obvious metric lies. If the "holdout" set is
+resampled from the training buffer, holdout loss looks healthy no matter how
+badly the model has overfit. That was a real bug here, and it hid the problem
+for several rounds of investigation.
+
+Three things fixed most of it, all of them present in the reference
+implementation and all easy to leave out:
+
+- **A genuine train/holdout split** (80/20) with early stopping and elite ranking scored on the holdout — never on data the member trained on
+- **Weight decay on the dynamics optimizer** — AdamW at `5e-5`. Switching from plain Adam was worth **2.6× reward** on its own
+- **Learnable, L2-penalised bounds on the predicted log-variance** rather than a fixed clamp, so the model cannot mask a bad mean with a large variance
+:::
+
+:::caution[The LayerNorm critic is regime-dependent — do not apply it blindly]
+A LayerNorm critic fixes a genuine Q-explosion in the *conservative* regime — a
+small, stale synthetic buffer with a high real fraction — where the critic loss
+otherwise runs to `1e7`.
+
+In the reference regime it **hurts**: it suppressed value growth (Q stuck around
+26, return plateaued near 250), and removing it let the return climb past 3600.
+The GPU example therefore uses a plain MLP critic, matching the reference.
+
+This is the opposite of the advice on the [SAC](/algorithms/sac/) and
+[REDQ](/algorithms/redq/) pages, and the difference is real rather than an
+inconsistency: LayerNorm bounds the value scale, which is what you want when the
+critic is diverging and what you do not want when the values genuinely need to
+grow.
+:::
+
+**Rollout length is the sensitive knob.** Too long and the policy trains on
+model error; too short and there is no benefit over plain SAC. Start short.
+
+**The real-to-synthetic ratio matters.** Training entirely on synthetic data
+lets the policy drift into regions the model invented.
+
+**Model retraining cadence.** The dynamics model must keep up with the state
+distribution the improving policy visits, or its rollouts become stale.
+
+**Watch synthetic reward against real reward.** The diagnostic that actually
+detects model exploitation is comparing mean reward on synthetic transitions
+against mean reward on real ones. A healthy model is slightly *pessimistic*; a
+model predicting 3× the real per-step reward is being exploited, and no amount
+of critic tuning will fix that. See [Logging and metrics](/tooling/logging/).
+
+:::note[Known gap]
+On HalfCheetah this implementation reaches roughly a third of the reference
+result at matched environment steps, with the curve still climbing when runs
+were cut. The signature is model exploitation as described above. Several
+plausible causes have been ruled out by A/B — the entropy temperature, the
+log-variance ceiling, rollout cadence, buffer retention, per-transition elite
+mixing — so treat MBPO here as working but not yet matching the paper.
+:::
+
+## MBPO or REDQ?
+
+Both buy sample efficiency over SAC, by different means:
+
+|  | MBPO | [REDQ](/algorithms/redq/) |
+|---|---|---|
+| Mechanism | synthetic data from a learned model | more updates on real data |
+| Extra compute | model training + rollout generation | ~20× gradient updates |
+| Main risk | model error corrupts the policy | value divergence |
+| Extra hyperparameters | rollout length, ratio, ensemble, cadence | ensemble size, subset size, UTD |
+
+REDQ is simpler to get working — it has no model to go wrong. MBPO can go
+further when the dynamics are genuinely learnable.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the base learner
+- [REDQ](/algorithms/redq/) — model-free sample efficiency
+- [TD-MPC2](/algorithms/tdmpc2/) — a learned model used for planning instead of data generation

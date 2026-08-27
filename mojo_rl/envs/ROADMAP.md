@@ -359,3 +359,11 @@ Files to create:
    `x_velocity = Σ(mass_b * cvel[b*6+3]) / total_mass`. No finite-difference approximation needed.
 
 6. **Walker2d timestep=0.002**: **RESOLVED** — The smaller timestep is passed correctly via `get_timestep()` in the XML model def. The integrator handles it automatically with the same frame_skip=4 as other envs.
+
+---
+
+## dm_control suite port
+
+Not tracked here. The ledger is `docs/DM_CONTROL_PORT.md` (progress log, gap
+list G1-G11, task tiering, staged plan). Tier A and Tier B are complete;
+Tier C (quadruped, manipulator, stacker) is in progress.

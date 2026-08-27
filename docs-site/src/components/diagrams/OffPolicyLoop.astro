@@ -1,0 +1,127 @@
+---
+/**
+ * OffPolicyLoop — the replay-buffer learning cycle shared by DQN, SAC, TD3, …
+ *
+ * Two arrow colours carry the whole idea: cyan for environment interaction,
+ * spark-orange for the learning update, muted for the target network (which is
+ * copied, not trained).
+ *
+ * Parameterised because DQN and SAC differ only in the box names and the
+ * bootstrap target. The formula renders as HTML below the SVG rather than
+ * inside it — selectable, and it cannot collide with the edge routing.
+ *
+ * Theme-aware via CSS custom properties — see the `.diagram` block in
+ * noeira.css.
+ */
+interface Props {
+	/** Label for the trained network box (e.g. "Q-network", "Actor π"). */
+	policy: string;
+	policySub?: string;
+	/** Label for the target box on the left. */
+	target: string;
+	targetSub?: string;
+	/** Action-edge label. */
+	actionLabel?: string;
+	/** What the target edge carries. */
+	targetEdgeLabel?: string;
+	/** Replay capacity caption. */
+	capacity?: string;
+	/** Bootstrap target, rendered monospace under the diagram. */
+	formula?: string;
+	formulaTitle?: string;
+}
+
+const {
+	policy,
+	policySub,
+	target,
+	targetSub,
+	actionLabel = 'action',
+	targetEdgeLabel = 'bootstrap value',
+	capacity = 'replay buffer',
+	formula,
+	formulaTitle = 'TD target',
+} = Astro.props;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img" aria-label={`${policy} off-policy learning loop`}>
+		<defs>
+			<marker id="ol-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="ol-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="ol-muted" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-muted" />
+			</marker>
+		</defs>
+
+		<!-- trained network (top centre) -->
+		<g class="dg-node dg-node--spark">
+			<rect x="330" y="20" width="220" height="78" rx="10" />
+			<text x="440" y="52" class="dg-title">{policy}</text>
+			{policySub && <text x="440" y="74" class="dg-sub">{policySub}</text>}
+		</g>
+
+		<!-- environment (middle right) -->
+		<g class="dg-node dg-node--cyan">
+			<rect x="640" y="160" width="220" height="78" rx="10" />
+			<text x="750" y="192" class="dg-title">Environment</text>
+			<text x="750" y="214" class="dg-sub">batched, on GPU</text>
+		</g>
+
+		<!-- replay (bottom centre) -->
+		<g class="dg-node dg-node--green">
+			<rect x="330" y="300" width="220" height="78" rx="10" />
+			<text x="440" y="332" class="dg-title">Replay buffer</text>
+			<text x="440" y="354" class="dg-sub">{capacity}</text>
+		</g>
+
+		<!-- target net (middle left) -->
+		<g class="dg-node dg-node--muted">
+			<rect x="20" y="160" width="220" height="78" rx="10" />
+			<text x="130" y="192" class="dg-title">{target}</text>
+			{targetSub && <text x="130" y="214" class="dg-sub">{targetSub}</text>}
+		</g>
+
+		<!-- policy → env -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#ol-cyan)"
+			d="M 550 59 L 750 59 L 750 160" />
+		<text x="596" y="46" class="dg-label dg-label--cyan">{actionLabel}</text>
+
+		<!-- env → replay -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#ol-cyan)"
+			d="M 750 238 L 750 339 L 550 339" />
+		<text x="580" y="364" class="dg-label dg-label--cyan">transition (s,a,r,s′)</text>
+
+		<!-- replay → policy -->
+		<path class="dg-edge dg-edge--spark" marker-end="url(#ol-spark)"
+			d="M 440 300 L 440 98" />
+		<text x="452" y="205" class="dg-label dg-label--spark">minibatch</text>
+
+		<!-- target → policy (the target net supplies the bootstrap) -->
+		<path class="dg-edge dg-edge--muted dg-edge--dashed" marker-end="url(#ol-muted)"
+			d="M 130 160 L 130 59 L 330 59" />
+		<text x="146" y="46" class="dg-label dg-label--muted">{targetEdgeLabel}</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">environment interaction</span>
+		<span class="diagram__key diagram__key--spark">learning update</span>
+		<span class="diagram__key diagram__key--muted">target network</span>
+	</figcaption>
+
+	{
+		formula && (
+			<div class="diagram__formula">
+				<span class="diagram__formula-title">{formulaTitle}</span>
+				<code>{formula}</code>
+			</div>
+		)
+	}
+</figure>

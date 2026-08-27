@@ -1,0 +1,113 @@
+---
+title: Reinforcement learning in Mojo
+description: A complete RL stack — physics, neural networks, learning algorithms, and rendering — built from scratch in a single language and running end to end on the GPU.
+template: splash
+hero:
+  title: mojo-rl
+  tagline: A complete RL stack — physics, neural networks, learning algorithms and rendering — built from scratch in one language, running end to end on the GPU.
+  image:
+    # Bare mark, not the lockup — the hero title already reads "mojo-rl".
+    file: ../../assets/mojo-rl-mark.svg
+  actions:
+    - text: Get started
+      link: /start/installation/
+      icon: right-arrow
+    - text: Why mojo-rl
+      link: /start/why/
+      icon: document
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/denislabs/mojo-rl
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<ul class="stat-grid not-content">
+	<li class="stat"><span class="stat__value">40+</span><span class="stat__label">RL algorithms</span></li>
+	<li class="stat"><span class="stat__value">25+</span><span class="stat__label">environments</span></li>
+	<li class="stat"><span class="stat__value">2</span><span class="stat__label">physics engines</span></li>
+	<li class="stat"><span class="stat__value">1</span><span class="stat__label">deep-learning framework</span></li>
+	<li class="stat"><span class="stat__value">166+</span><span class="stat__label">tests</span></li>
+</ul>
+
+## Today's RL stacks are stitched together
+
+A typical reinforcement-learning project runs on NumPy for arrays, PyTorch for
+networks, MuJoCo for physics and Gymnasium for environments — four libraries in
+two or three languages, held together by Python glue.
+
+That glue costs you three things. Every language and library boundary adds
+overhead and data copies. Versions drift, and the CPU↔GPU round-trips across
+those boundaries are hard to optimise. And you cannot fuse physics, networks and
+environment stepping into a single GPU pipeline, because no one owns all three.
+
+## One language. One GPU pipeline. No glue.
+
+mojo-rl rebuilds the whole stack — physics, neural networks, algorithms,
+rendering — in Mojo, so the entire loop compiles together and the data never
+leaves the device.
+
+<CardGrid>
+	<Card title="Environments" icon="rocket">
+		25+ worlds in pure Mojo: tabular, classic control, 2D physics, MuJoCo-style
+		3D locomotion and manipulation, native arcade engines, and a cycle-accurate
+		Atari 2600 emulator.
+	</Card>
+	<Card title="Physics engines" icon="setting">
+		A MuJoCo-inspired 3D engine in generalized coordinates (CRBA, RNE,
+		PGS/Newton/CG solvers, MJCF parsing) plus a GPU-batched 2D impulse engine
+		that steps hundreds of environments at once.
+	</Card>
+	<Card title="Deep learning" icon="puzzle">
+		`mojo_rl.nn` — Module/Param networks with autodiff, 70+ primitives,
+		SGD/Adam/AdamW, automatic kernel fusion, AMP and CUDA-graph capture.
+		Somewhere between Tinygrad and PyTorch.
+	</Card>
+	<Card title="Algorithms" icon="star">
+		From a lookup table to learned world models: Q-Learning and SARSA through
+		DQN, Rainbow, PPO, SAC and TD3, up to TD-MPC2, DreamerV3 and the MuZero
+		family.
+	</Card>
+</CardGrid>
+
+## Why Mojo
+
+Mojo gives Python's ergonomics with the performance of C and first-class GPU
+programming, so the whole RL loop can live in a single optimizable codebase.
+Custom kernels target both CUDA and Metal from the same source.
+
+The pieces that make this concrete — compile-time network composition, the trait
+hierarchy, and how a batched environment stays resident on the device — are
+covered in [Concepts](/concepts/architecture/).
+
+## Start here
+
+<CardGrid>
+	<Card title="Install" icon="download">
+		[Set up pixi](/start/installation/) and run your first example. No GPU
+		required to get going.
+	</Card>
+	<Card title="Train something" icon="approve-check">
+		[Solve GridWorld with Q-Learning](/start/quickstart-tabular/) in a few
+		seconds, then [train DQN on CartPole](/start/quickstart-gpu/).
+	</Card>
+	<Card title="New to RL?" icon="open-book">
+		[RL in five minutes](/start/rl-in-five-minutes/) — the agent/environment
+		loop and the vocabulary the rest of the docs assume.
+	</Card>
+	<Card title="Understand the design" icon="seti:config">
+		[The layered stack](/concepts/architecture/) and
+		[compile-time composition](/concepts/compile-time-composition/), the idiom
+		that makes the rest of the framework make sense.
+	</Card>
+</CardGrid>
+
+:::note[Project status]
+mojo-rl is developed in the open and was selected for a
+**Modular Community Grant** in 2026. The tabular agents, classic-control and
+MuJoCo-style environments, and DQN / PPO / SAC / TD3 are stable and tested. The
+world-model agents (DreamerV3, TD-MPC2, MuZero, EfficientZero V2) are still
+moving. Every page carries its own maturity marker.
+:::

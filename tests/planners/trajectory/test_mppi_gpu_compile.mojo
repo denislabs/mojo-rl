@@ -11,7 +11,7 @@ the planner trait machinery in isolation. If TDMPC2's MPPI parity
 breaks later, we can disambiguate planner-bug-vs-callback-bug.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.memory import alloc
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
@@ -25,7 +25,7 @@ from mojo_rl.planners.trajectory import (
 
 @fieldwise_init
 struct ZeroRolloutCallback(
-    Movable, ImplicitlyDeletable, RolloutCallbackGPU
+    Movable, Deinitable, RolloutCallbackGPU
 ):
     """Trivial GPU callback that writes zeros everywhere — exists
     only to validate that the trait surface is implementable.

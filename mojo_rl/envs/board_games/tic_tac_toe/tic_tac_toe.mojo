@@ -20,7 +20,7 @@ from std.random import random_float64
 from std.memory import alloc
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.core import (
     State,
     Action,
@@ -84,7 +84,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -196,13 +196,13 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    def get_state(self) -> BoardGameState:
+    def get_state(mut self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[S_STEP_COUNT]))
 
     def close(mut self):
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> BoardGameAction:
@@ -316,7 +316,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(width=400, height=450, fps=30, title="TicTacToe")
         )
@@ -408,7 +408,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -699,7 +699,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
@@ -772,7 +772,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
                 ImmutAnyOrigin,
             ](
-                rebind[UnsafePointer[Scalar[board_dtype], ImmutAnyOrigin]](
+                rebind[Pointer[Scalar[board_dtype], ImmutAnyOrigin]](
                     states.ptr
                 )
             )
@@ -833,7 +833,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)

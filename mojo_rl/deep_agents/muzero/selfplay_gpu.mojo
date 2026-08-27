@@ -37,7 +37,7 @@ from mojo_rl.planners.tree_search import (
     DirichletNoise,
     SinglePlayer,
 )
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from .blocks import mz_unroll_train_step_gpu, MZScratch
@@ -47,10 +47,10 @@ from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Category-B raw batch scratch feeding the raw-pointer replay + unroll
     inputs (not the nn surface)."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def mz_sync_gpu_to_cpu[M: Module](
@@ -59,7 +59,7 @@ def mz_sync_gpu_to_cpu[M: Module](
     """Download device params into a CPU mirror in place via the storage
     hard_copy collect/inject visitors (exact, no checkpoint text round-trip).
     The CPU net's param buffers are overwritten, so any MCTS adapter holding
-    `UnsafePointer(to=cpu_net)` sees the updated weights with no rebind."""
+    `Pointer(to=cpu_net)` sees the updated weights with no rebind."""
     var c = _CollectVisitor()
     gpu.for_each_param["gpu"](c, Optional(ctx))
     var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
@@ -109,7 +109,7 @@ def run_muzero_selfplay_gpu[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     var mcts = GenericCPUMCTS[
@@ -129,14 +129,14 @@ def run_muzero_selfplay_gpu[
     mz_sync_gpu_to_cpu(pred, pred_c, ctx)
 
     var rep_a = MZRepCPU[OBS, LATENT, REP](
-        net=untracked(UnsafePointer(to=rep_c))
+        net=untracked(Pointer(to=rep_c))
     )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=untracked(UnsafePointer(to=dyn_c)),
+        net=untracked(Pointer(to=dyn_c)),
         v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=untracked(UnsafePointer(to=pred_c)),
+        net=untracked(Pointer(to=pred_c)),
         v_min=v_min, v_max=v_max
     )
 
@@ -393,9 +393,9 @@ def run_muzero_selfplay_gpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    l_parts.free(); h_diag_pred.free()
+    l_parts.unsafe_free(); h_diag_pred.unsafe_free()
     # keep the CPU mirrors alive past the loop — the MCTS adapters hold
-    # `UnsafePointer(to=rep_c)`, which the lifetime analyzer can't see.
+    # `Pointer(to=rep_c)`, which the lifetime analyzer can't see.
     _ = rep_c^
     _ = dyn_c^
     _ = pred_c^

@@ -27,8 +27,8 @@ share a task id; same trick as the dynamics signal/step tables).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -55,10 +55,10 @@ def _te_embed_kernel[
     var k = e % AG
     var d = k % D
     var b = bt // T
-    var idb = Int(rebind[Scalar[DT]](ids.ptr[b]) + Scalar[DT](0.5))
-    out_buf.ptr[e] = (
-        rebind[Scalar[DT]](table.ptr[idb * D + d])
-        + rebind[Scalar[DT]](base.ptr[d])
+    var idb = Int(rebind[Scalar[DT]](ids.ptr[unsafe_offset=b]) + Scalar[DT](0.5))
+    out_buf.ptr[unsafe_offset=e] = (
+        rebind[Scalar[DT]](table.ptr[unsafe_offset=idb * D + d])
+        + rebind[Scalar[DT]](base.ptr[unsafe_offset=d])
     )
 
 
@@ -80,8 +80,8 @@ def _te_grad_base_kernel[
         for t in range(T):
             var bt = b * T + t
             for a in range(NAGENT):
-                acc += rebind[Scalar[DT]](grad_in.ptr[bt * AG + a * D + d])
-    gbase.ptr[d] = rebind[Scalar[DT]](gbase.ptr[d]) + acc
+                acc += rebind[Scalar[DT]](grad_in.ptr[unsafe_offset=bt * AG + a * D + d])
+    gbase.ptr[unsafe_offset=d] = rebind[Scalar[DT]](gbase.ptr[unsafe_offset=d]) + acc
 
 
 # task_table grad (index-masked batch reduction): gtab[v,d] += Σ_{b: id_b==v}
@@ -103,13 +103,13 @@ def _te_grad_table_kernel[
     var d = ed % D
     var acc = Scalar[DT](0.0)
     for b in range(B):
-        var idb = Int(rebind[Scalar[DT]](ids.ptr[b]) + Scalar[DT](0.5))
+        var idb = Int(rebind[Scalar[DT]](ids.ptr[unsafe_offset=b]) + Scalar[DT](0.5))
         if idb == v:
             for t in range(T):
                 var bt = b * T + t
                 for a in range(NAGENT):
-                    acc += rebind[Scalar[DT]](grad_in.ptr[bt * AG + a * D + d])
-    gtab.ptr[ed] = rebind[Scalar[DT]](gtab.ptr[ed]) + acc
+                    acc += rebind[Scalar[DT]](grad_in.ptr[unsafe_offset=bt * AG + a * D + d])
+    gtab.ptr[unsafe_offset=ed] = rebind[Scalar[DT]](gtab.ptr[unsafe_offset=ed]) + acc
 
 
 struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
@@ -155,11 +155,11 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
     def display_label() -> String:
         return String("TaskEmbedder")
 
-    def _cache_ids(mut self, task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin], B: Int):
+    def _cache_ids(mut self, task_ids: Pointer[Scalar[DT], MutAnyOrigin], B: Int):
         if len(self.cache_ids) < B:
             self.cache_ids.resize(B, 0)
         for b in range(B):
-            self.cache_ids[b] = Int(Float64(task_ids[b]) + 0.5)
+            self.cache_ids[b] = Int(Float64(task_ids[unsafe_offset=b]) + 0.5)
 
     def _ensure_ids_gpu(mut self, B: Int, ctx: Optional[DeviceContext]) raises:
         if self.scratch_b < B:
@@ -173,8 +173,8 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         target: StaticString, B: Int, T: Int
     ](
         mut self,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        task_ids: Pointer[Scalar[DT], MutAnyOrigin],
+        dst: Pointer[Scalar[DT], MutAnyOrigin],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """Fill `dst` [B·T, NAGENT·D] (CPU host ptr / GPU device ptr) with the
@@ -193,7 +193,7 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
                     var bt = b * T + t
                     for a in range(Self.NAGENT):
                         for d in range(Self.D):
-                            dst[bt * AG + a * Self.D + d] = (
+                            dst[unsafe_offset=bt * AG + a * Self.D + d] = (
                                 tab[idb * Self.D + d] + base[d]
                             )
         else:
@@ -201,7 +201,7 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             self._ensure_ids_gpu(B, ctx)
             var ih = self.ids_hbuf.value()
             for b in range(B):
-                ih.unsafe_ptr()[b] = Scalar[DT](Float64(self.cache_ids[b]))
+                ih.unsafe_ptr()[unsafe_offset=b] = Scalar[DT](Float64(self.cache_ids[b]))
             c.enqueue_copy(self.ids_dev.value(), ih)
             var ids_lt = LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin](
                 self.ids_dev.value()
@@ -225,7 +225,7 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         target: StaticString, B: Int, T: Int
     ](
         mut self,
-        grad_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        grad_in: Pointer[Scalar[DT], MutAnyOrigin],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """Accumulate the grad of the broadcast agent input (`grad_in`
@@ -244,7 +244,7 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
                     for t in range(T):
                         var bt = b * T + t
                         for a in range(Self.NAGENT):
-                            ge += grad_in[bt * AG + a * Self.D + d]
+                            ge += grad_in[unsafe_offset=bt * AG + a * Self.D + d]
                     gbase[d] += ge
                     gtab[idb * Self.D + d] += ge
         else:

@@ -23,7 +23,7 @@ transposed (`out = x @ Wᵀ`). PyTorch ties by making both modules reference one
     once per step (the source leaf owns + zeroes it).
 
 BORROWING REPRESENTATION (the crux): the borrow is the SAFE `std.memory.Pointer`
-(single-element, no arithmetic, bounds-safe deref — NOT a raw `UnsafePointer`),
+(single-element, no arithmetic, bounds-safe deref — NOT a raw `Pointer`),
 holding a `Pointer[Tensor, MutAnyOrigin]` to the owner's `Param.val` /
 `Param.grd` *storage cells*. Dereferencing yields a mutable `Tensor`, so
 forward/vjp build their typed views with the SAME storage-surface calls every
@@ -39,7 +39,7 @@ combinator that holds it (`Sequential`/`Tokenwise`/… are parametric over
 struct origin-free so it conforms to `Module` and drops into a generic
 `Sequential` trained by the standard `Trainer` loop. The trade: the wildcard
 does not pin the owner, so the POINTER-STABILITY RULE below is load-bearing.
-This is the storage-clean evolution of the legacy raw `UnsafePointer[Scalar]`
+This is the storage-clean evolution of the legacy raw `Pointer[Scalar]`
 to the val/grad buffers: safe single-element reference, Tensor-cell granularity.
 
 bf16-FLOW (AMP "Step B"): `TiedLinear[IN, OUT]` is fp32 (unchanged), while
@@ -72,7 +72,7 @@ Shapes (IN = EMBED, OUT = VOCAB; source weight is `[OUT, IN]`):
 from std.sys import CompilationTarget
 from std.memory import Pointer
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -137,7 +137,7 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # No owned weight/bias Param — the weight is borrowed (reflection finds no
     # `IsParam` field here, so the optimizer never double-counts the shared
     # weight). `tie_to` points these at the source weight's val/grad cells.
-    # SAFE `Pointer` (not raw `UnsafePointer`); wildcard origin so the struct
+    # SAFE `Pointer` (not raw `Pointer`); wildcard origin so the struct
     # stays origin-free (see module docstring).
     var src_val: Optional[Pointer[Tensor, MutUntrackedOrigin]]
     var src_grd: Optional[Pointer[Tensor, MutUntrackedOrigin]]
@@ -333,16 +333,16 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         Int32(Self.IN_),
                         Int32(B),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             god.data.unsafe_ptr()
                         ),
                         Int32(Self.OUT_),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             find.data.unsafe_ptr()
                         ),
                         Int32(Self.IN_),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        rebind[Pointer[Float32, MutAnyOrigin]](
                             gw.data.unsafe_ptr()
                         ),
                         Int32(Self.IN_),

@@ -10,8 +10,8 @@ owned `Tensor`s evolved only by the forward EMA (not optimized).
 
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.sys.info import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

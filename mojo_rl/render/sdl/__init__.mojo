@@ -3,7 +3,7 @@
 # +--------------------------------------------------------------------------+ #
 
 """SDL3 Bindings in Mojo."""
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from .sdl_audio import *
 from .sdl_blendmode import *
 from .sdl_camera import *
@@ -40,17 +40,17 @@ from .sdl_version import *
 from .sdl_video import *
 
 
-comptime Ptr = UnsafePointer
+comptime Ptr = Pointer
 
 
 @always_inline
 def untracked[
     T: AnyType, o: Origin
-](p: UnsafePointer[T, o]) -> UnsafePointer[T, MutUntrackedOrigin]:
+](p: Pointer[T, o]) -> Pointer[T, MutUntrackedOrigin]:
     """Re-key a pointer's origin to `MutUntrackedOrigin` for storage in an FFI
     struct field (AnyOrigin is banned in fields as of Mojo 1.0; SDL owns the
     pointee, lifetime is managed explicitly across the C ABI)."""
-    return rebind[UnsafePointer[T, MutUntrackedOrigin]](p)
+    return rebind[Pointer[T, MutUntrackedOrigin]](p)
 
 
 from std.os import abort, getenv
@@ -136,8 +136,8 @@ def _uninit[T: AnyType](out value: T):
 
 
 @always_inline
-def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
-    """Construct a NULL UnsafePointer for C-ABI FFI calls.
+def _null_ptr[T: AnyType, O: Origin]() -> Pointer[T, O]:
+    """Construct a NULL Pointer for C-ABI FFI calls.
 
     Mojo nightly made the literal-zero `unsafe_from_address=0` constructor
     a comptime constraint failure, so it cannot be used directly. The
@@ -146,7 +146,7 @@ def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
     FFI boundaries (SDL3 calls that document NULL as "use default").
     """
     var addr: Int = 0
-    return UnsafePointer[T, O](unsafe_from_address=addr)
+    return Pointer[T, O](unsafe_from_address=addr)
 
 
 comptime ArrayHelper[

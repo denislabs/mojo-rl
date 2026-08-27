@@ -11,7 +11,7 @@ machines should still pass).
 """
 
 from std.sys import has_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -29,7 +29,7 @@ comptime N_ENVS: Int = 2
 
 @fieldwise_init
 struct DummyGPUCB(
-    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackGPU
+    Copyable, Movable, Deinitable, RolloutJacobianCallbackGPU
 ):
     """Trivial gradient-free wrapper to satisfy
     ``RolloutJacobianCallbackGPU`` for a compile-time smoke test.

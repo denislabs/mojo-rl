@@ -1,0 +1,110 @@
+---
+title: Procgen & Craftax
+description: All 16 Procgen games and the Craftax open-world survival benchmark, ported to pure Mojo.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+import Demo from '~/components/Demo.astro';
+
+<Maturity level="beta" note="Complete and tested, but newer than the rest of the catalogue." />
+
+Procedurally generated environments, where every episode draws a fresh level from
+a seed. These measure **generalization** rather than mastery: an agent that
+memorises one layout scores nothing.
+
+
+<Papers label="Papers">
+	<Paper
+		title="Leveraging Procedural Generation to Benchmark Reinforcement Learning"
+		authors="Cobbe, Hesse, Hilton, Schulman"
+		year="2019"
+		arxiv="1912.01588"
+		venue="ICML 2020"
+		note="Procgen."
+	/>
+	<Paper
+		title="Craftax: A Lightning-Fast Benchmark for Open-Ended Reinforcement Learning"
+		authors="Matthews et al."
+		year="2024"
+		arxiv="2402.16801"
+		venue="ICML 2024"
+	/>
+	<Paper
+		title="Benchmarking the Spectrum of Agent Capabilities"
+		authors="Hafner"
+		year="2021"
+		arxiv="2109.06780"
+		venue="ICLR 2022"
+		note="Crafter, which Craftax Classic follows."
+	/>
+</Papers>
+
+## Procgen — all 16 games
+
+A complete pure-Mojo port of OpenAI's Procgen benchmark, with roughly 86 tests
+covering it.
+
+| | | | |
+|---|---|---|---|
+| bigfish | bossfight | caveflyer | chaser |
+| climber | coinrun | dodgeball | fruitbot |
+| heist | jumper | leaper | maze |
+| miner | ninja | plunder | starpilot |
+
+Each generates its level from a seed, so the standard protocol works: train on a
+fixed set of levels, evaluate on unseen ones, and the gap is the generalization
+measure.
+
+```mojo
+from mojo_rl.envs.procgen.games import CoinRun, Maze, StarPilot
+```
+
+```bash
+pixi run mojo run -I . examples/procgen/coinrun_render_demo.mojo
+pixi run -e nvidia mojo run -I . examples/procgen/coinrun_rainbow_training_gpu.mojo
+```
+
+The substrate lives in `mojo_rl/envs/procgen/{core,games}` — a shared engine
+(tile maps, sprites, collision, asset atlases) with per-game logic on top, which
+is how 16 games fit in a manageable amount of code.
+
+## Craftax
+
+An open-world survival and crafting benchmark — a 2D Minecraft-like world with a
+deep achievement tree: gather wood, craft tools, mine stone, descend, survive.
+
+Two variants:
+
+- **Craftax Classic** — the Crafter-equivalent surface world
+- **Craftax Full** — multi-level dungeons, more mechanics
+
+<Demo name="craftax_classic_playable" caption="Craftax Classic" meta="playable demo" />
+
+```bash
+pixi run mojo run -I . examples/craftax_classic/play_classic.mojo
+pixi run -e nvidia mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo
+```
+
+Craftax is a different kind of hard from the control tasks. Reward is tied to
+achievements that require long action sequences discovered in order — you cannot
+craft a pickaxe before collecting wood — so it stresses **exploration and
+long-horizon credit assignment** rather than fine motor control. Sprite-based
+pixel observations are available alongside the symbolic state.
+
+## Why these matter here
+
+Most of the catalogue tests whether an algorithm can *learn* a task. These test
+whether it learned the task or the level.
+
+That distinction is sharp on procedurally generated worlds: an agent overfitting
+to specific layouts shows near-perfect training returns and chance-level
+evaluation returns. It is the cleanest available signal that a representation
+generalises, which makes these the right benchmarks for world-model and
+representation-learning work.
+
+## Next
+
+- [Arcade games](/environments/arcade/) — fixed-layout pixel environments for contrast
+- [Environments overview](/environments/) — the full catalogue

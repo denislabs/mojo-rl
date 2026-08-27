@@ -25,12 +25,13 @@ Design (after probing what Float64 conforms to):
 
 from std.reflection import reflect
 from std.testing import assert_equal, assert_true
+from mojo_rl.core.fmt import fit
 
 
 # ---------------------------------------------------------------------
 # Logger-shaped trait — local, doesn't depend on the production Logger
 # ---------------------------------------------------------------------
-trait MiniLogger(Copyable, Movable, ImplicitlyDeletable):
+trait MiniLogger(Copyable, Movable, Deinitable):
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         ...
 
@@ -60,7 +61,7 @@ struct ListLogger(MiniLogger):
 # Metric — marker trait whose method does the Float64 cast.
 # Walker gates on conforms_to(ft, Metric) and calls .to_f64().
 # ---------------------------------------------------------------------
-trait Metric(Copyable, Movable, ImplicitlyDeletable):
+trait Metric(Copyable, Movable, Deinitable):
     def to_f64(self) -> Float64:
         ...
 
@@ -85,7 +86,7 @@ struct LogScalar[DT: DType](Metric):
 comptime DT_F32 = DType.float32
 
 @fieldwise_init
-struct SACMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct SACMetrics(Copyable, Movable, Deinitable):
     var critic_loss: LogScalar[DT_F32]
     var actor_loss: LogScalar[DT_F32]
     var alpha: LogScalar[DT_F32]
@@ -150,7 +151,7 @@ def test_metrics_bundle_walk() raises:
             "    log_scalar(",
             logger.names[i],
             ", ",
-            String(logger.values[i])[byte=:8],
+            fit(String(logger.values[i]), 8),
             ", step=",
             logger.steps[i],
             ")",
@@ -162,7 +163,7 @@ def test_metrics_bundle_walk() raises:
 # Second check: empty bundle is fine.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct EmptyMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct EmptyMetrics(Copyable, Movable, Deinitable):
     pass
 
 
@@ -179,7 +180,7 @@ def test_empty_bundle() raises:
 # Verifies one parametric LogScalar covers multiple dtypes.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct MixedMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct MixedMetrics(Copyable, Movable, Deinitable):
     var loss_f32: LogScalar[DType.float32]
     var lr_f64:   LogScalar[DType.float64]
 
@@ -204,7 +205,7 @@ def test_mixed_bundle() raises:
 # Fourth check: non-Metric fields are silently skipped.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct MetricsWithExtras(Copyable, Movable, ImplicitlyDeletable):
+struct MetricsWithExtras(Copyable, Movable, Deinitable):
     var critic_loss: LogScalar[DT_F32]
     var raw_step_counter: Int         # Not Metric — must be skipped
     var actor_loss: LogScalar[DT_F32]

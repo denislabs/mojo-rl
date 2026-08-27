@@ -24,7 +24,7 @@ Profiling knobs (flip and re-profile to isolate cost):
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
@@ -35,10 +35,11 @@ from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from mojo_rl.core.fmt import fit
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
-comptime USE_TRAIN_CUDA_GRAPH = True
+comptime USE_TRAIN_CUDA_GRAPH = False
 comptime EPISODE_SYNC_EVERY = 32
 
 # ─── Sizing (mirrors sac_half_cheetah_profile_graph.mojo exactly) ──────────
@@ -119,7 +120,7 @@ def main() raises:
 
         var elapsed = Float64(perf_counter_ns() - start) / 1e9
         print()
-        print("Time:", String(elapsed)[byte=:6], "s")
+        print("Time:", fit(String(elapsed), 6), "s")
         print("mean ep return (last 100):", agent.mean_return())
         print("episodes:", agent.ep_count())
         print("=== Done ===")

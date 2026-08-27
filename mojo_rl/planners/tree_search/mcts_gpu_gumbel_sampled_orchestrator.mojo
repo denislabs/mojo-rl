@@ -41,7 +41,7 @@ Output buffers exposed:
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -110,7 +110,7 @@ struct SampledGumbelGPUMCTS[
     # ordering keeps working. Tail position so legacy positional callers
     # stay unchanged.
     N_POLICY_AT_ROOT: Int = K_ROOT,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU sampled-Gumbel MCTS orchestrator (EZv2 continuous planner).
 
     Comptime params:

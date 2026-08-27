@@ -19,7 +19,7 @@ re-read as the children's `forward_input` in `vjp` (storage children recompute
 from their forward_input), so they MUST persist as fields across forward→vjp.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -116,7 +116,7 @@ struct Dreamer4Encoder[
     def set_mae_p(mut self, p_min: Float64, p_max: Float64):
         self.mae.set_p(p_min, p_max)
 
-    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def mae_mask_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Per-patch `keep` flags ([BATCH*NP], 1.0=kept); masked = 1 - keep."""
         return self.mae.mae_mask_ptr()
 

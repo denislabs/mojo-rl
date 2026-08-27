@@ -33,7 +33,7 @@ comptime PongRam = AtariEnv[0]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutUntrackedOrigin],
     rom_size: Int,
     max_frames: Int = 108000,
 ) -> List[PongRam]:
@@ -50,11 +50,11 @@ def main() raises:
 
     # ── (A) parallel step_batch ≡ serial per-env stepping ──
     var batched = BatchedCpuDiscreteEnv[PongRam, N, OBS](
-        _make_envs(rom.data.value().as_unsafe_any_origin(), rom.size)
+        _make_envs(rom.data.value(), rom.size)
     )
     batched.reset_batch[N](ctx=None, rng_seed=UInt64(7))
 
-    var serial = _make_envs(rom.data.value().as_unsafe_any_origin(), rom.size)
+    var serial = _make_envs(rom.data.value(), rom.size)
     for i in range(N):
         _ = serial[i].reset()
 
@@ -83,7 +83,7 @@ def main() raises:
 
     # ── (B) no-op starts decorrelate the reset lanes ──
     var noop_env = BatchedCpuDiscreteEnv[PongRam, N, OBS](
-        _make_envs(rom.data.value().as_unsafe_any_origin(), rom.size), noop_max=30
+        _make_envs(rom.data.value(), rom.size), noop_max=30
     )
     noop_env.reset_batch[N](ctx=None, rng_seed=UInt64(42))
     var nobs = noop_env.obs_ptr()
@@ -101,7 +101,7 @@ def main() raises:
     # Reset itself burns ~70-100 frames (title screen + RESET hold), then
     # frame_skip=4 per step → max_frames=400 truncates within ~80 steps.
     var trunc_env = BatchedCpuDiscreteEnv[PongRam, N, OBS](
-        _make_envs(rom.data.value().as_unsafe_any_origin(), rom.size, max_frames=400)
+        _make_envs(rom.data.value(), rom.size, max_frames=400)
     )
     trunc_env.reset_batch[N](ctx=None, rng_seed=UInt64(3))
     var tact = trunc_env.action_ptr()

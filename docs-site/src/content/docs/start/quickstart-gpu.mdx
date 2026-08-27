@@ -1,0 +1,173 @@
+---
+title: 'Quickstart: GPU training'
+description: Train SAC on HalfCheetah with the whole loop — physics, replay buffer and gradient updates — resident on the GPU.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+This is the framework doing the thing it was built for: 32 HalfCheetah
+simulations stepping in parallel on-device, a million-transition replay buffer
+that never touches host memory, and SAC gradient updates in the same kernel
+stream.
+
+```bash
+pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
+```
+
+On a single RTX 5090 this reaches a running gait in about six minutes.
+
+:::note
+Drop `NUM_STEPS` to ~50,000 in the example for a smoke run. The default of
+600,000 env-steps is a real training run, not a demo.
+:::
+
+## The shape of a GPU training script
+
+Stripped of logging and checkpointing, the whole program is this:
+
+```mojo
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
+comptime HIDDEN = 256
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 1_000_000
+comptime N_ENVS = 32
+
+# The networks are types, resolved at compile time.
+comptime ActorNet = StochasticActor[
+    OBS_DIM, ACT_DIM,
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+]
+comptime CriticNet = Sequential[
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
+
+# So is the batched environment.
+comptime BatchedEnvT = Phyics3dBatchedEnv[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
+
+
+def main() raises:
+    with DeviceContext() as ctx:
+        var agent = SACAgent[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet,
+            CriticNet,
+        ](
+            ctx=ctx,
+            actor_lr=3e-4,
+            critic_lr=3e-4,
+            gamma=0.99,
+            tau=0.005,
+            target_entropy=-Scalar[DT](ACT_DIM),
+            learning_starts=10_000,
+        )
+
+        var env = BatchedEnvT(ctx)
+
+        _ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
+            env, 600_000, updates_per_step=N_ENVS, verbose=True,
+        )
+```
+
+## What is happening here
+
+**Everything structural is a compile-time parameter.** `ActorNet`, `CriticNet`,
+the replay-buffer block and the environment are *types*, not objects. `SACAgent`
+is instantiated with them, so the compiler specializes the entire training
+pipeline — network shapes, buffer strides, physics kernels — for this exact
+configuration. There is no runtime graph to build and no dynamic dispatch in the
+inner loop. This is the framework's defining idiom, and it gets a page of its
+own in [compile-time composition](/concepts/compile-time-composition/).
+
+**The `DeviceContext` is threaded through the agent.** GPU training requires it:
+the trainer keeps it for host↔device staging and for every on-device kernel
+launch. Passing `ctx=ctx` is what selects the GPU path, together with the
+`"gpu"` target string.
+
+**`updates_per_step=N_ENVS` keeps the update-to-data ratio at 1.** Each driver
+iteration steps all 32 environments once, producing 32 transitions, and runs 32
+gradient updates. Setting this to `1` instead would train 32× less per unit of
+experience.
+
+**One `train` call is the whole loop.** Collection, replay insertion, sampling,
+the twin-critic update, the actor update, temperature tuning and Polyak target
+updates all live inside the batched off-policy driver — on-device, and on NVIDIA
+captured as a CUDA graph.
+
+## Swapping the environment
+
+`Phyics3dBatchedEnv` works for any MuJoCo-style environment in the framework.
+Its parameters are the model, the config, and the batch size:
+
+```mojo
+from mojo_rl.envs.hopper import HopperModel, HopperConfig
+from mojo_rl.envs.walker2d import Walker2dModel, Walker2dConfig
+from mojo_rl.envs.humanoid import HumanoidModel, HumanoidConfig
+
+comptime BatchedEnvT = Phyics3dBatchedEnv[HopperModel, HopperConfig, N_ENVS]
+```
+
+Because `OBS_DIM` and `ACT_DIM` come from the config, the network definitions
+adapt with no further edits. Humanoid's 376-dimensional observation and
+17-dimensional action space flow through the same code.
+
+Working GPU training scripts exist for several of these:
+
+```bash
+examples/humanoid/sac_humanoid_training_gpu.mojo
+examples/walker2d/sac_walker2d_profile_graph_nn.mojo
+examples/half_cheetah/redq_half_cheetah_training_gpu.mojo
+examples/half_cheetah/tdmpc2_half_cheetah_gpu.mojo
+```
+
+## Starting smaller
+
+If you would rather see a deep agent train on the CPU first, DQN on CartPole is
+a 2,000-step smoke run:
+
+```bash
+pixi run mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
+```
+
+Same facade shape — `DQNAgent["cpu", UniformSampleCpuStep[...], QNet]` — with a
+plain `Sequential` Q-network and no `DeviceContext`.
+
+## Monitoring a run
+
+Long runs stream metrics to a dashboard rather than scrolling a terminal. The
+real example wires up `RemoteLogger`, which POSTs `actor_loss`, `critic_loss`,
+`alpha`, `mean_q` and episode returns to the
+[training monitor](https://github.com/denislabs/mojo-rl) over HTTP. Configuration
+comes from a `.env` file read by `mojo_rl.core.dotenv`.
+
+Training also auto-checkpoints. The batched driver writes weights and optimizer
+state every `checkpoint_every` env-steps, and the paired
+`examples/half_cheetah/sac_half_cheetah_nn_eval_cpu.mojo` script reloads and
+renders the result.
+
+## Next
+
+- [Compile-time composition](/concepts/compile-time-composition/) — why the networks are types
+- [CPU and GPU paths](/concepts/cpu-gpu/) — batched environments and CUDA-graph capture
+- [The layered stack](/concepts/architecture/) — where the driver sits

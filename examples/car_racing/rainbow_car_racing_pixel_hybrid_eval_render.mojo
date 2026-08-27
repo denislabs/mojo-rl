@@ -20,7 +20,7 @@ Run with:
 Reads checkpoints/rainbow_car_racing_pixel_hybrid.ckpt.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential

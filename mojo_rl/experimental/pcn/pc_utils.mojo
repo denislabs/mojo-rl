@@ -31,17 +31,17 @@ def clip_grad_norm[
         var acc = SIMD[dtype, _SW](0)
         var i = 0
         while i + _SW <= SIZE:
-            var v = gp.load[width=_SW](i)
+            var v = gp.unsafe_load[width=_SW](i)
             acc = acc + v * v
             i += _SW
         sum_sq = Float64(acc.reduce_add())
         while i < SIZE:
-            var g = Float64(gp[i])
+            var g = Float64(gp[unsafe_offset=i])
             sum_sq += g * g
             i += 1
     else:
         for i in range(SIZE):
-            var g = Float64(gp[i])
+            var g = Float64(gp[unsafe_offset=i])
             sum_sq += g * g
     var norm = sqrt(sum_sq)
     if norm > max_norm:
@@ -50,14 +50,14 @@ def clip_grad_norm[
             var sv = SIMD[dtype, _SW](scale)
             var i = 0
             while i + _SW <= SIZE:
-                gp.store(i, gp.load[width=_SW](i) * sv)
+                gp.unsafe_store(i, gp.unsafe_load[width=_SW](i) * sv)
                 i += _SW
             while i < SIZE:
-                gp[i] = gp[i] * scale
+                gp[unsafe_offset=i] = gp[unsafe_offset=i] * scale
                 i += 1
         else:
             for i in range(SIZE):
-                gp[i] = gp[i] * scale
+                gp[unsafe_offset=i] = gp[unsafe_offset=i] * scale
 
 
 def spectral_norm_clamp[
@@ -90,9 +90,9 @@ def spectral_norm_clamp[
     var u_buf = List[Float64](capacity=IN)
     var v_buf = List[Float64](capacity=OUT)
     for i in range(IN):
-        u_buf.append(Float64(u.ptr[i]))
+        u_buf.append(Float64(u.ptr[unsafe_offset=i]))
     for j in range(OUT):
-        v_buf.append(Float64(v.ptr[j]))
+        v_buf.append(Float64(v.ptr[unsafe_offset=j]))
 
     for _ in range(n_power_iters):
         # v = W^T u; normalize.
@@ -100,7 +100,7 @@ def spectral_norm_clamp[
         for j in range(OUT):
             var s: Float64 = 0
             for i in range(IN):
-                s += u_buf[i] * Float64(W.ptr[i * OUT + j])
+                s += u_buf[i] * Float64(W.ptr[unsafe_offset=i * OUT + j])
             v_buf[j] = s
             v_norm_sq += s * s
         var v_norm = sqrt(v_norm_sq)
@@ -114,7 +114,7 @@ def spectral_norm_clamp[
         for i in range(IN):
             var s: Float64 = 0
             for j in range(OUT):
-                s += Float64(W.ptr[i * OUT + j]) * v_buf[j]
+                s += Float64(W.ptr[unsafe_offset=i * OUT + j]) * v_buf[j]
             u_buf[i] = s
             u_norm_sq += s * s
         var u_norm = sqrt(u_norm_sq)
@@ -125,16 +125,16 @@ def spectral_norm_clamp[
 
     # Persist refined (u, v).
     for i in range(IN):
-        u.ptr[i] = Scalar[dtype](u_buf[i])
+        u.ptr[unsafe_offset=i] = Scalar[dtype](u_buf[i])
     for j in range(OUT):
-        v.ptr[j] = Scalar[dtype](v_buf[j])
+        v.ptr[unsafe_offset=j] = Scalar[dtype](v_buf[j])
 
     # σ ≈ u^T W v.
     var sigma: Float64 = 0
     for i in range(IN):
         var s: Float64 = 0
         for j in range(OUT):
-            s += Float64(W.ptr[i * OUT + j]) * v_buf[j]
+            s += Float64(W.ptr[unsafe_offset=i * OUT + j]) * v_buf[j]
         sigma += u_buf[i] * s
 
     if sigma > target_sigma:
@@ -144,13 +144,13 @@ def spectral_norm_clamp[
             var sv = SIMD[dtype, _SW](scale)
             var k = 0
             while k + _SW <= N:
-                W.ptr.store(k, W.ptr.load[width=_SW](k) * sv)
+                W.ptr.unsafe_store(k, W.ptr.unsafe_load[width=_SW](k) * sv)
                 k += _SW
             while k < N:
-                W.ptr[k] = W.ptr[k] * scale
+                W.ptr[unsafe_offset=k] = W.ptr[unsafe_offset=k] * scale
                 k += 1
         else:
             for k in range(N):
-                W.ptr[k] = W.ptr[k] * scale
+                W.ptr[unsafe_offset=k] = W.ptr[unsafe_offset=k] * scale
 
     return sigma

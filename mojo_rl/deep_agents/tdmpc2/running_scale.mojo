@@ -18,7 +18,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 
 
-struct RunningScale(Movable & ImplicitlyDeletable):
+struct RunningScale(Movable & Deinitable):
     var value: Scalar[DT]
     var tau: Scalar[DT]
 

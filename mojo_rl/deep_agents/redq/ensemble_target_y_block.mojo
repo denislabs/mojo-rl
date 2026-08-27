@@ -31,7 +31,7 @@ actor + the ensemble, mirroring the SAC storage `TargetYBlock.step`.
 
 from std.gpu import global_idx
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -128,14 +128,17 @@ def _copy_row_kernel[
 ](
     src: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(NB), MutAnyOrigin],
-    base: Int,
+    base_arg: Int64,
 ):
     """`dst[base + b] = src[b]` — write src into the row `base = i*BATCH` of the
     flat [N*BATCH] stacked buffer."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var base = Int(base_arg)
     var b = Int(global_idx.x)
     if b >= BATCH:
         return
-    dst.ptr[base + b] = rebind[Scalar[DT]](src[b])
+    dst.ptr[unsafe_offset=base + b] = rebind[Scalar[DT]](src[b])
 
 
 struct EnsembleTargetYBlock[
@@ -147,7 +150,7 @@ struct EnsembleTargetYBlock[
     ACT_: Int,
     N_MIN_: Int,
     MODE_: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime OBS = Self.OBS_
@@ -177,7 +180,7 @@ struct EnsembleTargetYBlock[
     var _device_resample: Bool
     var _subset_offset: TensorImpl[DType.uint64]  # device Philox offset [1]
     var subset_seed: UInt64
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _alpha_ptr: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
@@ -263,7 +266,7 @@ struct EnsembleTargetYBlock[
             blk._subset_offset.dev.value().enqueue_fill(UInt64(0))
         return blk^
 
-    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    def set_alpha_ptr(mut self, p: Pointer[Scalar[DT], MutAnyOrigin]):
         """Wire REDQ's on-device alpha buffer into the combine (GPU device-alpha
         path). After this, `step` on GPU reads alpha from the device buffer
         instead of the `alpha` arg — CUDA-graph capturable."""
@@ -407,7 +410,7 @@ struct EnsembleTargetYBlock[
                     self._mb_stacked_q.lt[
                         "gpu", Layout.row_major(Self.N * Self.BATCH)
                     ](),
-                    i * Self.BATCH,
+                    Int64(i * Self.BATCH),
                     grid_dim=nb, block_dim=TPB,
                 )
 

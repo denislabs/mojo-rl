@@ -1,0 +1,165 @@
+---
+title: Writing your own environment
+description: Pick a trait combination, define State and Action, implement the loop — and optionally add a batched GPU path.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+An environment is a struct implementing a trait combination. Which combination
+you pick determines which algorithms will accept it, and the compiler enforces
+that — a tabular agent will not instantiate against an environment that cannot
+produce a state index.
+
+## 1. Pick the trait
+
+| Your states | Your actions | Implement | Works with |
+|---|---|---|---|
+| discrete, enumerable | discrete | `DiscreteEnv` | Q-Learning, SARSA, Monte Carlo |
+| continuous vector | discrete | `BoxDiscreteActionEnv` | DQN, Rainbow, PPO-discrete, tile coding |
+| continuous vector | continuous | `BoxContinuousActionEnv` | DDPG, TD3, SAC, PPO |
+| continuous vector | continuous, with termination/truncation split | `TerminationAwareEnv` | the above, correctly bootstrapped |
+| two-player, turn-based | discrete | `TwoPlayerDiscreteEnv` | AlphaZero, MuZero |
+
+See [Traits](/concepts/traits/) for what each requires.
+
+## 2. Define State and Action
+
+```mojo
+from mojo_rl.core.state import State
+from mojo_rl.core.action import Action
+
+
+struct MyState(State):
+    var x: Float64
+    var v: Float64
+
+
+struct MyAction(Action):
+    var thrust: Float64
+```
+
+`State` requires `Copyable`, `ImplicitlyCopyable`, `Movable` and
+`ImplicitlyDeletable`; `Action` is a lighter marker trait. For standard shapes
+the framework provides generics — `ObsState[N]` for an N-dimensional observation
+and `ContAction[N]` for an N-dimensional continuous action — so you often do not
+need your own.
+
+## 3. Implement the environment
+
+A discrete example:
+
+```mojo
+from mojo_rl.core.env_traits import DiscreteEnv
+
+
+struct MyEnv(DiscreteEnv):
+    comptime dtype = DType.float64
+    comptime StateType = MyState
+    comptime ActionType = MyAction
+
+    var state: MyState
+    var steps: Int
+
+    def step(mut self, action: MyAction, verbose: Bool = False)
+        -> Tuple[MyState, Float64, Bool]:
+        # advance dynamics, compute reward, decide termination
+        ...
+
+    def reset(mut self) -> MyState: ...
+    def get_state(self) -> MyState: ...
+    def close(mut self): ...
+
+    def was_terminated(self) -> Bool:
+        # True only for genuine termination, NOT the time limit
+        return self.state.x < -1.0
+
+    # DiscreteStateEnv
+    def state_to_index(self, state: MyState) -> Int: ...
+    def num_states(self) -> Int: ...
+
+    # DiscreteActionEnv
+    def action_from_index(self, action_idx: Int) -> MyAction: ...
+    def num_actions(self) -> Int: ...
+```
+
+:::caution[Get `was_terminated` right]
+This is the single easiest thing to get wrong, and it fails silently.
+
+`done` should be `True` when the episode ends for *any* reason, including hitting
+a step limit. `was_terminated()` should be `True` only when the episode ended
+because the agent reached a genuine terminal state.
+
+The difference matters at the bootstrap: a time-limit cutoff should still
+bootstrap the value of the final state, because the episode would have continued.
+Collapsing the two makes the agent believe the world ends at your step limit, and
+the resulting degradation looks like a hyperparameter problem rather than a bug.
+Pendulum is the classic case — it has no terminal state at all, so
+`was_terminated()` is always `False`.
+:::
+
+## 4. Train on it
+
+Nothing else needs to know your type:
+
+```mojo
+var env = MyEnv()
+var agent = QLearningAgent(
+    num_states=env.num_states(),
+    num_actions=env.num_actions(),
+)
+_ = agent.train(env, num_episodes=500)
+```
+
+## Adding a GPU path
+
+Optional, and a bigger commitment. Implement `GPUDiscreteEnv` or
+`GPUContinuousEnv` — separate traits, not extensions of the CPU ones, because a
+batched device environment has a genuinely different interface: it steps `N`
+environments per call, writes observations into device tensors, and handles
+per-environment resets internally.
+
+The design rule is that state is stored strided as `[BATCH, STATE_SIZE]` so one
+kernel launch advances every environment. Look at `physics2d` for a worked
+example — its `PhysicsLayout` computes compile-time offsets for bodies, contacts
+and joints across the batch dimension.
+
+Once implemented, wrap it for the batched drivers:
+
+```mojo
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+
+comptime EnvT = BatchedGpuDiscreteEnv[MyEnv[DT], N_ENVS, OBS_DIM, 1]
+```
+
+## Physics-backed environments
+
+If your environment is a rigid-body system, you probably want `physics3d` rather
+than hand-written dynamics. Define the model in **MJCF XML** — the same format
+MuJoCo uses — and load it:
+
+```mojo
+from mojo_rl.physics3d.parser import build_model_fields_from_flat
+```
+
+Then implement a config struct (`Phyics3dEnvConfig`) supplying observation
+extraction, reward, termination and any pre-step hooks, and use
+`Phyics3dBatchedEnv[MyModel, MyConfig, N_ENVS]`. The
+[3D locomotion](/environments/3d-locomotion/) environments are all built this way
+and are the best templates — `hopper/` is the smallest complete one.
+
+## Checklist
+
+- [ ] Trait combination matches the algorithms you intend to use
+- [ ] `was_terminated()` distinguishes termination from truncation
+- [ ] `reset()` randomises initial state — a fixed start teaches memorisation
+- [ ] Reward scale is sane; distributional agents care about the range
+- [ ] A tabular or random-policy smoke run terminates and produces finite returns
+- [ ] Dimensions exposed as compile-time constants, so networks can read them
+
+## Next
+
+- [Traits](/concepts/traits/) — full interface reference
+- [CPU and GPU paths](/concepts/cpu-gpu/) — batched environment mechanics
+- [Environments overview](/environments/) — implementations to copy from

@@ -20,7 +20,7 @@ Surface:
         step[target, POLICY](mut state, mut actor, mut tgt1, mut tgt2)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.core.ptr import untracked
 from std.gpu import global_idx
 from layout import Layout, LayoutTensor
@@ -70,14 +70,14 @@ def _target_y_dev_kernel[
     logp: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     y: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     gamma: Scalar[DT],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     # Device-alpha variant: reads alpha from `alpha_ptr[0]` (SAC's on-device
     # temperature buffer) instead of a baked scalar arg, so the target-y stays
     # CUDA-graph capturable while the device ScalarAdam refreshes alpha.
     var b = Int(global_idx.x)
     if b < B:
-        var soft = rebind[Scalar[DT]](min_q[b]) - alpha_ptr[0] * rebind[
+        var soft = rebind[Scalar[DT]](min_q[b]) - alpha_ptr[unsafe_offset=0] * rebind[
             Scalar[DT]
         ](logp[b])
         y[b] = (
@@ -94,7 +94,7 @@ def sac_target_y_dev[
     mut min_q: Tensor,
     mut logp: Tensor,
     gamma: Scalar[DT],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     mut y: Tensor,
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -187,7 +187,7 @@ struct TargetYBlock[
     var _min_q: Tensor  # graph output
     # Optional on-device alpha source (SAC GPU device-alpha path). When set,
     # target-y reads alpha from this device buffer instead of `state.alpha`.
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _alpha_ptr: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
 
     def __init__(out self):
         self.graph = Self.Graph()
@@ -196,7 +196,7 @@ struct TargetYBlock[
         self._min_q = Tensor()
         self._alpha_ptr = None
 
-    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    def set_alpha_ptr(mut self, p: Pointer[Scalar[DT], MutAnyOrigin]):
         """Wire SAC's on-device alpha buffer into target-y (GPU device-alpha
         path). After this, `step` on GPU reads alpha from the device buffer."""
         self._alpha_ptr = untracked(p)

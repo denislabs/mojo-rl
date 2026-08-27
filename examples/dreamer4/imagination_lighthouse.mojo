@@ -103,7 +103,7 @@ comptime Agent = Dreamer4Agent[
 
 
 def _greedy_good_fraction(
-    plog: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    plog: Pointer[Scalar[DT], MutAnyOrigin]
 ) -> Float64:
     """Fraction of acting states (0..T-2) whose greedy dist-0 action == GOOD."""
     var n_good = 0

@@ -557,7 +557,7 @@ def get_camera_format(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCameraFormat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetCameraFormat",
         def(

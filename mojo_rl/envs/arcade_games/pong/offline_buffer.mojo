@@ -112,22 +112,24 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
 
     var capacity: Int
     var n_frames: Int
-    var frames: UnsafePointer[UInt8, MutUntrackedOrigin]
-    var actions: UnsafePointer[UInt8, MutUntrackedOrigin]
-    var dones: UnsafePointer[UInt8, MutUntrackedOrigin]
+    var frames: Pointer[UInt8, MutUntrackedOrigin]
+    var actions: Pointer[UInt8, MutUntrackedOrigin]
+    var dones: Pointer[UInt8, MutUntrackedOrigin]
 
     def __init__(out self, capacity: Int):
         self.capacity = capacity
         self.n_frames = 0
-        self.frames = alloc[UInt8](capacity * PONG_FRAME_BYTES)
-        self.actions = alloc[UInt8](capacity)
-        self.dones = alloc[UInt8](capacity)
+        self.frames = alloc[UInt8](
+            {count = capacity * PONG_FRAME_BYTES}
+        ).unsafe_leak()
+        self.actions = alloc[UInt8]({count = capacity}).unsafe_leak()
+        self.dones = alloc[UInt8]({count = capacity}).unsafe_leak()
         # Zero-fill so partial writes don't leave garbage.
         for i in range(capacity * PONG_FRAME_BYTES):
-            self.frames[i] = 0
+            self.frames[unsafe_offset=i] = 0
         for i in range(capacity):
-            self.actions[i] = 0
-            self.dones[i] = 0
+            self.actions[unsafe_offset=i] = 0
+            self.dones[unsafe_offset=i] = 0
 
     def __init__(out self, *, deinit move: Self):
         self.capacity = move.capacity
@@ -135,15 +137,15 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
         self.frames = move.frames
         self.actions = move.actions
         self.dones = move.dones
-        # `deinit` skips move.__del__, so the buffers won't be double-freed.
+        # `deinit` skips move.__deinit__, so the buffers won't be double-freed.
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if Int(self.frames) != 0:
-            self.frames.free()
+            self.frames.unsafe_free()
         if Int(self.actions) != 0:
-            self.actions.free()
+            self.actions.unsafe_free()
         if Int(self.dones) != 0:
-            self.dones.free()
+            self.dones.unsafe_free()
 
     # ------------------------------------------------------------------
     # Append a step
@@ -151,7 +153,7 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
 
     def add_step_fp32(
         mut self,
-        obs: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        obs: Pointer[Scalar[DType.float32], MutAnyOrigin],
         action: Int,
         done: Bool,
     ):
@@ -163,14 +165,14 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
             return  # silently drop — caller should check capacity
         var base = self.n_frames * PONG_FRAME_BYTES
         for i in range(PONG_FRAME_BYTES):
-            var v = obs[i] * 255.0 + 0.5
+            var v = obs[unsafe_offset=i] * 255.0 + 0.5
             if v < 0.0:
                 v = 0.0
             elif v > 255.0:
                 v = 255.0
-            self.frames[base + i] = UInt8(Int(v))
-        self.actions[self.n_frames] = UInt8(action)
-        self.dones[self.n_frames] = UInt8(1) if done else UInt8(0)
+            self.frames[unsafe_offset=base + i] = UInt8(Int(v))
+        self.actions[unsafe_offset=self.n_frames] = UInt8(action)
+        self.dones[unsafe_offset=self.n_frames] = UInt8(1) if done else UInt8(0)
         self.n_frames += 1
 
     def add_step_fp32_list(
@@ -189,9 +191,9 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
                 v = 0.0
             elif v > 255.0:
                 v = 255.0
-            self.frames[base + i] = UInt8(Int(v))
-        self.actions[self.n_frames] = UInt8(action)
-        self.dones[self.n_frames] = UInt8(1) if done else UInt8(0)
+            self.frames[unsafe_offset=base + i] = UInt8(Int(v))
+        self.actions[unsafe_offset=self.n_frames] = UInt8(action)
+        self.dones[unsafe_offset=self.n_frames] = UInt8(1) if done else UInt8(0)
         self.n_frames += 1
 
     # ------------------------------------------------------------------
@@ -203,7 +205,7 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
         # Reject if any of dones[start .. start + T - 2] is set
         # (episode boundary mid-window). The last frame may be done.
         for i in range(start, start + T - 1):
-            if self.dones[i] != 0:
+            if self.dones[unsafe_offset=i] != 0:
                 return False
         return True
 
@@ -211,8 +213,8 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         """Sample B contiguous-T windows into a uint8 pixel buffer.
 
@@ -255,22 +257,22 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
                 )
 
             # Bulk uint8 copy of (T, C, H, W) frames for this window.
-            var pix_dst = pixels_out + b * sample_pix_stride
+            var pix_dst = pixels_out.unsafe_offset(b * sample_pix_stride)
             var pix_src_base = start * PONG_FRAME_BYTES
             for t in range(T):
                 var src_off = pix_src_base + t * PONG_FRAME_BYTES
                 var dst_off = t * PONG_FRAME_BYTES
                 for i in range(PONG_FRAME_BYTES):
-                    pix_dst[dst_off + i] = self.frames[src_off + i]
+                    pix_dst[unsafe_offset=dst_off + i] = self.frames[unsafe_offset=src_off + i]
 
             # Expand actions to one-hot for this window.
-            var act_dst = actions_out + b * sample_act_stride
+            var act_dst = actions_out.unsafe_offset(b * sample_act_stride)
             for t in range(T):
-                var a = Int(self.actions[start + t])
+                var a = Int(self.actions[unsafe_offset=start + t])
                 for k in range(PONG_NUM_ACTIONS):
-                    act_dst[t * PONG_NUM_ACTIONS + k] = 0.0
+                    act_dst[unsafe_offset=t * PONG_NUM_ACTIONS + k] = 0.0
                 if a >= 0 and a < PONG_NUM_ACTIONS:
-                    act_dst[t * PONG_NUM_ACTIONS + a] = 1.0
+                    act_dst[unsafe_offset=t * PONG_NUM_ACTIONS + a] = 1.0
 
     # ------------------------------------------------------------------
     # Persistence
@@ -301,15 +303,15 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
         # Frames
         var frame_bytes = self.n_frames * PONG_FRAME_BYTES
         for i in range(frame_bytes):
-            data.append(self.frames[i])
+            data.append(self.frames[unsafe_offset=i])
 
         # Actions
         for i in range(self.n_frames):
-            data.append(self.actions[i])
+            data.append(self.actions[unsafe_offset=i])
 
         # Dones
         for i in range(self.n_frames):
-            data.append(self.dones[i])
+            data.append(self.dones[unsafe_offset=i])
 
         with open(path, "w") as f:
             f.write_bytes(data)
@@ -361,12 +363,12 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
         var buf = PongOfflineBuffer(capacity=n_frames)
         var off = PONG_BUFFER_HEADER_BYTES
         for i in range(n_frames * PONG_FRAME_BYTES):
-            buf.frames[i] = data[off + i]
+            buf.frames[unsafe_offset=i] = data[off + i]
         off += n_frames * PONG_FRAME_BYTES
         for i in range(n_frames):
-            buf.actions[i] = data[off + i]
+            buf.actions[unsafe_offset=i] = data[off + i]
         off += n_frames
         for i in range(n_frames):
-            buf.dones[i] = data[off + i]
+            buf.dones[unsafe_offset=i] = data[off + i]
         buf.n_frames = n_frames
         return buf^

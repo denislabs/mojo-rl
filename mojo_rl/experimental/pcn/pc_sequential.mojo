@@ -27,7 +27,7 @@ For Phase 1 (CPU), no alignment padding between blocks. Add for GPU later.
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 from .predictive_model import PCBlockTrait
@@ -47,7 +47,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
     """
 
     comptime block_types = Self.BLOCKS
-    comptime N = Self.block_types.size
+    comptime N = Self.block_types.length
     comptime N_LATENTS = Self.N - 1
 
     comptime IN_DIM: Int = Self.block_types[0].IN_DIM
@@ -146,14 +146,14 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
         """Init: per-block `pc_init_params` (vendored
         `PCInitializer`, legacy-`nn`-free). Mirror of `initialize_params`."""
         for i in range(Self.PARAM_SIZE):
-            params.ptr[i] = Scalar[dtype](0)
+            params.ptr[unsafe_offset=i] = Scalar[dtype](0)
 
         comptime for i in range(Self.N):
             var li_p = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self._param_offset[i]()))
             Self.block_types[i].pc_init_params[INIT, dtype](li_p)
 
     # =========================================================================
@@ -214,12 +214,12 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 dtype,
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self._param_offset[i]()))
             var li_a = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_ptr + BATCH * Self._in_offset[i]())
+            ](a_ptr.unsafe_offset(BATCH * Self._in_offset[i]()))
 
             comptime if i == 0:
                 # Input: external x_in
@@ -243,7 +243,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                         dtype,
                         Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
-                    ](mu_ptr + BATCH * Self._out_offset[i]())
+                    ](mu_ptr.unsafe_offset(BATCH * Self._out_offset[i]()))
                     Self.block_types[i].predict[BATCH, dtype](
                         li_x, li_p, li_mu, li_a
                     )
@@ -253,7 +253,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](mu_ptr + BATCH * Self._out_offset[i - 1]())
+                ](mu_ptr.unsafe_offset(BATCH * Self._out_offset[i - 1]()))
                 var li_mu_out = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
@@ -268,12 +268,12 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](mu_ptr + BATCH * Self._out_offset[i - 1]())
+                ](mu_ptr.unsafe_offset(BATCH * Self._out_offset[i - 1]()))
                 var li_mu = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                     MutAnyOrigin,
-                ](mu_ptr + BATCH * Self._out_offset[i]())
+                ](mu_ptr.unsafe_offset(BATCH * Self._out_offset[i]()))
                 Self.block_types[i].predict[BATCH, dtype](
                     li_x_below, li_p, li_mu, li_a
                 )
@@ -330,19 +330,19 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 dtype,
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self._param_offset[i]()))
             var li_a = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_ptr + BATCH * Self._in_offset[i]())
+            ](a_ptr.unsafe_offset(BATCH * Self._in_offset[i]()))
 
             # Output: latents[..., latent_offset[i]..+OUT_DIM]  (= x_{i+1})
             var li_mu = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self._latent_offset[i]())
+            ](latents.ptr.unsafe_offset(BATCH * Self._latent_offset[i]()))
 
             comptime if i == 0:
                 var li_x = LayoutTensor[
@@ -359,7 +359,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self._latent_offset[i - 1]())
+                ](latents.ptr.unsafe_offset(BATCH * Self._latent_offset[i - 1]()))
                 Self.block_types[i].predict[BATCH, dtype](
                     li_x_below, li_p, li_mu, li_a
                 )
@@ -395,12 +395,12 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 dtype,
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self._param_offset[i]()))
             var li_a = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_buf.ptr + BATCH * Self._in_offset[i]())
+            ](a_buf.ptr.unsafe_offset(BATCH * Self._in_offset[i]()))
 
             comptime if i == 0:
                 var li_x = LayoutTensor[
@@ -422,7 +422,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                         dtype,
                         Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
-                    ](mu_buf.ptr + BATCH * Self._out_offset[i]())
+                    ](mu_buf.ptr.unsafe_offset(BATCH * Self._out_offset[i]()))
                     Self.block_types[i].predict_gpu[BATCH, dtype](
                         ctx, li_x, li_p, li_mu, li_a
                     )
@@ -431,7 +431,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](mu_buf.ptr + BATCH * Self._out_offset[i - 1]())
+                ](mu_buf.ptr.unsafe_offset(BATCH * Self._out_offset[i - 1]()))
                 var li_mu_out = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
@@ -445,12 +445,12 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](mu_buf.ptr + BATCH * Self._out_offset[i - 1]())
+                ](mu_buf.ptr.unsafe_offset(BATCH * Self._out_offset[i - 1]()))
                 var li_mu = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                     MutAnyOrigin,
-                ](mu_buf.ptr + BATCH * Self._out_offset[i]())
+                ](mu_buf.ptr.unsafe_offset(BATCH * Self._out_offset[i]()))
                 Self.block_types[i].predict_gpu[BATCH, dtype](
                     ctx, li_x_below, li_p, li_mu, li_a
                 )
@@ -479,17 +479,17 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 dtype,
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self._param_offset[i]()))
             var li_a = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_buf.ptr + BATCH * Self._in_offset[i]())
+            ](a_buf.ptr.unsafe_offset(BATCH * Self._in_offset[i]()))
             var li_mu = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self._latent_offset[i]())
+            ](latents.ptr.unsafe_offset(BATCH * Self._latent_offset[i]()))
 
             comptime if i == 0:
                 var li_x = LayoutTensor[
@@ -505,7 +505,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     dtype,
                     Layout.row_major(BATCH, Self.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self._latent_offset[i - 1]())
+                ](latents.ptr.unsafe_offset(BATCH * Self._latent_offset[i - 1]()))
                 Self.block_types[i].predict_gpu[BATCH, dtype](
                     ctx, li_x_below, li_p, li_mu, li_a
                 )

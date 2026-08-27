@@ -17,11 +17,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_contact_detection_fiel
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -31,8 +31,10 @@ from mojo_rl.physics3d.collision.contact_detection import (
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -45,25 +47,44 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON = 10  # total contacts across both envs
-comptime GOLD_CON = 3390.603547532484  # order-sensitive contact-record checksum
+# ⚠ REFRESHED 2026-08-05, from 3390.603547532484, and NOT on faith.
+#
+# The element-order fix made `full_parser` group geoms by body as MuJoCo
+# numbers them. Geom indices moved, so the EMISSION ORDER of these 10 contacts
+# moved with them, and a deliberately order-sensitive checksum is exactly what
+# notices that. `GOLD_NCON` did not move: no contact appeared or vanished.
+#
+# This gate could not tell "reordered correctly" from "broken", because the
+# legacy kernels it was frozen against no longer exist — a golden with no live
+# reference only ever reports CHANGE. So the question was answered elsewhere
+# before this number was touched:
+# `tests/physics3d/test_walker2d_contacts_vs_mujoco.mojo` replays these same
+# two poses against MuJoCo and compares contact by contact, MATCHED BY POSITION
+# rather than sorted, so a right-set-wrong-order result fails it. Measured:
+# ncon 6/6 and 4/4, ZERO position-matched body-pair mismatches, dist 1.2e-7,
+# pos 7.6e-8, normal 0.0 (float32 FK round-off). Our order IS MuJoCo's.
+#
+# Read that file first if this ever moves again — it is the reference this one
+# lacks, and refreshing this constant without it is laundering.
+comptime GOLD_CON = 9501.98150853524  # order-sensitive contact-record checksum
 
 
 def main() raises:
     print("--- contact detection fields GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
     # Poses: env0 slight floor penetration; env1 heavy penetration + bent legs.
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     var qcfg = List[List[Float64]]()
     var q0 = List[Float64](length=NQ, fill=0.0)
     q0[1] = 1.18  # rootz slightly below standing -> feet penetrate
@@ -81,19 +102,15 @@ def main() raises:
     d.upload_all(ctx)
 
     # Fields GPU: FK + detection.
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
     var ncon_total = 0
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -124,21 +141,17 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU == fields-GPU (count + records) ---
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             dc.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](dc, mf)
-    detect_contacts[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](dc, mf)
+    forward_kinematics["cpu", DTYPE, BATCH=BATCH](dc, mf)
+    detect_contacts["cpu", DTYPE, BATCH=BATCH](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):
-        var nc_g = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc_g = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         var nc_c = Int(
-            dc.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            dc.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         if nc_g != nc_c:
             raise Error("fields-CPU contact count differs from fields-GPU")

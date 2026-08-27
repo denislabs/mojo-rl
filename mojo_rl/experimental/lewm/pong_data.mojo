@@ -25,7 +25,7 @@ The trainer wraps `pix_ptr`/`act_ptr` in `TileTensor`s and calls train_step.
 
 from std.memory import alloc
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ...nn.constants import DT
 from .pixel_convert import u8_to_fp32_norm, u8_hwc_to_chw_norm
@@ -42,7 +42,7 @@ struct WindowSource[
     BUF: OfflineBuffer = PongOfflineBuffer,
     C: Int = 0,
     FRAME: Int = 0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     # `C`/`FRAME` are the per-frame channel count + side length, required ONLY
     # when `BUF.INPUT_LAYOUT_HWC` (e.g. PushT 3×224×224): then conversion is
     # `u8_hwc_to_chw_norm` (permute HWC→CHW + ÷255). CHW buffers (Pong) leave
@@ -52,10 +52,10 @@ struct WindowSource[
 
     var buf: Self.BUF
     # Host staging (always): sampled uint8 pixels + fp32 one-hot actions.
-    var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
-    var act_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var pix_u8_host: Pointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var act_host: Pointer[Scalar[DT], MutUntrackedOrigin]
     # CPU output: converted fp32 pixels (host). GPU: device buffers below.
-    var pix_fp32_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var pix_fp32_host: Pointer[Scalar[DT], MutUntrackedOrigin]
     var pix_u8_dev: Optional[DeviceBuffer[DType.uint8]]
     var pix_fp32_dev: Optional[DeviceBuffer[DT]]
     var act_dev: Optional[DeviceBuffer[DT]]
@@ -71,18 +71,24 @@ struct WindowSource[
                 " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
             )
         self.buf = buf^
-        self.pix_u8_host = untracked(alloc[Scalar[DType.uint8]](Self.NPIX))
-        self.act_host = untracked(alloc[Scalar[DT]](Self.NACT))
-        self.pix_fp32_host = untracked(alloc[Scalar[DT]](Self.NPIX))
+        self.pix_u8_host = untracked(
+            alloc[Scalar[DType.uint8]]({count = Self.NPIX}).unsafe_leak()
+        )
+        self.act_host = untracked(
+            alloc[Scalar[DT]]({count = Self.NACT}).unsafe_leak()
+        )
+        self.pix_fp32_host = untracked(
+            alloc[Scalar[DT]]({count = Self.NPIX}).unsafe_leak()
+        )
         self.pix_u8_dev = None
         self.pix_fp32_dev = None
         self.act_dev = None
         self.ctx = None
 
-    def __del__(deinit self):
-        self.pix_u8_host.free()
-        self.act_host.free()
-        self.pix_fp32_host.free()
+    def __deinit__(deinit self):
+        self.pix_u8_host.unsafe_free()
+        self.act_host.unsafe_free()
+        self.pix_fp32_host.unsafe_free()
 
     @staticmethod
     def make(
@@ -121,9 +127,9 @@ struct WindowSource[
             c.enqueue_copy(self.pix_u8_dev.value(), self.pix_u8_host)
             c.enqueue_copy(self.act_dev.value(), self.act_host)
             var src_u8 = rebind[
-                UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
+                Pointer[Scalar[DType.uint8], MutAnyOrigin]
             ](self.pix_u8_dev.value().unsafe_ptr())
-            var dst_fp32 = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var dst_fp32 = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.pix_fp32_dev.value().unsafe_ptr()
             )
             comptime if Self.BUF.INPUT_LAYOUT_HWC:
@@ -135,18 +141,18 @@ struct WindowSource[
                     src_u8, dst_fp32, ctx=self.ctx
                 )
 
-    def pix_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def pix_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
             return self.pix_fp32_host.as_unsafe_any_origin()
         else:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.pix_fp32_dev.value().unsafe_ptr()
             )
 
-    def act_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def act_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
             return self.act_host.as_unsafe_any_origin()
         else:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.act_dev.value().unsafe_ptr()
             )

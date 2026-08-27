@@ -31,7 +31,7 @@ default `ADT = DT` reproduces the legacy fp32 kernels byte-for-byte.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB

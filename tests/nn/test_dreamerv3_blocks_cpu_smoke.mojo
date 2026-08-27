@@ -113,7 +113,7 @@ def main() raises:
     # ── twohot bins + retnorm ──
     var binsT = Tensor.alloc(BINS)
     symexp_twohot_bins[BINS](binsT.data.unsafe_ptr(), Scalar[DT](-9.0))
-    var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var bins = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         binsT.data.unsafe_ptr()
     )
     var retnorm = PercentileNormalize.make(String("perc"))

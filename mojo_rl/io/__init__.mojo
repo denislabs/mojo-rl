@@ -5,4 +5,5 @@
 
 Currently provides:
 - ``hdf5``: a Mojo FFI over libhdf5 (used by the LeWM PushT loader).
+- ``serial``: raw-mode tty over libc (the SO-101 Feetech bus).
 """

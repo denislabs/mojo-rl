@@ -43,7 +43,7 @@ function (like `run_muzero_selfplay_2p_cpu`) rather than on the single-player
 
 from std.math import exp, log
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -81,18 +81,18 @@ from ..zero.evaluators import GPUEvaluator, RandomOpponent
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw scratch for optional unroll outputs + diag/staging host buffers
-    (the unroll's optional-output params are Optional[UnsafePointer])."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    (the unroll's optional-output params are Optional[Pointer])."""
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
-def _ai32(n: Int) -> UnsafePointer[Int32, MutAnyOrigin]:
-    return alloc[Int32](n).as_unsafe_any_origin()
+def _ai32(n: Int) -> Pointer[Int32, MutAnyOrigin]:
+    return alloc[Int32]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
-def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+def _aint(n: Int) -> Pointer[Int, MutAnyOrigin]:
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 @always_inline
@@ -175,9 +175,9 @@ def _mz_search_argmax[
     mut pred_a: PA,
     obs_dev: DeviceBuffer[DT],
     legal_dev: DeviceBuffer[DT],
-    mut h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mut legal_h: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mut actions_h: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut h_pol: Pointer[Scalar[DT], MutAnyOrigin],
+    mut legal_h: Pointer[Scalar[DT], MutAnyOrigin],
+    mut actions_h: Pointer[Scalar[DT], MutAnyOrigin],
     rng_seed: UInt32,
 ) raises:
     """Run one batched Gumbel search over the learned model on `N` root obs and
@@ -201,12 +201,12 @@ def _mz_search_argmax[
         var best = -1
         var bestv = Float64(-1e30)
         for a in range(ACT):
-            if Float64(legal_h[e * ACT + a]) > 0.5:
-                var v = Float64(h_pol[e * ACT + a])
+            if Float64(legal_h[unsafe_offset=e * ACT + a]) > 0.5:
+                var v = Float64(h_pol[unsafe_offset=e * ACT + a])
                 if best < 0 or v > bestv:
                     bestv = v
                     best = a
-        actions_h[e] = Scalar[DT](best if best >= 0 else 0)
+        actions_h[unsafe_offset=e] = Scalar[DT](best if best >= 0 else 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -328,9 +328,9 @@ def mz_arena_match[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h[e]) > 0.5:
+            if not eval_done[e] and Float64(done_h[unsafe_offset=e]) > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h[e])
+                var r = Float64(rew_h[unsafe_offset=e])
                 if r > 0.5:
                     eval_result[e] = 1 if a_turn else 2
                 elif r < -0.5:
@@ -360,7 +360,7 @@ def mz_arena_match[
         else:
             draws += 1
 
-    h_pol.free(); legal_h.free(); act_h.free(); done_h.free(); rew_h.free()
+    h_pol.unsafe_free(); legal_h.unsafe_free(); act_h.unsafe_free(); done_h.unsafe_free(); rew_h.unsafe_free()
     return MZArenaResult(wins=wins, draws=draws, losses=losses)
 
 
@@ -521,9 +521,9 @@ def _mz_eval_one_color[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h[e]) > 0.5:
+            if not eval_done[e] and Float64(done_h[unsafe_offset=e]) > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h[e])
+                var r = Float64(rew_h[unsafe_offset=e])
                 if r > 0.5:
                     eval_result[e] = 1 if agent_turn else 2
                 elif r < -0.5:
@@ -553,7 +553,7 @@ def _mz_eval_one_color[
         else:
             draws += 1
 
-    h_pol.free(); legal_h.free(); act_h.free(); done_h.free(); rew_h.free()
+    h_pol.unsafe_free(); legal_h.unsafe_free(); act_h.unsafe_free(); done_h.unsafe_free(); rew_h.unsafe_free()
     return MZArenaResult(wins=wins, draws=draws, losses=losses)
 
 
@@ -677,7 +677,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
     #                                  drifts away from a frozen best once
     #                                  promotions stall).
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     selfplay_open_plies: Int = 2,
     eval_open_plies: Int = 4,
     temperature_decay_steps: Int = 0,
@@ -948,11 +948,11 @@ def run_muzero_selfplay_arena_gumbel_2p[
             var ply = len(e_act[e])
             var tp = Scalar[DT](ply % 2)
             for j in range(OBS):
-                e_obs[e].append(obs_h[e * OBS + j])
+                e_obs[e].append(obs_h[unsafe_offset=e * OBS + j])
             for a in range(ACT):
-                e_pol[e].append(pol_h[e * ACT + a])
-                e_legal[e].append(legal_h[e * ACT + a])
-            e_val[e].append(val_h[e])
+                e_pol[e].append(pol_h[unsafe_offset=e * ACT + a])
+                e_legal[e].append(legal_h[unsafe_offset=e * ACT + a])
+            e_val[e].append(val_h[unsafe_offset=e])
             e_tp[e].append(tp)
 
             # Action selection: opening diversity → temp sampling → argmax,
@@ -962,14 +962,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
             if ply < selfplay_open_plies:
                 var n_legal = 0
                 for a in range(ACT):
-                    if Float64(legal_h[e * ACT + a]) > 0.5:
+                    if Float64(legal_h[unsafe_offset=e * ACT + a]) > 0.5:
                         n_legal += 1
                 if n_legal > 0:
                     rng = _xs(rng)
                     var pick = Int(rng % UInt64(n_legal))
                     var seen = 0
                     for a in range(ACT):
-                        if Float64(legal_h[e * ACT + a]) > 0.5:
+                        if Float64(legal_h[unsafe_offset=e * ACT + a]) > 0.5:
                             if seen == pick:
                                 a_sel = a
                                 break
@@ -999,7 +999,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     var wsum = 0.0
                     var w = List[Float64](capacity=ACT)
                     for a in range(ACT):
-                        var p = Float64(pol_h[e * ACT + a])
+                        var p = Float64(pol_h[unsafe_offset=e * ACT + a])
                         if eff_temp != 1.0 and p > 0.0:
                             p = exp(log(p) / eff_temp)
                         w.append(p)
@@ -1018,23 +1018,23 @@ def run_muzero_selfplay_arena_gumbel_2p[
             if a_sel < 0:
                 var bv = -1.0
                 for a in range(ACT):
-                    var p = Float64(pol_h[e * ACT + a])
+                    var p = Float64(pol_h[unsafe_offset=e * ACT + a])
                     if p > bv:
                         bv = p
                         a_sel = a
-            if a_sel < 0 or Float64(legal_h[e * ACT + a_sel]) <= 0.5:
+            if a_sel < 0 or Float64(legal_h[unsafe_offset=e * ACT + a_sel]) <= 0.5:
                 var bestl = -1
                 var bvl = -1.0e30
                 for a in range(ACT):
-                    if Float64(legal_h[e * ACT + a]) > 0.5:
-                        var p = Float64(pol_h[e * ACT + a])
+                    if Float64(legal_h[unsafe_offset=e * ACT + a]) > 0.5:
+                        var p = Float64(pol_h[unsafe_offset=e * ACT + a])
                         if bestl < 0 or p > bvl:
                             bvl = p
                             bestl = a
                 if bestl >= 0:
                     a_sel = bestl
             e_act[e].append(Scalar[DT](a_sel))
-            act_h[e] = Scalar[DT](a_sel)
+            act_h[unsafe_offset=e] = Scalar[DT](a_sel)
         ctx.enqueue_copy(act_dev, act_h)
 
         # ── 3. Step every game ──
@@ -1049,8 +1049,8 @@ def run_muzero_selfplay_arena_gumbel_2p[
         #      symmetry-augmented). Board games always terminate → truncated
         #      = False (every `done` is a real terminal). ──
         for e in range(N_ENVS):
-            e_rew[e].append(rew_h[e])
-            if Float64(done_h[e]) > 0.5:
+            e_rew[e].append(rew_h[unsafe_offset=e])
+            if Float64(done_h[unsafe_offset=e]) > 0.5:
                 total_games += 1
                 var Lg = len(e_act[e])
                 for s in range(NSYM):
@@ -1152,11 +1152,11 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 # sample owns this — it has both ν and z); board games leave it
                 # None → priorities stay uniform.
                 var samp_prio = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    Pointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
                     samp_prio = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                        Pointer[Scalar[DT], MutAnyOrigin]
                     ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, d_obs_seq, d_seq_slots, h_seq_slots,
@@ -1173,11 +1173,11 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 # written by the sample above, paper formula |ν − z|). Off →
                 # unweighted, priorities untouched (→ uniform sampling).
                 var isw_opt = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    Pointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
                     isw_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                        Pointer[Scalar[DT], MutAnyOrigin]
                     ](t_isw.unsafe_ptr().as_unsafe_any_origin())
                 comptime if USE_TRAIN_CUDA_GRAPH:
                     # Eager prologue (H2D) → captured device compute (forward +
@@ -1283,7 +1283,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     rpos_o.append(rpos[1])
                     var lm = rb.read_legal(rpos[0], rpos[1])
                     for a in range(ACT):
-                        h_reana_legal[e * ACT + a] = (
+                        h_reana_legal[unsafe_offset=e * ACT + a] = (
                             Scalar[DT](1.0) if lm[a] else Scalar[DT](0.0)
                         )
                 # obs gathered device→device straight into `d_reana`.
@@ -1319,8 +1319,8 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     # row out of the raw D2H staging mirror pol_h.
                     var pe = List[Scalar[DT]](length=ACT, fill=0)
                     for a in range(ACT):
-                        pe[a] = pol_h[e * ACT + a]
-                    rb.update_targets(rpos_e[e], rpos_o[e], pe, val_h[e])
+                        pe[a] = pol_h[unsafe_offset=e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pe, val_h[unsafe_offset=e])
 
         # ── 7. Arena gating: learner challenges best ──
         if (
@@ -1477,10 +1477,10 @@ def run_muzero_selfplay_arena_gumbel_2p[
         hard_copy["gpu", M=PRED](l_pred, pred, Optional(ctx))
         promotions += 1
 
-    l_parts.free(); h_diag_pred.free()
-    obs_h.free(); pol_h.free(); val_h.free(); legal_h.free()
-    done_h.free(); rew_h.free(); act_h.free()
-    h_reana_legal.free()
+    l_parts.unsafe_free(); h_diag_pred.unsafe_free()
+    obs_h.unsafe_free(); pol_h.unsafe_free(); val_h.unsafe_free(); legal_h.unsafe_free()
+    done_h.unsafe_free(); rew_h.unsafe_free(); act_h.unsafe_free()
+    h_reana_legal.unsafe_free()
     # keep the learner + target nets alive past the adapters' borrowed pointers.
     _ = l_rep^
     _ = l_dyn^

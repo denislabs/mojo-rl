@@ -24,7 +24,7 @@ from std.math import tanh
 from std.random import random_float64
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -40,6 +40,14 @@ from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
 from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.deep_agents.training.batched_env import BatchedEnv
+from mojo_rl.deep_agents.training.blocks.action_select import (
+    warmup_uniform_batched,
+)
+from .batched_acting import (
+    tdmpc2_select_action_batched,
+    tdmpc2_encode_batched,
+)
 from .callback import TDMPC2RolloutCallbackGPU
 from .metrics import TDMPC2Metrics
 
@@ -51,6 +59,21 @@ from .wm_graph import TDMPC2WMGraph, NQ
 from .wm_step import WMStep
 from .policy_step import PolicyStep
 from .td_target_step import TDTargetStep
+
+
+@always_inline
+def _crossed(prev: Int, now: Int, every: Int) -> Bool:
+    """True iff a multiple of `every` lies in `(prev, now]`.
+
+    The batched loop advances the env-step counter by N_ENVS per iteration, so
+    `step % every == 0` — the single-env test — fires only when `every` is a
+    multiple of N_ENVS and is SILENTLY NEVER TRUE otherwise (e.g.
+    `eval_every=10_000` with 32 envs: the counter goes 9984 → 10016 and no
+    eval ever runs). Testing for a crossed boundary instead makes every
+    cadence work at any N_ENVS."""
+    if every <= 0:
+        return False
+    return (now // every) > (prev // every)
 
 
 @fieldwise_init
@@ -73,7 +96,7 @@ struct TDMPC2Agent[
     NUM_ELITES: Int = 64,
     NUM_ITERS: Int = 6,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
@@ -171,6 +194,46 @@ struct TDMPC2Agent[
     var ctx: Optional[DeviceContext]
     var planner: Optional[Self.PlannerT]
     var temperature: Scalar[DT]
+
+    # ── acting scratch — allocated ONCE, reused every step ────────────────
+    # `select_action` / `select_action_mpc` run per ENV-STEP. Building their
+    # staging tensors per call meant ~5 (MPC-off) to ~13 (MPC) device/pinned
+    # buffer creations per action: at 1 M env-steps that is ~13 M calls into
+    # `enqueue_create_buffer`, which is both slow (~5 ms/action measured on
+    # Metal) and a known way to hammer the disk on CUDA.
+    var act_ob: Tensor
+    var act_z: Tensor
+    var act_pio: Tensor
+    var act_alp: Tensor
+    # MPC only: the rollout callback (9 device scratch tensors) + the selected
+    # action's device/host landing buffers.
+    #
+    # ⚠ `MpcCB` stores RAW POINTERS to this agent's own modules, so a cached
+    # one is invalidated by MOVING the agent (`var a = TDMPC2[...](...)`, or
+    # storing it in a struct field, both of which happen). `_mpc_ready` checks
+    # the cached callback still points at OUR `dynamics` and rebuilds if not —
+    # the alternative is a use-after-free that reads plausible garbage.
+    var mpc_cb: Optional[Self.MpcCB]
+    var mpc_out: Optional[DeviceBuffer[DT]]
+    var mpc_host: Optional[HostBuffer[DT]]
+
+    # ── train_step scratch — allocated ONCE, reused every gradient step ───
+    # The replay sample (b-major host) and its t-major transpose. Previously
+    # four Lists + five Tensors per step, each Tensor's `.upload()` creating a
+    # fresh device buffer.
+    var smp_ob: List[Scalar[DT]]
+    var smp_ab: List[Scalar[DT]]
+    var smp_rb: List[Scalar[DT]]
+    var smp_dbf: List[Scalar[DT]]
+    var tr_ot: Tensor
+    var tr_at: Tensor
+    var tr_rt: Tensor
+    var tr_dt: Tensor
+    var tr_td: Tensor
+    # Policy-update inputs: `tr_zpol` is PB x LATENT — 2 MB at the reference
+    # dims, and it was being recreated on every single gradient step.
+    var tr_obs_pb: Tensor
+    var tr_zpol: Tensor
 
     # ── comptime accessors: distinct online / target Q field by index ──────
     def get_q[i: Int](mut self) -> ref[MutAnyOrigin] Self.QNetT:
@@ -310,6 +373,18 @@ struct TDMPC2Agent[
             _n_diag=0,
             ctx=ctx,
             planner=planner^, temperature=temperature,
+            # Acting scratch starts EMPTY and is sized on first use: building
+            # it here would allocate MPC buffers for agents that never plan,
+            # and the callback in particular must not be built until the agent
+            # has stopped moving (see the field comment).
+            act_ob=Tensor(), act_z=Tensor(),
+            act_pio=Tensor(), act_alp=Tensor(),
+            mpc_cb=None, mpc_out=None, mpc_host=None,
+            smp_ob=List[Scalar[DT]](), smp_ab=List[Scalar[DT]](),
+            smp_rb=List[Scalar[DT]](), smp_dbf=List[Scalar[DT]](),
+            tr_ot=Tensor(), tr_at=Tensor(), tr_rt=Tensor(),
+            tr_dt=Tensor(), tr_td=Tensor(),
+            tr_obs_pb=Tensor(), tr_zpol=Tensor(),
         )
 
     # ── acting (MPC-off): a = π(encode(obs)) ───────────────────────────
@@ -323,28 +398,35 @@ struct TDMPC2Agent[
         comptime A = Self.ACT
         comptime LAT = Self.LATENT
         var ctx = self.ctx
-        # stage obs into a Tensor, upload on GPU.
-        var ob = Tensor.alloc(Self.OBS)
+        # Stage obs into the AGENT-OWNED tensor and refresh the device copy in
+        # place. `upload_resident` (not `upload`) is load-bearing: `upload`
+        # re-creates `self.dev` on every call, which is exactly the per-step
+        # buffer creation this scratch exists to avoid.
+        self.act_ob.ensure(Self.OBS)
         for d in range(Self.OBS):
-            ob.data[d] = obs[d]
+            self.act_ob.data[d] = obs[d]
         comptime if tg == "gpu":
-            ob.upload(ctx.value())
-        var z = Tensor.make[tg](LAT, ctx)
-        self.encoder.forward[tg, 1](TensorRefs[1](ob), z, ctx)
-        var pio = Tensor.make[tg](2 * A, ctx)
-        self.policy.forward[tg, 1](TensorRefs[1](z), pio, ctx)
+            self.act_ob.upload_resident(ctx.value())
+        self.act_z.ensure[tg](LAT, ctx)
+        self.encoder.forward[tg, 1](TensorRefs[1](self.act_ob), self.act_z, ctx)
+        self.act_pio.ensure[tg](2 * A, ctx)
+        self.policy.forward[tg, 1](
+            TensorRefs[1](self.act_z), self.act_pio, ctx
+        )
         if explore:
-            var alp = Tensor.make[tg](A + 1, ctx)
-            self.act_rsample.forward[tg, 1](TensorRefs[1](pio), alp, ctx)
+            self.act_alp.ensure[tg](A + 1, ctx)
+            self.act_rsample.forward[tg, 1](
+                TensorRefs[1](self.act_pio), self.act_alp, ctx
+            )
             comptime if tg == "gpu":
-                alp.download(ctx.value())
+                self.act_alp.download(ctx.value())
             for j in range(A):
-                act_out[j] = alp.data[j]
+                act_out[j] = self.act_alp.data[j]
         else:
             comptime if tg == "gpu":
-                pio.download(ctx.value())
+                self.act_pio.download(ctx.value())
             for j in range(A):
-                act_out[j] = tanh(pio.data[j]) * self.action_scale
+                act_out[j] = tanh(self.act_pio.data[j]) * self.action_scale
 
     def select_greedy_action(
         mut self,
@@ -362,9 +444,16 @@ struct TDMPC2Agent[
         ref obs: List[Scalar[DT]],
         mut act_out: List[Scalar[DT]],
         explore: Bool = True,
+        num_iters: Int = 0,
     ) raises:
         """MPC acting: plan in latent space via MPPIGPUBatched (single env).
-        GPU only."""
+        GPU only.
+
+        `num_iters` overrides the comptime MPPI iteration budget for THIS call
+        (0 = use `NUM_ITERS`). Cost is near-linear in it, and it is the only
+        budget knob that can vary at runtime — `NUM_SAMPLES` / `NUM_PI_TRAJS`
+        size the planner's device buffers at construction. Use it to trade plan
+        quality for frame rate in an interactive viewer."""
         comptime assert Self.target == "gpu", (
             "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
         )
@@ -372,39 +461,74 @@ struct TDMPC2Agent[
         comptime LAT = Self.LATENT
         var ctx = self.ctx.value()
 
-        var ob = Tensor.alloc(Self.OBS)
+        self._mpc_ready(ctx)
+
+        self.act_ob.ensure(Self.OBS)
         for d in range(Self.OBS):
-            ob.data[d] = obs[d]
-        ob.upload(ctx)
-        var z0 = Tensor.alloc_gpu(ctx, LAT)
+            self.act_ob.data[d] = obs[d]
+        self.act_ob.upload_resident(ctx)
+        self.act_z.ensure_gpu(ctx, LAT)
         self.encoder.forward[Self.target, 1](
-            TensorRefs[1](ob), z0, Optional(ctx)
+            TensorRefs[1](self.act_ob), self.act_z, Optional(ctx)
         )
 
-        # transient callback over self's modules (target Q for the bootstrap).
-        var cb = Self.MpcCB.make(
-            self.dynamics, self.reward, self.policy,
-            self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
-            self.action_scale, ctx,
-        )
-
-        var d_out = ctx.enqueue_create_buffer[DT](A)
-        var z0_lt = z0.lt["gpu", Layout.row_major(1, LAT)]()
+        var z0_lt = self.act_z.lt["gpu", Layout.row_major(1, LAT)]()
         var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
-            d_out
+            self.mpc_out.value()
         )
         self.planner.value().plan_gpu[Self.MpcCB](
-            ctx, cb, z0_lt, out_lt,
+            ctx, self.mpc_cb.value(), z0_lt, out_lt,
             gamma=Float64(self.gamma),
             temperature=Float64(self.temperature),
             action_scale=Float64(self.action_scale),
             deterministic=not explore,
+            num_iters=num_iters,
         )
-        var h = ctx.enqueue_create_host_buffer[DT](A)
-        ctx.enqueue_copy(h, d_out)
+        ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
         ctx.synchronize()
         for j in range(A):
-            act_out[j] = h.unsafe_ptr()[j]
+            act_out[j] = self.mpc_host.value().unsafe_ptr()[unsafe_offset=j]
+
+    @staticmethod
+    def _ensure_list(mut buf: List[Scalar[DT]], n: Int):
+        """Lazy-grow a host scratch List to >= n, zero-filled — the `List`
+        counterpart of `Tensor.ensure`. Reallocating only on growth is what
+        makes the per-step cost zero after the first call; every consumer
+        overwrites the whole span before reading it."""
+        if len(buf) < n:
+            buf = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+
+    def _mpc_ready(mut self, ctx: DeviceContext) raises:
+        """Build the MPC scratch on first use, and REBUILD the callback if this
+        agent has moved since.
+
+        `MpcCB` holds raw `MutUntrackedOrigin` pointers to `self.dynamics`,
+        `self.reward`, `self.policy` and the five target-Q heads. Those are
+        untracked by construction — the compiler will not complain when they go
+        stale — so a cached callback that survived a move of the agent would
+        plan against freed memory and return plausible-looking actions. The
+        guard compares the cached `dyn` pointer with a fresh one: same address
+        means the modules have not moved and the whole callback is still valid.
+        """
+        comptime A = Self.ACT
+        var fresh = rebind[Pointer[Self.DynT, MutUntrackedOrigin]](
+            Pointer(to=self.dynamics)
+        )
+        var stale = True
+        if self.mpc_cb:
+            stale = self.mpc_cb.value().dyn != fresh
+        if stale:
+            self.mpc_cb = Optional(
+                Self.MpcCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, ctx,
+                )
+            )
+        # These own their memory outright, so a move carries them along.
+        if not self.mpc_out:
+            self.mpc_out = Optional(ctx.enqueue_create_buffer[DT](A))
+            self.mpc_host = Optional(ctx.enqueue_create_host_buffer[DT](A))
 
     def record(
         mut self,
@@ -414,11 +538,11 @@ struct TDMPC2Agent[
         done: Scalar[DT],
     ) raises:
         self.replay.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=obs[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=obs[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=act[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=act[0])
             ),
             reward, done,
         )
@@ -448,7 +572,7 @@ struct TDMPC2Agent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises -> TDMPC2Metrics:
         var n = self._n_diag if self._n_diag > 0 else 1
@@ -499,7 +623,7 @@ struct TDMPC2Agent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)
@@ -596,10 +720,24 @@ struct TDMPC2Agent[
     def _td_dispatch(
         mut self,
         a: Int, b: Int,
-        mut obs: Tensor, mut rew: Tensor, mut done: Tensor, mut td: Tensor,
+        obs_p: Pointer[Tensor, MutUntrackedOrigin],
+        rew_p: Pointer[Tensor, MutUntrackedOrigin],
+        done_p: Pointer[Tensor, MutUntrackedOrigin],
+        td_p: Pointer[Tensor, MutUntrackedOrigin],
         gamma: Scalar[DT],
         ctx: Optional[DeviceContext],
     ) raises:
+        """⚠ The four tensors arrive as POINTERS, not `mut` refs, because the
+        caller now passes AGENT-OWNED scratch (`self.tr_ot`, …). A `mut Tensor`
+        parameter bound to a field of the same `self` this method already
+        borrows mutably is an exclusivity violation — the compiler rejects it.
+        Untracked pointers are the sanctioned escape (the same one the rollout
+        callback uses for its module handles); they stay valid for the call
+        because the caller's `self` outlives it."""
+        ref obs = obs_p[]
+        ref rew = rew_p[]
+        ref done = done_p[]
+        ref td = td_p[]
         comptime tg = Self.target
         comptime for i in range(NQ):
             comptime for j in range(NQ):
@@ -614,8 +752,11 @@ struct TDMPC2Agent[
     def _policy_dispatch(
         mut self,
         a: Int, b: Int,
-        mut zpol: Tensor,
+        zpol_p: Pointer[Tensor, MutUntrackedOrigin],
     ) raises -> Scalar[DT]:
+        """Pointer parameter for the same exclusivity reason as
+        `_td_dispatch` — the caller passes `self.tr_zpol`."""
+        ref zpol = zpol_p[]
         comptime tg = Self.target
         comptime for i in range(NQ):
             comptime for j in range(NQ):
@@ -642,31 +783,56 @@ struct TDMPC2Agent[
         comptime BB = Self.B
 
         # ── sample (b-major) + transpose to t-major (host) ─────────────
-        var ob = List[Scalar[DT]](length=BB * (HH + 1) * OBSD, fill=0)
-        var ab = List[Scalar[DT]](length=BB * HH * ACTD, fill=0)
-        var rb = List[Scalar[DT]](length=BB * HH, fill=0)
-        var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
+        # All of this is AGENT-OWNED scratch, sized once. It used to be
+        # allocated per train_step: four host Lists plus seven Tensors whose
+        # `.upload()` re-created its device buffer every call — ~7 device
+        # buffer creations per GRADIENT STEP, `tr_zpol` alone being
+        # PB x LATENT (2 MB at the reference dims). See the acting-scratch
+        # note on the fields: same footgun, hotter loop.
+        #
+        # ⚠ Caching is only sound because every one of these is FULLY
+        # overwritten before it is read. `ob/ab/rb/dbf` are filled by
+        # `sample_batch`, `tr_ot/at/rt/dt` by the transpose below,
+        # `tr_obs_pb` by the copy, `tr_zpol` by `encoder.forward`. `tr_td` is
+        # the exception — it is written on DEVICE by `_td_dispatch` — so it is
+        # explicitly re-zeroed each step, reproducing what `Tensor.alloc` did
+        # and keeping this change independent of what that step writes.
+        self._ensure_list(self.smp_ob, BB * (HH + 1) * OBSD)
+        self._ensure_list(self.smp_ab, BB * HH * ACTD)
+        self._ensure_list(self.smp_rb, BB * HH)
+        self._ensure_list(self.smp_dbf, BB * HH)
+        ref ob = self.smp_ob
+        ref ab = self.smp_ab
+        ref rb = self.smp_rb
+        ref dbf = self.smp_dbf
         self.replay.sample_batch[BB, HH](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ob[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ob[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ab[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ab[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=rb[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=rb[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=dbf[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=dbf[0])
             ),
         )
 
-        # t-major input Tensors.
-        var ot = Tensor.alloc((HH + 1) * BB * OBSD)
-        var at = Tensor.alloc(HH * BB * ACTD)
-        var rt = Tensor.alloc(HH * BB)
-        var dt = Tensor.alloc(HH * BB)
-        var td = Tensor.alloc(HH * BB)
+        # t-major input Tensors (agent-owned; host side sized here).
+        self.tr_ot.ensure((HH + 1) * BB * OBSD)
+        self.tr_at.ensure(HH * BB * ACTD)
+        self.tr_rt.ensure(HH * BB)
+        self.tr_dt.ensure(HH * BB)
+        self.tr_td.ensure(HH * BB)
+        ref ot = self.tr_ot
+        ref at = self.tr_at
+        ref rt = self.tr_rt
+        ref dt = self.tr_dt
+        ref td = self.tr_td
+        for i in range(HH * BB):
+            td.data[i] = Scalar[DT](0.0)   # see the note above
         for b in range(BB):
             for t in range(HH + 1):
                 for i in range(OBSD):
@@ -690,14 +856,24 @@ struct TDMPC2Agent[
 
         var ctx = self.ctx
         comptime if tg == "gpu":
-            ot.upload(ctx.value())
-            at.upload(ctx.value())
-            rt.upload(ctx.value())
-            dt.upload(ctx.value())
-            td.upload(ctx.value())
+            # `upload_resident`, NOT `upload`: the latter re-creates the device
+            # buffer on every call, which is the allocation this scratch exists
+            # to remove. Same bytes copied either way.
+            ot.upload_resident(ctx.value())
+            at.upload_resident(ctx.value())
+            rt.upload_resident(ctx.value())
+            dt.upload_resident(ctx.value())
+            td.upload_resident(ctx.value())
 
         # ── TD targets (stop-grad) ─────────────────────────────────────
-        self._td_dispatch(ta, tb, ot, rt, dt, td, self.gamma, ctx)
+        self._td_dispatch(
+            ta, tb,
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=ot)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=rt)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=dt)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=td)),
+            self.gamma, ctx,
+        )
 
         # ── WM BPTT ─────────────────────────────────────────────────────
         var wl = self.wm_step.step[tg](
@@ -714,14 +890,21 @@ struct TDMPC2Agent[
         self._last_wm = wl.total()
 
         # ── policy update on encoded latents ───────────────────────────
-        var zpol = Tensor.make[tg](Self.PB * LAT, ctx)
-        var obs_pb = Tensor.alloc(Self.PB * OBSD)
+        self.tr_zpol.ensure[tg](Self.PB * LAT, ctx)
+        self.tr_obs_pb.ensure(Self.PB * OBSD)
         for i in range(Self.PB * OBSD):
-            obs_pb.data[i] = ot.data[i]
+            self.tr_obs_pb.data[i] = ot.data[i]
         comptime if tg == "gpu":
-            obs_pb.upload(ctx.value())
-        self.encoder.forward[tg, Self.PB](TensorRefs[1](obs_pb), zpol, ctx)
-        self._last_pi = self._policy_dispatch(pa, pb, zpol)
+            self.tr_obs_pb.upload_resident(ctx.value())
+        self.encoder.forward[tg, Self.PB](
+            TensorRefs[1](self.tr_obs_pb), self.tr_zpol, ctx
+        )
+        self._last_pi = self._policy_dispatch(
+            pa, pb,
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](
+                Pointer(to=self.tr_zpol)
+            ),
+        )
 
         # ── Polyak (target ← online) ────────────────────────────────────
         self.qt0.polyak_from[tg](self.q0, self.tau, ctx)
@@ -758,11 +941,12 @@ struct TDMPC2Agent[
         self._n_diag += 1
         return True
 
-    # ── one-call training / eval drivers (single-env facade) ───────────────
-    # TD-MPC2 acts single-env (the MPPI planner + world-model BPTT are
-    # per-env), so unlike SAC there is no batched driver — these methods
-    # internalize the collect → record → train_step loop (+ warmup, periodic
-    # eval, logging, checkpoint) so examples don't hand-roll it.
+    # ── one-call training / eval drivers ──────────────────────────────────
+    # `train` / `evaluate` are the SINGLE-env pair (one `BoxContinuousActionEnv`
+    # stepped one action at a time); `train_batched` / `evaluate_batched` below
+    # are the N-env pair over the `BatchedEnv` trait. Both internalize the
+    # collect → record → train_step loop (+ warmup, periodic eval, logging,
+    # checkpoint) so examples don't hand-roll it.
 
     def evaluate[
         E: BoxContinuousActionEnv,
@@ -818,11 +1002,11 @@ struct TDMPC2Agent[
         train_every: Int = 1,
         print_every: Int = 20_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
-        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 2,
         eval_max_steps: Int = 1_000,
@@ -851,6 +1035,13 @@ struct TDMPC2Agent[
         comptime OBSD = Self.OBS
         comptime ACTD = Self.ACT
 
+        # Single-stream collection. Raises if this agent's replay already holds
+        # frames laid down by `train_batched` — those are interleaved N ways,
+        # and continuing to fill them one-env-at-a-time would make both halves
+        # of the ring unreadable. No-op for the normal (fresh, or repeatedly
+        # single-env) case.
+        self.replay.set_env_stride(1)
+
         var obs_l = List[Scalar[DT]](length=OBSD, fill=Scalar[DT](0.0))
         var act_l = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0.0))
         var obs = env.reset_obs_list()
@@ -871,7 +1062,7 @@ struct TDMPC2Agent[
             for d in range(OBSD):
                 obs_l[d] = Scalar[DT](obs[d])
 
-            if step < self.learning_starts:
+            if self.replay.count() < self.learning_starts:
                 for j in range(ACTD):
                     act_l[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
             else:
@@ -903,7 +1094,10 @@ struct TDMPC2Agent[
                 comptime if USE_MPC:
                     self.mpc_start_episode()
 
-            if step >= self.learning_starts and step % train_every == 0:
+            if (
+                self.replay.count() >= self.learning_starts
+                and step % train_every == 0
+            ):
                 _ = self.train_step()
 
             if diag_every > 0 and step > 0 and step % diag_every == 0:
@@ -972,3 +1166,540 @@ struct TDMPC2Agent[
         if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
             self.save_state(checkpoint_path)
         return best
+
+    # ── batched drivers (N_ENVS envs stepped in lockstep) ──────────────────
+
+    def evaluate_batched[
+        E: BatchedEnv,
+        EVAL_ENVS: Int,
+        USE_MPC: Bool = False,
+    ](
+        mut self,
+        mut env: E,
+        *,
+        max_steps: Int = 1_000,
+        rng_seed: UInt64 = 12345,
+    ) raises -> Scalar[DT]:
+        """Deterministic eval over `EVAL_ENVS` envs in lockstep → mean return.
+
+        The batched counterpart of `evaluate`. Runs `max_steps` iterations
+        (i.e. one episode per env for a fixed-horizon env) collecting every
+        COMPLETED episode return; envs that never finish contribute nothing,
+        so a `max_steps` shorter than the episode returns 0.0 rather than a
+        truncated return.
+
+        Greedy: `a = tanh(π(encode(obs)).mean)·scale` — no rsample noise — or
+        the MPPI plan with `deterministic=True` when `USE_MPC`."""
+        comptime tg = Self.target
+        comptime env_target = E.ENV_TARGET
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime LAT = Self.LATENT
+        comptime assert env_target == tg, (
+            "evaluate_batched: env target must equal the agent's train target"
+        )
+        comptime assert E.OBS_DIM == OBSD and E.ACT_DIM == ACTD, (
+            "evaluate_batched: env dims must match the agent's"
+        )
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", "MPC eval is GPU-only"
+
+        var ctx = self.ctx
+        var ob_scr = Tensor()
+        var z_scr = Tensor()
+        var pio_scr = Tensor()
+        var alp_scr = Tensor()
+
+        # A planner for EXACTLY this env count (the agent's own planner is
+        # N_ENVS=1). Built per eval call — eval is periodic, not hot.
+        comptime EV_BT = EVAL_ENVS * Self.MPC_BT
+        comptime EvPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, EVAL_ENVS,
+        ]
+        comptime EvCB = TDMPC2RolloutCallbackGPU[
+            Self.ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+            Self.VMAX, NQ, EV_BT, Self.QP,
+        ]
+        var ev_planner: Optional[EvPlannerT] = None
+        var ev_cb: Optional[EvCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            ev_planner = Optional(EvPlannerT(c))
+            ev_cb = Optional(
+                EvCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(EVAL_ENVS):
+                ev_planner.value().start_episode(e)
+
+        env.reset_batch[EVAL_ENVS](ctx=ctx, rng_seed=rng_seed)
+
+        var per_env = List[Scalar[DT]](
+            length=EVAL_ENVS, fill=Scalar[DT](0.0)
+        )
+        var rew_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var returns = List[Scalar[DT]]()
+
+        for s in range(max_steps):
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(EVAL_ENVS, OBSD), MutAnyOrigin
+            ](env.obs_ptr())
+            var act_lt = LayoutTensor[
+                DT, Layout.row_major(EVAL_ENVS, ACTD), MutAnyOrigin
+            ](env.action_ptr())
+
+            comptime if USE_MPC:
+                tdmpc2_encode_batched[
+                    Self.EncT, tg, EVAL_ENVS, OBSD, LAT
+                ](self.encoder, ob_scr, z_scr, obs_lt, ctx)
+                ev_planner.value().plan_gpu[EvCB](
+                    ctx.value(),
+                    ev_cb.value(),
+                    z_scr.lt["gpu", Layout.row_major(EVAL_ENVS, LAT)](),
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS * ACTD), MutAnyOrigin
+                    ](env.action_ptr()),
+                    gamma=Float64(self.gamma),
+                    temperature=Float64(self.temperature),
+                    action_scale=Float64(self.action_scale),
+                    deterministic=True,
+                    rng_base_seed=UInt32(rng_seed) + UInt32(s),
+                )
+            else:
+                tdmpc2_select_action_batched[
+                    Self.EncT, Self.PolicyT, tg, EVAL_ENVS, OBSD, ACTD, LAT
+                ](
+                    self.encoder, self.policy, self.act_rsample,
+                    ob_scr, z_scr, pio_scr, alp_scr,
+                    obs_lt, act_lt, self.action_scale, False, ctx,
+                )
+
+            env.step_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1)
+            )
+
+            # Reward/done must be read BEFORE selective_reset_batch — that
+            # call ZEROES the done slab as it resets the finished lanes.
+            comptime if env_target == "cpu":
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                for e in range(EVAL_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var rew_view = DeviceBuffer[DT](
+                    c, env.reward_ptr(), EVAL_ENVS, owning=False
+                )
+                var done_view = DeviceBuffer[DT](
+                    c, env.done_ptr(), EVAL_ENVS, owning=False
+                )
+                c.enqueue_copy(rew_h.unsafe_ptr(), rew_view)
+                c.enqueue_copy(done_h.unsafe_ptr(), done_view)
+                c.synchronize()
+
+            for e in range(EVAL_ENVS):
+                per_env[e] = per_env[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    returns.append(per_env[e])
+                    per_env[e] = Scalar[DT](0.0)
+                    comptime if USE_MPC:
+                        ev_planner.value().start_episode(e)
+
+            env.selective_reset_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1) * UInt64(7)
+            )
+
+        if len(returns) == 0:
+            return Scalar[DT](0.0)
+        var tot = Scalar[DT](0.0)
+        for i in range(len(returns)):
+            tot += returns[i]
+        return tot / Scalar[DT](len(returns))
+
+    def train_batched[
+        E: BatchedEnv,
+        N_ENVS: Int = 1,
+        L: Logger = NoOpLogger,
+        USE_MPC: Bool = False,
+        EE: BatchedEnv = E,
+        EVAL_ENVS: Int = N_ENVS,
+    ](
+        mut self,
+        mut env: E,
+        total_env_steps: Int,
+        *,
+        rng_seed: UInt64 = 42,
+        updates_per_step: Int = 1,
+        print_every: Int = 20_000,
+        verbose: Bool = True,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        base_step: Int = 0,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_max_steps: Int = 1_000,
+    ) raises -> Scalar[DT]:
+        """Multi-env TD-MPC2 training driver → best eval return.
+
+        The batched sibling of `train`. `total_env_steps` counts env-steps
+        ACROSS ALL ENVS (SAC's convention), so the loop runs
+        `total_env_steps // N_ENVS` iterations and each iteration advances
+        every env by one step. `learning_starts`, `print_every`,
+        `checkpoint_every` and `eval_every` are all in the same all-env unit.
+
+        What is genuinely batched, and what is not:
+          * env stepping — one `step_batch` for all N (the GPU physics win);
+          * acting — ONE `encoder → policy → rsample` pass over [N, ·], or
+            ONE `plan_gpu` that runs N × (NUM_SAMPLES + NUM_PI_TRAJS) MPPI
+            candidates in the same kernel grid;
+          * `train_step` — UNCHANGED. It samples B windows from replay, which
+            never depended on how the data was collected. `updates_per_step`
+            train steps run per ITERATION, so `updates_per_step=N_ENVS`
+            reproduces the single-env ratio of one update per env-step.
+
+        ⚠ Replay interleaving: N envs write into one ring round-robin, so a
+        contiguous window would hop between envs every frame. The driver sets
+        `replay.set_env_stride(N_ENVS)`, which makes the sampler walk lanes of
+        stride N — windows are then one env's real trajectory. That call is
+        NOT optional and there is no runtime signal if it is missing: the loss
+        still falls, on dynamics that never happened.
+
+        MPC (`USE_MPC=True`, GPU only) builds its own `MPPIGPUBatched` sized
+        for N_ENVS (the agent's own `planner` field is the N=1 one used by
+        `select_action_mpc`) and a matching rollout callback, both hoisted out
+        of the loop — `MpcCB.make` allocates device scratch, so making one per
+        step is the `enqueue_create_buffer`-in-a-hot-loop footgun.
+
+        Bootstrapping matches `train`: the replay stores `terminated`
+        (NATURAL termination), not `done`, so the value bootstrap survives
+        time-limit truncation.
+        """
+        comptime tg = Self.target
+        comptime env_target = E.ENV_TARGET
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime LAT = Self.LATENT
+
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime assert env_target == tg, (
+            "train_batched: env target must equal the agent's train target"
+            " (cross-target batched collection would D2H every obs)"
+        )
+        comptime assert E.OBS_DIM == OBSD and E.ACT_DIM == ACTD, (
+            "train_batched: env dims must match the agent's"
+        )
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", (
+                "train_batched[USE_MPC=True] requires target='gpu'"
+            )
+        # The strided sampler needs the ring wrap to preserve lane identity.
+        comptime assert Self.CAP % N_ENVS == 0, (
+            "train_batched: replay CAP must be a multiple of N_ENVS"
+        )
+
+        var ctx = self.ctx
+        # ⚠ Not optional — see the docstring. Without it every training window
+        # is a round-robin of N different envs.
+        self.replay.set_env_stride(N_ENVS)
+
+        var iters = total_env_steps // N_ENVS
+
+        # ── acting scratch (allocated ONCE) ──────────────────────────────
+        var ob_scr = Tensor()
+        var z_scr = Tensor()
+        var pio_scr = Tensor()
+        var alp_scr = Tensor()
+
+        # ── MPC: N_ENVS-wide planner + its rollout callback, hoisted ─────
+        comptime TR_BT = N_ENVS * Self.MPC_BT
+        comptime TrPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, N_ENVS,
+        ]
+        comptime TrCB = TDMPC2RolloutCallbackGPU[
+            Self.ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+            Self.VMAX, NQ, TR_BT, Self.QP,
+        ]
+        var planner: Optional[TrPlannerT] = None
+        var cb: Optional[TrCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            planner = Optional(TrPlannerT(c))
+            cb = Optional(
+                TrCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(N_ENVS):
+                planner.value().start_episode(e)
+
+        # ── host mirrors (the replay is a host ring) ─────────────────────
+        # `obs_h` holds the PREVIOUS iteration's post-reset observation — the
+        # `s` of the transition recorded after the next step.
+        var obs_h = List[Scalar[DT]](
+            length=N_ENVS * OBSD, fill=Scalar[DT](0.0)
+        )
+        var act_h = List[Scalar[DT]](
+            length=N_ENVS * ACTD, fill=Scalar[DT](0.0)
+        )
+        var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var term_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+
+        env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
+        self._dl_obs[E, N_ENVS](env, obs_h, ctx)
+
+        var per_env_ret = List[Scalar[DT]](
+            length=N_ENVS, fill=Scalar[DT](0.0)
+        )
+        var window = List[Scalar[DT]](length=100, fill=Scalar[DT](0.0))
+        var w_idx = 0
+        var w_cnt = 0
+        var best: Scalar[DT] = Scalar[DT](-1.0e30)
+        var t_start = perf_counter_ns()
+        var warm_off: UInt64 = 0
+        var warm_seed = rng_seed
+
+        for it in range(iters):
+            var step = it * N_ENVS          # env-steps done BEFORE this iter
+            var gstep = base_step + step    # cumulative, for logging
+
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, OBSD), MutAnyOrigin
+            ](env.obs_ptr())
+            var act_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACTD), MutAnyOrigin
+            ](env.action_ptr())
+
+            # ── 1. actions → env.action_ptr() ────────────────────────────
+            # ⚠ Gate on the REPLAY COUNT, not the per-call step counter:
+            # these drivers are called once per SEGMENT (a task's turn, or a
+            # ladder rung) and `step` restarts at 0 every call, so a step-based
+            # gate re-runs the random warmup at the top of every segment,
+            # quietly poisoning an agent that is already trained. On the first
+            # call the two are the same quantity; `replay.count()` is also
+            # exactly what `train_step` itself gates on.
+            if self.replay.count() < self.learning_starts:
+                warmup_uniform_batched[tg, N_ENVS, ACTD](
+                    act_lt, self.action_scale, ctx, warm_seed, warm_off
+                )
+            else:
+                comptime if USE_MPC:
+                    tdmpc2_encode_batched[
+                        Self.EncT, tg, N_ENVS, OBSD, LAT
+                    ](self.encoder, ob_scr, z_scr, obs_lt, ctx)
+                    planner.value().plan_gpu[TrCB](
+                        ctx.value(),
+                        cb.value(),
+                        z_scr.lt["gpu", Layout.row_major(N_ENVS, LAT)](),
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS * ACTD), MutAnyOrigin
+                        ](env.action_ptr()),
+                        gamma=Float64(self.gamma),
+                        temperature=Float64(self.temperature),
+                        action_scale=Float64(self.action_scale),
+                        deterministic=False,
+                        rng_base_seed=UInt32(rng_seed) + UInt32(it),
+                    )
+                else:
+                    tdmpc2_select_action_batched[
+                        Self.EncT, Self.PolicyT, tg, N_ENVS, OBSD, ACTD, LAT
+                    ](
+                        self.encoder, self.policy, self.act_rsample,
+                        ob_scr, z_scr, pio_scr, alp_scr,
+                        obs_lt, act_lt, self.action_scale, True, ctx,
+                    )
+
+            # ── 2. step every env ────────────────────────────────────────
+            env.step_batch[N_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(it + 1)
+            )
+
+            # ── 3. one D2H for the whole batch ───────────────────────────
+            # ⚠ BEFORE selective_reset_batch: that call zeroes the done slab.
+            comptime if env_target == "cpu":
+                var ap = env.action_ptr()
+                for k in range(N_ENVS * ACTD):
+                    act_h[k] = ap[unsafe_offset=k]
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                var tp = env.terminated_ptr()
+                for e in range(N_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+                    term_h[e] = tp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var act_view = DeviceBuffer[DT](
+                    c, env.action_ptr(), N_ENVS * ACTD, owning=False
+                )
+                var rew_view = DeviceBuffer[DT](
+                    c, env.reward_ptr(), N_ENVS, owning=False
+                )
+                var done_view = DeviceBuffer[DT](
+                    c, env.done_ptr(), N_ENVS, owning=False
+                )
+                var term_view = DeviceBuffer[DT](
+                    c, env.terminated_ptr(), N_ENVS, owning=False
+                )
+                c.enqueue_copy(act_h.unsafe_ptr(), act_view)
+                c.enqueue_copy(rew_h.unsafe_ptr(), rew_view)
+                c.enqueue_copy(done_h.unsafe_ptr(), done_view)
+                c.enqueue_copy(term_h.unsafe_ptr(), term_view)
+                # Also drains the obs copy enqueued at the END of the previous
+                # iteration, so `obs_h` is the post-reset obs of THIS step's
+                # `s`. One sync per iteration for N_ENVS env-steps.
+                c.synchronize()
+
+            # ── 4. record N transitions, lockstep (env 0 … N-1) ──────────
+            # This order IS the layout the strided sampler assumes.
+            for e in range(N_ENVS):
+                self.replay.record(
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=obs_h[e * OBSD])
+                    ),
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=act_h[e * ACTD])
+                    ),
+                    rew_h[e],
+                    term_h[e],
+                )
+                per_env_ret[e] = per_env_ret[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    window[w_idx] = per_env_ret[e]
+                    w_idx = (w_idx + 1) % 100
+                    if w_cnt < 100:
+                        w_cnt += 1
+                    per_env_ret[e] = Scalar[DT](0.0)
+                    comptime if USE_MPC:
+                        planner.value().start_episode(e)
+
+            # ── 5. reset the finished lanes, stage next `s` ──────────────
+            env.selective_reset_batch[N_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(it + 1) * UInt64(7)
+            )
+            self._stage_obs[E, N_ENVS](env, obs_h, ctx)
+
+            # ── 6. updates ───────────────────────────────────────────────
+            if self.replay.count() >= self.learning_starts:
+                for _ in range(updates_per_step):
+                    _ = self.train_step()
+
+            # ── 7. logging / checkpoint / eval (all in all-env steps) ────
+            var prev = step
+            var now = step + N_ENVS
+            if diag_every > 0 and _crossed(prev, now, diag_every):
+                self.flush_metrics_through_logger[L](logger, gstep)
+                if Bool(logger):
+                    var lg = logger.value()
+                    if w_cnt > 0:
+                        var s: Scalar[DT] = 0.0
+                        for k in range(w_cnt):
+                            s += window[k]
+                        lg[].log_scalar(
+                            "avg_reward", Float64(s / Scalar[DT](w_cnt)), gstep
+                        )
+                    lg[].flush()
+
+            if (
+                checkpoint_every > 0
+                and checkpoint_path.byte_length() > 0
+                and _crossed(prev, now, checkpoint_every)
+            ):
+                self.save_state(checkpoint_path)
+
+            var do_eval = (
+                eval_every > 0
+                and Bool(eval_env)
+                and _crossed(prev, now, eval_every)
+            )
+            if do_eval:
+                var ep = eval_env.value()
+                var ret = self.evaluate_batched[EE, EVAL_ENVS, USE_MPC](
+                    ep[],
+                    max_steps=eval_max_steps,
+                    rng_seed=rng_seed + UInt64(gstep),
+                )
+                if ret > best:
+                    best = ret
+                if Bool(logger):
+                    var lg = logger.value()
+                    lg[].log_scalar("eval/mean_return", Float64(ret), gstep)
+                    lg[].log_scalar("eval/best_return", Float64(best), gstep)
+                if verbose:
+                    var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+                    print(
+                        "  step", gstep, " eval_return=", ret, " best=", best,
+                        " wm=", self.last_wm_loss(),
+                        " pi=", self.last_pi_loss(),
+                        " (", elapsed, "s )",
+                    )
+            elif verbose and print_every > 0 and _crossed(
+                prev, now, print_every
+            ):
+                var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+                var mean_ret: Scalar[DT] = 0.0
+                if w_cnt > 0:
+                    for k in range(w_cnt):
+                        mean_ret += window[k]
+                    mean_ret /= Scalar[DT](w_cnt)
+                print(
+                    "  step", gstep, " mean_ret(100)=", mean_ret,
+                    " wm=", self.last_wm_loss(),
+                    " pi=", self.last_pi_loss(), " (", elapsed, "s )",
+                )
+
+        if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+            self.save_state(checkpoint_path)
+        return best
+
+    def _stage_obs[
+        E: BatchedEnv, N_ENVS: Int
+    ](
+        mut self,
+        mut env: E,
+        mut obs_h: List[Scalar[DT]],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """ENQUEUE the [N_ENVS, OBS] obs copy without synchronizing.
+
+        The copy lands before the next iteration's `synchronize`, and the host
+        does not read `obs_h` again until after it — so the batched loop pays
+        ONE sync per iteration instead of two. On the CPU target it is a plain
+        copy (the env slab is host memory and is about to be overwritten by
+        the next `step_batch`, so a snapshot is required, not a pointer)."""
+        comptime OBSD = Self.OBS
+        comptime if E.ENV_TARGET == "cpu":
+            var op = env.obs_ptr()
+            for k in range(N_ENVS * OBSD):
+                obs_h[k] = op[unsafe_offset=k]
+        else:
+            var c = ctx.value()
+            var obs_view = DeviceBuffer[DT](
+                c, env.obs_ptr(), N_ENVS * OBSD, owning=False
+            )
+            c.enqueue_copy(obs_h.unsafe_ptr(), obs_view)
+
+    def _dl_obs[
+        E: BatchedEnv, N_ENVS: Int
+    ](
+        mut self,
+        mut env: E,
+        mut obs_h: List[Scalar[DT]],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """`_stage_obs` + a synchronize — the initial post-reset fill, where
+        there is no later sync to piggyback on."""
+        self._stage_obs[E, N_ENVS](env, obs_h, ctx)
+        comptime if E.ENV_TARGET != "cpu":
+            ctx.value().synchronize()

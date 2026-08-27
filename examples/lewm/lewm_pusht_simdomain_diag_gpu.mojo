@@ -22,7 +22,7 @@ Run (NVIDIA; 224² WM):
 """
 
 from std.random import random_float64, seed as rng_seed
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -87,8 +87,8 @@ comptime Decoder = LeWMDecoderTrainer[
 ]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _rand_target() -> PushTAction[DT]:
@@ -127,7 +127,7 @@ def main() raises:
             var off = (b * T + t) * IMG_DIM
             sim_frame_chw_norm[IMG](
                 bp[0], bp[1], bp[2], ap[0], ap[1],
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     pix_host.unsafe_ptr()
                 ) + off,
             )
@@ -143,7 +143,7 @@ def main() raises:
     var act_t = TileTensor(_p(act_dev), row_major[B, ACTIN]())
     _ = wm.eval_loss(pix_t, act_t)
     ref emb_tensor = wm.graph.node_output["emb"]()
-    var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var emb_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         emb_tensor.dev.value().unsafe_ptr()
     )
     var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
@@ -155,7 +155,7 @@ def main() raises:
     ctx.synchronize()
     dec.recon_into(
         emb_t,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
     )
 
     # ── quantitative sim-domain recon MSE (patch space, host) ───────────
@@ -165,8 +165,8 @@ def main() raises:
     ctx.synchronize()
     patchify["cpu", DEC_BATCH, IN_CH, IMG, PATCH_D](
         None,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pix_host.unsafe_ptr()),
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](tgt_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](pix_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](tgt_host.unsafe_ptr()),
     )
     var sse: Float64 = 0.0
     comptime NEL = DEC_BATCH * N_Q * PATCH_PX
@@ -181,8 +181,8 @@ def main() raises:
     ctx.synchronize()
     unpatchify["cpu", N_VIZ, IN_CH, IMG, PATCH_D](
         None,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_img.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_img.unsafe_ptr()),
     )
     save_reconstruction_grid(
         String("/tmp/lewm_pusht_simdomain_recon.ppm"),

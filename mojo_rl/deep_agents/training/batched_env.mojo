@@ -14,10 +14,10 @@ over both via the **env-owns-buffers** pattern:
       def step_batch[BATCH](mut self, ctx, rng_seed) raises
       def selective_reset_batch[BATCH](mut self, ctx, rng_seed) raises
 
-      def obs_ptr(self)    -> UnsafePointer[Scalar[DT], MutAnyOrigin]
-      def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]
-      def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]
-      def done_ptr(self)   -> UnsafePointer[Scalar[DT], MutAnyOrigin]
+      def obs_ptr(self)    -> Pointer[Scalar[DT], MutAnyOrigin]
+      def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]
+      def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]
+      def done_ptr(self)   -> Pointer[Scalar[DT], MutAnyOrigin]
 
 The env adapter owns the obs/action/reward/done buffers (host List for
 CPU, DeviceBuffer for GPU). The driver writes actions into
@@ -40,9 +40,12 @@ reconstructs non-owning views via
 `DeviceBuffer[DT](ctx, env.obs_ptr(), N*OBS, owning=False)`.
 """
 
-from std.algorithm import parallelize
+# `parallelize` moved out of the stdlib into MAX in Mojo 1.0 — `std.algorithm`
+# keeps `vectorize` but no longer carries any parallel primitive. The async
+# runtime it is built on is still `std.runtime.asyncrt`.
+from max.algorithm import parallelize
 from std.gpu import thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -74,7 +77,7 @@ def _increment_env_rng_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait BatchedEnv(Movable & ImplicitlyDeletable):
+trait BatchedEnv(Movable & Deinitable):
     """Uniform N_ENVS-batched env surface. Env owns its
     obs/action/reward/done buffers internally; driver reads/writes via
     pointer accessors. Method comptime is `BATCH` (not `N_ENVS`) so
@@ -109,27 +112,27 @@ trait BatchedEnv(Movable & ImplicitlyDeletable):
 
     # ─── Pointer accessors — same return type for CPU and GPU ────────
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to the [N_ENVS, OBS_DIM] obs slab on ENV_TARGET."""
         ...
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to the [N_ENVS, ACT_DIM] action slab. Driver
         writes action into this slab before calling step_batch."""
         ...
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to the [N_ENVS] reward slab."""
         ...
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to the [N_ENVS] done slab (1.0 if done else 0.0).
 
         `done` = terminated OR truncated — drives episode tracking and
         selective reset."""
         ...
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to the [N_ENVS] terminated slab (1.0 iff natural
         termination, NOT time-limit truncation).
 
@@ -145,7 +148,7 @@ trait BatchedEnv(Movable & ImplicitlyDeletable):
 
 
 struct BatchedCpuEnv[
-    E: BoxContinuousActionEnv & Copyable & ImplicitlyDeletable,
+    E: BoxContinuousActionEnv & Copyable & Deinitable,
     N_ENVS: Int,
     OBS_DIM_: Int,
     ACT_DIM_: Int,
@@ -268,19 +271,19 @@ struct BatchedCpuEnv[
                         obs_list[d]
                     )
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._terminated.unsafe_ptr())
 
 
@@ -299,12 +302,12 @@ def _splitmix64(x: UInt64) -> UInt64:
 
 
 struct BatchedCpuDiscreteEnv[
-    E: BoxDiscreteActionEnv & Movable & ImplicitlyDeletable,
+    E: BoxDiscreteActionEnv & Movable & Deinitable,
     N_ENVS: Int,
     OBS_DIM_: Int,
 ](BatchedEnv):
     """Discrete-action sibling of `BatchedCpuEnv` that steps its N envs
-    in PARALLEL across CPU cores (`std.algorithm.parallelize`) — the
+    in PARALLEL across CPU cores (`max.algorithm.parallelize`) — the
     Stage-1 lever from `docs/ATARI_AUDIT.md` §2. Each env instance is
     fully independent, so per-env work items never share mutable state
     and the parallel step is bit-identical to a serial loop (validated
@@ -468,7 +471,7 @@ struct BatchedCpuDiscreteEnv[
                 # 28K-element List the `step_obs` path materializes).
                 var res = envs_ptr[unsafe_offset=env_idx].step_obs_into(
                     Int(action_ptr[unsafe_offset=env_idx]),
-                    rebind[UnsafePointer[Scalar[Self.E.dtype], MutAnyOrigin]](
+                    rebind[Pointer[Scalar[Self.E.dtype], MutAnyOrigin]](
                         obs_ptr.unsafe_offset(env_idx * Self.OBS_DIM)
                     ),
                 )
@@ -501,19 +504,19 @@ struct BatchedCpuDiscreteEnv[
         _ = ctx
         self._reset_lanes(rng_seed, only_done=True)
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._terminated.unsafe_ptr())
 
 
@@ -589,6 +592,31 @@ struct BatchedGpuEnv[
     var _env_rng_counter: DeviceBuffer[DType.uint64]
 
     def __init__(out self, ctx: DeviceContext) raises:
+        # ⚠ `OBS_DIM_` / `ACT_DIM_` are CALLER-SUPPLIED, so nothing stopped them
+        # disagreeing with the wrapped env's own dims — the same
+        # caller-passes-wrong-value bug this struct's docstring records for
+        # STATE_SIZE, left open for the other two. It bites harder than it
+        # looks: a driver's `E.ACT_DIM == trainer.ACT` check reads the
+        # WRAPPER's declared value, so a wrong one satisfies every assert and
+        # the env kernel then strides the action slab wrong — garbage actions,
+        # no error. (Wrapping a 1-action Pendulum as 2-action cost a debug
+        # cycle on the multi-task MPC gate.)
+        #
+        # ⚠ RUNTIME `raise`, NOT `comptime assert`: a `comptime assert` in this
+        # non-parametric `__init__` is silently never evaluated — verified by
+        # putting `comptime assert False` here and watching it compile clean.
+        # (The ones in `reset_batch[BATCH]` / `step_batch[BATCH]` do fire;
+        # those methods carry their own comptime params.) Construction runs
+        # once per env, so a runtime check costs nothing.
+        if Self.OBS_DIM_ != Self.E.OBS_DIM:
+            raise Error(
+                "BatchedGpuEnv: OBS_DIM_ must equal the wrapped env's OBS_DIM"
+            )
+        if Self.ACT_DIM_ != Self.E.ACTION_DIM:
+            raise Error(
+                "BatchedGpuEnv: ACT_DIM_ must equal the wrapped env's"
+                " ACTION_DIM"
+            )
         self._states = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.STATE_SIZE
         )
@@ -702,19 +730,19 @@ struct BatchedGpuEnv[
                 Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
             ](c, self._states, self._obs)
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         # `_terminated` is written by `step_kernel_gpu` (1.0 iff natural
         # termination, NOT truncation) — see GPUContinuousEnv.step_kernel_gpu.
         return mptr(self._terminated.unsafe_ptr())
@@ -894,17 +922,17 @@ struct BatchedGpuDiscreteEnv[
         comptime if Self._OBS_IS_STATE_PREFIX:
             self._seed_obs(c)
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._terminated.unsafe_ptr())

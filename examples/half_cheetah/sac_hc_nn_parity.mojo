@@ -83,7 +83,7 @@ def main() raises:
     seed(42)
     print("\nStorage SAC run  →", SELFCHECK_CSV)
     var logger = CsvLogger(file_path=SELFCHECK_CSV, buffer_size=64)
-    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+    var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
     var agent = SACAgent[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],

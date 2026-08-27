@@ -13,7 +13,7 @@ evaluations:
 
 STORAGE migration (Stage 5): the public CPU/GPU functions take owning storage
 `Tensor`s (CPU `.data` host loop / GPU `.lt` device views) instead of raw
-`UnsafePointer`s. The `rebind` / raw-ptr usage that survives is confined to
+`Pointer`s. The `rebind` / raw-ptr usage that survives is confined to
 inside the GPU kernel (the GPU ABI), matching SAC/DDPG/TD3.
 
 CleanRL natural-termination semantics: bootstrap is DROPPED on `term=1` (real
@@ -22,7 +22,7 @@ envs (`term ≡ 0`) the mask reduces to `r + γ·(combined − α·lp)`.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -127,14 +127,14 @@ def _redq_ensemble_target_kernel[
 
     var combined: Scalar[DT] = Scalar[DT](0.0)
     comptime if MODE == REDQ_TARGET_MIN:
-        var first_idx = Int(subset_idxs.ptr[0])
-        var v0 = q_next.ptr[first_idx * BATCH + b]
+        var first_idx = Int(subset_idxs.ptr[unsafe_offset=0])
+        var v0 = q_next.ptr[unsafe_offset=first_idx * BATCH + b]
         if v0 != v0:
             v0 = Scalar[DT](0.0)
         combined = v0
         comptime for m in range(1, N_MIN):
-            var idx = Int(subset_idxs.ptr[m])
-            var v = q_next.ptr[idx * BATCH + b]
+            var idx = Int(subset_idxs.ptr[unsafe_offset=m])
+            var v = q_next.ptr[unsafe_offset=idx * BATCH + b]
             if v != v:
                 v = Scalar[DT](0.0)
             if v < combined:
@@ -142,18 +142,18 @@ def _redq_ensemble_target_kernel[
     comptime if MODE == REDQ_TARGET_AVE:
         var acc: Scalar[DT] = Scalar[DT](0.0)
         comptime for n in range(N_ENSEMBLE):
-            var v = q_next.ptr[n * BATCH + b]
+            var v = q_next.ptr[unsafe_offset=n * BATCH + b]
             if v != v:
                 v = Scalar[DT](0.0)
             acc = acc + v
         combined = acc / Scalar[DT](N_ENSEMBLE)
 
-    var lp = log_probs.ptr[b]
-    var nonterm = Scalar[DT](1.0) - terms.ptr[b]
-    var tgt = rewards.ptr[b] + nonterm * gamma * (combined - alpha * lp)
+    var lp = log_probs.ptr[unsafe_offset=b]
+    var nonterm = Scalar[DT](1.0) - terms.ptr[unsafe_offset=b]
+    var tgt = rewards.ptr[unsafe_offset=b] + nonterm * gamma * (combined - alpha * lp)
     if tgt != tgt:
         tgt = Scalar[DT](0.0)
-    out_y.ptr[b] = tgt
+    out_y.ptr[unsafe_offset=b] = tgt
 
 
 # =============================================================================
@@ -182,7 +182,7 @@ def _redq_ensemble_target_dev_kernel[
         DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin,
     ],
     gamma: Scalar[DT],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """As `_redq_ensemble_target_kernel` but α read from `alpha_ptr[0]`."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -191,14 +191,14 @@ def _redq_ensemble_target_dev_kernel[
 
     var combined: Scalar[DT] = Scalar[DT](0.0)
     comptime if MODE == REDQ_TARGET_MIN:
-        var first_idx = Int(subset_idxs.ptr[0])
-        var v0 = q_next.ptr[first_idx * BATCH + b]
+        var first_idx = Int(subset_idxs.ptr[unsafe_offset=0])
+        var v0 = q_next.ptr[unsafe_offset=first_idx * BATCH + b]
         if v0 != v0:
             v0 = Scalar[DT](0.0)
         combined = v0
         comptime for m in range(1, N_MIN):
-            var idx = Int(subset_idxs.ptr[m])
-            var v = q_next.ptr[idx * BATCH + b]
+            var idx = Int(subset_idxs.ptr[unsafe_offset=m])
+            var v = q_next.ptr[unsafe_offset=idx * BATCH + b]
             if v != v:
                 v = Scalar[DT](0.0)
             if v < combined:
@@ -206,18 +206,18 @@ def _redq_ensemble_target_dev_kernel[
     comptime if MODE == REDQ_TARGET_AVE:
         var acc: Scalar[DT] = Scalar[DT](0.0)
         comptime for n in range(N_ENSEMBLE):
-            var v = q_next.ptr[n * BATCH + b]
+            var v = q_next.ptr[unsafe_offset=n * BATCH + b]
             if v != v:
                 v = Scalar[DT](0.0)
             acc = acc + v
         combined = acc / Scalar[DT](N_ENSEMBLE)
 
-    var lp = log_probs.ptr[b]
-    var nonterm = Scalar[DT](1.0) - terms.ptr[b]
-    var tgt = rewards.ptr[b] + nonterm * gamma * (combined - alpha_ptr[0] * lp)
+    var lp = log_probs.ptr[unsafe_offset=b]
+    var nonterm = Scalar[DT](1.0) - terms.ptr[unsafe_offset=b]
+    var tgt = rewards.ptr[unsafe_offset=b] + nonterm * gamma * (combined - alpha_ptr[unsafe_offset=0] * lp)
     if tgt != tgt:
         tgt = Scalar[DT](0.0)
-    out_y.ptr[b] = tgt
+    out_y.ptr[unsafe_offset=b] = tgt
 
 
 def redq_ensemble_target_gpu_dev[
@@ -236,7 +236,7 @@ def redq_ensemble_target_gpu_dev[
         DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin,
     ],
     gamma: Scalar[DT],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     """Device-alpha variant of `redq_ensemble_target_gpu` — alpha read from
     `alpha_ptr[0]` (REDQ's on-device temperature). CUDA-graph capturable."""

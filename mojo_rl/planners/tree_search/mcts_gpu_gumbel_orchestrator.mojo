@@ -38,7 +38,7 @@ Output buffers exposed:
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -250,7 +250,10 @@ def gz_extract_actions_temp_kernel[
     ],
     ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    temp_threshold: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    temp_threshold: Int32,
     rng_seed: Scalar[DType.uint32],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ) where dtype.is_floating_point():
@@ -302,7 +305,7 @@ def gz_extract_actions_temp_kernel[
         return
 
     # ── 2. Branch on move_count ────────────────────────────────────────
-    if move_count < temp_threshold:
+    if move_count < Int(temp_threshold):
         # Sample ∝ policies_out (legal-masked).
         var philox = PhiloxRandom(
             seed=(UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15))
@@ -366,7 +369,7 @@ struct GumbelGPUMCTS[
     # nodes carry true game-state payloads and expansion is `env.step_gpu`
     # instead of the dynamics net. 0 (default) allocates no AZ buffers.
     STATE_SIZE: Int = 0,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU Gumbel-MCTS orchestrator (shared across EZv2 + MuZero).
 
     Comptime params:
@@ -1121,7 +1124,7 @@ struct GumbelGPUMCTS[
             lm_t,
             ep_steps,
             act_t,
-            TEMP_THRESHOLD,
+            Int32(TEMP_THRESHOLD),
             rng_seed,
             Scalar[dtype](temp_min),
             grid_dim=(Self.ENV_BLOCKS,),

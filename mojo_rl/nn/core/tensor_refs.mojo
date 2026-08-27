@@ -1,11 +1,11 @@
 """TensorRefs[N, o] — a SOUND borrowing N-pack of `Tensor` refs.
 
 Holds `Pointer[Tensor, o]` (the SAFE, origin-tracked pointer), NOT a raw
-`UnsafePointer`. The origin `o` is inferred from the inputs via `ref [Self.o]`
+`Pointer`. The origin `o` is inferred from the inputs via `ref [Self.o]`
 and threaded through, so the lifetime checker keeps the referenced storages
 alive across the call (the `NameList`/`Span` pattern from the Mojo manual).
 
-WHY (proven the hard way): storing `UnsafePointer(to=param)` captures a
+WHY (proven the hard way): storing `Pointer(to=param)` captures a
 FRAME-FRAGILE address — correct in the constructing frame, garbage once the
 pack is passed to a leaf and the element is used after an intervening op. The
 safe `Pointer` + threaded origin fixes it. This is the ONE origin parameter the
@@ -32,6 +32,12 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
     activation dtype here so a packed ref points at `TensorImpl[bf16]` storages."""
 
     var ptrs: InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
+
+    def __init__(out self, *, copy: Self):
+        # Mojo 1.0: `Array` is no longer `ImplicitlyCopyable`, so the compiler
+        # can no longer synthesise this struct's copy constructor. Written out
+        # explicitly to keep the previous (implicitly copyable) semantics.
+        self.ptrs = copy.ptrs.copy()
 
     def __init__(out self, ref[Self.o] tensor: TensorImpl[Self.ADT]) raises:
         comptime assert Self.N == 1, "of1 requires N == 1"

@@ -34,7 +34,7 @@ unchanged. `pendulum_sac_nn_driver.mojo` continues to produce
 `mean_ret(10) = -169.04118` at 30k steps seed=42.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -59,7 +59,7 @@ struct SACAgent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `SACTrainer` + off-policy drivers.
 
     Comptime parameters mirror `SACTrainer` one-for-one. Dimensions
@@ -154,12 +154,13 @@ struct SACAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
-        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        base_step: Int = 0,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
         eval_max_steps: Int = 1_000,
@@ -170,8 +171,8 @@ struct SACAgent[
         `N_ENVS` as a comptime method param when wrapping multiple envs,
         e.g. `agent.train[N_ENVS=8](env, total_timesteps=200_000)`.
 
-        Pass `logger=Optional[UnsafePointer[L, MutAnyOrigin]](
-        UnsafePointer(to=my_logger))` to stream `env/mean_ret` and
+        Pass `logger=Optional[Pointer[L, MutAnyOrigin]](
+        Pointer(to=my_logger))` to stream `env/mean_ret` and
         `env/ep_count` at `print_every` cadence. Default `L=NoOpLogger`
         comptime-elides the emit path entirely (bit-identical no-op).
 
@@ -198,6 +199,15 @@ struct SACAgent[
         between iterations (D2H of live params on the GPU target) so it is
         CUDA-graph-capture safe. The replay buffer / episode tracker are NOT
         persisted, so resume starts with a fresh replay.
+
+        ⚠ `checkpoint_path` is OVERWRITTEN on every save, so a single `train`
+        call cannot produce a LADDER of policies (random → expert). To build
+        one, call `train` in segments on the SAME agent — the nets, replay
+        buffer and optimizer state all persist across calls — saving to a
+        step-stamped path after each, and pass `base_step` so the logger's
+        x-axis stays continuous instead of restarting per segment. That is
+        what `examples/dm_control/sac_dm_walker_training_gpu.mojo` does; the
+        ladder is what the FB dataset is collected from.
 
         Set `eval_every > 0` AND pass an ISOLATED `eval_env` (a second
         `BatchedGpuEnv[..., EVAL_ENVS, ...]` — NOT the training env) to run a
@@ -243,6 +253,7 @@ struct SACAgent[
             episode_sync_every=episode_sync_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            base_step=base_step,
             eval_env=eval_env,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
@@ -259,7 +270,7 @@ struct SACAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -408,11 +419,11 @@ struct SACAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> SACMetrics:
         """Drain trainer accumulators into a SACMetrics bundle. Pass an
-        UnsafePointer-to-logger to also emit one `log_scalar` call per
+        Pointer-to-logger to also emit one `log_scalar` call per
         metric field. Resets accumulators on every call."""
         return self.trainer.flush_metrics[L](logger, step)
 

@@ -23,15 +23,17 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_newton_solve_fields.mo
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
+    AsStatic,
     Data,
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
@@ -78,6 +80,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MAX,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -90,20 +93,69 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 2
 comptime N_ROUNDS = 3
 
+# Regenerated 2026-07-31 for the pyramidal contact-force RECORD fix. The
+# PYRAMIDAL contacts checksum moved ~2.17x; ELLIPTIC did not move at all, and
+# neither did any qacc/state checksum. That split is the whole story:
+# `mju_decodePyramid` makes a contact's normal force the SUM of its four edge
+# forces, and `newton_solve.mojo` was halving it. The solver works in edge
+# forces, so qacc was never affected — only the write-back to
+# `Data.contacts[CONTACT_IDX_FORCE_*]`, which the elliptic path writes
+# directly and therefore never had wrong. Verified by causation: with the
+# whole change stashed, this file's PYRAMIDAL qacc checksum is byte-identical
+# to the new one.
+#
+# ⚠ While regenerating, the OLD PYRAMIDAL qacc golden turned out to be STALE
+# on its own: baseline harvests 5707.35403907299 against a frozen
+# 5707.129324436188 (4e-5). It had drifted at some earlier commit and survived
+# because GOLD_RTOL is 1e-3. Refreshed here too, but note that a 1e-3 pin on a
+# self-golden cannot tell drift from a bug.
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 # ELLIPTIC leg
+# Re-harvested 2026-07-30: joint limits and dry-friction dofs became ROWS of
+# the elliptic Newton system instead of PGS post-passes run after it
+# (constraints/scalar_rows.mojo). env1 carries one limit row, so its qacc
+# moved — QC 12520.206316679716 -> 11196.676875680685 (10.6%),
+# CON 514215.5317506604 -> 506352.9110841565 (1.5%).
+# This golden is a checksum, not ground truth, so it cannot say which value is
+# right. What can: with `distal` tightened to +-0.5 rad so the limit fires
+# during contact, worst |d qvel| vs MuJoCo over the finger rollout went
+# 1.0237321068510568 -> 0.0261971900712797 (39x closer). Do NOT re-harvest this
+# leg again without an equivalent MuJoCo-anchored measurement.
+#
+# ⚠ CON REFRESHED 2026-08-05 (506352.9110841565 -> 512613.3470442081, 1.2%),
+# QC UNTOUCHED — and that split is the entire justification. The element-order
+# fix made `full_parser` group geoms by body as MuJoCo numbers them, so the
+# EMISSION ORDER of the contact records changed while the physics did not:
+#   * `GOLD_NCON_ELL` unchanged at 36 — no contact appeared or vanished;
+#   * `GOLD_QC_ELL` PASSES, and it is checked BEFORE the contact fingerprint —
+#     the solved accelerations are identical, so this is bookkeeping, not
+#     dynamics;
+#   * walker2d has NO condim-1 geoms (all 8 are condim 3, measured), so
+#     neither the frictionless-row fix nor the frictionless record guard can
+#     reach this model — element order is the only remaining cause;
+#   * and the order itself is now MuJoCo's, verified in
+#     `test_walker2d_contacts_vs_mujoco.mojo` on this same model: zero
+#     position-matched body-pair mismatches, dist 1.2e-7, pos 7.6e-8.
+# The instruction above still stands — do not re-harvest the ELLIPTIC leg's QC
+# without a MuJoCo-anchored measurement. This refresh does not touch QC.
 comptime GOLD_NCON_ELL = 36  # total contacts summed over the 3 rounds
-comptime GOLD_QC_ELL = 12520.206316679716
-comptime GOLD_CON_ELL = 514215.5317506604
-# PYRAMIDAL leg
+comptime GOLD_QC_ELL = 11196.676875680685
+comptime GOLD_CON_ELL = 512613.3470442081
+# PYRAMIDAL leg — unchanged goldens. This leg already carried its limit rows in
+# the Newton system, and the model has no frictionloss, so the same change
+# moved it by only ~4e-5 relative (float32 reassociation in the refactored
+# `primal.mojo` expressions), well inside GOLD_RTOL.
 comptime GOLD_NCON_PYR = 36
-comptime GOLD_QC_PYR = 5707.129324436188
-comptime GOLD_CON_PYR = 178360.48161778972
+comptime GOLD_QC_PYR = 5707.35403907299
+# Refreshed with the ELLIPTIC leg above and for the same reason — record ORDER,
+# not dynamics. QC untouched here too.
+comptime GOLD_CON_PYR = 393472.4222483421
 
 
 def _check(name: String, got: Float64, gold: Float64) raises:
@@ -119,33 +171,18 @@ def _check(name: String, got: Float64, gold: Float64) raises:
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, MD, BATCH],
+    mut mf: Model[DTYPE, MD],
+    mut scratch: DynamicsScratch[DTYPE, MD, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
     up to the constraint seam (order verbatim)."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -156,29 +193,26 @@ def _fields_prep[
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
-        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+            _armature_env[DTYPE](e, AsStatic[MD](), joints_v, M_v)
+        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
-                e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
+            _fnet_passive_env[DTYPE](
+                e, AsStatic[MD](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env[DTYPE, NV, BATCH](
-                e, qacc_ws_v, qacc_v, qacc_c_v
+            _qacc_writeback_env[DTYPE](
+                e, AsStatic[MD](), qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
         ctx.value().enqueue_function[
@@ -189,12 +223,9 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
         ](
@@ -207,7 +238,7 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](
@@ -218,10 +249,7 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
 def _find_limited_joint(
@@ -279,11 +307,11 @@ def run_leg[
     print("--- Newton solve leg:", leg, "(BATCH=", BATCH, ")")
 
     # === Model ===
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     var lim = _find_limited_joint(mf.joints.data)
     var lim_qpos_adr = lim[0]
     var lim_rmax = lim[1]
@@ -335,18 +363,15 @@ def run_leg[
         raise Error("env 1 has no violated joint limit — limit rows vacuous")
     print("  limit rows: env0", nlim0, " env1", nlim1, "(non-vacuous)")
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch = ContactScratch[DTYPE, MD, BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
 
     var ncon_total = 0
     for rnd in range(N_ROUNDS):
         _fields_prep["gpu"](d, mf, scratch, ctx)
-        solve_newton[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            CONE_T, BATCH,
-        ](d, mf, scratch, cscratch, ctx)
+        solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d, mf, scratch, cscratch, ctx)
 
         d.meta.download(ctx)
         var ncon_rnd = 0
@@ -409,11 +434,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     """Single-source CPU path smoke: fields-CPU Newton solve close to
     fields-GPU (iterative solver -> loose cross-target tolerance)."""
     print("--- Newton solve fields-CPU vs fields-GPU smoke (ELLIPTIC)")
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -432,23 +457,17 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch = ContactScratch[DTYPE, MD, BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
-    var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch_c = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var scratch_c = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch_c = ContactScratch[DTYPE, MD, BATCH]()
 
     _fields_prep["gpu"](d, mf, scratch, ctx)
-    solve_newton[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        ConeType.ELLIPTIC, BATCH,
-    ](d, mf, scratch, cscratch, ctx)
+    solve_newton["gpu", DTYPE, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH](d, mf, scratch, cscratch, ctx)
     _fields_prep["cpu"](dc, mf, scratch_c, None)
-    solve_newton[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        ConeType.ELLIPTIC, BATCH,
-    ](dc, mf, scratch_c, cscratch_c, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH](dc, mf, scratch_c, cscratch_c, None)
 
     scratch.qacc_constrained.download(ctx)
     var worst = Float64(0)

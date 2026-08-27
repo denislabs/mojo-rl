@@ -15,7 +15,7 @@ Run:
     pixi run -e apple mojo run -I . tests/arcade_games/test_pong_pixel_batched_obs.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT

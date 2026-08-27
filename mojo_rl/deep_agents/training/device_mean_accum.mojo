@@ -22,8 +22,8 @@ this only on GPU.
 """
 
 from std.gpu import thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE
@@ -38,24 +38,24 @@ from mojo_rl.nn.core.target_storage import require_ctx
 
 
 def _mean_reduce_add_kernel[N: Int](
-    data: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    data: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        my_sum += data[k]
+        my_sum += data[unsafe_offset=k]
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = acc[0] + total[0] / Scalar[DT](N)
-        acc[1] = acc[1] + Scalar[DT](1.0)
+        acc[unsafe_offset=0] = acc[unsafe_offset=0] + total[0] / Scalar[DT](N)
+        acc[unsafe_offset=1] = acc[unsafe_offset=1] + Scalar[DT](1.0)
 
 
 def _mean_abs_reduce_add_kernel[N: Int](
-    data: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    data: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """Same as `_mean_reduce_add_kernel` but reduces `mean(|data[k]|)`. Used
     for `mean_abs_action` (sum of absolute action components / N)."""
@@ -63,19 +63,19 @@ def _mean_abs_reduce_add_kernel[N: Int](
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        var v = data[k]
+        var v = data[unsafe_offset=k]
         my_sum += v if v >= Scalar[DT](0.0) else -v
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = acc[0] + total[0] / Scalar[DT](N)
-        acc[1] = acc[1] + Scalar[DT](1.0)
+        acc[unsafe_offset=0] = acc[unsafe_offset=0] + total[0] / Scalar[DT](N)
+        acc[unsafe_offset=1] = acc[unsafe_offset=1] + Scalar[DT](1.0)
 
 
 def _mean_abs_diff_reduce_add_kernel[N: Int](
-    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """Reduces `mean(|a[k] - b[k]|)` over `[N]`. Used for `mean_td_error`
     (the Bellman residual magnitude |Q − y|)."""
@@ -83,19 +83,19 @@ def _mean_abs_diff_reduce_add_kernel[N: Int](
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        var d = a[k] - b[k]
+        var d = a[unsafe_offset=k] - b[unsafe_offset=k]
         my_sum += d if d >= Scalar[DT](0.0) else -d
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = acc[0] + total[0] / Scalar[DT](N)
-        acc[1] = acc[1] + Scalar[DT](1.0)
+        acc[unsafe_offset=0] = acc[unsafe_offset=0] + total[0] / Scalar[DT](N)
+        acc[unsafe_offset=1] = acc[unsafe_offset=1] + Scalar[DT](1.0)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Storage-native variants: take `LayoutTensor` views (built from a storage
 # `Tensor`'s device buffer via `lt` / direct buffer access) instead of raw
-# `UnsafePointer`s — so the storage SAC path never touches `unsafe_ptr`. Same
+# `Pointer`s — so the storage SAC path never touches `unsafe_ptr`. Same
 # reduction as the raw-ptr kernels above.
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -154,7 +154,7 @@ def _mean_abs_diff_reduce_add_kernel_lt[N: Int](
         acc[1] = acc[1] + Scalar[DT](1.0)
 
 
-struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
+struct DeviceMeanAccum(Copyable, Movable, Deinitable):
     """Running mean of a `[N]` buffer over a flush window.
 
     GPU: a `[2]` device buffer `[sum_of_batch_means, count]`. CPU mirror:
@@ -191,7 +191,7 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
 
     def accumulate_gpu[N: Int](
         mut self,
-        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        data_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Reduce `data_ptr[0..N]` on device and fold `(mean, +1)` into the
         accumulator. No D2H — capture-safe. `data_ptr` must be a device
@@ -207,7 +207,7 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
 
     def accumulate_gpu_abs[N: Int](
         mut self,
-        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        data_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Like `accumulate_gpu` but folds `mean(|data[k]|)` (for
         `mean_abs_action`)."""
@@ -251,8 +251,8 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
 
     def accumulate_gpu_abs_diff[N: Int](
         mut self,
-        a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        b_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        a_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        b_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Folds `mean(|a[k] - b[k]|)` (for `mean_td_error`)."""
         var ctx = self.ctx.value()
@@ -282,13 +282,13 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
 
     def accumulate_cpu[N: Int](
         mut self,
-        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        data_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ):
         """Host-scalar mirror of `accumulate_gpu` (sum/N into the running
         host accumulators)."""
         var s: Scalar[DT] = 0.0
         for i in range(N):
-            s += data_ptr[i]
+            s += data_ptr[unsafe_offset=i]
         self._acc_sum += s / Scalar[DT](N)
         self._acc_n += 1
 
@@ -305,8 +305,8 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
             var h = ctx.enqueue_create_host_buffer[DT](2)
             ctx.enqueue_copy(h, self.acc_dev.value())
             ctx.synchronize()
-            var s = h.unsafe_ptr()[0]
-            var n = h.unsafe_ptr()[1]
+            var s = h.unsafe_ptr()[unsafe_offset=0]
+            var n = h.unsafe_ptr()[unsafe_offset=1]
             if n == Scalar[DT](0.0):
                 return Scalar[DT](0.0)
             return s / n

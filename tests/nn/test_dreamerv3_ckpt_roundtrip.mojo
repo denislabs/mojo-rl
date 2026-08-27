@@ -13,7 +13,7 @@ Run: pixi run mojo run -I . tests/nn/test_dreamerv3_ckpt_roundtrip.mojo
 from std.math import isfinite
 from std.random import random_float64
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -87,8 +87,8 @@ def main() raises:
         for j in range(ACT):
             act[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
         tr.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](act),
             Scalar[DT](random_float64() - 0.5),
             Scalar[DT](1.0) if (s % 17 == 16) else Scalar[DT](0.0),
         )
@@ -115,8 +115,8 @@ def main() raises:
         for j in range(ACT):
             act[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
         fresh.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](act),
             Scalar[DT](random_float64() - 0.5),
             Scalar[DT](0.0),
         )

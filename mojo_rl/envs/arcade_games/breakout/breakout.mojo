@@ -33,7 +33,7 @@ from mojo_rl.render import Renderer2D, SDL_Color, Vec2, Camera, black, white
 from std.random.philox import Random as PhiloxRandom
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype
 from ..core.colors import SCREEN_W, SCREEN_H
@@ -105,7 +105,7 @@ struct BreakoutEnv[DTYPE: DType](
     var done: Bool
     var _rng_counter: UInt32
 
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -277,13 +277,13 @@ struct BreakoutEnv[DTYPE: DType](
     # Trait methods
     # ========================================================================
 
-    def get_state(self) -> ArcadeGameState:
+    def get_state(mut self) -> ArcadeGameState:
         return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
     def close(mut self):
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> ArcadeGameAction:
@@ -329,7 +329,7 @@ struct BreakoutEnv[DTYPE: DType](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -473,7 +473,7 @@ struct BreakoutEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -678,7 +678,11 @@ struct BreakoutEnv[DTYPE: DType](
         states[i, S_STEP_COUNT] = steps
 
         rewards[i] = reward
-        dones[i] = Scalar[gpu_dtype](is_done)
+        # `is_done` is a Bool, and `Scalar[float](Bool)` no longer compiles —
+        # SIMD's Intable constructor now requires an integral dtype.
+        dones[i] = Scalar[gpu_dtype](1.0) if is_done else Scalar[gpu_dtype](
+            0.0
+        )
 
     @staticmethod
     @always_inline
@@ -774,10 +778,10 @@ struct BreakoutEnv[DTYPE: DType](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         var states = LayoutTensor[
@@ -972,10 +976,10 @@ struct BreakoutEnv[DTYPE: DType](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         var states = LayoutTensor[

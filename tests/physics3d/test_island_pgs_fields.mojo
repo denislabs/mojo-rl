@@ -21,15 +21,17 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_island_pgs_fields.mojo
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
+    AsStatic,
     Data,
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import (
@@ -75,6 +77,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -87,6 +90,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime CONE = ConeType.ELLIPTIC
 comptime BATCH = 2
 
@@ -94,28 +98,18 @@ comptime BATCH = 2
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, MD, BATCH],
+    mut mf: Model[DTYPE, MD],
+    mut scratch: DynamicsScratch[DTYPE, MD, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection up to the constraint seam (copied
     from test_cg_fields / test_newton_solve_fields)."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -126,29 +120,26 @@ def _fields_prep[
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
-        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+            _armature_env[DTYPE](e, AsStatic[MD](), joints_v, M_v)
+        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
-                e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
+            _fnet_passive_env[DTYPE](
+                e, AsStatic[MD](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env[DTYPE, NV, BATCH](
-                e, qacc_ws_v, qacc_v, qacc_c_v
+            _qacc_writeback_env[DTYPE](
+                e, AsStatic[MD](), qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
         ctx.value().enqueue_function[
@@ -159,12 +150,9 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
         ](
@@ -177,7 +165,7 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](
@@ -188,12 +176,10 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
-def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DTYPE, MD, BATCH]):
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -209,11 +195,9 @@ def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
             d.qfrc.data[e * NV + i] = qf
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
-]:
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+def _load_model(ctx: DeviceContext) raises -> Model[DTYPE, MD]:
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -221,33 +205,27 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: fields-GPU IslandPGS vs fields-GPU PGS (ELLIPTIC)")
     var mf = _load_model(ctx)
 
-    var dP = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dI = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dP = Data[DTYPE, MD, BATCH]()
+    var dI = Data[DTYPE, MD, BATCH]()
     _init_state(dP)
     _init_state(dI)
     dP.upload_all(ctx)
     dI.upload_all(ctx)
 
-    var scP = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csP = ContactScratch[DTYPE, NV, MC, BATCH]()
-    var scI = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csI = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var scP = DynamicsScratch[DTYPE, MD, BATCH]()
+    var csP = ContactScratch[DTYPE, MD, BATCH]()
+    var scI = DynamicsScratch[DTYPE, MD, BATCH]()
+    var csI = ContactScratch[DTYPE, MD, BATCH]()
     scP.upload_all(ctx)
     csP.upload_all(ctx)
     scI.upload_all(ctx)
     csI.upload_all(ctx)
 
     _fields_prep["gpu"](dP, mf, scP, ctx)
-    solve_contacts[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        CONE, BATCH,
-    ](dP, mf, scP, csP, ctx)
+    solve_contacts["gpu", DTYPE, CONE_TYPE=CONE, BATCH=BATCH](dP, mf, scP, csP, ctx)
 
     _fields_prep["gpu"](dI, mf, scI, ctx)
-    solve_island_pgs[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        CONE, BATCH,
-    ](dI, mf, scI, csI, ctx)
+    solve_island_pgs["gpu", DTYPE, CONE_TYPE=CONE, BATCH=BATCH](dI, mf, scI, csI, ctx)
 
     dP.meta.download(ctx)
     var ncon = 0
@@ -278,30 +256,24 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: fields-CPU IslandPGS vs fields-GPU IslandPGS")
     var mf = _load_model(ctx)
 
-    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     _init_state(dg)
     _init_state(dc)
     dg.upload_all(ctx)
 
-    var scg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csg = ContactScratch[DTYPE, NV, MC, BATCH]()
-    var scc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csc = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var scg = DynamicsScratch[DTYPE, MD, BATCH]()
+    var csg = ContactScratch[DTYPE, MD, BATCH]()
+    var scc = DynamicsScratch[DTYPE, MD, BATCH]()
+    var csc = ContactScratch[DTYPE, MD, BATCH]()
     scg.upload_all(ctx)
     csg.upload_all(ctx)
 
     _fields_prep["gpu"](dg, mf, scg, ctx)
-    solve_island_pgs[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        CONE, BATCH,
-    ](dg, mf, scg, csg, ctx)
+    solve_island_pgs["gpu", DTYPE, CONE_TYPE=CONE, BATCH=BATCH](dg, mf, scg, csg, ctx)
 
     _fields_prep["cpu"](dc, mf, scc, None)
-    solve_island_pgs[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        CONE, BATCH,
-    ](dc, mf, scc, csc, None)
+    solve_island_pgs["cpu", DTYPE, CONE_TYPE=CONE, BATCH=BATCH](dc, mf, scc, csc, None)
 
     scg.qacc_constrained.download(ctx)
     var worst = Float64(0)
@@ -320,14 +292,11 @@ def part_b(ctx: DeviceContext) raises:
 def part_c(ctx: DeviceContext) raises:
     print("--- Part C: EulerIntegrator[SOLVER='island'] step (finite)")
     var mf = _load_model(ctx)
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     _init_state(d)
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-        SOLVER="island",
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, CONE, BATCH, SOLVER="island"]()
     integ.prepare_gpu(ctx)
     integ.step["gpu", True](d, mf, ctx)
 

@@ -1,0 +1,179 @@
+---
+title: 3D physics engine
+description: A MuJoCo-inspired generalized-coordinates engine — CRBA, RNE, constraint solvers, collision detection and MJCF loading.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+import Demo from '~/components/Demo.astro';
+import Physics3dPipeline from '~/components/diagrams/Physics3dPipeline.astro';
+
+<Maturity level="stable" note="Contact-rich models and elliptic friction cones are the least settled areas." />
+
+`mojo_rl.physics3d` simulates articulated rigid bodies in **generalized
+coordinates** — joint space rather than world space — following MuJoCo's design.
+Models are defined in MJCF XML, the same format MuJoCo reads.
+
+Working in joint space means constraints like "this hinge has one degree of
+freedom" are structural rather than enforced numerically. A hinge joint *is* one
+number.
+
+<Demo name="ant" caption="Ant" meta="27 obs · 8 actuators · contact-rich" />
+
+
+<Papers label="Papers">
+	<Paper
+		title="MuJoCo: A physics engine for model-based control"
+		authors="Todorov, Erez, Tassa"
+		year="2012"
+		url="https://ieeexplore.ieee.org/document/6386109"
+		venue="IROS 2012"
+		note="The engine this one follows."
+	/>
+	<Paper
+		title="Rigid Body Dynamics Algorithms"
+		authors="Featherstone"
+		year="2008"
+		url="https://link.springer.com/book/10.1007/978-1-4899-7560-7"
+		venue="Springer"
+		note="CRBA, RNE and the generalized-coordinate formulation."
+	/>
+</Papers>
+
+## The pipeline
+
+<Physics3dPipeline />
+
+State lives in `Data` (`qpos`, `qvel`, `xpos`, `xquat`, …); the compile-time
+model description lives in `Model`. Both are in `physics3d/fields/`.
+
+## Dynamics
+
+| Component | Algorithm |
+|---|---|
+| Mass matrix | **CRBA** — composite rigid-body algorithm |
+| Bias forces | **RNE** — recursive Newton-Euler (Coriolis, centrifugal, gravity) |
+| Jacobians | contact and site Jacobians via `cdof` |
+| Factorization | `LDL` and `LU` |
+| Inverse inertia | `invweight` |
+| Subtree quantities | `subtree_com` |
+| Fluid forces | `fluid_forces` — Swimmer's viscous drag |
+| Derivatives | `qderiv` — velocity derivatives for implicit integration |
+
+## Integrators
+
+```
+euler · implicit · rk4
+```
+
+| Integrator | Notes |
+|---|---|
+| `euler` | semi-implicit; HalfCheetah and Ant use it |
+| `implicit` / `implicitfast` | stiffer systems, larger stable timestep |
+| `rk4` | fourth-order; Humanoid uses it — needs extra workspace |
+
+The choice is a compile-time constant on the environment config, along with any
+workspace it requires:
+
+```mojo
+comptime INTEGRATOR: StaticString = "euler"
+comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[NQ, NV]()
+```
+
+## Constraint solvers
+
+| Solver | Character |
+|---|---|
+| `newton_solve` | Newton — the production default; fast convergence |
+| `cg_solve` | conjugate gradient |
+| `island_pgs_solve` | projected Gauss-Seidel over contact islands |
+| `primal` · `qcqp` · `cholesky` | supporting formulations |
+
+Contacts are solved with a friction cone that is either **pyramidal**
+(linearised, cheap) or **elliptic** (exact, expensive).
+
+:::caution[Two friction-cone traps]
+**Never pass `cone=ELLIPTIC` with the RK4 integrator.** The serial solver's
+local-memory requirement exceeds what the GPU provides, and it fails at launch.
+Use `PYRAMIDAL`.
+
+**Elliptic contacts carry a known drift.** The Metaworld-style Sawyer model uses
+an elliptic cone and exposed a pre-existing divergence in elliptic-contact
+handling — see [3D manipulation](/environments/3d-manipulation/). Pyramidal is
+the well-tested path.
+:::
+
+## Collision
+
+| Stage | Implementation |
+|---|---|
+| Broadphase | `broadphase_sap` — sweep and prune |
+| Narrowphase | `collision_primitives`, `contact_detection` |
+| Convex | `convex_hull`, `gjk`, `gjk_support` |
+
+Primitive pairs (sphere, capsule, box, plane) have closed-form tests; general
+convex shapes fall back to GJK. Meshes are reduced to convex hulls at model-build
+time.
+
+## MJCF loading
+
+```mojo
+from mojo_rl.physics3d.parser import ModelDefFromXML
+```
+
+The parser reads MJCF XML into a flat model description, which is then built
+into the compile-time `Model`. It handles `inertiafromgeom`, `settotalmass` and
+mesh hulls, so the standard Gymnasium MuJoCo model files load directly.
+
+That is the reason the [environments](/environments/3d-locomotion/) are faithful
+ports rather than reimplementations — they read the same XML the reference does.
+
+## GPU execution
+
+The whole pipeline runs batched on GPU, one environment per block for the
+contact solve. Environment state is laid out per field rather than as an
+interleaved slab, which is what lets each kernel read exactly the arrays it
+needs.
+
+:::caution[The blocked Newton kernel is not CUDA-graph-safe]
+Solving pyramidal contacts uses a one-environment-per-block kernel with
+cooperative shared memory. Capturing it in a CUDA graph produces illegal
+addresses on replay.
+
+The GPU examples therefore set `USE_ENV_CUDA_GRAPH=False` while keeping
+`USE_TRAIN_CUDA_GRAPH=True`. Eager environment stepping is correct; only the
+per-step launch collapse is lost.
+:::
+
+:::caution[Apple: no heavy blocked kernels]
+The blocked solver kernels hard-crash on Metal. The fields path is correct on
+CUDA — and notably, the *legacy* slab-based GPU path miscomputed there, which is
+part of why it was retired.
+:::
+
+## Model specification
+
+Models can be built from MJCF or declared directly. The compile-time pieces:
+
+```
+model/
+├── model_def.mojo          ModelDefLike — the model description trait
+├── inertia_from_geom.mojo  derive inertia from geometry
+└── model_renderer.mojo     3D rendering adapter
+```
+
+Joint types are `FREE` (7 DOF), `BALL` (4), `SLIDE` (1) and `HINGE` (1).
+
+:::note[The package README predates the sunset]
+`mojo_rl/physics3d/README.md` describes a `types.mojo` holding
+`Model[NQ,NV,NBODY,NJOINT]` and a 17-file `model/` directory. That layout was
+retired: `Model` and `Data` now live in `physics3d/fields/`, `types.mojo` is 29
+lines, and `model/` holds three files. Trust the source.
+:::
+
+## Next
+
+- [2D physics](/physics/physics2d/) — the batched impulse engine
+- [Validation](/physics/validation/) — how this is checked against MuJoCo
+- [3D locomotion](/environments/3d-locomotion/) — what runs on it

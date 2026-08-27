@@ -1,0 +1,192 @@
+---
+title: Tree search
+description: MCTS as a reusable component — PUCT and Gumbel selection, learned or true dynamics, discrete and sampled-continuous actions, CPU and batched GPU.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import MctsSearch from '~/components/diagrams/MctsSearch.astro';
+import SequentialHalving from '~/components/diagrams/SequentialHalving.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="In production use by all three zero-series agents. One batching mode is known-biased and gated off — see below." />
+
+[AlphaZero](/algorithms/alphazero/), [MuZero](/algorithms/muzero/) and
+[EfficientZero V2](/algorithms/efficient-zero-v2/) differ in what they learn.
+They barely differ in how they search. `mojo_rl.planners.tree_search` is the
+search, factored out of all three.
+
+```mojo
+from mojo_rl.planners.tree_search import (
+    GenericCPUMCTS, GenericGPUMCTS, GumbelGPUMCTS, SampledGumbelGPUMCTS,
+)
+```
+
+## What the search sees
+
+MCTS builds a tree by repeatedly descending to a leaf, expanding it, and backing
+the resulting value up the path it came down. What varies between agents is
+where the nodes come from:
+
+<MctsSearch />
+
+Three traits carry everything the search needs — `Representation`, `Dynamics`
+and `Prediction` — and the adapter that implements them lives next to the agent
+that owns the networks. The contract is deliberately plain: `List[Float64]` in,
+`List[Float64]` out, with probabilities already softmaxed and values already
+decoded.
+
+That last part matters more than it reads. **Categorical decoding, symlog
+transforms and hidden-state scaling all belong to the adapter**, not to the
+search. MCTS never learns that MuZero encodes value over bins or that its hidden
+states are min-max scaled, which is exactly why AlphaZero — whose
+"representation" is the identity and whose "dynamics" is the game's own step
+function — implements the same three traits without contortion.
+
+## Strategy traits
+
+The parts that genuinely differ between agents are compile-time parameters, not
+runtime flags:
+
+| Trait | Options | Chooses |
+|---|---|---|
+| `SearchMode` | `LearnedDynamics`, `TrueGameRules` | latent tree vs. real game states in nodes |
+| `PUCTFormula` | `MuZeroPUCT`, `AlphaGoPUCT`, `UCB1Formula` | the exploration term |
+| `ExplorationNoise` | `DirichletNoise`, `EpsilonNoise`, `NoNoise` | root exploration |
+| `PlayerMode` | `SinglePlayer`, `SelfPlay` | whether values negate down the tree |
+| `BackupMode` | `NStepBootstrap`, `MonteCarloReturn`, `LambdaReturn` | how returns are formed |
+| `HiddenScaling` | `MinMaxScale`, `NoScale` | latent normalization |
+
+These are not flag structs — each carries the actual computation. `MuZeroPUCT`
+supplies `c(s) = log((1 + N(s) + c_base) / c_base) + c_init`, which grows the
+exploration constant as the tree does; `AlphaGoPUCT` supplies a constant
+`c_puct`. The formula is inlined into the selection loop at compile time, so
+choosing between them costs nothing at runtime.
+
+```mojo
+comptime Search = GenericCPUMCTS[
+    ACTION_DIM, LATENT_DIM, NUM_SIMULATIONS, MAX_NODES,
+    MuZeroPUCT, DirichletNoise, SinglePlayer,
+]
+```
+
+Q-values are min-max normalized to `[0, 1]` before the PUCT prior term. That is
+always on, and it is what keeps a single exploration constant sensible across
+environments whose reward scales differ by orders of magnitude.
+
+## Gumbel search
+
+The PUCT selection rule has a known weakness at small simulation budgets: it
+decides where to look next using statistics that are themselves still noisy,
+and with a few dozen simulations it can commit to a bad action early. Gumbel
+MuZero replaces it with a scheme that spends a fixed budget by construction.
+
+<SequentialHalving />
+
+Gumbel-Top-k samples `K` candidates at the root. Sequential halving then runs
+`log2(K)` phases, giving every surviving candidate the same number of visits
+within a phase and eliminating the worst half between phases. Selection *below*
+the root uses a deterministic visit-balance rule —
+`argmax_a [π̂(a) − N(s,a) / (1 + ΣN(s,b))]` — rather than PUCT.
+
+<Papers label="Reference">
+	<Paper
+		title="Policy Improvement by Planning with Gumbel"
+		authors="Danihelka, Guez, Schrittwieser, Silver"
+		year="2022"
+		venue="ICLR"
+		url="https://openreview.net/forum?id=bERaNdoegnO"
+		note="Gumbel top-k root sampling and sequential halving."
+	/>
+	<Paper
+		title="Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model"
+		authors="Schrittwieser, Antonoglou, Hubert, et al."
+		year="2019"
+		arxiv="1911.08265"
+		note="The PUCT formulation and the three-network contract."
+	/>
+</Papers>
+
+The reason to care beyond sample efficiency is that sequential halving is
+**order-independent**. A phase's visits can be issued in any order without
+changing the result, which is what makes the batched GPU path safe here.
+
+## The batching hazard
+
+:::caution[`BATCH_SIMS > 1` under PUCT is biased, and is gated off]
+`GenericGPUMCTS` accepts a `BATCH_SIMS` parameter that selects several leaves per
+round to fill the GPU. Under PUCT this is **wrong**, not merely approximate.
+
+A CPU search expands as it selects, so later simulations descend through earlier
+ones' children. A batched round instead selects every leaf against a *frozen*
+tree. Duplicate `(parent, action)` selections then re-expand the same edge, leak
+the orphaned node, and double-count its value. The measured effect is not
+subtle: MuZero CartPole root values come out systematically 1.2–1.7 too high
+with argmax flips, and AlphaZero Connect Four visit-policy targets are distorted
+by up to 2× per action.
+
+`BATCH_SIMS = 1` is near-exact against the converged CPU search. For batched GPU
+search, use the Gumbel orchestrators, which carry no virtual loss and are immune
+by construction. The unsafe mode requires setting `UNSAFE_BATCHED=True`
+explicitly and exists for diagnostics.
+:::
+
+This is the kind of bug that a "does it train?" test never catches — the agent
+still learns, just from slightly wrong targets. It was found by comparing the
+GPU search against the CPU one
+(`tests/deep_agents/test_az_search_gpu_batched_bias.mojo`), which is an argument
+for keeping a slow reference implementation around long after it stops being the
+production path.
+
+## Continuous actions
+
+`SampledGumbelGPUMCTS` is the variant EfficientZero V2 uses for continuous
+control. The tree is keyed by **candidate slot** rather than by action index,
+and each slot stores the actual `ACT_DIM` vector it represents. `K_ROOT`
+candidates are sampled at the root and `K_NON_ROOT` at every node below.
+
+Root sampling has two modes, chosen at compile time by `N_POLICY_AT_ROOT`:
+
+- **Magnified** (`N_POLICY_AT_ROOT == K_ROOT`) — half the candidates from
+  `N(μ, σ)`, half from `N(μ, std_mag · σ)`
+- **DMC-style** (`N_POLICY_AT_ROOT < K_ROOT`) — the first slice from `N(μ, σ)`,
+  the rest uniform over `±max_action`
+
+There is no improved-policy distribution to extract, because the action space is
+continuous. The orchestrator writes the chosen action directly, plus root visit
+counts for diagnostics and for the policy-weighted Q used in the value target.
+
+## Choosing an orchestrator
+
+| | Actions | Selection | Batched GPU |
+|---|---|---|---|
+| `GenericCPUMCTS` | discrete | PUCT | — |
+| `GenericGPUMCTS` | discrete | PUCT | only at `BATCH_SIMS = 1` |
+| `GumbelGPUMCTS` | discrete | sequential halving | yes |
+| `SampledGumbelGPUMCTS` | continuous | sequential halving | yes |
+
+`GumbelGPUMCTS` also drives the AlphaZero path when `STATE_SIZE > 0`: tree nodes
+then carry true game-state payloads and expansion calls the environment's
+`step_gpu` instead of a dynamics network.
+
+## Testing a search
+
+The two stub models in `mojo_rl/planners/testing/` are what make the search
+testable in isolation:
+
+```bash
+pixi run mojo run -I . tests/planners/tree_search/test_mcts_bandit.mojo
+pixi run mojo run -I . tests/planners/tree_search/test_mcts_value_tree.mojo
+```
+
+`TwoArmBandit` pins down that the search concentrates visits on the better arm;
+`KnownValueTree` is a tree whose values are fixed by construction, so the backup
+arithmetic can be checked against a number rather than against a trend. Neither
+involves a network.
+
+## Next
+
+- [Trajectory optimization](/planners/trajectory/) — the other half of the package
+- [MuZero](/algorithms/muzero/) — learned dynamics driving this search
+- [AlphaZero](/algorithms/alphazero/) — the same search over true game rules
+- [EfficientZero V2](/algorithms/efficient-zero-v2/) — Gumbel and sampled variants

@@ -20,14 +20,14 @@ per-param paths (arena optimizers override for the single-kernel / capture-safe
 variants). `set_lr` / `get_lr` default to no-op / 1.0 (schedules read/write them).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.module import Module
 from .grad_clip import clip_grad_norm
 
 
-trait Optimizer(Defaultable & Movable & ImplicitlyDeletable):
+trait Optimizer(Defaultable & Movable & Deinitable):
     def step[
         target: StaticString, M: Module
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:

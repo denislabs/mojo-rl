@@ -21,8 +21,8 @@ BatchNorm-bearing torsos (CNN / ResNet) use running stats — a no-op for the ML
 """
 
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import Pointer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -178,7 +178,7 @@ def eval_policy_vs_random[
 
 
 def eval_policy_vs_random_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     N_GAMES: Int,
     MAX_PLIES: Int,
@@ -258,7 +258,7 @@ def eval_policy_vs_random_cpu[
 
 
 def eval_mcts_vs_opponent_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,
@@ -287,8 +287,8 @@ def eval_mcts_vs_opponent_cpu[
 
     var env = ENV()
     var root_save = List[Scalar[DT]](length=LATENT, fill=0)
-    var env_ptr = UnsafePointer(to=env)
-    var net_ptr = UnsafePointer(to=net)
+    var env_ptr = Pointer(to=env)
+    var net_ptr = Pointer(to=net)
     var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
     var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred = AZPredCPU[ENV, OBS, ACT, NET](

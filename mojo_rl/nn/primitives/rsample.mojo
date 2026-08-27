@@ -24,7 +24,7 @@ from std.math import exp, log, tanh as ftanh
 from std.random import random_float64
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

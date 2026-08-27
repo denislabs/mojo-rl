@@ -39,11 +39,11 @@ bf16 path is GPU-only.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from mojo_rl.nn.random.box_muller import advance_rng_offset_kernel
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
@@ -123,6 +123,19 @@ struct Dropout[
     # path); `Dropout[DIM, p, SEED, bfloat16]` flows activations at bf16.
     comptime ACT_DT = Self.ADT
 
+    # ⚠ p == 0 IS IDENTITY, AND THE TRAIN PATH STILL RAN.
+    # `NormedLinearDropout` is structurally always present (Mojo cannot
+    # conditionally alias two type shapes — see nets.mojo), and TD-MPC2's
+    # default `QP = 0.0` makes this layer mathematically a no-op: mask =
+    # 1/(1-0) = 1 and threshold = 0, so every element passes scaled by exactly
+    # 1.0. But `training` defaults to True, so each call still launched the
+    # masked-forward kernel AND `advance_rng_offset_kernel` — the latter a
+    # grid_dim=1, one-thread launch to increment a counter nothing reads.
+    # In a TD-MPC2 MPC plan that is 8 Q-head forwards x 2 launches.
+    # The eval kernel is already an exact copy, so p==0 routes there: same
+    # values (x * 1.0 is exact), one launch instead of two, and no mask buffer.
+    comptime IS_IDENTITY = Self.p == 0.0
+
     # Runtime state.
     var training: Bool
     var call_counter: UInt64  # host CPU Philox counter (legacy slot 0)
@@ -160,6 +173,21 @@ struct Dropout[
     def set_training(mut self, v: Bool):
         self.training = v
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attr hook so a parent `Sequential` / `Repeat` / `ComputeGraph`
+        can switch this dropout to eval via `net.set_attr["training"](0.0)`.
+        `value != 0` -> training (sample a mask); else eval (identity).
+
+        ⚠ Without this, `set_training` was reachable only on a Dropout the
+        caller held DIRECTLY. Any dropout nested inside a container was stuck
+        in training mode for its whole life, and `set_attr["training"](0)` on
+        the container returned quietly — `Module.set_attr`'s default is `pass`,
+        so the call site looked correct and did nothing. `BatchNorm2D` has had
+        this override since the AlphaZero BN switch; dropout was missed.
+        """
+        comptime if ATTR == "training":
+            self.training = value != Scalar[DT](0.0)
+
     def set_seed(mut self) raises:
         """Reset the per-instance RNG counters to the start of the stream."""
         self.call_counter = 0
@@ -187,9 +215,18 @@ struct Dropout[
             ref maskd = rebind[Tensor](self.cache_mask)
             comptime if target == "cpu":
                 outd.ensure(N)
-                if not self.training:
-                    for i in range(N):
-                        outd.data[i] = in0d.data[i]
+                if Self.IS_IDENTITY or not self.training:
+                    # SIMD copy — the scalar loop this replaces cost 247 us at
+                    # B=268, DIM=512 (1.8 ns/element) to move 137k floats.
+                    var sp = in0d.data.unsafe_ptr()
+                    var dp = outd.data.unsafe_ptr()
+                    var i = 0
+                    while i + CPU_SIMD_W <= N:
+                        dp.unsafe_store(i, sp.unsafe_load[width=CPU_SIMD_W](i))
+                        i += CPU_SIMD_W
+                    while i < N:
+                        dp[unsafe_offset=i] = sp[unsafe_offset=i]
+                        i += 1
                     # Eval pass doesn't bump the counter — keeps training
                     # determinism cleanly separated from eval calls.
                     return
@@ -218,7 +255,7 @@ struct Dropout[
                 comptime n_blocks = (N + TPB - 1) // TPB
                 comptime lN = Layout.row_major(N)
                 comptime loff = Layout.row_major(1)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     comptime eval_kernel = _dropout_eval_kernel[N]
                     c.enqueue_function[eval_kernel](
                         in0d.lt["gpu", lN](),
@@ -258,7 +295,7 @@ struct Dropout[
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime lN = Layout.row_major(N)
             comptime loff = Layout.row_major(1)
-            if not self.training:
+            if Self.IS_IDENTITY or not self.training:
                 comptime eval_kernel = _dropout_eval_kernel[N, Self.ADT]
                 c.enqueue_function[eval_kernel](
                     in0.lt["gpu", lN](),
@@ -311,7 +348,7 @@ struct Dropout[
             ref maskd = rebind[Tensor](self.cache_mask)
             comptime if target == "cpu":
                 gind.ensure(N)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     for i in range(N):
                         gind.data[i] = god.data[i]
                     return
@@ -322,7 +359,7 @@ struct Dropout[
                 gind.ensure_gpu(c, N)
                 comptime n_blocks = (N + TPB - 1) // TPB
                 comptime lN = Layout.row_major(N)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     comptime eval_kernel = _dropout_eval_kernel[N]
                     c.enqueue_function[eval_kernel](
                         god.lt["gpu", lN](),
@@ -348,7 +385,7 @@ struct Dropout[
             gin.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime lN = Layout.row_major(N)
-            if not self.training:
+            if Self.IS_IDENTITY or not self.training:
                 comptime eval_kernel = _dropout_eval_kernel[N, Self.ADT]
                 c.enqueue_function[eval_kernel](
                     grad_output.lt["gpu", lN](),

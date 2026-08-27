@@ -59,8 +59,8 @@ def test_trainer_train_step() raises:
         var rew = Scalar[DT](random_float64() - 0.5)
         var done = Scalar[DT](1.0) if (s % 17 == 16) else Scalar[DT](0.0)
         tr.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](act),
             rew, done,
         )
 
@@ -105,8 +105,8 @@ def test_agent_select_action() raises:
         out_action[j] = Scalar[DT](0.0)
 
     ag.select_action(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_action),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](out_action),
         explore=True,
     )
     for j in range(ACT):

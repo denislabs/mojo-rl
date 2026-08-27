@@ -15,7 +15,7 @@ Run:
 
 from std.memory import alloc, memset
 from std.random.philox import Random as PhiloxRandom
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 

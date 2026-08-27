@@ -1,6 +1,6 @@
 """Test GPU CartPole vectorized environment."""
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.envs.cartpole_gpu import (

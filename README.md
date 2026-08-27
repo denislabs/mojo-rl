@@ -1,6 +1,26 @@
-# mojo-rl
+<!--
+  The wordmark carries the project name, so it stands in for an `# mojo-rl`
+  heading; `alt` keeps the accessible name. <picture> + prefers-color-scheme is
+  supported by GitHub, so the logo follows the reader's theme: the light file is
+  dark-on-transparent, the dark file light-on-transparent. PNG rather than SVG
+  because GitHub's image proxy is reliable with raster and inconsistent with SVG.
+-->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/mojo-rl-logo-transparent-dark-2x.png">
+    <img alt="mojo-rl" src="docs-site/src/assets/mojo-rl-logo-light-2x.png" width="420">
+  </picture>
+</p>
 
-An end-to-end world‑model & RL framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
+<p align="center">
+  An end-to-end world‑model &amp; RL framework written in Mojo, featuring trait-based design,
+  40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines,
+  native arcade game engines, and SDL3 rendering.
+</p>
+
+<p align="center">
+  <b>📖 Documentation — <a href="https://mojo-rl.denislabs.com">mojo-rl.denislabs.com</a></b>
+</p>
 
 > **Note:** This is a beta version, not a production-grade library yet. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
 
@@ -78,6 +98,28 @@ pixi run -e apple mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_
 # NVIDIA GPUs (CUDA)
 pixi run -e nvidia mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu.mojo
 ```
+
+## Documentation
+
+Full documentation lives at **[mojo-rl.denislabs.com](https://mojo-rl.denislabs.com)** — this README is the summary.
+
+| | |
+|---|---|
+| [Why mojo-rl](https://mojo-rl.denislabs.com/start/why/) | what the framework is for, and what it is not |
+| [Installation](https://mojo-rl.denislabs.com/start/installation/) · [Tabular quickstart](https://mojo-rl.denislabs.com/start/quickstart-tabular/) · [GPU quickstart](https://mojo-rl.denislabs.com/start/quickstart-gpu/) | first run, CPU then GPU |
+| [RL in five minutes](https://mojo-rl.denislabs.com/start/rl-in-five-minutes/) | the vocabulary the rest of the docs assume |
+| [The layered stack](https://mojo-rl.denislabs.com/concepts/architecture/) · [Traits](https://mojo-rl.denislabs.com/concepts/traits/) · [Compile-time composition](https://mojo-rl.denislabs.com/concepts/compile-time-composition/) | how the pieces fit together |
+| [Environments](https://mojo-rl.denislabs.com/environments/) | all 25, with observation and action shapes |
+| [Algorithms](https://mojo-rl.denislabs.com/algorithms/) | 20 pages by family, from tabular to the zero-series |
+| [Neural networks](https://mojo-rl.denislabs.com/nn/) | `Module`/`Param`, primitives, optimizers, training |
+| [3D physics](https://mojo-rl.denislabs.com/physics/physics3d/) · [2D physics](https://mojo-rl.denislabs.com/physics/physics2d/) · [Validation](https://mojo-rl.denislabs.com/physics/validation/) | both engines and how they are checked against MuJoCo |
+| [Rendering](https://mojo-rl.denislabs.com/rendering/) · [Tooling](https://mojo-rl.denislabs.com/tooling/logging/) | SDL3 renderers, logging, the training monitor |
+| [Contributing](https://mojo-rl.denislabs.com/project/contributing/) · [Testing](https://mojo-rl.denislabs.com/project/testing/) | working on the framework itself |
+
+Pages carry a maturity marker (stable / beta / experimental) so the state of each
+component is explicit, and every algorithm page links the paper it implements.
+
+The site is built from `docs-site/` — see its README to run it locally.
 
 ## Project Structure
 
@@ -160,6 +202,7 @@ mojo-rl/
 │   ├── arcade_games/            #   Pong/Breakout/SpaceInvaders (DQN, PPO, playable)
 │   └── *.mojo                   #   Various environment demos
 ├── benchmarks/                  # Performance benchmarks
+├── docs-site/                   # Documentation site (Astro + Starlight)
 └── pixi.toml                    # Dependency management
 ```
 
@@ -337,6 +380,11 @@ def main() raises:
 See [`examples/nn/mlp/mlp_mnist_training_gpu.mojo`](examples/nn/mlp/mlp_mnist_training_gpu.mojo) for the full working example.
 
 ## Extending the Framework
+
+The sketches below are the shape of it. For the full walkthroughs — trait choice,
+GPU batching, and the mistakes that cost the most time — see
+[Writing your own environment](https://mojo-rl.denislabs.com/environments/custom/)
+and [Writing your own algorithm](https://mojo-rl.denislabs.com/algorithms/custom/).
 
 ### Adding a New Environment
 

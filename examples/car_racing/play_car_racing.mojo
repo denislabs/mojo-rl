@@ -34,6 +34,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.envs.car_racing import CarRacingMB
 from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
 from mojo_rl.render.sdl.sdl_scancode import Scancode
+from mojo_rl.core.fmt import fit
 
 
 comptime MAX_STEPS = 1_000_000  # effectively no truncation while exploring
@@ -87,7 +88,7 @@ def main() raises:
         if frame % HUD_EVERY == 0:
             var surface = "GRASS" if env.on_grass() else "track"
             print(
-                "speed:", String(env.hull_speed())[byte=:5],
+                "speed:", fit(String(env.hull_speed()), 5),
                 " on:", surface,
                 " tiles:", env.tiles_visited, "/", env.track_length(),
                 "  [steer", steer, "gas", gas, "brake", brake, "]",

@@ -1,0 +1,60 @@
+---
+/**
+ * Paper — a citation for the work an algorithm or component comes from.
+ *
+ * mojo-rl's claim is that its implementations are faithful to the published
+ * algorithms. Citing the source makes that checkable rather than assertable,
+ * and gives readers the reference when the docs stop short.
+ *
+ * Wrap several in <Papers> to get a list.
+ *
+ * Usage:
+ *   <Paper
+ *     title="Soft Actor-Critic: Off-Policy Maximum Entropy Deep RL with a Stochastic Actor"
+ *     authors="Haarnoja, Zhou, Abbeel, Levine"
+ *     year="2018"
+ *     arxiv="1801.01290"
+ *   />
+ *
+ * `arxiv` builds the link. Use `url` instead for anything not on arXiv
+ * (journal articles, theses, OpenReview). One of the two is required.
+ */
+interface Props {
+	title: string;
+	authors: string;
+	year: string | number;
+	/** arXiv identifier, e.g. "1801.01290" — builds the link. */
+	arxiv?: string;
+	/** Explicit URL, for non-arXiv sources. Ignored if `arxiv` is set. */
+	url?: string;
+	/** Optional one-line note: what this paper contributes here. */
+	note?: string;
+	/** Venue, e.g. "ICLR 2024", "Nature". */
+	venue?: string;
+}
+
+const { title, authors, year, arxiv, url, note, venue } = Astro.props;
+
+const href = arxiv ? `https://arxiv.org/abs/${arxiv}` : url;
+const label = arxiv ? `arXiv:${arxiv}` : 'link';
+---
+
+<li class="paper">
+	<span class="paper__title">
+		{
+			href ? (
+				<a href={href} target="_blank" rel="noopener noreferrer">
+					{title}
+				</a>
+			) : (
+				title
+			)
+		}
+	</span>
+	<span class="paper__meta">
+		{authors} · {year}
+		{venue && <> · {venue}</>}
+		{href && <> · <span class="paper__id">{label}</span></>}
+	</span>
+	{note && <span class="paper__note">{note}</span>}
+</li>

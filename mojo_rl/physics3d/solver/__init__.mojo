@@ -15,5 +15,12 @@ Unified constraint representation:
 # Legacy slab solvers (PGS/Newton/CG/IslandPGS + island detection) were deleted
 # at the P6 fields sunset. The fields solvers live in `newton_solve` /
 # `cg_solve` / `contact_solve` / `island_pgs_solve` and are
-# imported directly. `cholesky` and `qcqp` (leaf helpers) remain — the fields
-# solvers import them by submodule.
+# imported directly. `cholesky` (leaf helper) remains — the fields solvers
+# import it by submodule.
+#
+# ⚠ `qcqp` AND `elliptic_layout` MOVED TO `constraints/` (phase 2.0). Both are
+# leaf math — `elliptic_layout` imports nothing at all — and living here made
+# `constraints` import `solver`, which with `solver -> constraints` formed a
+# cycle. That cycle put {constraints, dynamics, solver} in one 22.5k-line SCC
+# with no intermediate green state, which is what made §5.4's
+# package-at-a-time gating protocol unexecutable. See §11.3.

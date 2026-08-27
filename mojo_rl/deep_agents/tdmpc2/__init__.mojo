@@ -32,6 +32,10 @@ from .td_target_step import TDTargetStep
 from .callback import TDMPC2RolloutCallbackCPU, TDMPC2RolloutCallbackGPU
 from .metrics import TDMPC2Metrics
 from .agent import TDMPC2Agent
+from .batched_acting import (
+    tdmpc2_select_action_batched,
+    tdmpc2_encode_batched,
+)
 from .config import (
     TDMPC2ConfigT,
     TDMPC2Config,

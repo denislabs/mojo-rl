@@ -12,7 +12,7 @@ Backward: c = OP.cache(x,y) ; gi0 = OP.backward_x(c, go) ; gi1 = OP.backward_y(c
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB

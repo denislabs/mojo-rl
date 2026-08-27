@@ -18,13 +18,14 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_euler_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -37,6 +38,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 3
 comptime N_STEPS = 3
 
@@ -46,7 +48,13 @@ comptime GOLD_RTOL = 1e-3
 comptime GOLD_QPOS = 42.2036153235822
 comptime GOLD_QVEL = -12.21184940263629
 comptime GOLD_QACC = -1929.7593653202057
-comptime GOLD_XVEL = 57.93556372821331
+# Re-harvested 2026-07-29. qpos/qvel/qacc are unchanged — the state trajectory
+# is identical — but `xvel` was recomputed when the hinge angular-to-linear
+# coupling bug was fixed (commit f0d35e2c), so the frozen value here described
+# the OLD, wrong xvel. The new one is not taken on trust: walker2d's xvel is
+# gated directly against MuJoCo to 1.2e-10 in
+# `tests/physics3d/test_body_velocities_vs_mujoco.mojo`, on this same model.
+comptime GOLD_XVEL = 16.63215710222721
 comptime GOLD_XANG = -46.879036627709866
 
 
@@ -64,11 +72,11 @@ def main() raises:
     print("--- Euler full-step GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 7 + i * 3) % 5 - 2) / 20.0
@@ -85,15 +93,9 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
 
     for step in range(N_STEPS):
         integ.step["gpu", False](d, mf, ctx)  # CONTACTS=False: unconstrained

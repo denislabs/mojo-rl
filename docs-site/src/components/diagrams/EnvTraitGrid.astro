@@ -1,0 +1,98 @@
+---
+/**
+ * EnvTraitGrid — the environment traits as what they actually are: a 2×2 grid.
+ *
+ * This replaces an ASCII block that drew the two axes recombining into three
+ * named traits. Three, from two binary axes, is the interesting part — the
+ * fourth cell is empty, and an ASCII tree cannot show an absence. Drawing the
+ * grid makes the gap visible and lets the cell say why it is empty.
+ *
+ * Each cell carries the algorithms that accept it, because that is the question
+ * a reader actually arrives with: I have this kind of environment, what can I
+ * train on it?
+ */
+
+const COL_X = [200, 540];
+const COL_W = 320;
+const ROW_Y = [100, 250];
+const ROW_H = 132;
+
+const CELLS = [
+	{
+		col: 0, row: 0,
+		trait: 'DiscreteEnv',
+		envs: 'GridWorld · FrozenLake · Taxi',
+		algos: 'Q-Learning · SARSA · Monte Carlo',
+	},
+	{
+		col: 0, row: 1,
+		trait: 'BoxDiscreteActionEnv',
+		envs: 'CartPole · MountainCar · LunarLander',
+		algos: 'DQN · Rainbow · PPO-discrete · tile coding',
+	},
+	{
+		col: 1, row: 1,
+		trait: 'BoxContinuousActionEnv',
+		envs: 'Pendulum · HalfCheetah · Humanoid',
+		algos: 'DDPG · TD3 · SAC · PPO',
+	},
+];
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 430" role="img"
+		aria-label="The environment traits arranged as a two-by-two grid of state representation against action representation. Discrete state with discrete actions is DiscreteEnv; continuous state with discrete actions is BoxDiscreteActionEnv; continuous state with continuous actions is BoxContinuousActionEnv. The fourth combination, discrete state with continuous actions, has no trait because no environment needs it.">
+		<text x="20" y="30" class="dg-title dg-title--left">Two axes, three traits</text>
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			The combination you implement decides which agents will compile against your environment.
+		</text>
+
+		{/* column headers */}
+		<text x={COL_X[0] + COL_W / 2} y="88" class="dg-caption">discrete actions</text>
+		<text x={COL_X[1] + COL_W / 2} y="88" class="dg-caption">continuous actions</text>
+
+		{/* row headers */}
+		<text x="20" y={ROW_Y[0] + ROW_H / 2 - 4} class="dg-sub dg-sub--left">discrete</text>
+		<text x="20" y={ROW_Y[0] + ROW_H / 2 + 16} class="dg-sub dg-sub--left">state</text>
+		<text x="20" y={ROW_Y[1] + ROW_H / 2 - 4} class="dg-sub dg-sub--left">continuous</text>
+		<text x="20" y={ROW_Y[1] + ROW_H / 2 + 16} class="dg-sub dg-sub--left">(Box) state</text>
+
+		{
+			CELLS.map((cell) => (
+				<g>
+					<g class="dg-node dg-node--cyan">
+						<rect x={COL_X[cell.col]} y={ROW_Y[cell.row]}
+							width={COL_W} height={ROW_H} rx="9" />
+					</g>
+					<text x={COL_X[cell.col] + 18} y={ROW_Y[cell.row] + 36}
+						class="dg-label dg-label--cyan">
+						{cell.trait}
+					</text>
+					<text x={COL_X[cell.col] + 18} y={ROW_Y[cell.row] + 68}
+						class="dg-sub dg-sub--left">
+						{cell.envs}
+					</text>
+					<text x={COL_X[cell.col] + 18} y={ROW_Y[cell.row] + 100}
+						class="dg-sub dg-sub--left">
+						{cell.algos}
+					</text>
+				</g>
+			))
+		}
+
+		{/* the empty cell — the reason this is a grid and not a list */}
+		<rect x={COL_X[1]} y={ROW_Y[0]} width={COL_W} height={ROW_H} rx="9" class="dg-ghost" />
+		<text x={COL_X[1] + COL_W / 2} y={ROW_Y[0] + 62} class="dg-caption">no trait</text>
+		<text x={COL_X[1] + COL_W / 2} y={ROW_Y[0] + 84} class="dg-caption">nothing needs this combination</text>
+
+		{/* No backticks: SVG text renders them literally rather than as code. */}
+		<text x="20" y="410" class="dg-sub dg-sub--left">
+			The GPU environment traits sit outside this grid — separate traits, not extensions of these.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">implemented</span>
+		<span class="diagram__key diagram__key--muted">not implemented</span>
+	</figcaption>
+</figure>

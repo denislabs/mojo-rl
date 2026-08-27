@@ -9,9 +9,14 @@ lives in its own ``h5*.mojo`` file, and ``reader.mojo`` provides the
 high-level ``H5File`` / ``H5Dataset`` structs that the dataset loaders
 actually consume.
 
-Only the surface area required by the LeWM PushT loader is covered:
-file open/close, dataset open/close, dataspace selection, native-type
-introspection, and bulk reads. Writes are intentionally not supported.
+Read surface (``reader.mojo``): file/dataset open+close, dataspace
+selection, native-type introspection, bulk + hyperslab + strided reads.
+
+Write surface (``writer.mojo``): file create, chunked datasets with an
+UNLIMITED leading axis, append via extent+hyperslab, optional
+shuffle+deflate. ``h5native.mojo`` resolves the predefined
+``H5T_NATIVE_*`` ids the write path needs — read its docstring before
+touching it, the globals are ``-1`` until ``H5open()`` runs.
 
 Compression filters distributed by the ``hdf5plugin`` Python package
 (Blosc/LZ4/ZSTD/...) are registered with libhdf5 at first
@@ -19,7 +24,7 @@ Compression filters distributed by the ``hdf5plugin`` Python package
 not need to be set as an environment variable.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.ffi import (
     _Global,
     OwnedDLHandle,
@@ -38,11 +43,16 @@ from .h5f import *
 from .h5d import *
 from .h5s import *
 from .h5t import *
+from .h5e import *
+from .h5l import *
 from .h5pl import *
+from .h5native import *
+from .h5p import *
 from .reader import *
+from .writer import *
 
 
-comptime Ptr = UnsafePointer
+comptime Ptr = Pointer
 
 comptime lib = _Global["MOJO_RL_HDF5_LIB", _init_hdf5_handle]()
 

@@ -12,7 +12,7 @@ Run:
     pixi run -e apple mojo run -I . tests/nn/test_ppo_discrete_batched_gpu_smoke.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true

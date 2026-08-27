@@ -34,14 +34,14 @@ comptime TM1 = T - 1
 
 
 def _sum_policy(
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    act: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    con: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    vlog: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    svlog: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    pstd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: Pointer[Scalar[DT], MutAnyOrigin],
+    act: Pointer[Scalar[DT], MutAnyOrigin],
+    rew: Pointer[Scalar[DT], MutAnyOrigin],
+    con: Pointer[Scalar[DT], MutAnyOrigin],
+    vlog: Pointer[Scalar[DT], MutAnyOrigin],
+    svlog: Pointer[Scalar[DT], MutAnyOrigin],
+    pstd: Pointer[Scalar[DT], MutAnyOrigin],
+    bins: Pointer[Scalar[DT], MutAnyOrigin],
     lam: Scalar[DT], actent: Scalar[DT], slowreg: Scalar[DT],
 ) raises -> Scalar[DT]:
     var pol = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))

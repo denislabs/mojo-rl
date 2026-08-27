@@ -15,7 +15,7 @@ to zero at init by design).
 
 from std.math import isnan, isinf
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn import Tensor, ParamVisitor, Kaiming

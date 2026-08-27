@@ -25,8 +25,8 @@ decisive games).
 """
 
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import Pointer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -409,7 +409,7 @@ def candidate_winrate_mcts[
 
 
 def arena_match_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NETA: Module,
     NETB: Module,
     N_GAMES: Int,
@@ -448,9 +448,9 @@ def arena_match_cpu[
 
     var env = ENV()
     var root_save = List[Scalar[DT]](length=LATENT, fill=0)
-    var env_ptr = UnsafePointer(to=env)
-    var a_ptr = UnsafePointer(to=a)
-    var b_ptr = UnsafePointer(to=b)
+    var env_ptr = Pointer(to=env)
+    var a_ptr = Pointer(to=a)
+    var b_ptr = Pointer(to=b)
     var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
     var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred_a = AZPredCPU[ENV, OBS, ACT, NETA](
@@ -514,7 +514,7 @@ def arena_match_cpu[
 
 
 def candidate_winrate_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     CAND: Module,
     BEST: Module,
     N_PER_COLOR: Int,

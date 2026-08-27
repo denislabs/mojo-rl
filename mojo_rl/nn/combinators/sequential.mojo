@@ -7,7 +7,7 @@ a `MutAnyOrigin` ref (load-bearing pin, §7.12); each child input is wrapped in
 a borrowing `TensorRefs[1]`. Slice scope: N >= 2.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
@@ -23,7 +23,7 @@ from ..core.graph_visitor import DisplayStep
 
 struct Sequential[*MODULES: Module](Module):
     comptime ARITY = 1
-    comptime N = Self.MODULES.size
+    comptime N = Self.MODULES.length
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
     # All children share one activation dtype (asserted in __init__); the chain's

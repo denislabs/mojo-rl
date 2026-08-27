@@ -28,7 +28,7 @@ buffer per slab) instead of a single pointer-sliced scratch — no `mptr`.
 
 from std.math import exp, sqrt
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
 
@@ -77,15 +77,15 @@ def _attn_fwd_kernel[
     while idx0 < n_qkv:
         var i = idx0 // HEAD_DIM
         var d = idx0 % HEAD_DIM
-        cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[ADT]](
-            input.ptr[b * IN_DIM + i * DIM + h_off + d]
+        cache.ptr[unsafe_offset=b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[ADT]](
+            input.ptr[unsafe_offset=b * IN_DIM + i * DIM + h_off + d]
         ).cast[DT]()
-        cache.ptr[b * CACHE_SIZE + K_OFF + i * DIM + h_off + d] = rebind[
+        cache.ptr[unsafe_offset=b * CACHE_SIZE + K_OFF + i * DIM + h_off + d] = rebind[
             Scalar[ADT]
-        ](input.ptr[b * IN_DIM + K_OFF + i * DIM + h_off + d]).cast[DT]()
-        cache.ptr[b * CACHE_SIZE + V_OFF + i * DIM + h_off + d] = rebind[
+        ](input.ptr[unsafe_offset=b * IN_DIM + K_OFF + i * DIM + h_off + d]).cast[DT]()
+        cache.ptr[unsafe_offset=b * CACHE_SIZE + V_OFF + i * DIM + h_off + d] = rebind[
             Scalar[ADT]
-        ](input.ptr[b * IN_DIM + V_OFF + i * DIM + h_off + d]).cast[DT]()
+        ](input.ptr[unsafe_offset=b * IN_DIM + V_OFF + i * DIM + h_off + d]).cast[DT]()
         idx0 += bs
 
     # Step 2: per-row attention; each thread strides over query rows i.
@@ -100,29 +100,29 @@ def _attn_fwd_kernel[
             var s = Scalar[DT](0)
             for d in range(HEAD_DIM):
                 var q = rebind[Scalar[ADT]](
-                    input.ptr[b * IN_DIM + i * DIM + h_off + d]
+                    input.ptr[unsafe_offset=b * IN_DIM + i * DIM + h_off + d]
                 ).cast[DT]()
                 var k = rebind[Scalar[ADT]](
-                    input.ptr[b * IN_DIM + K_OFF + j * DIM + h_off + d]
+                    input.ptr[unsafe_offset=b * IN_DIM + K_OFF + j * DIM + h_off + d]
                 ).cast[DT]()
                 s += q * k
             s *= scale
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            cache.ptr[aidx] = s
+            cache.ptr[unsafe_offset=aidx] = s
             if s > max_score:
                 max_score = s
 
         var sum_exp = Scalar[DT](0)
         for j in range(j_end):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            var e = exp(rebind[Scalar[DT]](cache.ptr[aidx]) - max_score)
-            cache.ptr[aidx] = e
+            var e = exp(rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx]) - max_score)
+            cache.ptr[unsafe_offset=aidx] = e
             sum_exp += e
 
         var inv_sum = Scalar[DT](1) / sum_exp
         for j in range(j_end):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            cache.ptr[aidx] = rebind[Scalar[DT]](cache.ptr[aidx]) * inv_sum
+            cache.ptr[unsafe_offset=aidx] = rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx]) * inv_sum
 
         for d in range(HEAD_DIM):
             var acc = Scalar[DT](0)
@@ -131,10 +131,10 @@ def _attn_fwd_kernel[
                     b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
                 )
                 var v = rebind[Scalar[ADT]](
-                    input.ptr[b * IN_DIM + V_OFF + j * DIM + h_off + d]
+                    input.ptr[unsafe_offset=b * IN_DIM + V_OFF + j * DIM + h_off + d]
                 ).cast[DT]()
-                acc += rebind[Scalar[DT]](cache.ptr[aidx]) * v
-            output.ptr[b * OUT_DIM + i * DIM + h_off + d] = acc.cast[ADT]()
+                acc += rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx]) * v
+            output.ptr[unsafe_offset=b * OUT_DIM + i * DIM + h_off + d] = acc.cast[ADT]()
         i += bs
 
 
@@ -145,7 +145,7 @@ def _attn_zero_grad_kernel[
 ):
     var idx = Int(global_idx.x)
     if idx < BATCH * IN_DIM:
-        grad_input.ptr[idx] = Scalar[ADT](0)
+        grad_input.ptr[unsafe_offset=idx] = Scalar[ADT](0)
 
 
 def _attn_dV_kernel[
@@ -180,12 +180,12 @@ def _attn_dV_kernel[
         for i in range(i_start, SEQ):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
             var go = rebind[Scalar[ADT]](
-                grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
+                grad_output.ptr[unsafe_offset=b * OUT_DIM + i * DIM + h_off + d]
             ).cast[DT]()
-            acc += rebind[Scalar[DT]](cache.ptr[aidx]) * go
+            acc += rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx]) * go
         var dv_idx = b * IN_DIM + V_OFF + j * DIM + h_off + d
-        grad_input.ptr[dv_idx] = (
-            rebind[Scalar[ADT]](grad_input.ptr[dv_idx]).cast[DT]() + acc
+        grad_input.ptr[unsafe_offset=dv_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[unsafe_offset=dv_idx]).cast[DT]() + acc
         ).cast[ADT]()
         idx0 += bs
 
@@ -223,28 +223,28 @@ def _attn_dscore_dQ_kernel[
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
                 var go = rebind[Scalar[ADT]](
-                    grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
+                    grad_output.ptr[unsafe_offset=b * OUT_DIM + i * DIM + h_off + d]
                 ).cast[DT]()
                 var v = rebind[Scalar[DT]](
-                    cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
+                    cache.ptr[unsafe_offset=b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
                 d_attn += go * v
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            dot_sum += rebind[Scalar[DT]](cache.ptr[aidx]) * d_attn
+            dot_sum += rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx]) * d_attn
 
         for j in range(j_end):
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
                 var go = rebind[Scalar[ADT]](
-                    grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
+                    grad_output.ptr[unsafe_offset=b * OUT_DIM + i * DIM + h_off + d]
                 ).cast[DT]()
                 var v = rebind[Scalar[DT]](
-                    cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
+                    cache.ptr[unsafe_offset=b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
                 d_attn += go * v
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            var attn_w = rebind[Scalar[DT]](cache.ptr[aidx])
-            cache.ptr[aidx] = attn_w * (d_attn - dot_sum) * scale
+            var attn_w = rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx])
+            cache.ptr[unsafe_offset=aidx] = attn_w * (d_attn - dot_sum) * scale
 
         for d in range(HEAD_DIM):
             var acc = Scalar[DT](0)
@@ -252,14 +252,14 @@ def _attn_dscore_dQ_kernel[
                 var aidx = (
                     b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
                 )
-                var d_score = rebind[Scalar[DT]](cache.ptr[aidx])
+                var d_score = rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx])
                 var k = rebind[Scalar[DT]](
-                    cache.ptr[b * CACHE_SIZE + K_OFF + j * DIM + h_off + d]
+                    cache.ptr[unsafe_offset=b * CACHE_SIZE + K_OFF + j * DIM + h_off + d]
                 )
                 acc += d_score * k
             var dq_idx = b * IN_DIM + i * DIM + h_off + d
-            grad_input.ptr[dq_idx] = (
-                rebind[Scalar[ADT]](grad_input.ptr[dq_idx]).cast[DT]() + acc
+            grad_input.ptr[unsafe_offset=dq_idx] = (
+                rebind[Scalar[ADT]](grad_input.ptr[unsafe_offset=dq_idx]).cast[DT]() + acc
             ).cast[ADT]()
         i += bs
 
@@ -293,14 +293,14 @@ def _attn_dK_kernel[
         var acc = Scalar[DT](0)
         for i in range(i_start, SEQ):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            var d_score = rebind[Scalar[DT]](cache.ptr[aidx])
+            var d_score = rebind[Scalar[DT]](cache.ptr[unsafe_offset=aidx])
             var q = rebind[Scalar[DT]](
-                cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d]
+                cache.ptr[unsafe_offset=b * CACHE_SIZE + i * DIM + h_off + d]
             )
             acc += d_score * q
         var dk_idx = b * IN_DIM + K_OFF + j * DIM + h_off + d
-        grad_input.ptr[dk_idx] = (
-            rebind[Scalar[ADT]](grad_input.ptr[dk_idx]).cast[DT]() + acc
+        grad_input.ptr[unsafe_offset=dk_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[unsafe_offset=dk_idx]).cast[DT]() + acc
         ).cast[ADT]()
         idx0 += bs
 
@@ -338,19 +338,19 @@ def _attn_pack_qkv_fwd_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    var qv = rebind[Scalar[ADT]](input.ptr[b * IN_DIM + t * DIM + col]).cast[DT]()
+    var qv = rebind[Scalar[ADT]](input.ptr[unsafe_offset=b * IN_DIM + t * DIM + col]).cast[DT]()
     var kv = rebind[Scalar[ADT]](
-        input.ptr[b * IN_DIM + KOFF + t * DIM + col]
+        input.ptr[unsafe_offset=b * IN_DIM + KOFF + t * DIM + col]
     ).cast[DT]()
     var vv = rebind[Scalar[ADT]](
-        input.ptr[b * IN_DIM + VOFF + t * DIM + col]
+        input.ptr[unsafe_offset=b * IN_DIM + VOFF + t * DIM + col]
     ).cast[DT]()
-    cache.ptr[b * CACHE_SIZE + t * DIM + col] = qv
-    cache.ptr[b * CACHE_SIZE + KOFF + t * DIM + col] = kv
-    cache.ptr[b * CACHE_SIZE + VOFF + t * DIM + col] = vv
-    packed_q.ptr[pidx] = qv
-    packed_k.ptr[pidx] = kv
-    packed_v.ptr[pidx] = vv
+    cache.ptr[unsafe_offset=b * CACHE_SIZE + t * DIM + col] = qv
+    cache.ptr[unsafe_offset=b * CACHE_SIZE + KOFF + t * DIM + col] = kv
+    cache.ptr[unsafe_offset=b * CACHE_SIZE + VOFF + t * DIM + col] = vv
+    packed_q.ptr[unsafe_offset=pidx] = qv
+    packed_k.ptr[unsafe_offset=pidx] = kv
+    packed_v.ptr[unsafe_offset=pidx] = vv
 
 
 def _attn_softmax_kernel[
@@ -382,26 +382,26 @@ def _attn_softmax_kernel[
         var cache_row = cache_attn_base + i * SEQ
         var mx = Scalar[DT](-1e30)
         for j in range(j_end):
-            var s = rebind[Scalar[DT]](scores.ptr[row_off + j]) * scale
-            scores.ptr[row_off + j] = s
+            var s = rebind[Scalar[DT]](scores.ptr[unsafe_offset=row_off + j]) * scale
+            scores.ptr[unsafe_offset=row_off + j] = s
             if s > mx:
                 mx = s
         var se = Scalar[DT](0)
         for j in range(j_end):
-            var e = exp(rebind[Scalar[DT]](scores.ptr[row_off + j]) - mx)
-            scores.ptr[row_off + j] = e
+            var e = exp(rebind[Scalar[DT]](scores.ptr[unsafe_offset=row_off + j]) - mx)
+            scores.ptr[unsafe_offset=row_off + j] = e
             se += e
         comptime if CAUSAL:
             for j in range(i + 1, SEQ):
-                scores.ptr[row_off + j] = Scalar[DT](0)
+                scores.ptr[unsafe_offset=row_off + j] = Scalar[DT](0)
         var inv = Scalar[DT](1) / se
         for j in range(j_end):
-            var w = rebind[Scalar[DT]](scores.ptr[row_off + j]) * inv
-            scores.ptr[row_off + j] = w
-            cache.ptr[cache_row + j] = w
+            var w = rebind[Scalar[DT]](scores.ptr[unsafe_offset=row_off + j]) * inv
+            scores.ptr[unsafe_offset=row_off + j] = w
+            cache.ptr[unsafe_offset=cache_row + j] = w
         comptime if CAUSAL:
             for j in range(i + 1, SEQ):
-                cache.ptr[cache_row + j] = Scalar[DT](0)
+                cache.ptr[unsafe_offset=cache_row + j] = Scalar[DT](0)
         i += bs
 
 
@@ -424,8 +424,8 @@ def _attn_unpack_out_kernel[
     var b = rem2 // SEQ
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    output.ptr[b * OUT_DIM + t * DIM + h * HEAD_DIM + d] = rebind[Scalar[DT]](
-        packed_out.ptr[pidx]
+    output.ptr[unsafe_offset=b * OUT_DIM + t * DIM + h * HEAD_DIM + d] = rebind[Scalar[DT]](
+        packed_out.ptr[unsafe_offset=pidx]
     ).cast[ADT]()
 
 
@@ -455,15 +455,15 @@ def _attn_pack_in_bwd_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    packed_dout.ptr[pidx] = rebind[Scalar[ADT]](
-        grad_output.ptr[b * OUT_DIM + t * DIM + col]
+    packed_dout.ptr[unsafe_offset=pidx] = rebind[Scalar[ADT]](
+        grad_output.ptr[unsafe_offset=b * OUT_DIM + t * DIM + col]
     ).cast[DT]()
-    packed_q.ptr[pidx] = rebind[Scalar[DT]](cache.ptr[b * CACHE_SIZE + t * DIM + col])
-    packed_k.ptr[pidx] = rebind[Scalar[DT]](
-        cache.ptr[b * CACHE_SIZE + KOFF + t * DIM + col]
+    packed_q.ptr[unsafe_offset=pidx] = rebind[Scalar[DT]](cache.ptr[unsafe_offset=b * CACHE_SIZE + t * DIM + col])
+    packed_k.ptr[unsafe_offset=pidx] = rebind[Scalar[DT]](
+        cache.ptr[unsafe_offset=b * CACHE_SIZE + KOFF + t * DIM + col]
     )
-    packed_v.ptr[pidx] = rebind[Scalar[DT]](
-        cache.ptr[b * CACHE_SIZE + VOFF + t * DIM + col]
+    packed_v.ptr[unsafe_offset=pidx] = rebind[Scalar[DT]](
+        cache.ptr[unsafe_offset=b * CACHE_SIZE + VOFF + t * DIM + col]
     )
 
 
@@ -494,13 +494,13 @@ def _attn_softmax_jvp_kernel[
         var cache_row = cache_attn_base + i * SEQ
         var s = Scalar[DT](0)
         for j in range(SEQ):
-            s += rebind[Scalar[DT]](cache.ptr[cache_row + j]) * rebind[
+            s += rebind[Scalar[DT]](cache.ptr[unsafe_offset=cache_row + j]) * rebind[
                 Scalar[DT]
-            ](dattn.ptr[row_off + j])
+            ](dattn.ptr[unsafe_offset=row_off + j])
         for j in range(SEQ):
-            var a = rebind[Scalar[DT]](cache.ptr[cache_row + j])
-            var da = rebind[Scalar[DT]](dattn.ptr[row_off + j])
-            dscore.ptr[row_off + j] = scale * a * (da - s)
+            var a = rebind[Scalar[DT]](cache.ptr[unsafe_offset=cache_row + j])
+            var da = rebind[Scalar[DT]](dattn.ptr[unsafe_offset=row_off + j])
+            dscore.ptr[unsafe_offset=row_off + j] = scale * a * (da - s)
         i += bs
 
 
@@ -523,8 +523,8 @@ def _attn_transpose_from_cache_kernel[
     var b = bh // N_HEADS
     var h = bh % N_HEADS
     var src = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-    attn_T.ptr[bh * SEQ * SEQ + j * SEQ + i] = rebind[Scalar[DT]](
-        cache.ptr[src]
+    attn_T.ptr[unsafe_offset=bh * SEQ * SEQ + j * SEQ + i] = rebind[Scalar[DT]](
+        cache.ptr[unsafe_offset=src]
     )
 
 
@@ -542,8 +542,8 @@ def _attn_transpose_scores_kernel[
     var rem = idx // SEQ
     var j = rem % SEQ
     var bh = rem // SEQ
-    dst.ptr[bh * SEQ * SEQ + j * SEQ + i] = rebind[Scalar[DT]](
-        src.ptr[bh * SEQ * SEQ + i * SEQ + j]
+    dst.ptr[unsafe_offset=bh * SEQ * SEQ + j * SEQ + i] = rebind[Scalar[DT]](
+        src.ptr[unsafe_offset=bh * SEQ * SEQ + i * SEQ + j]
     )
 
 
@@ -571,14 +571,14 @@ def _attn_unpack_grad_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    grad_input.ptr[b * IN_DIM + t * DIM + col] = rebind[Scalar[DT]](
-        dQ.ptr[pidx]
+    grad_input.ptr[unsafe_offset=b * IN_DIM + t * DIM + col] = rebind[Scalar[DT]](
+        dQ.ptr[unsafe_offset=pidx]
     ).cast[ADT]()
-    grad_input.ptr[b * IN_DIM + KOFF + t * DIM + col] = rebind[Scalar[DT]](
-        dK.ptr[pidx]
+    grad_input.ptr[unsafe_offset=b * IN_DIM + KOFF + t * DIM + col] = rebind[Scalar[DT]](
+        dK.ptr[unsafe_offset=pidx]
     ).cast[ADT]()
-    grad_input.ptr[b * IN_DIM + VOFF + t * DIM + col] = rebind[Scalar[DT]](
-        dV.ptr[pidx]
+    grad_input.ptr[unsafe_offset=b * IN_DIM + VOFF + t * DIM + col] = rebind[Scalar[DT]](
+        dV.ptr[unsafe_offset=pidx]
     ).cast[ADT]()
 
 
@@ -600,6 +600,9 @@ struct ScaledDotProductAttention[
     comptime ACT_DT = Self.ADT
     comptime HEAD_DIM: Int = Self.DIM // Self.N_HEADS
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM * 3)
+    # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
+    # `IN_DIMS` from a runtime context would materialize the whole array.
+    comptime IN_DIM0 = Self.SEQ_LEN * Self.DIM * 3
     comptime OUT_DIM = Self.SEQ_LEN * Self.DIM
     # Cache offsets (per sample).
     comptime K_OFF: Int = Self.SEQ_LEN * Self.DIM
@@ -712,12 +715,12 @@ struct ScaledDotProductAttention[
         mut out: TensorImpl[Self.ACT_DT],
         c: DeviceContext,
     ) raises:
-        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_in = Layout.row_major(B, Self.IN_DIM0)
         comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
         comptime kernel = _attn_fwd_kernel[
             B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
+            Self.CAUSAL, Self.IN_DIM0, Self.OUT_DIM, Self.CACHE_SIZE,
             Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
         c.enqueue_function[kernel](
@@ -741,7 +744,7 @@ struct ScaledDotProductAttention[
         self._ensure_scratch_gpu[B](c)
 
         # Forward uses pq=sp0, pk=sp1, pv=sp2, pout=sp3, scores=ss0.
-        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_in = Layout.row_major(B, Self.IN_DIM0)
         comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
         comptime lay_p = Layout.row_major(PACKED)
@@ -752,7 +755,7 @@ struct ScaledDotProductAttention[
         comptime pblocks = (pelems + TPB - 1) // TPB
         comptime pack_k = _attn_pack_qkv_fwd_kernel[
             B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.IN_DIMS[0], Self.CACHE_SIZE, PACKED, Self.ADT,
+            Self.IN_DIM0, Self.CACHE_SIZE, PACKED, Self.ADT,
         ]
         c.enqueue_function[pack_k](
             self.sp0.lt["gpu", lay_p](),
@@ -816,7 +819,7 @@ struct ScaledDotProductAttention[
         # [Q|K|V|scores] is identical to the GPU path.
         out.ensure(B * Self.OUT_DIM)
         self.cache.ensure(B * Self.CACHE_SIZE)
-        comptime IN = Self.IN_DIMS[0]
+        comptime IN = Self.IN_DIM0
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SD = Self.SEQ_LEN * Self.DIM
@@ -946,7 +949,7 @@ struct ScaledDotProductAttention[
                 self._vjp_cpu[B](god, gind)
             else:
                 var c = ctx.value()
-                gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+                gin.ensure_gpu(c, B * Self.IN_DIM0)
                 comptime if Self.USE_MAX_KERNELS:
                     self._vjp_gpu_bmm[B](grad_output, gin, c)
                 else:
@@ -958,7 +961,7 @@ struct ScaledDotProductAttention[
                 target == "gpu"
             ), "bf16-flow ScaledDotProductAttention is GPU-only"
             var c = ctx.value()
-            gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+            gin.ensure_gpu(c, B * Self.IN_DIM0)
             comptime if Self.USE_MAX_KERNELS:
                 self._vjp_gpu_bmm[B](grad_output, gin, c)
             else:
@@ -972,20 +975,20 @@ struct ScaledDotProductAttention[
         mut gin: TensorImpl[Self.ACT_DT],
         c: DeviceContext,
     ) raises:
-        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_in = Layout.row_major(B, Self.IN_DIM0)
         comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
         comptime grid_bh = B * Self.N_HEADS
         # 1) zero grad_input.
-        comptime zk = _attn_zero_grad_kernel[B, Self.IN_DIMS[0], Self.ADT]
-        comptime zn = (B * Self.IN_DIMS[0] + TPB - 1) // TPB
+        comptime zk = _attn_zero_grad_kernel[B, Self.IN_DIM0, Self.ADT]
+        comptime zn = (B * Self.IN_DIM0 + TPB - 1) // TPB
         c.enqueue_function[zk](
             gin.lt["gpu", lay_in](), grid_dim=zn, block_dim=TPB
         )
         # 2) dV (reads attn weights — must precede dscore_dQ overwrite).
         comptime dvk = _attn_dV_kernel[
             B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
+            Self.CAUSAL, Self.IN_DIM0, Self.OUT_DIM, Self.CACHE_SIZE,
             Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
         c.enqueue_function[dvk](
@@ -997,7 +1000,7 @@ struct ScaledDotProductAttention[
         # 3) dscore + dQ (overwrites cache.attn with d_score).
         comptime dqk = _attn_dscore_dQ_kernel[
             B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
+            Self.CAUSAL, Self.IN_DIM0, Self.OUT_DIM, Self.CACHE_SIZE,
             Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
         c.enqueue_function[dqk](
@@ -1009,7 +1012,7 @@ struct ScaledDotProductAttention[
         # 4) dK (reads d_score from cache.attn).
         comptime dkk = _attn_dK_kernel[
             B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.CAUSAL, Self.IN_DIMS[0], Self.CACHE_SIZE,
+            Self.CAUSAL, Self.IN_DIM0, Self.CACHE_SIZE,
             Self.K_OFF, Self.ATTN_OFF, Self.ADT,
         ]
         c.enqueue_function[dkk](
@@ -1039,7 +1042,7 @@ struct ScaledDotProductAttention[
         #   sp2: pk                        sp3: pv     → (step5) dV
         #   ss0: dattn  → (step4) attn_T → (step6) dscore_T
         #   ss1: dscore
-        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_in = Layout.row_major(B, Self.IN_DIM0)
         comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
         comptime lay_p = Layout.row_major(PACKED)
@@ -1052,7 +1055,7 @@ struct ScaledDotProductAttention[
         # 1. pack dout + cache Q/K/V → (BH, SEQ, HEAD_DIM).
         comptime pin_k = _attn_pack_in_bwd_kernel[
             B, Self.DIM, Self.N_HEADS, SL, HD,
-            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE, PACKED, Self.ADT,
+            Self.IN_DIM0, Self.OUT_DIM, Self.CACHE_SIZE, PACKED, Self.ADT,
         ]
         c.enqueue_function[pin_k](
             self.sp0.lt["gpu", lay_p](),
@@ -1120,7 +1123,7 @@ struct ScaledDotProductAttention[
 
         # 9. unpack dQ(sp1)/dK(sp0)/dV(sp3) → grad_input.
         comptime ug_k = _attn_unpack_grad_kernel[
-            B, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIMS[0], PACKED, Self.ADT,
+            B, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIM0, PACKED, Self.ADT,
         ]
         c.enqueue_function[ug_k](
             gin.lt["gpu", lay_in](),
@@ -1135,8 +1138,8 @@ struct ScaledDotProductAttention[
     ](mut self, mut grad_output: Tensor, mut gin: Tensor) raises:
         # Mirror the GPU bmm backward (pack → dattn=dout·Vᵀ bmm → scalar
         # softmax-JVP → transposes → dV/dK/dQ bmms → unpack) with target="cpu".
-        gin.ensure(B * Self.IN_DIMS[0])
-        comptime IN = Self.IN_DIMS[0]
+        gin.ensure(B * Self.IN_DIM0)
+        comptime IN = Self.IN_DIM0
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SL = Self.SEQ_LEN

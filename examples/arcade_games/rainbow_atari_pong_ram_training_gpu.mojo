@@ -23,9 +23,9 @@ Requires roms/pong.bin.
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -35,6 +35,7 @@ from mojo_rl.deep_agents.c51.config import Rainbow
 from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
 from mojo_rl.envs.atari.environment import load_rom
 from mojo_rl.envs.atari.games import PongDef
+from mojo_rl.core.fmt import fit
 
 
 # RAM-mode Atari Pong: 128-byte RAM obs, 6 actions (ALE minimal set).
@@ -137,18 +138,18 @@ def main() raises:
                 print_every=20_000,
                 verbose=True,
                 nstep_gamma=Scalar[DT](0.99),
-                logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+                logger=Pointer(to=logger).as_unsafe_any_origin(),
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),
-                eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+                eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
                 eval_every=100_000,
                 eval_episodes=20,
             )
             var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
             logger.close()
             print("-" * 70)
-            print("Training complete in", String(elapsed_s)[byte=:8], "s")
+            print("Training complete in", fit(String(elapsed_s), 8), "s")
             print("Final mean return (last 10):", agent.mean_return())
             print("Episodes completed:", agent.ep_count())
         except e:

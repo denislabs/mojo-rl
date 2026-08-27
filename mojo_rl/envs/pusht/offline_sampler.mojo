@@ -151,8 +151,8 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         """Fill `pixels_out` (uint8 HWC) / `actions_out` (fp32) with B clips.
 
@@ -202,8 +202,8 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
             # buffer as a shared scratch — proprio/state are unused here.
             self.dataset.sample_clip_pixels_uint8(
                 clip_idx,
-                pixels_out + b * pix_per_sample,
-                actions_out + b * act_per_sample,
+                pixels_out.unsafe_offset(b * pix_per_sample),
+                actions_out.unsafe_offset(b * act_per_sample),
                 self.window.pixels_dense.as_unsafe_any_origin(),
             )
             if self.normalize_actions:
@@ -211,13 +211,13 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 # frameskip sub-steps: [x0,y0,x1,y1,...] → dim = j % 2).
                 # NaN (boundary padding) → 0 (reference nan_to_num).
                 var adim = self.dataset.action_dim
-                var base = actions_out + b * act_per_sample
+                var base = actions_out.unsafe_offset(b * act_per_sample)
                 for j in range(act_per_sample):
                     var d = j % adim
-                    var v = Float64(base[j])
+                    var v = Float64(base[unsafe_offset=j])
                     if isnan(v):
-                        base[j] = Scalar[DType.float32](0.0)
+                        base[unsafe_offset=j] = Scalar[DType.float32](0.0)
                     else:
-                        base[j] = Scalar[DType.float32](
+                        base[unsafe_offset=j] = Scalar[DType.float32](
                             (v - self.act_mean[d]) / self.act_std[d]
                         )

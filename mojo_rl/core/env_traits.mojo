@@ -41,13 +41,12 @@ from .env import Env
 from layout import LayoutTensor, Layout
 from mojo_rl.nn.constants import DT as dtype
 from std.gpu import (
-    DeviceContext,
-    DeviceBuffer,
     block_dim,
     block_idx,
     thread_idx,
 )
-from std.memory import UnsafePointer
+from max.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import Pointer
 
 
 # ============================================================================
@@ -329,7 +328,7 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
     def step_obs_into(
         mut self,
         action: Int,
-        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+        obs_out: Pointer[Scalar[Self.dtype], MutAnyOrigin],
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Take discrete action, writing the observation directly into
         `obs_out` (caller-owned, `obs_dim()` scalars). Returns
@@ -343,7 +342,7 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
         write the obs buffer once."""
         var res = self.step_obs(action)
         for d in range(len(res[0])):
-            obs_out[d] = res[0][d]
+            obs_out[unsafe_offset=d] = res[0][d]
         return (res[1], res[2])
 
 
@@ -439,10 +438,10 @@ trait GPUDiscreteEnv:
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Perform one environment step and extract observations.
@@ -495,10 +494,10 @@ trait GPUDiscreteEnv:
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only done environments to random initial values.
@@ -650,10 +649,10 @@ trait GPUContinuousEnv:
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Perform one environment step with continuous actions.
@@ -708,10 +707,10 @@ trait GPUContinuousEnv:
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only done environments to random initial values.
@@ -956,7 +955,7 @@ trait GPUTwoPlayerDiscreteEnv:
         mut legal_masks: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Perform one environment step for all games in batch.
@@ -1003,7 +1002,7 @@ trait GPUTwoPlayerDiscreteEnv:
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only finished games.

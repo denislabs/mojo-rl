@@ -1,0 +1,26 @@
+---
+/**
+ * DemoGrid — responsive grid wrapper for a set of <Demo> videos.
+ *
+ * Defaults to auto-fitting columns at a ~15rem minimum, which lands at 3 across
+ * in the content column and collapses to 1 on a phone. Pass `min` to widen the
+ * tracks for demos that need the detail (3D locomotion renders), or `cols` to
+ * pin an exact count.
+ */
+interface Props {
+	/** Minimum track width, any CSS length. Default '15rem'. */
+	min?: string;
+	/** Pin an exact column count instead of auto-fitting. */
+	cols?: number;
+}
+
+const { min = '15rem', cols } = Astro.props;
+
+const style = cols
+	? `--demo-grid-cols: repeat(${cols}, minmax(0, 1fr));`
+	: `--demo-grid-cols: repeat(auto-fit, minmax(${min}, 1fr));`;
+---
+
+<div class="demo-grid not-content" style={style}>
+	<slot />
+</div>

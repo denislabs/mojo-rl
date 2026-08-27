@@ -274,7 +274,7 @@ def init(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Init.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_Init", def(flags: InitFlags) thin -> Bool
     ]()(flags)
     if not ret:
@@ -296,7 +296,7 @@ def init_sub_system(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_InitSubSystem.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_InitSubSystem", def(flags: InitFlags) thin -> Bool
     ]()(flags)
     if not ret:
@@ -418,7 +418,7 @@ def run_on_main_thread(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RunOnMainThread.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RunOnMainThread",
         def(
@@ -472,7 +472,7 @@ def set_app_metadata(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAppMetadata.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAppMetadata",
         def(
@@ -552,7 +552,7 @@ def set_app_metadata_property(var name: String, var value: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAppMetadataProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAppMetadataProperty",
         def(

@@ -21,7 +21,7 @@ inherits its `SampleBlock` default — the host n-step decorator
 (`NStepSampleStep`) handles γ.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..replay_buffer import ReplayBuffer

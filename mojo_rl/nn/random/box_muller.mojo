@@ -17,7 +17,7 @@ to keep API identical between v1 and nn callers.
 
 from std.math import cos as fcos, log as flog, sin as fsin, sqrt as fsqrt, pi
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
@@ -27,7 +27,7 @@ from ..constants import DT, TPB
 
 def box_muller_normal[
     out_origin: Origin[mut=True]
-](out_ptr: UnsafePointer[Scalar[DT], out_origin], n: Int):
+](out_ptr: Pointer[Scalar[DT], out_origin], n: Int):
     """Fill out_ptr[0:n] with iid N(0, 1) samples via Box-Muller.
 
     Each lane is drawn independently — no batched-pair optimization (the
@@ -40,7 +40,7 @@ def box_muller_normal[
         if u1 < 1e-10:
             u1 = 1e-10
         var u2 = random_float64()
-        out_ptr[i] = fsqrt(Scalar[DT](-2.0) * flog(Scalar[DT](u1))) * fcos(
+        out_ptr[unsafe_offset=i] = fsqrt(Scalar[DT](-2.0) * flog(Scalar[DT](u1))) * fcos(
             Scalar[DT](2.0 * pi) * Scalar[DT](u2)
         )
 
@@ -78,7 +78,7 @@ def _box_muller_kernel[N: Int](
 
 def box_muller_normal_gpu[N: Int](
     ctx: DeviceContext,
-    out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    out_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     seed: UInt64,
     offset_base: UInt64,
 ) raises:
@@ -150,7 +150,7 @@ def advance_rng_offset_kernel[AMT: Int](
 
 def box_muller_normal_gpu_dev[N: Int](
     ctx: DeviceContext,
-    out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    out_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     seed: UInt64,
     offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ) raises:

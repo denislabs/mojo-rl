@@ -64,7 +64,7 @@ def check(mut counts: List[Int], name: String, ok: Bool):
 
 @always_inline
 def _count_block(
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
     floor: Int,
     target: Int,
 ) -> Int:
@@ -78,7 +78,7 @@ def _count_block(
 
 @always_inline
 def _count_item(
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
     floor: Int,
     target: Int,
 ) -> Int:
@@ -332,7 +332,9 @@ def test_light_map_range(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7B world-gen gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_world_generates(counts)
     test_overworld(counts)
     test_dungeons(counts)

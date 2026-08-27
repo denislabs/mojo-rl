@@ -28,7 +28,7 @@ perf-critical compared to the GPU rollout it scores, so the lost
 constant-folding is negligible.
 
 **Storage.** Host scratch lives in ``List`` (heap-allocated, safe
-ownership) rather than ``UnsafePointer`` — no manual ``__del__``, no
+ownership) rather than ``Pointer`` — no manual ``__deinit__``, no
 move-constructor boilerplate. ``TileTensor`` views are built on the
 fly inside each method that needs 3-D / 4-D indexed access; the view
 construction is free at runtime (just a pointer + Coord-layout
@@ -55,7 +55,7 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDeletable,
+    Deinitable,
     Movable,
 ):
     """Per-step categorical CEM optimizer.
@@ -250,7 +250,7 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         """Run `cem_iters` rounds of sample → score → top-K → refit.
@@ -336,7 +336,7 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         """Run ``cem_iters`` rounds of sample → score → top-K → refit

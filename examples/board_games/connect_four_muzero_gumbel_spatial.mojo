@@ -24,8 +24,8 @@ Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/connect_four_muzero_gumbel_spatial.mojo
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -174,7 +174,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         # Anti-sharpening / sustained exploration: never go greedy in self-play
         # (temp_min=1.0 → sample ∝ visits the whole game, the muzero-general
         # temp=1-always recipe) + 6 random opening plies, paired with the

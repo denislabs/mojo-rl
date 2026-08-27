@@ -12,7 +12,7 @@ control loop. Host-side; the caller H2D-uploads the assembled (B, T·IMG_DIM)
 window to the GPU world model.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from layout import Layout, LayoutTensor
 
 from ...nn.constants import DT
@@ -28,12 +28,13 @@ def sim_frame_chw_norm[
     block_angle: Scalar[DT],
     agent_cx: Scalar[DT],
     agent_cy: Scalar[DT],
-    dst_chw: UnsafePointer[Scalar[DT], do],
+    dst_chw: Pointer[Scalar[DT], do],
 ) raises:
     """Render one PushT state at OUT×OUT and write CHW [0,1] (3·OUT·OUT) to
     `dst_chw` — the LeWM encoder's per-frame input layout."""
     comptime HW = OUT * OUT
-    var tmp = alloc[Scalar[DT]](HW * 3)   # HWC [0,255]
+    var tmp_a = alloc[Scalar[DT]]({count = HW * 3})
+    var tmp = tmp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()   # HWC [0,255]
     var pix = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](
         tmp.as_unsafe_any_origin()
     )
@@ -45,7 +46,7 @@ def sim_frame_chw_norm[
     for c in range(3):
         for y in range(OUT):
             for x in range(OUT):
-                dst_chw[c * HW + y * OUT + x] = (
-                    tmp[(y * OUT + x) * 3 + c] * inv
+                dst_chw[unsafe_offset=c * HW + y * OUT + x] = (
+                    tmp[unsafe_offset=(y * OUT + x) * 3 + c] * inv
                 )
-    tmp.free()
+    dealloc(tmp_a^)

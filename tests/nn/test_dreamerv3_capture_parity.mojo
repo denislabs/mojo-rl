@@ -25,7 +25,7 @@ Run: `pixi run -e nvidia mojo run -I . tests/nn/test_dreamerv3_capture_parity.mo
 from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
@@ -65,11 +65,11 @@ def _lcg(mut s: UInt64) -> Scalar[DT]:
 
 def _fill_window(
     it: Int,
-    mb_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_act: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_dne: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_fst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mb_obs: Pointer[Scalar[DT], MutAnyOrigin],
+    mb_act: Pointer[Scalar[DT], MutAnyOrigin],
+    mb_rew: Pointer[Scalar[DT], MutAnyOrigin],
+    mb_dne: Pointer[Scalar[DT], MutAnyOrigin],
+    mb_fst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """A fresh-but-deterministic window for iter `it` (seeded by `it`)."""
     var s = UInt64(99887766) + UInt64(it) * UInt64(2654435761)

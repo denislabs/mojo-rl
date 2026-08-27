@@ -8,16 +8,27 @@ subsequent loads are pure-Mojo via the libhdf5 FFI in ``mojo_rl/io/hdf5``.
 
 Schema (from ``stable_worldmodel.data.formats.hdf5``):
 
-================ ===========  =========================  =============================
-Dataset          Dtype        Shape                      Notes
-================ ===========  =========================  =============================
-``ep_len``       int32        ``(N_ep,)``                episode lengths
-``ep_offset``    int64        ``(N_ep,)``                start index in flat storage
-``pixels``       uint8        ``(N_total, H, W, 3)``     HWC; we deliver permuted CHW
-``action``       float32      ``(N_total, A)``           A=2 for PushT
-``proprio``      float32      ``(N_total, P)``           P=2 for PushT (agent xy)
-``state``        float32      ``(N_total, S)``           S=5 for PushT
-================ ===========  =========================  =============================
+Schema as MEASURED from the cached `pusht_expert_train.h5` (2026-08-05):
+N_total = 2_336_736 frames over N_ep = 18_685 episodes.
+
+================ ===========  ============================  ==========================
+Dataset          Dtype        Shape                         Notes
+================ ===========  ============================  ==========================
+``ep_len``       int32        ``(N_ep,)``                   episode lengths
+``ep_offset``    int64        ``(N_ep,)``                   start index in flat storage
+``pixels``       uint8        ``(N_total, 224, 224, 3)``    HWC; we deliver permuted CHW
+``action``       float32      ``(N_total, 2)``
+``proprio``      float32      ``(N_total, 4)``
+``state``        float32      ``(N_total, 7)``
+``episode_idx``  int64        ``(N_total,)``                unused here
+``step_idx``     int64        ``(N_total,)``                unused here
+================ ===========  ============================  ==========================
+
+⚠ An earlier version of this table claimed P=2 / S=5 and omitted
+``episode_idx`` / ``step_idx``. The loader was never wrong — it reads every
+dimension from the file (see ``__init__``: ``dims[1]`` for action/proprio/state)
+— but the documented shapes were. Corrected after ``mojo_rl.data``'s foreign
+ingest enumerated the real file.
 
 Sampling matches ``stable_worldmodel.data.dataset.Dataset.__getitem__``
 exactly:
@@ -215,20 +226,20 @@ struct LewmPushTWindow(Movable):
     var proprio_dim: Int
     var state_dim: Int
 
-    var pixels: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var pixels: Pointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps, H, W, 3]`` — native HDF5 layout; HWC."""
-    var pixels_dense: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var pixels_dense: Pointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps * frameskip, H, W, 3]`` — scratch buffer for one
     dense HDF5 read. ``H5Sselect_hyperslab`` with ``stride>1`` is
     pathologically slow (~15× a contiguous read of the same chunk),
     so ``sample_window`` reads the dense span into this buffer and
     memcpys every ``frameskip``-th frame into ``pixels``.
     """
-    var action: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var action: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, frameskip * action_dim]`` — dense actions, reshaped."""
-    var proprio: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var proprio: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, proprio_dim]`` — subsampled by frameskip."""
-    var state: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var state: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, state_dim]`` — subsampled by frameskip."""
 
     def __init__(
@@ -251,23 +262,35 @@ struct LewmPushTWindow(Movable):
         self.state_dim = state_dim
 
         var n_pixels = num_steps * 3 * pixel_h * pixel_w
-        self.pixels = untracked(alloc[Scalar[DType.uint8]](n_pixels))
+        self.pixels = untracked(
+            alloc[Scalar[DType.uint8]]({count = n_pixels}).unsafe_leak()
+        )
         var n_pixels_dense = num_steps * frameskip * 3 * pixel_h * pixel_w
-        self.pixels_dense = untracked(alloc[Scalar[DType.uint8]](n_pixels_dense))
-        self.action = untracked(alloc[Scalar[DType.float32]](
-            num_steps * frameskip * action_dim
-        ))
-        self.proprio = untracked(alloc[Scalar[DType.float32]](
-            num_steps * proprio_dim
-        ))
-        self.state = untracked(alloc[Scalar[DType.float32]](num_steps * state_dim))
+        self.pixels_dense = untracked(
+            alloc[Scalar[DType.uint8]]({count = n_pixels_dense}).unsafe_leak()
+        )
+        self.action = untracked(
+            alloc[Scalar[DType.float32]](
+                {count = num_steps * frameskip * action_dim}
+            ).unsafe_leak()
+        )
+        self.proprio = untracked(
+            alloc[Scalar[DType.float32]](
+                {count = num_steps * proprio_dim}
+            ).unsafe_leak()
+        )
+        self.state = untracked(
+            alloc[Scalar[DType.float32]](
+                {count = num_steps * state_dim}
+            ).unsafe_leak()
+        )
 
-    def __del__(deinit self):
-        self.pixels.free()
-        self.pixels_dense.free()
-        self.action.free()
-        self.proprio.free()
-        self.state.free()
+    def __deinit__(deinit self):
+        self.pixels.unsafe_free()
+        self.pixels_dense.unsafe_free()
+        self.action.unsafe_free()
+        self.proprio.unsafe_free()
+        self.state.unsafe_free()
 
 
 struct LewmPushTExpert(Movable, Sized):
@@ -386,12 +409,14 @@ struct LewmPushTExpert(Movable, Sized):
             or ep_len_ds.signedness != H5T_SGN_2:
             raise Error("ep_len: expected int32")
         self.n_episodes = Int(ep_len_ds.dims[0])
-        var ep_len_buf = mptr(alloc[Scalar[DType.int32]](self.n_episodes))
+        var ep_len_buf = mptr(
+            alloc[Scalar[DType.int32]]({count = self.n_episodes}).unsafe_leak()
+        )
         ep_len_ds.read_all[DType.int32](ep_len_buf)
         self.ep_len = List[Int32](capacity=self.n_episodes)
         for i in range(self.n_episodes):
-            self.ep_len.append(Int32(ep_len_buf[i]))
-        ep_len_buf.free()
+            self.ep_len.append(Int32(ep_len_buf[unsafe_offset=i]))
+        ep_len_buf.unsafe_free()
 
         # ep_offset (int64)
         var ep_off_ds = self._file.open_dataset(String("ep_offset"))
@@ -401,39 +426,47 @@ struct LewmPushTExpert(Movable, Sized):
             raise Error("ep_offset: expected int64")
         if Int(ep_off_ds.dims[0]) != self.n_episodes:
             raise Error("ep_offset / ep_len length mismatch")
-        var ep_off_buf = mptr(alloc[Scalar[DType.int64]](self.n_episodes))
+        var ep_off_buf = mptr(
+            alloc[Scalar[DType.int64]]({count = self.n_episodes}).unsafe_leak()
+        )
         ep_off_ds.read_all[DType.int64](ep_off_buf)
         self.ep_offset = List[Int64](capacity=self.n_episodes)
         for i in range(self.n_episodes):
-            self.ep_offset.append(Int64(ep_off_buf[i]))
-        ep_off_buf.free()
+            self.ep_offset.append(Int64(ep_off_buf[unsafe_offset=i]))
+        ep_off_buf.unsafe_free()
 
         # action (flat)
         var n_act = self.n_total_frames * self.action_dim
-        var act_buf = mptr(alloc[Scalar[DType.float32]](n_act))
+        var act_buf = mptr(
+            alloc[Scalar[DType.float32]]({count = n_act}).unsafe_leak()
+        )
         self._dset_action.read_all[DType.float32](act_buf)
         self.action_flat = List[Float32](capacity=n_act)
         for i in range(n_act):
-            self.action_flat.append(Float32(act_buf[i]))
-        act_buf.free()
+            self.action_flat.append(Float32(act_buf[unsafe_offset=i]))
+        act_buf.unsafe_free()
 
         # proprio (flat)
         var n_pro = self.n_total_frames * self.proprio_dim
-        var pro_buf = mptr(alloc[Scalar[DType.float32]](n_pro))
+        var pro_buf = mptr(
+            alloc[Scalar[DType.float32]]({count = n_pro}).unsafe_leak()
+        )
         self._dset_proprio.read_all[DType.float32](pro_buf)
         self.proprio_flat = List[Float32](capacity=n_pro)
         for i in range(n_pro):
-            self.proprio_flat.append(Float32(pro_buf[i]))
-        pro_buf.free()
+            self.proprio_flat.append(Float32(pro_buf[unsafe_offset=i]))
+        pro_buf.unsafe_free()
 
         # state (flat)
         var n_st = self.n_total_frames * self.state_dim
-        var st_buf = mptr(alloc[Scalar[DType.float32]](n_st))
+        var st_buf = mptr(
+            alloc[Scalar[DType.float32]]({count = n_st}).unsafe_leak()
+        )
         self._dset_state.read_all[DType.float32](st_buf)
         self.state_flat = List[Float32](capacity=n_st)
         for i in range(n_st):
-            self.state_flat.append(Float32(st_buf[i]))
-        st_buf.free()
+            self.state_flat.append(Float32(st_buf[unsafe_offset=i]))
+        st_buf.unsafe_free()
 
         # ── sampling params + clip index ──────────────────────────────
         if frameskip <= 0:
@@ -514,8 +547,8 @@ struct LewmPushTExpert(Movable, Sized):
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
             unsafe_memcpy(
-                dest=into.pixels + k * pix_per_frame,
-                src=into.pixels_dense + k * self.frameskip * pix_per_frame,
+                dest=into.pixels.unsafe_offset(k * pix_per_frame),
+                src=into.pixels_dense.unsafe_offset(k * self.frameskip * pix_per_frame),
                 count=pix_per_frame,
             )
 
@@ -524,7 +557,7 @@ struct LewmPushTExpert(Movable, Sized):
         # as a (span, action_dim) block, just reinterpreted.
         var act_total = self.span * self.action_dim
         for i in range(act_total):
-            into.action[i] = self.action_flat[g_start * self.action_dim + i]
+            into.action[unsafe_offset=i] = self.action_flat[g_start * self.action_dim + i]
 
         # ── proprio: subsample by frameskip from flat host buffer ──────
         for n in range(self.num_steps):
@@ -532,7 +565,7 @@ struct LewmPushTExpert(Movable, Sized):
             var src_base = src_row * self.proprio_dim
             var dst_base = n * self.proprio_dim
             for j in range(self.proprio_dim):
-                into.proprio[dst_base + j] = self.proprio_flat[
+                into.proprio[unsafe_offset=dst_base + j] = self.proprio_flat[
                     src_base + j
                 ]
 
@@ -542,14 +575,14 @@ struct LewmPushTExpert(Movable, Sized):
             var src_base = src_row * self.state_dim
             var dst_base = n * self.state_dim
             for j in range(self.state_dim):
-                into.state[dst_base + j] = self.state_flat[src_base + j]
+                into.state[unsafe_offset=dst_base + j] = self.state_flat[src_base + j]
 
     def sample_clip_pixels_uint8(
         self,
         idx: Int,
-        pixels_dst: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_dst: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-        dense_scratch: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+        pixels_dst: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_dst: Pointer[Scalar[DType.float32], MutAnyOrigin],
+        dense_scratch: Pointer[Scalar[DType.uint8], MutAnyOrigin],
     ) raises:
         """Hot-path sample for the trainer's batch loop.
 
@@ -582,8 +615,8 @@ struct LewmPushTExpert(Movable, Sized):
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
             unsafe_memcpy(
-                dest=pixels_dst + k * pix_per_frame,
-                src=dense_scratch + k * self.frameskip * pix_per_frame,
+                dest=pixels_dst.unsafe_offset(k * pix_per_frame),
+                src=dense_scratch.unsafe_offset(k * self.frameskip * pix_per_frame),
                 count=pix_per_frame,
             )
 

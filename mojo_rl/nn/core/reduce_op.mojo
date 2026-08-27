@@ -21,7 +21,7 @@ needs one; not in scope here.
 from ..constants import DT
 
 
-trait ReduceOp(Movable & ImplicitlyDeletable):
+trait ReduceOp(Movable & Deinitable):
     """Marker trait — linear-reduction op providing a comptime scale factor.
 
     Implementations supply one `@staticmethod` returning a `Scalar[DT]`

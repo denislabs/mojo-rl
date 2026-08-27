@@ -31,7 +31,8 @@ Usage:
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
+from mojo_rl.core.fmt import fit
 
 
 struct PerfTimer[ENABLED: Bool]:
@@ -208,12 +209,12 @@ struct PerfTimer[ENABLED: Bool]:
 
 def _fmt_ms(ms: Float64) -> String:
     """Format milliseconds with consistent width."""
-    return String(ms)[byte=:9] + "ms"
+    return fit(String(ms), 9) + "ms"
 
 
 def _fmt_pct(pct: Float64) -> String:
     """Format percentage."""
-    return "(" + String(pct)[byte=:4] + "%)"
+    return "(" + fit(String(pct), 4) + "%)"
 
 
 def _pad_to(n: Int) -> String:

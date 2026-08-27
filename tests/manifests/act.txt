@@ -1,0 +1,35 @@
+# ACT manifest — `bash scripts/run_tests.sh tests/manifests/act.txt`
+#
+# ⚠ NOT part of `test-smoke`. Every gate below except the overfit probe reads a
+# reference dump produced from `references/act-main/` under PyTorch, and the
+# smoke tier is defined as self-contained (no references/, gitignored and absent
+# on CI). The overfit probe IS self-contained but takes ~80 s, which the smoke
+# tier is not for either.
+#
+# Prerequisites:
+#
+#   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+#   pixi run python tools/act/lerobot_v3_to_store.py \
+#       --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
+#
+# ⚠ These run under `mojo run` (JIT), which never invokes ld. Building them with
+# `mojo build` needs `-Xlinker -ld_classic`: the fully-expanded ResNet18 / graph
+# types mangle to symbols longer than Apple's new linker accepts. Healthy source,
+# toolchain limit — see feedback_mojo_build_failure_can_be_link_only.
+
+# M1 — the cross-attention leaf (vs torch)
+tests/nn/test_cross_attention_vs_torch.mojo
+# M2 — DETR encoder / masked encoder / decoder layers (vs the reference's own)
+tests/deep_agents/act/test_act_layers_vs_reference.mojo
+# M3 — ResNet18 + both position tables (vs torchvision / PositionEmbeddingSine)
+tests/deep_agents/act/test_act_backbone_vs_reference.mojo
+# M4 — reparameterize / KL / masked L1 (vs policy.py)
+tests/deep_agents/act/test_act_cvae_vs_reference.mojo
+# M5 — the whole model end to end (vs DETRVAE)
+tests/deep_agents/act/test_act_forward_vs_reference.mojo
+# M6 — the trainer drives one batch to ~0 (self-contained, ~80 s)
+tests/deep_agents/act/test_act_overfit_one_batch.mojo
+# M7 — temporal ensembling (vs imitate_episodes.py's buffer scheme)
+tests/deep_agents/act/test_act_temporal_ensemble.mojo
+# M0 — the dataset path (needs the converted store)
+tests/deep_agents/act/test_act_dataset.mojo

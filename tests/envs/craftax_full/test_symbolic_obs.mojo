@@ -231,7 +231,9 @@ def test_no_mob_in_dark(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7D symbolic obs smoke gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_obs_length(counts)
     test_obs_bounds(counts)
     test_tile_onehot(counts)

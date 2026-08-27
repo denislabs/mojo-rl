@@ -30,12 +30,12 @@ line-oriented, matching v1's existing line-based parser.
 """
 
 
-trait Saveable(Movable, ImplicitlyDeletable):
+trait Saveable(Movable, Deinitable):
     """Container or scalar-leaf that can serialize itself to a String
     body and read itself back. The walkers (`state_walker.mojo`) gate on
     `conforms_to(ft, Saveable)` to find conforming fields.
 
-    Parents are `Movable & ImplicitlyDeletable` only (matching the
+    Parents are `Movable & Deinitable` only (matching the
     `Module` trait). Copyable is NOT required because real conformers
     like `Param` carry `List[Scalar[DT]]` storage which is not
     `ImplicitlyCopyable`. The walker doesn't need to copy values — it

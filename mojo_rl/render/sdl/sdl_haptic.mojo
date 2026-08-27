@@ -1004,7 +1004,7 @@ def update_haptic_effect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateHapticEffect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateHapticEffect",
         def(
@@ -1041,7 +1041,7 @@ def run_haptic_effect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RunHapticEffect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RunHapticEffect",
         def(
@@ -1068,7 +1068,7 @@ def stop_haptic_effect(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StopHapticEffect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StopHapticEffect",
         def(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) thin -> Bool,
@@ -1146,7 +1146,7 @@ def set_haptic_gain(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetHapticGain.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetHapticGain",
         def(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) thin -> Bool,
@@ -1176,7 +1176,7 @@ def set_haptic_autocenter(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetHapticAutocenter.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetHapticAutocenter",
         def(haptic: Ptr[Haptic, MutAnyOrigin], autocenter: c_int) thin -> Bool,
@@ -1204,7 +1204,7 @@ def pause_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PauseHaptic.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_PauseHaptic", def(haptic: Ptr[Haptic, MutAnyOrigin]) thin -> Bool
     ]()(haptic)
     if not ret:
@@ -1226,7 +1226,7 @@ def resume_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResumeHaptic.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ResumeHaptic",
         def(haptic: Ptr[Haptic, MutAnyOrigin]) thin -> Bool,
@@ -1248,7 +1248,7 @@ def stop_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StopHapticEffects.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StopHapticEffects",
         def(haptic: Ptr[Haptic, MutAnyOrigin]) thin -> Bool,
@@ -1289,7 +1289,7 @@ def init_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_InitHapticRumble.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_InitHapticRumble",
         def(haptic: Ptr[Haptic, MutAnyOrigin]) thin -> Bool,
@@ -1315,7 +1315,7 @@ def play_haptic_rumble(
     Docs: https://wiki.libsdl.org/SDL3/SDL_PlayHapticRumble.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_PlayHapticRumble",
         def(
@@ -1341,7 +1341,7 @@ def stop_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StopHapticRumble.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StopHapticRumble",
         def(haptic: Ptr[Haptic, MutAnyOrigin]) thin -> Bool,

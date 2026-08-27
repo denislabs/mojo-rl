@@ -15,7 +15,7 @@ struct DDPGPolyakStep[
     BATCH_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

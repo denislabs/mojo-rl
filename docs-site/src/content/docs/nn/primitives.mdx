@@ -1,0 +1,176 @@
+---
+title: Primitives
+description: The leaf-layer catalogue — linear, convolution, attention, recurrence, normalization, and the RL-specific operations.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Around seventy leaf modules live in `mojo_rl.nn.primitives`. Every one
+implements [`Module`](/nn/modules/) with explicit `forward` and `vjp`, and most
+have both a CPU and a GPU kernel.
+
+Import paths follow the file name:
+
+```mojo
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Layer Normalization"
+		authors="Ba, Kiros, Hinton"
+		year="2016"
+		arxiv="1607.06450"
+	/>
+</Papers>
+
+## Linear and fused variants
+
+| Module | Notes |
+|---|---|
+| `Linear[IN, OUT]` | dense layer with bias |
+| `LinearReLU[IN, OUT]` | fused — one GPU kernel |
+| `LinearTanh` · `LinearSigmoid` · `LinearSwish` · `LinearMish` | other fused activations |
+| `LinearAct` | generic fused-activation form |
+| `BlockLinear` | block-diagonal, for ensembles |
+| `TiedLinear` | weights tied to another layer — used for GPT output projection |
+| `NoisyLinear` | learned parameter noise; replaces ε-greedy in Noisy DQN |
+| `ZeroLinear` | zero-initialized output layer |
+
+The fused variants are what the GPU examples use throughout. `Linear` followed
+by `ReLU` is two kernels; `LinearReLU` is one, and in an inner training loop
+evaluated millions of times that difference is real.
+
+:::caution[Weight tying is the dominant lever in small language models]
+On character-level GPT, tying the output projection to the embedding was worth
+more than any other single change. `TiedLinear` exists for exactly this.
+:::
+
+## Convolution
+
+| Module | Notes |
+|---|---|
+| `Conv2D` | 2D convolution, GEMM-backed via im2col |
+| `Conv2DTranspose` | transposed convolution — decoders (DreamerV3 pixel) |
+| `MaxPool2D` · `AvgPool2D` | pooling |
+| `Upsample2x` | nearest-neighbour upsampling |
+| `ConvRMSNorm` | RMS normalization for conv activations |
+| `ToNCHW` · `Flatten` · `Transpose2D` | layout helpers |
+
+Conv2D fuses with an activation the same way `Linear` does.
+
+:::note[Conv is bandwidth-bound, not GEMM-bound]
+Profiling the zero-series convolutional nets showed the bottleneck is memory
+bandwidth rather than matrix-multiply throughput. Hand-written GEMMs *lose* to
+the library `max_matmul` here. If you are optimizing a conv path, look at data
+movement first.
+:::
+
+## Attention and transformers
+
+| Module | Notes |
+|---|---|
+| `Attention` | scaled dot-product attention |
+| `MaskedAttention` | causal masking |
+| `QkvToMajor` | QKV layout transform |
+| `DecoderBlock` | pre-norm transformer decoder block |
+| `ConditionalTransformerBlock` | conditioned variant |
+| `Embedding` · `SinusoidalPos` | token and position embeddings |
+| `LearnedQueries` · `LearnedTokens` · `BroadcastTokens` | latent-query patterns |
+| `SwiGLU` · `Gate` · `Modulate` | gating and modulation |
+
+:::caution[QKV layout mismatches scramble attention silently]
+A wrong QKV layout produces attention that runs, trains, and is wrong. Worse,
+a numerical parity test against a reference **will not catch it** if the test
+does not exercise causality — the shapes match and the values look plausible.
+Test masked attention with a sequence where position `t` must not see `t+1`.
+:::
+
+## Recurrence
+
+| Module | Notes |
+|---|---|
+| `LSTMCell` | single LSTM step |
+| `LSTMSeq` | unrolled sequence |
+| `GRUCell` | GRU step — the RSSM recurrence in DreamerV3 |
+
+:::caution[Do not spectral-clamp a tanh recurrence]
+Constraining the spectral norm of a tanh recurrent weight matrix damages
+learning rather than stabilising it. The saturating nonlinearity already bounds
+the state.
+:::
+
+## Normalization
+
+| Module | Notes |
+|---|---|
+| `LayerNorm` · `LayerNormNoAffine` | the deep-RL default |
+| `RMSNorm` · `ConvRMSNorm` | cheaper, no mean subtraction |
+| `BatchNorm1D` · `BatchNorm2D` | running statistics |
+| `SimNorm` | simplicial normalization — TD-MPC2 latents |
+| `MinMaxNorm` | bounded normalization |
+
+:::tip[Prefer LayerNorm in deep RL]
+Value scales drift over training in ways batch statistics cannot track, and RL
+minibatches are not i.i.d. LayerNorm is the safer default — it fixed critic
+instability on Humanoid (SAC) and runaway Q-values in MBPO.
+
+If you do use BatchNorm, remember its running statistics are **state, not
+parameters**. A hard copy to a target network that misses them yields a network
+that evaluates catastrophically while looking fine.
+:::
+
+## Activations
+
+`ReLU`, `Tanh`, `Sigmoid`, `Softmax`, `Mish`, `SiLU`, `Swish`, `Symlog`,
+`Clamp`, `Scale`.
+
+```mojo
+from mojo_rl.nn.primitives.activations import ReLU, Tanh, Sigmoid
+```
+
+`Symlog` — `sign(x)·log(1+|x|)` — compresses unbounded targets and appears
+throughout DreamerV3.
+
+## RL-specific operations
+
+These are why `nn` is not a general-purpose framework wearing an RL hat:
+
+| Module | Used by |
+|---|---|
+| `RSample` | reparameterised Gaussian sampling — SAC, PPO |
+| `DuelingHead` · `DuelingHeadC51` | Dueling DQN, Rainbow |
+| `GatherActionSlice` | select the taken action's Q-value |
+| `MSEPerSample` | per-sample loss for prioritized replay weights |
+| `StopGrad` · `StopGradParams` | detach in a loss graph |
+| `SigReg` | SIGReg regularizer — the LeWM world-model work |
+| `TokenMean` · `Slice` · `Concat` · `Reduce` | plumbing |
+
+## Utility
+
+`Add`, `BiasAdd`, `Elementwise`, `BinaryElementwise`, `Dropout`, `GatherCols`,
+`ReduceMax`, `Concat`, `Slice`, `SpaceTimeTranspose`, `MAEReplacer`.
+
+## A note on GEMM
+
+:::caution[`transpose_b` GEMM miscomputes at N = 1 on GPU]
+A GPU matrix multiply with `transpose_b` and `N = 1` silently produces wrong
+results. It was found via `Conv2D` forward with a single output channel.
+
+If you add a call site where the second dimension can be 1, either guard it or
+ensure `N ≥ 2`. The failure is silent.
+:::
+
+## Next
+
+- [Combinators and models](/nn/combinators/) — composing these
+- [Modules and Params](/nn/modules/) — writing your own leaf
+- [Optimizers and losses](/nn/optimizers/) — what trains them

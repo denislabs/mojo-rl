@@ -16,7 +16,7 @@ Run:
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.memory import alloc, memset
 from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
@@ -339,7 +339,7 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             ctx.synchronize()
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
-            print("    ", epoch, "  ", String(elapsed)[byte=:7])
+            print("    ", epoch, "  ", fit(String(elapsed), 7))
 
     ctx.synchronize()
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -437,6 +437,7 @@ def main() raises:
         )
         NET.block_types[1].predict_gpu[BATCH, dtype](
             ctx, z_pred_t, params_b1_t, s_pred_t, a_s_pred_t
+from mojo_rl.core.fmt import fit
         )
 
         # Download s_pred to host for MSE

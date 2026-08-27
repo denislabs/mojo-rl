@@ -18,7 +18,7 @@ Run (Apple):  pixi run -e apple  mojo run -I . benchmarks/bench_storage_elementw
 
 from std.math import tanh
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 

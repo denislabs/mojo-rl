@@ -11,7 +11,7 @@ storage TrainerState minibatch Tensors straight into the migrated
 `CriticUpdateBlock`. CPU + GPU.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -29,7 +29,7 @@ struct SingleCriticStep[
     ACT_: Int,
     BATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

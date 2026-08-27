@@ -9,7 +9,7 @@ compile and run with finite losses. Real CUDA-graph capture is on NVIDIA.
 """
 
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.c51.config import C51, Rainbow

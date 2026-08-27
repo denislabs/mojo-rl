@@ -15,7 +15,7 @@ Run:
     pixi run -e apple mojo run -I . tests/nn/test_n_step_replay.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs as fabs
 from std.memory import alloc
 from std.testing import assert_true

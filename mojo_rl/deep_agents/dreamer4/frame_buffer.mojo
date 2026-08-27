@@ -122,10 +122,10 @@ struct Dreamer4FrameBuffer[C: Int, H: Int, W: Int, ACT: Int, CAP: Int](Movable):
         done_o: Origin[mut=True],
     ](
         mut self,
-        pix_fp32: UnsafePointer[Scalar[DT], pix_o],       # [B*T*FRAME]
-        act_onehot: UnsafePointer[Scalar[DT], act_o],     # [B*T*ACT]
-        rew: UnsafePointer[Scalar[DT], rew_o],            # [B*T]
-        done: UnsafePointer[Scalar[DT], done_o],          # [B*T]
+        pix_fp32: Pointer[Scalar[DT], pix_o],       # [B*T*FRAME]
+        act_onehot: Pointer[Scalar[DT], act_o],     # [B*T*ACT]
+        rew: Pointer[Scalar[DT], rew_o],            # [B*T]
+        done: Pointer[Scalar[DT], done_o],          # [B*T]
     ) raises:
         """Sample B contiguous-T windows (logical/temporal order). Fills, per
         (b, t): fp32 pixels in [0,1] (CHW), one-hot action, reward, done flag."""
@@ -154,16 +154,16 @@ struct Dreamer4FrameBuffer[C: Int, H: Int, W: Int, ACT: Int, CAP: Int](Movable):
                 var src = self._phys(start + t) * Self.FRAME
                 var dst = bt * Self.FRAME
                 for i in range(Self.FRAME):
-                    pix_fp32[dst + i] = (
+                    pix_fp32[unsafe_offset=dst + i] = (
                         Scalar[DT](Float64(self.frames[src + i]))
                         * Scalar[DT](1.0 / 255.0)
                     )
                 var a = Int(self.actions[self._phys(start + t)])
                 for k in range(Self.ACT):
-                    act_onehot[bt * Self.ACT + k] = Scalar[DT](0.0)
+                    act_onehot[unsafe_offset=bt * Self.ACT + k] = Scalar[DT](0.0)
                 if a >= 0 and a < Self.ACT:
-                    act_onehot[bt * Self.ACT + a] = Scalar[DT](1.0)
-                rew[bt] = self.rewards[self._phys(start + t)]
-                done[bt] = Scalar[DT](
+                    act_onehot[unsafe_offset=bt * Self.ACT + a] = Scalar[DT](1.0)
+                rew[unsafe_offset=bt] = self.rewards[self._phys(start + t)]
+                done[unsafe_offset=bt] = Scalar[DT](
                     1.0 if self.dones[self._phys(start + t)] != 0 else 0.0
                 )

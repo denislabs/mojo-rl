@@ -19,7 +19,7 @@ GPU; the improved policy is pulled to host only to sample the action, which this
 driver does on the host by design).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT

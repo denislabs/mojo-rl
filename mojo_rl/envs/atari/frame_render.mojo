@@ -89,24 +89,24 @@ def _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
 def _write_pixel_bgra[
     o: MutOrigin
 ](
-    buf: UnsafePointer[UInt8, o],
+    buf: Pointer[UInt8, o],
     offset: Int,
     color_idx: UInt8,
     palette: InlineArray[UInt32, 256],
 ):
     """Write one BGRA pixel using a pre-materialized palette."""
     var rgb = palette[Int(color_idx)]
-    buf[offset + 0] = UInt8(rgb & 0xFF)  # B
-    buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)  # G
-    buf[offset + 2] = UInt8((rgb >> 16) & 0xFF)  # R
-    buf[offset + 3] = 0xFF  # A
+    buf[unsafe_offset=offset + 0] = UInt8(rgb & 0xFF)  # B
+    buf[unsafe_offset=offset + 1] = UInt8((rgb >> 8) & 0xFF)  # G
+    buf[unsafe_offset=offset + 2] = UInt8((rgb >> 16) & 0xFF)  # R
+    buf[unsafe_offset=offset + 3] = 0xFF  # A
 
 
 @always_inline
 def render_scanline_bgra(
     state: AtariState,
     scanline: Int,
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
 ):
     """Render one scanline (160 pixels) into the BGRA frame buffer.
 
@@ -141,7 +141,7 @@ def render_scanline_bgra(
 
 def render_frame_bgra(
     state: AtariState,
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
 ):
     """Render a static frame snapshot (160×210) into a BGRA pixel buffer.
 
@@ -155,7 +155,7 @@ def render_frame_bgra(
 
 def render_frame_rgb(
     state: AtariState,
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
 ):
     """Render one full frame (160×210) into an RGB pixel buffer.
 
@@ -169,14 +169,14 @@ def render_frame_rgb(
             var color_idx = _get_pixel_color(state, x)
             var rgb = palette[Int(color_idx)]
             var offset = row_offset + x * 3
-            buf[offset + 0] = UInt8((rgb >> 16) & 0xFF)
-            buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)
-            buf[offset + 2] = UInt8(rgb & 0xFF)
+            buf[unsafe_offset=offset + 0] = UInt8((rgb >> 16) & 0xFF)
+            buf[unsafe_offset=offset + 1] = UInt8((rgb >> 8) & 0xFF)
+            buf[unsafe_offset=offset + 2] = UInt8(rgb & 0xFF)
 
 
 def render_frame_grayscale(
     state: AtariState,
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: Pointer[UInt8, MutAnyOrigin],
 ):
     """Render one full frame (160×210) as grayscale.
 
@@ -192,4 +192,4 @@ def render_frame_grayscale(
             var r = Int((rgb >> 16) & 0xFF)
             var g = Int((rgb >> 8) & 0xFF)
             var b = Int(rgb & 0xFF)
-            buf[row_offset + x] = UInt8((77 * r + 150 * g + 29 * b) >> 8)
+            buf[unsafe_offset=row_offset + x] = UInt8((77 * r + 150 * g + 29 * b) >> 8)

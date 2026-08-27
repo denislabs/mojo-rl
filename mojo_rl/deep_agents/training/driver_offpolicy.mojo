@@ -42,7 +42,8 @@ through the `BatchedEnv` trait.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys import has_nvidia_gpu_accelerator
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -66,7 +67,7 @@ from .blocks.cadence import DriverCadence
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgent(ImplicitlyDeletable, Movable):
+trait OffPolicyAgent(Deinitable, Movable):
     """Single-trait surface for the off-policy drivers.
     Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
     H2D/D2H around the env step) and routes all action selection
@@ -164,7 +165,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
             for e in range(N_ENVS):
                 var obs_view = DeviceBuffer[DT](
                     c,
-                    obs.ptr + e * OBS,
+                    obs.ptr.unsafe_offset(e * OBS),
                     OBS,
                     owning=False,
                 )
@@ -173,7 +174,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
                 self.select_greedy_action(obs_h, act_h)
                 var act_view = DeviceBuffer[DT](
                     c,
-                    action.ptr + e * ACT,
+                    action.ptr.unsafe_offset(e * ACT),
                     ACT,
                     owning=False,
                 )
@@ -203,7 +204,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
     # read-receiver defaults (`mean_return`/`ep_count`) and the mut-receiver
     # ones (`end_episode`/`add_complete_return`) can share it.
 
-    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+    def _tracker_ptr(self) -> Pointer[EpisodeTracker, MutAnyOrigin]:
         """Handle to the conformer's `EpisodeTracker` field. The ONE
         required member behind the four delegator defaults below."""
         ...
@@ -268,11 +269,11 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         N_ENVS: Int
     ](
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        prev_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Push N transitions from host pointer slabs into the trainer's
         replay buffer. Does NOT update the trainer's episode tracker —
@@ -295,16 +296,16 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
         for env_idx in range(N_ENVS):
             for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+                obs_lane[d] = prev_obs_ptr[unsafe_offset=env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[unsafe_offset=env_idx * OBS + d]
             for j in range(ACT):
-                act_lane[j] = action_ptr[env_idx * ACT + j]
+                act_lane[j] = action_ptr[unsafe_offset=env_idx * ACT + j]
             self._replay_add(
                 obs_lane,
                 act_lane,
-                reward_ptr[env_idx],
+                reward_ptr[unsafe_offset=env_idx],
                 nxt_lane,
-                done_ptr[env_idx],
+                done_ptr[unsafe_offset=env_idx],
             )
 
     # ─── Optional cadence hooks (default no-op) ──────────────────────
@@ -325,7 +326,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         pass
@@ -423,7 +424,7 @@ def run_offpolicy_train[
     ctx: Optional[DeviceContext] = None,
     print_every: Int = 1_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -511,7 +512,7 @@ def run_offpolicy_train[
         for d in range(OBS):
             var v = Scalar[DT](env_obs[d])
             obs_list[d] = v
-            obs_scratch_h[d] = v
+            obs_scratch_h[unsafe_offset=d] = v
 
         # Boundary copy: env_target != train_target requires H2D obs.
         # Elided when env_target == train_target.
@@ -550,7 +551,7 @@ def run_offpolicy_train[
 
         var action_h = action_scratch.host_ptr()
         for j in range(ACT):
-            var a = action_h[j]
+            var a = action_h[unsafe_offset=j]
             action_list[j] = a
             env_action[j] = Scalar[E.dtype](a)
 
@@ -759,8 +760,8 @@ def run_offpolicy_eval_batched[
             var rp = eval_env.reward_ptr()
             var dp = eval_env.done_ptr()
             for e in range(EVAL_ENVS):
-                per_env[e] = per_env[e] + rp[e]
-                if dp[e] > Scalar[DT](0.5):
+                per_env[e] = per_env[e] + rp[unsafe_offset=e]
+                if dp[unsafe_offset=e] > Scalar[DT](0.5):
                     returns.append(per_env[e])
                     per_env[e] = Scalar[DT](0.0)
         else:
@@ -827,13 +828,13 @@ def run_offpolicy_train_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
     diag_every: Int = 0,
     episode_sync_every: Int = 1,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
-    eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_steps: Int = 1_000,
@@ -1039,7 +1040,7 @@ def run_offpolicy_train_batched[
             var po_p = prev_obs.host_ptr()
             var ob_p = env.obs_ptr()
             for k in range(N_ENVS * OBS):
-                po_p[k] = ob_p[k]
+                po_p[unsafe_offset=k] = ob_p[unsafe_offset=k]
         else:
             # GPU env: D→D enqueue_copy. Reconstruct DeviceBuffer view
             # over env.obs_ptr() (owning=False — env still owns memory).
@@ -1073,7 +1074,19 @@ def run_offpolicy_train_batched[
         )
 
         # ── 3. Env step (writes env-internal obs/reward/done).
-        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+        # ⚠ `and has_nvidia_gpu_accelerator()` added 2026-08-07. The
+        # comptime asserts above have always CLAIMED this path is a
+        # "no-op on non-NVIDIA" — it was not. On Apple/Metal the capture
+        # branch ran and silently FROZE the env: measured ep_count 0 vs 6
+        # over an identical 6000-step dm_control walker run with the flag
+        # off (3 truncations x 2 lanes is the correct count). Every GPU
+        # example in examples/ sets USE_ENV_CUDA_GRAPH=True, so on Apple
+        # they were all training against a stopped environment.
+        comptime if (
+            USE_ENV_CUDA_GRAPH
+            and env_target == "gpu"
+            and has_nvidia_gpu_accelerator()
+        ):
             # Capture the (deterministic) physics `step_batch` into a CUDA graph
             # and replay it once per iteration — collapses the env's dozens of
             # eager per-step kernel launches (newton solver, integrators,
@@ -1220,7 +1233,19 @@ def run_offpolicy_train_batched[
         # advances reset randomness on every replay — no baked host seed. The
         # `rng_seed` arg is retained for trait/CPU compatibility but the GPU
         # reset ignores it (the device counter is authoritative).
-        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+        # ⚠ `and has_nvidia_gpu_accelerator()` added 2026-08-07. The
+        # comptime asserts above have always CLAIMED this path is a
+        # "no-op on non-NVIDIA" — it was not. On Apple/Metal the capture
+        # branch ran and silently FROZE the env: measured ep_count 0 vs 6
+        # over an identical 6000-step dm_control walker run with the flag
+        # off (3 truncations x 2 lanes is the correct count). Every GPU
+        # example in examples/ sets USE_ENV_CUDA_GRAPH=True, so on Apple
+        # they were all training against a stopped environment.
+        comptime if (
+            USE_ENV_CUDA_GRAPH
+            and env_target == "gpu"
+            and has_nvidia_gpu_accelerator()
+        ):
             # TEMP DIAGNOSTIC: inline, legacy-style explicit CUDAGraph capture
             # (mirrors the env-step block above). Reset randomness is driven by
             # the env's DEVICE RNG counter (bumped inside `selective_reset_batch`
@@ -1258,7 +1283,12 @@ def run_offpolicy_train_batched[
         iter_idx += 1
 
         # ── 9. Trainer updates.
-        comptime if USE_TRAIN_CUDA_GRAPH:
+        # Gated on NVIDIA for the same reason as the env branches above
+        # (same CUDAGraph API, same 'NVIDIA only' contract). ⚠ Unlike the
+        # env path this one was NOT independently measured to misbehave on
+        # Metal — it is gated to honour the contract, not to fix a
+        # diagnosed defect.
+        comptime if USE_TRAIN_CUDA_GRAPH and has_nvidia_gpu_accelerator():
             # Capture path: once the buffer is warm, the per-update device
             # kernel sequence (`train_device_kernels`) is captured into
             # `train_graph` on first call and replayed thereafter — host
@@ -1429,7 +1459,7 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     updates_per_step: Int = 1,
     print_every: Int = 5_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",

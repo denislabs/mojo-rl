@@ -2,7 +2,7 @@
 
 Ports `references/Craftax-main/craftax/craftax_classic/game_logic.py`
 subroutine-by-subroutine. All functions operate on a single env's flat
-state slice (`UnsafePointer[Float32, MutAnyOrigin]`) and are
+state slice (`Pointer[Float32, MutAnyOrigin]`) and are
 `@always_inline` so they work in both the CPU `step_obs` path and the
 GPU `step_kernel_gpu` per-thread body.
 
@@ -211,7 +211,7 @@ from .state import (
 # Type alias
 # ============================================================================
 
-comptime State = UnsafePointer[Float32, MutAnyOrigin]
+comptime State = Pointer[Float32, MutAnyOrigin]
 
 
 # ============================================================================
@@ -270,32 +270,32 @@ def is_solid(block: Int) -> Bool:
 
 @always_inline
 def get_map(s: State, y: Int, x: Int) -> Int:
-    return Int(s[S_MAP_BASE + y * MAP_W + x])
+    return Int(s[unsafe_offset=S_MAP_BASE + y * MAP_W + x])
 
 
 @always_inline
 def set_map(s: State, y: Int, x: Int, block: Int):
-    s[S_MAP_BASE + y * MAP_W + x] = Float32(block)
+    s[unsafe_offset=S_MAP_BASE + y * MAP_W + x] = Float32(block)
 
 
 @always_inline
 def get_inv(s: State, slot: Int) -> Int:
-    return Int(s[S_INV_BASE + slot])
+    return Int(s[unsafe_offset=S_INV_BASE + slot])
 
 
 @always_inline
 def add_inv(s: State, slot: Int, delta: Int):
-    var v = Int(s[S_INV_BASE + slot]) + delta
+    var v = Int(s[unsafe_offset=S_INV_BASE + slot]) + delta
     if v < 0:
         v = 0
     if v > INV_MAX_PER_SLOT:
         v = INV_MAX_PER_SLOT
-    s[S_INV_BASE + slot] = Float32(v)
+    s[unsafe_offset=S_INV_BASE + slot] = Float32(v)
 
 
 @always_inline
 def get_intr(s: State, slot: Int) -> Int:
-    return Int(s[S_INTRINSICS_BASE + slot])
+    return Int(s[unsafe_offset=S_INTRINSICS_BASE + slot])
 
 
 @always_inline
@@ -305,7 +305,7 @@ def set_intr(s: State, slot: Int, v: Int):
         v2 = 0
     if v2 > INTRINSIC_MAX:
         v2 = INTRINSIC_MAX
-    s[S_INTRINSICS_BASE + slot] = Float32(v2)
+    s[unsafe_offset=S_INTRINSICS_BASE + slot] = Float32(v2)
 
 
 @always_inline
@@ -315,42 +315,42 @@ def add_intr(s: State, slot: Int, delta: Int):
 
 @always_inline
 def get_intr_f(s: State, slot: Int) -> Float32:
-    return s[S_INTRINSICS_F_BASE + slot]
+    return s[unsafe_offset=S_INTRINSICS_F_BASE + slot]
 
 
 @always_inline
 def set_intr_f(s: State, slot: Int, v: Float32):
-    s[S_INTRINSICS_F_BASE + slot] = v
+    s[unsafe_offset=S_INTRINSICS_F_BASE + slot] = v
 
 
 @always_inline
 def player_pos(s: State) -> Tuple[Int, Int]:
-    return (Int(s[S_PLAYER_POS]), Int(s[S_PLAYER_POS + 1]))
+    return (Int(s[unsafe_offset=S_PLAYER_POS]), Int(s[unsafe_offset=S_PLAYER_POS + 1]))
 
 
 @always_inline
 def player_dir(s: State) -> Int:
-    return Int(s[S_PLAYER_DIR])
+    return Int(s[unsafe_offset=S_PLAYER_DIR])
 
 
 @always_inline
 def is_sleeping(s: State) -> Bool:
-    return s[S_IS_SLEEPING] > Float32(0.5)
+    return s[unsafe_offset=S_IS_SLEEPING] > Float32(0.5)
 
 
 @always_inline
 def set_sleeping(s: State, v: Bool):
-    s[S_IS_SLEEPING] = Float32(1.0) if v else Float32(0.0)
+    s[unsafe_offset=S_IS_SLEEPING] = Float32(1.0) if v else Float32(0.0)
 
 
 @always_inline
 def set_achievement(s: State, idx: Int):
-    s[S_ACHIEVEMENTS_BASE + idx] = Float32(1.0)
+    s[unsafe_offset=S_ACHIEVEMENTS_BASE + idx] = Float32(1.0)
 
 
 @always_inline
 def get_ach(s: State, idx: Int) -> Bool:
-    return s[S_ACHIEVEMENTS_BASE + idx] > Float32(0.5)
+    return s[unsafe_offset=S_ACHIEVEMENTS_BASE + idx] > Float32(0.5)
 
 
 @always_inline
@@ -368,36 +368,36 @@ def sum_achievements(s: State) -> Int:
 
 @always_inline
 def mob_hp(s: State, base: Int, i: Int) -> Int:
-    return Int(s[base + i * MOB_FIELDS + MOB_HP])
+    return Int(s[unsafe_offset=base + i * MOB_FIELDS + MOB_HP])
 
 
 @always_inline
 def mob_set_hp(s: State, base: Int, i: Int, hp: Int):
-    s[base + i * MOB_FIELDS + MOB_HP] = Float32(hp)
+    s[unsafe_offset=base + i * MOB_FIELDS + MOB_HP] = Float32(hp)
 
 
 @always_inline
 def mob_pos(s: State, base: Int, i: Int) -> Tuple[Int, Int]:
     return (
-        Int(s[base + i * MOB_FIELDS + MOB_FY]),
-        Int(s[base + i * MOB_FIELDS + MOB_FX]),
+        Int(s[unsafe_offset=base + i * MOB_FIELDS + MOB_FY]),
+        Int(s[unsafe_offset=base + i * MOB_FIELDS + MOB_FX]),
     )
 
 
 @always_inline
 def mob_set_pos(s: State, base: Int, i: Int, y: Int, x: Int):
-    s[base + i * MOB_FIELDS + MOB_FY] = Float32(y)
-    s[base + i * MOB_FIELDS + MOB_FX] = Float32(x)
+    s[unsafe_offset=base + i * MOB_FIELDS + MOB_FY] = Float32(y)
+    s[unsafe_offset=base + i * MOB_FIELDS + MOB_FX] = Float32(x)
 
 
 @always_inline
 def mob_cd(s: State, base: Int, i: Int) -> Int:
-    return Int(s[base + i * MOB_FIELDS + MOB_CD])
+    return Int(s[unsafe_offset=base + i * MOB_FIELDS + MOB_CD])
 
 
 @always_inline
 def mob_set_cd(s: State, base: Int, i: Int, cd: Int):
-    s[base + i * MOB_FIELDS + MOB_CD] = Float32(cd)
+    s[unsafe_offset=base + i * MOB_FIELDS + MOB_CD] = Float32(cd)
 
 
 # Returns (kind_base, slot_idx) of the first alive mob at (y, x), or (-1, -1)
@@ -434,36 +434,36 @@ def is_in_mob(s: State, y: Int, x: Int) -> Bool:
 
 @always_inline
 def plant_mask(s: State, i: Int) -> Bool:
-    return s[S_PLANT_MASK_BASE + i] > Float32(0.5)
+    return s[unsafe_offset=S_PLANT_MASK_BASE + i] > Float32(0.5)
 
 
 @always_inline
 def plant_set_mask(s: State, i: Int, v: Bool):
-    s[S_PLANT_MASK_BASE + i] = Float32(1.0) if v else Float32(0.0)
+    s[unsafe_offset=S_PLANT_MASK_BASE + i] = Float32(1.0) if v else Float32(0.0)
 
 
 @always_inline
 def plant_pos(s: State, i: Int) -> Tuple[Int, Int]:
     return (
-        Int(s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FY]),
-        Int(s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FX]),
+        Int(s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FY]),
+        Int(s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FX]),
     )
 
 
 @always_inline
 def plant_set_pos(s: State, i: Int, y: Int, x: Int):
-    s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FY] = Float32(y)
-    s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FX] = Float32(x)
+    s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FY] = Float32(y)
+    s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FX] = Float32(x)
 
 
 @always_inline
 def plant_age(s: State, i: Int) -> Int:
-    return Int(s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FAGE])
+    return Int(s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FAGE])
 
 
 @always_inline
 def plant_set_age(s: State, i: Int, a: Int):
-    s[S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FAGE] = Float32(a)
+    s[unsafe_offset=S_PLANTS_BASE + i * PLANT_FIELDS + PLANT_FAGE] = Float32(a)
 
 
 # ============================================================================
@@ -473,12 +473,12 @@ def plant_set_age(s: State, i: Int, a: Int):
 @always_inline
 def cap_inventory(s: State):
     for i in range(NUM_INVENTORY):
-        var v = Int(s[S_INV_BASE + i])
+        var v = Int(s[unsafe_offset=S_INV_BASE + i])
         if v < 0:
             v = 0
         elif v > INV_MAX_PER_SLOT:
             v = INV_MAX_PER_SLOT
-        s[S_INV_BASE + i] = Float32(v)
+        s[unsafe_offset=S_INV_BASE + i] = Float32(v)
 
 
 # ============================================================================
@@ -503,7 +503,7 @@ def move_player(s: State, action: Int):
     var nx = pp[1] + off[1]
 
     # Direction updates regardless of whether move succeeds.
-    s[S_PLAYER_DIR] = Float32(d)
+    s[unsafe_offset=S_PLAYER_DIR] = Float32(d)
 
     if not in_bounds(ny, nx):
         return
@@ -513,8 +513,8 @@ def move_player(s: State, action: Int):
     if is_in_mob(s, ny, nx):
         return
 
-    s[S_PLAYER_POS] = Float32(ny)
-    s[S_PLAYER_POS + 1] = Float32(nx)
+    s[unsafe_offset=S_PLAYER_POS] = Float32(ny)
+    s[unsafe_offset=S_PLAYER_POS + 1] = Float32(nx)
 
 
 # ============================================================================
@@ -1063,12 +1063,12 @@ def try_spawn_arrow(s: State, sy: Int, sx: Int, fire_dir: Int) -> Bool:
     (a DIR_* code). Returns True on success."""
     for i in range(MAX_ARROWS):
         var base = S_ARROWS_BASE + i * ARROW_FIELDS
-        if Int(s[base + MOB_HP]) <= 0:
-            s[base + MOB_FY] = Float32(sy)
-            s[base + MOB_FX] = Float32(sx)
-            s[base + MOB_HP] = Float32(1)
-            s[base + MOB_CD] = Float32(0)
-            s[base + ARROW_FDIR] = Float32(fire_dir)
+        if Int(s[unsafe_offset=base + MOB_HP]) <= 0:
+            s[unsafe_offset=base + MOB_FY] = Float32(sy)
+            s[unsafe_offset=base + MOB_FX] = Float32(sx)
+            s[unsafe_offset=base + MOB_HP] = Float32(1)
+            s[unsafe_offset=base + MOB_CD] = Float32(0)
+            s[unsafe_offset=base + ARROW_FDIR] = Float32(fire_dir)
             return True
     return False
 
@@ -1148,18 +1148,18 @@ def update_arrows(s: State):
     var pp = player_pos(s)
     for i in range(MAX_ARROWS):
         var base = S_ARROWS_BASE + i * ARROW_FIELDS
-        if Int(s[base + MOB_HP]) <= 0:
+        if Int(s[unsafe_offset=base + MOB_HP]) <= 0:
             continue
 
-        var ay = Int(s[base + MOB_FY])
-        var ax = Int(s[base + MOB_FX])
-        var d = Int(s[base + ARROW_FDIR])
+        var ay = Int(s[unsafe_offset=base + MOB_FY])
+        var ax = Int(s[unsafe_offset=base + MOB_FX])
+        var d = Int(s[unsafe_offset=base + ARROW_FDIR])
         var off = dir_offset(d)
         var ny = ay + off[0]
         var nx = ax + off[1]
 
         if not in_bounds(ny, nx):
-            s[base + MOB_HP] = Float32(0)
+            s[unsafe_offset=base + MOB_HP] = Float32(0)
             continue
 
         # Hit player.
@@ -1168,7 +1168,7 @@ def update_arrows(s: State):
             if is_sleeping(s):
                 set_sleeping(s, False)
                 set_achievement(s, ACH_WAKE_UP)
-            s[base + MOB_HP] = Float32(0)
+            s[unsafe_offset=base + MOB_HP] = Float32(0)
             continue
 
         var blk = get_map(s, ny, nx)
@@ -1176,15 +1176,15 @@ def update_arrows(s: State):
         if is_solid(blk) and blk != BLOCK_WATER:
             if blk == BLOCK_FURNACE or blk == BLOCK_CRAFTING_TABLE:
                 set_map(s, ny, nx, BLOCK_PATH)
-            s[base + MOB_HP] = Float32(0)
+            s[unsafe_offset=base + MOB_HP] = Float32(0)
             continue
 
         if is_in_mob(s, ny, nx):
-            s[base + MOB_HP] = Float32(0)
+            s[unsafe_offset=base + MOB_HP] = Float32(0)
             continue
 
-        s[base + MOB_FY] = Float32(ny)
-        s[base + MOB_FX] = Float32(nx)
+        s[unsafe_offset=base + MOB_FY] = Float32(ny)
+        s[unsafe_offset=base + MOB_FX] = Float32(nx)
 
 
 @always_inline
@@ -1329,7 +1329,7 @@ def spawn_mobs(s: State, mut rng: PhiloxRandom):
         rng,
     )
     # Zombies — night-gated.
-    var light = s[S_LIGHT_LEVEL]
+    var light = s[unsafe_offset=S_LIGHT_LEVEL]
     var darkness = Float32(1.0) - light
     var z_chance = (
         SPAWN_ZOMBIE_BASE_CHANCE
@@ -1387,9 +1387,9 @@ def apply_step_inline(
     )
 
     # Bookkeeping: timestep + light level.
-    var t = Int(s[S_TIMESTEP]) + 1
-    s[S_TIMESTEP] = Float32(t)
-    s[S_LIGHT_LEVEL] = compute_light_level(t)
+    var t = Int(s[unsafe_offset=S_TIMESTEP]) + 1
+    s[unsafe_offset=S_TIMESTEP] = Float32(t)
+    s[unsafe_offset=S_LIGHT_LEVEL] = compute_light_level(t)
 
     var dead = new_health <= 0
     var truncated = t >= MAX_TIMESTEPS
@@ -1404,7 +1404,7 @@ def apply_step_inline(
 @always_inline
 def _splat_mob_channel(
     s: State,
-    obs: UnsafePointer[Float32, MutAnyOrigin],
+    obs: Pointer[Float32, MutAnyOrigin],
     base: Int,
     max_n: Int,
     py: Int,
@@ -1423,11 +1423,11 @@ def _splat_mob_channel(
         var lx = mp[1] - px + half_w
         if 0 <= lv and lv < VIEW_H and 0 <= lx and lx < VIEW_W:
             var tile_base = lv * VIEW_W * TILE_CHANNELS + lx * TILE_CHANNELS
-            obs[tile_base + NUM_BLOCK_TYPES + channel] = Float32(1.0)
+            obs[unsafe_offset=tile_base + NUM_BLOCK_TYPES + channel] = Float32(1.0)
 
 
 @always_inline
-def extract_obs_inline(s: State, obs: UnsafePointer[Float32, MutAnyOrigin]):
+def extract_obs_inline(s: State, obs: Pointer[Float32, MutAnyOrigin]):
     """Build the 1345-D symbolic observation vector for one env.
 
     Layout (matches `references/.../renderer.py:render_craftax_symbolic`):
@@ -1451,12 +1451,12 @@ def extract_obs_inline(s: State, obs: UnsafePointer[Float32, MutAnyOrigin]):
             var wx = px - half_w + lx
             var tile_base = lv * VIEW_W * TILE_CHANNELS + lx * TILE_CHANNELS
             for ch in range(TILE_CHANNELS):
-                obs[tile_base + ch] = Float32(0.0)
+                obs[unsafe_offset=tile_base + ch] = Float32(0.0)
             var blk = (
                 get_map(s, wy, wx) if in_bounds(wy, wx)
                 else BLOCK_OUT_OF_BOUNDS
             )
-            obs[tile_base + blk] = Float32(1.0)
+            obs[unsafe_offset=tile_base + blk] = Float32(1.0)
 
     # --- 2. Mob channels: zombie=17, cow=18, skeleton=19, arrow=20 ---
     _splat_mob_channel(
@@ -1479,33 +1479,33 @@ def extract_obs_inline(s: State, obs: UnsafePointer[Float32, MutAnyOrigin]):
     # Arrows are 5-field; mob_pos works because it only reads fields 0,1.
     for i in range(MAX_ARROWS):
         var arr_base = S_ARROWS_BASE + i * ARROW_FIELDS
-        if Int(s[arr_base + MOB_HP]) <= 0:
+        if Int(s[unsafe_offset=arr_base + MOB_HP]) <= 0:
             continue
-        var ay = Int(s[arr_base + MOB_FY])
-        var ax = Int(s[arr_base + MOB_FX])
+        var ay = Int(s[unsafe_offset=arr_base + MOB_FY])
+        var ax = Int(s[unsafe_offset=arr_base + MOB_FX])
         var lv = ay - py + half_h
         var lx = ax - px + half_w
         if 0 <= lv and lv < VIEW_H and 0 <= lx and lx < VIEW_W:
             var tile_base = lv * VIEW_W * TILE_CHANNELS + lx * TILE_CHANNELS
-            obs[tile_base + NUM_BLOCK_TYPES + 3] = Float32(1.0)
+            obs[unsafe_offset=tile_base + NUM_BLOCK_TYPES + 3] = Float32(1.0)
 
     # --- 3. Inventory / 10 ---
     var inv_off = OBS_VIEW_SIZE
     for i in range(NUM_INVENTORY):
-        obs[inv_off + i] = Float32(get_inv(s, i)) * Float32(0.1)
+        obs[unsafe_offset=inv_off + i] = Float32(get_inv(s, i)) * Float32(0.1)
 
     # --- 4. Intrinsics / 10 ---
     var intr_off = inv_off + NUM_INVENTORY
     for k in range(NUM_INTRINSICS):
-        obs[intr_off + k] = Float32(get_intr(s, k)) * Float32(0.1)
+        obs[unsafe_offset=intr_off + k] = Float32(get_intr(s, k)) * Float32(0.1)
 
     # --- 5. Direction one-hot (DIR_LEFT..DIR_DOWN = 0..3) ---
     var dir_off = intr_off + NUM_INTRINSICS
     var d = player_dir(s)
     for k in range(NUM_DIRECTIONS):
-        obs[dir_off + k] = Float32(1.0) if k == d else Float32(0.0)
+        obs[unsafe_offset=dir_off + k] = Float32(1.0) if k == d else Float32(0.0)
 
     # --- 6. Light + sleep ---
     var scalar_off = dir_off + NUM_DIRECTIONS
-    obs[scalar_off + 0] = s[S_LIGHT_LEVEL]
-    obs[scalar_off + 1] = s[S_IS_SLEEPING]
+    obs[unsafe_offset=scalar_off + 0] = s[unsafe_offset=S_LIGHT_LEVEL]
+    obs[unsafe_offset=scalar_off + 1] = s[unsafe_offset=S_IS_SLEEPING]

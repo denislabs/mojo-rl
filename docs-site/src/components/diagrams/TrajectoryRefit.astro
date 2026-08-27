@@ -1,0 +1,138 @@
+---
+/**
+ * TrajectoryRefit — random shooter, CEM and MPPI are one algorithm with three
+ * refit rules.
+ *
+ * All three sample action sequences, score them through the same callback, and
+ * differ only in what they do with the scores afterwards. Drawing them against
+ * an identical sample set is the point: the stems are the same in every panel,
+ * and only the bar underneath — the distribution the next iteration samples
+ * from — changes.
+ *
+ * Note that CEM and MPPI take the SAME top-k cut. An earlier version of this
+ * diagram drew MPPI as weighting every sample, which is textbook MPPI but not
+ * this implementation: `mppi_kernels.mojo` zeroes non-elite weights, following
+ * TD-MPC2. The real distinction is uniform-vs-weighted *within* the elite set,
+ * so the two right-hand panels must share an elite selection and differ only in
+ * how tightly the survivors pull the refit.
+ */
+
+const PANELS = [20, 310, 600];
+const PW = 260;
+
+/** One shared sample set, so the panels differ only in their refit. */
+const SAMPLES = [
+	{ x: 24, s: 30 },
+	{ x: 56, s: 58 },
+	{ x: 88, s: 40 },
+	{ x: 120, s: 86 },
+	{ x: 152, s: 96 },
+	{ x: 184, s: 70 },
+	{ x: 214, s: 44 },
+	{ x: 240, s: 26 },
+];
+
+const AXIS_Y = 252;
+const BEST = 4;
+/** Top-3 by score: the elite set CEM keeps and everything else discards. */
+const ELITES = [3, 4, 5];
+
+/**
+ * Bar geometry, in panel-local coordinates: the next iteration's mean ± std.
+ *
+ * CEM and MPPI span the same elite set. MPPI's is narrower because the softmax
+ * concentrates the refit on the best elite rather than averaging the three
+ * equally — the visual claim is "tighter", not "wider".
+ */
+const BARS = [
+	{ from: 14, to: 250, label: 'unchanged — resampled uniform' },
+	{ from: 104, to: 200, label: 'refit to the elites, equally' },
+	{ from: 114, to: 186, label: 'refit to the elites, softmax-weighted' },
+];
+
+const MAX_S = 96;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="Random shooter, CEM and MPPI scored against an identical sample set. The shooter keeps the best and refits nothing; CEM fits a new distribution to the top-k elites, weighting them equally; MPPI fits one to the same elites, weighting each by the exponential of its score.">
+		<text x="20" y="28" class="dg-title dg-title--left">One loop, three refit rules</text>
+		<text x="20" y="50" class="dg-sub dg-sub--left">
+			Same samples, same callback, same scores (taller is better) — only what happens next differs.
+		</text>
+
+		{
+			[
+				{ title: 'random shooter', sub: 'keep the best, refit nothing' },
+				{ title: 'CEM', sub: 'top-k, weighted equally' },
+				{ title: 'MPPI', sub: 'top-k, weighted by score' },
+			].map((panel, p) => (
+				<g>
+					<text x={PANELS[p] + PW / 2} y="96" class="dg-title">{panel.title}</text>
+					<text x={PANELS[p] + PW / 2} y="118" class="dg-sub">{panel.sub}</text>
+
+					{/* score stems — height is the score, identical across panels */}
+					{SAMPLES.map((sample, i) => {
+						const active =
+							p === 0 ? i === BEST : ELITES.includes(i);
+						/* MPPI: opacity stands in for exp(score / temperature) *within
+						   the elite set*. The exponent matters — a linear ramp made the
+						   survivors look equally weighted, which is the one thing this
+						   panel must not say, since equal weighting is exactly what CEM
+						   does in the panel to its left. */
+						const opacity =
+							p === 2 && active
+								? 0.18 + 0.82 * Math.pow(sample.s / MAX_S, 2.5)
+								: 1;
+						return (
+							<line
+								x1={PANELS[p] + sample.x}
+								y1={AXIS_Y}
+								x2={PANELS[p] + sample.x}
+								y2={AXIS_Y - sample.s}
+								class={active ? 'dg-edge dg-edge--spark' : 'dg-edge dg-edge--muted'}
+								opacity={active ? opacity : 0.4}
+							/>
+						);
+					})}
+
+					<line
+						x1={PANELS[p] + 8} y1={AXIS_Y}
+						x2={PANELS[p] + PW - 4} y2={AXIS_Y}
+						class="dg-axis" />
+
+					{/* the distribution the next iteration draws from */}
+					<rect
+						x={PANELS[p] + BARS[p].from}
+						y={AXIS_Y + 22}
+						width={BARS[p].to - BARS[p].from}
+						height="14"
+						rx="7"
+						class={p === 0 ? 'dg-ghost' : 'dg-fill-cyan'}
+						opacity={p === 0 ? 1 : 0.55} />
+
+					<text x={PANELS[p] + PW / 2} y="322" class="dg-caption">
+						{BARS[p].label}
+					</text>
+				</g>
+			))
+		}
+
+		{/* the best sample, marked once — it is the same trajectory in all three */}
+		<circle cx={PANELS[0] + SAMPLES[BEST].x} cy={AXIS_Y - SAMPLES[BEST].s}
+			r="5" class="dg-fill-spark" />
+
+		<text x="20" y="360" class="dg-sub dg-sub--left">
+			CEM and MPPI keep the same elites and discard the same rest — the cut is identical.
+		</text>
+		<text x="20" y="382" class="dg-sub dg-sub--left">
+			Only the right panel lets a clearly-better elite pull the refit further than a marginal one.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">samples that move the distribution</span>
+		<span class="diagram__key diagram__key--muted">discarded</span>
+		<span class="diagram__key diagram__key--cyan">next iteration's mean ± std</span>
+	</figcaption>
+</figure>

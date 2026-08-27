@@ -1,0 +1,144 @@
+---
+title: Environments
+description: Every environment in mojo-rl — dimensions, action spaces, physics engine and GPU support, in one table.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" note="Procgen and the Metaworld-style Sawyer tasks are newer — see their pages." />
+
+25+ worlds, all in pure Mojo. Nothing here wraps a C library: the tabular grids,
+the classic-control dynamics, the 2D and 3D physics, the arcade engines and the
+Atari 2600 emulator are all Mojo, which is what lets an environment step inside
+the same GPU pipeline that trains on its output.
+
+<DemoGrid min="13rem">
+	<Demo name="half_cheetah_sac_trained" caption="HalfCheetah" meta="SAC · physics3d" />
+	<Demo name="sac_humanoid" caption="Humanoid" meta="SAC · physics3d" />
+	<Demo name="lunar_lander_ppo_trained" caption="LunarLander" meta="PPO · physics2d" />
+	<Demo name="rainbow_car_racing" caption="CarRacing" meta="Rainbow · physics2d" />
+	<Demo name="ant" caption="Ant" meta="physics3d" />
+	<Demo name="pong_playable" caption="Pong" meta="native GPU engine" />
+</DemoGrid>
+
+## The families
+
+| Family | Environments | Engine | GPU batch |
+|---|---|---|---|
+| [Tabular](/environments/tabular/) | GridWorld · FrozenLake · CliffWalking · Taxi | grid | — |
+| [Classic control](/environments/classic-control/) | CartPole · MountainCar · Acrobot · Pendulum | Gymnasium-matching | partial |
+| [2D physics](/environments/2d-physics/) | LunarLander · BipedalWalker · CarRacing | `physics2d` | yes |
+| [3D locomotion](/environments/3d-locomotion/) | HalfCheetah · Hopper · Walker2d · Ant · Swimmer · Humanoid · pendula | `physics3d` | yes |
+| [3D manipulation](/environments/3d-manipulation/) | Reacher · Pusher · Sawyer | `physics3d` | yes |
+| [Arcade](/environments/arcade/) | Pong · Breakout · Space Invaders | native GPU | yes |
+| [Atari 2600](/environments/atari/) | 103 ROMs | 6502 emulation | CPU only |
+| [Board games](/environments/board-games/) | Tic-Tac-Toe · Connect Four · Go · Chess | — | yes |
+| [Procgen](/environments/procgen/) | 16 procedurally generated games | native | yes |
+| [Gymnasium](/environments/gymnasium/) | 20+ wrappers | Python interop | — |
+
+## Full reference
+
+Dimensions below are read from the source, not from the Gymnasium documentation.
+Where mojo-rl differs from Gymnasium's defaults, it is noted.
+
+### Tabular
+
+| Environment | States | Actions | Reward |
+|---|---|---|---|
+| GridWorld | 25 (5×5) | 4 | −1/step, +10 goal |
+| FrozenLake | 16 (4×4) | 4 | +1 goal (sparse) |
+| CliffWalking | 48 (4×12) | 4 | −1/step, −100 cliff |
+| Taxi | 500 | 6 | +20 dropoff, −10 illegal |
+
+### Classic control
+
+| Environment | Obs | Actions | Notes |
+|---|---|---|---|
+| CartPole | 4 | 2 discrete | GPU batch |
+| MountainCar | 2 | 3 discrete | tile-coding friendly |
+| Acrobot | 6 | 3 discrete | RK4 integration |
+| Pendulum | 3 | 1 continuous | V1 CPU · V2 GPU batch |
+
+### 2D physics — `physics2d`
+
+| Environment | Obs | Actions | Notes |
+|---|---|---|---|
+| LunarLander | 8 | 4 discrete **or** 2 continuous | terrain + flame particles |
+| BipedalWalker | 24 | 4 continuous | revolute joints, LIDAR, hardcore mode |
+| CarRacing | 13 clean **or** pixels | 3 continuous **or** 5 discrete | slip-based tire model |
+
+### 3D — `physics3d`
+
+| Environment | Obs | Actions | Frame skip |
+|---|---|---|---|
+| HalfCheetah | 17 | 6 | 5 |
+| Hopper | 11 | 3 | 4 |
+| Walker2d | 17 | 6 | 4 |
+| Ant | 27 | 8 | 5 |
+| Swimmer | 8 | 2 | 4 |
+| Humanoid | 45 | 17 | 5 |
+| HumanoidStandup | 45 | 17 | 5 |
+| InvertedPendulum | 4 | 1 | 2 |
+| InvertedDoublePendulum | 9 | 1 | 5 |
+| Reacher | 10 | 2 | 2 |
+| Pusher | 23 | 7 | 5 |
+
+:::note[Humanoid is 45-dimensional, not 376]
+Gymnasium's `Humanoid-v5` observation includes contact forces and inertia terms,
+which push it to 348–376 dimensions. mojo-rl's Humanoid observes
+`(NQ − 2) + NV = 22 + 23 = 45` — position and velocity only. Older copies of the
+project README and slide deck quote 376; the source is authoritative and the GPU
+example reads `HumanoidModel.OBS_DIM  # 45`.
+:::
+
+### Arcade — native GPU engines
+
+Two observation modes each: a compact game-state vector (`OBS_MODE=0`) or a
+4×84×84 grayscale frame stack (`OBS_MODE=1`).
+
+| Environment | Clean obs | Actions |
+|---|---|---|
+| Pong | 6 | 3 |
+| Breakout | 7 | 4 |
+| Space Invaders | 8 | 4 |
+
+## Where the dimensions live
+
+A recurring source of confusion, so worth stating plainly: for the physics3d
+environments the dimensions are on the **model**, not the config.
+
+```mojo
+comptime OBS_DIM = HumanoidModel.OBS_DIM      # 45
+comptime ACT_DIM = HumanoidModel.ACTION_DIM   # 17
+```
+
+HalfCheetah and Ant additionally expose them on their config
+(`HalfCheetahConfig.OBS_DIM`), which is what the older examples use. Both resolve
+to the same compile-time constant. If one does not exist, try the other.
+
+## Choosing one
+
+**Learning the framework** — GridWorld or CartPole. No GPU, seconds to run,
+obvious correct behaviour.
+
+**Testing a continuous-control algorithm** — Pendulum first (3 dimensions,
+fast), then HalfCheetah (no early termination, so returns are smooth and easy to
+compare).
+
+**Testing exploration** — MountainCar or FrozenLake. Both have sparse or
+deceptive reward that punishes greedy agents.
+
+**Stressing the physics engine** — Humanoid. 45 observations, 17 actuators, and
+contact-rich dynamics that expose solver problems immediately.
+
+**Pixel-based agents** — the arcade engines in `OBS_MODE=1`. Native and
+GPU-batched, so they are far faster than the Atari emulator for training; the
+emulator exists to validate them.
+
+## Next
+
+- [Writing your own environment](/environments/custom/) — the traits to implement
+- [Traits](/concepts/traits/) — the trait hierarchy in detail
+- [CPU and GPU paths](/concepts/cpu-gpu/) — how batched environments work

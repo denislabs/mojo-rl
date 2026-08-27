@@ -1,0 +1,166 @@
+---
+title: Combinators and models
+description: Sequential, Residual, Parallel and Repeat; the pre-built ResNet, GPT and ViT; and the ComputeGraph DAG builder.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Combinators are modules that take modules. Because composition happens in the
+type system, a network is built by nesting types rather than by appending to a
+list at runtime.
+
+```mojo
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.residual import Residual
+from mojo_rl.nn.combinators.repeat import Repeat
+from mojo_rl.nn.combinators.parallel import Parallel
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="Deep Residual Learning for Image Recognition"
+		authors="He, Zhang, Ren, Sun"
+		year="2015"
+		arxiv="1512.03385"
+		venue="CVPR 2016"
+		note="ResNet."
+	/>
+	<Paper
+		title="Attention Is All You Need"
+		authors="Vaswani et al."
+		year="2017"
+		arxiv="1706.03762"
+		venue="NeurIPS 2017"
+		note="The transformer."
+	/>
+	<Paper
+		title="An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
+		authors="Dosovitskiy et al."
+		year="2020"
+		arxiv="2010.11929"
+		venue="ICLR 2021"
+		note="ViT."
+	/>
+</Papers>
+
+## The core four
+
+**`Sequential[A, B, C, …]`** — chain modules. Output dimensions must match the
+next input, checked at compile time.
+
+```mojo
+comptime Net = Sequential[
+    LinearReLU[784, 256],
+    LinearReLU[256, 128],
+    Linear[128, 10],
+]
+```
+
+**`Residual[M]`** — add the input to the output. Requires `IN_DIM == OUT_DIM`.
+
+```mojo
+comptime Block = Residual[Sequential[Linear[D, D], ReLU[D], Linear[D, D]]]
+```
+
+**`Repeat[M, N]`** — `N` independent copies in sequence. Each gets its own
+parameters; the count is compile-time, so there is no runtime loop.
+
+```mojo
+comptime Trunk = Repeat[Block, 6]      # six residual blocks
+```
+
+**`Parallel[A, B, …]`** — run several modules on the same input and combine.
+This is where `ARITY` earns its place: the combinator handles children with
+different input counts uniformly.
+
+## The rest
+
+| Combinator | Purpose |
+|---|---|
+| `BranchConcat` | branch, then concatenate outputs |
+| `SkipConcat` | concatenate a skip connection — U-net style |
+| `ProjectedResidual` | residual with a projection when dimensions differ |
+| `RepeatConditional` | conditioned stack — Dreamer 4's transformer |
+| `Tokenwise` | apply a module per token |
+| `InitWith` | override the initializer for a subtree |
+| `StopGradParams` | freeze a subtree's parameters |
+
+:::caution[`Tokenwise` and eval-mode state]
+Setting an attribute through `Tokenwise` did not propagate to the wrapped
+module for a while, which meant BatchNorm stayed in **training mode during
+planning**. If you wrap a module carrying eval-mode state, verify the mode
+actually reaches it.
+:::
+
+## Pre-built models
+
+```mojo
+from mojo_rl.nn.models.resnet import ResNet
+from mojo_rl.nn.models.gpt import GPT
+from mojo_rl.nn.models.vit import ViT
+```
+
+| Model | Notes |
+|---|---|
+| `ResNet` | residual CNN — ResNet-20 on CIFAR-10 in the examples |
+| `GPT` | decoder-only transformer, weight tying available |
+| `ViT` | vision transformer |
+| `Transformer` | generic encoder/decoder stack |
+| `Conv` · `CifarFeatureNet` | small convolutional trunks |
+
+```bash
+pixi run -e nvidia mojo run -I . examples/nn/resnet/resnet20_cifar10_training_storage_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/nn/vit/vit_cifar_training_storage_gpu.mojo
+```
+
+## ComputeGraph
+
+`Sequential` covers chains. When a loss has a genuine DAG shape — several
+inputs, shared subgraphs, multiple outputs — use the named-node builder in
+`combinators/compute_graph.mojo`.
+
+```mojo
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+```
+
+Nodes are declared with names and wired by reference, and the graph resolves the
+backward order itself. This is what the world-model losses use, where a single
+update touches an encoder, a dynamics net, several prediction heads and a KL
+term that has to flow to two places.
+
+For a plain feed-forward network, `Sequential` is simpler and generates better
+code — reach for `ComputeGraph` when the topology actually needs it.
+
+## Compile-time cost
+
+Deep parameterization is not free, and this is where it bites first.
+
+:::caution[Instantiation depth can explode compile times]
+Two known failure modes, both hit in this repository:
+
+- **A long chain of calls in one function** (~80+) can trigger an inliner
+  explosion. Extract helpers.
+- **A deep `comptime` loop building nested modules** can hang the compiler
+  outright. The LeWM depth-loop and eval-block cases both needed the body pulled
+  into a separate function.
+
+If a build stops making progress rather than failing, suspect instantiation
+depth before suspecting your code.
+:::
+
+A related practical note: probe compilation with `mojo build --emit=llvm` rather
+than a full link. macOS `ld` rejects the very long generic symbol names this
+design produces, so a link failure can be a false negative that has nothing to
+do with your code.
+
+## Next
+
+- [Primitives](/nn/primitives/) — the leaves to compose
+- [Optimizers and losses](/nn/optimizers/) — training the result
+- [Compile-time composition](/concepts/compile-time-composition/) — the idiom behind all of this

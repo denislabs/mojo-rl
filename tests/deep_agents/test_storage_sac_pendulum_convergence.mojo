@@ -36,7 +36,7 @@ from mojo_rl.deep_agents.training.blocks.polyak_step import PolyakStep
 from mojo_rl.deep_agents.sac.target_y_block import TargetYBlock
 from mojo_rl.deep_agents.sac.actor_loss import SACActorLoss
 from mojo_rl.deep_agents.sac.blocks.alpha_update_step import AlphaUpdateStep
-from mojo_rl.deep_agents.data.cpu_replay import CPUReplay
+from mojo_rl.data.replay import StoreReplay
 
 from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
 
@@ -97,7 +97,7 @@ def main() raises:
     var aloss = SACActorLoss[ACTOR, CRITIC, BATCH].make["cpu"](action_scale=ASCALE)
     var alpha_blk = AlphaUpdateStep[OBS, ACT, BATCH].make(Scalar[DT](-Float64(ACT)))
     var polyak = PolyakStep[OBS, ACT, BATCH, CRITIC].make(TAU)
-    var replay = CPUReplay[OBS, ACT, CAP].make()
+    var replay = StoreReplay[OBS, ACT, CAP, False].make()
     var state = TrainerState[OBS, ACT, BATCH].make["cpu"]()
 
     # select-action rsample (separate from the loss graphs' own rsamples).

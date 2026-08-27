@@ -35,20 +35,20 @@ host buffer; `read_obs` gathers a single obs row device→host.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
+from max.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import alloc, dealloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.core.sum_tree import SumTree
-from ..data.gpu_replay import _obs_quant, _obs_dequant
+from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 from .nstep_targets import compute_nstep_value_targets
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) feeding the shared raw-pointer
     `compute_nstep_value_targets`; alloc'd + freed within one sample call."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ def _mz_obs_gather_kernel[
 struct GPUMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, N_ENVS: Int,
     OBS_STORE_DT: DType = DType.uint8,
-](Movable, ImplicitlyDeletable):
+](Movable, Deinitable):
     """Device-obs MuZero replay (see module docstring). ``OBS_STORE_DT`` is the
     obs ring dtype (default ``uint8``: ``round(x·255)`` store / ``k/255`` read,
     bit-lossless for the arcade pixel pipeline; set ``DT`` for vector obs)."""
@@ -398,28 +398,28 @@ struct GPUMCTSSequenceReplay[
             # reward / done horizon (absorbing past terminal).
             for h in range(HR):
                 if s + h >= L:
-                    w_rew[h] = Scalar[DT](0.0)
-                    w_done[h] = Scalar[DT](1.0)
+                    w_rew[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)
                 else:
                     var sl = self._slot(astart, s + h)
-                    w_rew[h] = self.rew[sl]
-                    w_done[h] = self.done[sl]
+                    w_rew[unsafe_offset=h] = self.rew[sl]
+                    w_done[unsafe_offset=h] = self.done[sl]
             # value / to_play horizon.
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     var sl = self._slot(astart, s + h)
-                    w_val[h] = self.val[sl]
-                    w_tp[h] = self.tp[sl]
+                    w_val[unsafe_offset=h] = self.val[sl]
+                    w_tp[unsafe_offset=h] = self.tp[sl]
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 var pbase = k * B * Self.ACT + b * Self.ACT
                 if s + k >= L:
                     var u = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
@@ -434,7 +434,7 @@ struct GPUMCTSSequenceReplay[
                     actions[k * B + b] = Scalar[DT](0.0)
                 else:
                     actions[k * B + b] = self.act[self._slot(astart, s + k)]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
         # ── gather obs0 device→device into the caller's buffer ──
         self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
@@ -452,7 +452,7 @@ struct GPUMCTSSequenceReplay[
             _mz_obs_gather_kernel[B, Self.OBS, Self.CAP, Self.SDT]
         ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.unsafe_free(); w_done.unsafe_free(); w_val.unsafe_free(); w_tp.unsafe_free(); w_vt.unsafe_free()
 
     def sample_training_batch_per_dev[
         B: Int, K: Int, N: Int,
@@ -467,7 +467,7 @@ struct GPUMCTSSequenceReplay[
         mut is_weights: List[Scalar[DT]], # [B] IS weights
         mut sample_slots: List[Int],      # [B] ring slots
         out_prio: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+            Pointer[Scalar[DT], MutAnyOrigin]
         ] = None,  # [B] raw PER priority |ν − z| per sampled root (paper formula)
     ) raises:
         """Prioritized device-obs twin of `sample_training_batch_dev`: window
@@ -537,27 +537,27 @@ struct GPUMCTSSequenceReplay[
 
             for h in range(HR):
                 if s + h >= L:
-                    w_rew[h] = Scalar[DT](0.0)
-                    w_done[h] = Scalar[DT](1.0)
+                    w_rew[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)
                 else:
                     var sl = self._slot(astart, s + h)
-                    w_rew[h] = self.rew[sl]
-                    w_done[h] = self.done[sl]
+                    w_rew[unsafe_offset=h] = self.rew[sl]
+                    w_done[unsafe_offset=h] = self.done[sl]
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     var sl = self._slot(astart, s + h)
-                    w_val[h] = self.val[sl]
-                    w_tp[h] = self.tp[sl]
+                    w_val[unsafe_offset=h] = self.val[sl]
+                    w_tp[unsafe_offset=h] = self.tp[sl]
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 var pbase = k * B * Self.ACT + b * Self.ACT
                 if s + k >= L:
                     var uni = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
@@ -572,16 +572,16 @@ struct GPUMCTSSequenceReplay[
             # reanalyze), z = w_vt[0] (n-step target). update_priorities applies
             # (·+eps)^α. Replaces the old value-head soft-CE (not the paper signal).
             if out_prio:
-                var praw = w_val[0] - w_vt[0]
+                var praw = w_val[unsafe_offset=0] - w_vt[unsafe_offset=0]
                 if praw < Scalar[DT](0.0):
                     praw = -praw
-                out_prio.value()[b] = praw
+                out_prio.value()[unsafe_offset=b] = praw
             for k in range(K):
                 if s + k >= L:
                     actions[k * B + b] = Scalar[DT](0.0)
                 else:
                     actions[k * B + b] = self.act[self._slot(astart, s + k)]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
         # ── gather obs0 device→device into the caller's buffer ──
         self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
@@ -599,7 +599,7 @@ struct GPUMCTSSequenceReplay[
             _mz_obs_gather_kernel[B, Self.OBS, Self.CAP, Self.SDT]
         ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.unsafe_free(); w_done.unsafe_free(); w_val.unsafe_free(); w_tp.unsafe_free(); w_vt.unsafe_free()
 
     def update_priorities(
         mut self,
@@ -680,26 +680,29 @@ struct GPUMCTSSequenceReplay[
         # one-row gather via tiny throwaway device buffers.
         var d_one = self.ctx.enqueue_create_buffer[DType.int32](1)
         var d_out = self.ctx.enqueue_create_buffer[DT](Self.OBS)
-        var hs = alloc[Int32](1).as_unsafe_any_origin()
-        hs[0] = Int32(slot)
-        self.ctx.enqueue_copy(d_one, hs)
-        var slots_t = LayoutTensor[
-            DType.int32, Layout.row_major(1), MutAnyOrigin
-        ](d_one.unsafe_ptr().as_unsafe_any_origin())
-        var buf_t = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
-        var out_t = LayoutTensor[
-            DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](d_out.unsafe_ptr().as_unsafe_any_origin())
-        comptime nb = (Self.OBS + TPB - 1) // TPB
-        self.ctx.enqueue_function[
-            _mz_obs_gather_kernel[1, Self.OBS, Self.CAP, Self.SDT]
-        ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
-        # `.unsafe_ptr()`: sanctioned D2H-staging boundary (device row → host List).
-        self.ctx.enqueue_copy(out.unsafe_ptr(), d_out)
-        self.ctx.synchronize()
-        hs.free()
+        var hs_a = alloc[Int32]({count = 1})
+        var hs = hs_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
+            hs[unsafe_offset=0] = Int32(slot)
+            self.ctx.enqueue_copy(d_one, hs)
+            var slots_t = LayoutTensor[
+                DType.int32, Layout.row_major(1), MutAnyOrigin
+            ](d_one.unsafe_ptr().as_unsafe_any_origin())
+            var buf_t = LayoutTensor[
+                Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
+            var out_t = LayoutTensor[
+                DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](d_out.unsafe_ptr().as_unsafe_any_origin())
+            comptime nb = (Self.OBS + TPB - 1) // TPB
+            self.ctx.enqueue_function[
+                _mz_obs_gather_kernel[1, Self.OBS, Self.CAP, Self.SDT]
+            ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
+            # `.unsafe_ptr()`: sanctioned D2H-staging boundary (device row → host List).
+            self.ctx.enqueue_copy(out.unsafe_ptr(), d_out)
+            self.ctx.synchronize()
+        finally:
+            dealloc(hs_a^)
 
     def update_targets(
         mut self,

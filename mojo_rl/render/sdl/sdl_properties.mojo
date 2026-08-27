@@ -160,7 +160,7 @@ def copy_properties(src: PropertiesID, dst: PropertiesID) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CopyProperties.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CopyProperties",
         def(src: PropertiesID, dst: PropertiesID) thin -> Bool,
@@ -194,7 +194,7 @@ def lock_properties(props: PropertiesID) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockProperties.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_LockProperties", def(props: PropertiesID) thin -> Bool
     ]()(props)
     if not ret:
@@ -281,7 +281,7 @@ def set_pointer_property_with_cleanup(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetPointerPropertyWithCleanup.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetPointerPropertyWithCleanup",
         def(
@@ -316,7 +316,7 @@ def set_pointer_property(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetPointerProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetPointerProperty",
         def(
@@ -352,7 +352,7 @@ def set_string_property(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetStringProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetStringProperty",
         def(
@@ -389,7 +389,7 @@ def set_number_property(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetNumberProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetNumberProperty",
         def(
@@ -422,7 +422,7 @@ def set_float_property(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetFloatProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetFloatProperty",
         def(
@@ -455,7 +455,7 @@ def set_boolean_property(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetBooleanProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetBooleanProperty",
         def(
@@ -723,7 +723,7 @@ def clear_property(props: PropertiesID, var name: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearProperty.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ClearProperty",
         def(
@@ -782,7 +782,7 @@ def enumerate_properties(
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnumerateProperties.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_EnumerateProperties",
         def(

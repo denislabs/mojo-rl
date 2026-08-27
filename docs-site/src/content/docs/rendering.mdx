@@ -1,0 +1,159 @@
+---
+title: Rendering
+description: SDL3-backed rendering — a 2D CPU rasterizer, a GPU 3D renderer with shadows and reflections, and video capture.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" note="Requires SDL3. Not needed for training." />
+
+`mojo_rl.render` draws environments — for watching a policy, for recording, and
+for playing them yourself. It is optional: training never touches it.
+
+<DemoGrid min="15rem">
+	<Demo name="walker2d" caption="3D renderer" meta="shadows · reflections · skybox" />
+	<Demo name="cartpole_demo" caption="2D rasterizer" meta="CPU, no GPU required" />
+	<Demo name="pong_playable" caption="Playable" meta="interactive, keyboard input" />
+</DemoGrid>
+
+## Installing SDL3
+
+```bash
+brew install sdl3             # macOS
+sudo apt install libsdl3-dev  # Ubuntu / Debian
+sudo dnf install SDL3-devel   # Fedora
+```
+
+The bindings are complete FFI — 35 files under `render/sdl/` — not a wrapper
+around a C shim.
+
+## Two renderers
+
+### Renderer2D — CPU rasterizer
+
+Software rasterization for the classic-control and 2D-physics environments.
+Draws lines, filled and outlined polygons, circles and text into a pixel buffer
+that SDL3 presents.
+
+```mojo
+from mojo_rl.render.renderer2d import Renderer2D
+```
+
+No GPU required, which makes it the reliable choice for a headless box or a
+quick look at a policy.
+
+### Renderer3D — GPU renderer
+
+The MuJoCo-style environments render through the SDL3 GPU API with Metal
+shaders. Six passes:
+
+| Pass | Output |
+|---|---|
+| shadow | depth map from the light |
+| solid | Blinn-Phong shaded geometry |
+| ground | checkerboard floor |
+| reflection | mirrored geometry in the floor |
+| skybox | gradient background |
+| text | HUD overlay |
+
+```mojo
+from mojo_rl.render.renderer3d import Renderer3D
+```
+
+Meshes are cached and draw commands deferred, so a batch of similar geoms costs
+one submission rather than one per body.
+
+## Interactive controls
+
+The 3D viewer is interactive. Environment demos print their bindings, and the
+common ones are:
+
+| Key | Action |
+|---|---|
+| `Space` | pause / resume |
+| `→` | single step |
+| `1`–`9` | switch camera |
+| `R` | reset camera |
+| `S` | screenshot |
+| `V` | start / stop recording |
+
+Mouse orbits, pans and zooms.
+
+## Video capture
+
+```mojo
+from mojo_rl.render.video_recorder import VideoRecorder
+```
+
+Records MP4 or GIF through Python `imageio` (a pixi dependency, so nothing extra
+to install). Every demo GIF on this site came from it.
+
+```bash
+pixi run mojo run -I . examples/export_env_gifs.mojo
+pixi run mojo run -I . examples/arcade_games/pong_playable_gif.mojo
+```
+
+:::tip[Prefer MP4 over GIF for anything long]
+GIF is enormous for screen capture. The clips on this site were 82 MB as GIFs
+and 3.7 MB as H.264 — 22× smaller — for the same content. If you are recording
+to share, record MP4, or transcode afterwards with
+`docs-site/scripts/build-media.mjs`.
+:::
+
+## Supporting modules
+
+| Module | Purpose |
+|---|---|
+| `camera3d` | orbit / pan / zoom camera |
+| `gpu_mesh` · `gpu_types` | mesh upload and GPU resource types |
+| `gpu_shaders` · `gpu_shaders_spirv` | MSL shaders and SPIR-V variants |
+| `font_atlas` | bitmap text |
+| `shapes` · `shapes3d` | primitive geometry |
+| `transform` · `light` · `colors` | scene helpers |
+| `stl_loader` · `png_loader` | asset loading |
+| `image_writer` | PNG / PPM output |
+
+Shader compilation goes through `shaderc` (GLSL → SPIR-V), also a pixi
+dependency.
+
+## Rendering an environment
+
+Environments implementing `RenderableEnv` draw themselves:
+
+```mojo
+_ = env.reset()
+env.render_frame()
+```
+
+For the tabular environments that renders as text — no SDL3 required at all. The
+physics3d environments use `ModelRenderer`, which adapts a physics model to
+`EnvRenderer3D`.
+
+## Playable demos
+
+Several environments accept keyboard input directly:
+
+```bash
+pixi run mojo run -I . examples/arcade_games/pong_playable.mojo
+pixi run mojo run -I . examples/arcade_games/breakout_playable.mojo
+pixi run mojo run -I . examples/board_games/chess_playable.mojo
+pixi run mojo run -I . examples/craftax_classic/play_classic.mojo
+pixi run mojo run -I . examples/car_racing/play_car_racing.mojo
+```
+
+Worth doing before training an agent on something. Playing a task tends to make
+its reward structure and failure modes obvious in a way that reading the config
+does not.
+
+:::caution[Metal toolchain]
+The GPU renderer needs Apple's Metal toolchain present. If shader compilation
+fails on macOS with a missing-toolchain error, install the Xcode command-line
+tools. The 2D rasterizer is unaffected.
+:::
+
+## Next
+
+- [Environments](/environments/) — what there is to render
+- [3D physics](/physics/physics3d/) — the models being drawn

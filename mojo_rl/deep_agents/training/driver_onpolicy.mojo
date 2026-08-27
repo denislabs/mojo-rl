@@ -18,7 +18,7 @@ target consistently across env + trainer.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -29,7 +29,7 @@ from .driver_scratch import DriverScratch
 from .blocks.cadence import DriverCadence
 
 
-trait OnPolicyCheckpointable(ImplicitlyDeletable, Movable):
+trait OnPolicyCheckpointable(Deinitable, Movable):
     """Shared ROOT surface for ALL on-policy traits (continuous +
     discrete, single-env + batched).
 
@@ -65,7 +65,7 @@ trait OnPolicyCheckpointable(ImplicitlyDeletable, Movable):
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         pass
@@ -157,7 +157,7 @@ def run_onpolicy_train[
     act_dim: Int,
     print_every: Int = 1_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -330,8 +330,8 @@ trait OnPolicyBatchedCore(OnPolicyCheckpointable):
 
     def select_action_batched(
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
         """Reads AGENT_N_ENVS * AGENT_OBS_DIM from `obs_ptr`, writes
@@ -343,10 +343,10 @@ trait OnPolicyBatchedCore(OnPolicyCheckpointable):
 
     def record_batch_cpu(
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Push AGENT_N_ENVS transitions into the rollout buffer. All
         pointers host-side. Maintains per-env running returns and
@@ -391,7 +391,7 @@ def run_onpolicy_train_batched[
     rng_seed: UInt64 = UInt64(42),
     print_every: Int = 5_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -489,7 +489,7 @@ def _run_onpolicy_batched_body[
     rng_seed: UInt64,
     print_every: Int,
     verbose: Bool,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+    logger: Optional[Pointer[L, MutAnyOrigin]],
     diag_every: Int,
     checkpoint_every: Int,
     checkpoint_path: String,
@@ -548,7 +548,7 @@ def _run_onpolicy_batched_body[
         comptime if env_target == "cpu":
             var ob_p = env.obs_ptr()
             for k in range(N_ENVS * OBS):
-                po_p[k] = ob_p[k]
+                po_p[unsafe_offset=k] = ob_p[unsafe_offset=k]
         else:
             var c = ctx.value()
             var env_obs_view = DeviceBuffer[DT](
@@ -562,7 +562,7 @@ def _run_onpolicy_batched_body[
             c.synchronize()
             var ph = po_host.unsafe_ptr()
             for k in range(N_ENVS * OBS):
-                po_p[k] = ph[k]
+                po_p[unsafe_offset=k] = ph[unsafe_offset=k]
 
         # ── 2. Trainer writes action into host scratch.
         # `base_step + step_idx` — cumulative env-step counter (see
@@ -588,7 +588,7 @@ def _run_onpolicy_batched_body[
             var ap = action_h.host_ptr()
             var ea = env.action_ptr()
             for k in range(N_ENVS * ACT):
-                ea[k] = ap[k]
+                ea[unsafe_offset=k] = ap[unsafe_offset=k]
 
         # ── 4. Env step.
         env.step_batch[N_ENVS](
@@ -607,11 +607,11 @@ def _run_onpolicy_batched_body[
             var ed_p = env.done_ptr()
             var et_p = env.terminated_ptr()
             for k in range(N_ENVS * OBS):
-                no_p[k] = ob_p[k]
+                no_p[unsafe_offset=k] = ob_p[unsafe_offset=k]
             for e in range(N_ENVS):
-                rew_p[e] = er_p[e]
-                dn_p[e] = ed_p[e]
-                tm_p[e] = et_p[e]
+                rew_p[unsafe_offset=e] = er_p[unsafe_offset=e]
+                dn_p[unsafe_offset=e] = ed_p[unsafe_offset=e]
+                tm_p[unsafe_offset=e] = et_p[unsafe_offset=e]
         else:
             var c = ctx.value()
             var env_obs_view = DeviceBuffer[DT](
@@ -652,18 +652,18 @@ def _run_onpolicy_batched_body[
             var dh = dn_host.unsafe_ptr()
             var th = tm_host.unsafe_ptr()
             for k in range(N_ENVS * OBS):
-                no_p[k] = nh[k]
+                no_p[unsafe_offset=k] = nh[unsafe_offset=k]
             for e in range(N_ENVS):
-                rew_p[e] = rh[e]
-                dn_p[e] = dh[e]
-                tm_p[e] = th[e]
+                rew_p[unsafe_offset=e] = rh[unsafe_offset=e]
+                dn_p[unsafe_offset=e] = dh[unsafe_offset=e]
+                tm_p[unsafe_offset=e] = th[unsafe_offset=e]
 
         # ── 6. Trainer push, then mark TRUE terminals (V=0 bootstrap in GAE)
         # — truncation keeps the bootstrap. No-op for non-terminating envs
         # (`term ≡ 0`) → bit-identical.
         trainer.record_batch_cpu(po_p, rew_p, no_p, dn_p)
         for e in range(N_ENVS):
-            if tm_p[e] > Scalar[DT](0.5):
+            if tm_p[unsafe_offset=e] > Scalar[DT](0.5):
                 trainer.mark_terminal_env(e)
 
         # ── 7. Selective env reset (env handles per-env done internally).

@@ -19,10 +19,10 @@ from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
 
 
 def _loss[C: Int](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: Pointer[Scalar[DT], MutAnyOrigin],
     u: Scalar[DT], k: Int, a: Scalar[DT], b: Scalar[DT],
-    sm: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    sm: Pointer[Scalar[DT], MutAnyOrigin],
+    p: Pointer[Scalar[DT], MutAnyOrigin],
 ) -> Scalar[DT]:
     var r = cat_fwd[C](logits, 0, u, k, sm, p)
     return a * r[0] + b * r[1]

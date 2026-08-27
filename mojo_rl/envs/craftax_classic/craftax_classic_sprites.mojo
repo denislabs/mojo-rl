@@ -13,7 +13,7 @@ the BLOCK_* constants in `constants.mojo` for the 17 block types, so a
 block_id can be used directly as a sprite index without a translation table.
 """
 
-from std.memory import alloc, unsafe_memset, UnsafePointer
+from std.memory import alloc, unsafe_memset, Pointer
 from std.python import Python, PythonObject
 
 
@@ -93,7 +93,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 
 
 def _blit_sprite_to_sheet(
-    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
+    sheet: Pointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     raw_bytes: PythonObject,
     src_w: Int,
@@ -110,14 +110,14 @@ def _blit_sprite_to_sheet(
         for x in range(copy_w):
             var src_off = (y * src_w + x) * SPRITE_BPP
             var dst_off = (y * SHEET_WIDTH + (dst_x + x)) * SPRITE_BPP
-            sheet[dst_off + 0] = UInt8(Int(py=raw_bytes[src_off + 0]))
-            sheet[dst_off + 1] = UInt8(Int(py=raw_bytes[src_off + 1]))
-            sheet[dst_off + 2] = UInt8(Int(py=raw_bytes[src_off + 2]))
-            sheet[dst_off + 3] = UInt8(Int(py=raw_bytes[src_off + 3]))
+            sheet[unsafe_offset=dst_off + 0] = UInt8(Int(py=raw_bytes[src_off + 0]))
+            sheet[unsafe_offset=dst_off + 1] = UInt8(Int(py=raw_bytes[src_off + 1]))
+            sheet[unsafe_offset=dst_off + 2] = UInt8(Int(py=raw_bytes[src_off + 2]))
+            sheet[unsafe_offset=dst_off + 3] = UInt8(Int(py=raw_bytes[src_off + 3]))
 
 
 def _load_one(
-    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
+    sheet: Pointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     asset_dir: String,
     filename: String,
@@ -134,13 +134,13 @@ def _load_one(
 
 def build_sprite_sheet(
     asset_dir: String,
-) raises -> UnsafePointer[UInt8, MutUntrackedOrigin]:
+) raises -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate and populate the full Craftax-Classic sprite sheet.
 
     Returns a heap buffer the caller owns (must be freed via `.free()`).
     Sheet layout matches the comptime SPR_* indices above.
     """
-    var sheet = alloc[UInt8](SHEET_BYTES)
+    var sheet = alloc[UInt8]({count = SHEET_BYTES}).unsafe_leak()
     # Zero the sheet first so SPR_INVALID is transparent and SPR_OOB stays
     # at solid black-with-alpha (we set its alpha explicitly below).
     unsafe_memset(sheet, UInt8(0), SHEET_BYTES)
@@ -150,10 +150,10 @@ def build_sprite_sheet(
             var off = (
                 y * SHEET_WIDTH + (SPR_OOB * SPRITE_SIZE + x)
             ) * SPRITE_BPP
-            sheet[off + 0] = UInt8(15)
-            sheet[off + 1] = UInt8(15)
-            sheet[off + 2] = UInt8(25)
-            sheet[off + 3] = UInt8(255)
+            sheet[unsafe_offset=off + 0] = UInt8(15)
+            sheet[unsafe_offset=off + 1] = UInt8(15)
+            sheet[unsafe_offset=off + 2] = UInt8(25)
+            sheet[unsafe_offset=off + 3] = UInt8(255)
 
     var pil = Python.import_module("PIL.Image")
 
@@ -231,7 +231,7 @@ def agent_atlas_size(block_pixel_size: Int) -> Int:
 
 
 def _blit_resized_to_atlas(
-    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
+    atlas: Pointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     raw_bytes: PythonObject,
@@ -243,14 +243,14 @@ def _blit_resized_to_atlas(
         for x in range(bps):
             var src_off = (y * bps + x) * 4
             var dst_off = slot_base + (y * bps + x) * 4
-            atlas[dst_off + 0] = Float32(Int(py=raw_bytes[src_off + 0])) / Float32(255.0)
-            atlas[dst_off + 1] = Float32(Int(py=raw_bytes[src_off + 1])) / Float32(255.0)
-            atlas[dst_off + 2] = Float32(Int(py=raw_bytes[src_off + 2])) / Float32(255.0)
-            atlas[dst_off + 3] = Float32(Int(py=raw_bytes[src_off + 3])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 0] = Float32(Int(py=raw_bytes[src_off + 0])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 1] = Float32(Int(py=raw_bytes[src_off + 1])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 2] = Float32(Int(py=raw_bytes[src_off + 2])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 3] = Float32(Int(py=raw_bytes[src_off + 3])) / Float32(255.0)
 
 
 def _load_one_resized(
-    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
+    atlas: Pointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     asset_dir: String,
@@ -270,7 +270,7 @@ def _load_one_resized(
 def build_agent_atlas(
     asset_dir: String,
     block_pixel_size: Int,
-) raises -> UnsafePointer[Float32, MutUntrackedOrigin]:
+) raises -> Pointer[Float32, MutUntrackedOrigin]:
     """Build the float32 RGBA atlas at the agent's small block_pixel_size.
 
     Returns a heap buffer owned by caller (must be freed via `.free()`).
@@ -279,18 +279,18 @@ def build_agent_atlas(
     """
     var bps = block_pixel_size
     var size = NUM_SPRITES * bps * bps * 4
-    var atlas = alloc[Float32](size)
+    var atlas = alloc[Float32]({count = size}).unsafe_leak()
     # Zero (transparent) by default.
     for i in range(size):
-        atlas[i] = Float32(0.0)
+        atlas[unsafe_offset=i] = Float32(0.0)
     # OOB slot — opaque dark slate.
     for y in range(bps):
         for x in range(bps):
             var off = SPR_OOB * bps * bps * 4 + (y * bps + x) * 4
-            atlas[off + 0] = Float32(15.0) / Float32(255.0)
-            atlas[off + 1] = Float32(15.0) / Float32(255.0)
-            atlas[off + 2] = Float32(25.0) / Float32(255.0)
-            atlas[off + 3] = Float32(1.0)
+            atlas[unsafe_offset=off + 0] = Float32(15.0) / Float32(255.0)
+            atlas[unsafe_offset=off + 1] = Float32(15.0) / Float32(255.0)
+            atlas[unsafe_offset=off + 2] = Float32(25.0) / Float32(255.0)
+            atlas[unsafe_offset=off + 3] = Float32(1.0)
 
     var pil = Python.import_module("PIL.Image")
 

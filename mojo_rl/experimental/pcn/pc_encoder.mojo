@@ -93,12 +93,12 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         )
         for i in range(Self.W1_SIZE):
             var u = Float64(rng1.step_uniform()[0])
-            params.ptr[Self.W1_OFFSET + i] = Scalar[dtype](
+            params.ptr[unsafe_offset=Self.W1_OFFSET + i] = Scalar[dtype](
                 (u * 2.0 - 1.0) * bound1
             )
         # b1 = 0
         for i in range(Self.B1_SIZE):
-            params.ptr[Self.B1_OFFSET + i] = Scalar[dtype](0.0)
+            params.ptr[unsafe_offset=Self.B1_OFFSET + i] = Scalar[dtype](0.0)
         # W2: bound = sqrt(6 / (hidden_dim + out_dim))
         var rng2 = PhiloxRandom(seed=seed + UInt64(1), offset=UInt64(0))
         var bound2 = sqrt(
@@ -106,12 +106,12 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         )
         for i in range(Self.W2_SIZE):
             var u = Float64(rng2.step_uniform()[0])
-            params.ptr[Self.W2_OFFSET + i] = Scalar[dtype](
+            params.ptr[unsafe_offset=Self.W2_OFFSET + i] = Scalar[dtype](
                 (u * 2.0 - 1.0) * bound2
             )
         # b2 = 0
         for i in range(Self.B2_SIZE):
-            params.ptr[Self.B2_OFFSET + i] = Scalar[dtype](0.0)
+            params.ptr[unsafe_offset=Self.B2_OFFSET + i] = Scalar[dtype](0.0)
 
     # =========================================================================
     # Forward:  output = W2 · tanh(W1 · input + b1) + b2
@@ -141,16 +141,16 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         # Param sub-views over the flat slab (no rebind; like the block path).
         var W1 = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
-        ](params.ptr + Self.W1_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W1_OFFSET))
         var b1 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
-        ](params.ptr + Self.B1_OFFSET)
+        ](params.ptr.unsafe_offset(Self.B1_OFFSET))
         var W2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.W2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W2_OFFSET))
         var b2 = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.B2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.B2_OFFSET))
 
         # h_pre = input @ W1
         try:
@@ -206,24 +206,24 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
     ):
         """Writes gradients into `grads` (overwrites; caller need not zero)."""
         for i in range(Self.PARAM_SIZE):
-            grads.ptr[i] = Scalar[dtype](0.0)
+            grads.ptr[unsafe_offset=i] = Scalar[dtype](0.0)
 
         # Grad + param sub-views over the slabs (no rebind; like the block path).
         var dW1 = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
-        ](grads.ptr + Self.W1_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.W1_OFFSET))
         var db1 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
-        ](grads.ptr + Self.B1_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.B1_OFFSET))
         var dW2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.W2_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.W2_OFFSET))
         var db2 = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.B2_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.B2_OFFSET))
         var W2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.W2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W2_OFFSET))
 
         # dW2 = h_act^T @ dz_out
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:
@@ -239,14 +239,14 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
                     Int32(Self.out_dim),
                     Int32(BATCH),
                     Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](
                         hidden_act.ptr
                     ),
                     Int32(Self.hidden_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](dz_out.ptr),
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](dz_out.ptr),
                     Int32(Self.out_dim),
                     Float32(0.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dW2.ptr),
+                    rebind[Pointer[Float32, MutAnyOrigin]](dW2.ptr),
                     Int32(Self.out_dim),
                 )
             except:
@@ -320,16 +320,16 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
                     Int32(Self.hidden_dim),
                     Int32(BATCH),
                     Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](
                         enc_input.ptr
                     ),
                     Int32(Self.in_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                    rebind[Pointer[Float32, ImmutAnyOrigin]](
                         dh_pre_view.ptr
                     ),
                     Int32(Self.hidden_dim),
                     Float32(0.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dW1.ptr),
+                    rebind[Pointer[Float32, MutAnyOrigin]](dW1.ptr),
                     Int32(Self.hidden_dim),
                 )
             except:

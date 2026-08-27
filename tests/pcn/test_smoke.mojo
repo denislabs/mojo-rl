@@ -143,9 +143,9 @@ def main() raises:
         )
         print(
             "    ", b, "  ",
-            String(result.energy_initial)[byte=:9], " ",
-            String(result.energy_final)[byte=:9], " ",
-            String(result.output_loss_final)[byte=:9],
+            fit(String(result.energy_initial), 9), " ",
+            fit(String(result.energy_final), 9), " ",
+            fit(String(result.output_loss_final), 9),
         )
         if b == 0:
             first_loss = result.output_loss_final
@@ -170,3 +170,5 @@ def main() raises:
     z_below_buf_raw.free()
     dx_buf_raw.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

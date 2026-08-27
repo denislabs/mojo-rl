@@ -22,7 +22,7 @@ read the result back on host for the sampling walk.
 """
 
 from std.math import exp as fexp
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -52,7 +52,7 @@ struct PPOActStep[
     ACT_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
 
@@ -84,8 +84,8 @@ struct PPOActStep[
         ],
         mut actor: Self.ACTOR,
         mut critic: Self.CRITIC,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         action_scale: Scalar[DT],
     ) raises:
         """Sample N_ENVS PPO actions. Reads N_ENVS × OBS from obs_ptr,
@@ -100,7 +100,7 @@ struct PPOActStep[
         # tensor's `.data` List directly; obs_ptr is the driver trait ABI).
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                state.ob1.data[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                state.ob1.data[e * Self.OBS + d] = obs_ptr[unsafe_offset=e * Self.OBS + d]
 
         comptime if target == "gpu":
             var ctx = state.ctx.value()
@@ -143,7 +143,7 @@ struct PPOActStep[
                     env_a = action_scale
                 elif env_a < -action_scale:
                     env_a = -action_scale
-                action_ptr[e * Self.ACT + j] = env_a
+                action_ptr[unsafe_offset=e * Self.ACT + j] = env_a
                 var zz = (sample - mu) / (fexp(ls) + EPS_STD)
                 lp_total += Scalar[DT](-0.5) * (
                     LOG_2PI + Scalar[DT](2.0) * ls + zz * zz

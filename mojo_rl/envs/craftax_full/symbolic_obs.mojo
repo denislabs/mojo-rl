@@ -32,7 +32,7 @@ CPU only for now — GPU encoder lands later if needed.
 """
 
 from std.math import sqrt
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from .constants import (
     MAP_H,
@@ -142,8 +142,8 @@ from .state import (
 )
 
 
-comptime State = UnsafePointer[Float32, MutAnyOrigin]
-comptime Obs = UnsafePointer[Float32, MutAnyOrigin]
+comptime State = Pointer[Float32, MutAnyOrigin]
+comptime Obs = Pointer[Float32, MutAnyOrigin]
 
 
 # ============================================================================
@@ -182,35 +182,35 @@ def _put_mob_array(
     `field_stride`."""
     for i in range(max_n):
         var mob_base = array_base + i * field_stride
-        var mask = Int(s[mob_base + MOB_MASK])
+        var mask = Int(s[unsafe_offset=mob_base + MOB_MASK])
         if mask == 0:
             continue
-        var my = Int(s[mob_base + MOB_FY])
-        var mx = Int(s[mob_base + MOB_FX])
+        var my = Int(s[unsafe_offset=mob_base + MOB_FY])
+        var mx = Int(s[unsafe_offset=mob_base + MOB_FX])
         var lv = my - py + half_h
         var lx = mx - px + half_w
         if 0 <= lv and lv < VIEW_H and 0 <= lx and lx < VIEW_W:
-            var type_id = Int(s[mob_base + MOB_TYPE_ID])
+            var type_id = Int(s[unsafe_offset=mob_base + MOB_TYPE_ID])
             if 0 <= type_id and type_id < OBS_MOB_TYPES_PER_CLASS:
                 var ch = (
                     OBS_CH_MOB_BASE
                     + class_idx * OBS_MOB_TYPES_PER_CLASS
                     + type_id
                 )
-                obs[_tile_off(lv, lx) + ch] = Float32(1.0)
+                obs[unsafe_offset=_tile_off(lv, lx) + ch] = Float32(1.0)
 
 
 @always_inline
 def _is_boss_vulnerable(s: State, floor: Int) -> Bool:
     """Boss is vulnerable when no melee + no ranged mobs are alive on the
     current floor AND the boss spawn cooldown has elapsed."""
-    if Int(s[S_BOSS_TIMESTEPS]) > 0:
+    if Int(s[unsafe_offset=S_BOSS_TIMESTEPS]) > 0:
         return False
     for i in range(MAX_MELEE_MOBS):
-        if Int(s[s_melee_mob(floor, i, MOB_MASK)]) != 0:
+        if Int(s[unsafe_offset=s_melee_mob(floor, i, MOB_MASK)]) != 0:
             return False
     for i in range(MAX_RANGED_MOBS):
-        if Int(s[s_ranged_mob(floor, i, MOB_MASK)]) != 0:
+        if Int(s[unsafe_offset=s_ranged_mob(floor, i, MOB_MASK)]) != 0:
             return False
     return True
 
@@ -223,11 +223,11 @@ def _is_boss_vulnerable(s: State, floor: Int) -> Bool:
 def encode_symbolic_obs(s: State, obs: Obs):
     """Fill `obs[0 : OBS_DIM)` with the Craftax-Full symbolic observation."""
     for i in range(OBS_DIM):
-        obs[i] = Float32(0.0)
+        obs[unsafe_offset=i] = Float32(0.0)
 
-    var floor = Int(s[S_PLAYER_LEVEL])
-    var py = Int(s[S_PLAYER_POS])
-    var px = Int(s[S_PLAYER_POS + 1])
+    var floor = Int(s[unsafe_offset=S_PLAYER_LEVEL])
+    var py = Int(s[unsafe_offset=S_PLAYER_POS])
+    var px = Int(s[unsafe_offset=S_PLAYER_POS + 1])
     var half_h = VIEW_H // 2
     var half_w = VIEW_W // 2
 
@@ -246,9 +246,9 @@ def encode_symbolic_obs(s: State, obs: Obs):
             var lit: Bool
 
             if in_b:
-                blk_id = Int(s[s_map(floor, wy, wx)])
-                item_id = Int(s[s_item_map(floor, wy, wx)])
-                var light_val = s[s_light_map(floor, wy, wx)]
+                blk_id = Int(s[unsafe_offset=s_map(floor, wy, wx)])
+                item_id = Int(s[unsafe_offset=s_item_map(floor, wy, wx)])
+                var light_val = s[unsafe_offset=s_light_map(floor, wy, wx)]
                 lit = light_val > Float32(LIGHT_VISIBILITY_THRESHOLD)
             else:
                 blk_id = BLOCK_OUT_OF_BOUNDS
@@ -257,10 +257,10 @@ def encode_symbolic_obs(s: State, obs: Obs):
 
             if lit:
                 if 0 <= blk_id and blk_id < NUM_BLOCK_TYPES:
-                    obs[tb + OBS_CH_BLOCK_BASE + blk_id] = Float32(1.0)
+                    obs[unsafe_offset=tb + OBS_CH_BLOCK_BASE + blk_id] = Float32(1.0)
                 if 0 <= item_id and item_id < NUM_ITEM_TYPES:
-                    obs[tb + OBS_CH_ITEM_BASE + item_id] = Float32(1.0)
-                obs[tb + OBS_CH_LIGHT] = Float32(1.0)
+                    obs[unsafe_offset=tb + OBS_CH_ITEM_BASE + item_id] = Float32(1.0)
+                obs[unsafe_offset=tb + OBS_CH_LIGHT] = Float32(1.0)
             # else: leave all channels at 0 — matches reference darkness mask.
 
     # ------------------------------------------------------------------
@@ -311,9 +311,9 @@ def encode_symbolic_obs(s: State, obs: Obs):
     for lv in range(VIEW_H):
         for lx in range(VIEW_W):
             var tb = _tile_off(lv, lx)
-            if obs[tb + OBS_CH_LIGHT] == Float32(0.0):
+            if obs[unsafe_offset=tb + OBS_CH_LIGHT] == Float32(0.0):
                 for c in range(OBS_MOB_CLASSES * OBS_MOB_TYPES_PER_CLASS):
-                    obs[tb + OBS_CH_MOB_BASE + c] = Float32(0.0)
+                    obs[unsafe_offset=tb + OBS_CH_MOB_BASE + c] = Float32(0.0)
 
     # ------------------------------------------------------------------
     # 3. Scalar tail — 51 floats.
@@ -321,71 +321,71 @@ def encode_symbolic_obs(s: State, obs: Obs):
     var off = OBS_VIEW_SIZE
 
     # inventory (16) — order matches reference renderer.
-    obs[off + 0]  = sqrt(Float32(Int(s[s_inv(INV_WOOD)])))     * Float32(0.1)
-    obs[off + 1]  = sqrt(Float32(Int(s[s_inv(INV_STONE)])))    * Float32(0.1)
-    obs[off + 2]  = sqrt(Float32(Int(s[s_inv(INV_COAL)])))     * Float32(0.1)
-    obs[off + 3]  = sqrt(Float32(Int(s[s_inv(INV_IRON)])))     * Float32(0.1)
-    obs[off + 4]  = sqrt(Float32(Int(s[s_inv(INV_DIAMOND)])))  * Float32(0.1)
-    obs[off + 5]  = sqrt(Float32(Int(s[s_inv(INV_SAPPHIRE)]))) * Float32(0.1)
-    obs[off + 6]  = sqrt(Float32(Int(s[s_inv(INV_RUBY)])))     * Float32(0.1)
-    obs[off + 7]  = sqrt(Float32(Int(s[s_inv(INV_SAPLING)])))  * Float32(0.1)
-    obs[off + 8]  = sqrt(Float32(Int(s[s_inv(INV_TORCHES)])))  * Float32(0.1)
-    obs[off + 9]  = sqrt(Float32(Int(s[s_inv(INV_ARROWS)])))   * Float32(0.1)
-    obs[off + 10] = Float32(Int(s[s_inv(INV_BOOKS)]))   * Float32(0.5)
-    obs[off + 11] = Float32(Int(s[s_inv(INV_PICKAXE)])) * Float32(0.25)
-    obs[off + 12] = Float32(Int(s[s_inv(INV_SWORD)]))   * Float32(0.25)
-    obs[off + 13] = s[S_SWORD_ENCHANT]
-    obs[off + 14] = s[S_BOW_ENCHANT]
-    obs[off + 15] = Float32(Int(s[s_inv(INV_BOW)]))
+    obs[unsafe_offset=off + 0]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_WOOD)])))     * Float32(0.1)
+    obs[unsafe_offset=off + 1]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_STONE)])))    * Float32(0.1)
+    obs[unsafe_offset=off + 2]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_COAL)])))     * Float32(0.1)
+    obs[unsafe_offset=off + 3]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_IRON)])))     * Float32(0.1)
+    obs[unsafe_offset=off + 4]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_DIAMOND)])))  * Float32(0.1)
+    obs[unsafe_offset=off + 5]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_SAPPHIRE)]))) * Float32(0.1)
+    obs[unsafe_offset=off + 6]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_RUBY)])))     * Float32(0.1)
+    obs[unsafe_offset=off + 7]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_SAPLING)])))  * Float32(0.1)
+    obs[unsafe_offset=off + 8]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_TORCHES)])))  * Float32(0.1)
+    obs[unsafe_offset=off + 9]  = sqrt(Float32(Int(s[unsafe_offset=s_inv(INV_ARROWS)])))   * Float32(0.1)
+    obs[unsafe_offset=off + 10] = Float32(Int(s[unsafe_offset=s_inv(INV_BOOKS)]))   * Float32(0.5)
+    obs[unsafe_offset=off + 11] = Float32(Int(s[unsafe_offset=s_inv(INV_PICKAXE)])) * Float32(0.25)
+    obs[unsafe_offset=off + 12] = Float32(Int(s[unsafe_offset=s_inv(INV_SWORD)]))   * Float32(0.25)
+    obs[unsafe_offset=off + 13] = s[unsafe_offset=S_SWORD_ENCHANT]
+    obs[unsafe_offset=off + 14] = s[unsafe_offset=S_BOW_ENCHANT]
+    obs[unsafe_offset=off + 15] = Float32(Int(s[unsafe_offset=s_inv(INV_BOW)]))
     off += OBS_INV_SIZE  # +16
 
     # potions (6)
     for k in range(NUM_POTIONS):
-        var v = Float32(Int(s[s_inv(INV_POTIONS_BASE + k)]))
-        obs[off + k] = sqrt(v) * Float32(0.1)
+        var v = Float32(Int(s[unsafe_offset=s_inv(INV_POTIONS_BASE + k)]))
+        obs[unsafe_offset=off + k] = sqrt(v) * Float32(0.1)
     off += NUM_POTIONS  # +6
 
     # intrinsics (9)
-    obs[off + 0] = Float32(Int(s[s_intrinsic(INTRINSIC_HEALTH)])) * Float32(0.1)
-    obs[off + 1] = Float32(Int(s[s_intrinsic(INTRINSIC_FOOD)]))   * Float32(0.1)
-    obs[off + 2] = Float32(Int(s[s_intrinsic(INTRINSIC_DRINK)]))  * Float32(0.1)
-    obs[off + 3] = Float32(Int(s[s_intrinsic(INTRINSIC_ENERGY)])) * Float32(0.1)
-    obs[off + 4] = Float32(Int(s[s_intrinsic(INTRINSIC_MANA)]))   * Float32(0.1)
-    obs[off + 5] = Float32(Int(s[s_attribute(ATTR_XP)]))          * Float32(0.1)
-    obs[off + 6] = Float32(Int(s[s_attribute(ATTR_DEXTERITY)]))   * Float32(0.1)
-    obs[off + 7] = Float32(Int(s[s_attribute(ATTR_STRENGTH)]))    * Float32(0.1)
-    obs[off + 8] = Float32(Int(s[s_attribute(ATTR_INTELLIGENCE)])) * Float32(0.1)
+    obs[unsafe_offset=off + 0] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_HEALTH)])) * Float32(0.1)
+    obs[unsafe_offset=off + 1] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_FOOD)]))   * Float32(0.1)
+    obs[unsafe_offset=off + 2] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_DRINK)]))  * Float32(0.1)
+    obs[unsafe_offset=off + 3] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_ENERGY)])) * Float32(0.1)
+    obs[unsafe_offset=off + 4] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_MANA)]))   * Float32(0.1)
+    obs[unsafe_offset=off + 5] = Float32(Int(s[unsafe_offset=s_attribute(ATTR_XP)]))          * Float32(0.1)
+    obs[unsafe_offset=off + 6] = Float32(Int(s[unsafe_offset=s_attribute(ATTR_DEXTERITY)]))   * Float32(0.1)
+    obs[unsafe_offset=off + 7] = Float32(Int(s[unsafe_offset=s_attribute(ATTR_STRENGTH)]))    * Float32(0.1)
+    obs[unsafe_offset=off + 8] = Float32(Int(s[unsafe_offset=s_attribute(ATTR_INTELLIGENCE)])) * Float32(0.1)
     off += OBS_INTRINSICS_SIZE  # +9
 
     # direction one-hot (4) — Mojo dirs are 0..3, no `-1` shift.
-    var d = Int(s[S_PLAYER_DIR])
+    var d = Int(s[unsafe_offset=S_PLAYER_DIR])
     for k in range(NUM_DIRECTIONS):
-        obs[off + k] = Float32(1.0) if k == d else Float32(0.0)
+        obs[unsafe_offset=off + k] = Float32(1.0) if k == d else Float32(0.0)
     off += OBS_DIRECTION_SIZE  # +4
 
     # armour (4) — tier-encoded each, /2 to normalize.
-    obs[off + 0] = Float32(Int(s[s_inv(INV_ARMOUR_HEAD)])) * Float32(0.5)
-    obs[off + 1] = Float32(Int(s[s_inv(INV_ARMOUR_BODY)])) * Float32(0.5)
-    obs[off + 2] = Float32(Int(s[s_inv(INV_ARMOUR_LEGS)])) * Float32(0.5)
-    obs[off + 3] = Float32(Int(s[s_inv(INV_ARMOUR_FEET)])) * Float32(0.5)
+    obs[unsafe_offset=off + 0] = Float32(Int(s[unsafe_offset=s_inv(INV_ARMOUR_HEAD)])) * Float32(0.5)
+    obs[unsafe_offset=off + 1] = Float32(Int(s[unsafe_offset=s_inv(INV_ARMOUR_BODY)])) * Float32(0.5)
+    obs[unsafe_offset=off + 2] = Float32(Int(s[unsafe_offset=s_inv(INV_ARMOUR_LEGS)])) * Float32(0.5)
+    obs[unsafe_offset=off + 3] = Float32(Int(s[unsafe_offset=s_inv(INV_ARMOUR_FEET)])) * Float32(0.5)
     off += OBS_ARMOUR_SIZE  # +4
 
     # armour enchants (4)
     for k in range(NUM_ARMOUR_ENCHANTS):
-        obs[off + k] = s[s_armour_enchant(k)]
+        obs[unsafe_offset=off + k] = s[unsafe_offset=s_armour_enchant(k)]
     off += OBS_ARMOUR_ENCH_SIZE  # +4
 
     # special (8)
     var floor_cleared = (
-        Int(s[s_monsters_killed(floor)]) >= MONSTERS_KILLED_TO_CLEAR_LEVEL
+        Int(s[unsafe_offset=s_monsters_killed(floor)]) >= MONSTERS_KILLED_TO_CLEAR_LEVEL
     )
-    obs[off + 0] = s[S_LIGHT_LEVEL]
-    obs[off + 1] = Float32(Int(s[s_intrinsic(INTRINSIC_IS_SLEEPING)]))
-    obs[off + 2] = Float32(Int(s[s_intrinsic(INTRINSIC_IS_RESTING)]))
-    obs[off + 3] = s[s_learned_spell(0)]
-    obs[off + 4] = s[s_learned_spell(1)]
-    obs[off + 5] = Float32(floor) * Float32(0.1)
-    obs[off + 6] = Float32(1.0) if floor_cleared else Float32(0.0)
-    obs[off + 7] = (
+    obs[unsafe_offset=off + 0] = s[unsafe_offset=S_LIGHT_LEVEL]
+    obs[unsafe_offset=off + 1] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_IS_SLEEPING)]))
+    obs[unsafe_offset=off + 2] = Float32(Int(s[unsafe_offset=s_intrinsic(INTRINSIC_IS_RESTING)]))
+    obs[unsafe_offset=off + 3] = s[unsafe_offset=s_learned_spell(0)]
+    obs[unsafe_offset=off + 4] = s[unsafe_offset=s_learned_spell(1)]
+    obs[unsafe_offset=off + 5] = Float32(floor) * Float32(0.1)
+    obs[unsafe_offset=off + 6] = Float32(1.0) if floor_cleared else Float32(0.0)
+    obs[unsafe_offset=off + 7] = (
         Float32(1.0) if _is_boss_vulnerable(s, floor) else Float32(0.0)
     )

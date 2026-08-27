@@ -41,7 +41,7 @@ Run (NVIDIA, after the online run has written a checkpoint into the cwd):
 from std.memory import alloc
 from std.math import max
 from std.random import seed
-from std.gpu.host import DeviceContext, HostBuffer
+from max.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier

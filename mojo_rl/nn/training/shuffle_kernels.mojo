@@ -38,7 +38,7 @@ def fisher_yates_shuffle_kernel[
     """
     if Int(thread_idx.x) != 0 or Int(block_idx.x) != 0:
         return
-    var s = seed_buf.ptr[0]
+    var s = seed_buf.ptr[unsafe_offset=0]
     var philox = PhiloxRandom(seed=s, offset=0)
     for i in range(N - 1, 0, -1):
         var r = philox.step_uniform()
@@ -58,7 +58,7 @@ def increment_seed_kernel(
     """Bump the device-side RNG seed so each epoch has a different
     permutation."""
     if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
-        seed_buf.ptr[0] = seed_buf.ptr[0] + UInt64(1)
+        seed_buf.ptr[unsafe_offset=0] = seed_buf.ptr[unsafe_offset=0] + UInt64(1)
 
 
 @always_inline
@@ -71,7 +71,10 @@ def gather_rows_kernel[
     batch_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     full: LayoutTensor[dtype, Layout.row_major(N_TOTAL, DIM), MutAnyOrigin],
     indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
-    offset: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    offset: Int32,
 ):
     """`batch_out[b, d]` = full[indices[offset + b], d]. Parallel over
     BATCH * DIM threads."""
@@ -80,5 +83,5 @@ def gather_rows_kernel[
         return
     var b = i // DIM
     var d = i % DIM
-    var src = Int(indices[offset + b])
+    var src = Int(indices[Int(offset) + b])
     batch_out[b, d] = full[src, d]

@@ -90,7 +90,10 @@ struct VideoRecorder(Movable):
         self.is_recording = True
         print("Recording started: " + filename)
 
-    def add_frame_bgra(mut self, addr: Int, width: Int, height: Int) raises:
+    def add_frame_bgra(
+        mut self, addr: Int, width: Int, height: Int,
+        crop_x: Int = 0, crop_w: Int = 0,
+    ) raises:
         """Append one frame from a BGRA pixel buffer.
 
         The buffer layout must be B8G8R8A8 (4 bytes per pixel, row-major),
@@ -104,6 +107,8 @@ struct VideoRecorder(Movable):
             addr: CPU address of the pixel buffer (pass ``Int(ptr)``).
             width: Frame width in pixels.
             height: Frame height in pixels.
+            crop_x: First column to keep (0 = from the left edge).
+            crop_w: Columns to keep; 0 means the full width.
         """
         self._skip_counter += 1
         if self._skip_counter < self.skip:
@@ -115,6 +120,13 @@ struct VideoRecorder(Movable):
         var arr = self._np.frombuffer(buf, dtype=self._np.uint8).reshape(
             height, width, 4
         )
+        if crop_w > 0:
+            # ⚠ EVEN WIDTH. libx264 refuses odd dimensions ("width not
+            # divisible by 2"), and the failure surfaces at the FIRST frame —
+            # long after the user pressed record. Dropping one column is
+            # invisible; an aborted recording is not.
+            var w = crop_w - (crop_w % 2)
+            arr = arr[:, crop_x : crop_x + w, :]
         var rgb = self._np.ascontiguousarray(
             self._np.take(arr, self._channel_idx, axis=2)
         )
@@ -122,7 +134,8 @@ struct VideoRecorder(Movable):
         self.frame_count += 1
 
     def save_frame_bgra(
-        mut self, addr: Int, width: Int, height: Int, filename: String
+        mut self, addr: Int, width: Int, height: Int, filename: String,
+        crop_x: Int = 0, crop_w: Int = 0,
     ) raises:
         """Save a single BGRA pixel buffer as an image file via imageio.
 
@@ -134,6 +147,8 @@ struct VideoRecorder(Movable):
             width: Frame width in pixels.
             height: Frame height in pixels.
             filename: Output path (e.g. ``screenshot_0.jpg``).
+            crop_x: First column to keep (0 = from the left edge).
+            crop_w: Columns to keep; 0 means the full width.
         """
         if not self._np:
             self._np = Python.import_module("numpy")
@@ -147,6 +162,8 @@ struct VideoRecorder(Movable):
         var arr = self._np.frombuffer(buf, dtype=self._np.uint8).reshape(
             height, width, 4
         )
+        if crop_w > 0:
+            arr = arr[:, crop_x : crop_x + crop_w, :]
         var rgb = self._np.ascontiguousarray(
             self._np.take(arr, self._channel_idx, axis=2)
         )

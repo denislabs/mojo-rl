@@ -16,7 +16,7 @@ one origin (§B0) for the `TensorRefs[4]` the leaf consumes; grad_inputs land in
 second pool. `forward_backward` returns the mean per-batch loss for logging.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module

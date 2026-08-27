@@ -1,0 +1,116 @@
+---
+title: Tabular environments
+description: GridWorld, FrozenLake, CliffWalking and Taxi — small discrete worlds for exact tabular methods.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Four discrete worlds small enough to enumerate, which makes them the right place
+to check that an algorithm is correct before scaling it. All implement
+[`DiscreteEnv`](/concepts/traits/): states map to integer indices, actions to a
+finite set.
+
+| Environment | States | Actions | Reward | Character |
+|---|---|---|---|---|
+| GridWorld | 25 (5×5) | 4 | −1/step, +10 goal | dense, easy |
+| FrozenLake | 16 (4×4) | 4 | +1 goal only | sparse, slippery |
+| CliffWalking | 48 (4×12) | 4 | −1/step, −100 cliff | risk-sensitive |
+| Taxi | 500 | 6 | +20 dropoff, −10 illegal | compositional |
+
+```mojo
+from mojo_rl.envs import GridWorldEnv, FrozenLakeEnv, CliffWalkingEnv, TaxiEnv
+```
+
+## GridWorld
+
+A 5×5 grid. Start at `(0, 0)`, goal at `(4, 4)`, −1 per step and +10 for
+arriving. The optimal path is 8 steps for a return of `+2`.
+
+```mojo
+var env = GridWorldEnv(width=5, height=5)
+```
+
+The dimensions are constructor arguments, so a larger grid is a one-line change
+when you want to see a method's scaling behaviour. GridWorld implements
+`RenderableEnv` and draws to the terminal.
+
+Its virtue is that you already know the answer, so a wrong result is
+unambiguous. Start here.
+
+## FrozenLake
+
+A 4×4 grid with holes. Reaching the goal pays +1 and everything else pays
+nothing — the reward is genuinely sparse, so an agent that never stumbles onto
+the goal learns nothing at all.
+
+The ice is slippery: the intended action is not always the action taken. That
+stochasticity is the point. It separates methods that account for transition
+noise from ones that memorise a single lucky trajectory, and it makes
+deterministic-looking policies fail in ways worth watching.
+
+## CliffWalking
+
+A 4×12 grid with a cliff along the bottom edge. Stepping off costs −100 and
+resets to the start; every other step costs −1.
+
+This is the canonical demonstration of the difference between **Q-Learning and
+SARSA**, and the reason it is worth keeping around:
+
+- **Q-Learning** learns the *optimal* path, hugging the cliff edge, because its
+  update assumes greedy future behaviour. While still exploring with ε-greedy it
+  therefore falls off regularly, and its online returns look bad.
+- **SARSA** learns a *safer* path one row further from the edge, because its
+  update accounts for the exploratory actions it will actually take.
+
+Both are correct; they answer different questions. Running
+`examples/solve_cliffwalking.mojo` shows the split directly.
+
+## Taxi
+
+A 500-state world: 25 grid positions × 5 passenger locations (four stops plus
+"in the taxi") × 4 destinations. Six actions — four moves, pick up, drop off.
+
+The task is compositional — navigate, collect, navigate again, deliver — and
+illegal pickups and dropoffs are penalised, so an agent must learn the
+precondition structure rather than just the geometry. It is the largest tabular
+environment here and the one where eligibility traces and planning methods
+(Dyna-Q, priority sweeping) start to pay for themselves.
+
+## Running them
+
+Each has a worked example that trains several algorithms side by side and prints
+a comparison:
+
+```bash
+pixi run mojo run -I . examples/solve_gridworld.mojo
+pixi run mojo run -I . examples/solve_frozenlake.mojo
+pixi run mojo run -I . examples/solve_cliffwalking.mojo
+pixi run mojo run -I . examples/solve_taxi.mojo
+```
+
+The [tabular quickstart](/start/quickstart-tabular/) walks through the GridWorld
+one line by line.
+
+## What works with them
+
+Everything in `mojo_rl.agents` that takes integer states:
+
+```mojo
+from mojo_rl.agents import (
+    QLearningAgent, SARSAAgent, ExpectedSARSAAgent, DoubleQLearningAgent,
+    NStepSARSAAgent, SARSALambdaAgent, MonteCarloAgent,
+    DynaQAgent, PrioritySweepingAgent,
+    QLearningReplayAgent, QLearningPERAgent,
+)
+```
+
+All share the `TabularAgent` interface and the same constructor shape, so
+swapping one for another is a single line. See
+[Traits](/concepts/traits/#tabularagent).
+
+## Next
+
+- [Classic control](/environments/classic-control/) — continuous observations, still small
+- [Quickstart: tabular](/start/quickstart-tabular/) — a complete worked run

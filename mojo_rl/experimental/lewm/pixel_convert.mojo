@@ -11,7 +11,7 @@ covers both CPU (reference / offline ingest) and GPU (the batched path).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ...nn.constants import DT, TPB
@@ -51,8 +51,8 @@ def u8_to_fp32_norm[
     so: MutOrigin = MutAnyOrigin,
     do: MutOrigin = MutAnyOrigin,
 ](
-    src: UnsafePointer[Scalar[DType.uint8], so],
-    dst: UnsafePointer[Scalar[DT], do],
+    src: Pointer[Scalar[DType.uint8], so],
+    dst: Pointer[Scalar[DT], do],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Layout-preserving uint8 → fp32 ÷255 over `N` elements. Use when the
@@ -64,7 +64,7 @@ def u8_to_fp32_norm[
     )
     comptime if target == "cpu":
         for i in range(N):
-            dst[i] = src[i].cast[DT]() / Scalar[DT](255.0)
+            dst[unsafe_offset=i] = src[unsafe_offset=i].cast[DT]() / Scalar[DT](255.0)
     else:
         if not ctx:
             raise Error("u8_to_fp32_norm[target='gpu']: ctx required")
@@ -86,8 +86,8 @@ def u8_hwc_to_chw_norm[
     so: MutOrigin = MutAnyOrigin,
     do: MutOrigin = MutAnyOrigin,
 ](
-    src: UnsafePointer[Scalar[DType.uint8], so],
-    dst: UnsafePointer[Scalar[DT], do],
+    src: Pointer[Scalar[DType.uint8], so],
+    dst: Pointer[Scalar[DT], do],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Convert `src` (BATCH·H·W·C uint8, HWC) → `dst` (BATCH·C·H·W fp32,
@@ -103,7 +103,7 @@ def u8_hwc_to_chw_norm[
                     for w in range(W):
                         var d = b * HWC + (c * H + h) * W + w
                         var sidx = b * HWC + (h * W + w) * C + c
-                        dst[d] = src[sidx].cast[DT]() / Scalar[DT](255.0)
+                        dst[unsafe_offset=d] = src[unsafe_offset=sidx].cast[DT]() / Scalar[DT](255.0)
     else:
         if not ctx:
             raise Error("u8_hwc_to_chw_norm[target='gpu']: ctx required")

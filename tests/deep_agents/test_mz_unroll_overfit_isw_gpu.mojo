@@ -19,8 +19,8 @@ If the code is sound, B must equal A (multiplying grads by 1.0 changes nothing).
 apple should pass both. Run on NVIDIA to compare.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
@@ -91,11 +91,11 @@ def main() raises:
         var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
         var lp = List[Scalar[DT]](length=3, fill=0)
-        var lp_opt = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var lp_opt = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
             lp.unsafe_ptr().as_unsafe_any_origin()
         )
-        var isw_opt = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
-        var prio_opt = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
+        var isw_opt = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
+        var prio_opt = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
         if per_on:
             isw_opt = Optional(isw.unsafe_ptr().as_unsafe_any_origin())
             prio_opt = Optional(prio.unsafe_ptr().as_unsafe_any_origin())

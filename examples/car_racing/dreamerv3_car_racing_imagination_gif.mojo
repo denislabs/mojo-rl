@@ -30,7 +30,7 @@ Run (NVIDIA, after the training run has written a checkpoint):
 
 from std.memory import alloc
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp

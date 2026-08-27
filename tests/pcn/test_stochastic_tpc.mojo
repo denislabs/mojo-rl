@@ -273,8 +273,8 @@ def main() raises:
                 var elapsed = Float64(perf_counter_ns() - t0) / 1e9
                 print(
                     "    ", epoch, "  ",
-                    String(last_loss)[byte=:11], "  ",
-                    String(elapsed)[byte=:7],
+                    fit(String(last_loss), 11), "  ",
+                    fit(String(elapsed), 7),
                 )
 
         var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -388,3 +388,5 @@ def main() raises:
     x_pred_buf.free()
     a_x_buf.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

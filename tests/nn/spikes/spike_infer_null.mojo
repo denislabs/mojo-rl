@@ -1,7 +1,7 @@
-comptime Null[T: AnyType] = Optional[UnsafePointer[T, ImmutExternalOrigin]]()
+comptime Null[T: AnyType] = Optional[Pointer[T, ImmutExternalOrigin]]()
 
 
-def foo[T: AnyType, o: Origin, //](p: Optional[UnsafePointer[T, o]]):
+def foo[T: AnyType, o: Origin, //](p: Optional[Pointer[T, o]]):
     pass
 
 

@@ -17,7 +17,7 @@ Run: `pixi run -e apple mojo run -I . tests/nn/test_dqn_select_action_batched_gp
 """
 
 from std.random import seed
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
@@ -71,10 +71,10 @@ def main() raises:
     ctx.enqueue_copy(obs_dev, obs_host.unsafe_ptr())
     ctx.synchronize()
 
-    var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var obs_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         obs_dev.unsafe_ptr()
     )
-    var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var act_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         act_dev.unsafe_ptr()
     )
     var act_host = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](-1.0))

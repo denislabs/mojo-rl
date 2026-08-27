@@ -52,7 +52,7 @@ Apple (parity / local wall only; nsys is NVIDIA):
 from std.memory import alloc
 from std.random import random_float64, seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -94,7 +94,7 @@ comptime Ag = DreamerV3Agent[
 ]
 
 
-def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
+def _argmax(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Int:
     var k = 0
     var best = a[0]
     for i in range(1, ACT):

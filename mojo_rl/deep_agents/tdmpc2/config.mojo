@@ -33,7 +33,7 @@ carries. Checkpoints written from a `TDMPC2[...]` agent on one target
 load on any other `TDMPC2[...]` agent of matching dims.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 
@@ -45,7 +45,7 @@ from .agent import TDMPC2Agent
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait TDMPC2ConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait TDMPC2ConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a TD-MPC2-family algorithm. Conformers
     are zero-field comptime tags — never instantiated at runtime; only
     their comptime members are read."""

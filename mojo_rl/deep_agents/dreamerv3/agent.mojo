@@ -33,9 +33,9 @@ train_step).
 """
 
 from std.math import tanh, log
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -54,20 +54,20 @@ from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
 
 
 @always_inline
-def _hp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _hp(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Host-pointer view of a storage Tensor's CPU `data` — for the raw-pointer
     cat_sample/cat_argmax helpers (CPU only)."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
 
 
 @always_inline
-def _argmax_oh(a: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
+def _argmax_oh(a: Pointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
     """Index of the max entry of a one-hot / logit vector (greedy discrete act)."""
     var k = 0
-    var best = a[0]
+    var best = a[unsafe_offset=0]
     for i in range(1, n):
-        if a[i] > best:
-            best = a[i]
+        if a[unsafe_offset=i] > best:
+            best = a[unsafe_offset=i]
             k = i
     return k
 
@@ -94,7 +94,7 @@ struct DreamerV3Agent[
     # Hidden-layer weight init (see trainer): Kaiming default; TruncNormalIn
     # = reference parity.
     NET_INIT: Initializer = Kaiming,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
     # discrete (categorical) actor → ACT logits; continuous → 2·ACT (mean,std).
@@ -166,15 +166,15 @@ struct DreamerV3Agent[
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: Pointer[Scalar[DT], MutAnyOrigin],
+        act: Pointer[Scalar[DT], MutAnyOrigin],
         reward: Scalar[DT],
         done: Scalar[DT],
     ) raises:
         self.trainer.record(obs, act, reward, done)
 
     def record_terminal(
-        mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        mut self, obs: Pointer[Scalar[DT], MutAnyOrigin]
     ) raises:
         """Store a genuine terminal observation (call right after `record` with
         done=1) so the WM continue head can learn `latent(terminal)→0`."""
@@ -205,8 +205,8 @@ struct DreamerV3Agent[
         mut env: E,
         episodes: Int,
         ep_len: Int,
-        obsbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obsbuf: Pointer[Scalar[DT], MutAnyOrigin],
+        actbuf: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises -> Scalar[DT]:
         """Mean return over `episodes` greedy (argmax) episodes. Steps `env`
         (caller resets it afterward for training continuation)."""
@@ -216,7 +216,7 @@ struct DreamerV3Agent[
             var o = env.reset_obs_list()
             for _s in range(ep_len):
                 for i in range(Self.OBS):
-                    obsbuf[i] = o[i].cast[DT]()
+                    obsbuf[unsafe_offset=i] = o[i].cast[DT]()
                 self.select_greedy_action(obsbuf, actbuf)
                 var r = env.step_obs(_argmax_oh(actbuf, Self.ACT))
                 total += r[1].cast[DT]()
@@ -242,7 +242,7 @@ struct DreamerV3Agent[
         print_every: Int = 2500,
         log_every: Int = 0,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
         checkpoint_every: Int = 0,
     ) raises -> Scalar[DT]:
@@ -260,8 +260,8 @@ struct DreamerV3Agent[
         )
         comptime OBSL = Self.OBS
         comptime ACTL = Self.ACT
-        var obsbuf = alloc[Scalar[DT]](OBSL).as_unsafe_any_origin()
-        var actbuf = alloc[Scalar[DT]](ACTL).as_unsafe_any_origin()
+        var obsbuf = alloc[Scalar[DT]]({count = OBSL}).unsafe_leak().as_unsafe_any_origin()
+        var actbuf = alloc[Scalar[DT]]({count = ACTL}).unsafe_leak().as_unsafe_any_origin()
         var obs = env.reset_obs_list()
         self.reset_belief()
         var last_eval: Scalar[DT] = 0.0
@@ -276,14 +276,14 @@ struct DreamerV3Agent[
 
         for step in range(total_steps):
             for i in range(OBSL):
-                obsbuf[i] = obs[i].cast[DT]()
+                obsbuf[unsafe_offset=i] = obs[i].cast[DT]()
             var idx: Int
             if step < learn_start:
                 idx = Int(random_float64() * Float64(ACTL))
                 if idx >= ACTL:
                     idx = ACTL - 1
                 for a in range(ACTL):
-                    actbuf[a] = Scalar[DT](1.0) if a == idx else Scalar[DT](0.0)
+                    actbuf[unsafe_offset=a] = Scalar[DT](1.0) if a == idx else Scalar[DT](0.0)
             else:
                 self.select_action(obsbuf, actbuf, explore=True)
                 idx = _argmax_oh(actbuf, ACTL)
@@ -297,7 +297,7 @@ struct DreamerV3Agent[
             if res[2]:
                 # store the terminal (fallen) obs so the WM cont head learns it
                 for i in range(OBSL):
-                    obsbuf[i] = res[0][i].cast[DT]()
+                    obsbuf[unsafe_offset=i] = res[0][i].cast[DT]()
                 self.record_terminal(obsbuf)
                 obs = env.reset_obs_list()
                 self.reset_belief()
@@ -459,8 +459,8 @@ struct DreamerV3Agent[
         var final_ev = self._greedy_eval[E](
             env, eval_episodes, ep_len, obsbuf, actbuf
         )
-        obsbuf.free()
-        actbuf.free()
+        obsbuf.unsafe_free()
+        actbuf.unsafe_free()
         return final_ev
 
     # ─── Single-env training facade (continuous) ────────────────────────────
@@ -482,8 +482,8 @@ struct DreamerV3Agent[
         mut env: E,
         episodes: Int,
         ep_len: Int,
-        obsbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obsbuf: Pointer[Scalar[DT], MutAnyOrigin],
+        actbuf: Pointer[Scalar[DT], MutAnyOrigin],
         frame_repeat: Int = 1,
     ) raises -> Scalar[DT]:
         """Mean return over `episodes` eval episodes (continuous actions scaled
@@ -503,11 +503,11 @@ struct DreamerV3Agent[
             var o = self._reset_obs_dt[E](env)
             for _s in range(ep_len):
                 for i in range(Self.OBS):
-                    obsbuf[i] = o[i].cast[DT]()
+                    obsbuf[unsafe_offset=i] = o[i].cast[DT]()
                 self.select_action(obsbuf, actbuf, explore=True)
                 var al = List[Scalar[DT]]()
                 for a in range(Self.ACT):
-                    al.append(self.action_scale * actbuf[a])
+                    al.append(self.action_scale * actbuf[unsafe_offset=a])
                 var done = False
                 for _r in range(frame_repeat):
                     var r = env.step_continuous_vec[DT](al)
@@ -537,7 +537,7 @@ struct DreamerV3Agent[
         print_every: Int = 2500,
         log_every: Int = 0,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
         checkpoint_every: Int = 0,
         frame_repeat: Int = 1,
@@ -570,8 +570,8 @@ struct DreamerV3Agent[
         )
         comptime OBSL = Self.OBS
         comptime ACTL = Self.ACT
-        var obsbuf = alloc[Scalar[DT]](OBSL).as_unsafe_any_origin()
-        var actbuf = alloc[Scalar[DT]](ACTL).as_unsafe_any_origin()
+        var obsbuf = alloc[Scalar[DT]]({count = OBSL}).unsafe_leak().as_unsafe_any_origin()
+        var actbuf = alloc[Scalar[DT]]({count = ACTL}).unsafe_leak().as_unsafe_any_origin()
         var obs = self._reset_obs_dt[E](env)
         self.reset_belief()
         var last_eval: Scalar[DT] = 0.0
@@ -587,15 +587,15 @@ struct DreamerV3Agent[
 
         for step in range(total_steps):
             for i in range(OBSL):
-                obsbuf[i] = obs[i].cast[DT]()
+                obsbuf[unsafe_offset=i] = obs[i].cast[DT]()
             if step < learn_start:
                 for a in range(ACTL):
-                    actbuf[a] = Scalar[DT](random_float64() * 2.0 - 1.0)
+                    actbuf[unsafe_offset=a] = Scalar[DT](random_float64() * 2.0 - 1.0)
             else:
                 self.select_action(obsbuf, actbuf, explore=True)
             var al = List[Scalar[DT]]()
             for a in range(ACTL):
-                al.append(self.action_scale * actbuf[a])
+                al.append(self.action_scale * actbuf[unsafe_offset=a])
             # action repeat: hold the decision for `frame_repeat` env steps,
             # summing reward (the DreamerV3 reference ActionRepeat wrapper). One
             # recorded transition per agent decision (obs_t, action, summed reward,
@@ -618,7 +618,7 @@ struct DreamerV3Agent[
             if done:
                 # store the terminal obs so the WM cont head learns it
                 for i in range(OBSL):
-                    obsbuf[i] = obs[i].cast[DT]()
+                    obsbuf[unsafe_offset=i] = obs[i].cast[DT]()
                 self.record_terminal(obsbuf)
                 obs = self._reset_obs_dt[E](env)
                 self.reset_belief()
@@ -706,12 +706,12 @@ struct DreamerV3Agent[
         var final_ev = self._greedy_eval_cont[E](
             env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
         )
-        obsbuf.free()
-        actbuf.free()
+        obsbuf.unsafe_free()
+        actbuf.unsafe_free()
         return final_ev
 
     def train_continuous_batched[
-        E: BoxContinuousActionEnv & Movable & ImplicitlyDeletable,
+        E: BoxContinuousActionEnv & Movable & Deinitable,
         L: Logger = NoOpLogger,
     ](
         mut self,
@@ -722,7 +722,7 @@ struct DreamerV3Agent[
         train_every: Int = 4,
         print_every: Int = 5000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     ) raises -> Scalar[DT]:
         """Batched-CPU-env / (this agent's) GPU-or-CPU training for a CONTINUOUS
         env: step `len(envs)` env instances in parallel on the host, train the
@@ -754,135 +754,139 @@ struct DreamerV3Agent[
         comptime O = Self.OBS
         var n = len(envs)
 
-        var obsbuf = alloc[Scalar[DT]](O).as_unsafe_any_origin()
-        var actbuf = alloc[Scalar[DT]](A).as_unsafe_any_origin()
+        var obsbuf_a = alloc[Scalar[DT]]({count = O})
+        var obsbuf = obsbuf_a.unsafe_ptr().as_unsafe_any_origin()
+        var actbuf_a = alloc[Scalar[DT]]({count = A})
+        var actbuf = actbuf_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
 
-        # Per-env belief carries (flat) + episode buffers + current obs.
-        var bel_d = List[Scalar[DT]](length=n * D, fill=Scalar[DT](0))
-        var bel_s = List[Scalar[DT]](length=n * SCl, fill=Scalar[DT](0))
-        var bel_a = List[Scalar[DT]](length=n * A, fill=Scalar[DT](0))
-        var ep_obs = List[List[Scalar[DT]]]()
-        var ep_act = List[List[Scalar[DT]]]()
-        var ep_rew = List[List[Scalar[DT]]]()
-        var ep_dne = List[List[Scalar[DT]]]()
-        var cur_obs = List[List[Scalar[DT]]]()
-        for e in range(n):
-            ep_obs.append(List[Scalar[DT]]())
-            ep_act.append(List[Scalar[DT]]())
-            ep_rew.append(List[Scalar[DT]]())
-            ep_dne.append(List[Scalar[DT]]())
-            var o0 = envs[e].reset_obs_list()
-            var c0 = List[Scalar[DT]](capacity=len(o0))
-            for i in range(len(o0)):
-                c0.append(o0[i].cast[DT]())
-            cur_obs.append(c0^)
-
-        var ep_ret = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
-        var ret_acc: Scalar[DT] = 0.0
-        var ret_n: Int = 0
-        var last_ep: Scalar[DT] = 0.0
-
-        for step in range(total_steps):
+            # Per-env belief carries (flat) + episode buffers + current obs.
+            var bel_d = List[Scalar[DT]](length=n * D, fill=Scalar[DT](0))
+            var bel_s = List[Scalar[DT]](length=n * SCl, fill=Scalar[DT](0))
+            var bel_a = List[Scalar[DT]](length=n * A, fill=Scalar[DT](0))
+            var ep_obs = List[List[Scalar[DT]]]()
+            var ep_act = List[List[Scalar[DT]]]()
+            var ep_rew = List[List[Scalar[DT]]]()
+            var ep_dne = List[List[Scalar[DT]]]()
+            var cur_obs = List[List[Scalar[DT]]]()
             for e in range(n):
-                for i in range(O):
-                    obsbuf[i] = cur_obs[e][i]
-                # swap this env's belief into the agent
-                for k in range(D):
-                    self.belief_deter.data[k] = bel_d[e * D + k]
-                for k in range(SCl):
-                    self.belief_stoch.data[k] = bel_s[e * SCl + k]
-                for k in range(A):
-                    self.last_action.data[k] = bel_a[e * A + k]
+                ep_obs.append(List[Scalar[DT]]())
+                ep_act.append(List[Scalar[DT]]())
+                ep_rew.append(List[Scalar[DT]]())
+                ep_dne.append(List[Scalar[DT]]())
+                var o0 = envs[e].reset_obs_list()
+                var c0 = List[Scalar[DT]](capacity=len(o0))
+                for i in range(len(o0)):
+                    c0.append(o0[i].cast[DT]())
+                cur_obs.append(c0^)
 
-                if step < learn_start:
-                    for a in range(A):
-                        actbuf[a] = Scalar[DT](random_float64() * 2.0 - 1.0)
-                else:
-                    self.select_action(obsbuf, actbuf, explore=True)
+            var ep_ret = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+            var ret_acc: Scalar[DT] = 0.0
+            var ret_n: Int = 0
+            var last_ep: Scalar[DT] = 0.0
 
-                # swap the (updated) belief back out
-                for k in range(D):
-                    bel_d[e * D + k] = self.belief_deter.data[k]
-                for k in range(SCl):
-                    bel_s[e * SCl + k] = self.belief_stoch.data[k]
-                for k in range(A):
-                    bel_a[e * A + k] = self.last_action.data[k]
-
-                var av = List[Scalar[DT]]()
-                for a in range(A):
-                    av.append(actbuf[a])
-                var r = envs[e].step_continuous_vec[DT](av)
-                ep_ret[e] += r[1]
-                # buffer this transition for a contiguous flush on done
-                for i in range(O):
-                    ep_obs[e].append(cur_obs[e][i])
-                for a in range(A):
-                    ep_act[e].append(actbuf[a])
-                ep_rew[e].append(r[1])
-                ep_dne[e].append(Scalar[DT](1.0) if r[2] else Scalar[DT](0.0))
-                cur_obs[e] = r[0].copy()
-
-                if r[2]:
-                    # flush the complete episode contiguously, then the terminal
-                    # obs (DreamerV3 terminal-obs storage), matching train_single
-                    var cnt = len(ep_rew[e])
-                    for t in range(cnt):
-                        for i in range(O):
-                            obsbuf[i] = ep_obs[e][t * O + i]
-                        for a in range(A):
-                            actbuf[a] = ep_act[e][t * A + a]
-                        self.record(obsbuf, actbuf, ep_rew[e][t], ep_dne[e][t])
+            for step in range(total_steps):
+                for e in range(n):
                     for i in range(O):
-                        obsbuf[i] = cur_obs[e][i]
-                    self.record_terminal(obsbuf)
-                    ep_obs[e].clear()
-                    ep_act[e].clear()
-                    ep_rew[e].clear()
-                    ep_dne[e].clear()
+                        obsbuf[unsafe_offset=i] = cur_obs[e][i]
+                    # swap this env's belief into the agent
                     for k in range(D):
-                        bel_d[e * D + k] = Scalar[DT](0)
+                        self.belief_deter.data[k] = bel_d[e * D + k]
                     for k in range(SCl):
-                        bel_s[e * SCl + k] = Scalar[DT](0)
+                        self.belief_stoch.data[k] = bel_s[e * SCl + k]
                     for k in range(A):
-                        bel_a[e * A + k] = Scalar[DT](0)
-                    var od = envs[e].reset_obs_list()
-                    var cd = List[Scalar[DT]](capacity=len(od))
-                    for i in range(len(od)):
-                        cd.append(od[i].cast[DT]())
-                    cur_obs[e] = cd^
-                    last_ep = ep_ret[e]
-                    ret_acc += ep_ret[e]
-                    ret_n += 1
-                    ep_ret[e] = Scalar[DT](0)
+                        self.last_action.data[k] = bel_a[e * A + k]
 
-            if step >= learn_start and step % train_every == 0:
-                _ = self.train_step()
+                    if step < learn_start:
+                        for a in range(A):
+                            actbuf[unsafe_offset=a] = Scalar[DT](random_float64() * 2.0 - 1.0)
+                    else:
+                        self.select_action(obsbuf, actbuf, explore=True)
 
-            if verbose and step > 0 and step % print_every == 0:
-                var avg = ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
-                print(
-                    "  step", step, "(", step * n, "env-steps)  avg_ep_ret=",
-                    avg, " last_ep=", last_ep, " eps=", ret_n,
-                    " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
-                )
-                comptime if L.ENABLED:
-                    if logger:
-                        var lg = logger.value()
-                        lg[].log_scalar("avg_reward", Float64(avg), step)
-                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
-                        lg[].log_scalar(
-                            "loss/world_model",
-                            Float64(self.last_wm_loss()), step,
-                        )
-                        lg[].log_scalar(
-                            "loss/actor_critic",
-                            Float64(self.last_ac_loss()), step,
-                        )
+                    # swap the (updated) belief back out
+                    for k in range(D):
+                        bel_d[e * D + k] = self.belief_deter.data[k]
+                    for k in range(SCl):
+                        bel_s[e * SCl + k] = self.belief_stoch.data[k]
+                    for k in range(A):
+                        bel_a[e * A + k] = self.last_action.data[k]
 
-        obsbuf.free()
-        actbuf.free()
-        return ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
+                    var av = List[Scalar[DT]]()
+                    for a in range(A):
+                        av.append(actbuf[unsafe_offset=a])
+                    var r = envs[e].step_continuous_vec[DT](av)
+                    ep_ret[e] += r[1]
+                    # buffer this transition for a contiguous flush on done
+                    for i in range(O):
+                        ep_obs[e].append(cur_obs[e][i])
+                    for a in range(A):
+                        ep_act[e].append(actbuf[unsafe_offset=a])
+                    ep_rew[e].append(r[1])
+                    ep_dne[e].append(Scalar[DT](1.0) if r[2] else Scalar[DT](0.0))
+                    cur_obs[e] = r[0].copy()
 
+                    if r[2]:
+                        # flush the complete episode contiguously, then the terminal
+                        # obs (DreamerV3 terminal-obs storage), matching train_single
+                        var cnt = len(ep_rew[e])
+                        for t in range(cnt):
+                            for i in range(O):
+                                obsbuf[unsafe_offset=i] = ep_obs[e][t * O + i]
+                            for a in range(A):
+                                actbuf[unsafe_offset=a] = ep_act[e][t * A + a]
+                            self.record(obsbuf, actbuf, ep_rew[e][t], ep_dne[e][t])
+                        for i in range(O):
+                            obsbuf[unsafe_offset=i] = cur_obs[e][i]
+                        self.record_terminal(obsbuf)
+                        ep_obs[e].clear()
+                        ep_act[e].clear()
+                        ep_rew[e].clear()
+                        ep_dne[e].clear()
+                        for k in range(D):
+                            bel_d[e * D + k] = Scalar[DT](0)
+                        for k in range(SCl):
+                            bel_s[e * SCl + k] = Scalar[DT](0)
+                        for k in range(A):
+                            bel_a[e * A + k] = Scalar[DT](0)
+                        var od = envs[e].reset_obs_list()
+                        var cd = List[Scalar[DT]](capacity=len(od))
+                        for i in range(len(od)):
+                            cd.append(od[i].cast[DT]())
+                        cur_obs[e] = cd^
+                        last_ep = ep_ret[e]
+                        ret_acc += ep_ret[e]
+                        ret_n += 1
+                        ep_ret[e] = Scalar[DT](0)
+
+                if step >= learn_start and step % train_every == 0:
+                    _ = self.train_step()
+
+                if verbose and step > 0 and step % print_every == 0:
+                    var avg = ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
+                    print(
+                        "  step", step, "(", step * n, "env-steps)  avg_ep_ret=",
+                        avg, " last_ep=", last_ep, " eps=", ret_n,
+                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                    )
+                    comptime if L.ENABLED:
+                        if logger:
+                            var lg = logger.value()
+                            lg[].log_scalar("avg_reward", Float64(avg), step)
+                            lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                            lg[].log_scalar(
+                                "loss/world_model",
+                                Float64(self.last_wm_loss()), step,
+                            )
+                            lg[].log_scalar(
+                                "loss/actor_critic",
+                                Float64(self.last_ac_loss()), step,
+                            )
+
+            return ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
+
+        finally:
+            dealloc(obsbuf_a^)
+            dealloc(actbuf_a^)
     def can_train(self) -> Bool:
         return self.trainer.can_train()
 
@@ -957,8 +961,8 @@ struct DreamerV3Agent[
 
     def select_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [OBS]
-        out_action: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT]
+        obs: Pointer[Scalar[DT], MutAnyOrigin],       # [OBS]
+        out_action: Pointer[Scalar[DT], MutAnyOrigin],  # [ACT]
         explore: Bool,
     ) raises:
         comptime D = Self.DETER
@@ -977,7 +981,7 @@ struct DreamerV3Agent[
             # 1. encode obs → token (B=1)
             var obt = Tensor.alloc(Self.OBS)
             for k in range(Self.OBS):
-                obt.data[k] = obs[k]
+                obt.data[k] = obs[unsafe_offset=k]
             var tok = Tensor.alloc(TOK)
             self.trainer.enc.forward[Self.train_target, 1](
                 child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](obt),
@@ -1035,7 +1039,7 @@ struct DreamerV3Agent[
             var cscr = Tensor.make["gpu"](CARRY, self.trainer.ctx)
             # H2D obs + belief carry (belief_* / last_action are host-resident).
             for k in range(Self.OBS):
-                obt.data[k] = obs[k]
+                obt.data[k] = obs[unsafe_offset=k]
             obt.upload(ctx)
             for k in range(D):
                 bd.data[k] = self.belief_deter.data[k]
@@ -1086,21 +1090,25 @@ struct DreamerV3Agent[
                 k = cat_sample[ACTD](_hp(pol), 0, UNIMIX, u01)
                 # acting-policy telemetry: accumulate the true entropy of the
                 # unimix-mixed categorical at this state + the sampled action.
-                var sm = alloc[Scalar[DT]](ACTD)
-                var pp = alloc[Scalar[DT]](ACTD)
-                cat_softmax_mix[ACTD](_hp(pol), 0, UNIMIX, sm, pp)
-                var ent = Scalar[DT](0.0)
-                for m in range(ACTD):
-                    ent += -pp[m] * log(pp[m])
-                sm.free()
-                pp.free()
-                self.ent_acc += ent
-                self.ent_n += 1
-                self.act_hist[k] += 1
+                var sm_a = alloc[Scalar[DT]]({count = ACTD})
+                var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+                var pp_a = alloc[Scalar[DT]]({count = ACTD})
+                var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+                try:
+                    cat_softmax_mix[ACTD](_hp(pol), 0, UNIMIX, sm, pp)
+                    var ent = Scalar[DT](0.0)
+                    for m in range(ACTD):
+                        ent += -pp[unsafe_offset=m] * log(pp[unsafe_offset=m])
+                    self.ent_acc += ent
+                    self.ent_n += 1
+                    self.act_hist[k] += 1
+                finally:
+                    dealloc(sm_a^)
+                    dealloc(pp_a^)
             else:
                 k = cat_argmax[ACTD](_hp(pol), 0)
             for a in range(ACTD):
-                out_action[a] = Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
+                out_action[unsafe_offset=a] = Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
         else:
             # ── action = tanh(mean) [+ std·noise], NORMALIZED [-1,1] ──
             # The env-range scale (`action_scale`) is applied by the DRIVER at
@@ -1120,18 +1128,18 @@ struct DreamerV3Agent[
                     act_a = Scalar[DT](1.0)
                 if act_a < Scalar[DT](-1.0):
                     act_a = Scalar[DT](-1.0)
-                out_action[a] = act_a
+                out_action[unsafe_offset=a] = act_a
         # update belief (both paths)
         for k in range(D):
             self.belief_deter.data[k] = nd_h.data[k]
         for k in range(SCl):
             self.belief_stoch.data[k] = sn_h.data[k]
         for a in range(ACTD):
-            self.last_action.data[a] = out_action[a]
+            self.last_action.data[a] = out_action[unsafe_offset=a]
 
     def select_greedy_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        out_action: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: Pointer[Scalar[DT], MutAnyOrigin],
+        out_action: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         self.select_action(obs, out_action, explore=False)

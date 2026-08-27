@@ -48,7 +48,7 @@ def consistency_loss_and_grad[
     t: List[Scalar[DT]],
     grad_scale: Scalar[DT],
     mut grad_p: List[Scalar[DT]],
-    mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    mask: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) -> Scalar[DT]:
     """Negative-cosine SimSiam consistency over ``BATCH`` rows of ``DIM``.
 
@@ -63,7 +63,7 @@ def consistency_loss_and_grad[
     for b in range(BATCH):
         var m = Scalar[DT](1.0)
         if mask:
-            m = mask.value()[b]
+            m = mask.value()[unsafe_offset=b]
         var base = b * DIM
         var sum_pp = Scalar[DT](0.0)
         var sum_tt = Scalar[DT](0.0)

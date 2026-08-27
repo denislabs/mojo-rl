@@ -45,7 +45,7 @@ comptime Ag = DreamerV3Agent[
 ]
 
 
-def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
+def _argmax(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Int:
     var k = 0
     var best = a[0]
     for i in range(1, ACT):
@@ -55,7 +55,7 @@ def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
     return k
 
 
-def _is_onehot(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Bool:
+def _is_onehot(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Bool:
     var ones = 0
     var zeros = 0
     for i in range(ACT):

@@ -36,7 +36,7 @@ as a variadic `Add[DIM, N]` primitive — it doesn't go through this trait.)
 from ..constants import DT
 
 
-trait BinaryElementOp(Movable & ImplicitlyDeletable):
+trait BinaryElementOp(Movable & Deinitable):
     """Per-element binary math (scalar + SIMD specialisations) for the
     `BinaryElementwise[DIM, OP]` template."""
 

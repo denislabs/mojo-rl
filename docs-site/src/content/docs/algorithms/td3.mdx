@@ -1,0 +1,183 @@
+---
+title: TD3
+description: Twin Delayed DDPG — three targeted fixes for overestimation, and a stable deterministic alternative to SAC.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import OffPolicyLoop from '~/components/diagrams/OffPolicyLoop.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+**Twin Delayed DDPG** takes [DDPG](/algorithms/ddpg/) and applies three specific
+fixes to its overestimation problem. The result is stable, strong, and
+deterministic.
+
+```mojo
+from mojo_rl.deep_agents.td3 import TD3Agent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Addressing Function Approximation Error in Actor-Critic Methods"
+		authors="Fujimoto, van Hoof, Meger"
+		year="2018"
+		arxiv="1802.09477"
+		venue="ICML 2018"
+	/>
+</Papers>
+
+## The learning loop
+
+<OffPolicyLoop
+	policy="Actor π"
+	policySub="deterministic · delayed"
+	target="Twin target critics"
+	targetSub="+ smoothed target action"
+	actionLabel="π(s) + 𝒩(0, σ)"
+	targetEdgeLabel="min Q′"
+	capacity="1M transitions"
+	formula="y = r + γ · min( Q′₁(s′, ã′), Q′₂(s′, ã′) ),   ã′ = π′(s′) + clip(ε, −c, c)"
+/>
+
+## The three fixes
+
+Each one breaks a different link in [DDPG's overestimation
+loop](/algorithms/ddpg/).
+
+**Twin critics.** Train two independent critics and use the **minimum** for the
+target:
+
+```
+y = r + γ · min( Q′₁(s′, a′), Q′₂(s′, a′) )
+```
+
+Overestimation noise is independent between them, so taking the min cancels most
+of it. This is the single largest contributor, and [SAC](/algorithms/sac/)
+inherits it unchanged.
+
+It is worth being precise about *why* a min works, because the reasoning is not
+"two estimates are more accurate than one". The min of two unbiased estimates is
+**biased low** — that is the point. Trading a known downward bias for the
+unbounded upward one is a good deal, because underestimation does not
+self-reinforce: the actor is not attracted to regions the critic undervalues, so
+the error never gets fed back into its own target.
+
+**Delayed policy updates.** Update the actor once every *two* critic updates. A
+policy chasing a critic that is still badly wrong makes both worse; letting the
+critic settle between actor steps breaks that feedback loop.
+
+The target networks are delayed on the same schedule. The effect is a genuine
+timescale separation — the critic gets to converge toward the *current* policy
+before that policy moves again — which is the assumption value iteration needs
+and DDPG quietly violates.
+
+**Target policy smoothing.** Add clipped noise to the target action:
+
+```
+a′ = π′(s′) + clip(ε, −c, c),   ε ~ N(0, σ)
+```
+
+This forces the critic to give similar values to similar actions, so the actor
+cannot exploit a narrow spurious peak in the critic's value surface. It is
+regularization applied to the *target*, not the policy.
+
+The clip matters as much as the noise. Unclipped, a rare large `ε` evaluates the
+target at an action the policy would never take, and the resulting target is
+noise rather than smoothing. `c = 0.5` with `σ = 0.2` bounds it at 2.5σ.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.td3 import TD3Agent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+
+var agent = TD3Agent[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet,
+    CriticNet,
+](
+    ctx=ctx,
+    actor_lr=3e-4,
+    critic_lr=3e-4,
+    gamma=0.99,
+    tau=0.005,
+    policy_delay=2,            # one actor update per 2 critic updates
+    exploration_noise=0.1,     # σ added when acting
+    target_policy_noise=0.2,   # smoothing σ on the target action
+    target_noise_clip=0.5,     # smoothing clip
+)
+```
+
+As with SAC, only **one** `CriticNet` type is passed — the agent instantiates
+both internally. You describe the architecture, not the count.
+
+Note that there are **two** independent noise scales, and mixing them up is easy
+because both are "the exploration noise" in casual description.
+`exploration_noise` perturbs the action actually sent to the environment;
+`target_policy_noise` never leaves the update — it only smooths the value
+target. They serve opposite purposes and the paper tunes them separately.
+
+### Key runtime arguments
+
+| Argument | Default | Notes |
+|---|---|---|
+| `actor_lr` / `critic_lr` | `3e-4` | equal, unlike DDPG's `1e-4`/`1e-3` |
+| `gamma` | `0.99` | discount |
+| `tau` | `0.005` | Polyak coefficient |
+| `policy_delay` | `2` | actor + target update period |
+| `exploration_noise` | `0.1` | σ on the acting policy |
+| `target_policy_noise` | `0.2` | σ for target smoothing |
+| `target_noise_clip` | `0.5` | bound on the smoothing noise |
+| `learning_starts` | `1_000` | random-action warmup |
+
+```bash
+pixi run mojo run -I . examples/pendulum_td3.mojo
+pixi run mojo run -I . examples/half_cheetah/td3_half_cheetah_training.mojo
+```
+
+## TD3 or SAC?
+
+Both are stable and well exercised here. The differences that actually matter:
+
+|  | TD3 | [SAC](/algorithms/sac/) |
+|---|---|---|
+| Policy | deterministic | stochastic (Gaussian) |
+| Exploration | external Gaussian noise | policy entropy |
+| Temperature | none | auto-tuned `α` |
+| Hyperparameters | `policy_delay`, `target_noise`, `noise_clip`, noise schedule | `target_entropy` (heuristic) |
+| Evaluation | policy is already deterministic | take the mean action |
+
+**Choose TD3** when you want a deterministic policy, reproducible evaluation
+without sampling, or when SAC's temperature is behaving oddly on your task.
+
+**Choose SAC** as the default. Its auto-tuned temperature removes the
+exploration hyperparameter people most often get wrong, and it is the most
+exercised path in this repository.
+
+The exploration noise schedule is TD3's real cost — it is a hyperparameter you
+must set, and the right value is task-dependent. That is exactly what SAC's
+entropy target automates away.
+
+## Watch out for
+
+Everything on the [SAC](/algorithms/sac/) page about the off-policy family
+applies, in particular:
+
+**Mask the bootstrap on true termination only.** A time-limit cutoff must still
+bootstrap. Use `was_terminated()`, not `done`.
+
+**LayerNorm the critic on high-dimensional tasks.** Value scales drift, and the
+twin-min does not save you from a critic that diverges.
+
+**`updates_per_step=N_ENVS`** for a batched environment, or you train far less
+than intended.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the recommended default and the full deep dive
+- [DDPG](/algorithms/ddpg/) — what TD3 fixes
+- [REDQ](/algorithms/redq/) — pushing the ensemble idea further

@@ -13,6 +13,13 @@ from .transformer import (
 )
 from .conv import Conv2DReLU, Conv2DBatchNormReLU
 from .resnet import ResBlockConv2DBN, ResBlockDownsampleBN
+from .resnet18 import (
+    RESNET18_OUT_CH,
+    ResNet18Backbone,
+    ResNet18OutH,
+    ResNet18OutW,
+    ResNet18Stem,
+)
 from .vit import PatchEmbed, ViT
 from .gpt import (
     GPT,

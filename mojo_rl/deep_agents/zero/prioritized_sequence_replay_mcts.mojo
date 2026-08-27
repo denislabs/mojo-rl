@@ -42,13 +42,13 @@ replay — only the *which-window* draw and the IS weights differ.
 
 from std.memory import alloc
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.core.sum_tree import SumTree
 from .nstep_targets import compute_nstep_value_targets
-from ..data.gpu_replay import _obs_quant, _obs_dequant
+from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 
 
 # Host→device store staging chunk (steps). Bounds the transient host uint8
@@ -56,10 +56,10 @@ from ..data.gpu_replay import _obs_quant, _obs_dequant
 comptime STORE_CHUNK = 1024
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) feeding the shared raw-pointer
     `compute_nstep_value_targets`; alloc'd + freed within one sample call."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ def _ez_obs_gather_kernel[
 
 struct PrioritizedMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """Prioritized ring of MCTS-labelled steps + episode index + a per-slot
     `SumTree`. ``CAP`` = max resident steps. ``OBS_STORE_DT`` mirrors
     `MCTSSequenceReplay` (DT or uint8 pixel storage). ``alpha``/``beta`` are
@@ -313,10 +313,10 @@ struct PrioritizedMCTSSequenceReplay[
         mut is_weights: List[Scalar[DT]],  # [B] IS weights
         mut sample_slots: List[Int],  # [B] ring slots
         cons_mask: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+            Pointer[Scalar[DT], MutAnyOrigin]
         ] = None,  # [K, B]
         out_prio: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+            Pointer[Scalar[DT], MutAnyOrigin]
         ] = None,  # [B] raw PER priority |ν − z| per sampled root (paper formula)
     ) raises:
         """Prioritized window sample with **device-side obs gather**: each window
@@ -390,33 +390,33 @@ struct PrioritizedMCTSSequenceReplay[
             if cons_mask:
                 var cm = cons_mask.value()
                 for k in range(K):
-                    cm[k * B + b] = Scalar[DT](
+                    cm[unsafe_offset=k * B + b] = Scalar[DT](
                         1.0
                     ) if s + k + 1 < L else Scalar[DT](0.0)
 
             for h in range(HR):
                 if s + h >= L:
-                    w_rew[h] = Scalar[DT](0.0)
-                    w_done[h] = Scalar[DT](1.0)
+                    w_rew[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)
                 else:
                     var rslot = (self.ep_start[e] + s + h) % Self.CAP
-                    w_rew[h] = self.rew[rslot]
-                    w_done[h] = self.done[rslot]
+                    w_rew[unsafe_offset=h] = self.rew[rslot]
+                    w_done[unsafe_offset=h] = self.done[rslot]
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     var vslot = (self.ep_start[e] + s + h) % Self.CAP
-                    w_val[h] = self.val[vslot]
-                    w_tp[h] = self.tp[vslot]
+                    w_val[unsafe_offset=h] = self.val[vslot]
+                    w_tp[unsafe_offset=h] = self.tp[vslot]
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 var pbase = k * B * Self.ACT + b * Self.ACT
                 if s + k >= L:
                     var uni = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
@@ -432,23 +432,23 @@ struct PrioritizedMCTSSequenceReplay[
             # Caller applies (·+eps)^α via update_priorities. Replaces the old
             # value-head soft-CE, which was not the paper's signal.
             if out_prio:
-                var praw = w_val[0] - w_vt[0]
+                var praw = w_val[unsafe_offset=0] - w_vt[unsafe_offset=0]
                 if praw < Scalar[DT](0.0):
                     praw = -praw
-                out_prio.value()[b] = praw
+                out_prio.value()[unsafe_offset=b] = praw
             for k in range(K):
                 if s + k >= L:
                     actions[k * B + b] = Scalar[DT](0.0)
                 else:
                     var aslot = (self.ep_start[e] + s + k) % Self.CAP
                     actions[k * B + b] = self.act[aslot]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
-        w_rew.free()
-        w_done.free()
-        w_val.free()
-        w_tp.free()
-        w_vt.free()
+        w_rew.unsafe_free()
+        w_done.unsafe_free()
+        w_val.unsafe_free()
+        w_tp.unsafe_free()
+        w_vt.unsafe_free()
 
         # ── device gather: H2D the M slot indices, assemble the obs slab ──
         ctx.enqueue_copy(d_slots, h_slots.unsafe_ptr())  # sanctioned H2D-staging boundary

@@ -18,7 +18,7 @@ from .pc_constants import TPB
 from layout import LayoutTensor, Layout
 from std.math import sqrt, exp, log
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.sys import simd_width_of
 
 
@@ -143,17 +143,17 @@ struct PCAdam[
         var wd_v = SIMD[dtype, W](wd)
         var i = 0
         while i + W <= PARAM_SIZE:
-            var p = p_p.load[width=W](i)
-            var g = g_p.load[width=W](i) + wd_v * p
-            var mv = s_p.load[width=2 * W](2 * i).deinterleave()
+            var p = p_p.unsafe_load[width=W](i)
+            var g = g_p.unsafe_load[width=W](i) + wd_v * p
+            var mv = s_p.unsafe_load[width=2 * W](2 * i).deinterleave()
             var m = rebind[SIMD[dtype, W]](mv[0])
             var v = rebind[SIMD[dtype, W]](mv[1])
             var m_new = b1_v * m + omb1_v * g
             var v_new = b2_v * v + omb2_v * g * g
-            s_p.store(2 * i, m_new.interleave(v_new))
+            s_p.unsafe_store(2 * i, m_new.interleave(v_new))
             var m_hat = m_new / bc1_v
             var v_hat = v_new / bc2_v
-            p_p.store(i, p - lr_v * m_hat / (sqrt(v_hat) + eps_v))
+            p_p.unsafe_store(i, p - lr_v * m_hat / (sqrt(v_hat) + eps_v))
             i += W
         while i < PARAM_SIZE:
             var g = grads[i] + wd * params[i]
@@ -284,11 +284,11 @@ struct PCAdam[
         # Slot 0 (Float32) → bit-cast UInt32 step counter view.
         var counter_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr.bitcast[Scalar[DType.uint32]]())
+        ](opt_global_state.ptr.unsafe_bitcast[Scalar[DType.uint32]]())
         # Slot 1 → lr_scale view.
         var lr_scale_view = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr + 1)
+        ](opt_global_state.ptr.unsafe_offset(1))
 
         @parameter
         @always_inline
@@ -455,17 +455,17 @@ struct PCAdamW[
         var wdf_v = SIMD[dtype, W](wd_factor)
         var i = 0
         while i + W <= PARAM_SIZE:
-            var g = g_p.load[width=W](i)
-            var mv = s_p.load[width=2 * W](2 * i).deinterleave()
+            var g = g_p.unsafe_load[width=W](i)
+            var mv = s_p.unsafe_load[width=2 * W](2 * i).deinterleave()
             var m = rebind[SIMD[dtype, W]](mv[0])
             var v = rebind[SIMD[dtype, W]](mv[1])
             var m_new = b1_v * m + omb1_v * g
             var v_new = b2_v * v + omb2_v * g * g
-            s_p.store(2 * i, m_new.interleave(v_new))
+            s_p.unsafe_store(2 * i, m_new.interleave(v_new))
             var m_hat = m_new / bc1_v
             var v_hat = v_new / bc2_v
-            var p = p_p.load[width=W](i)
-            p_p.store(i, p * wdf_v - lr_v * m_hat / (sqrt(v_hat) + eps_v))
+            var p = p_p.unsafe_load[width=W](i)
+            p_p.unsafe_store(i, p * wdf_v - lr_v * m_hat / (sqrt(v_hat) + eps_v))
             i += W
         while i < PARAM_SIZE:
             var g = grads[i]
@@ -579,10 +579,10 @@ struct PCAdamW[
         # Slot 0 → UInt32 step counter view; slot 1 → lr_scale view.
         var counter_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr.bitcast[Scalar[DType.uint32]]())
+        ](opt_global_state.ptr.unsafe_bitcast[Scalar[DType.uint32]]())
         var lr_scale_view = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr + 1)
+        ](opt_global_state.ptr.unsafe_offset(1))
 
         @parameter
         @always_inline

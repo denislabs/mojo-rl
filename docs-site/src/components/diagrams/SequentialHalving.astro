@@ -1,0 +1,89 @@
+---
+/**
+ * SequentialHalving — how the Gumbel orchestrators spend a fixed simulation
+ * budget across root candidates.
+ *
+ * Plain PUCT decides where to look next from statistics that are themselves
+ * still noisy. Sequential halving instead commits the budget up front: every
+ * surviving candidate gets the same number of visits within a phase, the worst
+ * half is dropped, and the next phase re-spends the same budget on fewer
+ * candidates. Nothing depends on the order simulations happen to run in, which
+ * is what makes the batched GPU path safe here and unsafe under PUCT.
+ */
+
+const SLOTS = 8;
+/**
+ * Sized so the eighth slot ends near x = 714, leaving the per-phase budget
+ * label room on the right. At the original 74 the last slot ran under it.
+ */
+const SLOT_W = 60;
+const SLOT_X = (i: number) => 150 + i * (SLOT_W + 12);
+
+/** Active count per phase — log2(K) phases, halving each time. */
+const PHASES = [
+	{ y: 108, active: 8, budget: 'N / (3 · 8)' },
+	{ y: 190, active: 4, budget: 'N / (3 · 4)' },
+	{ y: 272, active: 2, budget: 'N / (3 · 2)' },
+];
+
+/**
+ * Survivor order — which slots remain active, best first. Fixed rather than
+ * derived so the eliminated slots stay in place down the columns and the eye
+ * can follow a single candidate's fate.
+ */
+const ORDER = [3, 5, 1, 6, 0, 4, 2, 7];
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="Sequential halving: eight root candidates sampled by Gumbel top-k, visited equally within each phase, with the worst half eliminated between phases until one survives.">
+		<text x="20" y="30" class="dg-title dg-title--left">Sequential halving at the root</text>
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			Gumbel-Top-k samples K candidates; the budget is then divided, not steered.
+		</text>
+
+		<text x={SLOT_X(0)} y="84" class="dg-caption dg-sub--left">K root candidates</text>
+		<text x="782" y="84" class="dg-caption">visits each</text>
+
+		{
+			PHASES.map((phase, p) => (
+				<g>
+					<text x="20" y={phase.y + 28} class="dg-sub dg-sub--left">
+						{`phase ${p + 1}`}
+					</text>
+					{Array.from({ length: SLOTS }, (_, i) => {
+						const alive = ORDER.indexOf(i) < phase.active;
+						return (
+							<rect
+								x={SLOT_X(i)} y={phase.y} width={SLOT_W} height="44" rx="6"
+								class={alive ? 'dg-fill-spark' : 'dg-ghost'}
+								opacity={alive ? 0.55 : 1} />
+						);
+					})}
+					<text x="782" y={phase.y + 28} class="dg-caption">{phase.budget}</text>
+				</g>
+			))
+		}
+
+		{/* the survivor */}
+		<rect x={SLOT_X(ORDER[0])} y="342" width={SLOT_W} height="44" rx="6"
+			class="dg-fill-cyan" opacity="0.7" />
+		<text x="20" y="370" class="dg-sub dg-sub--left">chosen</text>
+		<text x={SLOT_X(ORDER[0]) + SLOT_W / 2} y="334" class="dg-label dg-label--cyan">↓</text>
+
+		<text x="500" y="370" class="dg-sub dg-sub--left">
+			Selection below the root is a visit-balance rule, not PUCT.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">still active</span>
+		<span class="diagram__key diagram__key--muted">eliminated</span>
+		<span class="diagram__key diagram__key--cyan">survivor</span>
+	</figcaption>
+
+	<div class="diagram__formula">
+		<span class="diagram__formula-title">improved policy, read off the root</span>
+		<code>π̂ = softmax( logits + σ( completed_Q ) )</code>
+	</div>
+</figure>

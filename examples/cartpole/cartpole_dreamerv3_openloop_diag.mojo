@@ -70,7 +70,7 @@ comptime CTX = 4               # context steps observed before the open-loop rol
 comptime HORCAP = 80           # max stored episode length / horizon buffer size
 
 
-def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
+def _argmax(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Int:
     var k = 0
     var best = a[0]
     for i in range(1, ACT):

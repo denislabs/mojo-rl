@@ -128,9 +128,10 @@ from .shapes import (
 from .renderer2d import Renderer2D
 
 from .camera3d import Camera3D
-from .renderer3d import Renderer3D
+from .renderer3d import Renderer3D, RendererHandoff
 from .gpu_types import MeshHandle, MeshCacheEntry, TextureCacheEntry, SkyboxUniforms
 from .stl_loader import load_stl
+from .obj_loader import load_obj
 from .png_loader import load_png, TextureData
 from .light import Light, LightMode
 from .video_recorder import VideoRecorder
@@ -141,3 +142,6 @@ from .image_writer import (
     save_vector_heatmap,
     save_vector_comparison,
 )
+
+# Immediate-mode UI widgets over the screen-space quad pipeline
+from .ui import UI, UI_ROW_H

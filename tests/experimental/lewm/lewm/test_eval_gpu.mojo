@@ -9,7 +9,7 @@ Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_eval_gpu.mojo
 """
 
 from std.math import isnan, isinf
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
@@ -53,8 +53,8 @@ comptime Trainer = LeWMTrainer[
 ]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _det(i: Int) -> Scalar[DT]:

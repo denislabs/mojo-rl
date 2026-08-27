@@ -16,7 +16,7 @@ Symmetry with `Scratch`:
   * `DriverScratch[NAME, N, DIM]` — driver-owned, N_ENVS exposed.
 
 Both carry CPU `List` + GPU `Optional[DeviceBuffer]`, populated by
-`make[target]`. Both expose `target_ptr[target]() -> UnsafePointer` for
+`make[target]`. Both expose `target_ptr[target]() -> Pointer` for
 generic access plus explicit `host_ptr()` / `dev_ptr()` for the staging
 paths that need both at once.
 
@@ -26,14 +26,14 @@ whether it needs a host shadow for episode tracking D2H, no value in
 fanning the type out comptime).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.ptr import mptr
 
 
 struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     comptime SIZE: Int = Self.N_ENVS * Self.DIM
 
@@ -76,18 +76,18 @@ struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
 
     # ----- Pointer accessors --------------------------------------------
 
-    def host_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def host_ptr(ref self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Raw CPU pointer. Valid for `target="cpu"` and for
         `target="gpu"` builds that requested `with_host_mirror=True`."""
         return mptr(self.cpu.unsafe_ptr())
 
-    def dev_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def dev_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Raw GPU pointer. Valid only after `make["gpu"]`."""
         return mptr(self.dev.value().unsafe_ptr())
 
     def target_ptr[
         target: StaticString
-    ](self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    ](self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Unified pointer accessor. CPU build returns the host pointer;
         GPU build returns the device pointer (host mirror, if present,
         is reachable via `host_ptr()`)."""

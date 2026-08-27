@@ -27,7 +27,7 @@ they'd have without the wrapper. Checkpoint load and params-only promotion
 (`hard_copy_params`) stay byte-compatible.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

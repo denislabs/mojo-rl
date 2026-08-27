@@ -1,0 +1,95 @@
+---
+/**
+ * DreamerLoops — DreamerV3's two loops.
+ *
+ * The idea worth conveying: real experience trains the world model, and the
+ * actor-critic trains almost entirely *inside* that model. Only the left loop
+ * touches the environment; the right loop never does.
+ */
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="DreamerV3: real experience trains the world model, behaviour is learned in imagination">
+		<defs>
+			<marker id="dr-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="dr-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="dr-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+		</defs>
+
+		<!-- environment -->
+		<g class="dg-node dg-node--cyan">
+			<rect x="20" y="20" width="220" height="72" rx="10" />
+			<text x="130" y="50" class="dg-title">Environment</text>
+			<text x="130" y="72" class="dg-sub">pixels</text>
+		</g>
+
+		<!-- replay -->
+		<g class="dg-node dg-node--green">
+			<rect x="20" y="164" width="220" height="72" rx="10" />
+			<text x="130" y="194" class="dg-title">Replay</text>
+			<text x="130" y="216" class="dg-sub">real episodes</text>
+		</g>
+
+		<!-- world model -->
+		<g class="dg-node dg-node--purple">
+			<rect x="320" y="120" width="240" height="160" rx="10" />
+			<text x="440" y="152" class="dg-title">World model · RSSM</text>
+			<text x="440" y="182" class="dg-sub">encoder — pixels → embedding</text>
+			<text x="440" y="206" class="dg-sub">recurrent latent (h, z)</text>
+			<text x="440" y="230" class="dg-sub">predict reward · continue</text>
+			<text x="440" y="254" class="dg-sub">decoder — reconstruct</text>
+		</g>
+
+		<!-- behaviour -->
+		<g class="dg-node dg-node--spark">
+			<rect x="640" y="120" width="220" height="120" rx="10" />
+			<text x="750" y="152" class="dg-title">Behaviour</text>
+			<text x="750" y="180" class="dg-sub">Actor π over latents</text>
+			<text x="750" y="204" class="dg-sub">Critic V — λ-returns</text>
+			<text x="750" y="228" class="dg-sub">trained in imagination</text>
+		</g>
+
+		<!-- env → replay -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#dr-cyan)"
+			d="M 130 92 L 130 164" />
+		<text x="144" y="134" class="dg-label dg-label--cyan">store</text>
+
+		<!-- replay → world model -->
+		<path class="dg-edge dg-edge--spark" marker-end="url(#dr-spark)"
+			d="M 240 200 L 320 200" />
+		<text x="252" y="192" class="dg-label dg-label--spark">train WM</text>
+
+		<!-- world model → behaviour (imagination) -->
+		<path class="dg-edge dg-edge--purple" marker-end="url(#dr-purple)"
+			d="M 560 180 L 640 180" />
+		<text x="570" y="172" class="dg-label dg-label--purple">imagine</text>
+
+		<!-- behaviour → env (acting) -->
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#dr-cyan)"
+			d="M 750 120 L 750 56 L 240 56" />
+		<text x="440" y="44" class="dg-label dg-label--cyan">action</text>
+
+		<text x="320" y="316" class="dg-sub dg-sub--left">
+			The actor never sees a pixel after the first encode —
+		</text>
+		<text x="320" y="336" class="dg-sub dg-sub--left">
+			it is trained on ~15-step rollouts imagined in latent space.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">real experience</span>
+		<span class="diagram__key diagram__key--spark">world-model training</span>
+		<span class="diagram__key diagram__key--purple">imagination</span>
+	</figcaption>
+</figure>

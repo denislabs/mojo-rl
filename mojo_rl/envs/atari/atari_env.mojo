@@ -123,8 +123,8 @@ struct AtariAction(Action, Copyable, ImplicitlyCopyable, Movable):
 def _resize_160x210_to_84x84[
     so: MutOrigin, do: MutOrigin, //
 ](
-    src: UnsafePointer[UInt8, so],
-    dst: UnsafePointer[UInt8, do],
+    src: Pointer[UInt8, so],
+    dst: Pointer[UInt8, do],
 ):
     """Resize 160×210 grayscale to 84×84 using area (box-filter) interpolation.
 
@@ -153,7 +153,7 @@ def _resize_160x210_to_84x84[
         for x in range(0, FRAME_WIDTH, W):
             var acc = SIMD[DType.uint16, W](0)
             for sy in range(sy0, sy1):
-                acc += src.load[width=W](sy * FRAME_WIDTH + x).cast[
+                acc += src.unsafe_load[width=W](sy * FRAME_WIDTH + x).cast[
                     DType.uint16
                 ]()
             vsum.unsafe_ptr().unsafe_store(x, acc)
@@ -170,15 +170,15 @@ def _resize_160x210_to_84x84[
             for sx in range(sx0, sx1):
                 total += Int(vsum[sx])
 
-            dst[oy * OBS_WIDTH + ox] = UInt8(total // ((sx1 - sx0) * cy))
+            dst[unsafe_offset=oy * OBS_WIDTH + ox] = UInt8(total // ((sx1 - sx0) * cy))
 
 
 def _bgra_maxpool_to_rgb_planar[
     ao: MutOrigin, bo: MutOrigin, do: MutOrigin, //
 ](
-    a: UnsafePointer[UInt8, ao],
-    b: UnsafePointer[UInt8, bo],
-    dst: UnsafePointer[UInt8, do],
+    a: Pointer[UInt8, ao],
+    b: Pointer[UInt8, bo],
+    dst: Pointer[UInt8, do],
 ):
     """Max-pool two BGRA frames (flicker handling, like the gray path) and
     write the result as three PLANAR channels R,G,B into `dst`
@@ -189,17 +189,17 @@ def _bgra_maxpool_to_rgb_planar[
     channel extraction to `_bgra_to_gray_maxpool` but kept per-channel."""
     comptime W = 16
     comptime assert RGB_SRC_PLANE % W == 0, "src plane must be SIMD-divisible"
-    var a32 = a.bitcast[UInt32]()
-    var b32 = b.bitcast[UInt32]()
+    var a32 = a.unsafe_bitcast[UInt32]()
+    var b32 = b.unsafe_bitcast[UInt32]()
     var rp = dst
-    var gp = dst + RGB_SRC_PLANE
-    var bp = dst + 2 * RGB_SRC_PLANE
+    var gp = dst.unsafe_offset(RGB_SRC_PLANE)
+    var bp = dst.unsafe_offset(2 * RGB_SRC_PLANE)
     for i in range(0, RGB_SRC_PLANE, W):
-        var va = a32.load[width=W](i)
-        var vb = b32.load[width=W](i)
-        bp.store(i, max(va & 0xFF, vb & 0xFF).cast[DType.uint8]())
-        gp.store(i, max((va >> 8) & 0xFF, (vb >> 8) & 0xFF).cast[DType.uint8]())
-        rp.store(
+        var va = a32.unsafe_load[width=W](i)
+        var vb = b32.unsafe_load[width=W](i)
+        bp.unsafe_store(i, max(va & 0xFF, vb & 0xFF).cast[DType.uint8]())
+        gp.unsafe_store(i, max((va >> 8) & 0xFF, (vb >> 8) & 0xFF).cast[DType.uint8]())
+        rp.unsafe_store(
             i, max((va >> 16) & 0xFF, (vb >> 16) & 0xFF).cast[DType.uint8]()
         )
 
@@ -207,8 +207,8 @@ def _bgra_maxpool_to_rgb_planar[
 def _resize_plane_160x210[
     OW: Int, OH: Int
 ](
-    src: UnsafePointer[UInt8, MutAnyOrigin],
-    dst: UnsafePointer[UInt8, MutAnyOrigin],
+    src: Pointer[UInt8, MutAnyOrigin],
+    dst: Pointer[UInt8, MutAnyOrigin],
 ):
     """Area (box-filter) resize one 160×210 plane to OW×OH, the SAME
     integer-boundary box filter the 84×84 gray path uses (each output pixel
@@ -233,8 +233,8 @@ def _resize_plane_160x210[
             for sy in range(sy0, sy1):
                 var row = sy * FRAME_WIDTH
                 for sx in range(sx0, sx1):
-                    total += Int(src[row + sx])
-            dst[oy * OW + ox] = UInt8(
+                    total += Int(src[unsafe_offset=row + sx])
+            dst[unsafe_offset=oy * OW + ox] = UInt8(
                 total // ((sx1 - sx0) * (sy1 - sy0))
             )
 
@@ -242,8 +242,8 @@ def _resize_plane_160x210[
 def _resize_plane_160x210_to_96x96[
     so: MutOrigin, do: MutOrigin, //
 ](
-    src: UnsafePointer[UInt8, so],
-    dst: UnsafePointer[UInt8, do],
+    src: Pointer[UInt8, so],
+    dst: Pointer[UInt8, do],
 ):
     """96×96 alias of `_resize_plane_160x210` (kept so the mode-2/3/4 call
     sites read unchanged). Scale: x = 160/96 ≈ 1.667, y = 210/96 ≈ 2.1875."""
@@ -316,19 +316,19 @@ struct AtariEnv[
     var _life_lost: Bool  # last step lost a life (bootstrap-terminal, no reset)
 
     # Pixel-mode buffers (allocated only when OBS_MODE>=1)
-    var frame_stack: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]  # stack ring
+    var frame_stack: Optional[Pointer[UInt8, MutUntrackedOrigin]]  # stack ring
     var frame_idx: Int  # ring buffer index
     var raw_frame_a: Optional[
-        UnsafePointer[UInt8, MutUntrackedOrigin]
+        Pointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210*4 BGRA
     var raw_frame_b: Optional[
-        UnsafePointer[UInt8, MutUntrackedOrigin]
+        Pointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210*4 BGRA
     var gray_buf: Optional[
-        UnsafePointer[UInt8, MutUntrackedOrigin]
+        Pointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210 grayscale
     var rgb_buf: Optional[
-        UnsafePointer[UInt8, MutUntrackedOrigin]
+        Pointer[UInt8, MutUntrackedOrigin]
     ]  # 3*160*210 planar RGB
 
     def __init__(
@@ -351,7 +351,7 @@ struct AtariEnv[
         var rom_data = load_rom(game.rom_file())
         self = Self(
             game,
-            rom_data.data.value().as_unsafe_any_origin(),
+            rom_data.data.value(),
             rom_data.size,
             frame_skip=frame_skip,
             max_frames=max_frames,
@@ -365,7 +365,7 @@ struct AtariEnv[
     def __init__(
         out self,
         game: AtariGame,
-        rom: UnsafePointer[UInt8, MutAnyOrigin],
+        rom: Pointer[UInt8, MutUntrackedOrigin],
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,
@@ -431,47 +431,83 @@ struct AtariEnv[
 
         # Pixel mode buffers
         comptime if Self.OBS_MODE == 1:
-            self.frame_stack = alloc[UInt8](FRAME_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = FRAME_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
         elif Self.OBS_MODE == 2:
-            self.frame_stack = alloc[UInt8](RGB_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = RGB_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
             self.gray_buf = None
-            self.rgb_buf = alloc[UInt8](3 * RGB_SRC_PLANE)
+            self.rgb_buf = alloc[UInt8](
+                {count = 3 * RGB_SRC_PLANE}
+            ).unsafe_leak()
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
         elif Self.OBS_MODE == 3:
             # Grayscale-96 single frame: `frame_stack` holds ONE 96×96 frame
             # (no ring). Reuse gray_buf (160×210) as the maxpool scratch.
-            self.frame_stack = alloc[UInt8](GRAY96_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8]({count = GRAY96_SIZE}).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY96_SIZE)
         elif Self.OBS_MODE == 4:
             # Grayscale-96 4-frame stack: `frame_stack` is a 4-slot ring.
-            self.frame_stack = alloc[UInt8](GRAY96_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = GRAY96_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY96_STACK_SIZE)
         elif Self.OBS_MODE == 5:
             # Grayscale-64 single frame (reference DreamerV3 resolution):
             # one 64×64 slot, no ring; gray_buf as the maxpool scratch.
-            self.frame_stack = alloc[UInt8](GRAY64_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8]({count = GRAY64_SIZE}).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY64_SIZE)
@@ -523,17 +559,17 @@ struct AtariEnv[
         """
         comptime W = 16
         comptime assert GRAY_FRAME_SIZE % W == 0, "frame must be SIMD-divisible"
-        var a32 = self.raw_frame_a.value().bitcast[UInt32]()
-        var b32 = self.raw_frame_b.value().bitcast[UInt32]()
+        var a32 = self.raw_frame_a.value().unsafe_bitcast[UInt32]()
+        var b32 = self.raw_frame_b.value().unsafe_bitcast[UInt32]()
         var gray = self.gray_buf.value()
         for i in range(0, GRAY_FRAME_SIZE, W):
-            var va = a32.load[width=W](i)
-            var vb = b32.load[width=W](i)
+            var va = a32.unsafe_load[width=W](i)
+            var vb = b32.unsafe_load[width=W](i)
             var b = max(va & 0xFF, vb & 0xFF)
             var g = max((va >> 8) & 0xFF, (vb >> 8) & 0xFF)
             var r = max((va >> 16) & 0xFF, (vb >> 16) & 0xFF)
             # Luminance: Y = (77*R + 150*G + 29*B) >> 8
-            gray.store(
+            gray.unsafe_store(
                 i, ((77 * r + 150 * g + 29 * b) >> 8).cast[DType.uint8]()
             )
 
@@ -543,7 +579,7 @@ struct AtariEnv[
         var slot_offset = self.frame_idx * OBS_FRAME_SIZE
         _resize_160x210_to_84x84(
             self.gray_buf.value(),
-            self.frame_stack.value() + slot_offset,
+            self.frame_stack.value().unsafe_offset(slot_offset),
         )
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -570,18 +606,18 @@ struct AtariEnv[
             self.raw_frame_b.value().as_unsafe_any_origin(),
             self.rgb_buf.value(),
         )
-        var slot = self.frame_stack.value() + self.frame_idx * RGB_FRAME_SIZE
+        var slot = self.frame_stack.value().unsafe_offset(self.frame_idx * RGB_FRAME_SIZE)
         var src = self.rgb_buf.value()
         for c in range(3):
             _resize_plane_160x210_to_96x96(
-                src + c * RGB_SRC_PLANE,
-                slot + c * RGB_OBS_PLANE,
+                src.unsafe_offset(c * RGB_SRC_PLANE),
+                slot.unsafe_offset(c * RGB_OBS_PLANE),
             )
         self.frame_idx = (self.frame_idx + 1) % 4
 
     def _write_rgb_stack_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the 4-frame RGB stack (chronological, oldest first) as
         normalized floats into `obs_out`. The 12 logical channels are frame-major
         (f0R,f0G,f0B, f1R,…, f3B), each from the source ring slot's [3,96,96]
@@ -600,13 +636,13 @@ struct AtariEnv[
             comptime CH = RGB_STACK_SIZE // RGB_OBS_PLANE  # 12
             for i in range(4):
                 var slot = (self.frame_idx + i) % 4  # oldest first
-                var src = fs + slot * RGB_FRAME_SIZE
+                var src = fs.unsafe_offset(slot * RGB_FRAME_SIZE)
                 for c in range(3):
                     var ch = i * 3 + c
-                    var src_c = src + c * RGB_OBS_PLANE
+                    var src_c = src.unsafe_offset(c * RGB_OBS_PLANE)
                     for p in range(RGB_OBS_PLANE):
-                        obs_out[p * CH + ch] = (
-                            src_c[p].cast[Self.dtype]() / 255.0
+                        obs_out[unsafe_offset=p * CH + ch] = (
+                            src_c[unsafe_offset=p].cast[Self.dtype]() / 255.0
                         )
         else:
             # NCHW: contiguous per-channel → SIMD frame-block copy (bit-identical
@@ -618,11 +654,11 @@ struct AtariEnv[
             var out_off = 0
             for i in range(4):
                 var slot = (self.frame_idx + i) % 4  # oldest first
-                var src = fs + slot * RGB_FRAME_SIZE
+                var src = fs.unsafe_offset(slot * RGB_FRAME_SIZE)
                 for j in range(0, RGB_FRAME_SIZE, W):
-                    obs_out.store(
+                    obs_out.unsafe_store(
                         out_off + j,
-                        src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                        src.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0,
                     )
                 out_off += RGB_FRAME_SIZE
 
@@ -638,15 +674,15 @@ struct AtariEnv[
 
     def _write_gray96_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the single 96×96 grayscale frame as normalized floats into
         `obs_out` (GRAY96_SIZE scalars). SIMD uint8→float `/255`."""
         comptime W = 16
         comptime assert GRAY96_SIZE % W == 0, "gray96 must be SIMD-divisible"
         var fs = self.frame_stack.value()
         for j in range(0, GRAY96_SIZE, W):
-            obs_out.store(
-                j, fs.load[width=W](j).cast[Self.dtype]() / 255.0
+            obs_out.unsafe_store(
+                j, fs.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0
             )
 
     # ── grayscale-64 single-frame helpers (OBS_MODE==5 — DreamerV3 ref res) ─
@@ -663,28 +699,28 @@ struct AtariEnv[
 
     def _write_gray64_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the single 64×64 grayscale frame as normalized floats into
         `obs_out` (GRAY64_SIZE scalars). SIMD uint8→float `/255`."""
         comptime W = 16
         comptime assert GRAY64_SIZE % W == 0, "gray64 must be SIMD-divisible"
         var fs = self.frame_stack.value()
         for j in range(0, GRAY64_SIZE, W):
-            obs_out.store(
-                j, fs.load[width=W](j).cast[Self.dtype]() / 255.0
+            obs_out.unsafe_store(
+                j, fs.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0
             )
 
     def _push_gray96_stack(mut self):
         """Max-pool a/b → grayscale → area-resize to 96×96 into the current ring
         slot, then advance the ring (OBS_MODE==4)."""
         self._bgra_to_gray_maxpool()
-        var slot = self.frame_stack.value() + self.frame_idx * GRAY96_SIZE
+        var slot = self.frame_stack.value().unsafe_offset(self.frame_idx * GRAY96_SIZE)
         _resize_plane_160x210_to_96x96(self.gray_buf.value(), slot)
         self.frame_idx = (self.frame_idx + 1) % 4
 
     def _write_gray96_stack_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the 4-frame gray-96 stack (chronological, oldest first) as
         normalized floats into `obs_out` (GRAY96_STACK_SIZE scalars)."""
         comptime W = 16
@@ -693,10 +729,10 @@ struct AtariEnv[
         var out_off = 0
         for i in range(4):
             var slot = (self.frame_idx + i) % 4  # oldest first
-            var src = fs + slot * GRAY96_SIZE
+            var src = fs.unsafe_offset(slot * GRAY96_SIZE)
             for j in range(0, GRAY96_SIZE, W):
-                obs_out.store(
-                    out_off + j, src.load[width=W](j).cast[Self.dtype]() / 255.0
+                obs_out.unsafe_store(
+                    out_off + j, src.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0
                 )
             out_off += GRAY96_SIZE
 
@@ -764,7 +800,7 @@ struct AtariEnv[
             )
             # Copy frame_a to frame_b for maxpool (both identical after reset)
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+                self.raw_frame_b.value()[unsafe_offset=i] = self.raw_frame_a.value()[unsafe_offset=i]
             self._bgra_to_gray_maxpool()
             # Fill all 4 slots with the same initial frame
             self.frame_idx = 0
@@ -779,7 +815,7 @@ struct AtariEnv[
                 self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+                self.raw_frame_b.value()[unsafe_offset=i] = self.raw_frame_a.value()[unsafe_offset=i]
             self.frame_idx = 0
             for _ in range(4):
                 self._push_rgb_frame_to_stack()
@@ -793,7 +829,7 @@ struct AtariEnv[
                 self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+                self.raw_frame_b.value()[unsafe_offset=i] = self.raw_frame_a.value()[unsafe_offset=i]
             self._push_gray96_frame()
         elif Self.OBS_MODE == 4:
             # Grayscale-96 4-stack: render the initial frame (a==b) and fill all
@@ -805,7 +841,7 @@ struct AtariEnv[
                 self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+                self.raw_frame_b.value()[unsafe_offset=i] = self.raw_frame_a.value()[unsafe_offset=i]
             self.frame_idx = 0
             for _ in range(4):
                 self._push_gray96_stack()
@@ -819,7 +855,7 @@ struct AtariEnv[
                 self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+                self.raw_frame_b.value()[unsafe_offset=i] = self.raw_frame_a.value()[unsafe_offset=i]
             self._push_gray64_frame()
 
         return AtariEnvState(index=0)
@@ -835,7 +871,7 @@ struct AtariEnv[
             result[2],
         )
 
-    def get_state(self) -> AtariEnvState:
+    def get_state(mut self) -> AtariEnvState:
         return AtariEnvState(index=self._steps)
 
     def was_terminated(self) -> Bool:
@@ -852,19 +888,19 @@ struct AtariEnv[
         """Free pixel-mode buffers."""
         comptime if Self.OBS_MODE >= 1:
             if Bool(self.frame_stack):
-                self.frame_stack.value().free()
+                self.frame_stack.value().unsafe_free()
                 self.frame_stack = None
             if Bool(self.raw_frame_a):
-                self.raw_frame_a.value().free()
+                self.raw_frame_a.value().unsafe_free()
                 self.raw_frame_a = None
             if Bool(self.raw_frame_b):
-                self.raw_frame_b.value().free()
+                self.raw_frame_b.value().unsafe_free()
                 self.raw_frame_b = None
             if Bool(self.gray_buf):
-                self.gray_buf.value().free()
+                self.gray_buf.value().unsafe_free()
                 self.gray_buf = None
             if Bool(self.rgb_buf):
-                self.rgb_buf.value().free()
+                self.rgb_buf.value().unsafe_free()
                 self.rgb_buf = None
 
     # ========================================================================
@@ -873,7 +909,7 @@ struct AtariEnv[
 
     def _write_stack_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the 4-frame stack (chronological order, oldest first) as
         normalized floats into `obs_out` (FRAME_STACK_SIZE scalars).
         SIMD uint8→float `/255` — bit-exact vs the per-element scalar
@@ -886,23 +922,23 @@ struct AtariEnv[
         var out_off = 0
         for i in range(4):
             var slot = (self.frame_idx + i) % 4  # oldest first
-            var src = fs + slot * OBS_FRAME_SIZE
+            var src = fs.unsafe_offset(slot * OBS_FRAME_SIZE)
             for j in range(0, OBS_FRAME_SIZE, W):
-                obs_out.store(
+                obs_out.unsafe_store(
                     out_off + j,
-                    src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                    src.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0,
                 )
             out_off += OBS_FRAME_SIZE
 
     def _write_ram_obs_into[
         o: MutOrigin
-    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+    ](self, obs_out: Pointer[Scalar[Self.dtype], o]):
         """Write the 128 RAM bytes as normalized floats into `obs_out`."""
         comptime W = 16
         comptime assert RAM_SIZE % W == 0, "RAM size must be SIMD-divisible"
         var ram = self.env.get_ram()
         for i in range(0, RAM_SIZE, W):
-            obs_out.store(
+            obs_out.unsafe_store(
                 i, ram.unsafe_ptr().unsafe_load[width=W](i).cast[Self.dtype]() / 255.0
             )
 
@@ -1057,7 +1093,7 @@ struct AtariEnv[
     def step_obs_into(
         mut self,
         action: Int,
-        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+        obs_out: Pointer[Scalar[Self.dtype], MutAnyOrigin],
     ) -> Tuple[Scalar[Self.DTYPE], Bool]:
         """Allocation-free step (trait override): advance the emulator and
         write the observation directly into `obs_out`, skipping the

@@ -11,7 +11,7 @@ so there's NO mid-slab and NO extra kernel: forward/vjp delegate straight to
   OUT_DIM = SEQ_LEN * Inner.OUT_DIM
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

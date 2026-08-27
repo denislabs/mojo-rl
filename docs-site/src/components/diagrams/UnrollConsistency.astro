@@ -1,0 +1,112 @@
+---
+/**
+ * UnrollConsistency — EfficientZero V2's SimSiam objective on the K-step unroll.
+ *
+ * Two facts have to survive the drawing, because both are easy to state in
+ * prose and easy to get wrong in code:
+ *   1. there is no consistency term at the root — z⁰ *is* h(oₜ), so comparing
+ *      them would be vacuous; the term runs over k = 1…K
+ *   2. only the online branch takes a gradient. The target is drawn muted and
+ *      the arrow points *from* the unrolled latent *to* it, which is the
+ *      direction the gradient does not flow.
+ */
+
+/** One column per unroll step. k = 0 is the root and is treated differently. */
+const COLS = [200, 440, 680];
+const OBS_Y = 54;
+const TARGET_Y = 178;
+const LATENT_Y = 300;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 440" role="img"
+		aria-label="EfficientZero V2: each unrolled latent is pulled toward the encoder's latent for the observation actually seen at that step, with the target branch detached">
+		<defs>
+			<marker id="uc-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="uc-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="uc-green" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-green" />
+			</marker>
+		</defs>
+
+		<text x="20" y={OBS_Y + 6} class="dg-sub dg-sub--left">observed</text>
+		<text x="20" y={TARGET_Y + 6} class="dg-sub dg-sub--left">encoded target</text>
+		<text x="20" y={LATENT_Y + 6} class="dg-sub dg-sub--left">unrolled latent</text>
+
+		{
+			COLS.map((x, k) => (
+				<g>
+					<circle cx={x} cy={OBS_Y} r="24" class="dg-tree-node dg-tree-node--root" />
+					<text x={x} y={OBS_Y + 6} class="dg-tree-label">{`o${['ₜ', 'ₜ₊₁', 'ₜ₊₂'][k]}`}</text>
+
+					<circle cx={x} cy={LATENT_Y} r="24"
+						class={k === 0 ? 'dg-tree-node dg-tree-node--new' : 'dg-tree-node dg-tree-node--hot'} />
+					<text x={x} y={LATENT_Y + 6} class="dg-tree-label">{`z${['⁰', '¹', '²'][k]}`}</text>
+				</g>
+			))
+		}
+
+		{/* k = 0: the encoder output IS the root, so there is nothing to compare. */}
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#uc-cyan)"
+			d={`M ${COLS[0]} ${OBS_Y + 24} L ${COLS[0]} ${LATENT_Y - 24}`} />
+		<text x={COLS[0] + 12} y={TARGET_Y + 4} class="dg-label dg-label--cyan">h</text>
+		<text x={COLS[0]} y={LATENT_Y + 50} class="dg-caption">no consistency here</text>
+
+		{/* k ≥ 1: encode the observation actually seen, and detach it. */}
+		{
+			COLS.slice(1).map((x, i) => (
+				<g>
+					<path class="dg-edge dg-edge--muted" marker-end="url(#uc-cyan)"
+						d={`M ${x} ${OBS_Y + 24} L ${x} ${TARGET_Y - 22}`} />
+					<text x={x + 12} y={OBS_Y + 62} class="dg-label dg-label--muted">h</text>
+					<circle cx={x} cy={TARGET_Y} r="22" class="dg-tree-node" />
+					<text x={x} y={TARGET_Y + 5} class="dg-tree-label">t</text>
+					<text x={x + 32} y={TARGET_Y + 5} class="dg-label dg-label--muted">sg( · )</text>
+
+					{/* Arrow points AT the detached target: the gradient does not follow it. */}
+					<path class="dg-edge dg-edge--spark dg-edge--dashed" marker-end="url(#uc-spark)"
+						d={`M ${x} ${LATENT_Y - 24} L ${x} ${TARGET_Y + 22}`} />
+					<text x={x + 12} y={LATENT_Y - 44} class="dg-label dg-label--spark">−cos</text>
+				</g>
+			))
+		}
+
+		{/* the dynamics chain */}
+		{
+			COLS.slice(0, 2).map((x, i) => (
+				<g>
+					<path class="dg-edge dg-edge--green" marker-end="url(#uc-green)"
+						d={`M ${x + 24} ${LATENT_Y} L ${COLS[i + 1] - 24} ${LATENT_Y}`} />
+					<text x={(x + COLS[i + 1]) / 2} y={LATENT_Y - 12} class="dg-label dg-label--green">
+						{`g(·, a${['ₜ', 'ₜ₊₁'][i]})`}
+					</text>
+				</g>
+			))
+		}
+
+		<text x="20" y="400" class="dg-sub dg-sub--left">
+			Only the online branch is trained. Reward, value and policy heads hang off every zᵏ as in MuZero —
+		</text>
+		<text x="20" y="424" class="dg-sub dg-sub--left">
+			consistency is the extra term that gives the dynamics a dense target at each step instead of a distant scalar.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">real observation</span>
+		<span class="diagram__key diagram__key--muted">detached target branch</span>
+		<span class="diagram__key diagram__key--spark">consistency loss</span>
+	</figcaption>
+
+	<div class="diagram__formula">
+		<span class="diagram__formula-title">consistency term</span>
+		<code>L_G = − cos( pred(proj(zᵏ)), sg( proj(h(oₜ₊ₖ)) ) ),   summed over k = 1…K</code>
+	</div>
+</figure>

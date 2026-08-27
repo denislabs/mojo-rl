@@ -16,7 +16,7 @@ the live α at log cadence.
 
 from std.math import sqrt as fsqrt, exp as fexp
 from std.gpu import thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
 from mojo_rl.nn.constants import DT
@@ -69,7 +69,7 @@ def _scalar_adam_step_kernel(
     state[_SA_ALPHA, 0] = fexp(la)
 
 
-struct ScalarAdam(Movable & ImplicitlyDeletable):
+struct ScalarAdam(Movable & Deinitable):
     var value: Scalar[DT]
     var m: Scalar[DT]
     var v: Scalar[DT]
@@ -172,17 +172,14 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
             block_dim=1,
         )
 
-    def alpha_dev_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def alpha_dev_ptr(mut self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Pointer to `state_dev[ALPHA]` — the live α read by raw GPU-ABI kernel
         consumers (SAC's `target_y` device-α path takes this as a kernel arg).
         Stable for the buffer lifetime. Module-trait consumers (the actor-loss
         `Scale` node) should prefer `alpha_dev_buffer` (type-safe DeviceBuffer)."""
-        return (
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.state_dev.value().unsafe_ptr()
-            )
-            + _SA_ALPHA
-        )
+        return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+            self.state_dev.value().unsafe_ptr()
+        ).unsafe_offset(_SA_ALPHA)
 
     def alpha_dev_buffer(mut self) raises -> DeviceBuffer[DT]:
         """Length-1 device sub-buffer viewing `state_dev[ALPHA]` — the live α

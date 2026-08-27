@@ -38,7 +38,7 @@ Run:
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -139,7 +139,7 @@ def main() raises:
     logger.set_config("batch", String(BATCH))
     logger.set_config("ere", "0.996")
 
-    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+    var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = SACAgent[

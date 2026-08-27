@@ -6,7 +6,7 @@ Run: pixi run -e apple mojo run -I . tests/envs/test_car_racing_pixel_gpu.mojo
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics2d import dtype
 from mojo_rl.envs.car_racing import CarRacingPixel
 
@@ -33,7 +33,7 @@ def main() raises:
     var obs = ctx.enqueue_create_buffer[dtype](B * OBS)
     var ws = ctx.enqueue_create_buffer[dtype](B * WS)
     ctx.synchronize()
-    var wsp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws.unsafe_ptr())
+    var wsp = rebind[Pointer[Scalar[dtype], MutAnyOrigin]](ws.unsafe_ptr())
 
     # gas every step
     var ahost = ctx.enqueue_create_host_buffer[dtype](B * 1)

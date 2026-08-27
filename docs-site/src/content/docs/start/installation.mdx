@@ -1,0 +1,142 @@
+---
+title: Installation
+description: Install pixi, fetch mojo-rl's dependencies, and pick the right environment for your GPU.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+mojo-rl uses [pixi](https://pixi.sh) for dependency management. pixi installs
+the Mojo toolchain, the MAX runtime, the Python packages used for reference
+comparisons, and the CUDA toolchain where relevant — you do not install Mojo
+separately.
+
+## Requirements
+
+| | |
+|---|---|
+| Platforms | `linux-64` (CUDA 12) · `osx-arm64` (macOS 15.0+) |
+| GPU (optional) | NVIDIA via CUDA, Apple Silicon via Metal |
+| Rendering (optional) | SDL3 — not needed for training |
+
+## 1. Install pixi
+
+```bash
+# macOS / Linux
+curl -fsSL https://pixi.sh/install.sh | bash
+
+# or with Homebrew
+brew install pixi
+```
+
+## 2. Clone and install
+
+```bash
+git clone https://github.com/denislabs/mojo-rl.git
+cd mojo-rl
+pixi install
+```
+
+This resolves the full dependency set on first run and takes a while. Subsequent
+commands reuse the cached environment.
+
+## 3. Run something
+
+Every command runs **from the repository root**, and the `-I .` flag puts the
+repository on Mojo's module search path. Without it, `import mojo_rl` fails.
+
+```bash
+pixi run mojo run -I . examples/solve_gridworld.mojo
+```
+
+If that prints a Q-Learning training curve and a rendered grid, you are set. Walk
+through what it does in [Quickstart: tabular](/start/quickstart-tabular/).
+
+## Choosing an environment
+
+pixi defines four environments. Which one you want depends on your hardware:
+
+| Environment | Use for | Command prefix |
+|---|---|---|
+| *(default)* | CPU work on any machine | `pixi run` |
+| `apple` | Apple Silicon GPU (Metal) | `pixi run -e apple` |
+| `nvidia` | NVIDIA GPU (CUDA) | `pixi run -e nvidia` |
+| `cpu` | CI / headless, no CUDA toolchain | `pixi run -e cpu` |
+
+GPU code must name its environment explicitly, because the kernels compile per
+backend:
+
+```bash
+pixi run -e apple  mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
+pixi run -e nvidia mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
+```
+
+The `cpu` environment exists so CI runners avoid pulling gigabytes of
+`cuda-toolkit` and `cudnn` they will never use.
+
+## Optional extras
+
+### SDL3 — for rendering and video capture
+
+Required to visualize environments or record GIFs and MP4s. **Not** required for
+training.
+
+```bash
+brew install sdl3            # macOS
+sudo apt install libsdl3-dev # Ubuntu / Debian
+sudo dnf install SDL3-devel  # Fedora
+```
+
+Source releases: [libsdl-org/SDL](https://github.com/libsdl-org/SDL/releases).
+
+### Atari ROMs — for the 2600 emulator
+
+`ale-py` ships without ROMs. This task downloads the canonical Farama bundle and
+symlinks `roms/`:
+
+```bash
+pixi run setup-roms
+```
+
+Only needed for the Atari 2600 emulator. The native arcade engines (Pong,
+Breakout, Space Invaders) are independent of it and need no ROMs.
+
+## Useful tasks
+
+pixi exposes a few shortcuts:
+
+```bash
+pixi run build        # precompile the package → mojo_rl.mojoc
+pixi run test-smoke   # fast curated CPU test tier (what CI runs)
+pixi run test-cpu     # every non-GPU test — takes hours
+pixi run -e apple test-gpu   # GPU tests on Metal
+pixi run -e nvidia test-gpu  # GPU tests on CUDA
+```
+
+## Troubleshooting
+
+:::caution[Stale build artifacts]
+If a build picks up code you have already changed, delete the precompiled
+package and rebuild:
+
+```bash
+rm -f mojo_rl.mojoc
+```
+
+A stale `mojo_rl.mojoc` shadows the source tree, and the resulting errors point
+at code that no longer exists.
+:::
+
+:::note[Mojo nightly]
+mojo-rl tracks **Mojo nightly**, so your editor's LSP may report warnings on
+perfectly valid code. Nightly syntax differs from stable in ways worth knowing:
+`mut` (not `inout`), `deinit` (not `owned`), `comptime` (not `alias`), and
+`ptr + n` (not `ptr.offset(n)`).
+:::
+
+## Next
+
+- [Quickstart: tabular](/start/quickstart-tabular/) — train Q-Learning on GridWorld
+- [Quickstart: GPU training](/start/quickstart-gpu/) — DQN on CartPole
+- [The layered stack](/concepts/architecture/) — what you just installed

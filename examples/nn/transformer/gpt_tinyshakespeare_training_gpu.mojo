@@ -29,7 +29,7 @@ Run on NVIDIA:
 from std.random import seed
 from std.math import log, exp
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
 from mojo_rl.nn.constants import DT
@@ -40,6 +40,7 @@ from mojo_rl.nn.training.autoregressive_trainer import (
     AutoregressiveTrainer,
 )
 from mojo_rl.nn.core.initializer import Normal
+from mojo_rl.core.fmt import fit
 
 
 # ── Full nanoGPT-class config (NVIDIA) ──
@@ -166,7 +167,7 @@ def main() raises:
         eval_every=EVAL_INTERVAL, n_val_windows=N_VAL_WINDOWS
     )
     var t1 = perf_counter_ns()
-    print("\n  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
+    print("\n  training time: " + fit(String(Float64(t1 - t0) / 1e9), 6) + " s")
 
     print("\n[final] val_loss=" + String(val_final) + " (start " + String(val_init) + ")")
     if val_final < val_init - 0.1:
@@ -177,10 +178,10 @@ def main() raises:
     # ── Diagnostic: per-token top-1 (is the loss consistent with prediction?) ──
     var acc = artr.val_top1(N_VAL_WINDOWS)
     print(
-        "[diagnostic] val per-token top-1=" + String(acc * 100.0)[byte=:5]
-        + "%  (random ≈ " + String(100.0 / Float64(VOCAB))[byte=:4]
-        + "%, from loss≈" + String(val_final)[byte=:5]
-        + " expect ~" + String(exp(-val_final) * 100.0)[byte=:5] + "%)"
+        "[diagnostic] val per-token top-1=" + fit(String(acc * 100.0), 5)
+        + "%  (random ≈ " + fit(String(100.0 / Float64(VOCAB)), 4)
+        + "%, from loss≈" + fit(String(val_final), 5)
+        + " expect ~" + fit(String(exp(-val_final) * 100.0), 5) + "%)"
     )
 
     # ── Sampling ──

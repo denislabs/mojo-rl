@@ -648,7 +648,7 @@ def detach_virtual_joystick(instance_id: JoystickID) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DetachVirtualJoystick.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_DetachVirtualJoystick", def(instance_id: JoystickID) thin -> Bool
     ]()(instance_id)
     if not ret:
@@ -699,7 +699,7 @@ def set_joystick_virtual_axis(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickVirtualAxis.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickVirtualAxis",
         def(
@@ -737,7 +737,7 @@ def set_joystick_virtual_ball(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickVirtualBall.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickVirtualBall",
         def(
@@ -774,7 +774,7 @@ def set_joystick_virtual_button(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickVirtualButton.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickVirtualButton",
         def(
@@ -808,7 +808,7 @@ def set_joystick_virtual_hat(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickVirtualHat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickVirtualHat",
         def(
@@ -855,7 +855,7 @@ def set_joystick_virtual_touchpad(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickVirtualTouchpad.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickVirtualTouchpad",
         def(
@@ -902,7 +902,7 @@ def send_joystick_virtual_sensor_data(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SendJoystickVirtualSensorData.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SendJoystickVirtualSensorData",
         def(
@@ -1041,7 +1041,7 @@ def set_joystick_player_index(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickPlayerIndex.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickPlayerIndex",
         def(joystick: Ptr[Joystick, MutAnyOrigin], player_index: c_int) thin -> Bool,
@@ -1524,7 +1524,7 @@ def get_joystick_ball(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetJoystickBall.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetJoystickBall",
         def(
@@ -1659,7 +1659,7 @@ def rumble_joystick_triggers(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RumbleJoystickTriggers.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RumbleJoystickTriggers",
         def(
@@ -1700,7 +1700,7 @@ def set_joystick_led(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetJoystickLED.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetJoystickLED",
         def(
@@ -1733,7 +1733,7 @@ def send_joystick_effect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SendJoystickEffect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SendJoystickEffect",
         def(

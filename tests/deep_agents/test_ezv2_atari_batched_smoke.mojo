@@ -13,9 +13,9 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_batched_smoke.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.math import isnan, isinf
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
@@ -54,7 +54,7 @@ comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutUntrackedOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):
@@ -74,7 +74,7 @@ def main() raises:
 
     var ctx = DeviceContext()
     var rom = load_rom("roms/pong.bin")
-    var env = BatchedPong(_make_envs(rom.data.value().as_unsafe_any_origin(), rom.size), noop_max=4)
+    var env = BatchedPong(_make_envs(rom.data.value(), rom.size), noop_max=4)
 
     var rep = Cfg.Rep.make["gpu", Kaiming](Optional(ctx))
     var dyn = Cfg.Dyn.make["gpu", Kaiming](Optional(ctx))

@@ -1,0 +1,231 @@
+---
+title: SAC
+description: Soft Actor-Critic — maximum-entropy continuous control with twin critics and an auto-tuned temperature.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import OffPolicyLoop from '~/components/diagrams/OffPolicyLoop.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" note="The most exercised training path in the repository." />
+
+SAC is an **off-policy, maximum-entropy** actor-critic for continuous control. It
+maximises reward *and* policy entropy, so the agent keeps exploring, learns from
+every past transition, and stays stable on high-dimensional tasks.
+
+If you have continuous actions, start here.
+
+<Demo name="sac_humanoid" caption="Humanoid — SAC" meta="45 obs · 17 torques · trained on-device" />
+
+
+<Papers label="Papers">
+	<Paper
+		title="Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor"
+		authors="Haarnoja, Zhou, Abbeel, Levine"
+		year="2018"
+		arxiv="1801.01290"
+		venue="ICML 2018"
+	/>
+	<Paper
+		title="Soft Actor-Critic Algorithms and Applications"
+		authors="Haarnoja et al."
+		year="2018"
+		arxiv="1812.05905"
+		note="Adds the auto-tuned temperature used here."
+	/>
+</Papers>
+
+## The learning loop
+
+<OffPolicyLoop
+	policy="Actor π"
+	policySub="stochastic Gaussian policy"
+	target="Twin critics Q₁, Q₂"
+	targetSub="+ Polyak targets (τ)"
+	actionLabel="a ~ π(·|s)"
+	targetEdgeLabel="min Q − α log π"
+	capacity="1M transitions"
+	formula="y = r + γ ( min Q′(s′,a′) − α log π(a′|s′) )"
+/>
+
+Three ideas separate SAC from DDPG and TD3.
+
+**The maximum-entropy objective.** SAC maximises `reward + α · entropy` rather
+than reward alone. A policy that keeps some randomness explores more robustly and
+is markedly less prone to collapsing onto a brittle deterministic behaviour. The
+entropy bonus appears directly in the bootstrap target — that `− α log π` term.
+
+**Twin critics.** Two Q-networks are trained, and the *minimum* of the two is
+used for the target. A single critic systematically overestimates values, because
+the `max`-like operation in the update selects for optimistic noise; taking the
+min of two independent estimates cancels most of it.
+
+**An auto-tuned temperature.** `α` weights the entropy bonus, and it is the
+hyperparameter people most often get wrong. SAC tunes it automatically against a
+target entropy — conventionally `−dim(A)` — so exploration adjusts itself over
+training instead of being hand-scheduled.
+
+## Building it in mojo-rl
+
+This is the shape of `examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`,
+stripped of logging and checkpointing:
+
+```mojo
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
+comptime HIDDEN = 256
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 1_000_000
+comptime N_ENVS = 32
+
+comptime ActorNet = StochasticActor[
+    OBS_DIM, ACT_DIM,
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+]
+comptime CriticNet = Sequential[
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
+comptime BatchedEnvT = Phyics3dBatchedEnv[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
+
+
+def main() raises:
+    with DeviceContext() as ctx:
+        var agent = SACAgent[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet,
+            CriticNet,
+        ](
+            ctx=ctx,
+            actor_lr=3e-4,
+            critic_lr=3e-4,
+            alpha_lr=3e-4,
+            gamma=0.99,
+            tau=0.005,
+            init_alpha=0.2,
+            target_entropy=-Scalar[DT](ACT_DIM),   # the SAC heuristic
+            learning_starts=10_000,
+        )
+
+        _ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
+            BatchedEnvT(ctx), 600_000, updates_per_step=N_ENVS, verbose=True,
+        )
+```
+
+Only **one** `CriticNet` type is passed. The agent instantiates two of them
+internally — you describe the architecture, not the count.
+
+### Compile-time parameters
+
+```mojo
+SACAgent[train_target, SAMPLE, ACTOR, CRITIC]
+```
+
+Dimensions come from `SAMPLE`, so `OBS`, `ACT` and `BATCH` appear in exactly one
+place.
+
+### Key runtime arguments
+
+| Argument | Typical | Notes |
+|---|---|---|
+| `actor_lr` / `critic_lr` | `3e-4` | equal rates are the usual choice |
+| `alpha_lr` | `3e-4` | temperature learning rate |
+| `gamma` | `0.99` | discount |
+| `tau` | `0.005` | Polyak coefficient for the target critics |
+| `target_entropy` | `-ACT_DIM` | the standard heuristic |
+| `init_alpha` | `0.2` | starting temperature |
+| `learning_starts` | `10_000` | random-action warmup before updates |
+
+## Update-to-data ratio
+
+Each driver iteration steps all `N_ENVS` environments once and runs
+`updates_per_step` gradient updates. Setting it to `N_ENVS` keeps the effective
+ratio at 1 update per collected transition:
+
+```mojo
+_ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
+    env, 600_000, updates_per_step=N_ENVS,
+)
+```
+
+Leaving it at `1` trains 32× less per unit of experience — the run will look
+like it is learning far too slowly, and the cause is easy to miss.
+
+## Watch out for
+
+:::caution[High-dimensional critics want LayerNorm]
+On Humanoid — 45 observations, 17 actions — a plain MLP critic destabilises. A
+**LayerNorm critic** fixes it, and LayerNorm is a reasonable default in deep RL
+generally: the value scale drifts over training in a way that batch statistics
+cannot track.
+
+The same failure showed up in MBPO as runaway Q-values.
+:::
+
+:::caution[Mask the bootstrap on true termination only]
+A time-limit cutoff must still bootstrap from the final state. Collapsing
+termination and truncation into one flag silently degrades learning — it teaches
+the agent that the world ends at your step limit. This was a real bug here, and
+it looks like a hyperparameter problem rather than a correctness one.
+:::
+
+**Adam's temperature slot.** The learned `α` rides in the optimizer alongside the
+network parameters; its per-parameter learning-rate scale must be `1.0`, not the
+network's. Worth knowing if you touch the optimizer plumbing.
+
+## Performance
+
+The full off-policy loop stays on-device: physics, replay sampling, both critic
+updates, the actor update, temperature tuning and the Polyak copies. On NVIDIA
+the training step is additionally captured as a CUDA graph, worth roughly
+**1.4×**.
+
+HalfCheetah reaches a running gait in about **six minutes** on a single RTX 5090.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/humanoid/sac_humanoid_training_gpu.mojo
+pixi run mojo run -I . examples/pendulum_sac.mojo
+```
+
+## Related
+
+**DDPG** — deterministic policy, single critic, Gaussian exploration noise. The
+ancestor; less stable.
+
+**TD3** — twin critics, delayed policy updates, target smoothing. Deterministic,
+so no entropy term.
+
+**REDQ** — an ensemble of N critics with a random-subset min and a much higher
+update-to-data ratio. More sample-efficient, more compute per step.
+
+```mojo
+from mojo_rl.deep_agents.ddpg import DDPGAgent
+from mojo_rl.deep_agents.td3 import TD3Agent
+from mojo_rl.deep_agents.redq import REDQAgent
+```
+
+## Next
+
+- [PPO](/algorithms/ppo/) — on-policy, the other half of continuous control
+- [Quickstart: GPU training](/start/quickstart-gpu/) — this page's example, run end to end
+- [3D locomotion](/environments/3d-locomotion/) — what to train it on

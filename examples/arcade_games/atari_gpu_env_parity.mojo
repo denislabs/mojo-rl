@@ -14,7 +14,7 @@ Requires roms/pong.bin.
 from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.math import abs
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
@@ -35,9 +35,9 @@ comptime MAX_FRAMES = 108_000
 def cpu_step(
     mut st: AtariState,
     action_idx: Int,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
 ) -> Tuple[Int, Int]:
     """One env step on CPU (mirrors the GPU step kernel). Returns (reward, done)."""
     var ale = PongDef.map_action(action_idx)
@@ -115,8 +115,17 @@ def main() raises:
 
         # CPU reference step + compare
         for e in range(N):
-            var res = cpu_step(cpu[e], actions[e], rom_ptr, rom_size,
-                               optab.unsafe_ptr())
+            # `.as_unsafe_any_origin()` on both: `rom_ptr` is
+            # `MutUntrackedOrigin` (it comes from `load_rom`) and
+            # `optab.unsafe_ptr()` is tracked. Neither converts implicitly
+            # to the `MutAnyOrigin` this helper shares with the GPU kernel.
+            var res = cpu_step(
+                cpu[e],
+                actions[e],
+                rom_ptr.as_unsafe_any_origin(),
+                rom_size,
+                optab.unsafe_ptr().as_unsafe_any_origin(),
+            )
             var c_reward = res[0]
             var c_done = res[1]
             if abs(Float64(rew_h.unsafe_ptr()[e]) - Float64(c_reward)) > 0.5:

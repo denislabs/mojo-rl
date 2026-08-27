@@ -58,7 +58,7 @@ struct Renderer2D(Movable):
     """
 
     # SDL3 handles (Optional because they are populated lazily in
-    # init_display() — Mojo nightly's UnsafePointer is non-nullable).
+    # init_display() — Mojo nightly's Pointer is non-nullable).
     var window: Optional[Ptr[Window, MutUntrackedOrigin]]
     var sdl_renderer: Optional[Ptr[SDLRenderer, MutUntrackedOrigin]]
 

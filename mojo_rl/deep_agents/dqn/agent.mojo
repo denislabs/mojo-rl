@@ -14,7 +14,7 @@ Usage:
 `DOUBLE=True` enables Double-DQN target-Y (van Hasselt et al. 2016).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -38,7 +38,7 @@ struct DQNAgent[
     SAMPLE: SampleBlock,
     Q_NET: Module,
     DOUBLE: Bool = False,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `DQNTrainer` + discrete off-policy drivers."""
 
     var trainer: DQNTrainer[
@@ -105,7 +105,7 @@ struct DQNAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -152,12 +152,12 @@ struct DQNAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         base_step: Int = 0,
         diag_every: Int = 0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
-        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
         eval_max_iters: Int = 20_000,
@@ -265,7 +265,7 @@ struct DQNAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> DQNMetrics:
         """Drain trainer accumulators into a DQNMetrics bundle."""

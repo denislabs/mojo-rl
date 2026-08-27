@@ -204,18 +204,54 @@ struct Camera3D(Copyable, Movable):
             self.target.z + r * cos(phi),
         )
 
+    comptime MIN_DISTANCE = 0.02
+    """2 cm. ⚠ This used to be 1.0 METRE, which made every small robot
+    impossible to inspect — the SO-101 is ~30 cm tall, so the closest the
+    camera could get was three arm-lengths away."""
+
+    comptime MAX_DISTANCE = 500.0
+    """Was 50 m. The dm_control terrains and the quadruped's `escape` arena
+    are larger than that, so pulling back far enough to see one hit the stop.
+    """
+
+    def distance(self) -> Float64:
+        """Current eye-to-target distance."""
+        return (self.eye - self.target).length()
+
     def zoom(mut self, delta: Float64):
-        """Zoom camera in/out.
+        """Zoom by an ABSOLUTE distance.
+
+        ⚠ Prefer `zoom_fraction` for anything driven by a scroll wheel: a
+        fixed step is unusable at both ends of the range, imperceptible when
+        you are 50 m out and a jump through the subject when you are 5 cm in.
 
         Args:
             delta: Zoom amount (negative = zoom in).
         """
         var direction = (self.eye - self.target).normalized()
-        var distance = (self.eye - self.target).length()
+        var distance = self.distance()
+        distance = self._clamp(
+            distance + delta, Self.MIN_DISTANCE, Self.MAX_DISTANCE
+        )
+        self.eye = self.target + direction * distance
 
-        # Clamp distance
-        distance = self._clamp(distance + delta, 1.0, 50.0)
+    def zoom_fraction(mut self, fraction: Float64):
+        """Zoom by a FRACTION of the current distance.
 
+        Multiplicative, so one wheel notch covers the same visual angle
+        wherever you are: the step shrinks automatically as you approach the
+        subject, which is what makes a 30 cm arm and a 100 m arena usable from
+        the same control.
+
+        Args:
+            fraction: Positive moves away, negative moves closer. -0.1 is
+                "10 % closer".
+        """
+        var direction = (self.eye - self.target).normalized()
+        var distance = self.distance() * (1.0 + fraction)
+        distance = self._clamp(
+            distance, Self.MIN_DISTANCE, Self.MAX_DISTANCE
+        )
         self.eye = self.target + direction * distance
 
     def pan(mut self, delta_x: Float64, delta_y: Float64):

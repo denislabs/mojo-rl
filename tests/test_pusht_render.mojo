@@ -2,7 +2,7 @@
 
 from std.math import pi
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.physics2d import dtype, SHAPE_MAX_SIZE
 from mojo_rl.envs.pusht import (
     PushTV2,

@@ -9,7 +9,7 @@ long NVIDIA run, out of scope here).
     pixi run -e apple mojo run -I . tests/deep_agents/test_mz_arena_gumbel_2p_smoke.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming

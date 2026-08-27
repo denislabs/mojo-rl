@@ -24,8 +24,8 @@ symmetry). CPU + GPU.
 """
 
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -52,7 +52,7 @@ def _lq_forward_kernel[
     if idx >= BATCH * OUT_DIM:
         return
     var i = idx % OUT_DIM
-    output.ptr[idx] = rebind[Scalar[DT]](param.ptr[i])
+    output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](param.ptr[unsafe_offset=i])
 
 
 def _lq_grad_input_zero_kernel[
@@ -62,7 +62,7 @@ def _lq_grad_input_zero_kernel[
 ):
     var idx = Int(global_idx.x)
     if idx < N:
-        grad_input.ptr[idx] = Scalar[DT](0.0)
+        grad_input.ptr[unsafe_offset=idx] = Scalar[DT](0.0)
 
 
 def _lq_grad_param_kernel[
@@ -79,11 +79,11 @@ def _lq_grad_param_kernel[
     var acc: Scalar[DT] = 0.0
     var bi = t
     while bi < BATCH:
-        acc += rebind[Scalar[DT]](grad_output.ptr[bi * OUT_DIM + col])
+        acc += rebind[Scalar[DT]](grad_output.ptr[unsafe_offset=bi * OUT_DIM + col])
         bi += LQ_RTPB
     var total = block.sum[block_size=LQ_RTPB, broadcast=False](val=acc)
     if t == 0:
-        grad_param.ptr[col] = rebind[Scalar[DT]](grad_param.ptr[col]) + total[0]
+        grad_param.ptr[unsafe_offset=col] = rebind[Scalar[DT]](grad_param.ptr[unsafe_offset=col]) + total[0]
 
 
 struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):

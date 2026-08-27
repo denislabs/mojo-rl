@@ -25,12 +25,23 @@ joints, meta (model) + cdof, fnet (scratch)."""
 
 from std.math import sqrt, abs
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -53,39 +64,46 @@ comptime FLUID_TPB: Int = 64
 
 def _fluid_forces_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_XVEL: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_FNET: Layout,
 ](
     env: Int,
-    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    xvel: LayoutTensor[DTYPE, L_XVEL, MutAnyOrigin],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XVEL, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_FNET, MutAnyOrigin],
 ):
     """Inertia-box fluid drag for one env (verbatim from compute_fluid_forces,
     serialized per env)."""
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
     var rho = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_DENSITY])
     var mu = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_VISCOSITY])
 
@@ -95,7 +113,7 @@ def _fluid_forces_env[
 
     comptime PI: Scalar[DTYPE] = 3.14159265358979323846
 
-    for b in range(1, NBODY):
+    for b in range(1, nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         if mass <= Scalar[DTYPE](1e-10):
             continue
@@ -213,7 +231,7 @@ def _fluid_forces_env[
         # Walk the kinematic tree from body b to root, accumulating via cdof
         var body = b
         while body > 0:
-            for j in range(NJOINT):
+            for j in range(njoint):
                 if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])) != (
                     body
                 ):
@@ -287,77 +305,66 @@ def _fluid_forces_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, xvel, xangvel, xquat, xipos, subtree_com, bodies, joints, mmeta,
+    _fluid_forces_env[DTYPE](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), xvel, xangvel, xquat, xipos, subtree_com, bodies, joints, mmeta,
         cdof, fnet,
     )
 
 
 def compute_fluid_forces[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-    ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Accumulate inertia-box fluid drag into `scratch.fnet`, both targets, one
     body. No-op when meta density and viscosity are both zero (early-out inside
     the env helper). Call in the passive seam after fnet assembly, before the
     LDL solve."""
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_META = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
-        var xvel_v = d.xvel.lt["cpu", L_B3]()
-        var xangvel_v = d.xangvel.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var fnet_v = scratch.fnet.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var xvel_v = d.xvel.lt_dyn["cpu", DYN2](rl_B3)
+        var xangvel_v = d.xangvel.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var fnet_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-                e, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
+            _fluid_forces_env[DTYPE](
+                e, dm, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
                 joints_v, meta_v, cdof_v, fnet_v,
             )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FLUID_TPB - 1) // FLUID_TPB
         c.enqueue_function[
-            _fluid_forces_fields_kernel[DTYPE, NV, NBODY, NJOINT, BATCH]
+            _fluid_forces_fields_kernel[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.xvel.lt["gpu", L_B3](),
             d.xangvel.lt["gpu", L_B3](),

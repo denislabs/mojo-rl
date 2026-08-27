@@ -147,7 +147,7 @@ struct PushTEnv[DTYPE: DType](
     var last_target_y: Scalar[dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -180,9 +180,9 @@ struct PushTEnv[DTYPE: DType](
         self._reset_internal()
 
     def __init__(out self, *, copy: Self):
-        self.state_data = copy.state_data
-        self.shapes_data = copy.shapes_data
-        self.contacts_data = copy.contacts_data
+        self.state_data = copy.state_data.copy()
+        self.shapes_data = copy.shapes_data.copy()
+        self.contacts_data = copy.contacts_data.copy()
         self.done = copy.done
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
@@ -193,9 +193,9 @@ struct PushTEnv[DTYPE: DType](
         self._renderer_initialized = False
 
     def __init__(out self, *, deinit move: Self):
-        self.state_data = move.state_data
-        self.shapes_data = move.shapes_data
-        self.contacts_data = move.contacts_data
+        self.state_data = move.state_data.copy()
+        self.shapes_data = move.shapes_data.copy()
+        self.contacts_data = move.contacts_data.copy()
         self.done = move.done
         self.rng_seed = move.rng_seed
         self.rng_counter = move.rng_counter
@@ -492,7 +492,7 @@ struct PushTEnv[DTYPE: DType](
             self.done,
         )
 
-    def get_state(self) -> PushTState[Self.dtype]:
+    def get_state(mut self) -> PushTState[Self.dtype]:
         var out = PushTState[Self.dtype]()
         for i in range(PConstants.KEYPOINTS_DIM):
             out.keypoints[i] = rebind[Scalar[Self.dtype]](
@@ -755,7 +755,7 @@ struct PushTEnv[DTYPE: DType](
             "PushT  step="
             + String(Int(Float64(step_v)))
             + "  coverage="
-            + String(Float64(cov_v))[byte=:5]
+            + fit(String(Float64(cov_v)), 5)
             + "  target=("
             + String(Int(Float64(self.last_target_x)))
             + ","
@@ -771,7 +771,7 @@ struct PushTEnv[DTYPE: DType](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(
                 width=Self.WINDOW_W,
@@ -792,7 +792,7 @@ struct PushTEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -826,3 +826,5 @@ struct PushTEnv[DTYPE: DType](
             Scalar[Self.dtype](sx),
             Scalar[Self.dtype](sy - Self.HEADER_H),
         )
+
+from mojo_rl.core.fmt import fit

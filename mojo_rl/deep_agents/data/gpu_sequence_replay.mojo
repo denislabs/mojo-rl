@@ -41,16 +41,16 @@ Same elements, re-tiled → bit-identical.
 Obs storage dtype (`OBS_STORE_DT_`, default `DT` — bit-identical): set
 `DType.uint8` for pixel obs to quantize on store / dequantize on sample
 (4× window capacity; lossless for exact `k/255` inputs; pixel-only —
-see gpu_replay.mojo).
+see `mojo_rl/data/quantize.mojo`).
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from .gpu_replay import _obs_quant, _obs_dequant
+from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 from .sequence_replay_buffer import SequenceReplayBuffer
 
 
@@ -459,8 +459,8 @@ struct GPUSequenceReplay[
 
     def record(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
+        a: Pointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -528,7 +528,7 @@ struct GPUSequenceReplay[
 
     def record_terminal(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Store a genuine TERMINAL observation as its own frame (act=0, rew=0,
         dne=0, fst=0). Called right after a `record(done=1)` so the window's obs
@@ -791,10 +791,10 @@ struct GPUSequenceReplay[
         T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Host-output bridge: sample on-device into temp buffers, then copy
         out via the stored `ctx`. Lets a GPU buffer feed the current CPU

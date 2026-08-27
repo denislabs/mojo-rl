@@ -1,0 +1,162 @@
+---
+title: Logging and metrics
+description: The Logger trait, CSV and remote loggers, and what the training drivers emit.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Training runs emit metrics through a `Logger`. Which logger you attach decides
+where they go — nowhere, a CSV file, or a live dashboard.
+
+```mojo
+from mojo_rl.core.logger import NoOpLogger, CsvLogger, RemoteLogger, CompositeLogger
+```
+
+| Logger | Destination |
+|---|---|
+| `NoOpLogger` | discards — the default |
+| `CsvLogger` | a local CSV file |
+| `RemoteLogger` | HTTP POST to the [training monitor](/tooling/monitor/) |
+| `CompositeLogger` | several loggers at once |
+
+## Attaching one
+
+Loggers are passed to `train` as a pointer plus a compile-time type parameter:
+
+```mojo
+var logger = CsvLogger("/tmp/run_metrics.csv", buffer_size=64)
+logger.set_config("algo", "sac")
+logger.set_config("env", "HalfCheetah")
+
+_ = agent.train[L=CsvLogger](
+    env, NUM_STEPS,
+    logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+    print_every=50_000,
+    diag_every=1_000,
+)
+logger.close()
+_ = logger   # keep it alive past the pointer
+```
+
+The `_ = logger` at the end is not decoration — it extends the lifetime past
+the raw pointer handed to the driver. Dropping it is a use-after-free.
+
+## Two cadences
+
+The drivers emit at two rates, and separating them is what keeps a long run's
+log both useful and small.
+
+**Driver cadence** (`print_every`) — the coarse progress signal: `avg_reward`,
+`episodes`. Every 50,000 steps is typical for a 600,000-step run.
+
+**Diagnostic cadence** (`diag_every`) — the full metric bundle for the
+algorithm: `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `train_steps`. Every
+1,000 steps.
+
+Reward alone tells you *that* something is wrong. The bundle tells you what:
+a collapsing return with rising `mean_q` is value explosion; with flat `mean_q`
+it is a policy problem.
+
+## RemoteLogger
+
+Streams to a dashboard over HTTP — batched JSON POSTs, registering the run on
+first flush.
+
+```mojo
+from mojo_rl.core.dotenv import load_dotenv
+
+var env_vars = load_dotenv()
+var logger = RemoteLogger(
+    server_url=env_vars.get("RL_MONITOR_URL", ""),
+    run_name="SAC HalfCheetah (GPU)",
+    buffer_size=64,
+    api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+)
+logger.set_config("algorithm", "SAC")
+logger.set_config("env", "HalfCheetah")
+logger.set_config("n_envs", String(N_ENVS))
+```
+
+Configuration comes from a `.env` file at the repo root, read by
+`mojo_rl.core.dotenv`:
+
+```
+RL_MONITOR_URL=https://your-monitor-url
+RL_MONITOR_API_KEY=...
+```
+
+`buffer_size` controls batching. Smaller means fresher charts and more requests;
+64–200 is the usual range. `logger.total_logged()` reports how many points were
+sent.
+
+:::caution[The logger uses Python `urllib`]
+Two consequences.
+
+Python temporaries created inside a Mojo function are not freed until that
+function **returns**, so a logger held across a very long training loop can
+accumulate. The batching keeps this bounded in practice, but it is why
+`buffer_size` exists.
+
+And in a headless or cron context where the network is unavailable, the logger
+should be configured out rather than left to fail per flush.
+:::
+
+## `set_config`
+
+Configuration keys are recorded once with the run, not per point:
+
+```mojo
+logger.set_config("algorithm", "SAC")
+logger.set_config("hidden", String(HIDDEN))
+logger.set_config("batch", String(BATCH))
+logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
+```
+
+Worth being generous here. Comparing two runs six weeks apart is only possible
+if the thing that differed was recorded.
+
+## Metrics per algorithm
+
+Each algorithm defines a metrics struct. Representative fields:
+
+| Algorithm | Metrics |
+|---|---|
+| DQN | `loss`, `mean_q`, `epsilon`, `train_steps` |
+| SAC | `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_next_q` |
+| PPO | `actor_loss`, `critic_loss`, `train_steps`, `n_updates` |
+| MuZero | policy / value / reward losses, search statistics |
+
+All drivers additionally emit `env/mean_ret` and `env/ep_count`.
+
+## What to watch
+
+Drawn from the failures documented across these docs:
+
+**`mean_q` climbing without bound** — value explosion. LayerNorm the critic. Hit
+by SAC on Humanoid, MBPO, and REDQ at high UTD.
+
+**Return collapsing after early progress** — often a target-network problem. If
+BatchNorm is involved, check that the hard copy carried the running statistics.
+
+**Loss descending while return stays flat** — the model is learning *something*,
+just not the task. Classic symptom of a misaligned target: prev-action
+off-by-one in a world model, or termination/truncation collapsed into one flag.
+
+**`train_steps` not advancing as expected** — check `updates_per_step`. At the
+default of 1 with 32 environments you are training 32× less than intended.
+
+## CSV for offline runs
+
+```mojo
+var logger = CsvLogger("/tmp/muzero_cartpole_metrics_gpu.csv", buffer_size=64)
+```
+
+Right for headless boxes, CI and anything you want to plot yourself. Several
+examples default to it.
+
+## Next
+
+- [Training monitor](/tooling/monitor/) — where `RemoteLogger` sends
+- [Checkpoints](/concepts/checkpoints/) — persisting the run itself

@@ -13,7 +13,7 @@ re-read as `dec`/`enc`'s `forward_input` in `vjp` (storage children recompute
 from their forward_input), so it MUST persist as a field across forward→vjp.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -81,7 +81,7 @@ struct Dreamer4Tokenizer[
     def set_mae_p(mut self, p_min: Float64, p_max: Float64):
         self.enc.set_mae_p(p_min, p_max)
 
-    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def mae_mask_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return self.enc.mae_mask_ptr()
 
     def forward[

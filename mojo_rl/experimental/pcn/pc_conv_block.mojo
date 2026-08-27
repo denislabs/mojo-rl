@@ -30,7 +30,7 @@ The −sign on weight_grad is baked in (as in PCBlock) so callers can do
 
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import CompilationTarget
 
 from .pc_constants import TPB
@@ -101,7 +101,7 @@ struct ConvPCBlock[
             dtype,
         ](W_view)
         for j in range(Self.out_channels):
-            params.ptr[W_SIZE + j] = Scalar[dtype](0)
+            params.ptr[unsafe_offset=W_SIZE + j] = Scalar[dtype](0)
 
     # =========================================================================
     # im2col helper (CPU, Accelerate fast path): a_below[B, IN] → cache row per
@@ -207,13 +207,13 @@ struct ConvPCBlock[
             )
             Self._im2col_cpu[BATCH, dtype](a_below, cache)
             # cblas FFI boundary: A/B/C pointers (kept rebinds).
-            var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
+            var Wp = rebind[Pointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
-                var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var col_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
-                var out_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                    mu.ptr + b * Self.OUT_DIM
+                var out_b = rebind[Pointer[Float32, MutAnyOrigin]](
+                    mu.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
                 try:
                     apple_sgemm_accum[transpose_a=False, transpose_b=True](
@@ -338,12 +338,12 @@ struct ConvPCBlock[
                 length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
             )
             # cblas FFI boundary: A/B/C pointers (kept rebinds).
-            var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
+            var Wp = rebind[Pointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
-                var eps_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    eps_above.ptr + b * Self.OUT_DIM
+                var eps_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
+                    eps_above.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
-                var dcol_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                var dcol_b = rebind[Pointer[Float32, MutAnyOrigin]](
                     dcol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:
@@ -499,12 +499,12 @@ struct ConvPCBlock[
             )
             Self._im2col_cpu[BATCH, dtype](a_below, cache)
             # cblas FFI boundary: A/B/C pointers (kept rebinds).
-            var Cw = rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr)
+            var Cw = rebind[Pointer[Float32, MutAnyOrigin]](grads.ptr)
             for b in range(BATCH):
-                var eps_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    eps_above.ptr + b * Self.OUT_DIM
+                var eps_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
+                    eps_above.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
-                var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var col_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:
@@ -608,7 +608,7 @@ struct ConvPCBlock[
         var s = rem % Self.spatial_out
         var oh = s // Self.out_w
         var ow = s % Self.out_w
-        var acc: Scalar[dtype] = params.ptr[W_SIZE + oc]  # bias
+        var acc: Scalar[dtype] = params.ptr[unsafe_offset=W_SIZE + oc]  # bias
         for c in range(Self.in_channels):
             for kh in range(Self.kernel_size):
                 for kw in range(Self.kernel_size):
@@ -629,10 +629,10 @@ struct ConvPCBlock[
                             c * Self.in_h * Self.in_w + ih * Self.in_w + iw
                         )
                         acc += (
-                            params.ptr[oc * Self.col_size + c_k]
-                            * a_below.ptr[b * Self.IN_DIM + in_idx]
+                            params.ptr[unsafe_offset=oc * Self.col_size + c_k]
+                            * a_below.ptr[unsafe_offset=b * Self.IN_DIM + in_idx]
                         )
-        mu.ptr[idx] = acc
+        mu.ptr[unsafe_offset=idx] = acc
 
     @staticmethod
     def _eps_kernel[
@@ -651,7 +651,7 @@ struct ConvPCBlock[
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.OUT_DIM:
             return
-        eps.ptr[idx] = x_above.ptr[idx] - mu.ptr[idx]
+        eps.ptr[unsafe_offset=idx] = x_above.ptr[unsafe_offset=idx] - mu.ptr[unsafe_offset=idx]
 
     @staticmethod
     def _pull_back_kernel[
@@ -700,12 +700,12 @@ struct ConvPCBlock[
                             )
                             var s = oh * Self.out_w + ow
                             acc += (
-                                params.ptr[oc * Self.col_size + c_k]
-                                * eps_above.ptr[
+                                params.ptr[unsafe_offset=oc * Self.col_size + c_k]
+                                * eps_above.ptr[unsafe_offset=
                                     b * Self.OUT_DIM + oc * Self.spatial_out + s
                                 ]
                             )
-        z_below.ptr[idx] = acc
+        z_below.ptr[unsafe_offset=idx] = acc
 
     @staticmethod
     def _weight_grad_W_kernel[
@@ -748,12 +748,12 @@ struct ConvPCBlock[
                             c * Self.in_h * Self.in_w + ih * Self.in_w + iw
                         )
                         acc += (
-                            eps_above.ptr[
+                            eps_above.ptr[unsafe_offset=
                                 b * Self.OUT_DIM + oc * Self.spatial_out + s
                             ]
-                            * a_below.ptr[b * Self.IN_DIM + in_idx]
+                            * a_below.ptr[unsafe_offset=b * Self.IN_DIM + in_idx]
                         )
-        grads.ptr[idx] = -acc
+        grads.ptr[unsafe_offset=idx] = -acc
 
     @staticmethod
     def _weight_grad_b_kernel[
@@ -774,10 +774,10 @@ struct ConvPCBlock[
         var acc: Scalar[dtype] = 0
         for b in range(BATCH):
             for s in range(Self.spatial_out):
-                acc += eps_above.ptr[
+                acc += eps_above.ptr[unsafe_offset=
                     b * Self.OUT_DIM + oc * Self.spatial_out + s
                 ]
-        grads.ptr[W_SIZE + oc] = -acc
+        grads.ptr[unsafe_offset=W_SIZE + oc] = -acc
 
     # ── GPU dispatchers ──────────────────────────────────────────────────────
 

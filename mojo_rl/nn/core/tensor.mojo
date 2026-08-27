@@ -9,13 +9,13 @@ builds its typed view INTERNALLY — `TileTensor(self.data, …)` on CPU, or
 the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.constants import DT
 
 
-struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
+struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
     var data: List[Scalar[Self.dt]]
     var dev: Optional[DeviceBuffer[Self.dt]]
     var n: Int  # logical length (tracks the device buffer too)
@@ -102,7 +102,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     @staticmethod
     def view_gpu(
         ctx: DeviceContext,
-        ptr: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        ptr: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises -> Self:
         """BORROWING device view — wrap an EXTERNALLY-owned device buffer (e.g.
@@ -138,7 +138,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     def copy_from_device(
         mut self,
         ctx: DeviceContext,
-        src: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        src: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises:
         """Device→device copy an EXTERNALLY-owned buffer INTO this Tensor's own
@@ -154,7 +154,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     def copy_to_device(
         mut self,
         ctx: DeviceContext,
-        dst: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        dst: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises:
         """Device→device copy this Tensor's own device buffer OUT to an
@@ -182,9 +182,33 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         else:
             comptime assert False, "target must be 'cpu' or 'gpu'"
 
+    def lt_dyn[
+        target: StaticString, layout: Layout
+    ](mut self, rl: RuntimeLayout[layout]) -> LayoutTensor[
+        Self.dt, layout, MutAnyOrigin
+    ]:
+        """The same view, shaped at RUN TIME — `layout` carries UNKNOWN
+        extents and `rl` carries the real ones.
+
+        This is `lt`'s counterpart for physics3d's dynamic leg (assessment
+        §12.4): one kernel body serves a comptime `Layout.row_major(BATCH,
+        NV*NV)` from the GPU path and a `Layout.row_major[2]()` + this from
+        the CPU path, because `LM: Layout` accepts both. Same origin-linking
+        ctor as `lt` — no `.unsafe_ptr()`, so the borrow is not severed."""
+        comptime if target == "cpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](self.data, rl)
+        elif target == "gpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](
+                self.dev.value(), rl
+            )
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"
+
     def lt_at[
         target: StaticString, layout: Layout
-    ](mut self, offset: Int) raises -> LayoutTensor[Self.dt, layout, MutAnyOrigin]:
+    ](mut self, offset: Int) raises -> LayoutTensor[
+        Self.dt, layout, MutAnyOrigin
+    ]:
         """Typed GPU view at element `offset` into the device buffer — a
         stacked-ensemble / per-step sub-view — WITHOUT `.unsafe_ptr()`. The
         sanctioned replacement for

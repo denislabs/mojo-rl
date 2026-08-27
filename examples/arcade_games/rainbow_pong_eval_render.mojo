@@ -17,7 +17,7 @@ Pass nothing — it reads checkpoints/rainbow_pong.ckpt. The window closes on
 quit (ESC / window close) or after EVAL_EPISODES games.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 

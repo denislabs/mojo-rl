@@ -11,7 +11,7 @@ Run (no GPU needed):
     pixi run mojo run -I . tests/deep_agents/test_az_cpu_arena.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.testing import assert_true
 
 from mojo_rl.core.logger import CsvLogger
@@ -62,7 +62,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=csv).as_unsafe_any_origin(),
+        logger=Pointer(to=csv).as_unsafe_any_origin(),
     )
     csv.close()
 

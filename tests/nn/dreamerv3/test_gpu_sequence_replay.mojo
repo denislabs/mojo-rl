@@ -17,7 +17,7 @@ Run:  pixi run -e apple mojo run -I . tests/nn/dreamerv3/test_gpu_sequence_repla
 
 from std.memory import alloc
 from std.testing import assert_true, assert_equal
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
@@ -33,10 +33,10 @@ comptime T = 4
 def _check_window_contiguous[
     BB: Int, TT: Int
 ](
-    obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+    act_out: Pointer[Scalar[DT], MutAnyOrigin],
+    rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+    dne_out: Pointer[Scalar[DT], MutAnyOrigin],
     name: String,
 ) raises:
     """Each window's frame tags must increase by 1 (mod CAP). obs has TT+1

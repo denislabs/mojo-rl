@@ -20,7 +20,7 @@ TargetStorage/TileTensor/unsafe_ptr. Exploration noise is host Box-Muller
 
 from std.random import random_float64
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, sin as fsin, pi
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -34,7 +34,7 @@ struct ActionSamplingBlock[
     OBS_DIM: Int,
     ACT_DIM: Int,
     SAMPLER_OUT_DIM: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime ACTOR_OUT_DIM = Self.ACTOR.OUT_DIM
 
     var _ob1: Tensor         # [OBS_DIM]

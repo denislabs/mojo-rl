@@ -38,7 +38,7 @@ from .flags import (
 @always_inline
 def rom_read(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ) -> UInt8:
@@ -51,9 +51,9 @@ def rom_read(
     var m = state.mapper
 
     if m == ROM_4K:
-        return rom[offset]
+        return rom[unsafe_offset=offset]
     elif m == ROM_2K:
-        return rom[offset & 0x07FF]
+        return rom[unsafe_offset=offset & 0x07FF]
     elif m == ROM_F8 or m == ROM_F8SC:
         if m == ROM_F8SC and offset < 0x100:
             # Superchip RAM (read port $80-$FF; reading the write port is
@@ -63,7 +63,7 @@ def rom_read(
             state.current_bank = 0
         elif offset == 0x0FF9:
             state.current_bank = 1
-        return rom[Int(state.current_bank) * 4096 + offset]
+        return rom[unsafe_offset=Int(state.current_bank) * 4096 + offset]
     elif m == ROM_F6 or m == ROM_F6SC:
         if m == ROM_F6SC and offset < 0x100:
             return state.sc_ram[offset & 0x7F]
@@ -75,7 +75,7 @@ def rom_read(
             state.current_bank = 2
         elif offset == 0x0FF9:
             state.current_bank = 3
-        return rom[Int(state.current_bank) * 4096 + offset]
+        return rom[unsafe_offset=Int(state.current_bank) * 4096 + offset]
     elif m == ROM_E0:
         if offset >= 0x0FE0 and offset <= 0x0FE7:
             state.e0_slices[0] = UInt8(offset & 0x0007)
@@ -83,24 +83,24 @@ def rom_read(
             state.e0_slices[1] = UInt8(offset & 0x0007)
         elif offset >= 0x0FF0 and offset <= 0x0FF7:
             state.e0_slices[2] = UInt8(offset & 0x0007)
-        return rom[
+        return rom[unsafe_offset=
             (Int(state.e0_slices[offset >> 10]) << 10) + (offset & 0x03FF)
         ]
     elif m == ROM_FE:
         # Bank = A13 of the CPU address: $Fxxx (A13=1) → bank 0,
         # $Dxxx (A13=0) → bank 1 (Stella CartFE::peek).
         if (Int(addr) & 0x2000) == 0:
-            return rom[offset + 4096]
-        return rom[offset]
+            return rom[unsafe_offset=offset + 4096]
+        return rom[unsafe_offset=offset]
 
     # Unknown mapper: direct 4K access.
-    return rom[offset]
+    return rom[unsafe_offset=offset]
 
 
 @always_inline
 def rom_write(
     mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom: Pointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
     value: UInt8,
@@ -140,7 +140,7 @@ def rom_write(
 
 
 def detect_rom_format(
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, ImmutAnyOrigin], rom_size: Int
 ) -> UInt8:
     """Auto-detect ROM format from size (F8/F6 defaults at 8K/16K).
 

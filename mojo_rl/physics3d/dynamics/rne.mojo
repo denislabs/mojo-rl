@@ -10,13 +10,27 @@ rne_cfrc, bias (scratch). As in the legacy code, the `crb` scratch tensor
 doubles as per-body cvel storage during RNE (b*6 indexing within the
 NBODY*10 tensor); `cinert` stays a per-thread InlineArray."""
 
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -50,33 +64,38 @@ def _max_one[N: Int]() -> Int:
 @always_inline
 def _rne_fwd_body[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QVEL: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
+    L_CVEL: Layout,
+    L_CACC: Layout,
 ](
     env: Int,
     b: Int,
     gx: Scalar[DTYPE],
     gy: Scalar[DTYPE],
     gz: Scalar[DTYPE],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     cvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 10), MutAnyOrigin
+        DTYPE, L_CVEL, MutAnyOrigin
     ],
     cacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CACC, MutAnyOrigin
     ],
 ):
     """Forward-pass cvel/cacc for one body (verbatim from rne_fwd_body;
     `cvel` is the crb scratch tensor, b*6 indexing)."""
+    var njoint = dims.get_njoint()
     var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
 
     var cv_wx = rebind[Scalar[DTYPE]](cvel[env, parent * 6 + 0])
@@ -97,7 +116,7 @@ def _rne_fwd_body[
         for k in range(6):
             cacc[env, b * 6 + k] = cacc[env, parent * 6 + k]
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jnt_body = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
         )
@@ -289,24 +308,26 @@ def _rne_fwd_body[
 @always_inline
 def _rne_cinert_body[
     DTYPE: DType,
-    NBODY: Int,
-    BATCH: Int,
+    CIN_CAP: Int,
+    L_XQUAT: Layout,
+    L_XIPOS: Layout,
+    L_BODIES: Layout,
 ](
     env: Int,
     b: Int,
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
-    mut cinert_g: InlineArray[Scalar[DTYPE], _max_one[NBODY * 10]()],
+    mut cinert_g: Scratch[Scalar[DTYPE], CIN_CAP],
 ):
     """One body's cinert (spatial inertia at subtree_com, mj_inertCom).
     Extracted verbatim from the `_rne_env` step-0 loop body so
@@ -389,20 +410,21 @@ def _rne_cinert_body[
 @always_inline
 def _rne_cfrc_body[
     DTYPE: DType,
-    NBODY: Int,
-    BATCH: Int,
+    CIN_CAP: Int,
+    L_CRB: Layout,
+    L_RNE_CACC: Layout,
 ](
     env: Int,
     b: Int,
-    cinert_g: InlineArray[Scalar[DTYPE], _max_one[NBODY * 10]()],
+    cinert_g: Scratch[Scalar[DTYPE], CIN_CAP],
     crb: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 10), MutAnyOrigin
+        DTYPE, L_CRB, MutAnyOrigin
     ],
     rne_cacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CACC, MutAnyOrigin
     ],
     rne_cfrc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CACC, MutAnyOrigin
     ],
 ):
     """One body's spatial force cfrc = I*cacc + cvel x* (I*cvel). Extracted
@@ -465,20 +487,23 @@ def _rne_cfrc_body[
 @always_inline
 def _rne_backward_env[
     DTYPE: DType,
-    NBODY: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_BODIES: Layout,
+    L_RNE_CFRC: Layout,
 ](
     env: Int,
+    dims: D,
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     rne_cfrc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CFRC, MutAnyOrigin
     ],
 ):
     """Backward cfrc accumulation (leaves to root; strictly sequential, one
     caller thread). Extracted verbatim from `_rne_env` step 3."""
-    for b in range(NBODY - 1, 0, -1):
+    var nbody = dims.get_nbody()
+    for b in range(nbody - 1, 0, -1):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if parent > 0:
             for k in range(6):
@@ -490,21 +515,21 @@ def _rne_backward_env[
 @always_inline
 def _rne_project_joint[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    L_JOINTS: Layout,
+    L_CDOF: Layout,
+    L_RNE_CFRC: Layout,
+    L_BIAS: Layout,
 ](
     env: Int,
     j: Int,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     rne_cfrc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CFRC, MutAnyOrigin
     ],
-    bias: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    bias: LayoutTensor[DTYPE, L_BIAS, MutAnyOrigin],
 ):
     """Project one joint's DOFs to joint space:
     bias[d] = cdof[d] . cfrc[body_of_dof]. Extracted verbatim from the
@@ -534,89 +559,105 @@ def _rne_project_joint[
 @always_inline
 def _rne_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QVEL: Layout,
+    L_XQUAT: Layout,
+    L_XIPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_META: Layout,
+    L_CDOF: Layout,
+    L_CRB: Layout,
+    L_RNE_CACC: Layout,
 ](
     env: Int,
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XIPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    meta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    meta: LayoutTensor[DTYPE, L_META, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     crb: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 10), MutAnyOrigin
+        DTYPE, L_CRB, MutAnyOrigin
     ],
     rne_cacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CACC, MutAnyOrigin
     ],
     rne_cfrc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_RNE_CACC, MutAnyOrigin
     ],
-    bias: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    bias: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
 ):
     """Full RNE for one env (verbatim from compute_bias_forces_rne_gpu)."""
-    for i in range(NV):
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    for i in range(nv):
         bias[env, i] = 0
 
     var gx = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_X])
     var gy = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Y])
     var gz = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Z])
 
-    comptime BODY6_SIZE = _max_one[NBODY * 6]()
-    for i in range(BODY6_SIZE):
+    # ⚠ `nbody * 6`, NOT a cap. These bound writes into TENSORS, so the cap
+    # never sized anything here -- and `_max_one` collapses to 1 on a dynamic
+    # provider, which would leave `rne_cacc`/`rne_cfrc` holding the PREVIOUS
+    # step's values from index 1 on. Silent: the static leg has cap == exact,
+    # so no gate in the tree can see it. Same defect as `rne_post`; found by
+    # `audit_caps.py`, and the `range(nbody * 10)` three lines below is what
+    # the correct form looks like.
+    for i in range(nbody * 6):
         rne_cacc[env, i] = Scalar[DTYPE](0)
-    for i in range(BODY6_SIZE):
+    for i in range(nbody * 6):
         rne_cfrc[env, i] = Scalar[DTYPE](0)
-    comptime CINERT_GPU_SIZE = _max_one[NBODY * 10]()
-    var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](
-        uninitialized=True
+    comptime CINERT_GPU_SIZE = cap[D.NBODY]() * 10
+    var cinert_g = Scratch[Scalar[DTYPE], CINERT_GPU_SIZE](
+        nbody * 10, uninitialized=0
     )
-    for i in range(CINERT_GPU_SIZE):
+    for i in range(nbody * 10):
         cinert_g[i] = Scalar[DTYPE](0)
 
     # Step 0: cinert — spatial inertia at subtree_com (mj_inertCom)
-    for b in range(NBODY):
-        _rne_cinert_body[DTYPE, NBODY, BATCH](
+    for b in range(nbody):
+        _rne_cinert_body[DTYPE](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
     # Per-body spatial velocity stored in the crb tensor (b*6 indexing)
-    for i in range(NBODY * 6):
+    for i in range(nbody * 6):
         crb[env, i] = 0
 
     # Step 1: Forward pass — cvel and cacc (root to leaves)
-    for b in range(1, NBODY):
-        _rne_fwd_body[DTYPE, NV, NBODY, NJOINT, BATCH](
-            env, b, gx, gy, gz, qvel, bodies, joints, cdof, crb, rne_cacc
+    for b in range(1, nbody):
+        _rne_fwd_body[DTYPE](
+            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, rne_cacc
         )
 
     # Step 2: Spatial forces per body: cfrc = I*cacc + cvel x* (I*cvel)
-    for b in range(NBODY):
-        _rne_cfrc_body[DTYPE, NBODY, BATCH](
+    for b in range(nbody):
+        _rne_cfrc_body[DTYPE](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
 
     # Step 3: Backward pass — simple addition
-    _rne_backward_env[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
+    _rne_backward_env[DTYPE](env, dims, bodies, rne_cfrc)
 
     # Step 4: Project to joint space: bias[d] = cdof[d] . cfrc[body_of_dof]
-    for j in range(NJOINT):
-        _rne_project_joint[DTYPE, NV, NBODY, NJOINT, BATCH](
+    for j in range(njoint):
+        _rne_project_joint[DTYPE](
             env, j, joints, cdof, rne_cfrc, bias
         )
 
@@ -660,8 +701,8 @@ def _rne_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rne_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, qvel, xquat, xipos, subtree_com, bodies, joints, meta,
+    _rne_env[DTYPE](
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), qvel, xquat, xipos, subtree_com, bodies, joints, meta,
         cdof, crb, rne_cacc, rne_cfrc, bias,
     )
 
@@ -739,12 +780,12 @@ def _rne_fields_mt_kernel[
     barrier()
 
     # Step 0: cinert (flat, my bodies -> per-thread cinert_g slots).
-    comptime CINERT_GPU_SIZE = _max_one[NBODY * 10]()
-    var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](
-        uninitialized=True
+    comptime CINERT_GPU_SIZE = cap[NBODY]() * 10
+    var cinert_g = Scratch[Scalar[DTYPE], CINERT_GPU_SIZE](
+        NBODY * 10, uninitialized=0
     )
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cinert_body[DTYPE, NBODY, BATCH](
+        _rne_cinert_body[DTYPE](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -752,101 +793,92 @@ def _rne_fields_mt_kernel[
     for lvl in range(1, max_level + 1):
         for b in range(1 + tid, NBODY, N_THREADS):
             if level[b] == lvl:
-                _rne_fwd_body[DTYPE, NV, NBODY, NJOINT, BATCH](
-                    env, b, gx, gy, gz, qvel, bodies, joints, cdof, crb,
+                _rne_fwd_body[DTYPE](
+                    env, b, gx, gy, gz, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), qvel, bodies, joints, cdof, crb,
                     rne_cacc,
                 )
         barrier()
 
     # Step 2: cfrc (flat, SAME mapping as cinert so cinert_g[b] is local).
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cfrc_body[DTYPE, NBODY, BATCH](
+        _rne_cfrc_body[DTYPE](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
     barrier()
 
     # Step 3: backward cfrc accumulation (cheap, tid 0 serial).
     if tid == 0:
-        _rne_backward_env[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
+        _rne_backward_env[DTYPE](env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), bodies, rne_cfrc)
     barrier()
 
     # Step 4: qfrc projection (flat per joint; disjoint DOFs).
     for j in range(tid, NJOINT, N_THREADS):
-        _rne_project_joint[DTYPE, NV, NBODY, NJOINT, BATCH](
+        _rne_project_joint[DTYPE](
             env, j, joints, cdof, rne_cfrc, bias
         )
 
 
 def compute_bias_forces_rne[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-    ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """RNE bias forces, both targets, one body. Reads FK products + qvel +
     `scratch.cdof`; writes `scratch.bias` (+ crb/rne_cacc/rne_cfrc temps).
     PARALLEL=True (GPU only): cooperative level-parallel kernel, bit-exact
     vs serial. CPU ignores PARALLEL."""
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_META = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
-    comptime L_CRB = Layout.row_major(BATCH, NBODY * 10)
-    comptime L_B6 = Layout.row_major(BATCH, NBODY * 6)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_CRB = Layout.row_major(BATCH, D.NBODY * 10)
+    comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
 
     comptime if target == "cpu":
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var crb_v = scratch.crb.lt["cpu", L_CRB]()
-        var cacc_v = scratch.rne_cacc.lt["cpu", L_B6]()
-        var cfrc_v = scratch.rne_cfrc.lt["cpu", L_B6]()
-        var bias_v = scratch.bias.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_CRB = rl2(BATCH, dm.get_nbody() * 10)
+        var rl_B6 = rl2(BATCH, dm.get_nbody() * 6)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var crb_v = scratch.crb.lt_dyn["cpu", DYN2](rl_CRB)
+        var cacc_v = scratch.rne_cacc.lt_dyn["cpu", DYN2](rl_B6)
+        var cfrc_v = scratch.rne_cfrc.lt_dyn["cpu", DYN2](rl_B6)
+        var bias_v = scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _rne_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-                e, qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
+            _rne_env[DTYPE](
+                e, dm, qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
                 meta_v, cdof_v, crb_v, cacc_v, cfrc_v, bias_v,
             )
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
-            _rne_fields_mt_kernel[DTYPE, NV, NBODY, NJOINT, BATCH, MT_T]
+            _rne_fields_mt_kernel[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH, MT_T]
         ](
             d.qvel.lt["gpu", L_NV](),
             d.xquat.lt["gpu", L_B4](),
@@ -867,7 +899,7 @@ def compute_bias_forces_rne[
         var c = ctx.value()
         comptime BLOCKS = (BATCH + RNE_TPB - 1) // RNE_TPB
         c.enqueue_function[
-            _rne_fields_kernel[DTYPE, NV, NBODY, NJOINT, BATCH]
+            _rne_fields_kernel[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.qvel.lt["gpu", L_NV](),
             d.xquat.lt["gpu", L_B4](),

@@ -19,17 +19,19 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_contact_solve_fields.m
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -42,19 +44,36 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime CONE = Walker2dModel.CONE_TYPE
 comptime BATCH = 2
 comptime N_STEPS = 3
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
+# ⚠ RE-RECORDED when the pyramidal edge builder stopped leaving a STALE
+# JACOBIAN on non-touching contacts. The builder's early-out zeroed only the
+# two slots named `ws_Jt1_idx`/`ws_Jt2_idx`, which alias pyramid edges 0 and 1;
+# edges 2 and 3 live further up the same region and kept the PREVIOUS step's
+# Jacobian, so a contact that had separated still pushed a row into the Newton
+# solve and still got a force written into its record.
+# The mechanism was isolated, not inferred: zeroing D and bias as well leaves
+# the fingerprint bit-identical (everything flows through Je), and zeroing only
+# edges 0-1 reproduces the old value exactly.
+# ⚠ THESE NUMBERS ARE NOT MuJoCo-ANCHORED. The originals were frozen from the
+# legacy Euler+PGS pipeline, which carried the same defect; the case for the
+# new values is that a geom which is not touching must contribute neither a
+# Jacobian nor a contact force. A MuJoCo-anchored Walker2D contact-FORCE gate
+# is still missing — every MuJoCo-anchored test in tests/physics3d passes
+# unchanged either way, which is exactly why this went unnoticed.
+# The contact-record fingerprint moves 1.5-1.7%; qpos/qvel/qacc move <2e-6,
+# i.e. the defect was almost entirely in the RECORD, not the dynamics.
 comptime GOLD_NCON = 12  # contacts per step (uniform across the 3 steps)
-comptime GOLD_QPOS = 14.316056500072591
-comptime GOLD_QVEL = -38.34850059449673
-comptime GOLD_QACC = -5676.545036315918
-comptime GOLD_CON = 413859.05552286515
+comptime GOLD_QPOS = 14.316056373878382
+comptime GOLD_QVEL = -38.348557934165
+comptime GOLD_QACC = -5676.547218322754
+comptime GOLD_CON = 420119.10779341473
 
 
 def _check(name: String, got: Float64, gold: Float64) raises:
@@ -71,11 +90,11 @@ def main() raises:
     print("--- Euler WITH CONTACTS fields GOLDEN gate: Walker2D BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -94,13 +113,9 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, CONE, BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD, CONE, BATCH]()
 
     for step in range(N_STEPS):
         integ.step["gpu"](d, mf, ctx)
@@ -109,7 +124,7 @@ def main() raises:
         var ncon_seen = 0
         for e in range(BATCH):
             ncon_seen += Int(
-                d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
         if ncon_seen == 0:
             raise Error("no contacts at step " + String(step) + " — vacuous")
@@ -138,7 +153,7 @@ def main() raises:
             fp_qacc += Float64(d.qacc.data[e * NV + i]) * Float64(e * NV + i + 1)
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc):
             for k in range(CONTACT_SIZE):
                 fp_con += Float64(

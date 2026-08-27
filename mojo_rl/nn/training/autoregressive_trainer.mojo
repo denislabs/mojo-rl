@@ -34,7 +34,7 @@ GPU-only for now (eval + generation use device buffers). A recurrent model
 
 from std.math import exp, cos
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB

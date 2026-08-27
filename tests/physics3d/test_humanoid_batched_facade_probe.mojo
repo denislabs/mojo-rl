@@ -11,7 +11,7 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
         tests/physics3d/test_humanoid_batched_facade_probe.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv

@@ -36,7 +36,7 @@ LINEAR (no activation) — raw tokens / raw pixel logits.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.combinators.sequential import Sequential

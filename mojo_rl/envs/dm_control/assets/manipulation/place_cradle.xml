@@ -1,0 +1,273 @@
+
+<mujoco model="base">
+  <compiler boundmass="1.0000000000000001e-05" boundinertia="9.9999999999999994e-12" coordinate="local" angle="radian" eulerseq="xyz"/>
+  <option timestep="0.002" cone="elliptic" noslip_iterations="5" noslip_tolerance="0">
+    <flag multiccd="disable" nativeccd="disable"/>
+  </option>
+  <visual>
+    <headlight ambient="0.29999999999999999 0.29999999999999999 0.29999999999999999" diffuse="0.59999999999999998 0.59999999999999998 0.59999999999999998" specular="0 0 0"/>
+    <map znear="0.01"/>
+    <scale forcewidth="0.01" contactwidth="0.059999999999999998" contactheight="0.01" jointwidth="0.01" framelength="0.29999999999999999" framewidth="0.01"/>
+  </visual>
+  <statistic center="0 0 0"/>
+  <default>
+    <default class="/"/>
+    <default class="jaco_arm/">
+      <joint type="hinge" damping="0.01"/>
+      <geom type="mesh" contype="3" conaffinity="2" condim="3" material="jaco_arm/dark_gray" solref="0.01 1" solimp="0.98999999999999999 0.999 0.001"/>
+      <site type="sphere" group="4" material="jaco_arm/reference_site" size="0.01"/>
+      <default class="jaco_arm/large_joint">
+        <joint armature="4" frictionloss="2"/>
+      </default>
+      <default class="jaco_arm/small_joint">
+        <joint armature="2" frictionloss="1"/>
+      </default>
+      <default class="jaco_arm/ring">
+        <geom type="cylinder" material="jaco_arm/light_gray" mass="0"/>
+        <default class="jaco_arm/large_ring">
+          <geom size="0.043999999999999997 0.010999999999999999"/>
+        </default>
+        <default class="jaco_arm/small_ring">
+          <geom size="0.035000000000000003 0.0089999999999999993"/>
+        </default>
+      </default>
+    </default>
+    <default class="jaco_arm/jaco_hand/">
+      <joint type="hinge" limited="true" range="0.14999999999999999 1.3500000000000001" armature="0.10000000000000001" damping="0.75" frictionloss="0.10000000000000001"/>
+      <geom type="mesh" contype="3" conaffinity="2" condim="3" material="jaco_arm/jaco_hand/dark_gray" solref="0.01 1" solimp="0.98999999999999999 0.999 0.001"/>
+      <site type="sphere" group="4" material="jaco_arm/jaco_hand/reference_site" size="0.01"/>
+      <default class="jaco_arm/jaco_hand/finger">
+        <geom type="mesh" condim="4" material="jaco_arm/jaco_hand/light_gray"/>
+        <default class="jaco_arm/jaco_hand/finger_proximal">
+          <geom mass="0.025520399999999999" mesh="jaco_arm/jaco_hand/finger_proximal"/>
+        </default>
+        <default class="jaco_arm/jaco_hand/finger_distal">
+          <geom mass="0.0132655" mesh="jaco_arm/jaco_hand/finger_distal"/>
+        </default>
+      </default>
+    </default>
+    <default class="duplo2x4/">
+      <geom rgba="1 0 0 1" friction="0.34999999999999998" solref="0.01 1" solimp="0.98999999999999999 0.999 0.001"/>
+      <site type="sphere" group="5" rgba="1 0 0 0.29999999999999999" size="0.001"/>
+      <default class="duplo2x4/base">
+        <geom type="box" contype="3" conaffinity="2" group="4" size="0.015900000000000001 0.031800000000000002 0.0095999999999999992" rgba="0 0 1 0.29999999999999999" mass="0" pos="0 0 0.0095999999999999992"/>
+      </default>
+      <default class="duplo2x4/wall">
+        <geom type="box" contype="4" conaffinity="0"/>
+      </default>
+      <default class="duplo2x4/flange">
+        <geom type="box" contype="4" conaffinity="0" size="0.00080000000000000004 0.00055000000000000003 0.0086999999999999994"/>
+      </default>
+      <default class="duplo2x4/stud">
+        <geom type="cylinder" contype="5" conaffinity="4" size="0.0046470000000000001 0.0023" density="500" margin="0.0001"/>
+      </default>
+      <default class="duplo2x4/stud-capsule">
+        <geom type="capsule" contype="0" conaffinity="0" group="3" size="0.0050000000000000001 0.0023" mass="0" density="500"/>
+      </default>
+      <default class="duplo2x4/tube">
+        <geom type="cylinder" contype="4" conaffinity="0" size="0.0066999 0.0077999999999999996" density="300"/>
+      </default>
+    </default>
+    <default class="pedestal/"/>
+    <default class="pedestal/cradle/"/>
+  </default>
+  <asset>
+    <texture name="//unnamed_texture_0" type="skybox" builtin="gradient" rgb1="0.40000000000000002 0.59999999999999998 0.80000000000000004" rgb2="0 0 0" width="100" height="100"/>
+    <texture name="groundplane" type="2d" builtin="checker" rgb1="0.20000000000000001 0.29999999999999999 0.40000000000000002" rgb2="0.10000000000000001 0.20000000000000001 0.29999999999999999" mark="edge" markrgb="0.80000000000000004 0.80000000000000004 0.80000000000000004" width="300" height="300"/>
+    <material name="groundplane" class="/" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.20000000000000001"/>
+    <mesh name="jaco_arm/base" class="jaco_arm/" file="../jaco/base-1e944fe900397431c653654e0d1b789a06d4b042.stl"/>
+    <mesh name="jaco_arm/shoulder" class="jaco_arm/" file="../jaco/shoulder-18bb5c4a7d504d2480fddb2fac761e001be74279.stl"/>
+    <mesh name="jaco_arm/arm" class="jaco_arm/" file="../jaco/arm-702b9dd09b408a7f036def4334ca1c9269db6876.stl"/>
+    <mesh name="jaco_arm/forearm" class="jaco_arm/" file="../jaco/forearm-1dddf7597490cfb0a9a62a2946b57b217f5c405e.stl"/>
+    <mesh name="jaco_arm/wrist" class="jaco_arm/" file="../jaco/wrist-0f1964ae4d24dabeeed1a58a831491bbb600e69b.stl"/>
+    <material name="jaco_arm/dark_gray" class="jaco_arm/" rgba="0.10000000000000001 0.10000000000000001 0.10000000000000001 1"/>
+    <material name="jaco_arm/light_gray" class="jaco_arm/" rgba="0.69999999999999996 0.69999999999999996 0.69999999999999996 1"/>
+    <material name="jaco_arm/reference_site" class="jaco_arm/" rgba="1 0 0 0.5"/>
+    <mesh name="jaco_arm/jaco_hand/hand_3finger_main" class="jaco_arm/jaco_hand/" file="../jaco/hand_3finger_main-3e2e523ce89de5414ac8a2e1f7c5d439d42af25f.stl"/>
+    <mesh name="jaco_arm/jaco_hand/hand_3finger_insert" class="jaco_arm/jaco_hand/" file="../jaco/hand_3finger_insert-f9315ec3333e3c3c353496eddb9e137b9e3c3903.stl"/>
+    <mesh name="jaco_arm/jaco_hand/finger_proximal" class="jaco_arm/jaco_hand/" file="../jaco/finger_proximal-1060bb281307fcb02d213a019691a38915c86811.stl"/>
+    <mesh name="jaco_arm/jaco_hand/finger_distal" class="jaco_arm/jaco_hand/" file="../jaco/finger_distal-45a5d28ff721d9f3c07c1d25506f70a4e59f4293.stl"/>
+    <material name="jaco_arm/jaco_hand/dark_gray" class="jaco_arm/jaco_hand/" rgba="0.10000000000000001 0.10000000000000001 0.10000000000000001 1"/>
+    <material name="jaco_arm/jaco_hand/light_gray" class="jaco_arm/jaco_hand/" rgba="0.69999999999999996 0.69999999999999996 0.69999999999999996 1"/>
+    <material name="jaco_arm/jaco_hand/reference_site" class="jaco_arm/jaco_hand/" rgba="1 0 0 0.5"/>
+  </asset>
+  <worldbody>
+    <geom name="ground" class="/" type="plane" size="1 1 0.10000000000000001" material="groundplane" friction="0.40000000000000002" solref="0.002 1" solimp="0.94999999999999996 0.98999999999999999 0.001"/>
+    <light name="//unnamed_light_0" class="/" directional="false" castshadow="true" pos="0 0 1.5" dir="0 0 -1" diffuse="0.69999999999999996 0.69999999999999996 0.69999999999999996" specular="0.29999999999999999 0.29999999999999999 0.29999999999999999"/>
+    <body pos="0 0.40000000000000002 0" name="jaco_arm/">
+      <body name="jaco_arm/b_base">
+        <geom name="jaco_arm/base" class="jaco_arm/" mass="0.718306" mesh="jaco_arm/base"/>
+        <body name="jaco_arm/b_1" pos="0 0 0.15675" quat="0 0 1 0">
+          <joint name="jaco_arm/joint_1" class="jaco_arm/large_joint"/>
+          <geom name="jaco_arm/link_1" class="jaco_arm/" mass="0.64320500000000003" mesh="jaco_arm/shoulder"/>
+          <geom name="jaco_arm/ring_1" class="jaco_arm/large_ring"/>
+          <body name="jaco_arm/b_2" pos="0 0.0016000000000000001 -0.11874999999999999" quat="0 0 -0.70710700000000004 0.70710700000000004">
+            <joint name="jaco_arm/joint_2" class="jaco_arm/large_joint" limited="true" range="0.82030499999999995 5.4628810000000003"/>
+            <geom name="jaco_arm/link_2" class="jaco_arm/" mass="1.1691499999999999" mesh="jaco_arm/arm"/>
+            <geom name="jaco_arm/ring_2" class="jaco_arm/large_ring"/>
+            <body name="jaco_arm/b_3" pos="0 -0.40999999999999998 0" quat="0 0 1 0">
+              <joint name="jaco_arm/joint_3" class="jaco_arm/large_joint" limited="true" range="0.33161299999999999 5.9515729999999998"/>
+              <geom name="jaco_arm/link_3" class="jaco_arm/" mass="0.67344300000000001" mesh="jaco_arm/forearm"/>
+              <geom name="jaco_arm/ring_3" class="jaco_arm/large_ring"/>
+              <body name="jaco_arm/b_4" pos="0 0.20730000000000001 -0.0114" quat="0 0 -0.70710700000000004 0.70710700000000004">
+                <joint name="jaco_arm/joint_4" class="jaco_arm/small_joint"/>
+                <geom name="jaco_arm/link_4" class="jaco_arm/" mass="0.22143199999999999" mesh="jaco_arm/wrist"/>
+                <geom name="jaco_arm/ring_4" class="jaco_arm/small_ring"/>
+                <body name="jaco_arm/b_5" pos="0 -0.03703 -0.064140000000000003" quat="0 0 0.5 0.86602500000000004">
+                  <joint name="jaco_arm/joint_5" class="jaco_arm/small_joint"/>
+                  <geom name="jaco_arm/link_5" class="jaco_arm/" mass="0.22143199999999999" mesh="jaco_arm/wrist"/>
+                  <geom name="jaco_arm/ring_5" class="jaco_arm/small_ring"/>
+                  <body name="jaco_arm/b_6" pos="0 -0.03703 -0.064140000000000003" quat="0 0 0.5 0.86602500000000004">
+                    <joint name="jaco_arm/joint_6" class="jaco_arm/small_joint"/>
+                    <geom name="jaco_arm/ring_6" class="jaco_arm/small_ring" mass="1.0000000000000001e-09"/>
+                    <site name="jaco_arm/wristsite" class="jaco_arm/" quat="0 0.70710678118000003 0.70710678118000003 0"/>
+                    <body quat="0 0.70710678118000003 0.70710678118000003 0" name="jaco_arm/jaco_hand/">
+                      <body name="jaco_arm/jaco_hand/hand" quat="0 0.70710678118000003 0.70710678118000003 0">
+                        <site name="jaco_arm/jaco_hand/gripsite" class="jaco_arm/jaco_hand/" pos="0 -0.0001 -0.159" quat="0 0.70710678118000003 0.70710678118000003 0"/>
+                        <site name="jaco_arm/jaco_hand/pinchsite" class="jaco_arm/jaco_hand/" pos="0.014999999999999999 0.0023999999999999998 -0.193" quat="0 0.70710678118000003 0.70710678118000003 0"/>
+                        <geom name="jaco_arm/jaco_hand/link_6_main" class="jaco_arm/jaco_hand/" mass="0.54718999999999995" mesh="jaco_arm/jaco_hand/hand_3finger_main"/>
+                        <geom name="jaco_arm/jaco_hand/link_6_insert" class="jaco_arm/jaco_hand/" material="jaco_arm/jaco_hand/light_gray" mass="0" mesh="jaco_arm/jaco_hand/hand_3finger_insert"/>
+                        <body name="jaco_arm/jaco_hand/b_finger_1" childclass="jaco_arm/jaco_hand/finger_proximal" pos="0.0027899999999999999 0.031260000000000003 -0.11466999999999999" quat="0.24396000000000001 -0.63158999999999998 -0.38818000000000003 0.62521000000000004">
+                          <joint name="jaco_arm/jaco_hand/finger_1"/>
+                          <geom name="jaco_arm/jaco_hand/finger_knuckle_1"/>
+                          <body name="jaco_arm/jaco_hand/b_finger_tip_1" childclass="jaco_arm/jaco_hand/finger_distal" pos="0.043999999999999997 -0.0030000000000000001 0">
+                            <geom name="jaco_arm/jaco_hand/finger_tip_1"/>
+                          </body>
+                        </body>
+                        <body name="jaco_arm/jaco_hand/b_finger_2" childclass="jaco_arm/jaco_hand/finger_proximal" pos="-0.022259999999999999 -0.02707 -0.11482000000000001" quat="0.60167899999999996 -0.25467099999999998 0.65965300000000004 -0.37146000000000001">
+                          <joint name="jaco_arm/jaco_hand/finger_2"/>
+                          <geom name="jaco_arm/jaco_hand/finger_knuckle_2"/>
+                          <body name="jaco_arm/jaco_hand/b_finger_tip_2" childclass="jaco_arm/jaco_hand/finger_distal" pos="0.043999999999999997 -0.0030000000000000001 0">
+                            <geom name="jaco_arm/jaco_hand/finger_tip_2"/>
+                          </body>
+                        </body>
+                        <body name="jaco_arm/jaco_hand/b_finger_3" childclass="jaco_arm/jaco_hand/finger_proximal" pos="0.022259999999999999 -0.02707 -0.11482000000000001" quat="0.65965300000000004 -0.37146000000000001 0.60167899999999996 -0.25467099999999998">
+                          <joint name="jaco_arm/jaco_hand/finger_3"/>
+                          <geom name="jaco_arm/jaco_hand/finger_knuckle_3"/>
+                          <body name="jaco_arm/jaco_hand/b_finger_tip_3" childclass="jaco_arm/jaco_hand/finger_distal" pos="0.043999999999999997 -0.0030000000000000001 0">
+                            <geom name="jaco_arm/jaco_hand/finger_tip_3"/>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                    <site name="jaco_arm/joint_6_site" class="jaco_arm/" group="4" size="0.001"/>
+                  </body>
+                  <site name="jaco_arm/joint_5_site" class="jaco_arm/" group="4" size="0.001"/>
+                </body>
+                <site name="jaco_arm/joint_4_site" class="jaco_arm/" group="4" size="0.001"/>
+              </body>
+              <site name="jaco_arm/joint_3_site" class="jaco_arm/" group="4" size="0.001"/>
+            </body>
+            <site name="jaco_arm/joint_2_site" class="jaco_arm/" group="4" size="0.001"/>
+          </body>
+          <site name="jaco_arm/joint_1_site" class="jaco_arm/" group="4" size="0.001"/>
+        </body>
+      </body>
+    </body>
+    <camera name="front_close" class="/" pos="0 -0.59999999999999998 0.75" xyaxes="1 0 0 0 0.69999999999999996 0.75"/>
+    <body name="duplo2x4/">
+      <freejoint name="duplo2x4/"/>
+      <geom name="duplo2x4/base" class="duplo2x4/base"/>
+      <geom name="duplo2x4/wall_x0" class="duplo2x4/wall" size="0.00080000000000000004 0.030200000000000001 0.0088000000000000005" pos="-0.015100000000000001 0 0.0088000000000000005"/>
+      <geom name="duplo2x4/wall_x1" class="duplo2x4/wall" size="0.00080000000000000004 0.030200000000000001 0.0088000000000000005" pos="0.015100000000000001 0 0.0088000000000000005"/>
+      <geom name="duplo2x4/wall_y0" class="duplo2x4/wall" size="0.015900000000000001 0.00080000000000000004 0.0088000000000000005" pos="0 -0.031 0.0088000000000000005"/>
+      <geom name="duplo2x4/wall_y1" class="duplo2x4/wall" size="0.015900000000000001 0.00080000000000000004 0.0088000000000000005" pos="0 0.031 0.0088000000000000005"/>
+      <geom name="duplo2x4/wall_z1" class="duplo2x4/wall" size="0.015900000000000001 0.031800000000000002 0.00080000000000000004" pos="0 0 0.0184"/>
+      <site name="duplo2x4/bounding_box" class="duplo2x4/" type="box" group="3" size="0.016 0.031899999999999998 0.012" pos="0 0 0.011900000000000001"/>
+      <site name="duplo2x4/stud_00" class="duplo2x4/" pos="-0.0080000000000000002 -0.024 0.023800000000000002"/>
+      <site name="duplo2x4/stud_01" class="duplo2x4/" pos="-0.0080000000000000002 -0.0080000000000000002 0.023800000000000002"/>
+      <site name="duplo2x4/stud_02" class="duplo2x4/" pos="-0.0080000000000000002 0.0080000000000000002 0.023800000000000002"/>
+      <site name="duplo2x4/stud_03" class="duplo2x4/" pos="-0.0080000000000000002 0.024 0.023800000000000002"/>
+      <site name="duplo2x4/stud_10" class="duplo2x4/" pos="0.0080000000000000002 -0.024 0.023800000000000002"/>
+      <site name="duplo2x4/stud_11" class="duplo2x4/" pos="0.0080000000000000002 -0.0080000000000000002 0.023800000000000002"/>
+      <site name="duplo2x4/stud_12" class="duplo2x4/" pos="0.0080000000000000002 0.0080000000000000002 0.023800000000000002"/>
+      <site name="duplo2x4/stud_13" class="duplo2x4/" pos="0.0080000000000000002 0.024 0.023800000000000002"/>
+      <site name="duplo2x4/hole_00" class="duplo2x4/" pos="-0.0080000000000000002 -0.024 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_01" class="duplo2x4/" pos="-0.0080000000000000002 -0.0080000000000000002 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_02" class="duplo2x4/" pos="-0.0080000000000000002 0.0080000000000000002 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_03" class="duplo2x4/" pos="-0.0080000000000000002 0.024 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_10" class="duplo2x4/" pos="0.0080000000000000002 -0.024 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_11" class="duplo2x4/" pos="0.0080000000000000002 -0.0080000000000000002 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_12" class="duplo2x4/" pos="0.0080000000000000002 0.0080000000000000002 0.0045999999999999999"/>
+      <site name="duplo2x4/hole_13" class="duplo2x4/" pos="0.0080000000000000002 0.024 0.0045999999999999999"/>
+      <geom name="duplo2x4/stud_00" class="duplo2x4/stud" pos="-0.0080499999999999999 -0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_01" class="duplo2x4/stud" pos="-0.0080499999999999999 -0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_02" class="duplo2x4/stud" pos="-0.0080499999999999999 0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_03" class="duplo2x4/stud" pos="-0.0080499999999999999 0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_10" class="duplo2x4/stud" pos="0.0080499999999999999 -0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_11" class="duplo2x4/stud" pos="0.0080499999999999999 -0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_12" class="duplo2x4/stud" pos="0.0080499999999999999 0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/stud_13" class="duplo2x4/stud" pos="0.0080499999999999999 0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_00" class="duplo2x4/stud-capsule" pos="-0.0080000000000000002 -0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_01" class="duplo2x4/stud-capsule" pos="-0.0080000000000000002 -0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_02" class="duplo2x4/stud-capsule" pos="-0.0080000000000000002 0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_03" class="duplo2x4/stud-capsule" pos="-0.0080000000000000002 0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_10" class="duplo2x4/stud-capsule" pos="0.0080000000000000002 -0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_11" class="duplo2x4/stud-capsule" pos="0.0080000000000000002 -0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_12" class="duplo2x4/stud-capsule" pos="0.0080000000000000002 0.0080000000000000002 0.021499999999999998"/>
+      <geom name="duplo2x4/studcap_13" class="duplo2x4/stud-capsule" pos="0.0080000000000000002 0.024 0.021499999999999998"/>
+      <geom name="duplo2x4/flange_00" class="duplo2x4/flange" pos="-0.0135 -0.024 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_01" class="duplo2x4/flange" pos="-0.0135 -0.0080000000000000002 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_02" class="duplo2x4/flange" pos="-0.0135 0.0080000000000000002 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_03" class="duplo2x4/flange" pos="-0.0135 0.024 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_10" class="duplo2x4/flange" pos="0.0135 -0.024 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_11" class="duplo2x4/flange" pos="0.0135 -0.0080000000000000002 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_12" class="duplo2x4/flange" pos="0.0135 0.0080000000000000002 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_13" class="duplo2x4/flange" pos="0.0135 0.024 0.0088500000000000002"/>
+      <geom name="duplo2x4/flange_00y" class="duplo2x4/flange" pos="-0.0080499999999999999 -0.02945 0.0088500000000000002" quat="1 0 0 1"/>
+      <geom name="duplo2x4/flange_01y" class="duplo2x4/flange" pos="-0.0080499999999999999 0.02945 0.0088500000000000002" quat="1 0 0 1"/>
+      <geom name="duplo2x4/flange_10y" class="duplo2x4/flange" pos="0.0080499999999999999 -0.02945 0.0088500000000000002" quat="1 0 0 1"/>
+      <geom name="duplo2x4/flange_11y" class="duplo2x4/flange" pos="0.0080499999999999999 0.02945 0.0088500000000000002" quat="1 0 0 1"/>
+      <geom name="duplo2x4/tube_0" class="duplo2x4/tube" pos="0 -0.016 0.0097999999999999997"/>
+      <geom name="duplo2x4/tube_1" class="duplo2x4/tube" pos="0 0 0.0097999999999999997"/>
+      <geom name="duplo2x4/tube_2" class="duplo2x4/tube" pos="0 0.016 0.0097999999999999997"/>
+      <geom name="duplo2x4/inner_x0" class="duplo2x4/wall" size="0.0038500000000000001 0.00055000000000000003 0.0066" pos="-0.010449999999999999 0 0.010999999999999999"/>
+      <geom name="duplo2x4/inner_x1" class="duplo2x4/wall" size="0.0038500000000000001 0.00055000000000000003 0.0066" pos="0.010449999999999999 0 0.010999999999999999"/>
+      <geom name="duplo2x4/inner_y0" class="duplo2x4/wall" size="0.00040000000000000002 0.0014 0.0044000000000000003" pos="0 -0.0080000000000000002 0.0132"/>
+      <geom name="duplo2x4/inner_y1" class="duplo2x4/wall" size="0.00040000000000000002 0.0014 0.0044000000000000003" pos="0 0.0080000000000000002 0.0132"/>
+    </body>
+    <body name="pedestal/">
+      <geom name="pedestal//unnamed_geom_0" class="pedestal/" type="capsule" size="0.070000000000000007" fromto="0 0 -0.070000000000000007 0 0 -0.27000000000000002"/>
+      <site name="pedestal//unnamed_site_0" class="pedestal/" type="sphere" group="3" size="0.0030000000000000001"/>
+      <body name="pedestal/cradle/">
+        <geom name="pedestal/cradle//unnamed_geom_0" class="pedestal/cradle/" type="sphere" condim="6" size="0.049000000000000002" pos="0 0.034299999999999997 -0.034299999999999997"/>
+        <geom name="pedestal/cradle//unnamed_geom_1" class="pedestal/cradle/" type="sphere" condim="6" size="0.049000000000000002" pos="0.029704671349806245 -0.017149999999999992 -0.034299999999999997"/>
+        <geom name="pedestal/cradle//unnamed_geom_2" class="pedestal/cradle/" type="sphere" condim="6" size="0.049000000000000002" pos="-0.029704671349806235 -0.017150000000000012 -0.034299999999999997"/>
+      </body>
+      <site name="pedestal//unnamed_site_1" class="pedestal/" type="sphere" group="3" rgba="1 0 0 0.29999999999999999" size="0.050000000000000003"/>
+    </body>
+    <site name="tcp_spawn_area" class="/" type="box" group="3" rgba="0 1 0 0.29999999999999999" size="0.10000000000000001 0.10000000000000001 0.115" pos="0 0 0.28500000000000003"/>
+    <site name="prop_spawn_area" class="/" type="box" group="3" rgba="0 0 1 0.29999999999999999" size="0.10000000000000001 0.10000000000000001 9.9999999999999995e-07" pos="0 0 9.9999999999999995e-07"/>
+    <site name="pedestal_spawn_area" class="/" type="box" group="3" rgba="0 1 1 0.29999999999999999" size="0.10000000000000001 0.10000000000000001 0.050000000000000003" pos="0 0 0.12000000000000001"/>
+  </worldbody>
+  <contact>
+    <exclude name="jaco_arm//unnamed_contact_0" body1="jaco_arm/b_base" body2="jaco_arm/b_1"/>
+    <exclude name="jaco_arm/jaco_hand//unnamed_contact_0" body1="jaco_arm/jaco_hand/hand" body2="jaco_arm/jaco_hand/b_finger_1"/>
+    <exclude name="jaco_arm/jaco_hand//unnamed_contact_1" body1="jaco_arm/jaco_hand/hand" body2="jaco_arm/jaco_hand/b_finger_2"/>
+    <exclude name="jaco_arm/jaco_hand//unnamed_contact_2" body1="jaco_arm/jaco_hand/hand" body2="jaco_arm/jaco_hand/b_finger_3"/>
+  </contact>
+  <actuator>
+    <velocity name="jaco_arm/joint_1" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.62831853071795862 0.62831853071795862" forcerange="-30.5 30.5" joint="jaco_arm/joint_1" kv="500"/>
+    <velocity name="jaco_arm/joint_2" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.62831853071795862 0.62831853071795862" forcerange="-30.5 30.5" joint="jaco_arm/joint_2" kv="500"/>
+    <velocity name="jaco_arm/joint_3" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.62831853071795862 0.62831853071795862" forcerange="-30.5 30.5" joint="jaco_arm/joint_3" kv="500"/>
+    <velocity name="jaco_arm/joint_4" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.83775804095727824 0.83775804095727824" forcerange="-6.7999999999999998 6.7999999999999998" joint="jaco_arm/joint_4" kv="500"/>
+    <velocity name="jaco_arm/joint_5" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.83775804095727824 0.83775804095727824" forcerange="-6.7999999999999998 6.7999999999999998" joint="jaco_arm/joint_5" kv="500"/>
+    <velocity name="jaco_arm/joint_6" class="jaco_arm/" ctrllimited="true" forcelimited="true" ctrlrange="-0.83775804095727824 0.83775804095727824" forcerange="-6.7999999999999998 6.7999999999999998" joint="jaco_arm/joint_6" kv="500"/>
+    <velocity name="jaco_arm/jaco_hand/finger_1" class="jaco_arm/jaco_hand/" ctrllimited="true" forcelimited="true" ctrlrange="-5 5" forcerange="-1 1" joint="jaco_arm/jaco_hand/finger_1" kv="10"/>
+    <velocity name="jaco_arm/jaco_hand/finger_2" class="jaco_arm/jaco_hand/" ctrllimited="true" forcelimited="true" ctrlrange="-5 5" forcerange="-1 1" joint="jaco_arm/jaco_hand/finger_2" kv="10"/>
+    <velocity name="jaco_arm/jaco_hand/finger_3" class="jaco_arm/jaco_hand/" ctrllimited="true" forcelimited="true" ctrlrange="-5 5" forcerange="-1 1" joint="jaco_arm/jaco_hand/finger_3" kv="10"/>
+  </actuator>
+  <sensor>
+    <torque name="jaco_arm/joint_1_torque" site="jaco_arm/joint_1_site"/>
+    <torque name="jaco_arm/joint_2_torque" site="jaco_arm/joint_2_site"/>
+    <torque name="jaco_arm/joint_3_torque" site="jaco_arm/joint_3_site"/>
+    <torque name="jaco_arm/joint_4_torque" site="jaco_arm/joint_4_site"/>
+    <torque name="jaco_arm/joint_5_torque" site="jaco_arm/joint_5_site"/>
+    <torque name="jaco_arm/joint_6_torque" site="jaco_arm/joint_6_site"/>
+    <framepos name="duplo2x4/position" objtype="site" objname="duplo2x4/bounding_box"/>
+    <framequat name="duplo2x4/orientation" objtype="site" objname="duplo2x4/bounding_box"/>
+    <framelinvel name="duplo2x4/linear_velocity" objtype="site" objname="duplo2x4/bounding_box"/>
+    <frameangvel name="duplo2x4/angular_velocity" objtype="site" objname="duplo2x4/bounding_box"/>
+    <force name="duplo2x4/force" site="duplo2x4/bounding_box"/>
+  </sensor>
+</mujoco>

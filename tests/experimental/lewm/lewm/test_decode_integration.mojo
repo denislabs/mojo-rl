@@ -14,7 +14,7 @@ overfits the fixed emb→image mapping.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_decode_integration.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import isnan, isinf
 from std.testing import assert_true
 from layout import TileTensor, row_major
@@ -74,8 +74,8 @@ comptime Decoder = LeWMDecoderTrainer[
 ]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _det(i: Int) -> Scalar[DT]:
@@ -111,7 +111,7 @@ def main() raises:
     # frozen WM forward → emb node; reinterpret (B, T·EMB) as (B·T, EMB)
     _ = wm.eval_loss(pix_t, act_t)
     ref emb_tensor = wm.graph.node_output["emb"]()
-    var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var emb_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         emb_tensor.dev.value().unsafe_ptr()
     )
     var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
@@ -126,7 +126,7 @@ def main() raises:
     ctx.synchronize()
     dec.recon_into(
         emb_t,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](cold.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](cold.unsafe_ptr()),
     )
     var cold_fin = True
     for i in range(DEC_BATCH * N_Q * PATCH_PX):
@@ -157,12 +157,12 @@ def main() raises:
     ctx.synchronize()
     dec.recon_into(
         emb_t,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
     )
     unpatchify["cpu", N_VIZ, IN_CH, IMG, PATCH_D](
         None,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](recon_img.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](recon_img.unsafe_ptr()),
     )
     # originals already in pix_h (host) — first N_VIZ frames, CHW [0,1].
     save_reconstruction_grid(

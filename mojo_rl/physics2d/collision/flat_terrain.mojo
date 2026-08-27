@@ -11,7 +11,7 @@ Perfect for LunarLander where we need fast ground contact detection.
 from std.math import cos, sin
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
     dtype,

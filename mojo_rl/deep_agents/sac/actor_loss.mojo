@@ -17,8 +17,8 @@ carries the moving α (host scalar). Mean loss + mean log_prob are host reductio
 """
 
 from std.gpu import thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE
@@ -80,7 +80,7 @@ def reduce_mean_acc_kernel[
 
 
 @fieldwise_init
-struct SACActorLossOut(Movable & ImplicitlyDeletable):
+struct SACActorLossOut(Movable & Deinitable):
     var loss: Scalar[DT]
     var log_prob_mean: Scalar[DT]
 

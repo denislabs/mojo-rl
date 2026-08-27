@@ -10,7 +10,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_scalar_adam_storage.mojo
 
 from std.math import exp as fexp
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam

@@ -1,0 +1,138 @@
+---
+/**
+ * MppiPlanning — one TD-MPC2 decision.
+ *
+ * The fan is the point. Every other agent in the docs answers "what do I do
+ * here?" with a single forward pass; TD-MPC2 answers it with a population of
+ * imagined futures, scores them, and refits. Drawing the trajectories as
+ * diverging polylines makes the cost obvious in a way a box would not: this
+ * whole picture happens *per environment step*.
+ *
+ * The trajectory geometry is computed so the fan stays even under editing.
+ */
+
+/** Where every sampled sequence starts — the encoded current observation. */
+const ROOT = { x: 250, y: 207 };
+
+/** Horizon ticks. Four steps stands in for the configurable H. */
+const STEPS = [320, 390, 460, 530];
+
+/**
+ * Vertical drift per sampled sequence, in px per step. Kept linear and
+ * symmetric so the fan's extent is exactly ±(drift × STEPS.length) — the
+ * gridlines below are sized from that, and a curved fan would silently overrun
+ * them. Two of the seven are elites, deliberately not the extremes: the winners
+ * of an MPPI round are rarely the boldest samples.
+ */
+const TRAJ = [
+	{ drift: -24, elite: false },
+	{ drift: -16, elite: true },
+	{ drift: -8, elite: false },
+	{ drift: 0, elite: false },
+	{ drift: 8, elite: true },
+	{ drift: 16, elite: false },
+	{ drift: 24, elite: false },
+];
+
+const path = (drift: number) =>
+	`M ${ROOT.x} ${ROOT.y} ` +
+	STEPS.map((x, i) => `L ${x} ${ROOT.y + drift * (i + 1)}`).join(' ');
+
+/** Vertical span of the fan, plus a little air — the gridlines' extent. */
+const SPREAD = 24 * STEPS.length;
+const GRID_TOP = ROOT.y - SPREAD - 12;
+const GRID_BOTTOM = ROOT.y + SPREAD + 12;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="TD-MPC2 MPPI planning: sample action sequences, roll them through the latent model, score them, refit toward the elites, execute only the first action">
+		<defs>
+			<marker id="mp-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="mp-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="mp-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+		</defs>
+
+		<!-- encode the real observation into the latent the planner works in -->
+		<g class="dg-node dg-node--cyan">
+			<rect x="20" y={ROOT.y - 31} width="160" height="62" rx="10" />
+			<text x="100" y={ROOT.y - 3} class="dg-title">observation</text>
+			<text x="100" y={ROOT.y + 18} class="dg-sub">encode → z</text>
+		</g>
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#mp-cyan)"
+			d={`M 180 ${ROOT.y} L 238 ${ROOT.y}`} />
+
+		<!-- horizon gridlines, sized to the fan -->
+		{
+			STEPS.map((x) => (
+				<line class="dg-tick" x1={x} y1={GRID_TOP} x2={x} y2={GRID_BOTTOM} />
+			))
+		}
+		<text x={STEPS[0]} y={GRID_BOTTOM + 20} class="dg-caption">t+1</text>
+		<text x={STEPS[3]} y={GRID_BOTTOM + 20} class="dg-caption">t+H</text>
+
+		<!-- the sampled population, rolled through the latent dynamics -->
+		{
+			TRAJ.filter((t) => !t.elite).map((t) => (
+				<path class="dg-edge dg-edge--muted" d={path(t.drift)} />
+			))
+		}
+		{
+			TRAJ.filter((t) => t.elite).map((t) => (
+				<path class="dg-edge dg-edge--green" d={path(t.drift)} />
+			))
+		}
+		<circle cx={ROOT.x} cy={ROOT.y} r="9" class="dg-tree-node dg-tree-node--root" />
+
+		<text x="20" y={GRID_TOP - 28} class="dg-label dg-label--muted">N sampled action sequences</text>
+		<text x="20" y={GRID_TOP - 8} class="dg-label dg-label--green">top-k elites</text>
+
+		<!-- score → refit → act -->
+		<g class="dg-node dg-node--purple">
+			<rect x="596" y="40" width="264" height="72" rx="10" />
+			<text x="728" y="68" class="dg-title">score each sequence</text>
+			<text x="728" y="90" class="dg-sub">Σ γᵗ r̂(z,a) + γᴴ Q(z_H)</text>
+		</g>
+
+		<g class="dg-node dg-node--spark">
+			<rect x="596" y="150" width="264" height="72" rx="10" />
+			<text x="728" y="178" class="dg-title">refit μ, σ</text>
+			<text x="728" y="200" class="dg-sub">softmax-weighted over elites</text>
+		</g>
+
+		<g class="dg-node dg-node--cyan">
+			<rect x="596" y="260" width="264" height="72" rx="10" />
+			<text x="728" y="288" class="dg-title">execute a₀ only</text>
+			<text x="728" y="310" class="dg-sub">then re-plan from scratch</text>
+		</g>
+
+		<path class="dg-edge dg-edge--purple" marker-end="url(#mp-purple)"
+			d={`M 542 ${ROOT.y - SPREAD + 8} L 570 108 L 596 84`} />
+		<path class="dg-edge dg-edge--spark" marker-end="url(#mp-spark)"
+			d="M 728 112 L 728 150" />
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#mp-cyan)"
+			d="M 728 222 L 728 260" />
+
+		<!-- the iteration loop: refit feeds the next round of sampling.
+		     Routed at x = 566 / y = 364, both clear of the fan's extent. -->
+		<path class="dg-edge dg-edge--spark dg-edge--dashed" marker-end="url(#mp-spark)"
+			d={`M 596 200 L 566 200 L 566 364 L ${ROOT.x} 364 L ${ROOT.x} ${ROOT.y + 20}`} />
+		<text x="286" y="386" class="dg-label dg-label--spark">× J iterations, every environment step</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">real observation / chosen action</span>
+		<span class="diagram__key diagram__key--muted">sampled rollouts</span>
+		<span class="diagram__key diagram__key--purple">scoring</span>
+		<span class="diagram__key diagram__key--spark">distribution refit</span>
+	</figcaption>
+</figure>

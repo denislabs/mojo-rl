@@ -33,9 +33,10 @@ Run (Apple = parity + signal):
     pixi run -e apple  mojo run -I . benchmarks/bench_conv2d_implicit_gemm_gpu.mojo
 """
 
-from std.gpu import global_idx, thread_idx, block_idx, block_dim, barrier
-from std.gpu.memory import AddressSpace
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major, Idx
 from layout.tile_layout import Layout as TileLayout

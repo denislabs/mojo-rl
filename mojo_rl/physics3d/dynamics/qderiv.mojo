@@ -19,12 +19,24 @@ damping diagonal, exactly like the legacy integrator).
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import Data, Model, DynamicsScratch, ImplicitScratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    ImplicitScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -230,60 +242,71 @@ def _matmul_6x6_x_6x6[
 @always_inline
 def _rne_vel_derivative_env[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_XIPOS: Layout,
+    L_XQUAT: Layout,
+    L_QVEL: Layout,
+    L_CDOF: Layout,
+    L_CINERT: Layout,
+    L_CVEL_SC: Layout,
+    L_DCVEL: Layout,
+    L_DCDOFDOT: Layout,
+    L_QDERIV: Layout,
 ](
     env: Int,
     njoint: Int,
+    dims: D,
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xipos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
-    xquat: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, L_XIPOS, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     cinert: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 10), MutAnyOrigin
+        DTYPE, L_CINERT, MutAnyOrigin
     ],
-    cdof_sc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof_sc: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     cvel_sc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
+        DTYPE, L_CVEL_SC, MutAnyOrigin
     ],
-    cdof_dot: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof_dot: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     dcvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6 * NV), MutAnyOrigin
+        DTYPE, L_DCVEL, MutAnyOrigin
     ],
     dcdofdot: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * 6 * NV), MutAnyOrigin
+        DTYPE, L_DCDOFDOT, MutAnyOrigin
     ],
     dcacc: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6 * NV), MutAnyOrigin
+        DTYPE, L_DCVEL, MutAnyOrigin
     ],
     dcfrcbody: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 6 * NV), MutAnyOrigin
+        DTYPE, L_DCVEL, MutAnyOrigin
     ],
-    qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    qderiv: LayoutTensor[DTYPE, L_QDERIV, MutAnyOrigin],
 ):
     """d(qfrc_bias)/d(qvel) SUBTRACTED into qderiv for one env. Persistent
     intermediates are zeroed here (scratch is reused across envs/steps)."""
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
     # Zero the reused scratch slices for this env.
-    for i in range(NBODY * 10):
+    for i in range(nbody * 10):
         cinert[env, i] = 0
-    for i in range(NV * 6):
+    for i in range(nv * 6):
         cdof_sc[env, i] = 0
         cdof_dot[env, i] = 0
-    for i in range(NBODY * 6):
+    for i in range(nbody * 6):
         cvel_sc[env, i] = 0
-    for i in range(NBODY * 6 * NV):
+    for i in range(nbody * 6 * nv):
         dcvel[env, i] = 0
         dcacc[env, i] = 0
         dcfrcbody[env, i] = 0
-    for i in range(NV * 6 * NV):
+    for i in range(nv * 6 * nv):
         dcdofdot[env, i] = 0
 
     # ── Step 0: subtree COM + reexpress cinert / cdof_sc / cvel / cdof_dot ──
@@ -291,7 +314,7 @@ def _rne_vel_derivative_env[
     var com_x = Scalar[DTYPE](0)
     var com_y = Scalar[DTYPE](0)
     var com_z = Scalar[DTYPE](0)
-    for b in range(NBODY):
+    for b in range(nbody):
         var m = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         total_mass += m
         com_x += m * rebind[Scalar[DTYPE]](xipos[env, b * 3 + 0])
@@ -303,7 +326,7 @@ def _rne_vel_derivative_env[
         com_z = com_z / total_mass
 
     # cinert at subtree COM
-    for b in range(NBODY):
+    for b in range(nbody):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         var dx = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 0]) - com_x
         var dy = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 1]) - com_y
@@ -381,8 +404,8 @@ def _rne_vel_derivative_env[
         cinert[env, b * 10 + 9] = mass
 
     # dof_bodyid lookup
-    var dof_bodyid = InlineArray[Int, NV if NV > 0 else 1](uninitialized=True)
-    for i in range(NV):
+    var dof_bodyid = Scratch[Int, cap[D.NV]()](nv, uninitialized=0)
+    for i in range(nv):
         dof_bodyid[i] = 0
     for j in range(njoint):
         var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
@@ -397,7 +420,7 @@ def _rne_vel_derivative_env[
             dof_bodyid[dof_adr + d] = body_id
 
     # cdof_sc: shift lin to subtree COM
-    for d in range(NV):
+    for d in range(nv):
         var body = dof_bodyid[d]
         var ax = rebind[Scalar[DTYPE]](cdof[env, d * 6 + 0])
         var ay = rebind[Scalar[DTYPE]](cdof[env, d * 6 + 1])
@@ -419,9 +442,9 @@ def _rne_vel_derivative_env[
         )
 
     # body_dofadr / body_dofnum lookup
-    var body_dofadr = InlineArray[Int, NBODY](uninitialized=True)
-    var body_dofnum = InlineArray[Int, NBODY](uninitialized=True)
-    for b in range(NBODY):
+    var body_dofadr = Scratch[Int, cap[D.NBODY]()](nbody, uninitialized=0)
+    var body_dofnum = Scratch[Int, cap[D.NBODY]()](nbody, uninitialized=0)
+    for b in range(nbody):
         body_dofadr[b] = -1
         body_dofnum[b] = 0
     for j in range(njoint):
@@ -438,7 +461,7 @@ def _rne_vel_derivative_env[
         body_dofnum[body] = body_dofnum[body] + num_dof
 
     # cvel_sc + cdof_dot (per body, accumulate over the body's DOFs)
-    for b in range(NBODY):
+    for b in range(nbody):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         var cv_wx = Scalar[DTYPE](0)
         var cv_wy = Scalar[DTYPE](0)
@@ -570,11 +593,11 @@ def _rne_vel_derivative_env[
         cvel_sc[env, b * 6 + 5] = cv_vz
 
     # ── Step 1: Dcvel + Dcdofdot ─────────────────────────────────────────
-    for b in range(NBODY):
+    for b in range(nbody):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if parent >= 0:
-            for idx in range(6 * NV):
-                dcvel[env, b * 6 * NV + idx] = dcvel[env, parent * 6 * NV + idx]
+            for idx in range(6 * nv):
+                dcvel[env, b * 6 * nv + idx] = dcvel[env, parent * 6 * nv + idx]
         if body_dofadr[b] < 0:
             continue
         for j in range(njoint):
@@ -592,7 +615,7 @@ def _rne_vel_derivative_env[
                 for d in range(3):
                     var dof = dof_adr + d
                     for kk in range(6):
-                        dcvel[env, b * 6 * NV + kk * NV + dof] += rebind[
+                        dcvel[env, b * 6 * nv + kk * nv + dof] += rebind[
                             Scalar[DTYPE]
                         ](cdof_sc[env, dof * 6 + kk])
                 for d in range(3):
@@ -607,15 +630,15 @@ def _rne_vel_derivative_env[
                     var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
                     _mjd_crossMotion_vel(mat, cdof_v)
                     for ii in range(6):
-                        for kk in range(NV):
+                        for kk in range(nv):
                             var s = Scalar[DTYPE](0)
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    dcvel[env, b * 6 * NV + jj * NV + kk]
+                                    dcvel[env, b * 6 * nv + jj * nv + kk]
                                 )
-                            dcdofdot[env, dof * 6 * NV + ii * NV + kk] = s
+                            dcdofdot[env, dof * 6 * nv + ii * nv + kk] = s
                     for kk in range(6):
-                        dcvel[env, b * 6 * NV + kk * NV + dof] += rebind[
+                        dcvel[env, b * 6 * nv + kk * nv + dof] += rebind[
                             Scalar[DTYPE]
                         ](cdof_sc[env, dof * 6 + kk])
 
@@ -632,15 +655,15 @@ def _rne_vel_derivative_env[
                     var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
                     _mjd_crossMotion_vel(mat, cdof_v)
                     for ii in range(6):
-                        for kk in range(NV):
+                        for kk in range(nv):
                             var s = Scalar[DTYPE](0)
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    dcvel[env, b * 6 * NV + jj * NV + kk]
+                                    dcvel[env, b * 6 * nv + jj * nv + kk]
                                 )
-                            dcdofdot[env, dof * 6 * NV + ii * NV + kk] = s
+                            dcdofdot[env, dof * 6 * nv + ii * nv + kk] = s
                     for kk in range(6):
-                        dcvel[env, b * 6 * NV + kk * NV + dof] += rebind[
+                        dcvel[env, b * 6 * nv + kk * nv + dof] += rebind[
                             Scalar[DTYPE]
                         ](cdof_sc[env, dof * 6 + kk])
 
@@ -654,37 +677,37 @@ def _rne_vel_derivative_env[
                 var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
                 _mjd_crossMotion_vel(mat, cdof_v)
                 for ii in range(6):
-                    for kk in range(NV):
+                    for kk in range(nv):
                         var s = Scalar[DTYPE](0)
                         for jj in range(6):
                             s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                dcvel[env, b * 6 * NV + jj * NV + kk]
+                                dcvel[env, b * 6 * nv + jj * nv + kk]
                             )
-                        dcdofdot[env, dof * 6 * NV + ii * NV + kk] = s
+                        dcdofdot[env, dof * 6 * nv + ii * nv + kk] = s
                 for kk in range(6):
-                    dcvel[env, b * 6 * NV + kk * NV + dof] += rebind[
+                    dcvel[env, b * 6 * nv + kk * nv + dof] += rebind[
                         Scalar[DTYPE]
                     ](cdof_sc[env, dof * 6 + kk])
 
     # ── Step 2: forward pass — Dcacc + Dcfrcbody ─────────────────────────
-    for b in range(NBODY):
+    for b in range(nbody):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if parent >= 0:
-            for idx in range(6 * NV):
-                dcacc[env, b * 6 * NV + idx] = dcacc[env, parent * 6 * NV + idx]
+            for idx in range(6 * nv):
+                dcacc[env, b * 6 * nv + idx] = dcacc[env, parent * 6 * nv + idx]
 
         if body_dofadr[b] >= 0:
             var dof_start = body_dofadr[b]
             var dof_end = dof_start + body_dofnum[b]
             for j_dof in range(dof_start, dof_end):
                 for k in range(6):
-                    dcacc[env, b * 6 * NV + k * NV + j_dof] += rebind[
+                    dcacc[env, b * 6 * nv + k * nv + j_dof] += rebind[
                         Scalar[DTYPE]
                     ](cdof_dot[env, j_dof * 6 + k])
                 var qvel_j = rebind[Scalar[DTYPE]](qvel[env, j_dof])
-                for idx in range(6 * NV):
-                    dcacc[env, b * 6 * NV + idx] += (
-                        rebind[Scalar[DTYPE]](dcdofdot[env, j_dof * 6 * NV + idx])
+                for idx in range(6 * nv):
+                    dcacc[env, b * 6 * nv + idx] += (
+                        rebind[Scalar[DTYPE]](dcdofdot[env, j_dof * 6 * nv + idx])
                         * qvel_j
                     )
 
@@ -696,13 +719,13 @@ def _rne_vel_derivative_env[
         _mjd_mulInertVec_vel(dmul, ci)
 
         for ii in range(6):
-            for kk in range(NV):
+            for kk in range(nv):
                 var s = Scalar[DTYPE](0)
                 for jj in range(6):
                     s += dmul[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                        dcacc[env, b * 6 * NV + jj * NV + kk]
+                        dcacc[env, b * 6 * nv + jj * nv + kk]
                     )
-                dcfrcbody[env, b * 6 * NV + ii * NV + kk] = s
+                dcfrcbody[env, b * 6 * nv + ii * nv + kk] = s
 
         var cv = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
         for k in range(6):
@@ -720,33 +743,33 @@ def _rne_vel_derivative_env[
             mat[k] += mat2[k]
 
         for ii in range(6):
-            for kk in range(NV):
+            for kk in range(nv):
                 var s = Scalar[DTYPE](0)
                 for jj in range(6):
                     s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                        dcvel[env, b * 6 * NV + jj * NV + kk]
+                        dcvel[env, b * 6 * nv + jj * nv + kk]
                     )
-                dcfrcbody[env, b * 6 * NV + ii * NV + kk] += s
+                dcfrcbody[env, b * 6 * nv + ii * nv + kk] += s
 
     # ── Step 3: backward pass — accumulate to parents ────────────────────
-    for b in range(NBODY - 1, 0, -1):
+    for b in range(nbody - 1, 0, -1):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if parent >= 0:
-            for idx in range(6 * NV):
-                dcfrcbody[env, parent * 6 * NV + idx] += rebind[Scalar[DTYPE]](
-                    dcfrcbody[env, b * 6 * NV + idx]
+            for idx in range(6 * nv):
+                dcfrcbody[env, parent * 6 * nv + idx] += rebind[Scalar[DTYPE]](
+                    dcfrcbody[env, b * 6 * nv + idx]
                 )
 
     # ── Step 4: project to joint space — SUBTRACT into qderiv ────────────
-    for i in range(NV):
+    for i in range(nv):
         var body_i = dof_bodyid[i]
-        for k in range(NV):
+        for k in range(nv):
             var s = Scalar[DTYPE](0)
             for comp in range(6):
                 s += rebind[Scalar[DTYPE]](cdof_sc[env, i * 6 + comp]) * rebind[
                     Scalar[DTYPE]
-                ](dcfrcbody[env, body_i * 6 * NV + comp * NV + k])
-            qderiv[env, i * NV + k] -= s
+                ](dcfrcbody[env, body_i * 6 * nv + comp * nv + k])
+            qderiv[env, i * nv + k] -= s
 
 
 # ── launchable kernel (serial: one thread per env) ────────────────────────
@@ -757,7 +780,7 @@ def _rne_vel_derivative_fields_kernel[
     NJOINT: Int,
     BATCH: Int,
 ](
-    njoint: Int,
+    njoint_arg: Int64,
     bodies: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
     ],
@@ -790,38 +813,37 @@ def _rne_vel_derivative_fields_kernel[
     ],
     qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var njoint = Int(njoint_arg)
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rne_vel_derivative_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-        env, njoint, bodies, joints, xipos, xquat, qvel, cdof, cinert,
+    _rne_vel_derivative_env[DTYPE](
+        env, njoint, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), bodies, joints, xipos, xquat, qvel, cdof, cinert,
         cdof_sc, cvel_sc, cdof_dot, dcvel, dcdofdot, dcacc, dcfrcbody, qderiv,
     )
 
 
 def compute_rne_vel_derivative[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEQUALITY: Int,
-    NTENDON: Int,
-    NSITE: Int,
-    NEXCLUDE: Int,
-    NMESH_VERTS: Int,
     BATCH: Int,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
-        NMESH_VERTS,
-    ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut iscratch: ImplicitScratch[DTYPE, NV, NBODY, BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
+    # ⚠ `Dims[nv=NV, nbody=NBODY]` rather than a `D: DimsLike` parameter on
+    # this function: the body reads NV/NBODY throughout and every caller
+    # passes them positionally, so taking `D` here would pull those callers
+    # into 1c. Two `Dims[...]` with equal arguments are ONE type, so this
+    # matches whatever the caller built — and when the sweep gives this
+    # function a real `D`, the adapter is deleted, not rewired.
+    mut iscratch: ImplicitScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`d(qfrc_bias)/d(qvel)` SUBTRACTED into iscratch.qderiv (caller pre-loads
@@ -829,37 +851,49 @@ def compute_rne_vel_derivative[
     scratch.cdof; both targets. NJOINT>0 required (njoint read from meta)."""
     var njoint = Int(m.meta.data[MODEL_META_IDX_NJOINT])
 
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_NV6 = Layout.row_major(BATCH, NV * 6)
-    comptime L_B10 = Layout.row_major(BATCH, NBODY * 10)
-    comptime L_B6 = Layout.row_major(BATCH, NBODY * 6)
-    comptime L_DCVEL = Layout.row_major(BATCH, NBODY * 6 * NV)
-    comptime L_DCDOF = Layout.row_major(BATCH, NV * 6 * NV)
-    comptime L_QD = Layout.row_major(BATCH, NV * NV)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_NV6 = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_B10 = Layout.row_major(BATCH, D.NBODY * 10)
+    comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
+    comptime L_DCVEL = Layout.row_major(BATCH, D.NBODY * 6 * D.NV)
+    comptime L_DCDOF = Layout.row_major(BATCH, D.NV * 6 * D.NV)
+    comptime L_QD = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var cdof_v = scratch.cdof.lt["cpu", L_NV6]()
-        var cinert_v = iscratch.cinert.lt["cpu", L_B10]()
-        var cdof_sc_v = iscratch.cdof_sc.lt["cpu", L_NV6]()
-        var cvel_sc_v = iscratch.cvel_sc.lt["cpu", L_B6]()
-        var cdof_dot_v = iscratch.cdof_dot.lt["cpu", L_NV6]()
-        var dcvel_v = iscratch.dcvel.lt["cpu", L_DCVEL]()
-        var dcdofdot_v = iscratch.dcdofdot.lt["cpu", L_DCDOF]()
-        var dcacc_v = iscratch.dcacc.lt["cpu", L_DCVEL]()
-        var dcfrcbody_v = iscratch.dcfrcbody.lt["cpu", L_DCVEL]()
-        var qderiv_v = iscratch.qderiv.lt["cpu", L_QD]()
+        var dm = d.dims
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_NV6 = rl2(BATCH, dm.get_nv() * 6)
+        var rl_B10 = rl2(BATCH, dm.get_nbody() * 10)
+        var rl_B6 = rl2(BATCH, dm.get_nbody() * 6)
+        var rl_DCVEL = rl2(BATCH, dm.get_nbody() * 6 * dm.get_nv())
+        var rl_DCDOF = rl2(BATCH, dm.get_nv() * 6 * dm.get_nv())
+        var rl_QD = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_NV6)
+        var cinert_v = iscratch.cinert.lt_dyn["cpu", DYN2](rl_B10)
+        var cdof_sc_v = iscratch.cdof_sc.lt_dyn["cpu", DYN2](rl_NV6)
+        var cvel_sc_v = iscratch.cvel_sc.lt_dyn["cpu", DYN2](rl_B6)
+        var cdof_dot_v = iscratch.cdof_dot.lt_dyn["cpu", DYN2](rl_NV6)
+        var dcvel_v = iscratch.dcvel.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var dcdofdot_v = iscratch.dcdofdot.lt_dyn["cpu", DYN2](rl_DCDOF)
+        var dcacc_v = iscratch.dcacc.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var dcfrcbody_v = iscratch.dcfrcbody.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var qderiv_v = iscratch.qderiv.lt_dyn["cpu", DYN2](rl_QD)
         for e in range(BATCH):
-            _rne_vel_derivative_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-                e, njoint, bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
+            _rne_vel_derivative_env[DTYPE](
+                e, njoint, dm, bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
                 cdof_v, cinert_v, cdof_sc_v, cvel_sc_v, cdof_dot_v, dcvel_v,
                 dcdofdot_v, dcacc_v, dcfrcbody_v, qderiv_v,
             )
@@ -868,10 +902,10 @@ def compute_rne_vel_derivative[
         comptime BLOCKS = (BATCH + QD_TPB - 1) // QD_TPB
         c.enqueue_function[
             _rne_vel_derivative_fields_kernel[
-                DTYPE, NV, NBODY, NJOINT, BATCH
+                DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH
             ]
         ](
-            njoint,
+            Int64(njoint),
             m.bodies.lt["gpu", L_BODY](),
             m.joints.lt["gpu", L_JOINT](),
             d.xipos.lt["gpu", L_B3](),

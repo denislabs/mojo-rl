@@ -22,7 +22,7 @@ Ported from `deep_agents/muzero/evaluators.mojo` onto `nn` (`DT`).
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT

@@ -5,15 +5,22 @@ for true 3D rendering with Blinn-Phong lighting, depth buffering, and procedural
 checkerboard ground.
 """
 
-from std.memory import UnsafePointer, unsafe_memcpy, alloc
-from std.math import sqrt, sin, cos
+from std.memory import Pointer, unsafe_memcpy, alloc
+from std.math import sqrt, sin, cos, tan
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
     Quat as QuatGeneric,
     Mat4 as Mat4Generic,
 )
+# ⚠ THE ONE PLACE THE HFIELD SAMPLE POSITIONS ARE SPELLED. `mj_rayHfield`
+# builds the same surface for the physics; see that module's header for why a
+# second copy here would be a silent divergence.
+from mojo_rl.physics3d.model.hfield_surface import (
+    hfield_node_x, hfield_node_y, hfield_node_z,
+)
 from std.ffi import _get_dylib_function
 from std.sys import CompilationTarget
+from std.sys.info import size_of
 from .sdl import (
     _null_ptr,
     untracked,
@@ -147,6 +154,17 @@ from .sdl import (
 )
 from .camera3d import Camera3D
 from .types import Color
+from .imgui import (
+    ig_init,
+    ig_shutdown,
+    ig_new_frame,
+    ig_prepare,
+    ig_render,
+    ig_process_event,
+    ig_want_mouse,
+    ig_want_keyboard,
+    imgui_shim_available,
+)
 from .light import Light
 from .video_recorder import VideoRecorder
 from .gpu_types import (
@@ -173,6 +191,8 @@ from .gpu_types import (
 from .sdl.sdl_keyboard import get_mod_state
 from .sdl.sdl_keycode import Keymod
 from .stl_loader import load_stl
+from .skn_loader import load_skn, SkinData
+from .skinning import resolve_skin_bones, skin_pose
 from .gpu_mesh import (
     generate_sphere,
     generate_box,
@@ -195,7 +215,7 @@ from .gpu_shaders import (
     TEXT_VERTEX_MSL,
     TEXT_FRAGMENT_MSL,
 )
-from .font_atlas import build_font_atlas_r8, glyph_uv
+from .font_atlas import build_font_atlas_r8, glyph_uv, solid_uv
 from .png_loader import load_png, TextureData
 from .gpu_shaders_spirv import load_spirv_shaders, SPIRVShaders
 
@@ -207,8 +227,17 @@ comptime Mat4 = Mat4Generic[DType.float64]
 # Maximum line vertices per frame
 comptime MAX_LINE_VERTICES = 512
 
-# Maximum text characters per frame for HUD overlay
-comptime MAX_TEXT_CHARS = 512
+# Maximum text characters per frame for HUD overlay.
+#
+# ⚠ THIS IS ALSO THE RECTANGLE BUDGET. `draw_rect` writes quads into the same
+# buffer, so panels and buttons spend from the same pot as glyphs.
+#
+# Raised 512 → 2048 on 2026-08-03 for the viewer's 39-row task list. The old
+# value left ~55 quads of headroom (the engine HUD plus four application lines
+# already cost ~457), and one list blows through that several times over. Cost
+# is a static 2048*4*32 = 256 KiB vertex buffer plus a 24 KiB index buffer,
+# allocated once at init.
+comptime MAX_TEXT_CHARS = 2048
 
 
 # --- Line color entry for list storage ---
@@ -249,6 +278,226 @@ struct LineColorEntry(Copyable, Movable):
         return out^
 
 
+struct HfieldCacheEntry(Movable):
+    """A `<hfield>` surface: its GPU home and the revision it was built from.
+
+    ⚠ THE GPU SIDE LIVES IN `mesh_cache`, exactly as `SkinCacheEntry`'s does —
+    a heightfield is an ordinary indexed triangle mesh once its vertices are
+    computed, so it is drawn by the existing mesh path and released by the
+    existing `_release_model_caches`. What this entry adds is the state that
+    tells a re-upload from a redraw.
+
+    ⚠ THE TOPOLOGY NEVER CHANGES, ONLY THE HEIGHTS. `nrow`/`ncol` are fixed by
+    the asset, so the INDEX buffer is uploaded once and only the vertex buffer
+    is rewritten. That is what makes a per-episode terrain affordable: escape's
+    grid is 80,000 triangles, and re-deriving its 240,000 indices every reset
+    would cost far more than the elevations do.
+
+    ⚠ `revision` IS THE WHOLE REASON THIS IS NOT `draw_skin`. A skin deforms
+    every frame and re-uploads unconditionally; a heightfield changes only when
+    the task rewrites it — once per episode for `quadruped escape`, never for a
+    terrain loaded from a PNG. Uploading 1.3 MB at 60 Hz for a surface that is
+    not moving is the shape this field exists to avoid.
+    """
+
+    var name: String
+    var mesh_idx: Int
+    var revision: Int
+    var nrow: Int
+    var ncol: Int
+
+    var transfer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+    """Persistent upload staging. ⚠ ALLOCATED ONCE — see `SkinCacheEntry`."""
+    var vbuf_bytes: Int
+
+    var verts: List[GPUVertex]
+    """Scratch for the rebuild. A field rather than a local for the same reason
+    the skin's is, even though this runs per RESET and not per frame: 40,401
+    vertices is not an allocation to make casually."""
+
+    def __init__[
+        tb_o: MutOrigin, //
+    ](
+        out self,
+        var name: String,
+        mesh_idx: Int,
+        nrow: Int,
+        ncol: Int,
+        transfer: Ptr[GPUTransferBuffer, tb_o],
+        vbuf_bytes: Int,
+    ):
+        self.name = name^
+        self.mesh_idx = mesh_idx
+        # ⚠ NOT 0. `revision` 0 is a legitimate value a caller can pass on the
+        # very first frame, and starting equal to it would skip the initial
+        # upload and draw a FLAT sheet until the first reset.
+        self.revision = -1
+        self.nrow = nrow
+        self.ncol = ncol
+        self.transfer = untracked(transfer)
+        self.vbuf_bytes = vbuf_bytes
+        self.verts = List[GPUVertex]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.mesh_idx = move.mesh_idx
+        self.revision = move.revision
+        self.nrow = move.nrow
+        self.ncol = move.ncol
+        self.transfer = move.transfer
+        self.vbuf_bytes = move.vbuf_bytes
+        self.verts = move.verts^
+
+
+struct SkinCacheEntry(Movable):
+    """A loaded skin: its rest data, its bone->body map, and its GPU home.
+
+    ⚠ THE GPU SIDE LIVES IN `mesh_cache`, not here. The posed skin is an
+    ordinary indexed triangle mesh once it has been deformed, so it is drawn by
+    the existing mesh path (`SolidDrawCommand.is_mesh`) and its buffers are
+    released by the existing `_release_model_caches`. What this entry adds is
+    the CPU state a mesh geom never needs: the rest vertices, the bones, and
+    the scratch the per-frame deformation writes into.
+
+    ⚠ THE SCRATCH IS FIELDS, NOT LOCALS, and that is the point. `draw_skin`
+    runs every frame; allocating 24k vertices' worth of `List` per frame would
+    cost more than the skinning does.
+    """
+
+    var name: String
+    var skin: SkinData
+    var bone_body: List[Int]
+    var n_unbound: Int
+    """Bones whose body name matched nothing. Reported once at load — the
+    symptom is a collapsed region of the mesh, never an error."""
+
+    var mesh_idx: Int
+    """Index into `mesh_cache`. Its vertex buffer is rewritten every frame; its
+    index buffer never changes, since deformation moves vertices and not
+    topology."""
+
+    var transfer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+    """Persistent upload staging. ⚠ ALLOCATED ONCE. Creating a transfer buffer
+    per frame is the shape that has burned this codebase before."""
+    var vbuf_bytes: Int
+
+    var posed: List[Float32]
+    var normals: List[Float32]
+    var verts: List[GPUVertex]
+
+    def __init__[
+        tb_o: MutOrigin, //
+    ](
+        out self,
+        var name: String,
+        var skin: SkinData,
+        var bone_body: List[Int],
+        n_unbound: Int,
+        mesh_idx: Int,
+        transfer: Ptr[GPUTransferBuffer, tb_o],
+        vbuf_bytes: Int,
+    ):
+        self.name = name^
+        self.skin = skin^
+        self.bone_body = bone_body^
+        self.n_unbound = n_unbound
+        self.mesh_idx = mesh_idx
+        self.transfer = untracked(transfer)
+        self.vbuf_bytes = vbuf_bytes
+        self.posed = List[Float32]()
+        self.normals = List[Float32]()
+        self.verts = List[GPUVertex]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.skin = move.skin^
+        self.bone_body = move.bone_body^
+        self.n_unbound = move.n_unbound
+        self.mesh_idx = move.mesh_idx
+        self.transfer = move.transfer
+        self.vbuf_bytes = move.vbuf_bytes
+        self.posed = move.posed^
+        self.normals = move.normals^
+        self.verts = move.verts^
+
+
+@fieldwise_init
+struct RendererHandoff(Copyable, Movable):
+    """The window, device and every MODEL-INDEPENDENT GPU resource, detached
+    from one `Renderer3D` so the next one can adopt them.
+
+    WHY THIS EXISTS. A tool that swaps models — the dm_control viewer — used to
+    destroy the whole renderer per switch, and with it the SDL window. A
+    destroyed window is re-created wherever the OS decides, which on a
+    multi-monitor desktop means it JUMPS BACK to the primary display: the user
+    drags the viewer to an external screen, picks another robot, and the window
+    reappears on the laptop. It also blinks, drops the ImGui context (and with
+    it the sidebar's expanded/scrolled state), and pays for shader compilation,
+    the font atlas and the static meshes all over again.
+
+    ⚠ MODEL-INDEPENDENT IS THE WHOLE CRITERION. Everything here is built from
+    the swapchain format and the window size, never from the model: pipelines,
+    depth/shadow targets, the sphere/box/ground meshes, the line and text
+    buffers, the 1x1 default texture. What is NOT here — the capsule, cylinder,
+    STL and PNG caches — is keyed by the model's geoms and is released by
+    `detach`, because carrying it over would hand the next model the previous
+    one's limb meshes.
+
+    ⚠ `shadow_size` COMES FROM THE MODEL (`<visual shadowsize=>`), so the
+    shadow map is carried but re-created when the sizes disagree. It rides here
+    rather than in the caches because most models agree and re-allocating a
+    4096² depth texture per switch is the one adoption that would visibly cost
+    something.
+    """
+
+    var window: Ptr[Window, MutUntrackedOrigin]
+    var device: Ptr[GPUDevice, MutUntrackedOrigin]
+    var swapchain_format: GPUTextureFormat
+
+    var width: Int
+    var height: Int
+    """The window's size AT DETACH, not the size the renderer was built with.
+    The user may have resized it, and the adopting renderer has to agree with
+    the swapchain or it re-creates the depth texture on its first frame."""
+
+    var solid_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var ground_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var line_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var shadow_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var reflection_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var skybox_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var text_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+
+    var depth_texture: Ptr[GPUTexture, MutUntrackedOrigin]
+    var shadow_map: Ptr[GPUTexture, MutUntrackedOrigin]
+    var shadow_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+    var shadow_size: Int
+
+    var sphere_mesh: MeshHandle
+    var box_mesh: MeshHandle
+    var ground_mesh: MeshHandle
+
+    var line_vertex_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var line_transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+
+    var font_atlas_tex: Ptr[GPUTexture, MutUntrackedOrigin]
+    var font_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+    var text_vertex_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var text_index_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var text_transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+
+    var default_texture: Ptr[GPUTexture, MutUntrackedOrigin]
+    var default_tex_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+
+    var imgui_on: Bool
+    """Whether the ImGui backend is still attached to this window+device.
+
+    It survives a handoff untouched — the context, its font texture and its
+    pipeline all live on the device being carried over — so the adopting
+    renderer must NOT call `ig_init` again. `imgui_init` returns early on
+    `imgui_on`, which is exactly that."""
+
+
 struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
@@ -256,7 +505,7 @@ struct Renderer3D(Movable):
     rendering with procedural checkerboard ground and flat-color line drawing.
     """
 
-    # SDL3 handles. Mojo nightly removed nullable UnsafePointer; these
+    # SDL3 handles. Mojo nightly removed nullable Pointer; these
     # GPU resources are populated by init() and need to be wrapped in
     # Optional[] so the field can start out empty.
     var window: Optional[Ptr[Window, MutUntrackedOrigin]]
@@ -288,6 +537,21 @@ struct Renderer3D(Movable):
         CapsuleCacheEntry
     ]  # Same cache type (radius, half_height)
     var mesh_cache: List[MeshCacheEntry]
+    var mesh_failed: List[String]
+    """Meshes whose load or upload raised, so the diagnostic prints ONCE.
+
+    ⚠⚠ `draw_mesh` USED TO `return` SILENTLY ON A FAILURE, and a mesh geom
+    that draws nothing is indistinguishable from one the model never
+    declared — the viewer just shows a robot with parts missing. That is the
+    most expensive kind of bug this renderer can have, because the model, the
+    parse, the asset table and the kinematics can all be verified correct
+    while the picture stays wrong. Printing per frame would be 60 lines a
+    second, so the name is recorded here and reported once."""
+    var hfield_cache: List[HfieldCacheEntry]
+    var skin_cache: List[SkinCacheEntry]
+    """Deformable skins. Separate from `mesh_cache` because a skin carries CPU
+    state a rigid mesh never needs; its GPU buffers still live in `mesh_cache`.
+    See `SkinCacheEntry`."""
 
     # Texture cache for PNG textures
     var texture_cache: List[TextureCacheEntry]
@@ -338,6 +602,50 @@ struct Renderer3D(Movable):
     # State
     var initialized: Bool
     var should_quit: Bool
+    # Most recent key the renderer's own bindings did NOT claim, 0 when none.
+    # The event switch below decodes a fixed set (ESC, 1-9, SPACE, RIGHT, R,
+    # S, V) and swallows everything else; without this an application has no
+    # way to bind a key of its own. Read it with `take_key`, which clears.
+    var last_key: Int
+    # Pointer state for screen-space UI. The pump already receives these
+    # coordinates and used to keep only a button bool, so nothing could
+    # hit-test a widget.
+    var mouse_x: Float32
+    var mouse_y: Float32
+    var mouse_clicked: Bool
+    var text_budget_warned: Bool
+    """One-shot latch so an exhausted quad budget is reported, not swallowed."""
+    var text_input_mode: Bool
+    """When set, the renderer claims NO keyboard shortcut and forwards every
+    keycode to the application via `take_key`.
+
+    ⚠ WITHOUT THIS A TEXT FIELD IS UNUSABLE, not merely awkward. The bindings
+    below swallow R, S, V, SPACE, 1-9 and ESC before the app ever sees them, so
+    typing "reacher" would reset the camera, save a screenshot and start a
+    video recording. ESC is included deliberately: quitting the window mid-word
+    is worse than making the app responsible for unfocusing."""
+    var pointer_claimed: Bool
+    """An OVERLAY that owns the pointer without ImGui knowing it does.
+
+    ⚠⚠ `ig_want_mouse()` IS NOT A COMPLETE ANSWER, and the gap is not
+    theoretical. ImGuizmo draws into a window created with
+    `ImGuiWindowFlags_NoInputs`, so ImGui truthfully reports that it does NOT
+    want the mouse while a gizmo handle is being dragged — and the drag then
+    orbits the camera at the same time as it moves the part. Anything
+    hit-testing the viewport for itself sets this each frame and the press
+    latch below reads it beside `ig_mouse`.
+
+    ⚠ WRITTEN BY THE APPLICATION, ONE FRAME AHEAD, which is the same staleness
+    `ig_want_mouse` already has and for the same reason: the overlay can only
+    answer after its own layout has run."""
+    var ui_sidebar_width: Int
+    """Pixels reserved on the LEFT for screen-space UI. 0 = full-window scene.
+
+    ⚠ THIS RESERVES SPACE, it does not merely draw over it. The 3D phases get a
+    viewport inset by this much and the camera's aspect is corrected to match,
+    so the scene is squeezed rather than stretched or cropped. The HUD/text
+    phase then runs at FULL window size, which is what lets widgets live in the
+    reserved strip while the scene keeps the remainder to itself."""
     var draw_grid: Bool
     var draw_axes: Bool
 
@@ -371,6 +679,32 @@ struct Renderer3D(Movable):
     var default_eye: Vec3
     var default_target: Vec3
 
+    # Dear ImGui overlay (see mojo_rl/render/imgui/). OPT-IN: nothing here
+    # touches the ImGui shim unless `imgui_init()` succeeded, so the FFI
+    # dependency stays confined to applications that ask for it.
+    var capture_scene_only: Bool
+    """Crop screenshots and recordings to the 3D viewport.
+
+    ⚠ CROPPED ON THE CPU, NOT ON THE GPU. Narrowing the download region
+    instead would be the obvious move and is a trap: SDL_GPU texture downloads
+    carry row-pitch alignment rules, so an arbitrary `ui_sidebar_width` can
+    produce a skewed image rather than an error. The full swapchain is
+    downloaded as before and the columns are dropped in numpy, which has no
+    alignment to satisfy.
+
+    No effect when `ui_sidebar_width` is 0 — with no reserved strip there is
+    nothing to crop away."""
+
+    var imgui_on: Bool
+    var imgui_frame_open: Bool
+    """True between `imgui_new_frame()` and the `ImGui::Render()` inside
+    `end_frame`.
+
+    ⚠ ONCE A FRAME IS OPEN IT MUST BE CLOSED, on every path. ImGui asserts on
+    the *next* `NewFrame` if the previous one was never rendered, so the close
+    happens before `end_frame`'s early return on a missing swapchain texture
+    rather than beside the draw call."""
+
     def __init__(
         out self,
         width: Int = 800,
@@ -396,6 +730,14 @@ struct Renderer3D(Movable):
         self.draw_grid = draw_grid
         self.draw_axes = draw_axes
         self.should_quit = False
+        self.last_key = 0
+        self.mouse_x = 0
+        self.mouse_y = 0
+        self.mouse_clicked = False
+        self.text_budget_warned = False
+        self.ui_sidebar_width = 0
+        self.pointer_claimed = False
+        self.text_input_mode = False
         self.initialized = False
 
         # Copy camera
@@ -446,6 +788,9 @@ struct Renderer3D(Movable):
         self.capsule_cache = List[CapsuleCacheEntry]()
         self.cylinder_cache = List[CapsuleCacheEntry]()
         self.mesh_cache = List[MeshCacheEntry]()
+        self.mesh_failed = List[String]()
+        self.hfield_cache = List[HfieldCacheEntry]()
+        self.skin_cache = List[SkinCacheEntry]()
 
         # Texture cache
         self.texture_cache = List[TextureCacheEntry]()
@@ -484,6 +829,9 @@ struct Renderer3D(Movable):
         self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
+        self.capture_scene_only = True
+        self.imgui_on = False
+        self.imgui_frame_open = False
         if len(lights) > 0:
             self.lights = lights.copy()
         else:
@@ -525,6 +873,9 @@ struct Renderer3D(Movable):
         self.capsule_cache = move.capsule_cache^
         self.cylinder_cache = move.cylinder_cache^
         self.mesh_cache = move.mesh_cache^
+        self.mesh_failed = move.mesh_failed^
+        self.hfield_cache = move.hfield_cache^
+        self.skin_cache = move.skin_cache^
         self.texture_cache = move.texture_cache^
         self.default_texture = move.default_texture^
         self.default_tex_sampler = move.default_tex_sampler^
@@ -568,8 +919,19 @@ struct Renderer3D(Movable):
         self.recording_tb_size = move.recording_tb_size
         self.default_eye = move.default_eye
         self.default_target = move.default_target
+        self.capture_scene_only = move.capture_scene_only
+        self.imgui_on = move.imgui_on
+        self.imgui_frame_open = move.imgui_frame_open
         self.initialized = move.initialized
         self.should_quit = move.should_quit
+        self.last_key = move.last_key
+        self.mouse_x = move.mouse_x
+        self.mouse_y = move.mouse_y
+        self.mouse_clicked = move.mouse_clicked
+        self.text_budget_warned = move.text_budget_warned
+        self.ui_sidebar_width = move.ui_sidebar_width
+        self.pointer_claimed = move.pointer_claimed
+        self.text_input_mode = move.text_input_mode
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -585,6 +947,23 @@ struct Renderer3D(Movable):
 
     def init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
+        self.init(title, None)
+
+    def init(
+        mut self, mut title: String, adopt: Optional[RendererHandoff]
+    ) raises:
+        """Initialize, or ADOPT a `RendererHandoff` from a previous renderer.
+
+        Adopting skips every step below: the window, the device and all the
+        model-independent GPU resources already exist and are simply re-pointed
+        at. That is what lets a model swap keep the same window — same monitor,
+        same position, same size, no blink — instead of destroying it and
+        letting the OS re-place the replacement. See `RendererHandoff`.
+        """
+        if adopt:
+            self._adopt(adopt.value())
+            return
+
         # 1. Init SDL3
         init(InitFlags.INIT_VIDEO)
 
@@ -642,6 +1021,264 @@ struct Renderer3D(Movable):
         self._create_default_texture()
 
         self.initialized = True
+
+    def _adopt(mut self, h: RendererHandoff) raises:
+        """Take over a previous renderer's window, device and shared GPU
+        resources. The counterpart of `detach`."""
+        self.window = h.window
+        self.device = h.device
+        self.swapchain_format = h.swapchain_format
+
+        self.solid_pipeline = h.solid_pipeline
+        self.ground_pipeline = h.ground_pipeline
+        self.line_pipeline = h.line_pipeline
+        self.shadow_pipeline = h.shadow_pipeline
+        self.reflection_pipeline = h.reflection_pipeline
+        self.skybox_pipeline = h.skybox_pipeline
+        self.text_pipeline = h.text_pipeline
+
+        self.sphere_mesh = h.sphere_mesh.copy()
+        self.box_mesh = h.box_mesh.copy()
+        self.ground_mesh = h.ground_mesh.copy()
+
+        self.line_vertex_buffer = h.line_vertex_buffer
+        self.line_transfer_buffer = h.line_transfer_buffer
+
+        self.font_atlas_tex = h.font_atlas_tex
+        self.font_sampler = h.font_sampler
+        self.text_vertex_buffer = h.text_vertex_buffer
+        self.text_index_buffer = h.text_index_buffer
+        self.text_transfer_buffer = h.text_transfer_buffer
+
+        self.default_texture = h.default_texture
+        self.default_tex_sampler = h.default_tex_sampler
+
+        self.imgui_on = h.imgui_on
+        self.imgui_frame_open = False
+
+        # ⚠ THE WINDOW'S SIZE WINS, not the size this renderer asked for. The
+        # user may have resized it since the last model was built; disagreeing
+        # with the live swapchain would make `render_frame`'s resize branch fire
+        # on the first frame and throw away the depth texture we just adopted.
+        self.width = h.width
+        self.height = h.height
+        self.camera.set_screen_size(self.scene_width(), self.height)
+        self.depth_texture = h.depth_texture
+
+        # Shadow map resolution is the one adopted resource the MODEL chooses
+        # (`<visual shadowsize=>`), so a disagreement means re-creating it.
+        if self.shadow_size == h.shadow_size:
+            self.shadow_map = h.shadow_map
+            self.shadow_sampler = h.shadow_sampler
+        else:
+            release_gpu_texture(self.device.value(), h.shadow_map)
+            release_gpu_sampler(self.device.value(), h.shadow_sampler)
+            self._create_shadow_resources()
+
+        self.initialized = True
+
+    def detach(mut self) raises -> RendererHandoff:
+        """Release only the MODEL-SPECIFIC GPU state and hand the rest over.
+
+        Leaves `self` uninitialized, so the usual `close()` on the way out is a
+        no-op and the window survives the renderer that opened it. The caller
+        now owns the handoff and MUST either pass it to another renderer's
+        `init` or end it with `close_handoff` — nothing else will free the
+        device.
+
+        ⚠ NOT A CHEAPER `close()`. `close()` still exists and still tears
+        everything down; this is the switch path only.
+        """
+        # Recording is per-renderer bookkeeping (frame counter, output file),
+        # and the next model is a different video. Stop rather than carry.
+        if self.recorder.is_recording:
+            self.recorder.stop()
+        if self.recording_tb:
+            release_gpu_transfer_buffer(
+                self.device.value(), self.recording_tb.value()
+            )
+            self.recording_tb = None
+            self.recording_tb_size = 0
+
+        self._release_model_caches()
+
+        var h = RendererHandoff(
+            window=self.window.value(),
+            device=self.device.value(),
+            swapchain_format=self.swapchain_format,
+            width=self.width,
+            height=self.height,
+            solid_pipeline=self.solid_pipeline.value(),
+            ground_pipeline=self.ground_pipeline.value(),
+            line_pipeline=self.line_pipeline.value(),
+            shadow_pipeline=self.shadow_pipeline.value(),
+            reflection_pipeline=self.reflection_pipeline.value(),
+            skybox_pipeline=self.skybox_pipeline.value(),
+            text_pipeline=self.text_pipeline.value(),
+            depth_texture=self.depth_texture.value(),
+            shadow_map=self.shadow_map.value(),
+            shadow_sampler=self.shadow_sampler.value(),
+            shadow_size=self.shadow_size,
+            sphere_mesh=self.sphere_mesh.value().copy(),
+            box_mesh=self.box_mesh.value().copy(),
+            ground_mesh=self.ground_mesh.value().copy(),
+            line_vertex_buffer=self.line_vertex_buffer.value(),
+            line_transfer_buffer=self.line_transfer_buffer.value(),
+            font_atlas_tex=self.font_atlas_tex.value(),
+            font_sampler=self.font_sampler.value(),
+            text_vertex_buffer=self.text_vertex_buffer.value(),
+            text_index_buffer=self.text_index_buffer.value(),
+            text_transfer_buffer=self.text_transfer_buffer.value(),
+            default_texture=self.default_texture.value(),
+            default_tex_sampler=self.default_tex_sampler.value(),
+            imgui_on=self.imgui_on,
+        )
+
+        # ⚠ DROP EVERY HANDLE, don't merely lower the flag. `close()` guards on
+        # `initialized`, but a stray `imgui_close()` or a future teardown path
+        # reading a still-populated field would release an object the NEXT
+        # renderer is drawing with — a use-after-free that only shows up as a
+        # corrupted frame.
+        self.initialized = False
+        self.imgui_on = False
+        self.imgui_frame_open = False
+        self.window = None
+        self.device = None
+        self.solid_pipeline = None
+        self.ground_pipeline = None
+        self.line_pipeline = None
+        self.shadow_pipeline = None
+        self.reflection_pipeline = None
+        self.skybox_pipeline = None
+        self.text_pipeline = None
+        self.depth_texture = None
+        self.shadow_map = None
+        self.shadow_sampler = None
+        self.sphere_mesh = None
+        self.box_mesh = None
+        self.ground_mesh = None
+        self.line_vertex_buffer = None
+        self.line_transfer_buffer = None
+        self.font_atlas_tex = None
+        self.font_sampler = None
+        self.text_vertex_buffer = None
+        self.text_index_buffer = None
+        self.text_transfer_buffer = None
+        self.default_texture = None
+        self.default_tex_sampler = None
+        return h^
+
+    @staticmethod
+    def close_handoff(var h: RendererHandoff) raises:
+        """Tear down a handoff nobody adopted — the end of a switch chain.
+
+        The viewer calls this when the LAST model's window is closed for real,
+        because by then the window and device belong to the handoff rather than
+        to any live renderer.
+        """
+        if h.imgui_on:
+            ig_shutdown()
+
+        release_gpu_buffer(h.device, h.sphere_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.sphere_mesh.index_buffer)
+        release_gpu_buffer(h.device, h.box_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.box_mesh.index_buffer)
+        release_gpu_buffer(h.device, h.ground_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.ground_mesh.index_buffer)
+
+        release_gpu_texture(h.device, h.default_texture)
+        release_gpu_sampler(h.device, h.default_tex_sampler)
+
+        release_gpu_buffer(h.device, h.line_vertex_buffer)
+        release_gpu_transfer_buffer(h.device, h.line_transfer_buffer)
+
+        release_gpu_texture(h.device, h.depth_texture)
+        release_gpu_texture(h.device, h.shadow_map)
+        release_gpu_sampler(h.device, h.shadow_sampler)
+
+        release_gpu_buffer(h.device, h.text_vertex_buffer)
+        release_gpu_buffer(h.device, h.text_index_buffer)
+        release_gpu_transfer_buffer(h.device, h.text_transfer_buffer)
+        release_gpu_texture(h.device, h.font_atlas_tex)
+        release_gpu_sampler(h.device, h.font_sampler)
+
+        release_gpu_graphics_pipeline(h.device, h.solid_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.ground_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.line_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.shadow_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.reflection_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.skybox_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.text_pipeline)
+
+        release_window_from_gpu_device(h.device, h.window)
+        destroy_window(h.window)
+        destroy_gpu_device(h.device)
+        quit()
+
+    def _release_model_caches(mut self) raises:
+        """Free the geom-keyed GPU caches — capsules, cylinders, STL meshes and
+        PNG textures.
+
+        ⚠ THE CYLINDER CACHE IS IN HERE FOR A REASON. `close()` released the
+        capsule, mesh and texture caches and silently skipped the cylinders;
+        that was a one-shot leak at exit, but on the switch path it would be a
+        leak PER SWITCH, which is how a viewer someone leaves open for an hour
+        ends up out of GPU memory.
+        """
+        for i in range(len(self.capsule_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.capsule_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.capsule_cache[i].mesh.index_buffer
+            )
+        self.capsule_cache.clear()
+
+        for i in range(len(self.cylinder_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.cylinder_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.cylinder_cache[i].mesh.index_buffer
+            )
+        self.cylinder_cache.clear()
+
+        for i in range(len(self.mesh_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.mesh_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.mesh_cache[i].mesh.index_buffer
+            )
+        self.mesh_cache.clear()
+
+        for i in range(len(self.texture_cache)):
+            release_gpu_texture(
+                self.device.value(), self.texture_cache[i].texture
+            )
+            release_gpu_sampler(
+                self.device.value(), self.texture_cache[i].sampler
+            )
+        self.texture_cache.clear()
+
+        # ⚠ THE SKIN'S VERTEX/INDEX BUFFERS ARE ALREADY GONE — they live in
+        # `mesh_cache`, released above. What is left here is the persistent
+        # upload staging, which nothing else owns. Clearing the list too keeps
+        # `mesh_idx` from outliving the `mesh_cache` it points into: on a task
+        # switch that index would otherwise address another model's mesh.
+        for i in range(len(self.skin_cache)):
+            release_gpu_transfer_buffer(
+                self.device.value(), self.skin_cache[i].transfer
+            )
+        self.skin_cache.clear()
+        # Same argument as the skins above: the mesh buffers are already gone,
+        # what is left is staging this list alone owns, and `mesh_idx` must not
+        # outlive the `mesh_cache` it points into.
+        for i in range(len(self.hfield_cache)):
+            release_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[i].transfer
+            )
+        self.hfield_cache.clear()
 
     def _create_shader_msl(
         self,
@@ -782,29 +1419,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var solid_attrs = alloc[GPUVertexAttribute](3)
-        solid_attrs[0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var solid_attrs = List[GPUVertexAttribute]()
+        solid_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        solid_attrs[1] = GPUVertexAttribute(
+        ))
+        solid_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        solid_attrs[2] = GPUVertexAttribute(
+        ))
+        solid_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var solid_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=solid_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=solid_attrs,
+            vertex_attributes=solid_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -921,29 +1562,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var ground_attrs = alloc[GPUVertexAttribute](3)
-        ground_attrs[0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var ground_attrs = List[GPUVertexAttribute]()
+        ground_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        ground_attrs[1] = GPUVertexAttribute(
+        ))
+        ground_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        ground_attrs[2] = GPUVertexAttribute(
+        ))
+        ground_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var ground_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=ground_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=ground_attrs,
+            vertex_attributes=ground_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1131,29 +1776,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var shadow_attrs = alloc[GPUVertexAttribute](3)
-        shadow_attrs[0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var shadow_attrs = List[GPUVertexAttribute]()
+        shadow_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        shadow_attrs[1] = GPUVertexAttribute(
+        ))
+        shadow_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        shadow_attrs[2] = GPUVertexAttribute(
+        ))
+        shadow_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var shadow_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=shadow_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=shadow_attrs,
+            vertex_attributes=shadow_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1254,29 +1903,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var refl_attrs = alloc[GPUVertexAttribute](3)
-        refl_attrs[0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var refl_attrs = List[GPUVertexAttribute]()
+        refl_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        refl_attrs[1] = GPUVertexAttribute(
+        ))
+        refl_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        refl_attrs[2] = GPUVertexAttribute(
+        ))
+        refl_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var refl_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=refl_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=refl_attrs,
+            vertex_attributes=refl_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1306,13 +1959,26 @@ struct Renderer3D(Movable):
                 padding3=0,
             ),
             depth_stencil_state=GPUDepthStencilState(
-                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+                # ⚠ ALWAYS, NOT LESS — the reflection now draws AFTER the
+                # ground (Phase B2), and the ground has written depth by then.
+                # Under LESS every reflection fragment would be rejected by the
+                # very floor it belongs on, and the pass would silently render
+                # nothing. It was LESS while this ran BEFORE the ground, where
+                # the depth buffer was still cleared to far and the test passed
+                # everything — i.e. it was already a no-op, so nothing is lost.
+                #
+                # With no depth test, what keeps reflections from painting over
+                # the sky past the ground's rim is the fragment shader's own
+                # distance fade, which is tighter than the ground's. Still no
+                # depth WRITE: reflections must not occlude the solids drawn
+                # after them.
+                compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
                 back_stencil_state=self._no_stencil_op(),
                 front_stencil_state=self._no_stencil_op(),
                 compare_mask=0,
                 write_mask=0,
                 enable_depth_test=True,
-                enable_depth_write=False,  # Don't write depth (ground renders on top)
+                enable_depth_write=False,
                 enable_stencil_test=False,
                 padding1=0,
                 padding2=0,
@@ -1431,11 +2097,15 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=skybox_pi)
         ))
 
-        # Free heap-allocated vertex attribute arrays
-        solid_attrs.free()
-        ground_attrs.free()
-        shadow_attrs.free()
-        refl_attrs.free()
+
+        # Keep the attribute lists alive until every pipeline is built. The
+        # borrow through `GPUVertexInputState` should already guarantee this,
+        # but the pointers cross an FFI boundary and a premature free here is
+        # silent — the same shape that made the HDF5 buffers read freed memory.
+        _ = solid_attrs
+        _ = ground_attrs
+        _ = shadow_attrs
+        _ = refl_attrs
 
         # Release shader objects (pipelines retain them)
         release_gpu_shader(self.device.value(), solid_vs)
@@ -1467,7 +2137,23 @@ struct Renderer3D(Movable):
         self.depth_texture = untracked(create_gpu_texture(self.device.value(), Ptr(to=info)))
 
     def _create_shadow_resources(mut self) raises:
-        """Create shadow map texture and comparison sampler."""
+        """Create shadow map texture and comparison sampler.
+
+        ⚠⚠ `shadow_size` COMES FROM THE MODEL (`<visual><quality
+        shadowsize=>`) AND MuJoCo LETS IT BE ZERO — that is how a model turns
+        shadows OFF. Menagerie's umi_gripper writes `shadowsize="0"`, and
+        passing it straight through aborted SDL: "width, height, and
+        layer_count_or_depth must be >= 1", inside an assert that kills the
+        process rather than raising. The model had already parsed and built;
+        the only visible outcome was an empty error message.
+
+        Clamped rather than branched: the shadow PASS still runs and samples a
+        1x1 map, which is a shadow nobody can see — the same end state the
+        model asked for, without a second code path through the renderer that
+        only a handful of models would ever exercise.
+        """
+        if self.shadow_size < 1:
+            self.shadow_size = 1
         # Shadow map: D32_FLOAT, usable as both depth target and sampler source
         var sm_info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
@@ -1524,18 +2210,18 @@ struct Renderer3D(Movable):
 
         # Map and copy data
         var mapped = map_gpu_transfer_buffer(self.device.value(), transfer_buf, False)
-        var mapped_ptr = mapped.bitcast[UInt8]()
+        var mapped_ptr = mapped.unsafe_bitcast[UInt8]()
 
         # Copy vertices
         unsafe_memcpy(
             dest=mapped_ptr,
-            src=UnsafePointer(to=mesh_data.vertices[0]).bitcast[UInt8](),
+            src=Pointer(to=mesh_data.vertices[0]).unsafe_bitcast[UInt8](),
             count=Int(vb_size),
         )
         # Copy indices after vertices
         unsafe_memcpy(
-            dest=mapped_ptr + Int(vb_size),
-            src=UnsafePointer(to=mesh_data.indices[0]).bitcast[UInt8](),
+            dest=mapped_ptr.unsafe_offset(Int(vb_size)),
+            src=Pointer(to=mesh_data.indices[0]).unsafe_bitcast[UInt8](),
             count=Int(ib_size),
         )
 
@@ -1655,9 +2341,9 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=atlas_tb_info)
         ))
         var mapped = map_gpu_transfer_buffer(self.device.value(), atlas_tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(8192):
-            (mapped_u8 + i)[] = atlas[i]
+            mapped_u8[unsafe_offset=i] = atlas[i]
         unmap_gpu_transfer_buffer(self.device.value(), atlas_tb)
 
         var atlas_cmd = acquire_gpu_command_buffer(self.device.value())
@@ -1731,29 +2417,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var text_attrs = alloc[GPUVertexAttribute](3)
-        text_attrs[0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var text_attrs = List[GPUVertexAttribute]()
+        text_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=0,
-        )
-        text_attrs[1] = GPUVertexAttribute(
+        ))
+        text_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=8,
-        )
-        text_attrs[2] = GPUVertexAttribute(
+        ))
+        text_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT4,
             offset=16,
-        )
+        ))
         var text_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=text_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=text_attrs,
+            vertex_attributes=text_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1826,7 +2516,7 @@ struct Renderer3D(Movable):
         self.text_pipeline = untracked(create_gpu_graphics_pipeline(
             self.device.value(), Ptr(to=text_pi)
         ))
-        text_attrs.free()
+        _ = text_attrs  # keep alive across pipeline creation
         release_gpu_shader(self.device.value(), text_vs)
         release_gpu_shader(self.device.value(), text_fs)
 
@@ -1871,15 +2561,15 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=idx_tb_info)
         ))
         var idx_mapped = map_gpu_transfer_buffer(self.device.value(), idx_tb, False)
-        var idx_ptr = idx_mapped.bitcast[UInt16]()
+        var idx_ptr = idx_mapped.unsafe_bitcast[UInt16]()
         for q in range(MAX_TEXT_CHARS):
             var base = UInt16(q * 4)
-            (idx_ptr + q * 6 + 0)[] = base + 0
-            (idx_ptr + q * 6 + 1)[] = base + 1
-            (idx_ptr + q * 6 + 2)[] = base + 2
-            (idx_ptr + q * 6 + 3)[] = base + 2
-            (idx_ptr + q * 6 + 4)[] = base + 3
-            (idx_ptr + q * 6 + 5)[] = base + 0
+            idx_ptr[unsafe_offset=q * 6 + 0] = base + 0
+            idx_ptr[unsafe_offset=q * 6 + 1] = base + 1
+            idx_ptr[unsafe_offset=q * 6 + 2] = base + 2
+            idx_ptr[unsafe_offset=q * 6 + 3] = base + 2
+            idx_ptr[unsafe_offset=q * 6 + 4] = base + 3
+            idx_ptr[unsafe_offset=q * 6 + 5] = base + 0
         unmap_gpu_transfer_buffer(self.device.value(), idx_tb)
 
         var idx_cmd = acquire_gpu_command_buffer(self.device.value())
@@ -1920,11 +2610,11 @@ struct Renderer3D(Movable):
         )
         var tb = untracked(create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info)))
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
-        (mapped_u8 + 0)[] = UInt8(255)  # R
-        (mapped_u8 + 1)[] = UInt8(255)  # G
-        (mapped_u8 + 2)[] = UInt8(255)  # B
-        (mapped_u8 + 3)[] = UInt8(255)  # A
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
+        mapped_u8[unsafe_offset=0] = UInt8(255)  # R
+        mapped_u8[unsafe_offset=1] = UInt8(255)  # G
+        mapped_u8[unsafe_offset=2] = UInt8(255)  # B
+        mapped_u8[unsafe_offset=3] = UInt8(255)  # A
         unmap_gpu_transfer_buffer(self.device.value(), tb)
 
         var cmd = acquire_gpu_command_buffer(self.device.value())
@@ -1989,6 +2679,27 @@ struct Renderer3D(Movable):
         Returns:
             Index into self.texture_cache.
         """
+        # ⚠⚠ A ZERO-SIZED TEXTURE ABORTS SDL, NOT JUST THIS UPLOAD.
+        # `SDL_CreateGPUTexture` asserts "width, height, and
+        # layer_count_or_depth must be >= 1", and the raise that follows
+        # carried an EMPTY message — so the whole model failed to open with no
+        # reason given. Menagerie's umi_gripper is the trigger: a
+        # `<texture type="2d" file="...png"/>` declares no width/height,
+        # because for a file texture the PNG carries them, and anything that
+        # reads the XML's (absent) values gets 0.
+        #
+        # Refusing ONE texture is the right blast radius: the model still
+        # loads and the geom draws untextured, which is visible and
+        # recoverable, unlike an abort.
+        if texture_data.width < 1 or texture_data.height < 1:
+            raise Error(
+                "texture '" + name + "' has no pixels ("
+                + String(texture_data.width) + "x"
+                + String(texture_data.height)
+                + ") — a file texture takes its size from the image, so a 0"
+                " here means the image did not load. Skipping it."
+            )
+
         # Check cache
         for i in range(len(self.texture_cache)):
             if self.texture_cache[i].matches(name):
@@ -2020,9 +2731,9 @@ struct Renderer3D(Movable):
         )
         var tb = untracked(create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info)))
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(Int(byte_size)):
-            (mapped_u8 + i)[] = texture_data.pixels[i]
+            mapped_u8[unsafe_offset=i] = texture_data.pixels[i]
         unmap_gpu_transfer_buffer(self.device.value(), tb)
 
         var cmd = acquire_gpu_command_buffer(self.device.value())
@@ -2107,8 +2818,6 @@ struct Renderer3D(Movable):
             color: RGBA text color.
             scale: Pixel scale factor (default 2 = 16×16 per char).
         """
-        if len(self.text_vertex_data) >= MAX_TEXT_CHARS * 4 * 8:
-            return  # budget exhausted
         var cr = Float32(color.r) / 255.0
         var cg = Float32(color.g) / 255.0
         var cb = Float32(color.b) / 255.0
@@ -2117,6 +2826,14 @@ struct Renderer3D(Movable):
         var glyph_h = Float32(8 * scale)
         var cx = x
         for i in range(text.byte_length()):
+            # ⚠ PER CHARACTER, not once per call. The check used to sit above
+            # the loop, which let a single long string append past the end of
+            # a buffer sized for MAX_TEXT_CHARS quads — the upload path copies
+            # `len(text_vertex_data)` floats with no clamp of its own, so that
+            # was a write past the mapped transfer buffer, not a dropped glyph.
+            # It never fired only because every caller was short.
+            if not self._text_budget_ok():
+                break
             var c = text.as_bytes()[i]
             var uv = glyph_uv(c)
             var u0 = uv[0]
@@ -2223,6 +2940,261 @@ struct Renderer3D(Movable):
 
         self.solid_draws.append(
             SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
+        )
+
+    def take_click(mut self) -> Bool:
+        """True once per mouse press; clears on read like `take_key`."""
+        var c = self.mouse_clicked
+        self.mouse_clicked = False
+        return c
+
+    def set_text_input_mode(mut self, on: Bool):
+        """Suspend the renderer's own key bindings while a field has focus."""
+        self.text_input_mode = on
+
+    def request_camera(mut self, index: Int):
+        """Same channel the 1-9 keys use; read once by the next render."""
+        self.camera_switch_request = index
+
+    def request_screenshot(mut self):
+        self.screenshot_requested = True
+
+    def is_recording(self) -> Bool:
+        return self.recorder.is_recording
+
+    def recording_frames(self) -> Int:
+        return self.recorder.frame_count
+
+    def toggle_recording(mut self) raises:
+        """Start/stop video capture — the V key's behaviour, as a method."""
+        if self.recorder.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording(
+                "recording_" + String(self.screenshot_counter) + ".mp4"
+            )
+
+    def paused(self) -> Bool:
+        return self.is_paused
+
+    def toggle_pause(mut self):
+        self.is_paused = not self.is_paused
+
+    def scene_width(self) -> Int:
+        """Window width minus the reserved UI strip; at least 1."""
+        var w = self.width - self.ui_sidebar_width
+        return w if w > 1 else 1
+
+    def set_ui_sidebar_width(mut self, w: Int):
+        """Reserve `w` pixels on the left for UI and re-fit the camera.
+
+        Correcting the aspect here is the whole point: without it the scene
+        would keep a full-window aspect while being drawn into a narrower
+        viewport, which reads as everything being horizontally stretched — a
+        subtle wrongness that is easy to blame on the model.
+        """
+        self.ui_sidebar_width = w if w > 0 else 0
+        self.camera.set_screen_size(self.scene_width(), self.height)
+
+    def set_pointer_claimed(mut self, on: Bool):
+        """Declare that an overlay ImGui cannot speak for owns the pointer.
+
+        See `pointer_claimed`. Set it EVERY frame — it is a level, not an
+        event, and a latched True would leave the camera permanently frozen.
+        """
+        self.pointer_claimed = on
+
+    def set_capture_scene_only(mut self, on: Bool):
+        """Whether screenshots/recordings exclude the reserved UI strip."""
+        self.capture_scene_only = on
+
+    def _capture_x(self) -> Int:
+        """First column of the capture region."""
+        return self.ui_sidebar_width if self.capture_scene_only else 0
+
+    def _capture_w(self) -> Int:
+        """Columns to capture; 0 means the whole frame (the recorder's
+        "no crop" sentinel), which is what a full-window capture wants."""
+        if not self.capture_scene_only or self.ui_sidebar_width <= 0:
+            return 0
+        return self.scene_width()
+
+    # --- Dear ImGui overlay ---
+
+    def imgui_init(mut self) raises -> Bool:
+        """Attach an ImGui context to THIS window and device. Idempotent.
+
+        Returns False (having printed why) when the shim is missing or ImGui
+        declines the device, so a viewer can fall back instead of dying: the
+        3D scene is perfectly usable without a UI, and an FFI dependency that
+        takes the whole tool down with it would be a poor trade.
+        """
+        if self.imgui_on:
+            return True
+        if not self.initialized:
+            print("imgui_init: renderer not initialized")
+            return False
+        if not imgui_shim_available():
+            print(
+                "imgui_init: Dear ImGui shim not built — run"
+                " `pixi run build-imgui`"
+            )
+            return False
+        self.imgui_on = ig_init(
+            self.window.value(),
+            self.device.value(),
+            UInt32(Int(self.swapchain_format)),
+        )
+        if not self.imgui_on:
+            print("imgui_init: ImGui declined this GPU device")
+        return self.imgui_on
+
+    def imgui_new_frame(mut self) raises:
+        """Open an ImGui frame. Call BEFORE building any widgets, and before
+        `render_frame`; `end_frame` closes it."""
+        if not self.imgui_on:
+            return
+        ig_new_frame()
+        self.imgui_frame_open = True
+
+    def imgui_active(self) -> Bool:
+        return self.imgui_on
+
+    def imgui_close(mut self) raises:
+        """Detach ImGui. Must run BEFORE the device and window are destroyed,
+        since the backend releases GPU objects it created on them."""
+        if not self.imgui_on:
+            return
+        # An open frame here means the app quit mid-frame. ImGui's shutdown
+        # tolerates that; the flag is cleared so a later re-init starts clean.
+        self.imgui_frame_open = False
+        self.imgui_on = False
+        ig_shutdown()
+
+    def _text_budget_ok(mut self) -> Bool:
+        """Room for one more quad? Complains ONCE if not.
+
+        Overflow used to be a silent `return`, which is the worst shape for
+        this failure: the frame still renders, just missing whatever came
+        last, so a half-drawn list reads as a layout or logic bug rather than
+        as a budget that ran out. One line on stderr costs nothing and names
+        the actual cause.
+        """
+        if len(self.text_vertex_data) < MAX_TEXT_CHARS * 4 * 8:
+            return True
+        if not self.text_budget_warned:
+            self.text_budget_warned = True
+            print(
+                "[renderer3d] HUD/UI quad budget exhausted at",
+                MAX_TEXT_CHARS,
+                "quads — text and rectangles beyond this are DROPPED this"
+                " frame and every frame after. Raise MAX_TEXT_CHARS in"
+                " renderer3d.mojo.",
+            )
+        return False
+
+    def draw_rect(
+        mut self,
+        x: Float32,
+        y: Float32,
+        w: Float32,
+        h: Float32,
+        color: Color = Color(30, 30, 40, 220),
+    ):
+        """Filled screen-space rectangle, in pixels, top-left origin.
+
+        Rides the FONT pipeline: the same textured-quad buffer `draw_text`
+        writes into, with UVs pinned to the atlas's solid cell. That keeps the
+        UI to one draw pass and needs no second shader — but it also means
+        rectangles share `MAX_TEXT_CHARS` budget with text, so a panel is
+        worth a few characters.
+        """
+        if not self._text_budget_ok():
+            return
+        var cr = Float32(color.r) / 255.0
+        var cg = Float32(color.g) / 255.0
+        var cb = Float32(color.b) / 255.0
+        var ca = Float32(color.a) / 255.0
+        var uv = solid_uv()
+        var u = uv[0]
+        var v = uv[1]
+
+        # ⚠ InlineArray has no positional-variadic ctor; fill then assign.
+        var xs = InlineArray[Float32, 4](fill=Float32(0))
+        var ys = InlineArray[Float32, 4](fill=Float32(0))
+        xs[0] = x
+        ys[0] = y
+        xs[1] = x + w
+        ys[1] = y
+        xs[2] = x + w
+        ys[2] = y + h
+        xs[3] = x
+        ys[3] = y + h
+        for i in range(4):
+            self.text_vertex_data.append(xs[i])
+            self.text_vertex_data.append(ys[i])
+            self.text_vertex_data.append(u)
+            self.text_vertex_data.append(v)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
+
+    def take_key(mut self) -> Int:
+        """Consume the last unclaimed keycode (0 if none since the last call).
+
+        Clearing on read is what makes this usable as an EVENT rather than a
+        state: a viewer polling once per frame gets each press exactly once.
+        """
+        var k = self.last_key
+        self.last_key = 0
+        return k
+
+    def draw_ellipsoid(
+        mut self,
+        center: Vec3,
+        orientation: Quat,
+        radii: Vec3,
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a solid ellipsoid — the sphere mesh under a non-uniform scale.
+
+        `draw_sphere` already composes its model matrix with a scale vector
+        `(r, r, r)`; an ellipsoid is the same call with three different radii
+        and a real orientation, so this costs a mesh reuse and nothing else.
+
+        Added 2026-08-03: `mjGEOM_ELLIPSOID` had no branch in
+        `ModelDefFromXML.render_body_geoms` and no fallback either, so every
+        ellipsoid geom was silently INVISIBLE — quadruped's torso, and geoms in
+        swimmer, fish and finger. A viewer that hides a robot's torso is worse
+        than no viewer, since it reads as a broken model rather than a missing
+        draw call.
+
+        Args:
+            center: Ellipsoid center in world space.
+            orientation: World orientation.
+            radii: Semi-axes (x, y, z) in the ellipsoid's local frame.
+            color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+        """
+        var model = Mat4.compose(center, orientation, radii)
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(0, uniforms, texture_cache_idx=-1)
         )
 
     def draw_capsule(
@@ -2484,7 +3456,17 @@ struct Renderer3D(Movable):
                 self.mesh_cache.append(MeshCacheEntry(name, handle^))
                 cache_idx = len(self.mesh_cache) - 1
             except e:
-                # File not found or parse error — skip this mesh silently
+                # ⚠ ONCE, NOT PER FRAME, and never silently. See `mesh_failed`.
+                var seen = False
+                for k in range(len(self.mesh_failed)):
+                    if self.mesh_failed[k] == name:
+                        seen = True
+                if not seen:
+                    self.mesh_failed.append(name)
+                    print(
+                        "Warning: mesh '", name, "' did not load — DRAWN AS"
+                        " NOTHING. path='", file_path, "' :", String(e),
+                    )
                 return
 
         # Load and cache texture if provided
@@ -2542,6 +3524,457 @@ struct Renderer3D(Movable):
                 texture_cache_idx=tex_idx,
             )
         )
+
+    def draw_heightfield(
+        mut self,
+        name: String,
+        center: Vec3,
+        orientation: Quat,
+        nrow: Int,
+        ncol: Int,
+        size_x: Float64,
+        size_y: Float64,
+        size_z: Float64,
+        grid: List[Float64],
+        adr: Int,
+        revision: Int,
+        color: Color = Color(80, 110, 140, 255),
+        shininess: Float32 = 0.2,
+        specular: Float32 = 0.15,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a MuJoCo `<hfield>` elevation surface.
+
+        Args:
+            name: Cache key.
+            center: The geom's world position.
+            orientation: The geom's world orientation.
+            nrow: Grid rows (the y axis).
+            ncol: Grid columns (the x axis).
+            size_x: Half-extent along local x, `hfield_size[0]`.
+            size_y: Half-extent along local y, `hfield_size[1]`.
+            size_z: Elevation scale, `hfield_size[2]`.
+            grid: The elevation grid, NORMALISED TO [0, 1].
+            adr: Offset of this field's first sample within `grid`.
+            revision: Bump to force a rebuild; see `HfieldCacheEntry`.
+            color: Surface colour.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+
+        ⚠ THE VERTEX CONVENTION IS `mj_rayHfield`'s, COPIED RATHER THAN
+        RE-DERIVED. Sample (r, c) sits at
+        `x = 2*size_x*c/(ncol-1) - size_x`, `y = 2*size_y*r/(nrow-1) - size_y`,
+        `z = grid[adr + r*ncol + c] * size_z`, and each cell is split
+        `(r,c)-(r,c+1)-(r+1,c+1)` then `(r,c)-(r+1,c+1)-(r+1,c)`. Getting the
+        split or the winding wrong draws a surface that looks plausible and does
+        not match the one the rangefinders hit — which is the single thing this
+        view exists to check.
+
+        ⚠ THE VERTICES ARE LOCAL, NOT WORLD, unlike `draw_skin`'s. The geom's
+        pose goes in the model matrix, so a terrain on a moving body follows it
+        for free and the cached buffer stays valid when it does.
+
+        ⚠ THE BASE IS NOT DRAWN HERE. A `<hfield>` is a surface on a box that
+        extends `size[3]` below z=0; this draws the surface only, and the caller
+        adds the base with `draw_box` if it wants one. Keeping them apart means
+        a caller can suppress a base that is 0.1 m thick under a 60 m field
+        without losing the terrain.
+        """
+        if nrow < 2 or ncol < 2:
+            return
+        var need = adr + nrow * ncol
+        if need > len(grid):
+            # ⚠ REPORTED ONCE, THEN DRAWN AS NOTHING — `draw_mesh`'s rule. A
+            # short grid is a wiring fault upstream, and a per-frame print
+            # would bury it under itself.
+            var seen = False
+            for k in range(len(self.mesh_failed)):
+                if self.mesh_failed[k] == name:
+                    seen = True
+            if not seen:
+                self.mesh_failed.append(name)
+                print(
+                    "Warning: heightfield '", name, "' needs", need,
+                    "samples and the grid holds", len(grid),
+                    "— DRAWN AS NOTHING.",
+                )
+            return
+
+        var idx = -1
+        for i in range(len(self.hfield_cache)):
+            if self.hfield_cache[i].name == name:
+                idx = i
+                break
+
+        var nv = nrow * ncol
+        if idx < 0:
+            # ── first sight: topology, buffers, staging ──────────────────
+            var seed = MeshData()
+            seed.vertices.reserve(nv)
+            seed.indices.reserve(6 * (nrow - 1) * (ncol - 1))
+            for _ in range(nv):
+                seed.vertices.append(GPUVertex(px=0, py=0, pz=0, nz=Float32(1)))
+            for r in range(nrow - 1):
+                for c in range(ncol - 1):
+                    var i00 = UInt32(r * ncol + c)
+                    var i01 = UInt32(r * ncol + c + 1)
+                    var i11 = UInt32((r + 1) * ncol + c + 1)
+                    var i10 = UInt32((r + 1) * ncol + c)
+                    seed.indices.append(i00)
+                    seed.indices.append(i01)
+                    seed.indices.append(i11)
+                    seed.indices.append(i00)
+                    seed.indices.append(i11)
+                    seed.indices.append(i10)
+
+            var vb_bytes = seed.vertex_byte_size()
+            var handle = self._upload_mesh(seed)
+            self.mesh_cache.append(MeshCacheEntry(name, handle^))
+            var mesh_idx = len(self.mesh_cache) - 1
+
+            var tb_info = GPUTransferBufferCreateInfo(
+                usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                size=UInt32(vb_bytes),
+                props=PropertiesID(0),
+            )
+            var transfer = untracked(
+                create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info))
+            )
+
+            var entry = HfieldCacheEntry(
+                name, mesh_idx, nrow, ncol, transfer, vb_bytes
+            )
+            for _ in range(nv):
+                entry.verts.append(GPUVertex(px=0, py=0, pz=0))
+            self.hfield_cache.append(entry^)
+            idx = len(self.hfield_cache) - 1
+            print(
+                "Built heightfield '", name, "':", nrow, "x", ncol, "=",
+                2 * (nrow - 1) * (ncol - 1), "triangles",
+            )
+
+        # ── rebuild the elevations, only when they moved ──────────────────
+        if self.hfield_cache[idx].revision != revision:
+            self.hfield_cache[idx].revision = revision
+            var dx = 2.0 * size_x / Float64(ncol - 1)
+            var dy = 2.0 * size_y / Float64(nrow - 1)
+            for r in range(nrow):
+                for c in range(ncol):
+                    var v = r * ncol + c
+                    var z = hfield_node_z(grid, adr, ncol, r, c, size_z)
+                    # ⚠ NORMALS BY CENTRAL DIFFERENCE ON THE GRID, not by
+                    # averaging the two triangles a vertex belongs to. The
+                    # difference is visible: per-face normals on a bump field
+                    # give the faceted look that makes a smooth bowl read as a
+                    # tessellation artefact, which is exactly the wrong thing
+                    # for a view whose job is judging the terrain's SHAPE.
+                    var cm = c - 1 if c > 0 else c
+                    var cp = c + 1 if c < ncol - 1 else c
+                    var rm = r - 1 if r > 0 else r
+                    var rp = r + 1 if r < nrow - 1 else r
+                    var zdx = (
+                        grid[adr + r * ncol + cp] - grid[adr + r * ncol + cm]
+                    ) * size_z
+                    var zdy = (
+                        grid[adr + rp * ncol + c] - grid[adr + rm * ncol + c]
+                    ) * size_z
+                    var wx = dx * Float64(cp - cm)
+                    var wy = dy * Float64(rp - rm)
+                    # The surface is z = f(x, y), so the (unnormalised) normal
+                    # is (-df/dx, -df/dy, 1). `wx`/`wy` are never 0 because
+                    # nrow and ncol are both at least 2.
+                    var n = Vec3(-zdx / wx, -zdy / wy, 1.0).normalized()
+                    self.hfield_cache[idx].verts[v] = GPUVertex(
+                        px=Float32(hfield_node_x(c, ncol, size_x)),
+                        py=Float32(hfield_node_y(r, nrow, size_y)),
+                        pz=Float32(z),
+                        nx=Float32(n.x),
+                        ny=Float32(n.y),
+                        nz=Float32(n.z),
+                        u=Float32(Float64(c) / Float64(ncol - 1)),
+                        v=Float32(Float64(r) / Float64(nrow - 1)),
+                    )
+
+            var vb_size = UInt32(self.hfield_cache[idx].vbuf_bytes)
+            var mapped = map_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[idx].transfer, True
+            )
+            unsafe_memcpy(
+                dest=mapped.unsafe_bitcast[UInt8](),
+                src=Pointer(
+                    to=self.hfield_cache[idx].verts[0]
+                ).unsafe_bitcast[UInt8](),
+                count=Int(vb_size),
+            )
+            unmap_gpu_transfer_buffer(
+                self.device.value(), self.hfield_cache[idx].transfer
+            )
+
+            var mi = self.hfield_cache[idx].mesh_idx
+            var cmd_buf = acquire_gpu_command_buffer(self.device.value())
+            var copy_pass = begin_gpu_copy_pass(cmd_buf)
+            var src = GPUTransferBufferLocation(
+                transfer_buffer=untracked(self.hfield_cache[idx].transfer),
+                offset=0,
+            )
+            var dst = GPUBufferRegion(
+                buffer=untracked(self.mesh_cache[mi].mesh.vertex_buffer),
+                offset=0,
+                size=vb_size,
+            )
+            upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), True)
+            end_gpu_copy_pass(copy_pass)
+            submit_gpu_command_buffer(cmd_buf)
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(Mat4.from_quat(orientation, center))
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=self.hfield_cache[idx].mesh_idx,
+                texture_cache_idx=-1,
+            )
+        )
+
+    def draw_skin(
+        mut self,
+        name: String,
+        skn_path: String,
+        body_names: List[String],
+        xpos: List[Float32],
+        xquat: List[Float32],
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.4,
+        specular: Float32 = 0.3,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Deform a MuJoCo `.skn` by the current body poses and queue it.
+
+        Args:
+            name: Cache key.
+            skn_path: Path to the binary `.skn`.
+            body_names: Model body names, index-aligned with `xpos`/`xquat`.
+            xpos: World body positions, 3 per body.
+            xquat: World body orientations, 4 per body, (w, x, y, z).
+            color: Modulates the texture.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            texture_name: Cache key for the texture (empty = untextured).
+            texture_path: Path to the PNG (empty = untextured).
+
+        ⚠ THE VERTICES GO UP IN WORLD SPACE, so the draw carries an IDENTITY
+        model matrix. Skinning has already applied each bone's transform; a
+        second one on the GPU would apply the torso's motion twice.
+
+        The first call loads, resolves bones and allocates; every call after it
+        deforms and re-uploads. Failure to LOAD is reported and then swallowed,
+        matching `draw_mesh` — a missing asset should cost you the skin, not
+        the window.
+        """
+        var idx = -1
+        for i in range(len(self.skin_cache)):
+            if self.skin_cache[i].name == name:
+                idx = i
+                break
+
+        if idx < 0:
+            idx = self._load_skin(name, skn_path, body_names)
+            if idx < 0:
+                return
+
+        # ── deform ───────────────────────────────────────────────────────
+        skin_pose(
+            self.skin_cache[idx].skin,
+            self.skin_cache[idx].bone_body,
+            xpos,
+            xquat,
+            self.skin_cache[idx].posed,
+            self.skin_cache[idx].normals,
+        )
+
+        var nv = self.skin_cache[idx].skin.nvert
+        var textured = self.skin_cache[idx].skin.has_texcoords()
+        for v in range(nv):
+            var u = Float32(0)
+            var tv = Float32(0)
+            if textured:
+                u = self.skin_cache[idx].skin.texcoord[2 * v]
+                tv = self.skin_cache[idx].skin.texcoord[2 * v + 1]
+            self.skin_cache[idx].verts[v] = GPUVertex(
+                px=self.skin_cache[idx].posed[3 * v],
+                py=self.skin_cache[idx].posed[3 * v + 1],
+                pz=self.skin_cache[idx].posed[3 * v + 2],
+                nx=self.skin_cache[idx].normals[3 * v],
+                ny=self.skin_cache[idx].normals[3 * v + 1],
+                nz=self.skin_cache[idx].normals[3 * v + 2],
+                u=u,
+                v=tv,
+            )
+
+        # ── upload into the mesh's existing vertex buffer ─────────────────
+        var vb_size = UInt32(self.skin_cache[idx].vbuf_bytes)
+        var mapped = map_gpu_transfer_buffer(
+            self.device.value(), self.skin_cache[idx].transfer, True
+        )
+        unsafe_memcpy(
+            dest=mapped.unsafe_bitcast[UInt8](),
+            src=Pointer(to=self.skin_cache[idx].verts[0]).unsafe_bitcast[
+                UInt8
+            ](),
+            count=Int(vb_size),
+        )
+        unmap_gpu_transfer_buffer(
+            self.device.value(), self.skin_cache[idx].transfer
+        )
+
+        var mi = self.skin_cache[idx].mesh_idx
+        var cmd_buf = acquire_gpu_command_buffer(self.device.value())
+        var copy_pass = begin_gpu_copy_pass(cmd_buf)
+        var src = GPUTransferBufferLocation(
+            transfer_buffer=untracked(self.skin_cache[idx].transfer), offset=0
+        )
+        var dst = GPUBufferRegion(
+            buffer=untracked(self.mesh_cache[mi].mesh.vertex_buffer),
+            offset=0,
+            size=vb_size,
+        )
+        # `cycle=True`: the GPU may still be reading last frame's copy of this
+        # buffer, and this is a per-frame overwrite of the whole thing.
+        upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), True)
+        end_gpu_copy_pass(copy_pass)
+        submit_gpu_command_buffer(cmd_buf)
+
+        # ── texture ──────────────────────────────────────────────────────
+        var tex_idx = -1
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print(
+                        "Loaded skin texture '", texture_name, "':",
+                        tex_data.width, "x", tex_data.height,
+                    )
+                except e:
+                    print("Warning: skin texture load failed:", String(e))
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = make_identity_f32()
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else Float32(0.0)
+        uniforms.material[3] = Float32(0.0)
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=mi,
+                texture_cache_idx=tex_idx,
+            )
+        )
+
+    def _load_skin(
+        mut self, name: String, skn_path: String, body_names: List[String]
+    ) raises -> Int:
+        """Load a `.skn`, bind its bones and allocate its GPU home. -1 on
+        failure (already reported)."""
+        var skin: SkinData
+        try:
+            skin = load_skn(skn_path)
+        except e:
+            print("Warning: skin load failed:", String(e))
+            return -1
+
+        # ⚠ 16-BIT INDICES. `MeshData` and the mesh draw path are UInt16
+        # throughout, so a skin past 65535 vertices would WRAP silently and
+        # scramble the topology. dog is 24065; refuse anything that would not
+        # fit rather than render a knot.
+        if skin.nvert > 65535:
+            print(
+                "Warning: skin '", name, "' has", skin.nvert,
+                "vertices; the mesh path is 16-bit indexed (max 65535)",
+            )
+            return -1
+
+        var bone_body = resolve_skin_bones(skin, body_names)
+        var n_unbound = 0
+        for b in range(len(bone_body)):
+            if bone_body[b] < 0:
+                n_unbound += 1
+                print(
+                    "Warning: skin bone '", skin.bones[b].body_name,
+                    "' matches no body — that region will collapse",
+                )
+
+        # Seed the buffers from the REST mesh. The first frame overwrites the
+        # vertices anyway; this exists so the index buffer and the allocation
+        # come from the one code path that already works.
+        var seed = MeshData()
+        seed.vertices.reserve(skin.nvert)
+        seed.indices.reserve(3 * skin.nface)
+        var textured = skin.has_texcoords()
+        for v in range(skin.nvert):
+            seed.vertices.append(
+                GPUVertex(
+                    px=skin.vert[3 * v],
+                    py=skin.vert[3 * v + 1],
+                    pz=skin.vert[3 * v + 2],
+                    nz=Float32(1.0),
+                    u=skin.texcoord[2 * v] if textured else Float32(0),
+                    v=skin.texcoord[2 * v + 1] if textured else Float32(0),
+                )
+            )
+        for i in range(3 * skin.nface):
+            seed.indices.append(UInt32(Int(skin.face[i])))
+
+        var vb_bytes = seed.vertex_byte_size()
+        var handle = self._upload_mesh(seed)
+        self.mesh_cache.append(MeshCacheEntry(name, handle^))
+        var mesh_idx = len(self.mesh_cache) - 1
+
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=UInt32(vb_bytes),
+            props=PropertiesID(0),
+        )
+        var transfer = untracked(
+            create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info))
+        )
+
+        var nv = skin.nvert
+        var entry = SkinCacheEntry(
+            name, skin^, bone_body^, n_unbound, mesh_idx, transfer, vb_bytes
+        )
+        for _ in range(nv):
+            entry.verts.append(GPUVertex(px=0, py=0, pz=0))
+        self.skin_cache.append(entry^)
+
+        print(
+            "Loaded skin '", name, "':", nv, "verts,",
+            len(self.skin_cache[len(self.skin_cache) - 1].skin.bones),
+            "bones,", n_unbound, "unbound",
+        )
+        return len(self.skin_cache) - 1
+
 
     def draw_box(
         mut self,
@@ -2642,6 +4075,25 @@ struct Renderer3D(Movable):
         self.skybox_uniforms.bottom_color[1] = bottom_g
         self.skybox_uniforms.bottom_color[2] = bottom_b
         self.skybox_uniforms.bottom_color[3] = 1.0
+
+    def set_skybox_stars(
+        mut self,
+        r: Float32,
+        g: Float32,
+        b: Float32,
+        density: Float32,
+    ):
+        """Turn on the procedural starfield (MuJoCo `mark="random"`).
+
+        `density` is MuJoCo's `random` attribute — the fraction of texture
+        pixels it would have marked, default .01 — reused here as the fraction
+        of direction cells holding a star. Passing 0 disables it, which is what
+        a model without `mark="random"` gets.
+        """
+        self.skybox_uniforms.mark_color[0] = r
+        self.skybox_uniforms.mark_color[1] = g
+        self.skybox_uniforms.mark_color[2] = b
+        self.skybox_uniforms.mark_color[3] = density
 
     def set_ground_checker_colors(
         mut self,
@@ -2859,7 +4311,7 @@ struct Renderer3D(Movable):
         bind_gpu_index_buffer(
             render_pass,
             Ptr(to=ib_binding),
-            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
         )
         draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
 
@@ -2886,9 +4338,9 @@ struct Renderer3D(Movable):
             var mapped = map_gpu_transfer_buffer(
                 self.device.value(), self.line_transfer_buffer.value(), True
             )
-            var mapped_f32 = mapped.bitcast[Float32]()
+            var mapped_f32 = mapped.unsafe_bitcast[Float32]()
             for i in range(len(self.line_vertex_data)):
-                (mapped_f32 + i)[] = self.line_vertex_data[i]
+                mapped_f32[unsafe_offset=i] = self.line_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.line_transfer_buffer.value())
 
             var copy_pass = begin_gpu_copy_pass(cmd_buf)
@@ -2907,13 +4359,21 @@ struct Renderer3D(Movable):
         var num_text_chars = (
             len(self.text_vertex_data) // 32
         )  # 32 floats per quad (4 verts × 8 floats)
+        # ⚠ CLAMP, do not trust the producers. The transfer buffer holds
+        # exactly MAX_TEXT_CHARS quads; the loop below writes through a raw
+        # mapped pointer, so one caller appending past the cap would corrupt
+        # memory rather than lose a glyph. `draw_text`/`draw_rect` check their
+        # own budget, but this is the write that has to be safe.
+        if num_text_chars > MAX_TEXT_CHARS:
+            num_text_chars = MAX_TEXT_CHARS
+        var n_text_floats = num_text_chars * 32
         if num_text_chars > 0:
             var text_mapped = map_gpu_transfer_buffer(
                 self.device.value(), self.text_transfer_buffer.value(), True
             )
-            var text_mapped_f32 = text_mapped.bitcast[Float32]()
-            for i in range(len(self.text_vertex_data)):
-                (text_mapped_f32 + i)[] = self.text_vertex_data[i]
+            var text_mapped_f32 = text_mapped.unsafe_bitcast[Float32]()
+            for i in range(n_text_floats):
+                text_mapped_f32[unsafe_offset=i] = self.text_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.text_transfer_buffer.value())
 
             var text_copy_pass = begin_gpu_copy_pass(cmd_buf)
@@ -2923,12 +4383,26 @@ struct Renderer3D(Movable):
             var text_dst = GPUBufferRegion(
                 buffer=untracked(self.text_vertex_buffer.value()),
                 offset=0,
-                size=UInt32(len(self.text_vertex_data) * 4),
+                size=UInt32(n_text_floats * 4),
             )
             upload_to_gpu_buffer(
                 text_copy_pass, Ptr(to=text_src), Ptr(to=text_dst), False
             )
             end_gpu_copy_pass(text_copy_pass)
+
+        # ====================================================================
+        # ImGui geometry upload
+        # ====================================================================
+        # ⚠ HERE, NOT NEXT TO THE DRAW CALL. `PrepareDrawData` records a COPY
+        # pass, and SDL_GPU forbids one while a render pass is open — so it has
+        # to precede the shadow pass, not merely the main pass. Placing it
+        # before the swapchain acquire has a second benefit: it runs on the
+        # early-return path too, so `ImGui::Render()` always closes the frame
+        # that `imgui_new_frame` opened and the next frame cannot assert.
+        var imgui_pending = self.imgui_frame_open
+        if imgui_pending:
+            ig_prepare(cmd_buf)
+            self.imgui_frame_open = False
 
         # Build scene uniforms and shadow uniforms
         self._build_scene_uniforms()
@@ -2979,7 +4453,7 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=light_scene).bitcast[NoneType](),
+                Ptr(to=light_scene).unsafe_bitcast[NoneType](),
                 240,
             )
 
@@ -2987,7 +4461,7 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     1,
-                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
                     96,
                 )
                 self._select_and_draw(shadow_pass, self.solid_draws[i])
@@ -2997,7 +4471,7 @@ struct Renderer3D(Movable):
         # ====================================================================
         # Acquire swapchain texture
         # ====================================================================
-        # Mojo nightly: UnsafePointer is non-nullable. _null_ptr returns a
+        # Mojo nightly: Pointer is non-nullable. _null_ptr returns a
         # zero-address Ptr via the runtime-Int overload of unsafe_from_address.
         # The SDL3 FFI call populates it; we check the raw address afterward.
         var swapchain_tex = _null_ptr[GPUTexture, MutAnyOrigin]()
@@ -3019,7 +4493,7 @@ struct Renderer3D(Movable):
         if Int(sc_w) != self.width or Int(sc_h) != self.height:
             self.width = Int(sc_w)
             self.height = Int(sc_h)
-            self.camera.set_screen_size(self.width, self.height)
+            self.camera.set_screen_size(self.scene_width(), self.height)
             release_gpu_texture(self.device.value(), self.depth_texture.value())
             self._create_depth_texture()
 
@@ -3063,10 +4537,16 @@ struct Renderer3D(Movable):
             cmd_buf, Ptr(to=color_info), 1, Ptr(to=depth_info)
         )
 
+        # The 3D phases render into the window MINUS the reserved UI strip.
+        # Phase E restores the full window so the HUD and widgets can use it.
+        var scene_x = Float32(self.ui_sidebar_width)
+        var scene_w = Float32(sc_w) - scene_x
+        if scene_w < 1.0:
+            scene_w = 1.0
         var viewport = GPUViewport(
-            x=0.0,
+            x=c_float(scene_x),
             y=0.0,
-            w=c_float(sc_w),
+            w=c_float(scene_w),
             h=c_float(sc_h),
             min_depth=0.0,
             max_depth=1.0,
@@ -3084,61 +4564,24 @@ struct Renderer3D(Movable):
         # ------------------------------------------------------------------
         if self.draw_skybox:
             bind_gpu_graphics_pipeline(render_pass, self.skybox_pipeline.value())
+            # ⚠ SIZED FROM THE STRUCT, NOT BY HAND. This was a literal 32 —
+            # correct for two float4s — and adding the starfield's mark colour
+            # and camera basis made it 96. Nothing warns about the mismatch:
+            # the shader simply reads whatever follows the 32 bytes it was
+            # given, so the stars were computed from uninitialised memory and
+            # never appeared. The other push sites in this file are still
+            # hand-sized literals and carry the same hazard.
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.skybox_uniforms).bitcast[NoneType](),
-                32,
+                Ptr(to=self.skybox_uniforms).unsafe_bitcast[NoneType](),
+                UInt32(size_of[SkyboxUniforms]()),
             )
             # Draw fullscreen triangle (3 vertices, no vertex buffer)
             draw_gpu_primitives(render_pass, 3, 1, 0, 0)
 
         # ------------------------------------------------------------------
-        # Phase A: REFLECTIONS (Z-flipped solid objects, semi-transparent)
-        # ------------------------------------------------------------------
-        if self.has_ground and len(self.solid_draws) > 0:
-            bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline.value())
-
-            # Push scene uniforms (fragment slot 0 for reflection clipping)
-            push_gpu_vertex_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                240,
-            )
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                240,
-            )
-
-            for i in range(len(self.solid_draws)):
-                # Build mirrored model matrix: flip Z around ground_z
-                var mirrored_uniforms = self.solid_draws[i].uniforms
-                # M_reflected = T(0,0,2*gz) * S(1,1,-1) * M
-                # This negates row 2 of the model matrix (m20,m21,m22,m23)
-                # In column-major storage: m20=[2], m21=[6], m22=[10], m23=[14]
-                var gz = Float32(self.ground_z)
-                mirrored_uniforms.model[2] = -mirrored_uniforms.model[2]  # m20
-                mirrored_uniforms.model[6] = -mirrored_uniforms.model[6]  # m21
-                mirrored_uniforms.model[10] = -mirrored_uniforms.model[
-                    10
-                ]  # m22
-                mirrored_uniforms.model[14] = (
-                    -mirrored_uniforms.model[14] + 2.0 * gz
-                )  # m23
-
-                push_gpu_vertex_uniform_data(
-                    cmd_buf,
-                    1,
-                    Ptr(to=mirrored_uniforms).bitcast[NoneType](),
-                    96,
-                )
-                self._select_and_draw(render_pass, self.solid_draws[i])
-
-        # ------------------------------------------------------------------
-        # Phase B: GROUND (checkerboard with shadow map sampling)
+        # Phase B1: GROUND (opaque checkerboard, shadow-mapped)
         # ------------------------------------------------------------------
         if self.has_ground:
             bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline.value())
@@ -3146,26 +4589,26 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
                 80,
             )
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.ground_uniforms).bitcast[NoneType](),
+                Ptr(to=self.ground_uniforms).unsafe_bitcast[NoneType](),
                 96,
             )
 
@@ -3204,7 +4647,7 @@ struct Renderer3D(Movable):
             bind_gpu_index_buffer(
                 render_pass,
                 Ptr(to=gib),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
             )
 
             draw_gpu_indexed_primitives(
@@ -3217,6 +4660,61 @@ struct Renderer3D(Movable):
             )
 
         # ------------------------------------------------------------------
+        # Phase B2: REFLECTIONS (Z-flipped solids, blended ON TOP of the floor)
+        #
+        # ⚠ AFTER THE GROUND, NOT BEFORE. This ran first and the ground was
+        # then drawn semi-transparent over it, which is how the SKYBOX ended up
+        # visible through the floor: the floor's missing 45% showed reflections
+        # where reflected geometry existed and STARS everywhere else. MuJoCo
+        # keeps the floor opaque and blends the mirror term on top at the
+        # material's `reflectance`, which is what this order does.
+        #
+        # Needs the pipeline's depth compare to be ALWAYS (see
+        # `_create_pipelines`) — the ground has written depth by now and would
+        # otherwise reject every fragment of its own reflection.
+        # ------------------------------------------------------------------
+        if self.has_ground and len(self.solid_draws) > 0:
+            bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline.value())
+
+            # Push scene uniforms (fragment slot 0 for reflection clipping)
+            push_gpu_vertex_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+                240,
+            )
+            push_gpu_fragment_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+                240,
+            )
+
+            for i in range(len(self.solid_draws)):
+                # Build mirrored model matrix: flip Z around ground_z
+                var mirrored_uniforms = self.solid_draws[i].uniforms
+                # M_reflected = T(0,0,2*gz) * S(1,1,-1) * M
+                # This negates row 2 of the model matrix (m20,m21,m22,m23)
+                # In column-major storage: m20=[2], m21=[6], m22=[10], m23=[14]
+                var gz = Float32(self.ground_z)
+                mirrored_uniforms.model[2] = -mirrored_uniforms.model[2]  # m20
+                mirrored_uniforms.model[6] = -mirrored_uniforms.model[6]  # m21
+                mirrored_uniforms.model[10] = -mirrored_uniforms.model[
+                    10
+                ]  # m22
+                mirrored_uniforms.model[14] = (
+                    -mirrored_uniforms.model[14] + 2.0 * gz
+                )  # m23
+
+                push_gpu_vertex_uniform_data(
+                    cmd_buf,
+                    1,
+                    Ptr(to=mirrored_uniforms).unsafe_bitcast[NoneType](),
+                    96,
+                )
+                self._select_and_draw(render_pass, self.solid_draws[i])
+
+        # ------------------------------------------------------------------
         # Phase C: SOLID OBJECTS (with shadow map sampling)
         # ------------------------------------------------------------------
         if len(self.solid_draws) > 0:
@@ -3225,20 +4723,20 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
                 80,
             )
 
@@ -3251,7 +4749,7 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     1,
-                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
                     96,
                 )
                 # Bind texture at fragment sampler slot 1
@@ -3289,13 +4787,13 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     0,
-                    Ptr(to=lu).bitcast[NoneType](),
+                    Ptr(to=lu).unsafe_bitcast[NoneType](),
                     80,
                 )
                 push_gpu_fragment_uniform_data(
                     cmd_buf,
                     0,
-                    Ptr(to=lu).bitcast[NoneType](),
+                    Ptr(to=lu).unsafe_bitcast[NoneType](),
                     80,
                 )
 
@@ -3313,11 +4811,24 @@ struct Renderer3D(Movable):
         # Phase E: TEXT HUD OVERLAY (screen-space, alpha-blended, no depth)
         # ------------------------------------------------------------------
         if num_text_chars > 0:
+            # ⚠ FULL WINDOW AGAIN. The text ortho projection is built for the
+            # whole window (see `ortho_projection` above), so leaving the
+            # scene's inset viewport in place would both clip the HUD and shift
+            # every glyph right by the sidebar width.
+            var full_viewport = GPUViewport(
+                x=0.0,
+                y=0.0,
+                w=c_float(sc_w),
+                h=c_float(sc_h),
+                min_depth=0.0,
+                max_depth=1.0,
+            )
+            set_gpu_viewport(render_pass, Ptr(to=full_viewport))
             bind_gpu_graphics_pipeline(render_pass, self.text_pipeline.value())
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.text_uniforms).bitcast[NoneType](),
+                Ptr(to=self.text_uniforms).unsafe_bitcast[NoneType](),
                 64,
             )
             var atlas_binding = GPUTextureSamplerBinding(
@@ -3335,7 +4846,7 @@ struct Renderer3D(Movable):
             bind_gpu_index_buffer(
                 render_pass,
                 Ptr(to=text_ib_binding),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
             )
             draw_gpu_indexed_primitives(
                 render_pass, UInt32(num_text_chars * 6), 1, 0, 0, 0
@@ -3343,6 +4854,46 @@ struct Renderer3D(Movable):
 
         # End render pass
         end_gpu_render_pass(render_pass)
+
+        # ====================================================================
+        # IMGUI PASS (color-only, loads the scene, no depth)
+        # ====================================================================
+        # ⚠ ITS OWN PASS, DELIBERATELY. The obvious placement — alongside the
+        # text HUD inside the main pass — makes ImGui's pipeline and that pass
+        # disagree about attachments: `ImGui_ImplSDLGPU3_InitInfo` has no
+        # depth-stencil field, so the backend builds a color-only pipeline,
+        # while the main pass carries a depth attachment. Metal requires the
+        # two to match. A second pass costs one begin/end and makes the
+        # overlay independent of however the scene pass is configured.
+        #
+        # LOAD + cycle=False, so the scene underneath survives; CLEAR or
+        # cycling would leave the UI floating on an empty background. It runs
+        # BEFORE the screenshot/recording downloads below so captures include
+        # the UI.
+        if imgui_pending:
+            var ui_color_info = GPUColorTargetInfo(
+                texture=untracked(swapchain_tex),
+                mip_level=0,
+                layer_or_depth_plane=0,
+                clear_color=FColor(0.0, 0.0, 0.0, 1.0),
+                load_op=GPULoadOp.GPU_LOADOP_LOAD,
+                store_op=GPUStoreOp.GPU_STOREOP_STORE,
+                resolve_texture=_null_ptr[GPUTexture, MutUntrackedOrigin](),
+                resolve_mip_level=0,
+                resolve_layer=0,
+                cycle=False,
+                cycle_resolve_texture=False,
+                padding1=0,
+                padding2=0,
+            )
+            var ui_pass = begin_gpu_render_pass(
+                cmd_buf,
+                Ptr(to=ui_color_info),
+                1,
+                _null_ptr[GPUDepthStencilTargetInfo, MutAnyOrigin](),
+            )
+            ig_render(cmd_buf, ui_pass)
+            end_gpu_render_pass(ui_pass)
 
         # Screenshot capture: append a download copy pass before submitting.
         # The transfer buffer pointer is non-null only if setup succeeded.
@@ -3408,7 +4959,8 @@ struct Renderer3D(Movable):
                     "screenshot_" + String(self.screenshot_counter) + ".jpg"
                 )
                 self.recorder.save_frame_bgra(
-                    Int(pixels), self.width, self.height, filename
+                    Int(pixels), self.width, self.height, filename,
+                    self._capture_x(), self._capture_w(),
                 )
                 unmap_gpu_transfer_buffer(self.device.value(), screenshot_tb.value())
                 self.screenshot_counter += 1
@@ -3472,7 +5024,8 @@ struct Renderer3D(Movable):
                         self.device.value(), self.recording_tb.value(), False
                     )
                     self.recorder.add_frame_bgra(
-                        Int(rec_pixels), self.width, self.height
+                        Int(rec_pixels), self.width, self.height,
+                        self._capture_x(), self._capture_w(),
                     )
                     unmap_gpu_transfer_buffer(self.device.value(), self.recording_tb.value())
                 except e:
@@ -3515,6 +5068,28 @@ struct Renderer3D(Movable):
         var view_proj = proj @ view
 
         self.scene_uniforms.view_proj = mat4_to_gpu_f32(view_proj)
+
+        # Camera basis for the skybox's starfield. Rebuilt every frame from the
+        # SAME camera state the view matrix comes from, so the stars cannot
+        # drift out of step with the scene; the fragment reconstructs its view
+        # ray from these and hashes world directions, which is what keeps a
+        # star nailed to a point in the sky rather than to the screen.
+        var fwd = (self.camera.target - self.camera.eye).normalized()
+        var right = fwd.cross(self.camera.up).normalized()
+        var up = right.cross(fwd).normalized()
+        self.skybox_uniforms.cam_right[0] = Float32(right.x)
+        self.skybox_uniforms.cam_right[1] = Float32(right.y)
+        self.skybox_uniforms.cam_right[2] = Float32(right.z)
+        # `Camera3D.fov` is already in RADIANS (see ModelRenderer.__init__).
+        self.skybox_uniforms.cam_right[3] = Float32(tan(self.camera.fov * 0.5))
+        self.skybox_uniforms.cam_up[0] = Float32(up.x)
+        self.skybox_uniforms.cam_up[1] = Float32(up.y)
+        self.skybox_uniforms.cam_up[2] = Float32(up.z)
+        self.skybox_uniforms.cam_up[3] = Float32(self.camera.aspect)
+        self.skybox_uniforms.cam_fwd[0] = Float32(fwd.x)
+        self.skybox_uniforms.cam_fwd[1] = Float32(fwd.y)
+        self.skybox_uniforms.cam_fwd[2] = Float32(fwd.z)
+        self.skybox_uniforms.cam_fwd[3] = 0.0
 
         # Camera position + num_active_lights in w
         var num_lights = len(self.lights)
@@ -3608,9 +5183,27 @@ struct Renderer3D(Movable):
                 light_dir = Vec3(lx / ll, ly / ll, lz / ll)
                 break
 
-        # Light position: offset from camera target along negative light direction
+        # ⚠ THE FRUSTUM IS FITTED TO THE VIEW, NOT HARDCODED. It used to be a
+        # fixed 16 m box 15 m from the target with a 0.1..30 depth range —
+        # sized for a 2 m robot on a flat plane, which is every suite model
+        # except one. `quadruped escape`'s terrain is 60 m across with 5 m of
+        # relief, so that box covered a quarter of its width: shadows existed
+        # in a patch around the camera target and nowhere else, with a visible
+        # straight edge where the box ended.
+        #
+        # The camera distance is the scale signal available here — it is set
+        # per model by `setup_cameras` and by the user's zoom, so it tracks
+        # what is actually on screen. ⚠ FLOORED AT THE OLD VALUES so every
+        # model that looked right before still gets exactly the old frustum;
+        # this only ever loosens.
         var target = self.camera.target
+        var cam_dist = (self.camera.eye - target).length()
+        var ortho_size = 8.0
+        if 0.75 * cam_dist > ortho_size:
+            ortho_size = 0.75 * cam_dist
         var light_distance = 15.0
+        if 2.5 * ortho_size > light_distance:
+            light_distance = 2.5 * ortho_size
         var light_pos = target - light_dir * light_distance
 
         # Build look-at view matrix for the light using Mat4.look_at
@@ -3625,19 +5218,28 @@ struct Renderer3D(Movable):
 
         var light_view = Mat4.look_at(light_pos, target, up)
 
-        # Orthographic projection covering the scene
-        var ortho_size = 8.0
+        # ⚠ FAR REACHES PAST THE LIGHT, BY THE BOX'S OWN SIZE. An occluder can
+        # sit anywhere in the box, including well below the target; a far plane
+        # that only just reaches the target clips the ground out of the map.
+        var light_far = light_distance + 2.0 * ortho_size
         var light_proj = ortho_projection(
             -ortho_size,
             ortho_size,
             -ortho_size,
             ortho_size,
             0.1,
-            30.0,
+            light_far,
         )
 
         var light_vp = light_proj @ light_view
         self.shadow_uniforms.light_view_proj = mat4_to_gpu_f32(light_vp)
+
+        # ⚠ PUBLISHED HERE, NOT AT RESOURCE CREATION. `shadow_size` comes from
+        # `<visual quality shadowsize=>` and the map is re-created on a task
+        # switch when the two models disagree; setting it once at init leaves
+        # the shader dividing by the PREVIOUS model's resolution. This runs
+        # every frame, so it cannot go stale.
+        self.shadow_uniforms.params[2] = Float32(self.shadow_size)
 
     # --- Event Handling ---
 
@@ -3666,6 +5268,27 @@ struct Renderer3D(Movable):
         var event = Event()
         var has_events = True
 
+        # Who owns the pointer and the keyboard this frame.
+        #
+        # ⚠ THESE ARE LAST FRAME'S ANSWERS, and that is correct. ImGui can only
+        # decide what it wants once its widgets have been laid out, which
+        # happens after `NewFrame` — i.e. after this pump has already run. Every
+        # ImGui integration reads them one frame stale; the flags change on
+        # hover, so a one-frame lag is invisible.
+        var ig_mouse = False
+        var ig_kbd = False
+        if self.imgui_on:
+            try:
+                ig_mouse = ig_want_mouse()
+                ig_kbd = ig_want_keyboard()
+            except:
+                pass
+        # ⚠ AN OVERLAY ImGui CANNOT SPEAK FOR. See `pointer_claimed` — a
+        # gizmo's window carries `NoInputs`, so `ig_want_mouse()` says False
+        # while it is being dragged.
+        if self.pointer_claimed:
+            ig_mouse = True
+
         while has_events:
             try:
                 has_events = poll_event(Ptr(to=event))
@@ -3674,6 +5297,15 @@ struct Renderer3D(Movable):
 
             if not has_events:
                 break
+
+            # ImGui sees EVERY event, including ones claimed below. It tracks
+            # key-up, focus and modifier state, so filtering here would leave
+            # it believing a key is still held.
+            if self.imgui_on:
+                try:
+                    ig_process_event(Ptr(to=event))
+                except:
+                    pass
 
             var event_type = event[UInt32]
 
@@ -3684,7 +5316,17 @@ struct Renderer3D(Movable):
             elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
                 var key_event = event[KeyboardEvent]
                 var key_val = Int(key_event.key)
-                if key_val == Int(Keycode.SDLK_ESCAPE):
+                if ig_kbd:
+                    # ImGui is taking typed input: "s" is a letter, not the
+                    # screenshot shortcut, and ESC closes a popup rather than
+                    # the window. This is what makes `text_input_mode`
+                    # unnecessary — the UI reports its own focus instead of the
+                    # application having to declare it.
+                    pass
+                elif self.text_input_mode:
+                    # Everything goes to the application while it is typing.
+                    self.last_key = key_val
+                elif key_val == Int(Keycode.SDLK_ESCAPE):
                     self.should_quit = True
                     return True
                 elif key_val >= 0x31 and key_val <= 0x39:
@@ -3713,16 +5355,37 @@ struct Renderer3D(Movable):
                             self.start_recording(fname)
                     except:
                         pass
+                else:
+                    # Anything the bindings above do not claim is handed to
+                    # the application rather than dropped.
+                    self.last_key = key_val
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
                 # Track any button press (macOS trackpad intermittently
                 # misidentifies left as right, so treat all buttons same)
-                self.mouse_left_down = True
+                var mb = event[MouseButtonEvent]
+                self.mouse_x = Float32(mb.x)
+                self.mouse_y = Float32(mb.y)
+                self.mouse_clicked = not ig_mouse
+                # A drag that STARTS over the UI must not orbit the camera —
+                # otherwise every slider drag spins the scene behind it. Where
+                # the gesture began is what matters, not where the pointer
+                # currently is, so this is latched on press.
+                #
+                # Two sources, because both UI layers exist: `ui_sidebar_width`
+                # is the reserved strip the hand-rolled widgets live in, and
+                # `ig_mouse` covers ImGui windows, which can float anywhere.
+                self.mouse_left_down = (
+                    not ig_mouse
+                    and Float32(mb.x) >= Float32(self.ui_sidebar_width)
+                )
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
                 self.mouse_left_down = False
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
                 var motion = event[MouseMotionEvent]
+                self.mouse_x = Float32(motion.x)
+                self.mouse_y = Float32(motion.y)
                 var dx = Float64(motion.xrel)
                 var dy = Float64(motion.yrel)
                 if self.mouse_left_down:
@@ -3747,9 +5410,16 @@ struct Renderer3D(Movable):
                         self.camera.clamp_above_ground(self.ground_z)
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
+                if ig_mouse:
+                    # Scrolling a task list must not also dolly the camera.
+                    continue
                 var wheel = event[MouseWheelEvent]
                 # Scroll up (positive y) = zoom in (move eye closer)
-                self.camera.zoom(-Float64(wheel.y) * 0.5)
+                # ⚠ FRACTIONAL, not a fixed 0.5 m step. A fixed step is
+                # unusable at both ends: invisible when far out, and a jump
+                # straight through a 30 cm robot when close in. 12 % per
+                # notch is roughly one comfortable "step" at any scale.
+                self.camera.zoom_fraction(-Float64(wheel.y) * 0.12)
                 if self.has_ground:
                     self.camera.clamp_above_ground(self.ground_z)
 
@@ -3813,6 +5483,12 @@ struct Renderer3D(Movable):
         if not self.initialized:
             return
 
+        # ⚠ FIRST. ImGui's backend owns GPU buffers, a font texture and a
+        # pipeline created on THIS device; tearing the device down first would
+        # leave it releasing freed handles. The viewer destroys and rebuilds
+        # the window on every task switch, so this runs often, not once.
+        self.imgui_close()
+
         # Stop any active recording and release the persistent transfer buffer
         if self.recorder.is_recording:
             self.recorder.stop()
@@ -3821,28 +5497,8 @@ struct Renderer3D(Movable):
             self.recording_tb = None
             self.recording_tb_size = 0
 
-        # Release capsule cache meshes
-        for i in range(len(self.capsule_cache)):
-            release_gpu_buffer(
-                self.device.value(), self.capsule_cache[i].mesh.vertex_buffer
-            )
-            release_gpu_buffer(
-                self.device.value(), self.capsule_cache[i].mesh.index_buffer
-            )
-
-        # Release STL mesh cache
-        for i in range(len(self.mesh_cache)):
-            release_gpu_buffer(
-                self.device.value(), self.mesh_cache[i].mesh.vertex_buffer
-            )
-            release_gpu_buffer(
-                self.device.value(), self.mesh_cache[i].mesh.index_buffer
-            )
-
-        # Release texture cache
-        for i in range(len(self.texture_cache)):
-            release_gpu_texture(self.device.value(), self.texture_cache[i].texture)
-            release_gpu_sampler(self.device.value(), self.texture_cache[i].sampler)
+        # Release the geom-keyed caches (capsules, cylinders, STL, textures).
+        self._release_model_caches()
 
         # Release default texture resources
         if self.default_texture:

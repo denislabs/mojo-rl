@@ -29,6 +29,7 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime dtype = DType.float32
 comptime BATCH = 4
@@ -142,9 +143,9 @@ def main() raises:
         last_loss = r.output_loss_final
         if step == 0 or (step + 1) % 40 == 0 or step == STEPS - 1:
             print("    ", step, " ",
-                  String(r.energy_initial)[byte=:9], " ",
-                  String(r.energy_final)[byte=:9], " ",
-                  String(r.output_loss_final)[byte=:9])
+                  fit(String(r.energy_initial), 9), " ",
+                  fit(String(r.energy_final), 9), " ",
+                  fit(String(r.output_loss_final), 9))
 
     print("\n  first sup_loss =", first_loss)
     print("  last  sup_loss =", last_loss)
@@ -156,7 +157,7 @@ def main() raises:
     print("")
     if ok:
         print("✅ PASS — inference reduces energy every step; readout loss",
-              "dropped to", String(last_loss / first_loss * 100.0)[byte=:5],
+              "dropped to", fit(String(last_loss / first_loss * 100.0), 5),
               "% of initial")
     else:
         if not energy_descent_ok:

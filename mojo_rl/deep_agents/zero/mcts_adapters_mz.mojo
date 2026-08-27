@@ -17,12 +17,12 @@ one ``forward`` deep, returning raw logits (the MCTS kernels own all decoding).
 Storage bridge (same as ``AZPredGPU``): the planner owns the in/out device
 buffers; a LayoutTensor-space copy kernel stages the input into an owned scratch
 ``Tensor``, the net runs entirely on owned storage, then the owned output scratch
-is copied back to the planner's buffer — pointer-free (no UnsafePointer/rebind).
+is copied back to the planner's buffer — pointer-free (no Pointer/rebind).
 The scratch Tensors are reused across calls (lazily grown).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -50,20 +50,20 @@ def _copy2d_kernel[B: Int, D: Int](
 
 @fieldwise_init
 struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module, o: Origin[mut=True]](
-    Movable, ImplicitlyDeletable, RepresentationGPU
+    Movable, Deinitable, RepresentationGPU
 ):
     """H adapter: ``obs (B, OBS) → hidden (B, LATENT)``."""
 
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.LATENT
 
-    var net: UnsafePointer[Self.NET, Self.o]
+    var net: Pointer[Self.NET, Self.o]
     var sc_in: Tensor
     var sc_out: Tensor
 
     @staticmethod
     def make(ref[Self.o] net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
+        return Self(net=Pointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
     def encode_gpu[B: Int](
         mut self,
@@ -94,7 +94,7 @@ struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module, o: Origin[mut=True]](
 @fieldwise_init
 struct MZDynGPU[
     LATENT: Int, ACT: Int, BINS: Int, NET: Module, o: Origin[mut=True]
-](Movable, ImplicitlyDeletable, DynamicsGPU):
+](Movable, Deinitable, DynamicsGPU):
     """G adapter: ``[hidden ⊕ onehot(a)] → [hidden' | reward_logits]``."""
 
     comptime LATENT_DIM: Int = Self.LATENT
@@ -102,13 +102,13 @@ struct MZDynGPU[
     comptime DYN_IN_DIM: Int = Self.LATENT + Self.ACT
     comptime DYN_OUT_DIM: Int = Self.LATENT + Self.BINS
 
-    var net: UnsafePointer[Self.NET, Self.o]
+    var net: Pointer[Self.NET, Self.o]
     var sc_in: Tensor
     var sc_out: Tensor
 
     @staticmethod
     def make(ref[Self.o] net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
+        return Self(net=Pointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
     def step_gpu[B: Int](
         mut self,
@@ -141,7 +141,7 @@ struct MZDynGPU[
 @fieldwise_init
 struct MZPredGPU[
     LATENT: Int, ACT: Int, BINS: Int, NET: Module, o: Origin[mut=True]
-](Movable, ImplicitlyDeletable, PredictionGPU):
+](Movable, Deinitable, PredictionGPU):
     """F adapter: ``hidden (B, LATENT) → [policy_logits | value_logits]
     (B, ACT+BINS)``. Value is categorical (``BINS`` bins)."""
 
@@ -149,13 +149,13 @@ struct MZPredGPU[
     comptime ACTION_DIM: Int = Self.ACT
     comptime PRED_OUT_DIM: Int = Self.ACT + Self.BINS
 
-    var net: UnsafePointer[Self.NET, Self.o]
+    var net: Pointer[Self.NET, Self.o]
     var sc_in: Tensor
     var sc_out: Tensor
 
     @staticmethod
     def make(ref[Self.o] net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
+        return Self(net=Pointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
     def predict_gpu[B: Int](
         mut self,
@@ -188,7 +188,7 @@ struct MZPredGPU[
 @fieldwise_init
 struct MZContPredGPU[
     LATENT: Int, ACT_DIM: Int, BINS: Int, NET: Module, o: Origin[mut=True]
-](Movable, ImplicitlyDeletable, PredictionGPU):
+](Movable, Deinitable, PredictionGPU):
     """Continuous-EZv2 f adapter: ``hidden (B, LATENT) → [μ_raw | σ_raw | value]
     (B, 2·ACT_DIM + BINS)``."""
 
@@ -196,13 +196,13 @@ struct MZContPredGPU[
     comptime ACTION_DIM: Int = Self.ACT_DIM
     comptime PRED_OUT_DIM: Int = 2 * Self.ACT_DIM + Self.BINS
 
-    var net: UnsafePointer[Self.NET, Self.o]
+    var net: Pointer[Self.NET, Self.o]
     var sc_in: Tensor
     var sc_out: Tensor
 
     @staticmethod
     def make(ref[Self.o] net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
+        return Self(net=Pointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
     def predict_gpu[B: Int](
         mut self,

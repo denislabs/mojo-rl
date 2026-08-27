@@ -150,7 +150,7 @@ struct CliffWalkingEnv(DiscreteEnv, RenderableEnv):
         self.state = CliffState(0, 0)
         return self.state
 
-    def get_state(self) -> CliffState:
+    def get_state(mut self) -> CliffState:
         """Return current state."""
         return self.state
 

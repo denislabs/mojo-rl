@@ -34,8 +34,8 @@ GPU-oriented (the WM is a 224² gpu model); `ctx` is required.
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -210,10 +210,10 @@ def run_lewm_closedloop[
     var scorer = Scorer(pred_net^, ctx=ctx)
 
     # encoding IO
-    var pix_host = alloc[Scalar[DT]](BATCH * PIX)
-    var emb_host = alloc[Scalar[DT]](BATCH * TE)
-    var start_lat = alloc[Scalar[DT]](BE)
-    var goal_lat = alloc[Scalar[DT]](BE)
+    var pix_host = alloc[Scalar[DT]]({count = BATCH * PIX}).unsafe_leak()
+    var emb_host = alloc[Scalar[DT]]({count = BATCH * TE}).unsafe_leak()
+    var start_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
+    var goal_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
     var pix_dev = ctx_v.enqueue_create_buffer[DT](BATCH * PIX)
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
     # emb depends only on pixels, so act_dev's contents never affect the
@@ -222,10 +222,10 @@ def run_lewm_closedloop[
     # reason: the "emb" node ignores the actions input.)
     act_dev.enqueue_fill(0.0)
     ctx_v.synchronize()
-    var pix_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var pix_d_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         pix_dev.unsafe_ptr()
     )
-    var act_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var act_d_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         act_dev.unsafe_ptr()
     )
 
@@ -249,11 +249,11 @@ def run_lewm_closedloop[
         cem_topk=cem_topk,
         init_std=init_std,
     )
-    var plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var plan = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
 
     var do_viz = viz_path.byte_length() > 0
-    var viz_buf = alloc[Scalar[DT]](n_cycles * VIZN if do_viz else 1)
-    var viz_tmp = alloc[Scalar[DT]](VIZN if do_viz else 1)
+    var viz_buf = alloc[Scalar[DT]]({count = n_cycles * VIZN if do_viz else 1}).unsafe_leak()
+    var viz_tmp = alloc[Scalar[DT]]({count = VIZN if do_viz else 1}).unsafe_leak()
 
     # ── AdaJEPA TTA state (docs/ADAJEPA_LEWM_TTA_PLAN.md §5) ────────────
     var keep = tta_keep.copy()
@@ -265,7 +265,7 @@ def run_lewm_closedloop[
             String("act_emb."),
         ]
     var tta_buf = TTAWindowBuffer[BATCH, T, IMG_DIM, ACT](enabled=tta_enabled)
-    var tta_act_host = alloc[Scalar[DT]](BATCH * ACTIN if tta_enabled else 1)
+    var tta_act_host = alloc[Scalar[DT]]({count = BATCH * ACTIN if tta_enabled else 1}).unsafe_leak()
     var snap = List[Scalar[DT]]()
     if tta_enabled:
         snap = wm.snapshot_all()  # restored at exit (fresh model/episode)
@@ -282,11 +282,11 @@ def run_lewm_closedloop[
                 bp[2],
                 ap[0],
                 ap[1],
-                pix_host + (b * T) * IMG_DIM,
+                pix_host.unsafe_offset((b * T) * IMG_DIM),
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
-                    pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
+                    pix_host[unsafe_offset=(b * T + t) * IMG_DIM + i] = pix_host[unsafe_offset=
                         (b * T) * IMG_DIM + i
                     ]
         if tta_enabled:
@@ -294,7 +294,7 @@ def run_lewm_closedloop[
             # overwrites pix_host below, so push must happen here)
             for b in range(BATCH):
                 if not envs[b].is_done():
-                    tta_buf.push_frame(b, pix_host + (b * T) * IMG_DIM)
+                    tta_buf.push_frame(b, pix_host.unsafe_offset((b * T) * IMG_DIM))
         ctx_v.enqueue_copy(pix_dev, pix_host)
         ctx_v.synchronize()
         var pix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
@@ -303,7 +303,7 @@ def run_lewm_closedloop[
         wm.read_node_into["emb"](emb_host, BATCH * TE)
         for b in range(BATCH):
             for d in range(EMB):
-                start_lat[b * EMB + d] = emb_host[b * TE + d]
+                start_lat[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
 
         # goal window: block @ goal pose + (current agent | fixed) per env,
         # so the start↔goal latent diff is block-pose only.
@@ -317,11 +317,11 @@ def run_lewm_closedloop[
                 Scalar[DT](PConstants.GOAL_ANGLE),
                 Scalar[DT](gx),
                 Scalar[DT](gy),
-                pix_host + (b * T) * IMG_DIM,
+                pix_host.unsafe_offset((b * T) * IMG_DIM),
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
-                    pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
+                    pix_host[unsafe_offset=(b * T + t) * IMG_DIM + i] = pix_host[unsafe_offset=
                         (b * T) * IMG_DIM + i
                     ]
         ctx_v.enqueue_copy(pix_dev, pix_host)
@@ -332,7 +332,7 @@ def run_lewm_closedloop[
         wm.read_node_into["emb"](emb_host, BATCH * TE)
         for b in range(BATCH):
             for d in range(EMB):
-                goal_lat[b * EMB + d] = emb_host[b * TE + d]
+                goal_lat[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
         scorer.set_start_goal(start_lat, goal_lat)
 
         _ = cem.optimize(scorer, plan.as_unsafe_any_origin(), verbose=False)
@@ -351,14 +351,14 @@ def run_lewm_closedloop[
                 var ap = envs[b].agent_pos()
                 var dx = (
                     Float64(
-                        plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 0]
+                        plan[unsafe_offset=(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 0]
                     )
                     * act_std_x
                     + act_mean_x
                 )
                 var dy = (
                     Float64(
-                        plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 1]
+                        plan[unsafe_offset=(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 1]
                     )
                     * act_std_y
                     + act_mean_y
@@ -375,7 +375,7 @@ def run_lewm_closedloop[
             for b in range(BATCH):
                 if not envs[b].is_done():
                     tta_buf.push_action(
-                        b, plan + (b * NEEDED + (H - 1)) * ACT
+                        b, plan.unsafe_offset((b * NEEDED + (H - 1)) * ACT)
                     )
             if tta_buf.fill(pix_host, tta_act_host):
                 ctx_v.enqueue_copy(pix_dev, pix_host)
@@ -437,9 +437,9 @@ def run_lewm_closedloop[
             for c in range(IN_CH):
                 for y in range(VIZ):
                     for x in range(VIZ):
-                        viz_buf[
+                        viz_buf[unsafe_offset=
                             cyc * VIZN + c * VIZ * VIZ + y * VIZ + x
-                        ] = viz_tmp[(y * VIZ + x) * IN_CH + c]
+                        ] = viz_tmp[unsafe_offset=(y * VIZ + x) * IN_CH + c]
 
     # final metrics
     var mc: Float64 = 0.0
@@ -467,13 +467,13 @@ def run_lewm_closedloop[
     if tta_enabled:
         wm.restore_all(snap)  # fresh-model-per-episode: undo the TTA steps
 
-    pix_host.free()
-    emb_host.free()
-    start_lat.free()
-    goal_lat.free()
-    plan.free()
-    viz_buf.free()
-    viz_tmp.free()
-    tta_act_host.free()
+    pix_host.unsafe_free()
+    emb_host.unsafe_free()
+    start_lat.unsafe_free()
+    goal_lat.unsafe_free()
+    plan.unsafe_free()
+    viz_buf.unsafe_free()
+    viz_tmp.unsafe_free()
+    tta_act_host.unsafe_free()
     _ = scorer^
     return (success_rate, mc)

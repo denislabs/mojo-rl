@@ -33,7 +33,7 @@ views (no raw pointers). The EV kernel is reused from `ppo.trainer`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import exp as fexp, log as flog
 from std.memory import alloc
 from std.time import perf_counter_ns
@@ -184,11 +184,11 @@ struct PPODiscreteTrainer[
     ]
 
     # Host-side staging for the N=1 host-list wrapper paths.
-    var _obs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
-    var _act1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
-    var _rew1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
-    var _done1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
-    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _obs1: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
+    var _act1: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
+    var _rew1: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
+    var _done1: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
+    var _nobs1: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -199,7 +199,7 @@ struct PPODiscreteTrainer[
 
     # ── Episode tracker ──────────────────────────────────────────────
     var tracker: EpisodeTracker
-    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]  # N_ENVS
+    var _ep_returns: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]  # N_ENVS
 
     # ── Train-step accumulators ──────────────────────────────────────
     var _actor_L_accum: Scalar[DT]
@@ -360,14 +360,16 @@ struct PPODiscreteTrainer[
         t.state = OnPolicyState[
             Self.OBS_DIM, 1, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
         ].make[Self.train_target](ctx=ctx)
-        t._obs1  = alloc[Scalar[DT]](Self.OBS_DIM)
-        t._act1  = alloc[Scalar[DT]](1)
-        t._rew1  = alloc[Scalar[DT]](1)
-        t._done1 = alloc[Scalar[DT]](1)
-        t._nobs1 = alloc[Scalar[DT]](Self.OBS_DIM)
-        var ep_returns_p = alloc[Scalar[DT]](Self.N_ENVS)
+        t._obs1  = alloc[Scalar[DT]]({count = Self.OBS_DIM}).unsafe_leak()
+        t._act1  = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._rew1  = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._done1 = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._nobs1 = alloc[Scalar[DT]]({count = Self.OBS_DIM}).unsafe_leak()
+        var ep_returns_p = alloc[Scalar[DT]](
+            {count = Self.N_ENVS}
+        ).unsafe_leak()
         for e in range(Self.N_ENVS):
-            ep_returns_p[e] = Scalar[DT](0.0)
+            ep_returns_p[unsafe_offset=e] = Scalar[DT](0.0)
         t._ep_returns = ep_returns_p
 
         # Diag actor-output scratch (MINIBATCH * N_ACTIONS) on the train
@@ -417,11 +419,11 @@ struct PPODiscreteTrainer[
         var obs_p = self._obs1.value().as_unsafe_any_origin()
         var act_p = self._act1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
-            obs_p[d] = obs[d]
+            obs_p[unsafe_offset=d] = obs[d]
         self.act_step.step[
             Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, self.actor, self.critic, obs_p, act_p)
-        return Int(act_p[0])
+        return Int(act_p[unsafe_offset=0])
 
     def select_greedy_action(
         mut self,
@@ -452,10 +454,10 @@ struct PPODiscreteTrainer[
         var rew_p = self._rew1.value().as_unsafe_any_origin()
         var done_p = self._done1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
-            obs_p[d]  = obs[d]
-            nobs_p[d] = next_obs[d]
-        rew_p[0]  = reward
-        done_p[0] = done
+            obs_p[unsafe_offset=d]  = obs[d]
+            nobs_p[unsafe_offset=d] = next_obs[d]
+        rew_p[unsafe_offset=0]  = reward
+        done_p[unsafe_offset=0] = done
         self.record_step.step[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, obs_p, rew_p, nobs_p, done_p)
@@ -479,8 +481,8 @@ struct PPODiscreteTrainer[
 
     def select_action_batched(
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
         """N_ENVS-wide action selection. Reads N_ENVS*OBS from obs_ptr,
@@ -494,10 +496,10 @@ struct PPODiscreteTrainer[
 
     def record_batch_cpu(
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """N_ENVS-wide transition record. Maintains a per-env running
         return (_ep_returns[e]); on done[e] pushes the completed return
@@ -508,11 +510,11 @@ struct PPODiscreteTrainer[
         ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
         var ep_ret_p = self._ep_returns.value().as_unsafe_any_origin()
         for e in range(Self.N_ENVS):
-            ep_ret_p[e] += reward_ptr[e]
-            if done_ptr[e] > Scalar[DT](0.5):
-                self.tracker.add_reward(ep_ret_p[e])
+            ep_ret_p[unsafe_offset=e] += reward_ptr[unsafe_offset=e]
+            if done_ptr[unsafe_offset=e] > Scalar[DT](0.5):
+                self.tracker.add_reward(ep_ret_p[unsafe_offset=e])
                 self.tracker.end_episode()
-                ep_ret_p[e] = Scalar[DT](0.0)
+                ep_ret_p[unsafe_offset=e] = Scalar[DT](0.0)
 
     def mark_terminal_env(mut self, env_idx: Int) raises:
         self.record_step.mark_terminal[
@@ -706,7 +708,7 @@ struct PPODiscreteTrainer[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> PPOMetrics:
         """Drain accumulators into a PPOMetrics bundle (reused verbatim —
@@ -759,7 +761,7 @@ struct PPODiscreteTrainer[
 
     def flush_metrics_through_logger[L: Logger](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)

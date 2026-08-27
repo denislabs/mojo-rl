@@ -18,7 +18,7 @@ Run (NVIDIA):
 from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
@@ -29,8 +29,8 @@ comptime TOL: Float32 = 1e-3
 
 
 def _max_abs_diff(
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    b: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    a: Pointer[Scalar[dtype], MutAnyOrigin],
+    b: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ) -> Float32:
     var m: Float32 = 0.0

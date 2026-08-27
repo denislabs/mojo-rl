@@ -20,7 +20,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct DQNMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct DQNMetrics(Copyable, Movable, Deinitable):
     var loss:          LogScalar[DT]
     var epsilon:       LogScalar[DT]
     var mean_q:        LogScalar[DT]

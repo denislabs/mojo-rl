@@ -17,9 +17,9 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_integration_smoke.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.math import isnan, isinf
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
@@ -67,7 +67,7 @@ def main() raises:
     var ctx = DeviceContext()
     var rom = load_rom("roms/pong.bin")
     var env = Env(
-        AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size,
+        AtariGame.PONG, rom.data.value(), rom.size,
         clip_reward=True, full_action_set=True,
     )
 

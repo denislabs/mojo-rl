@@ -19,10 +19,12 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -603,7 +605,7 @@ def main():
         print("GPU Kernel Launch Overhead")
         print("-" * 70)
         var launch_ns = benchmark_kernel_launch_overhead(ctx, num_iters)
-        print("  " + String(launch_ns / 1000)[byte=:8] + " us per kernel launch")
+        print("  " + fit(String(launch_ns / 1000), 8) + " us per kernel launch")
         print()
 
         print("-" * 70)
@@ -612,7 +614,7 @@ def main():
         var mega_ns = benchmark_mega_kernel[
             BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM
         ](ctx, num_iters)
-        print("  " + String(mega_ns / 1000)[byte=:8] + " us per training step")
+        print("  " + fit(String(mega_ns / 1000), 8) + " us per training step")
         print("  " + String(Int(1e9 / mega_ns)) + " training steps/sec")
         print()
 
@@ -620,21 +622,21 @@ def main():
         print("Summary")
         print("=" * 70)
         print(
-            "  Kernel launch overhead: " + String(launch_ns / 1000)[byte=:8] + " us"
+            "  Kernel launch overhead: " + fit(String(launch_ns / 1000), 8) + " us"
         )
-        print("  Mega-kernel time:       " + String(mega_ns / 1000)[byte=:8] + " us")
+        print("  Mega-kernel time:       " + fit(String(mega_ns / 1000), 8) + " us")
         print()
 
         # Estimate separate kernel cost
         var estimated_separate = launch_ns * 6  # 6 kernel launches minimum
         print(
             "  Estimated separate kernel cost (6 launches): "
-            + String(estimated_separate / 1000)[byte=:8]
+            + fit(String(estimated_separate / 1000), 8)
             + " us"
         )
         print(
             "  Speedup from fusion: "
-            + String(estimated_separate / mega_ns)[byte=:4]
+            + fit(String(estimated_separate / mega_ns), 4)
             + "x"
         )
         print()

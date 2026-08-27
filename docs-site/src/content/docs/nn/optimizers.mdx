@@ -1,0 +1,166 @@
+---
+title: Optimizers, losses, initializers
+description: SGD, Adam and AdamW; gradient clipping and LR schedules; the loss catalogue; and the initializers that matter.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+
+<Papers label="Papers">
+	<Paper
+		title="Adam: A Method for Stochastic Optimization"
+		authors="Kingma, Ba"
+		year="2014"
+		arxiv="1412.6980"
+		venue="ICLR 2015"
+	/>
+	<Paper
+		title="Decoupled Weight Decay Regularization"
+		authors="Loshchilov, Hutter"
+		year="2017"
+		arxiv="1711.05101"
+		venue="ICLR 2019"
+		note="AdamW."
+	/>
+</Papers>
+
+## Optimizers
+
+```mojo
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.sgd import SGD
+```
+
+| Optimizer | Notes |
+|---|---|
+| `SGD` | with momentum and weight decay |
+| `Adam` | the default throughout the RL agents |
+| `AdamW` | decoupled weight decay |
+| `ScalarAdam` | for scalar parameters — SAC's learned temperature |
+| `DreamerOpt` | DreamerV3's optimizer configuration |
+
+An optimizer is a **`ParamVisitor`**: it walks the module's parameters and
+updates each in place. It carries no per-parameter state of its own, because
+Adam's moments live on the [`Param`](/nn/modules/) itself.
+
+```mojo
+var opt = Adam(lr=Scalar[DT](3e-4))
+```
+
+On NVIDIA, Adam applies as a **grouped multi-tensor** operation — one kernel
+across many parameters rather than one launch per tensor, which matters when a
+network has dozens of small parameter blocks.
+
+:::caution[Two Adam details that bite when you touch the plumbing]
+**The learning-rate scale slot must be `1.0`** for parameters that should follow
+the base rate. It is a per-parameter multiplier, and a wrong value there scales
+a subset of the network's updates without any visible error.
+
+**The step counter is device-only** on the GPU path. Reading it from the host
+gives a stale value, so bias correction computed host-side will be wrong.
+:::
+
+### Gradient clipping and schedules
+
+```mojo
+from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
+from mojo_rl.nn.optimizer.lr_scheduler import LRScheduler
+```
+
+Global gradient-norm clipping is standard in this codebase — PPO uses `0.5`,
+MuZero `10.0`. It is a **driver-call argument**, not an optimizer field:
+
+```mojo
+_ = agent.train(..., max_grad_norm=0.5)
+```
+
+`lr_scheduler` and `schedules` provide warmup and decay.
+
+:::caution[Never capture a CUDA graph during LR warmup]
+A captured graph freezes the learning rate at its value when captured, so
+warmup silently stops advancing. Capture after warmup completes.
+:::
+
+## Losses
+
+```mojo
+from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
+from mojo_rl.nn.loss.mse_loss import MSELoss
+from mojo_rl.nn.loss.two_hot import TwoHot
+```
+
+| Loss | Used for |
+|---|---|
+| `CrossEntropyLoss` | classification |
+| `SequenceCrossEntropy` | language modelling |
+| `SoftCrossEntropy` | soft targets — distillation, MCTS policy targets |
+| `MSELoss` · `MSE` | regression, value heads |
+| `MSEPerSample` | per-sample loss, for prioritized-replay weights |
+| `GaussianNLLLoss` | probabilistic dynamics models — MBPO |
+| `TwoHot` | distributional value/reward heads — DreamerV3, TD-MPC2 |
+
+**`TwoHot`** deserves a note. It encodes a scalar as a distribution over two
+adjacent bins, so a value head predicts a categorical distribution rather than a
+point estimate — markedly more stable for value learning.
+
+:::note[TwoHot and symlog are separate decisions]
+Whether symlog scaling is applied alongside two-hot encoding is per-head. In
+this implementation DreamerV3's TwoHot uses `SYMLOG=False`. Copying a
+configuration between agents without checking this changes what the head
+predicts.
+:::
+
+Huber loss is available through the loss helpers used by the DQN family.
+
+## Initializers
+
+```mojo
+from mojo_rl.nn.core.initializer import Kaiming, Xavier, Zero, Normal
+```
+
+| Initializer | Use |
+|---|---|
+| `Kaiming` | ReLU-family networks — the default |
+| `ScaledKaiming` | Kaiming with an explicit gain |
+| `Xavier` | tanh/sigmoid networks |
+| `TruncNormalIn` | truncated normal, σ = √(1/fan_in) — DreamerV3 reference |
+| `Normal` | plain Gaussian |
+| `Zero` | zero — reference output-layer init for reward/value heads |
+| `Deterministic` | fixed values, for tests |
+
+The initializer is a compile-time parameter to `make`, threaded down through
+combinators to every leaf:
+
+```mojo
+var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu"].make[Kaiming](
+    Optional(ctx), lr=1e-3
+)
+```
+
+:::caution[Initialization is not cosmetic in model-based RL]
+DreamerV3 is sensitive enough to initialization that the reference choices are
+part of the algorithm: `Zero` on the reward and value output layers,
+`TruncNormalIn` elsewhere. Departing from them shows up as failure to converge
+rather than as slightly slower learning.
+
+`InitWith` (a [combinator](/nn/combinators/)) overrides the initializer for a
+subtree when one part of a network needs a different scheme.
+:::
+
+Some layers carry their own initialization concerns — PPO's Gaussian head takes
+a `log_std_init`, and the trainer leaves setting it to the caller because Mojo
+nightly cannot reflect into `Sequential`'s variadic children generically:
+
+```mojo
+agent.trainer.actor.children[4].set_log_std_init["cpu"](LOG_STD_INIT)
+```
+
+## Next
+
+- [Training](/nn/training/) — the Trainer that drives all of this
+- [Modules and Params](/nn/modules/) — what the optimizer walks
+- [Primitives](/nn/primitives/) — the layers being initialized

@@ -50,7 +50,7 @@ def _gauss() -> Float64:
 
 
 struct ContinuousCEMOptimizer[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDeletable,
+    Deinitable,
     Movable,
 ):
     """Per-step diagonal-Gaussian CEM optimizer (continuous actions)."""
@@ -229,7 +229,7 @@ struct ContinuousCEMOptimizer[BATCH: Int, ACT_DIM: Int](
 
     def _write_plan(
         mut self, sample: Int,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
     ):
         var all_samples = TileTensor(
             self.sample_actions,
@@ -252,7 +252,7 @@ struct ContinuousCEMOptimizer[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         """Run `cem_iters` rounds of sample → score → top-K → refit.

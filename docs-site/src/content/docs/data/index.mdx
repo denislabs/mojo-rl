@@ -1,0 +1,170 @@
+---
+title: Data
+description: mojo_rl.data — one column-oriented trajectory store behind replay buffers, offline datasets and demonstrations, on a native HDF5 layer.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<Maturity level="stable" note="Transition buffers are migrated and gated. The sequence buffers (DreamerV3, Dreamer 4, zero-series) still have their own storage." />
+
+`mojo_rl.data` is the storage layer underneath training: the replay buffers the
+off-policy agents sample from, the on-disk format offline datasets and
+demonstrations are written in, and the index policies that decide which rows a
+minibatch contains.
+
+It exists because those three had drifted into separate implementations. Every
+buffer in the framework hardcoded the same five columns — `obs`, `action`,
+`reward`, `next_obs`, `done` — so anything with a different column set needed a
+new buffer rather than a new configuration.
+
+<CardGrid>
+	<Card title="Replay buffers" icon="random">
+		[Online storage](/data/replay/) — `StoreReplay` and `StoreReplayGpu`,
+		uniform and prioritized behind one comptime flag, ERE, uint8 observation
+		storage, and CUDA-graph-safe device sampling.
+	</Card>
+	<Card title="Trajectory store" icon="document">
+		[The on-disk format](/data/trajectory-store/) — named columns plus an
+		episode index, streaming HDF5 writes, residency, and the four index
+		policies.
+	</Card>
+	<Card title="Remote datasets" icon="cloud-download">
+		[Pull and push](/data/remote/) — a catalog client that resolves a dataset
+		name to bytes on disk, so a rented GPU box does not regenerate what it
+		could fetch.
+	</Card>
+</CardGrid>
+
+## Three layers
+
+```
+mojo_rl/io/       transport. HDF5 read + write, resumable HTTP. No RL semantics.
+mojo_rl/data/     the STORE: named columns, episode index, host/device residency.
+   └── samplers   index policies over a store: uniform, prioritized,
+                  sequence-window, and the device Philox sampler.
+```
+
+The split is the whole design. The old `ReplayBuffer` trait fused three concerns
+into a single method:
+
+```mojo
+def sample_into[BATCH](mut self, mut state: TrainerState[OBS, ACT, BATCH])
+```
+
+— storage, *and* the sampling policy, *and* the destination layout. Every
+combination of `backend × policy × column set` therefore needed its own struct.
+Separating them means prioritized sampling is an *index policy*, not a storage
+subclass:
+
+| | uniform | prioritized | ERE |
+|---|---|---|---|
+| CPU | `StoreReplay` | `StoreReplay[…, True]` | — |
+| GPU | `StoreReplayGpu` | `StoreReplayGpu[…, True]` | `configure_ere(True)` |
+
+Two structs cover what four previously did (`CPUReplay`,
+`CPUPrioritizedReplay`, `GPUReplay`, `GPUPrioritizedReplay`), because the
+sum-tree lives in a sampler and storage does not know it exists.
+
+## The axis that varies is the column set
+
+Not CPU-versus-GPU, and not uniform-versus-prioritized. Those are real splits and
+both survive. The one that kept forcing new buffers is *which columns a row
+holds*:
+
+| Consumer | Columns |
+|---|---|
+| Off-policy RL | `obs` · `action` · `reward` · `next_obs` · `done` |
+| dm_control behaviour foundation models | `qpos` · `qvel` · `action` — rewards are computed from physics state, not from the observation |
+| PushT | `pixels` · `proprio` · `state` · `action` |
+| Atari | `ram` plus frames |
+
+So a store declares its columns rather than inheriting them:
+
+```mojo
+from mojo_rl.data import ColumnSpec, TrajectoryStoreWriter
+
+var cols = List[ColumnSpec]()
+cols.append(ColumnSpec(String("qpos"), DType.float32, 9))
+cols.append(ColumnSpec(String("qvel"), DType.float32, 9))
+cols.append(ColumnSpec(String("action"), DType.float32, 6))
+
+var w = TrajectoryStoreWriter(path, cols^, env_id=String("walker-walk"), seed=7)
+```
+
+`action`, `reward`, `done` and `truncated` are reserved names with the meaning
+you expect. Everything else is domain-declared.
+
+## Residency is mandatory, and it was measured
+
+The design question was whether a minibatch can be gathered straight from disk.
+Measured on a walker-shaped store — 10 M transitions, 26 float32 per row,
+1.04 GB — assembling one 4096-row minibatch:
+
+| Pattern | Per minibatch | vs resident |
+|---|---|---|
+| Scattered rows, one read per row, from disk | 272 ms | **4500× worse** |
+| Scattered rows in 64-row groups, from disk | 2.16 ms | 36× worse |
+| Contiguous slab, from disk | 0.072 ms | 1.2× worse |
+| **Scattered rows from a resident host buffer** | **0.060 ms** | baseline |
+
+Four orders of magnitude is not a tuning question. So the store has
+*deliberately no* gather-by-index-from-disk API — it would be a performance trap
+wearing a convenient name. Sampling reads a resident buffer
+([`ResidentColumn`](/data/trajectory-store/#residency)); disk access is
+contiguous slabs, which run fast enough that refilling a window is nearly free.
+
+Bulk I/O, by contrast, is not a cost centre at all: that same 992 MiB store
+writes in 1.38 s (718 MiB/s) through the append path and streams back in about
+half a second warm.
+
+:::note[Measured under load]
+The machine was running a full physics test sweep at the time, so the absolute
+libhdf5 numbers are floors. The *ratios* span four orders of magnitude and are
+unaffected. Chunk-size tuning was pure noise under that load and is deliberately
+not derived from these figures.
+:::
+
+## Package map
+
+```
+mojo_rl/io/
+├── hdf5/          native libhdf5 FFI — reader.mojo, writer.mojo, per-API h5*.mojo
+└── fetch.mojo     resumable HTTP → local cache, sha256-verified
+
+mojo_rl/data/
+├── column.mojo        ColumnSpec, dtype mapping
+├── manifest.mojo      schema written into the file
+├── episode_index.mojo ep_len / ep_offset + validation
+├── store.mojo         TrajectoryStore, TrajectoryStoreWriter
+├── resident.mojo      ResidentColumn, IndexBatch, host + device gather
+├── windowed.mojo      WindowedColumn, WindowSampler
+├── sampler.mojo       Uniform, UniformDevice, Prioritized, SequenceWindow
+├── replay.mojo        StoreReplay (CPU ring)
+├── replay_gpu.mojo    StoreReplayGpu (device ring)
+├── quantize.mojo      uint8 observation quantise / dequantise
+├── blocks.mojo        sample-block aliases
+└── remote.mojo        RemoteCatalog
+```
+
+## Supervised datasets live elsewhere, on purpose
+
+MNIST, CIFAR-10, TinyShakespeare and PushT stay in `mojo_rl/nn/datasets/` — see
+[nn training](/nn/training/). Folding them in here was considered and rejected:
+they are images plus labels, or a token stream. No episodes, no actions, no
+rewards, no ragged row axis. Expressing them as a trajectory store would mean
+inventing single-row "episodes" and calling an image a column, which is the
+over-generalisation this layer exists to undo.
+
+The test is simple: **does it have an episode axis?** If not, it is not a
+trajectory store.
+
+## What is not migrated
+
+The *sequence* buffers — `sequence_replay`, `gpu_sequence_replay`, and the
+zero-series MCTS variants under `mojo_rl/deep_agents/data/` — still own their
+storage. They serve DreamerV3, Dreamer 4 and the AlphaZero/MuZero family, whose
+unit of sampling is a length-`T` window rather than a transition.
+`SequenceWindowSampler` already exists and is gated, so the index policy is in
+place; the storage migration is not. Nothing depends on it happening, and it
+gets easier the longer it waits, because the destination is now proven.

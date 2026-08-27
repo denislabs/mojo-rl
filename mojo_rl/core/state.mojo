@@ -1,4 +1,4 @@
-trait State(Copyable, ImplicitlyCopyable, Movable, ImplicitlyDeletable):
+trait State(Copyable, ImplicitlyCopyable, Movable, Deinitable):
     """Base trait for environment states.
 
     States must be copyable for use in generic training loops.

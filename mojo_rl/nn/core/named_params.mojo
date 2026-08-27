@@ -2,7 +2,7 @@
 list of (dotted-name, size, decay) records.
 
 The storage successor to legacy `named_params`. Legacy reified raw
-`UnsafePointer`s (param_ptr/grad_ptr) so an external polyak loop could copy
+`Pointer`s (param_ptr/grad_ptr) so an external polyak loop could copy
 through them; the storage design does soft-update via the recursive
 `Module.polyak_from` (no pointers), so this reification is POINTER-FREE — it
 carries only metadata, for structure-parity validation, named-checkpoint
@@ -13,7 +13,7 @@ compose from combinator child indices + field names (e.g. "0.weight",
 "1.running_mean").
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
 from .param import ParamVisitor

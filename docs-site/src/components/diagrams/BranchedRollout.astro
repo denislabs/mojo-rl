@@ -1,0 +1,118 @@
+---
+/**
+ * BranchedRollout — MBPO's branched short rollouts.
+ *
+ * Two things have to be legible at a glance, because both are load-bearing and
+ * neither is obvious from the name:
+ *   1. branches start from *real* states, not from an initial state, and
+ *   2. they are short — the drawn branch is 2 steps and the shipped config
+ *      uses 1.
+ * The widening cone behind each branch is the reason for (2): model error
+ * compounds, so depth is exactly what you cannot afford.
+ */
+
+/** The real trajectory: states visited in the environment. */
+const REAL_Y = 78;
+const REAL_X = [80, 155, 230, 305, 380, 455, 530, 605];
+
+/** Which real states get branched from. Uniformly sampled in the real thing. */
+const BRANCH_AT = [1, 3, 6];
+
+/** Offsets of the k imagined steps, relative to the branch point. */
+const BRANCH_STEPS = [
+	{ dx: 42, dy: 56 },
+	{ dx: 84, dy: 108 },
+];
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="MBPO branched rollouts: short imagined branches leave real states, filling a synthetic buffer that dominates the SAC minibatch">
+		<defs>
+			<marker id="br-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="br-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+			<marker id="br-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+		</defs>
+
+		<text x="80" y="42" class="dg-sub dg-sub--left">real trajectory — actually stepped in the environment</text>
+
+		<!-- the real chain -->
+		<path class="dg-edge dg-edge--cyan"
+			d={`M ${REAL_X[0]} ${REAL_Y} L ${REAL_X[REAL_X.length - 1]} ${REAL_Y}`} />
+		{
+			REAL_X.map((x) => (
+				<circle cx={x} cy={REAL_Y} r="11" class="dg-tree-node dg-tree-node--root" />
+			))
+		}
+
+		<!-- imagined branches, each leaving a real state -->
+		{
+			BRANCH_AT.map((i) => {
+				const x0 = REAL_X[i];
+				const pts = BRANCH_STEPS.map((s) => ({ x: x0 + s.dx, y: REAL_Y + s.dy }));
+				return (
+					<g>
+						{/* the cone: model error grows with imagined depth */}
+						<path class="dg-fill-purple" opacity="0.12"
+							d={`M ${x0} ${REAL_Y} L ${pts[1].x + 34} ${pts[1].y - 30} L ${pts[1].x - 12} ${pts[1].y + 32} z`} />
+						<path class="dg-edge dg-edge--purple dg-edge--dashed" marker-end="url(#br-purple)"
+							d={`M ${x0} ${REAL_Y} L ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`} />
+						<circle cx={pts[0].x} cy={pts[0].y} r="9" class="dg-tree-node dg-tree-node--new" />
+						<circle cx={pts[1].x} cy={pts[1].y} r="9" class="dg-tree-node dg-tree-node--new" />
+					</g>
+				);
+			})
+		}
+
+		<text x="660" y="150" class="dg-sub dg-sub--left">k-step model rollouts</text>
+		<text x="660" y="172" class="dg-sub dg-sub--left">error compounds with depth —</text>
+		<text x="660" y="194" class="dg-sub dg-sub--left">the shipped config uses k = 1</text>
+
+		<!-- the two buffers and the learner -->
+		<g class="dg-node dg-node--green">
+			<rect x="40" y="262" width="200" height="72" rx="10" />
+			<text x="140" y="290" class="dg-title">Real buffer</text>
+			<text x="140" y="312" class="dg-sub">environment transitions</text>
+		</g>
+
+		<g class="dg-node dg-node--purple">
+			<rect x="310" y="262" width="220" height="72" rx="10" />
+			<text x="420" y="290" class="dg-title">Synthetic buffer</text>
+			<text x="420" y="312" class="dg-sub">imagined transitions</text>
+		</g>
+
+		<g class="dg-node dg-node--spark">
+			<rect x="640" y="262" width="200" height="72" rx="10" />
+			<text x="740" y="290" class="dg-title">SAC update</text>
+			<text x="740" y="312" class="dg-sub">mixed minibatch</text>
+		</g>
+
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#br-cyan)"
+			d={`M ${REAL_X[0]} ${REAL_Y + 12} L 80 226 L 140 226 L 140 262`} />
+		<path class="dg-edge dg-edge--purple" marker-end="url(#br-purple)"
+			d="M 420 232 L 420 262" />
+
+		<path class="dg-edge dg-edge--spark" marker-end="url(#br-spark)"
+			d="M 240 298 L 288 298 L 288 356 L 740 356 L 740 336" />
+		<text x="298" y="376" class="dg-label dg-label--spark">5 % real</text>
+
+		<path class="dg-edge dg-edge--spark" marker-end="url(#br-spark)"
+			d="M 530 298 L 640 298" />
+		<text x="540" y="288" class="dg-label dg-label--spark">95 % synthetic</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">real experience</span>
+		<span class="diagram__key diagram__key--purple">imagined by the dynamics ensemble</span>
+		<span class="diagram__key diagram__key--spark">policy update</span>
+	</figcaption>
+</figure>

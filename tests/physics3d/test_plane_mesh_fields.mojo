@@ -20,11 +20,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_plane_mesh_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -50,7 +50,9 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_SOLREF_0,
     MAX_GPU_MESHES,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
@@ -65,8 +67,27 @@ comptime NTD = SawyerReachModel.MAX_TENDON
 comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
-comptime NMESHV = MAX_GPU_MESHES * 256
+# ⚠ 512, not 256: EXACT hulls need roughly 10x what support sampling
+# kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
+# `fields_build` TRUNCATES past this cap — silently, until now.
+comptime NMESHV = MAX_GPU_MESHES * 512
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTD,
+    nexclude=0,
+    nmesh_verts=NMESHV,
+    npair=SawyerReachModel.NPAIR,
+    nact=SawyerReachModel.NACT,
+    nten=SawyerReachModel.NTEN_F,
+    nkey=SawyerReachModel.NKEY,
+]
 
 comptime OBJ_Z_ENV0: Float64 = -0.900  # vertex dist = -0.017
 comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
@@ -74,10 +95,56 @@ comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
-comptime GOLD_NCON_A = 4  # O(N^2) leg
-comptime GOLD_CON_A = 1135.9686783785
-comptime GOLD_NCON_B = 6  # SAP leg
-comptime GOLD_CON_B = 1989.6578279478708
+# Re-harvested 2026-07-30 (was NCON 4/6, fingerprints 1135.9686783785 /
+# 1989.6578279478708). The plane-mesh record this gate exists for is unchanged
+# — both legs still assert it, with the same conventions. What went away are
+# the scene's PHANTOM mesh-mesh contacts: `_closest_point_on_simplex` read a
+# FLAT GJK simplex as enclosing the origin, so pairs float64 puts centimetres
+# apart came back as penetrating. Two per leg.
+# Re-harvested 2026-07-29 (was NCON 4 / fingerprint 1135.9686783785).
+#
+# Cause: commit f0d35e2c taught the parser that MJCF default classes supply
+# STRUCTURAL attributes, not just tuning ones. SawyerReach's `base_viz` and
+# `base_col` classes declare `type="mesh"`, and its class-only geoms had been
+# falling back to the built-in default type instead of inheriting it — so they
+# were being collided as the wrong primitive entirely. Now they are meshes, and
+# the O(N^2) leg finds 6 contacts.
+#
+# Both legs moved (the two legs collide different geom subsets, so their counts
+# were never expected to match each other). Regenerated with the HARVEST
+# procedure in the module docstring.
+# --- 2026-08-09: SPLIT AT THE SOLPARAM COLUMNS, and both deltas accounted ---
+# The single-number fingerprint summed all 30 record columns, so the day
+# `11e188fd` started writing per-contact solref/solimp into columns 23-29 every
+# gate that used one went red with no way to say whether GEOMETRY had moved.
+# It had not. Measured, O(N^2) leg: geometry cols = 401.17350097186863 against
+# the old whole-record golden 401.1735017262399 — same number to 1.9e-11, and
+# that residual is summation ORDER (two accumulators instead of one), not
+# physics. The whole 452.322002 delta is the solparam columns, and predicting
+# it from the record values gives 452.322002 exactly. `test_sap_fields` carries
+# the same split for the same reason.
+#
+# The SAP leg ALSO moved, for a completely different and real reason: defect 24
+# (`pair_body_filtered`). Its plane loop had no body filter, so sawyer's
+# jointless `tablelink` — welded to the world, collision box 7 mm through the
+# floor by construction — collided with the ground plane. That was ONE bogus
+# contact per env while plane/box was single-point, and became FOUR when
+# `3dbc4c33` made it a manifold: 2/env -> 5/env. MuJoCo emits none of them and
+# the O(N^2) leg never did either. Fixed, so the leg drops to the plane-mesh
+# record this gate exists for.
+comptime GOLD_NCON_A = 2  # O(N^2) leg
+comptime GOLD_CON_A = 401.1735017262399  # geometry columns (k < 23)
+comptime GOLD_SOL_A = 452.322002  # solparam columns (k >= 23)
+#
+# ⚠ The two legs' GEOMETRY fingerprints now differ by EXACTLY 6.0, and that is
+# a cross-check rather than a coincidence: the only remaining difference
+# between them is the world body id in `CONTACT_IDX_BODY_B` (k = 1), which
+# `detect_contacts` writes as 0 and SAP as -1. Its weight is (e+1)(c+1)(k+1) =
+# (e+1)*2, so one contact per env costs 2 + 4 = 6. If a future change moves the
+# two legs by DIFFERENT amounts, they have diverged on real geometry.
+comptime GOLD_NCON_B = 2  # SAP leg — was 4, then 10; defect 24 removed the lot
+comptime GOLD_CON_B = 395.17350097186863  # = GOLD_CON_A - 6.0, see above
+comptime GOLD_SOL_B = 452.32200173288584
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:
@@ -100,25 +167,38 @@ def _qpos_for_env(e: Int) -> List[Float64]:
 
 def _fp_check(
     label: String,
-    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, MD, BATCH],
     gold_ncon: Int,
     gold_con: Float64,
+    gold_sol: Float64,
 ) raises:
     var ncon_total = 0
-    var fp = Float64(0)
+    var fp_geom = Float64(0)
+    var fp_sol = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
-                fp += Float64(
+                var w = Float64(
                     d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
                 ) * Float64((e + 1) * (c + 1) * (k + 1))
+                if k < CONTACT_IDX_SOLREF_0:
+                    fp_geom += w
+                else:
+                    fp_sol += w
     if ncon_total == 0:
         raise Error(label + ": zero contacts — gate is vacuous")
+    # ALWAYS print the split, pass or fail: a single number cannot say WHICH
+    # half of the record moved, and that ambiguity is what made this gate sit
+    # red for a week (see the header).
+    print(
+        "  ", label, "split: geometry cols", fp_geom, " solparam cols", fp_sol
+    )
     if HARVEST:
         print("  HARVEST", label, "NCON =", ncon_total)
-        print("  HARVEST", label, "CON  =", fp)
+        print("  HARVEST", label, "GEOM =", fp_geom)
+        print("  HARVEST", label, "SOL  =", fp_sol)
     else:
         if ncon_total != gold_ncon and not has_nvidia_gpu_accelerator():
             raise Error(
@@ -126,24 +206,32 @@ def _fp_check(
                 + String(gold_ncon)
             )
         var denom = abs(gold_con) if abs(gold_con) > 1e-9 else 1.0
-        if abs(fp - gold_con) / denom > GOLD_RTOL and (
+        if abs(fp_geom - gold_con) / denom > GOLD_RTOL and (
             not has_nvidia_gpu_accelerator()
         ):
             raise Error(
-                label + ": record fingerprint " + String(fp) + " != golden "
-                + String(gold_con)
+                label + ": GEOMETRY fingerprint " + String(fp_geom)
+                + " != golden " + String(gold_con)
+            )
+        var sdenom = abs(gold_sol) if abs(gold_sol) > 1e-9 else 1.0
+        if abs(fp_sol - gold_sol) / sdenom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                label + ": SOLPARAM fingerprint " + String(fp_sol)
+                + " != golden " + String(gold_sol)
             )
         print("  [", label, "] PASS: counts + records match golden")
 
 
 def _assert_plane_mesh_contact(
     label: String,
-    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, MD, BATCH],
     obj_body: Int,
     expected_body_b: Int,
 ) raises:
     for e in range(BATCH):
-        var ncon = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var ncon = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         var found = 0
         for c in range(ncon):
             var base = e * MC * CONTACT_SIZE + c * CONTACT_SIZE
@@ -167,10 +255,8 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
-    ]()
-    SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    SawyerReachModel.init_fields[DTYPE](ctx, mf)
 
     # STL mesh counts from the packed mesh_meta (vertadr, nverts) pairs.
     var n_stl_meshes = 0
@@ -240,27 +326,21 @@ def main() raises:
         raise Error("tetra mesh_meta did not reach Model")
 
     # ================= Leg 1: O(N^2) detection ==========================
-    var d_a = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_a = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_a.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_a.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_a, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_a, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d_a, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](d_a, mf, ctx)
     d_a.contacts.download(ctx)
     d_a.meta.download(ctx)
-    _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A)
+    _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A, GOLD_SOL_A)
     _assert_plane_mesh_contact("O(N^2)", d_a, obj_body, 0)
     for e in range(BATCH):
         var ncon = Int(
-            d_a.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d_a.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var found_neg = False
         for c in range(ncon):
@@ -276,23 +356,17 @@ def main() raises:
     print("  [ O(N^2) ] PASS: plane-mesh record present (BODY_B=0, DIST<0)")
 
     # ================= Leg 2: SAP detection =============================
-    var d_b = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_b = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_b.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_b.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_b, mf, ctx)
-    detect_contacts_sap[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_b, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d_b, mf, ctx)
+    detect_contacts_sap["gpu", DTYPE, BATCH=BATCH](d_b, mf, ctx)
     d_b.contacts.download(ctx)
     d_b.meta.download(ctx)
-    _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B)
+    _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B, GOLD_SOL_B)
     _assert_plane_mesh_contact("SAP", d_b, obj_body, -1)
     print("  [ SAP ] PASS: plane-mesh record present (BODY_B=-1)")
 

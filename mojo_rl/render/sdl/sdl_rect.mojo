@@ -160,7 +160,7 @@ def get_rect_union(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRectUnion.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRectUnion",
         def(
@@ -330,7 +330,7 @@ def get_rect_union_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRectUnionFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRectUnionFloat",
         def(

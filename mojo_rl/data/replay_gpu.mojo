@@ -1,0 +1,1117 @@
+# +--------------------------------------------------------------------------+ #
+# | StoreReplayGpu — device-resident ring behind the ReplayBuffer seam
+# +--------------------------------------------------------------------------+ #
+"""GPU counterpart of `StoreReplay`, using the Stage-3 device index policy.
+
+Kernels here are deliberately NOT imported from `gpu_replay.mojo`. Depending
+on the module we intend to delete would make the deletion impossible, so this
+carries its own store/gather kernels — ports of the legacy ones, gated
+bit-identical against them.
+
+Dims are comptime at this seam (`OBS`/`ACT`/`CAP` are trait parameters), so
+these use static `Layout.row_major(...)` rather than the runtime-layout idiom
+that `resident.mojo` needs for store-metadata dims. Both spellings exist on
+purpose: static where the dims are known, runtime where they are not.
+
+Three index policies are covered, each gated bit-identical against its legacy
+counterpart: **uniform**, **ERE** (Emphasizing Recent Experience — sample from
+a shrinking recent window) and **PER** (device sum-tree). `PRIORITIZED` is a
+comptime flag, so ONE struct replaces both `GPUReplay` and
+`GPUPrioritizedReplay`.
+
+⚠ **Capture-safety differs by policy, faithfully.** `size` and the Philox
+`offset` live in DEVICE buffers for the uniform and PER paths — a baked host
+`size` is what the legacy `gpu_replay.mojo` (deleted 4d.3) called "the
+catastrophic-divergence bug", since capture would freeze sampling at the warmup
+fill. ERE passes `size`/`pos`/`c_k`
+as host scalars, exactly as the legacy does: the legacy documents ERE as
+deliberately non-capturable (it would need an on-device anneal).
+
+⚠ **ERE and PER cannot both be enabled.** The legacy pairing was
+`GPUReplay` + ERE or `GPUPrioritizedReplay` without it, never both;
+`configure_ere(enable=True)` on a PER buffer raises rather than silently
+dropping one of the two policies.
+"""
+
+from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext, DeviceBuffer
+from std.math import pow as fpow
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor
+
+from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
+from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from .quantize import _obs_dequant, _obs_quant
+from .resident import IDX_DT
+from .sampler import UniformDeviceSampler
+
+
+
+# ── kernels ───────────────────────────────────────────────────────────────
+
+def _store_one_kernel[
+    OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
+](
+    stage_s: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
+    stage_a: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
+    stage_r: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    stage_sp: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
+    stage_d: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
+    buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    slot: Int32,
+):
+    """One transition, staged host→device, written into `buf[slot]`."""
+    var d = Int(thread_idx.x)
+    var s = Int(slot)
+    if d < OBS:
+        buf_s[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_s[d]))
+        buf_sp[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_sp[d]))
+    if d < ACT:
+        buf_a[s, d] = stage_a[d]
+    if d == 0:
+        buf_r[s] = stage_r[0]
+        buf_d[s] = stage_d[0]
+
+
+def _store_batch_kernel[
+    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
+](
+    src_s: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
+    src_a: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    src_r: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
+    src_sp: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
+    src_d: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
+    buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    start_pos: Int32,
+):
+    """`N_ENVS` transitions written to consecutive ring slots from
+    `start_pos`, wrapping. Element-parallel over (env, obs element)."""
+    comptime assert OBS >= ACT, "_store_batch_kernel assumes OBS >= ACT"
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= N_ENVS * OBS:
+        return
+    var e = t // OBS
+    var d = t % OBS
+    var slot = (Int(start_pos) + e) % CAP
+    buf_s[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_s[e, d]))
+    buf_sp[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_sp[e, d]))
+    if d < ACT:
+        buf_a[slot, d] = src_a[e, d]
+    if d == 0:
+        buf_r[slot] = src_r[e]
+        buf_d[slot] = src_d[e]
+
+
+def _gather_batch_kernel[
+    BATCH: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
+](
+    mb_s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    mb_a: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
+    mb_r: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    mb_sp: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    mb_d: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
+    buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """One thread per (lane, obs element). Element-parallel rather than
+    one-thread-per-lane: a per-lane kernel serialises the row copy and
+    launches only BATCH threads, which cost ~73% of GPU time on pixel-wide
+    rows (`project_rainbow_pong_pixel_replay_gather_bottleneck`)."""
+    comptime assert OBS >= ACT, "_gather_batch_kernel assumes OBS >= ACT"
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= BATCH * OBS:
+        return
+    var i = t // OBS
+    var d = t % OBS
+    var idx = Int(indices[i])
+    mb_s[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_s[idx, d]))
+    mb_sp[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_sp[idx, d]))
+    if d < ACT:
+        mb_a[i, d] = buf_a[idx, d]
+    if d == 0:
+        mb_r[i] = buf_r[idx]
+        mb_d[i] = buf_d[idx]
+
+
+
+# ── device-resident RNG / size bookkeeping ────────────────────────────────
+#
+# `size` and the Philox `offset` live in DEVICE buffers, not host scalars.
+# That is not fussiness: the legacy `gpu_replay.mojo` (deleted 4d.3) documented
+# a baked host `size` as "the catastrophic-divergence bug" — under capture it freezes
+# sampling to the capture-time fill (≈ warmup) forever. 4b shipped host
+# scalars here; this restores capture-safety.
+
+def _uniform_indices_dev_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Capture-safe port of `gpu_replay.mojo::_sample_indices_kernel`."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var size = Int(size_buf[0])
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var idx = Int(u * Float32(size))
+    if idx >= size:
+        idx = size - 1
+    if idx < 0:
+        idx = 0
+    indices[i] = Scalar[IDX_DT](idx)
+
+
+def _incr_offset_kernel[BATCH: Int](
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """`offset += 2 * BATCH` on device — the capturable form of the host
+    counter bump."""
+    if Int(thread_idx.x) != 0:
+        return
+    offset_buf[0] = rebind[UInt64](offset_buf[0]) + UInt64(2 * BATCH)
+
+
+def _set_size_kernel(
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    v: Int32,
+):
+    if Int(thread_idx.x) != 0:
+        return
+    size_buf[0] = v
+
+
+
+def _ere_indices_kernel[
+    BATCH: Int, CAP: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    size: Int32,
+    write_pos: Int32,
+    c_k: Int32,
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Emphasizing Recent Experience (Wang & Ross 2019) — sample uniformly
+    from the most recent `c_k` rows of the ring rather than all of it.
+
+    Port of `gpu_replay.mojo::_sample_indices_ere_kernel`. ⚠ `size`,
+    `write_pos` and `c_k` are HOST scalars here exactly as in the legacy: the
+    legacy docstring notes ERE is deliberately NOT CUDA-graph capturable,
+    since capture would need device-resident `c_k` and an on-device anneal.
+    The uniform and PER paths above ARE capturable; this one is not, and that
+    is faithful rather than a regression.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var c = Int(c_k)
+    var sz = Int(size)
+    if c > sz:
+        c = sz
+    if c < 1:
+        c = 1
+    var off = Int(u * Float32(c))
+    if off >= c:
+        off = c - 1
+    if off < 0:
+        off = 0
+    var idx = (Int(write_pos) - c + off + CAP) % CAP
+    if idx < 0:
+        idx = idx + CAP
+    indices[i] = Scalar[IDX_DT](idx)
+
+
+
+def _range_indices_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    lo: Int32,
+    hi: Int32,
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Uniform index in `[lo, hi)` — MBPO's dynamics train/holdout split.
+
+    Port of `gpu_replay.mojo::_sample_indices_range_kernel`. The range is a
+    host scalar, matching the legacy: that split is not CUDA-graph captured.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var lo_i = Int(lo)
+    var hi_i = Int(hi)
+    var span = hi_i - lo_i
+    if span < 1:
+        span = 1
+    var idx = lo_i + Int(u * Float32(span))
+    if idx >= hi_i:
+        idx = hi_i - 1
+    if idx < lo_i:
+        idx = lo_i
+    indices[i] = Scalar[IDX_DT](idx)
+
+
+# ── PER: device sum-tree ──────────────────────────────────────────────────
+
+def _per_leafset_new_kernel[
+    N: Int, CAP: Int
+](
+    tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
+    max_p: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    start_pos: Int32,
+    alpha: Scalar[DT],
+):
+    """New rows enter at `max_priority^alpha`. `max_p` is read on device so
+    the ceiling tracks updates without host involvement."""
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N:
+        return
+    var leaf = (Int(start_pos) + e) % CAP
+    tree[CAP - 1 + leaf] = fpow(rebind[Scalar[DT]](max_p[0]), alpha)
+
+
+def _per_update_leaves_kernel[
+    BATCH: Int, CAP: Int
+](
+    tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    td: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    alpha: Scalar[DT],
+    epsilon: Scalar[DT],
+):
+    """`tree[leaf] = (|td| + eps)^alpha`.
+
+    ⚠ Duplicate-leaf determinism: the host loop applies lanes sequentially, so
+    the LAST lane touching a leaf wins. Mirrored here by letting only the last
+    duplicate write (O(BATCH) scan per thread — negligible). Without this the
+    winner is whichever thread happens to run last, and the tree diverges
+    non-deterministically from the host path.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var leaf = Int(indices[i])
+    for j in range(i + 1, BATCH):
+        if Int(indices[j]) == leaf:
+            return
+    var td_i = rebind[Scalar[DT]](td[i])
+    var td_abs = td_i if td_i >= Scalar[DT](0.0) else -td_i
+    tree[CAP - 1 + leaf] = fpow(td_abs + epsilon, alpha)
+
+
+def _per_max_priority_kernel[
+    BATCH: Int
+](
+    max_p: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    td: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    epsilon: Scalar[DT],
+):
+    """Single-thread max reduction — BATCH is small and the codebase avoids
+    float atomics by convention."""
+    if Int(thread_idx.x) != 0:
+        return
+    var m = rebind[Scalar[DT]](max_p[0])
+    for i in range(BATCH):
+        var td_i = rebind[Scalar[DT]](td[i])
+        var td_abs = td_i if td_i >= Scalar[DT](0.0) else -td_i
+        var raw = td_abs + epsilon
+        if raw > m:
+            m = raw
+    max_p[0] = m
+
+
+def _per_tree_propagate_kernel[
+    CAP: Int
+](tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],):
+    """Rebuild every internal node bottom-up, level by level, in ONE
+    single-block launch with a barrier between levels. Full-level recompute
+    sidesteps the concurrent ancestor-path race that per-leaf propagation
+    would have, and needs no atomics. Work is ~CAP adds total."""
+    var tid = Int(thread_idx.x)
+    var tpb = Int(block_dim.x)
+    var l_start = 0
+    while (1 << (l_start + 1)) - 1 <= CAP - 2:
+        l_start += 1
+    var l = l_start
+    while l >= 0:
+        var lo = (1 << l) - 1
+        var hi = (1 << (l + 1)) - 2
+        if hi > CAP - 2:
+            hi = CAP - 2
+        var node = lo + tid
+        while node <= hi:
+            tree[node] = rebind[Scalar[DT]](tree[2 * node + 1]) + rebind[
+                Scalar[DT]
+            ](tree[2 * node + 2])
+            node += tpb
+        barrier()
+        l -= 1
+
+
+def _per_sample_kernel[
+    BATCH: Int, CAP: Int
+](
+    tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    out_idx: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    out_w: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    beta: Scalar[DT],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Stratified draw + iterative root-to-leaf descent, one thread per lane.
+    `<=` on the left child, matching the host descent exactly."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var total = rebind[Scalar[DT]](tree[0])
+    var size = Int(size_buf[0])
+    if total <= Scalar[DT](0.0) or size < 1:
+        out_idx[i] = Scalar[IDX_DT](0)
+        out_w[i] = Scalar[DT](1.0)
+        return
+    var segment = total / Scalar[DT](BATCH)
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var r = Scalar[DT](Float32(philox.step_uniform()[0]))
+    var u = segment * (Scalar[DT](i) + r)
+    if u >= total:
+        u = total - Scalar[DT](1e-7)
+    if u < Scalar[DT](0.0):
+        u = Scalar[DT](0.0)
+    var idx = 0
+    while idx < CAP - 1:
+        var left = 2 * idx + 1
+        var left_sum = rebind[Scalar[DT]](tree[left])
+        if u <= left_sum:
+            idx = left
+        else:
+            u = u - left_sum
+            idx = left + 1
+    var leaf = idx - (CAP - 1)
+    if leaf >= size:
+        leaf = size - 1
+    out_idx[i] = Scalar[IDX_DT](leaf)
+    var p_leaf = rebind[Scalar[DT]](tree[CAP - 1 + leaf])
+    out_w[i] = fpow(Scalar[DT](size) * (p_leaf / total), -beta)
+
+
+def _per_normalize_weights_kernel[
+    BATCH: Int
+](w: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],):
+    """Normalize so max sampled weight == 1, matching the host two-pass."""
+    if Int(thread_idx.x) != 0:
+        return
+    var max_w = Scalar[DT](0.0)
+    for i in range(BATCH):
+        var wi = rebind[Scalar[DT]](w[i])
+        if wi > max_w:
+            max_w = wi
+    if max_w <= Scalar[DT](0.0):
+        max_w = Scalar[DT](1.0)
+    for i in range(BATCH):
+        w[i] = rebind[Scalar[DT]](w[i]) / max_w
+
+
+def _per_copy_weights_kernel[
+    BATCH: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    dst[i] = src[i]
+
+
+# ── the buffer ────────────────────────────────────────────────────────────
+
+struct StoreReplayGpu[
+    OBS_: Int,
+    ACT_: Int,
+    CAP_: Int,
+    PRIORITIZED: Bool = False,
+    OBS_STORE_DT_: DType = DT,
+](ReplayBuffer):
+    """Device ring + a device index policy. `PRIORITIZED` is a comptime FLAG,
+    matching the CPU `StoreReplay`: ONE storage struct serves both policies,
+    because the sum-tree is a sampler, not a storage subclass.
+
+    The tree buffers are `Optional`, so a uniform buffer pays nothing for
+    them."""
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
+    comptime SDT = Self.OBS_STORE_DT_
+    """Obs storage dtype. `DT` stores verbatim; `uint8` quantises — see the
+    module's quantisation note."""
+
+    var obs: DeviceBuffer[Self.SDT]
+    var act: DeviceBuffer[DT]
+    var rew: DeviceBuffer[DT]
+    var nxt: DeviceBuffer[Self.SDT]
+    var dne: DeviceBuffer[DT]
+
+    var stage_obs: DeviceBuffer[DT]
+    var stage_act: DeviceBuffer[DT]
+    var stage_rew: DeviceBuffer[DT]
+    var stage_nxt: DeviceBuffer[DT]
+    var stage_dne: DeviceBuffer[DT]
+    var idx_buf: DeviceBuffer[IDX_DT]
+
+    var _h_rew: List[Scalar[DT]]
+    var _h_dne: List[Scalar[DT]]
+
+    var size: Int
+    var pos: Int
+    var sampler: UniformDeviceSampler
+    var batch_capacity: Int
+
+    # Device-resident so the sample path stays CUDA-graph capturable.
+    var size_dev: DeviceBuffer[DType.int32]
+    var offset_dev: DeviceBuffer[DType.uint64]
+
+    # PER state — present only when PRIORITIZED.
+    var tree: Optional[DeviceBuffer[DT]]
+    var max_p: Optional[DeviceBuffer[DT]]
+    var w_buf: Optional[DeviceBuffer[DT]]
+    var alpha: Scalar[DT]
+    var beta: Scalar[DT]
+    var epsilon: Scalar[DT]
+
+    # ERE (Wang & Ross 2019): c_k = clamp(floor(size * eta^k), c_min, size).
+    var ere_enabled: Bool
+    var ere_eta: Scalar[DT]
+    var _ere_k: Int
+    var _ere_k_max: Int
+    var _ere_eta_pow_k: Scalar[DT]
+    var _ere_c_min: Int
+
+    def __init__(
+        out self,
+        var obs: DeviceBuffer[Self.SDT],
+        var act: DeviceBuffer[DT],
+        var rew: DeviceBuffer[DT],
+        var nxt: DeviceBuffer[Self.SDT],
+        var dne: DeviceBuffer[DT],
+        var stage_obs: DeviceBuffer[DT],
+        var stage_act: DeviceBuffer[DT],
+        var stage_rew: DeviceBuffer[DT],
+        var stage_nxt: DeviceBuffer[DT],
+        var stage_dne: DeviceBuffer[DT],
+        var idx_buf: DeviceBuffer[IDX_DT],
+        var _h_rew: List[Scalar[DT]],
+        var _h_dne: List[Scalar[DT]],
+        size: Int,
+        pos: Int,
+        var sampler: UniformDeviceSampler,
+        batch_capacity: Int,
+        var size_dev: DeviceBuffer[DType.int32],
+        var offset_dev: DeviceBuffer[DType.uint64],
+        var tree: Optional[DeviceBuffer[DT]],
+        var max_p: Optional[DeviceBuffer[DT]],
+        var w_buf: Optional[DeviceBuffer[DT]],
+        alpha: Scalar[DT],
+        beta: Scalar[DT],
+        epsilon: Scalar[DT],
+    ):
+        self.ere_enabled = False
+        self.ere_eta = Scalar[DT](0.996)
+        self._ere_k = 0
+        self._ere_k_max = 1000
+        self._ere_eta_pow_k = Scalar[DT](1.0)
+        self._ere_c_min = 1
+        self.obs = obs^
+        self.act = act^
+        self.rew = rew^
+        self.nxt = nxt^
+        self.dne = dne^
+        self.stage_obs = stage_obs^
+        self.stage_act = stage_act^
+        self.stage_rew = stage_rew^
+        self.stage_nxt = stage_nxt^
+        self.stage_dne = stage_dne^
+        self.idx_buf = idx_buf^
+        self._h_rew = _h_rew^
+        self._h_dne = _h_dne^
+        self.size = size
+        self.pos = pos
+        self.sampler = sampler^
+        self.batch_capacity = batch_capacity
+        self.size_dev = size_dev^
+        self.offset_dev = offset_dev^
+        self.tree = tree^
+        self.max_p = max_p^
+        self.w_buf = w_buf^
+        self.alpha = alpha
+        self.beta = beta
+        self.epsilon = epsilon
+
+    def __init__(out self, *, deinit move: Self):
+        self.obs = move.obs^
+        self.act = move.act^
+        self.rew = move.rew^
+        self.nxt = move.nxt^
+        self.dne = move.dne^
+        self.stage_obs = move.stage_obs^
+        self.stage_act = move.stage_act^
+        self.stage_rew = move.stage_rew^
+        self.stage_nxt = move.stage_nxt^
+        self.stage_dne = move.stage_dne^
+        self.idx_buf = move.idx_buf^
+        self._h_rew = move._h_rew^
+        self._h_dne = move._h_dne^
+        self.size = move.size
+        self.pos = move.pos
+        self.sampler = move.sampler^
+        self.batch_capacity = move.batch_capacity
+        self.size_dev = move.size_dev^
+        self.offset_dev = move.offset_dev^
+        self.tree = move.tree^
+        self.max_p = move.max_p^
+        self.w_buf = move.w_buf^
+        self.alpha = move.alpha
+        self.beta = move.beta
+        self.epsilon = move.epsilon
+        self.ere_enabled = move.ere_enabled
+        self.ere_eta = move.ere_eta
+        self._ere_k = move._ere_k
+        self._ere_k_max = move._ere_k_max
+        self._ere_eta_pow_k = move._ere_eta_pow_k
+        self._ere_c_min = move._ere_c_min
+
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        if not ctx:
+            raise Error("StoreReplayGpu.make: ctx required (GPU backend)")
+        var c = ctx.value()
+        var s = c.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
+        var a = c.enqueue_create_buffer[DT](Self.CAP * Self.ACT)
+        var r = c.enqueue_create_buffer[DT](Self.CAP)
+        var sp = c.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
+        var d = c.enqueue_create_buffer[DT](Self.CAP)
+        s.enqueue_fill(Scalar[Self.SDT](0))
+        a.enqueue_fill(Scalar[DT](0))
+        r.enqueue_fill(Scalar[DT](0))
+        sp.enqueue_fill(Scalar[Self.SDT](0))
+        d.enqueue_fill(Scalar[DT](0))
+
+        var sz_dev = c.enqueue_create_buffer[DType.int32](1)
+        sz_dev.enqueue_fill(Int32(0))
+        var off_dev = c.enqueue_create_buffer[DType.uint64](1)
+        off_dev.enqueue_fill(UInt64(0))
+
+        var tree_opt = Optional[DeviceBuffer[DT]](None)
+        var maxp_opt = Optional[DeviceBuffer[DT]](None)
+        var w_opt = Optional[DeviceBuffer[DT]](None)
+        comptime if Self.PRIORITIZED:
+            var t = c.enqueue_create_buffer[DT](2 * Self.CAP - 1)
+            t.enqueue_fill(Scalar[DT](0))
+            var mp = c.enqueue_create_buffer[DT](1)
+            mp.enqueue_fill(Scalar[DT](1.0))
+            var wb = c.enqueue_create_buffer[DT](batch_capacity)
+            wb.enqueue_fill(Scalar[DT](1.0))
+            tree_opt = t^
+            maxp_opt = mp^
+            w_opt = wb^
+
+        return Self(
+            obs=s^, act=a^, rew=r^, nxt=sp^, dne=d^,
+            stage_obs=c.enqueue_create_buffer[DT](Self.OBS),
+            stage_act=c.enqueue_create_buffer[DT](Self.ACT),
+            stage_rew=c.enqueue_create_buffer[DT](1),
+            stage_nxt=c.enqueue_create_buffer[DT](Self.OBS),
+            stage_dne=c.enqueue_create_buffer[DT](1),
+            idx_buf=c.enqueue_create_buffer[IDX_DT](batch_capacity),
+            _h_rew=List[Scalar[DT]](length=1, fill=Scalar[DT](0)),
+            _h_dne=List[Scalar[DT]](length=1, fill=Scalar[DT](0)),
+            size=0,
+            pos=0,
+            # Seed matches GPUReplay so a migrated call site draws the SAME
+            # sequence — the parity gate depends on it.
+            sampler=UniformDeviceSampler(
+                0, seed=UInt64(0xC0FFEE_DECADE_0042), offset=UInt64(0)
+            ),
+            batch_capacity=batch_capacity,
+            size_dev=sz_dev^,
+            offset_dev=off_dev^,
+            tree=tree_opt^,
+            max_p=maxp_opt^,
+            w_buf=w_opt^,
+            alpha=Scalar[DT](0.6),
+            beta=Scalar[DT](0.4),
+            epsilon=Scalar[DT](1e-6),
+        )
+
+    def count(self) -> Int:
+        return self.size
+
+    def add(
+        mut self,
+        ref s: List[Scalar[DT]],
+        ref a: List[Scalar[DT]],
+        r: Scalar[DT],
+        ref sp: List[Scalar[DT]],
+        d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        if not ctx:
+            raise Error("StoreReplayGpu.add: ctx required")
+        var c = ctx.value()
+        self._h_rew[0] = r
+        self._h_dne[0] = d
+        c.enqueue_copy(self.stage_obs, s.unsafe_ptr())
+        c.enqueue_copy(self.stage_act, a.unsafe_ptr())
+        c.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
+        c.enqueue_copy(self.stage_nxt, sp.unsafe_ptr())
+        c.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
+
+        comptime tpb = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime kern = _store_one_kernel[Self.OBS, Self.ACT, Self.CAP, Self.SDT]
+        c.enqueue_function[kern](
+            LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_obs),
+            LayoutTensor[DT, Layout.row_major(Self.ACT)](self.stage_act),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_rew),
+            LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_nxt),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_dne),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=tpb,
+        )
+        comptime if Self.PRIORITIZED:
+            c.enqueue_function[_per_leafset_new_kernel[1, Self.CAP]](
+                LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1)](
+                    self.tree.value()
+                ),
+                LayoutTensor[DT, Layout.row_major(1)](self.max_p.value()),
+                Int32(self.pos),
+                self.alpha,
+                grid_dim=1,
+                block_dim=1,
+            )
+            c.enqueue_function[_per_tree_propagate_kernel[Self.CAP]](
+                LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1)](
+                    self.tree.value()
+                ),
+                grid_dim=1,
+                block_dim=TPB,
+            )
+        self.pos = (self.pos + 1) % Self.CAP
+        if self.size < Self.CAP:
+            self.size += 1
+        self._sync_size(c)
+
+    def _sync_size(mut self, ctx: DeviceContext) raises:
+        """Mirror the host `size` into the device buffer the sample kernels
+        read. Device-resident so capture cannot bake a stale fill."""
+        ctx.enqueue_function[_set_size_kernel](
+            LayoutTensor[DType.int32, Layout.row_major(1)](self.size_dev),
+            Int32(self.size),
+            grid_dim=1,
+            block_dim=1,
+        )
+
+    def add_batch[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        src_obs: DeviceBuffer[DT],
+        src_act: DeviceBuffer[DT],
+        src_rew: DeviceBuffer[DT],
+        src_nxt: DeviceBuffer[DT],
+        src_dne: DeviceBuffer[DT],
+    ) raises:
+        """Device multi-env store — the GPU-batched driver path."""
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        # ⚠ The `src_*` buffers arrive as READ-ONLY arguments, so the
+        # LayoutTensor built from one carries an immutable origin and does
+        # NOT convert to the kernel's `MutAnyOrigin` parameter. The rebind is
+        # what legacy `gpu_replay.add_batch` did and is load-bearing: without
+        # it this method simply fails to instantiate (and, being generic, it
+        # stayed silently uncompiled until the first GPU-batched call site).
+        var src_obs_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs))
+        var src_act_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT)](src_act))
+        var src_rew_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew))
+        var src_nxt_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_nxt))
+        var src_dne_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne))
+        comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
+        comptime kern = _store_batch_kernel[
+            N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
+        ]
+        ctx.enqueue_function[kern](
+            src_obs_lt,
+            src_act_lt,
+            src_rew_lt,
+            src_nxt_lt,
+            src_dne_lt,
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            Int32(self.pos),
+            grid_dim=n_blocks,
+            block_dim=TPB,
+        )
+        comptime if Self.PRIORITIZED:
+            comptime nb = (N_ENVS + TPB - 1) // TPB
+            ctx.enqueue_function[
+                _per_leafset_new_kernel[N_ENVS, Self.CAP]
+            ](
+                LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1)](
+                    self.tree.value()
+                ),
+                LayoutTensor[DT, Layout.row_major(1)](self.max_p.value()),
+                Int32(self.pos),
+                self.alpha,
+                grid_dim=nb,
+                block_dim=TPB,
+            )
+            ctx.enqueue_function[_per_tree_propagate_kernel[Self.CAP]](
+                LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1)](
+                    self.tree.value()
+                ),
+                grid_dim=1,
+                block_dim=TPB,
+            )
+        self.pos = (self.pos + N_ENVS) % Self.CAP
+        self.size = self.size + N_ENVS
+        if self.size > Self.CAP:
+            self.size = Self.CAP
+        self._sync_size(ctx)
+
+    def sample_into[
+        BATCH: Int
+    ](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        if BATCH > self.batch_capacity:
+            raise Error(
+                "StoreReplayGpu.sample_into: BATCH=" + String(BATCH)
+                + " exceeds batch_capacity=" + String(self.batch_capacity)
+            )
+        var ctx = state.ctx.value()
+        var idx_lt = LayoutTensor[IDX_DT, Layout.row_major(BATCH)](
+            self.idx_buf
+        )
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.size_dev
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.offset_dev
+        )
+        comptime n_idx_blocks = (BATCH + TPB - 1) // TPB
+
+        comptime if Self.PRIORITIZED:
+            var tree_lt = LayoutTensor[
+                DT, Layout.row_major(2 * Self.CAP - 1)
+            ](self.tree.value())
+            var w_lt = LayoutTensor[DT, Layout.row_major(BATCH)](
+                self.w_buf.value()
+            )
+            ctx.enqueue_function[_per_sample_kernel[BATCH, Self.CAP]](
+                tree_lt, size_lt, idx_lt, w_lt, self.beta,
+                UInt64(0xC0FFEE_DECADE_0042), off_lt,
+                grid_dim=n_idx_blocks, block_dim=TPB,
+            )
+            ctx.enqueue_function[_per_normalize_weights_kernel[BATCH]](
+                w_lt, grid_dim=1, block_dim=1,
+            )
+            ctx.enqueue_function[_per_copy_weights_kernel[BATCH]](
+                LayoutTensor[DT, Layout.row_major(BATCH)](
+                    state.mb_w.dev.value()
+                ),
+                w_lt,
+                grid_dim=n_idx_blocks, block_dim=TPB,
+            )
+            state.has_per = True
+        else:
+            if self.ere_enabled:
+                # c_k = clamp(floor(size * eta^k), c_min, size), host-side —
+                # matching the legacy, which is deliberately not capturable.
+                var c = Int(Scalar[DT](self.size) * self._ere_eta_pow_k)
+                if c < self._ere_c_min:
+                    c = self._ere_c_min
+                if c > self.size:
+                    c = self.size
+                if c < 1:
+                    c = 1
+                ctx.enqueue_function[_ere_indices_kernel[BATCH, Self.CAP]](
+                    idx_lt, Int32(self.size), Int32(self.pos), Int32(c),
+                    UInt64(0xC0FFEE_DECADE_0042), off_lt,
+                    grid_dim=n_idx_blocks, block_dim=TPB,
+                )
+                self._ere_k = self._ere_k + 1
+                self._ere_eta_pow_k = self._ere_eta_pow_k * self.ere_eta
+                if self._ere_k >= self._ere_k_max:
+                    self._ere_k = 0
+                    self._ere_eta_pow_k = Scalar[DT](1.0)
+            else:
+                ctx.enqueue_function[_uniform_indices_dev_kernel[BATCH]](
+                    idx_lt, size_lt, UInt64(0xC0FFEE_DECADE_0042), off_lt,
+                    grid_dim=n_idx_blocks, block_dim=TPB,
+                )
+        ctx.enqueue_function[_incr_offset_kernel[BATCH]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+
+        comptime n_blocks = (BATCH * Self.OBS + TPB - 1) // TPB
+        comptime kern = _gather_batch_kernel[
+            BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
+        ]
+        ctx.enqueue_function[kern](
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](
+                state.mb_s.dev.value()
+            ),
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT)](
+                state.mb_a.dev.value()
+            ),
+            LayoutTensor[DT, Layout.row_major(BATCH)](state.mb_r.dev.value()),
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](
+                state.mb_sp.dev.value()
+            ),
+            LayoutTensor[DT, Layout.row_major(BATCH)](state.mb_d.dev.value()),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            LayoutTensor[IDX_DT, Layout.row_major(BATCH)](self.idx_buf),
+            grid_dim=n_blocks,
+            block_dim=TPB,
+        )
+
+    def configure_per(
+        mut self,
+        alpha: Scalar[DT] = Scalar[DT](0.6),
+        beta: Scalar[DT] = Scalar[DT](0.4),
+        epsilon: Scalar[DT] = Scalar[DT](1e-6),
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.epsilon = epsilon
+
+    def set_beta(mut self, beta: Scalar[DT]):
+        self.beta = beta
+
+    def update_priorities[
+        BATCH: Int
+    ](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        comptime if Self.PRIORITIZED:
+            var ctx = state.ctx.value()
+            var td = LayoutTensor[DT, Layout.row_major(BATCH)](
+                state.td_residuals.dev.value()
+            )
+            var tree_lt = LayoutTensor[
+                DT, Layout.row_major(2 * Self.CAP - 1)
+            ](self.tree.value())
+            var maxp_lt = LayoutTensor[DT, Layout.row_major(1)](
+                self.max_p.value()
+            )
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            ctx.enqueue_function[
+                _per_update_leaves_kernel[BATCH, Self.CAP]
+            ](
+                tree_lt,
+                LayoutTensor[IDX_DT, Layout.row_major(BATCH)](self.idx_buf),
+                td,
+                self.alpha,
+                self.epsilon,
+                grid_dim=n_blocks,
+                block_dim=TPB,
+            )
+            ctx.enqueue_function[_per_max_priority_kernel[BATCH]](
+                maxp_lt, td, self.epsilon, grid_dim=1, block_dim=1,
+            )
+            ctx.enqueue_function[_per_tree_propagate_kernel[Self.CAP]](
+                tree_lt, grid_dim=1, block_dim=TPB,
+            )
+
+    def sample[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Uniform draw into CALLER device buffers.
+
+        `sample_into` targets a `TrainerState`; MBPO needs the raw form for
+        its dynamics-model batches and rollout start states.
+        """
+        var idx_lt = LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf)
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.size_dev
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.offset_dev
+        )
+        comptime nb = (N + TPB - 1) // TPB
+        ctx.enqueue_function[_uniform_indices_dev_kernel[N]](
+            idx_lt, size_lt, UInt64(0xC0FFEE_DECADE_0042), off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        ctx.enqueue_function[_incr_offset_kernel[N]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        self._launch_gather[N](ctx, mb_s, mb_a, mb_r, mb_sp, mb_d)
+
+    def sample_range[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        lo: Int,
+        hi: Int,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Uniform draw restricted to rows `[lo, hi)` — MBPO's dynamics
+        train/holdout split."""
+        var idx_lt = LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf)
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.offset_dev
+        )
+        comptime nb = (N + TPB - 1) // TPB
+        ctx.enqueue_function[_range_indices_kernel[N]](
+            idx_lt, Int32(lo), Int32(hi),
+            UInt64(0xC0FFEE_DECADE_0042), off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        ctx.enqueue_function[_incr_offset_kernel[N]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        self._launch_gather[N](ctx, mb_s, mb_a, mb_r, mb_sp, mb_d)
+
+    def _launch_gather[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        # Same immutable-origin rebind as `add_batch` — these are the kernel's
+        # DESTINATIONS and arrive read-only, so without it `sample` /
+        # `sample_range` (the MBPO raw-buffer path) fail to instantiate.
+        var mb_s_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_s))
+        var mb_a_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.ACT)](mb_a))
+        var mb_r_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N)](mb_r))
+        var mb_sp_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_sp))
+        var mb_d_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N)](mb_d))
+        comptime nbg = (N * Self.OBS + TPB - 1) // TPB
+        comptime kern = _gather_batch_kernel[
+            N, Self.OBS, Self.ACT, Self.CAP, Self.SDT
+        ]
+        ctx.enqueue_function[kern](
+            mb_s_lt,
+            mb_a_lt,
+            mb_r_lt,
+            mb_sp_lt,
+            mb_d_lt,
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf),
+            grid_dim=nbg, block_dim=TPB,
+        )
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        """Enable ERE recency-biased sampling.
+
+        ⚠ Not supported together with PER — the legacy pairing is
+        `GPUReplay` + ERE or `GPUPrioritizedReplay` (no ERE), never both.
+        Raising beats silently ignoring one of the two policies.
+        """
+        comptime if Self.PRIORITIZED:
+            if enable:
+                raise Error(
+                    "StoreReplayGpu: ERE and PER cannot both be enabled"
+                    " (the legacy buffers never combined them either)."
+                )
+            return
+        self.ere_enabled = enable
+        if enable:
+            self.ere_eta = eta
+            self._ere_c_min = c_min
+            self._ere_k_max = k_max
+            self._ere_k = 0
+            self._ere_eta_pow_k = Scalar[DT](1.0)

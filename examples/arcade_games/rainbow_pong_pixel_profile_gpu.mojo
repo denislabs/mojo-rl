@@ -20,7 +20,7 @@ Run with:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 
@@ -40,6 +40,7 @@ from mojo_rl.deep_agents.training import (
     run_offpolicy_discrete_train_gpu_batched,
 )
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -147,9 +148,9 @@ def main() raises:
 
         var elapsed = Float64(perf_counter_ns() - start) / 1e9
         print()
-        print("Time:", String(elapsed)[byte=:6], "s")
+        print("Time:", fit(String(elapsed), 6), "s")
         print(
             "Transitions/second:",
-            String(Float64(NUM_STEPS) / elapsed)[byte=:9],
+            fit(String(Float64(NUM_STEPS) / elapsed), 9),
         )
         print("=== Done ===")

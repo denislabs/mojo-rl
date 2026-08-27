@@ -16,19 +16,34 @@ Expected output:
   obs[0] = 0.0       (qpos[1], rootz=0 after reset)
   bthigh qfrc = 120.0  (gear=120, action=1.0)
   enforce_limits clamped correctly
+
+Note the inline XML below has NO `<compiler angle="..."/>`, so MuJoCo's default
+of DEGREES applies and `range="-.52 1.05"` compiles to +-0.0183 rad. The real
+Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 """
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
-from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_Z,
     MODEL_META_IDX_GRAVITY_Z,
 )
 from std.testing import assert_true, TestSuite
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_DOF_ADR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    JLIM_SIZE,
+    JLIM_IDX_LIMITED,
+    JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_RANGE_MIN,
+    JLIM_IDX_RANGE_MAX,
+)
 
 
 # =============================================================================
@@ -117,16 +132,41 @@ def test_model_def_from_xml() raises:
     # Step 2: ModelDefFromXML comptime constants
     # =========================================================================
     # HalfCheetah: obs_qpos_skip=1 → OBS_DIM = 9-1+9 = 17
+    # ⚠ `xml=` BY KEYWORD. The MJCF used to be the FIRST parameter; phase 1b
+    # made it the last (after `xml_path`) because a parameter with a default
+    # cannot precede the required dims. Positional instantiation of the XML no
+    # longer works — which is the trap `NPAIR` documents, seen from the other
+    # side.
     comptime XmlModel = ModelDefFromXML[
-        half_cheetah_xml,
-        pm.NBODY,
-        pm.NJOINT,
-        pm.NQ,
-        pm.NV,
-        pm.NGEOM,
-        pm.NACT,
+        xml=half_cheetah_xml,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        nq=pm.NQ,
+        nv=pm.NV,
+        ngeom=pm.NGEOM,
+        nact=pm.NACT,
         max_contacts=10,
         obs_qpos_skip=1,
+    ]
+    comptime MD = Dims[
+        nq=pm.NQ,
+        nv=pm.NV,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        ngeom=pm.NGEOM,
+        nsite=XmlModel.NSITE,
+        max_contacts=10,
+        nequality=XmlModel.MAX_EQUALITY,
+        ntendon=XmlModel.MAX_TENDON,
+        nexclude=XmlModel.NEXCLUDE,
+        nmesh_verts=0,
+        # ⚠ A HAND-SPELLED `Dims` MUST DECLARE EVERY DIMENSION IT USES. This
+        # omitted `nact`, so it defaulted to 0, `d.actdamp_act` allocated one
+        # float, and the first step asserted "index 1 is out of bounds" from
+        # `dynamics/actuation.mojo` — a file with nothing to do with actuator
+        # counts. `fields_build` now raises a named error instead, but the
+        # dimension still has to be right.
+        nact=pm.NACT,
     ]
 
     print("=== ModelDefFromXML comptime constants ===")
@@ -140,37 +180,62 @@ def test_model_def_from_xml() raises:
         return
 
     # =========================================================================
-    # Step 3: parse_xml_model_data — precomputed InlineArray checks
+    # Step 3: the actuation records (`SpecFields`)
     # =========================================================================
-    print("=== parse_xml_model_data checks ===")
-    comptime acd = parse_xml_model_data(half_cheetah_xml)
+    print("=== actuation record checks ===")
+    # `ComptimeActData` is sized from the MODEL's dims, not from global caps
+    # (see `ModelDefFromXML.NACT_F` and friends). Derive them here the same way
+    # production does, so this test exercises the real sizing rule rather than
+    # a hand-picked one. half_cheetah has no tendons, so the wrap cap is 1.
+    # ⚠ FROM THE RECORDS, not from a hand-instantiated `ComptimeActData`.
+    # This used to call `parse_xml_model_data` directly to exercise "the real
+    # sizing rule"; the real sizing rule is now `SpecFields`' and the values
+    # come from the same build the engine uses.
+    var sf = XmlModel.make_spec_fields[DType.float64]()
 
     # Motor 0 = bthigh, gear=120, dof_adr=3 (3 preceding joints: rootx,rootz,rooty)
-    comptime gear0 = acd.motor_gears[0]
-    comptime dof0 = acd.motor_dof_adr[0]
+    var gear0 = Float64(sf.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
+    var dof0 = Int(sf.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_DOF_ADR])
     print("motor0 gear =", gear0, " (expected 120.0)")
     print("motor0 dof_adr =", dof0, " (expected 3)")
 
     # Motor 5 = ffoot, gear=30, dof_adr=8
-    comptime gear5 = acd.motor_gears[5]
-    comptime dof5 = acd.motor_dof_adr[5]
+    var gear5 = Float64(sf.actuators.data[5 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
+    var dof5 = Int(sf.actuators.data[5 * MODEL_ACTUATOR_SIZE + ACT_IDX_DOF_ADR])
     print("motor5 gear =", gear5, " (expected 30.0)")
     print("motor5 dof_adr =", dof5, " (expected 8)")
 
     # Joint 0 = rootx: slide, limited=false, qpos_adr=0
-    comptime rootx_limited = acd.joint_is_limited[0]
-    comptime rootx_qpos_adr = acd.joint_qpos_adr[0]
+    var rootx_limited = (
+        sf.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var rootx_qpos_adr = Int(
+        sf.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_QPOS_ADR]
+    )
     print("rootx limited =", rootx_limited, " (expected False)")
     print("rootx qpos_adr =", rootx_qpos_adr, " (expected 0)")
 
     # Joint 3 = bthigh: hinge, limited=true, range=[-0.52, 1.05], qpos_adr=3
-    comptime bthigh_limited = acd.joint_is_limited[3]
-    comptime bthigh_rmin = acd.joint_range_min[3]
-    comptime bthigh_rmax = acd.joint_range_max[3]
-    comptime bthigh_qpos_adr = acd.joint_qpos_adr[3]
+    var bthigh_limited = (
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var bthigh_rmin = Float64(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_RANGE_MIN]
+    )
+    var bthigh_rmax = Float64(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_RANGE_MAX]
+    )
+    var bthigh_qpos_adr = Int(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_QPOS_ADR]
+    )
     print("bthigh limited =", bthigh_limited, " (expected True)")
-    print("bthigh range_min =", bthigh_rmin, " (expected -0.52)")
-    print("bthigh range_max =", bthigh_rmax, " (expected 1.05)")
+    # ⚠ RADIANS. The XML says `range="-0.52 1.05"` with `angle="degree"`, and
+    # both parsers apply the deg->rad conversion — these print -0.0090757 and
+    # 0.0183260. The "(expected -0.52)" text this line used to carry was stale
+    # from before that conversion landed and nothing caught it, because the
+    # ASSERTION is on the post-clamp qpos below, not on the printed bound.
+    print("bthigh range_min =", bthigh_rmin, " (expected -0.0090757 rad)")
+    print("bthigh range_max =", bthigh_rmax, " (expected 0.0183260 rad)")
     print("bthigh qpos_adr =", bthigh_qpos_adr, " (expected 3)")
     print()
 
@@ -179,12 +244,8 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     print("=== fields model build ===")
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
-        XmlModel.MAX_EQUALITY, XmlModel.MAX_TENDON, XmlModel.NSITE,
-        XmlModel.NEXCLUDE, 0,
-    ]()
-    XmlModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    XmlModel.init_fields[DType.float64](ctx, mf)
     print("init_fields succeeded")
     print(
         "gravity_z     =",
@@ -202,8 +263,8 @@ def test_model_def_from_xml() raises:
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
     print("=== reset_data + extract_obs ===")
-    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
-    XmlModel.reset_data[DType.float64](d)
+    var d = Data[DType.float64, MD, 1]()
+    XmlModel.reset_data[DType.float64](sf, d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 
     var obs = List[Scalar[DType.float64]]()
@@ -223,7 +284,14 @@ def test_model_def_from_xml() raises:
         actions.append(Float64(0.0))
     actions[0] = Float64(1.0)  # bthigh motor with gear=120
 
-    XmlModel.apply_actions[DType.float64](d, actions)
+    # `act` is the actuator ACTIVATION state (MuJoCo `d->act`). cheetah's
+    # actuators are plain `<motor>`s with no dyntype, so NA == 0 and this
+    # stays a one-element placeholder that apply_actions never reads.
+    var act = List[Scalar[DType.float64]]()
+    for _ in range(XmlModel.NA if XmlModel.NA > 0 else 1):
+        act.append(Scalar[DType.float64](0))
+
+    XmlModel.apply_actions[DType.float64](sf, d, actions, act)
     # bthigh is joint 3 with dof_adr=3
     print("qfrc[3] =", Float64(d.qfrc.data[3]), " (expected 120.0)")
     print()
@@ -234,16 +302,16 @@ def test_model_def_from_xml() raises:
     print("=== enforce_limits ===")
     # Set bthigh qpos[3] out of range (2.0 > 1.05), should be clamped to 1.05
     d.qpos.data[3] = Scalar[DType.float64](2.0)
-    XmlModel.enforce_limits[DType.float64](d)
+    XmlModel.enforce_limits[DType.float64](sf, d)
     print(
         "bthigh qpos after clamp =",
         Float64(d.qpos.data[3]),
-        " (expected 1.05)",
+        " (expected 0.018326 = 1.05 deg)",
     )
 
     # rootx (joint 0) is not limited, should not be clamped
     d.qpos.data[0] = Scalar[DType.float64](100.0)
-    XmlModel.enforce_limits[DType.float64](d)
+    XmlModel.enforce_limits[DType.float64](sf, d)
     print(
         "rootx qpos after enforce =",
         Float64(d.qpos.data[0]),
@@ -252,6 +320,121 @@ def test_model_def_from_xml() raises:
     print()
 
     print("=== All CPU tests passed ===")
+
+
+# =============================================================================
+# Nested-default regression (bug 24)
+# =============================================================================
+
+# A minimal model with dm_control swimmer's `<default>` SHAPE: the top-level
+# `<motor>` and `<joint>` come AFTER two named class blocks, and one of those
+# classes is itself nested. `_extract_section` is not depth aware, so before
+# `_root_defaults` landed the scan saw a section truncated at the FIRST inner
+# `</default>` — which contains `class="inner"`'s joint and no `<motor>` at all.
+#
+# What that cost, silently, on the real model:
+#   * gear fell back to MuJoCo's 1.0 against an actual 5e-4 (2000x force),
+#   * `class="inner"`'s `limited="true"` was read as the global default, so the
+#     UNLIMITED root slide came out limited with an empty (0, 0) range.
+comptime nested_default_xml = """
+<mujoco model="nested_defaults">
+  <option timestep="0.002"/>
+  <default>
+    <default class="inner">
+      <joint type="hinge" axis="0 0 1" limited="true" armature="1e-6"/>
+      <default class="innermost">
+        <geom type="box" size=".01 .05 .01" mass=".01"/>
+      </default>
+    </default>
+    <default class="free">
+      <joint limited="false" armature="0"/>
+    </default>
+    <motor gear="5e-4" ctrllimited="true" ctrlrange="-1 1"/>
+  </default>
+  <worldbody>
+    <body name="root" pos="0 0 0" childclass="inner">
+      <joint name="slider" class="free" type="slide" axis="1 0 0"/>
+      <geom class="innermost" name="root_geom"/>
+      <body name="link" pos="0 .1 0">
+        <geom class="innermost" name="link_geom"/>
+        <joint name="hinge" range="-60 60"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="m0" joint="hinge"/>
+  </actuator>
+</mujoco>
+"""
+
+
+def test_root_default_survives_nested_classes() raises:
+    """Bug 24: top-level `<default>` entries declared after a named class.
+
+    Both assertions below are exactly the values the truncated scan produced,
+    so each fails loudly if `_root_defaults` is ever bypassed again.
+    """
+    comptime pm = parse_xml(nested_default_xml)
+    comptime XmlModel = ModelDefFromXML[
+        xml=nested_default_xml,
+        nbody = pm.NBODY, njoint = pm.NJOINT, nq = pm.NQ, nv = pm.NV,
+        ngeom = pm.NGEOM, nact = pm.NACT, ntex = pm.NTEX, nmat = pm.NMAT,
+        nlight = pm.NLIGHT, ncam = pm.NCAM, nsite = pm.NSITE,
+        max_contacts=1,
+        timestep = pm.TIMESTEP,
+    ]
+
+    # ⚠ THE `comptime` BINDING IS GONE AND SO IS ITS REASON: a comptime
+    # `InlineArray` could not be subscripted inside a runtime expression
+    # without materializing the whole array. These are tensor reads now.
+    var sfn = XmlModel.make_spec_fields[DType.float64]()
+    var GEAR0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]
+    )
+    var CTRL_MIN0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]
+    )
+    var CTRL_MAX0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]
+    )
+    var LIMITED0 = (
+        sfn.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var LIMITED1 = (
+        sfn.joint_limits.data[1 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+
+    print("=== nested-default regression ===")
+    print("motor gear =", GEAR0, " (expected 0.0005)")
+    assert_true(
+        abs(GEAR0 - 5e-4) <= 1e-18,
+        "the top-level <default><motor gear=...> is declared after two named"
+        " class blocks and was not picked up — gear fell back to 1.0, a 2000x"
+        " actuator force error with no diagnostic (bug 24)",
+    )
+    assert_true(
+        abs(CTRL_MIN0 + 1.0) <= 1e-15 and abs(CTRL_MAX0 - 1.0) <= 1e-15,
+        "the same <motor>'s ctrlrange",
+    )
+
+    # `slider` is class="free" (limited="false"); `hinge` inherits childclass
+    # "inner" (limited="true") and also declares a range. Neither default class
+    # is resolvable by this class-blind scan, so `limited` follows MuJoCo's
+    # `compiler/autolimits`: a joint with a range is limited.
+    print(
+        "joint limited =", LIMITED0, LIMITED1, " (expected False True)",
+    )
+    assert_true(
+        not LIMITED0,
+        "the UNLIMITED slide came out limited — a nested class's"
+        " limited=\"true\" is being read as the global default (bug 24)",
+    )
+    assert_true(
+        LIMITED1,
+        "the ranged hinge came out unlimited — autolimits is not being"
+        " applied, so a class-set `limited` is the only signal left",
+    )
+    print("=== nested-default regression passed ===")
 
 
 def main() raises:

@@ -8,17 +8,25 @@ consumers (constraints/contact_solve.mojo) are relative to the row
 start — the legacy `solver_idx` base is gone.
 """
 
-from std.gpu.host import DeviceContext
+from ..constraints.solver_ws import ws_budget, _max_one_rt
+
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 struct ContactScratch[
     DTYPE: DType,
-    NV: Int,
-    MAX_CONTACTS: Int,
+    D: DimsLike,
     BATCH: Int = 1,
+    # Per-env scalars for the blocked-Newton constraint Jacobian spill. 0 (the
+    # default) means "Je fits threadgroup memory" and NO buffer is allocated —
+    # see `solver/je_budget.mojo`, which is the ONLY place this number should
+    # be computed. Callers pass `je_ws_size[...]()`; nothing else.
+    JE_WS: Int = 0,
 ](Movable):
     """PGS contact-solver workspace: one owned tensor, `[BATCH, SOLVER_WS]`
     with `SOLVER_WS = 81*MC + 12*MC*NV` (the legacy
@@ -58,18 +66,65 @@ struct ContactScratch[
     Total = 15*MC + 2*MC*NV + 66*MC + 10*MC*NV = 81*MC + 12*MC*NV.
     """
 
+    # Body unchanged — see `Rk4Scratch` for why the aliases live here.
+    comptime NV = Self.D.NV
+    comptime MAX_CONTACTS = Self.D.MAX_CONTACTS
+
     comptime MC = Self.MAX_CONTACTS if Self.MAX_CONTACTS > 0 else 1
     comptime SOLVER_WS = 81 * Self.MC + 12 * Self.MC * Self.NV
     comptime L_SOLVER = Layout.row_major(Self.BATCH, Self.SOLVER_WS)
 
+    # ⚠ `Je` GETS ITS OWN TENSOR RATHER THAN WIDENING `solver`. `SOLVER_WS` is
+    # the ROW STRIDE of a `[BATCH, SOLVER_WS]` view, and that literal is
+    # recomputed independently in five solver files. Growing the tensor without
+    # growing every one of those views would leave each row after 0 reading the
+    # wrong memory — silent corruption, not a crash. A separate tensor leaves
+    # every stride untouched and confines the change to the blocked path.
+    comptime JE_ELEMS = Self.JE_WS if Self.JE_WS > 0 else 1
+    comptime L_JE = Layout.row_major(Self.BATCH, Self.JE_ELEMS)
+
     var solver: TensorImpl[Self.DTYPE]  # [BATCH, SOLVER_WS]
+    var je: TensorImpl[Self.DTYPE]  # [BATCH, JE_ELEMS] — 1 scalar when unused
+
+    # The provider as a VALUE (3a). See the same field on `Data`; six
+    # dispatchers (`ldl_*`, `lu_*`, `compute_m_inv*`) take this container and
+    # nothing else, so this is where their runtime layouts get their extents.
+    var dims: Self.D
 
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in, and ALLOCATED FROM (3b).
+
+        ⚠ Every size below reads `dims`, never a comptime member. Those
+        members still exist and still size the GPU layouts, but they are
+        `DIM_POISON` on a dynamic provider, so an `alloc` that read one
+        would ask for a NEGATIVE length. See the twin on `Data`."""
+        self.dims = dims
+        # ⚠⚠ THE RUNTIME BUDGET, NOT `Self.SOLVER_WS`. This line read the
+        # comptime member until 2026-08-18 — in direct contradiction of the
+        # docstring three lines above it, which is the reason it survived 3b's
+        # sweep unnoticed. On a dynamic provider `D.NV` is DIM_POISON and
+        # `MC` floors to 1, so `SOLVER_WS` is `81 - 12 = 69` scalars for EVERY
+        # model, while `contact_solve` indexes the tensor at offsets derived
+        # from the RUNTIME nv/mc (walker2d at mc=64 needs 12096). The result is
+        # a heap overflow on the first solve of any runtime-loaded model —
+        # which crashed at free, not at the write, and so read as an allocator
+        # bug. `ws_budget` is the same formula the five solver views use.
         self.solver = TensorImpl[Self.DTYPE].alloc(
-            Self.BATCH * Self.SOLVER_WS
+            Self.BATCH
+            * ws_budget(_max_one_rt(dims.get_max_contacts()), dims.get_nv())
         )
+        # ⚠ FLOORED AT 1: a zero-extent tensor operand SEGFAULTS rather than
+        # behaving as an empty allocation, so the non-spilling case pays one
+        # scalar per env instead of nothing.
+        self.je = TensorImpl[Self.DTYPE].alloc(Self.BATCH * Self.JE_ELEMS)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
-        """Create the device buffer (once, at setup — contents are produced
+        """Create the device buffers (once, at setup — contents are produced
         on-device thereafter)."""
         self.solver.upload(ctx)
+        self.je.upload(ctx)

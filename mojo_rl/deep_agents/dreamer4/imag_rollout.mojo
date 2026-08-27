@@ -47,7 +47,7 @@ NOTE: this requires an action-conditioned, agent-capable dynamics
 """
 
 from std.math import max
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -71,14 +71,14 @@ def _fwd_window[
     M: AgentDynamics, FWD: StaticString, BF: Int, ND: Int, AGD: Int
 ](
     mut dyn: M,
-    sig_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    step_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    act_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mask_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    packed_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    zhat_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    h_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    sig_p: Pointer[Scalar[DT], MutAnyOrigin],
+    step_p: Pointer[Scalar[DT], MutAnyOrigin],
+    act_p: Pointer[Scalar[DT], MutAnyOrigin],
+    mask_p: Pointer[Scalar[DT], MutAnyOrigin],
+    agent_in: Pointer[Scalar[DT], MutAnyOrigin],
+    packed_p: Pointer[Scalar[DT], MutAnyOrigin],
+    zhat_p: Pointer[Scalar[DT], MutAnyOrigin],
+    h_host: Pointer[Scalar[DT], MutAnyOrigin],
     mut in_t: Tensor,
     mut out_t: Tensor,
     ctx: Optional[DeviceContext],
@@ -89,27 +89,27 @@ def _fwd_window[
     dyn.set_agent_in(agent_in, BF)
     # copy host-scratch `packed` into the boundary input Tensor
     for i in range(BF * ND):
-        in_t.data[i] = packed_p[i]
+        in_t.data[i] = packed_p[unsafe_offset=i]
     comptime if FWD == "cpu":
         _dyn_fwd["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(BF * ND):
-            zhat_p[i] = out_t.data[i]
+            zhat_p[unsafe_offset=i] = out_t.data[i]
         var ao = dyn.agent_out_ptr_cpu()
         for i in range(BF * AGD):
-            h_host[i] = ao[i]
+            h_host[unsafe_offset=i] = ao[unsafe_offset=i]
     else:
         var c = ctx.value()
         in_t.upload(c)
         _dyn_fwd["gpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(BF * ND):
-            zhat_p[i] = out_t.data[i]
+            zhat_p[unsafe_offset=i] = out_t.data[i]
         # agent tokens h_t: D2H copy of dyn.agent_out_dev() into host staging
         var hb = h_ag.value()
         c.enqueue_copy(hb, dyn.agent_out_dev())
         c.synchronize()
         for i in range(BF * AGD):
-            h_host[i] = hb.unsafe_ptr()[i]
+            h_host[unsafe_offset=i] = hb.unsafe_ptr()[unsafe_offset=i]
 
 
 def _annotate[
@@ -118,15 +118,15 @@ def _annotate[
 ](
     mut ph: PH, mut vh: VH, mut rh: RH,
     state_i: Int,
-    h_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    hg: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    pl: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    vl: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    rl: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_h: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_host: Pointer[Scalar[DT], MutAnyOrigin],
+    hg: Pointer[Scalar[DT], MutAnyOrigin],
+    pl: Pointer[Scalar[DT], MutAnyOrigin],
+    vl: Pointer[Scalar[DT], MutAnyOrigin],
+    rl: Pointer[Scalar[DT], MutAnyOrigin],
+    bins: Pointer[Scalar[DT], MutAnyOrigin],
+    out_h: Pointer[Scalar[DT], MutAnyOrigin],
+    out_rew: Pointer[Scalar[DT], MutAnyOrigin],
+    out_val: Pointer[Scalar[DT], MutAnyOrigin],
     mut hin_t: Tensor,
     mut plout_t: Tensor,
     mut vlout_t: Tensor,
@@ -141,24 +141,24 @@ def _annotate[
     for b in range(B):
         var src = (b * T + state_i) * AGD
         for k in range(AGD):
-            hg[b * AGD + k] = h_host[src + k]
-            out_h[(b * T + state_i) * AGD + k] = h_host[src + k]
+            hg[unsafe_offset=b * AGD + k] = h_host[unsafe_offset=src + k]
+            out_h[unsafe_offset=(b * T + state_i) * AGD + k] = h_host[unsafe_offset=src + k]
     # bridge gathered h → boundary input Tensor (heads run CPU)
     for i in range(B * AGD):
-        hin_t.data[i] = hg[i]
+        hin_t.data[i] = hg[unsafe_offset=i]
     call_forward["cpu", B](ph, TensorRefs[PH.ARITY](hin_t), plout_t, None)
     call_forward["cpu", B](vh, TensorRefs[VH.ARITY](hin_t), vlout_t, None)
     call_forward["cpu", B](rh, TensorRefs[RH.ARITY](hin_t), rlout_t, None)
     # copy head outputs back into the raw scratch the host helpers index
     for i in range(B * PLOG):
-        pl[i] = plout_t.data[i]
+        pl[unsafe_offset=i] = plout_t.data[i]
     for i in range(B * NBINS):
-        vl[i] = vlout_t.data[i]
+        vl[unsafe_offset=i] = vlout_t.data[i]
     for i in range(B * RLOG):
-        rl[i] = rlout_t.data[i]
+        rl[unsafe_offset=i] = rlout_t.data[i]
     for b in range(B):
-        out_val[b * T + state_i] = twohot_pred[NBINS](vl, b * NBINS, bins)
-        out_rew[b * T + state_i] = twohot_pred[NBINS](rl, b * RLOG, bins)
+        out_val[unsafe_offset=b * T + state_i] = twohot_pred[NBINS](vl, b * NBINS, bins)
+        out_rew[unsafe_offset=b * T + state_i] = twohot_pred[NBINS](rl, b * RLOG, bins)
 
 
 def imagine_rollout[
@@ -174,15 +174,15 @@ def imagine_rollout[
     mut ph: PH,
     mut vh: VH,
     mut rh: RH,
-    ctx: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, NCTX, ND] clean
-    agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T, AGD] task embed
-    u01: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, T] action uniforms
-    z_noise: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T, ND] ODE τ=0 seeds
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [NBINS]
-    out_h: UnsafePointer[Scalar[DT], MutAnyOrigin],     # OUT [B, T, AGD]
-    out_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T-1] class ids
-    out_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
-    out_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
+    ctx: Pointer[Scalar[DT], MutAnyOrigin],       # [B, NCTX, ND] clean
+    agent_in: Pointer[Scalar[DT], MutAnyOrigin],  # [B*T, AGD] task embed
+    u01: Pointer[Scalar[DT], MutAnyOrigin],       # [B, T] action uniforms
+    z_noise: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T, ND] ODE τ=0 seeds
+    bins: Pointer[Scalar[DT], MutAnyOrigin],      # [NBINS]
+    out_h: Pointer[Scalar[DT], MutAnyOrigin],     # OUT [B, T, AGD]
+    out_act: Pointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T-1] class ids
+    out_rew: Pointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
+    out_val: Pointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
     dctx: Optional[DeviceContext] = None,               # FWD="gpu": the device
 ) raises:
     """FWD="gpu" runs the (frozen) dynamics transformer forward on `dctx` — the
@@ -254,7 +254,7 @@ def imagine_rollout[
             var bt = b * T + c
             sig[bt] = Scalar[DT](Float64(KMAX - 1))
             for i in range(ND):
-                packed[bt * ND + i] = ctx[(b * NCTX + c) * ND + i]
+                packed[bt * ND + i] = ctx[unsafe_offset=(b * NCTX + c) * ND + i]
 
     # ── autoregressive generation ───────────────────────────────────────
     for tgt in range(NCTX, T):
@@ -276,9 +276,9 @@ def imagine_rollout[
         # 2. sample action a_state_i from the dist-0 policy block
         for b in range(B):
             var k = cat_sample[NACT](
-                _mao(plog.unsafe_ptr()), b * PLOG, UNIMIX, u01[b * T + state_i]
+                _mao(plog.unsafe_ptr()), b * PLOG, UNIMIX, u01[unsafe_offset=b * T + state_i]
             )
-            out_act[b * (T - 1) + state_i] = Scalar[DT](Float64(k))
+            out_act[unsafe_offset=b * (T - 1) + state_i] = Scalar[DT](Float64(k))
             # set frame tgt's action token = one-hot(a_state_i)
             for a in range(ADIM):
                 act_oh[(b * T + tgt) * ADIM + a] = Scalar[DT](
@@ -287,7 +287,7 @@ def imagine_rollout[
         # 4. ODE-denoise frame tgt over K substeps (seed = z_noise[b,tgt])
         for b in range(B):
             for kk in range(ND):
-                packed[(b * T + tgt) * ND + kk] = z_noise[(b * T + tgt) * ND + kk]
+                packed[(b * T + tgt) * ND + kk] = z_noise[unsafe_offset=(b * T + tgt) * ND + kk]
         for b in range(B):
             step[b * T + tgt] = Scalar[DT](Float64(E))
         for isub in range(K):

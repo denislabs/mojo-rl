@@ -65,22 +65,22 @@ def _read_flat(lines: List[String], name: String) raises -> List[Scalar[DT]]:
     raise Error("fixture: section not found: " + name)
 
 
-def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
+def _buf(src: List[Scalar[DT]]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    var p: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
     for i in range(len(src)):
         p[i] = src[i]
     return p
 
 
-def _ones(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](n).as_unsafe_any_origin()
+def _ones(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    var p: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](n).as_unsafe_any_origin()
     for i in range(n):
         p[i] = 1.0
     return p
 
 
 def _diff(
-    got: UnsafePointer[Scalar[DT], MutAnyOrigin], expected: List[Scalar[DT]]
+    got: Pointer[Scalar[DT], MutAnyOrigin], expected: List[Scalar[DT]]
 ) -> Scalar[DT]:
     var m: Scalar[DT] = 0.0
     for i in range(len(expected)):

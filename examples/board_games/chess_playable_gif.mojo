@@ -194,7 +194,7 @@ def main() raises:
     renderer.start_recording("gifs/chess_playable.gif", fps=15, skip=2)
 
     var sprite_pixels = create_sprite_sheet()
-    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
+    var sprite_texture = Pointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
     var has_sprites = False
     var sprite_draw_size = 48
     var sprite_pad = (sq_size - sprite_draw_size) // 2
@@ -240,7 +240,7 @@ def main() raises:
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                    rebind[Pointer[NoneType, MutAnyOrigin]](
                         sprite_pixels
                     ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
@@ -273,8 +273,8 @@ def main() raises:
         var cur_r = Bool(keys[Int(Scancode.SCANCODE_R)])
 
         var mouse_buttons = get_mouse_state(
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
         var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
         var cur_mouse_right = (Int(mouse_buttons.value) & 4) != 0
@@ -442,10 +442,10 @@ def main() raises:
                             render_texture(
                                 renderer.sdl_renderer.value(),
                                 sprite_texture,
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     src_rect
                                 ),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     dst_rect
                                 ),
                             )

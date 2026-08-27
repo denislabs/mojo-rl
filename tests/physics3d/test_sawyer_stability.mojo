@@ -10,8 +10,8 @@ from std.math import isnan
 from std.random import seed, random_float64
 from mojo_rl.envs.metaworld import SawyerReach
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
-from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Model
+from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -30,6 +30,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RBOUND,
 )
 from mojo_rl.core import ContAction
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 def test_sawyer_no_nan() raises:
@@ -47,6 +48,7 @@ def test_sawyer_no_nan() raises:
     # Mesh collision diagnostics from the env's Model records (the
     # legacy CPU Model build was deleted at G4).
     comptime M = SawyerReachModel
+    comptime MD = ModelDims[M, 16*256]
     for m in range(16):
         var vnum = Int(env.mf.mesh_meta.data[m * 2 + 1])
         if vnum > 0:
@@ -61,18 +63,30 @@ def test_sawyer_no_nan() raises:
                   "contype=", Int(env.mf.geoms.data[go + GEOM_IDX_CONTYPE]),
                   "rbound=", Float64(env.mf.geoms.data[go + GEOM_IDX_RBOUND]))
 
-    # Print eGripperBase mesh hull extent (mesh 11, geom 27). The facade's
-    # mf is built with NMESH_VERTS=0 (mesh verts unused on the CPU step
-    # path), so build a diagnostics-only Model with full mesh capacity.
+    # Print eGripperBase's mesh hull extent (geom 27).
+    #
+    # ⚠ THE MESH ID IS RESOLVED FROM THE GEOM, NEVER HARDCODED. This block read
+    # `mesh_meta[11]` from when all twelve of sawyer's mesh geoms were loaded.
+    # Once `fields_build` started skipping non-collidable meshes only two load,
+    # eGripperBase became id 1, and id 11 stopped existing — so the `> 0` guard
+    # fell through and this diagnostic SILENTLY PRINTED NOTHING. A lookup that
+    # was unambiguous under the old numbering selects nothing under the new
+    # one, and a guarded diagnostic reports that as silence.
+    #
+    # The old comment here also claimed NMESH_VERTS=0 was fine because "mesh
+    # verts unused on the CPU step path". That was circular and wrong: they
+    # were unused BECAUSE the capacity was zero, which is what kept mesh geoms
+    # from colliding in every env until 2026-08-10.
     var ctx = DeviceContext()
-    var mfd = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
-    ]()
-    M.init_fields[DType.float64, 16 * 256](ctx, mfd)
-    if Int(mfd.mesh_meta.data[11 * 2 + 1]) > 0:
-        var vadr = Int(mfd.mesh_meta.data[11 * 2 + 0])
-        var vnum = Int(mfd.mesh_meta.data[11 * 2 + 1])
+    var mfd = Model[DType.float64, MD]()
+    M.init_fields[DType.float64](ctx, mfd)
+    var grip_mesh = Int(
+        mfd.geoms.data[27 * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]
+    )
+    print("  eGripperBase (geom 27) resolved mesh id:", grip_mesh)
+    if grip_mesh >= 0 and Int(mfd.mesh_meta.data[grip_mesh * 2 + 1]) > 0:
+        var vadr = Int(mfd.mesh_meta.data[grip_mesh * 2 + 0])
+        var vnum = Int(mfd.mesh_meta.data[grip_mesh * 2 + 1])
         var min_x = Float64(1e10)
         var max_x = Float64(-1e10)
         var min_y = Float64(1e10)
@@ -95,7 +109,7 @@ def test_sawyer_no_nan() raises:
                 min_z = vz
             if vz > max_z:
                 max_z = vz
-        print("eGripperBase hull (mesh 11):", vnum, "verts")
+        print("eGripperBase hull (mesh", grip_mesh, "):", vnum, "verts")
         print("  x:", min_x, "to", max_x)
         print("  y:", min_y, "to", max_y)
         print("  z:", min_z, "to", max_z)

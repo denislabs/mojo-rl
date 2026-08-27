@@ -44,8 +44,8 @@ conv2d im2col/col2im + bn2d kernels (the rep-net cost). The per-section
 wall split per layout.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.nn.core.initializer import Kaiming
@@ -103,7 +103,7 @@ comptime VPDyn = EZDynVPNetAtari[ACT, BINS]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutUntrackedOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):

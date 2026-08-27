@@ -28,7 +28,7 @@ are categorical over `[v_min, v_max]` — keep those in sync with the config.
 """
 
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -56,7 +56,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 @fieldwise_init
 struct MuZeroAgent[
     TARGET: StaticString,
-    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
+    ENV: BoxDiscreteActionEnv & Deinitable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -71,7 +71,7 @@ struct MuZeroAgent[
     K: Int,
     N: Int,
     MAX_K: Int = ACT,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     var ctx: Optional[DeviceContext]
     var rep: Self.REP
     var dyn: Self.DYN
@@ -123,7 +123,7 @@ struct MuZeroAgent[
         eval_episodes: Int = 5,
         diag_every: Int = 0,
         report_every: Int = 0,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """Single-player self-play training over the learned model. Returns the
@@ -218,16 +218,16 @@ struct MuZeroAgent[
                 DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
             ](gamma=Float64(self.gamma))
             var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-                net=untracked(UnsafePointer(to=self.rep))
+                net=untracked(Pointer(to=self.rep))
             )
             var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-                net=untracked(UnsafePointer(to=self.dyn)),
+                net=untracked(Pointer(to=self.dyn)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var pred_a = MZPredCPU[
                 Self.LATENT, Self.ACT, Self.BINS, Self.PRED
             ](
-                net=untracked(UnsafePointer(to=self.pred)),
+                net=untracked(Pointer(to=self.pred)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var total = 0.0

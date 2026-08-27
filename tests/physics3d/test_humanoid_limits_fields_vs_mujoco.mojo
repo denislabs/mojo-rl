@@ -52,9 +52,9 @@ from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
 from std.collections import InlineArray
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
@@ -68,6 +68,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MAX,
     META_IDX_NUM_CONTACTS,
     TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_JOINT_0,
     TENDON_IDX_JOINT_1,
     TENDON_IDX_JOINT_2,
@@ -84,6 +85,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_SOLIMP_2,
     TENDON_IDX_SOLIMP_3,
     TENDON_IDX_SOLIMP_4,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 
@@ -98,8 +100,24 @@ comptime NEQ = HumanoidModel.MAX_EQUALITY  # 0
 comptime NTEN = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE = HumanoidModel.NSITE  # 0
 comptime NEXCL = HumanoidModel.nexclude  # 0
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTEN,
+    nexclude=NEXCL,
+    nmesh_verts=0,
+    npair=HumanoidModel.NPAIR,
+    nact=HumanoidModel.NACT,
+    nten=HumanoidModel.NTEN_F,
+    nkey=HumanoidModel.NKEY,
+]
 comptime CONE = HumanoidModel.CONE_TYPE
-comptime METADATA_SIZE_L = 4
 
 # Tendon length at the test pose (hip_y=0, knee=-0.15; L = -hip_y + knee):
 # length_ref here == polycoef[0] in the MuJoCo equality block below.
@@ -120,19 +138,15 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 
 def _build_model(
     ctx: DeviceContext,
-) raises -> Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-]:
+) raises -> Model[DTYPE, MD]:
     """Offset-free init_fields build, then inject meta NTENDON=2 + the two
     hip-knee tendon records DIRECTLY into the per-field tendon tensor
     (record layout t_i * MODEL_TENDON_SIZE + TENDON_IDX_*) exactly as
     test_equality_tendon_fields Part A does — the parser never emits tendon
     records, so injection is the only way any model carries them. No slab,
     no load_from_slab."""
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-    ]()
-    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    HumanoidModel.init_fields[DTYPE](ctx, mf)
 
     # right = r_hip_y (joint 6) + r_knee (joint 7); left = l_hip_y (joint 10)
     # + l_knee (joint 11); coef -1 * hip_y + 1 * knee, MuJoCo-default
@@ -141,6 +155,14 @@ def _build_model(
     for t_i in range(2):
         var t_off = t_i * MODEL_TENDON_SIZE
         var j0 = 6 if t_i == 0 else 10
+        # `_tendon_env` imposes a BILATERAL EQUALITY, and since
+        # 2026-07-31 it only acts on records that say so. That gate
+        # exists because `fields_build` now populates `ntendon`
+        # honestly, and humanoid's <fixed> tendons are NOT constrained
+        # by MuJoCo — without it, every humanoid hip-knee pair would be
+        # welded. This test's whole subject IS the equality path, so it
+        # opts in explicitly.
+        mf.tendons.data[t_off + TENDON_IDX_IS_EQUALITY] = Scalar[DTYPE](1)
         mf.tendons.data[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
         mf.tendons.data[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
         mf.tendons.data[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)
@@ -166,7 +188,7 @@ def _build_model(
 
 
 def _find_elbow_joint(
-    mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0],
+    mf: Model[DTYPE, MD],
 ) raises -> Tuple[Int, Int]:
     """Locate the right-elbow joint record (qpos_adr == 20) and return
     (joint index, dof_adr); assert its range is the expected [-90, 50] deg."""
@@ -204,13 +226,13 @@ def _pose_qpos() -> InlineArray[Float64, NQ]:
     qpos[13] = -0.15  # right knee
     qpos[17] = -0.15  # left knee
     qpos[ELBOW_QPOS_ADR] = ELBOW_QPOS  # right elbow — VIOLATED
-    return qpos
+    return qpos^
 
 
 def _pose_qvel() -> InlineArray[Float64, NV]:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[19] = ELBOW_QVEL  # right elbow dof, closing into the limit
-    return qvel
+    return qvel^
 
 
 comptime MJ_EQUALITY_BLOCK = """    <equality>
@@ -272,17 +294,12 @@ def _compare_vs_mujoco(num_steps: Int) raises:
     )
 
     # ── Fields path (f64, CPU, BATCH=1, RK4 + Newton like the legacy gate).
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
+    var integ = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
     for _ in range(num_steps):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -399,8 +416,8 @@ def test_limit_off_rerun_differs() raises:
 
     var qpos_init = _pose_qpos()
     var qvel_init = _pose_qvel()
-    var d_on = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
-    var d_off = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d_on = Data[DTYPE, MD, 1]()
+    var d_off = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d_on.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
         d_off.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
@@ -409,18 +426,8 @@ def test_limit_off_rerun_differs() raises:
         d_off.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
         d_on.qfrc.data[i] = Scalar[DTYPE](0)
         d_off.qfrc.data[i] = Scalar[DTYPE](0)
-    var integ_on = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
-    var integ_off = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
+    var integ_on = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
+    var integ_off = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
     integ_on.step["cpu"](d_on, mf)
     integ_off.step["cpu"](d_off, mf_off)
     var ndiff = 0

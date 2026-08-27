@@ -17,6 +17,7 @@ from std.random import random_float64
 from std.time import perf_counter_ns
 
 from mojo_rl.core import BoxContinuousActionEnv, RenderableEnv
+from mojo_rl.core.fmt import fit
 
 
 def render_random[
@@ -118,9 +119,9 @@ def render_random[
                 "Step",
                 step,
                 " | reward:",
-                String(reward)[byte=:8],
+                fit(String(reward), 8),
                 " | total:",
-                String(total_reward)[byte=:10],
+                fit(String(total_reward), 10),
                 " | FPS:",
                 Int(fps),
             )

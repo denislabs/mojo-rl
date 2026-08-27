@@ -21,14 +21,14 @@ per-leaf storage polyak works on Apple AND NVIDIA; a grouped arena polyak
 CPU + GPU.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.initializer import Initializer
 
 
-struct OnlineTargetPair[M: Module](Movable & ImplicitlyDeletable):
+struct OnlineTargetPair[M: Module](Movable & Deinitable):
     var online: Self.M
     var target_net: Self.M
 

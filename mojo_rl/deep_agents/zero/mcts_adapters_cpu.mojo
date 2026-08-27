@@ -23,7 +23,7 @@ the old `nn.Network` to an nn `Module` (`forward["cpu", B]`). The env must be
 """
 
 from std.math import exp
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -38,7 +38,7 @@ from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 struct AZRepCPU[
     E: TwoPlayerDiscreteEnv & Saveable,
     OBS: Int,
-](Movable, ImplicitlyDeletable, Representation):
+](Movable, Deinitable, Representation):
     """Identity representation: snapshot the live env's serialized state as the
     latent the planner threads through dynamics + prediction. The `obs` argument
     is ignored — the env's own state is the source of truth (the caller positions
@@ -47,7 +47,7 @@ struct AZRepCPU[
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
 
-    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
+    var env: Pointer[Self.E, MutUntrackedOrigin]
 
     def encode_cpu(
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
@@ -63,14 +63,14 @@ struct AZRepCPU[
 struct AZDynCPU[
     E: TwoPlayerDiscreteEnv & Saveable,
     ACT: Int,
-](Movable, ImplicitlyDeletable, Dynamics):
+](Movable, Deinitable, Dynamics):
     """True game rules as `Dynamics`: load latent → `env.step` → save latent.
     Returns per-edge reward 0.0 (SelfPlay: only terminal value matters)."""
 
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
     comptime ACTION_DIM: Int = Self.ACT
 
-    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
+    var env: Pointer[Self.E, MutUntrackedOrigin]
 
     def step_cpu(
         mut self,
@@ -95,7 +95,7 @@ struct AZPredCPU[
     OBS: Int,
     ACT: Int,
     NET: Module,
-](Movable, ImplicitlyDeletable, Prediction):
+](Movable, Deinitable, Prediction):
     """Prediction adapter: load latent, run the policy/value net (or short-circuit
     terminals). On a terminal (`env.game_result() != 0`) the net is skipped and
     the leaf value is the zero-sum outcome from the leaf-mover's perspective
@@ -106,8 +106,8 @@ struct AZPredCPU[
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
     comptime ACTION_DIM: Int = Self.ACT
 
-    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
-    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
+    var env: Pointer[Self.E, MutUntrackedOrigin]
+    var net: Pointer[Self.NET, MutUntrackedOrigin]
 
     def predict_cpu(
         mut self, hidden: List[Float64], mut policy_out: List[Float64]

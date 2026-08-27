@@ -24,7 +24,7 @@ ONE origin (§B0). CPU + GPU.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -87,7 +87,7 @@ struct DQNTargetYBlock[
     OBS: Int,
     NA: Int,
     DOUBLE: Bool = False,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     """Owns:
     - `ReduceMax[NA]` (standard branch reducer)
     - `GatherCols[NA]` (Double branch gather; constructed but unused on the

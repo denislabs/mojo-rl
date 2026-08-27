@@ -14,7 +14,7 @@ augmentation is requested. Ported verbatim from the legacy
 """
 
 from std.gpu import thread_idx, block_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 

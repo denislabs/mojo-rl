@@ -14,11 +14,28 @@ first layer. The 3-way input concat `[z | a | task_emb]` (width
 `LATENT+ACT+TASK_EMB`) feeds `Linear[(LATENT+TASK_EMB)+ACT, MLP]` — i.e. the
 existing alias with `LATENT' = LATENT+TASK_EMB`. The encoder takes
 `MAX_OBS+TASK_EMB`; the policy takes `LATENT+TASK_EMB`.
+
+⚠⚠ That `LATENT' = LATENT+TASK_EMB` substitution is valid ONLY for nets whose
+OUTPUT width does not depend on the parameter being widened — reward and Q emit
+`BINS`, termination emits 1, the policy emits `2*MAX_ACT`, and the encoder takes
+`LATENT` as a separate parameter. `TDMPC2Dynamics` is the one exception: its
+first parameter sets BOTH the fan-in and the final `NormedLinearSimNorm[MLP,
+LATENT, SN]`, so aliasing it widened the OUTPUT too —
+`TDMPC2DynamicsMT.OUT_DIM` was `LATENT+TASK_EMB` (544 at the walker's dims)
+while the encoder, and therefore the consistency target `z_enc_next`, stayed at
+512. `MSELossPlain[LATENT]` and the carry `Concat[8, LATENT]` both read only
+the first `LATENT` columns, so nothing raised: the world model simply never
+converged. Measured cost — `consistency_loss` 0.16 rising vs 0.033 → 0.008 for
+single-task, with `reward_loss` and `value_loss` NORMAL because their outputs
+were unaffected. `TDMPC2DynamicsMT` is therefore written out in full below,
+NOT aliased. Gated by `tests/deep_agents/test_tdmpc2_mt_net_dims.mojo`.
 """
 
+from mojo_rl.nn.combinators.sequential import Sequential
+
 from .nets import (
-    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
-    TDMPC2Termination,
+    TDMPC2Encoder, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
+    TDMPC2Termination, NormedLinear, NormedLinearSimNorm,
 )
 
 
@@ -26,9 +43,17 @@ comptime TDMPC2EncoderMT[
     MAX_OBS: Int, ENC: Int, LATENT: Int, SN: Int, TASK_EMB: Int
 ] = TDMPC2Encoder[MAX_OBS + TASK_EMB, ENC, LATENT, SN]
 
+# ⚠ Written out, NOT `TDMPC2Dynamics[LATENT + TASK_EMB, ...]`. The task
+# embedding widens the fan-IN only; the output must stay `LATENT` so `znext`
+# matches the encoder's `z_enc_next` that the consistency MSE compares it to,
+# and the carry that feeds the next BPTT step. See the module docstring.
 comptime TDMPC2DynamicsMT[
     LATENT: Int, MAX_ACT: Int, MLP: Int, SN: Int, TASK_EMB: Int
-] = TDMPC2Dynamics[LATENT + TASK_EMB, MAX_ACT, MLP, SN]
+] = Sequential[
+    NormedLinear[LATENT + TASK_EMB + MAX_ACT, MLP],
+    NormedLinear[MLP, MLP],
+    NormedLinearSimNorm[MLP, LATENT, SN],
+]
 
 comptime TDMPC2RewardMT[
     LATENT: Int, MAX_ACT: Int, MLP: Int, BINS: Int, TASK_EMB: Int

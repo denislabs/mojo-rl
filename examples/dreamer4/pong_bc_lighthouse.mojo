@@ -84,9 +84,9 @@ struct Rng(Copyable, Movable):
 def _window_to_patches[
     B: Int, T: Int, IMG: Int, IMG_DIM: Int, TGT: Int, PATCH: Int
 ](
-    pix: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    frames: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pix: Pointer[Scalar[DT], MutAnyOrigin],
+    frames: Pointer[Scalar[DT], MutAnyOrigin],
+    patches: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     comptime BATCH = B * T
     for b in range(B):
@@ -100,8 +100,8 @@ def _window_to_patches[
 def _actions_to_idx[
     BATCH: Int, ACT: Int
 ](
-    ap: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BATCH*ACT] one-hot
-    act_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BATCH] class out
+    ap: Pointer[Scalar[DT], MutAnyOrigin],     # [BATCH*ACT] one-hot
+    act_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [BATCH] class out
 ):
     for bt in range(BATCH):
         var best = 0

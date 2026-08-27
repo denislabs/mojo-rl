@@ -31,7 +31,7 @@ from std.math import abs, sin, cos
 from std.memory import alloc
 from std.random import seed, random_float64
 from std.testing import assert_true
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.envs.pendulum.constants import PConstants, PendulumLayout

@@ -35,7 +35,7 @@ Run (GPU env required):
 from std.math import exp, log
 from std.memory import alloc
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -60,14 +60,14 @@ from ..zero.gpu_sequence_replay_mcts import GPUMCTSSequenceReplay
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw scratch for optional unroll outputs (loss_parts) + diag host buffers
-    (the unroll's optional-output params are Optional[UnsafePointer])."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    (the unroll's optional-output params are Optional[Pointer])."""
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
-def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+def _aint(n: Int) -> Pointer[Int, MutAnyOrigin]:
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _avg_last_n(returns: List[Float64], n: Int) -> Float64:
@@ -93,15 +93,15 @@ def _mz_emit_batch_diag[
     d_obs0: DeviceBuffer[DT],   # the last train batch's obs, already on device
     d_z: DeviceBuffer[DT],
     d_pred: DeviceBuffer[DT],
-    h_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_pred: Pointer[Scalar[DT], MutAnyOrigin],
     t_pol: List[Scalar[DT]],
     t_val: List[Scalar[DT]],
-    l_parts: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    l_parts: Pointer[Scalar[DT], MutAnyOrigin],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     last_loss: Float64,
     step: Int,
-    logger: UnsafePointer[L, MutAnyOrigin],
+    logger: Pointer[L, MutAnyOrigin],
 ) raises:
     """Re-forward the root prediction on the last train batch (using the obs
     slab already resident in ``d_obs0`` = ``scratch.d_obs0``) and emit the full
@@ -126,9 +126,9 @@ def _mz_emit_batch_diag[
     var dn = List[String]()
     var dv = List[Float64]()
     dn.append(String("loss")); dv.append(last_loss)
-    dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-    dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-    dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+    dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+    dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+    dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
     append_mz_train_diagnostics[ACT, BINS, B](
         h_pred, t_pol, t_val, v_min, v_max, dn, dv
     )
@@ -136,7 +136,7 @@ def _mz_emit_batch_diag[
 
 
 def _sample_action(
-    h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_pol: Pointer[Scalar[DT], MutAnyOrigin],
     base: Int,
     act: Int,
     temp: Float64,
@@ -148,7 +148,7 @@ def _sample_action(
     var wsum = 0.0
     var w = List[Float64](capacity=act)
     for a in range(act):
-        var p = Float64(h_pol[base + a])
+        var p = Float64(h_pol[unsafe_offset=base + a])
         if temp != 1.0 and p > 0.0:
             p = exp(log(p) / temp)
         w.append(p)
@@ -211,10 +211,10 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
-    eval_env: Optional[UnsafePointer[BENV, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[BENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     """Batched Gumbel MuZero self-play. ``learning_starts`` is in **stored
@@ -363,14 +363,14 @@ def run_muzero_gumbel_selfplay_gpu_batched[
         for e in range(N_ENVS):
             var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
             for j in range(OBS):
-                e_obs[e].append(h_obs[e * OBS + j])
+                e_obs[e].append(h_obs[unsafe_offset=e * OBS + j])
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
-                e_pol[e].append(h_pol[e * ACT + a])
+                e_pol[e].append(h_pol[unsafe_offset=e * ACT + a])
                 e_legal[e].append(Scalar[DT](1.0))
-            e_val[e].append(h_val[e])
+            e_val[e].append(h_val[unsafe_offset=e])
             e_tp[e].append(Scalar[DT](0.0))
-            h_act[e] = Scalar[DT](action)
+            h_act[unsafe_offset=e] = Scalar[DT](action)
 
         # ── 4. H2D actions → env, step, D2H reward/done/terminated ──
         var act_view = DeviceBuffer[DT](
@@ -394,11 +394,11 @@ def run_muzero_gumbel_selfplay_gpu_batched[
 
         # ── 5. per env: accumulate reward, store + reset finished episodes ──
         for e in range(N_ENVS):
-            e_rew[e].append(h_rew[e])
-            ep_return[e] += Float64(h_rew[e])
+            e_rew[e].append(h_rew[unsafe_offset=e])
+            ep_return[e] += Float64(h_rew[unsafe_offset=e])
             ep_len[e] += 1
-            var done = h_done[e] > Scalar[DT](0.5)
-            var terminated = h_term[e] > Scalar[DT](0.5)
+            var done = h_done[unsafe_offset=e] > Scalar[DT](0.5)
+            var terminated = h_term[unsafe_offset=e] > Scalar[DT](0.5)
             if done or ep_len[e] >= max_ep_steps:
                 # Time-limit cut (not terminated) is NOT a terminal → bootstrap.
                 rb.store_episode(
@@ -462,9 +462,9 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
             logger.value()[].log_scalars(dn, dv, it + 1)
 
         # ── high-coverage batched reanalyze: re-target `reanalyze_batch` stored
@@ -498,7 +498,7 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                     var tmp = List[Scalar[DT]](length=OBS, fill=0)
                     rb.read_obs(rpos[0], rpos[1], tmp)
                     for j in range(OBS):
-                        h_reana[e * OBS + j] = tmp[j]
+                        h_reana[unsafe_offset=e * OBS + j] = tmp[j]
                 ctx.enqueue_copy(d_reana, h_reana)
                 var reana_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
@@ -520,8 +520,8 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                     # row out of the raw D2H staging mirror h_pol.
                     var pe = List[Scalar[DT]](length=ACT, fill=0)
                     for a in range(ACT):
-                        pe[a] = h_pol[e * ACT + a]
-                    rb.update_targets(rpos_e[e], rpos_o[e], pe, h_val[e])
+                        pe[a] = h_pol[unsafe_offset=e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pe, h_val[unsafe_offset=e])
 
         # ── batched greedy eval (fixed horizon on a separate eval env) ──
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
@@ -589,9 +589,9 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    h_obs.free(); h_pol.free(); h_val.free(); h_act.free()
-    h_rew.free(); h_done.free(); h_term.free(); h_reana.free(); l_parts.free()
-    # keep the target nets (held only via UnsafePointer in the adapters) alive.
+    h_obs.unsafe_free(); h_pol.unsafe_free(); h_val.unsafe_free(); h_act.unsafe_free()
+    h_rew.unsafe_free(); h_done.unsafe_free(); h_term.unsafe_free(); h_reana.unsafe_free(); l_parts.unsafe_free()
+    # keep the target nets (held only via Pointer in the adapters) alive.
     _ = rep_t^
     _ = dyn_t^
     _ = pred_t^
@@ -642,10 +642,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
-    eval_env: Optional[UnsafePointer[BENV, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[BENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
     use_per: Bool = False,           # Prioritized Experience Replay toggle. The
     #                                  device-obs `GPUMCTSSequenceReplay` keeps
@@ -865,24 +865,24 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                     odyn.lr = dlr
                     opred.lr = dlr
                 var isw_opt = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    Pointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 var prio_opt = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    Pointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
                     # Prioritized device sample (∝ priorityᵅ) + IS weights. The
                     # sample writes the paper priority |ν − z| into t_prio (it owns
                     # both ν and z); update_priorities below applies (·+eps)^α.
                     prio_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                        Pointer[Scalar[DT], MutAnyOrigin]
                     ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                     rb.sample_training_batch_per_dev[B, K, N](
                         gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
                         t_isw, t_slots, out_prio=prio_opt,
                     )
                     isw_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                        Pointer[Scalar[DT], MutAnyOrigin]
                     ](t_isw.unsafe_ptr().as_unsafe_any_origin())
                 else:
                     # Uniform device sample — the converged Pong path, untouched.
@@ -1016,10 +1016,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             logger.value()[].log_scalars(rn, rv, it + 1)
 
     # t_*/h_* metadata + PER scratch are owned Lists (RAII) — only the raw
-    # UnsafePointer scratch (unroll loss_parts + diag host buffer) needs freeing.
-    l_parts.free()
-    h_diag_pred.free()
-    # keep the target nets (held only via UnsafePointer in the adapters) alive.
+    # Pointer scratch (unroll loss_parts + diag host buffer) needs freeing.
+    l_parts.unsafe_free()
+    h_diag_pred.unsafe_free()
+    # keep the target nets (held only via Pointer in the adapters) alive.
     _ = rep_t^
     _ = dyn_t^
     _ = pred_t^
@@ -1044,7 +1044,7 @@ def _eval_greedy_batched[
     PA: PredictionGPU,
 ](
     ctx: DeviceContext,
-    eval_env: UnsafePointer[BENV, MutAnyOrigin],
+    eval_env: Pointer[BENV, MutAnyOrigin],
     mut planner: GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
     ],
@@ -1092,9 +1092,9 @@ def _eval_greedy_batched[
         for e in range(N_ENVS):
             var best = 0
             for a in range(1, ACT):
-                if Float64(h_pol[e * ACT + a]) > Float64(h_pol[e * ACT + best]):
+                if Float64(h_pol[unsafe_offset=e * ACT + a]) > Float64(h_pol[unsafe_offset=e * ACT + best]):
                     best = a
-            h_act[e] = Scalar[DT](best)
+            h_act[unsafe_offset=e] = Scalar[DT](best)
         var act_view = DeviceBuffer[DT](
             ctx, eval_env[].action_ptr(), N_ENVS, owning=False
         )
@@ -1110,8 +1110,8 @@ def _eval_greedy_batched[
         ctx.enqueue_copy(h_done, done_view)
         ctx.synchronize()
         for e in range(N_ENVS):
-            run_ret[e] += Float64(h_rew[e])
-            if h_done[e] > Scalar[DT](0.5):
+            run_ret[e] += Float64(h_rew[unsafe_offset=e])
+            if h_done[unsafe_offset=e] > Scalar[DT](0.5):
                 done_sum += run_ret[e]
                 done_cnt += 1
                 run_ret[e] = 0.0
@@ -1129,5 +1129,5 @@ def _eval_greedy_batched[
         if done_cnt > 0
         else running / Float64(N_ENVS)
     )
-    h_pol.free(); h_act.free(); h_rew.free(); h_done.free()
+    h_pol.unsafe_free(); h_act.unsafe_free(); h_rew.unsafe_free(); h_done.unsafe_free()
     return out

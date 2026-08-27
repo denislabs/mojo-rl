@@ -50,7 +50,7 @@ arities cannot merge `Module`'s `InlineArray[Int, Self.ARITY]` `IN_DIMS`
 unifies. The graph branches on `KIND` to skip inputs / route externals.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.module import Module
@@ -88,7 +88,7 @@ def names_to_inline_array[
     var d = InlineArray[StaticString, N](fill=StaticString(""))
     comptime for k in range(N):
         d[k] = ITEMS[k]
-    return d
+    return d^
 
 
 def names_to_list[N: Int, *ITEMS: StaticString]() -> List[StaticString]:
@@ -113,7 +113,7 @@ def in_dims_to_list[ARITY: Int](arr: InlineArray[Int, ARITY]) -> List[Int]:
     return d^
 
 
-trait GraphDecl(Defaultable & Movable & ImplicitlyDeletable):
+trait GraphDecl(Defaultable & Movable & Deinitable):
     """A `ComputeGraph` node declaration's graph-identity surface.
 
     `NAME` is unique within the graph; `KIND` is 0 (input) / 1 (owned) / 2
@@ -243,8 +243,8 @@ struct InputSlot[slot_name: StaticString, DIM_: Int, ADT: DType = DT](
     comptime NAME = Self.slot_name
     comptime KIND = 0
     comptime ARITY = 0
-    comptime IN_DIMS = InlineArray[Int, 0]()
-    comptime IN_NAMES = InlineArray[StaticString, 0]()
+    comptime IN_DIMS: InlineArray[Int, 0] = []
+    comptime IN_NAMES: InlineArray[StaticString, 0] = []
     comptime IN_DIMS_L = List[Int]()
     comptime IN_NAMES_L = List[StaticString]()
     comptime OUT_DIM = Self.DIM_

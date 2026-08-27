@@ -20,7 +20,7 @@ Rainbow is C51 with `DOUBLE=True` + a PER + N-step SAMPLE block +
 a dueling/noisy `Q_NET`; configure those via the SAMPLE block and net.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -47,7 +47,7 @@ struct C51Agent[
     N_ATOMS: Int = 51,
     NUM_ACTIONS: Int = 2,
     DOUBLE: Bool = False,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `C51Trainer` + discrete off-policy drivers."""
 
     var trainer: C51Trainer[
@@ -121,12 +121,12 @@ struct C51Agent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
         base_step: Int = 0,
-        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 10,
         eval_max_steps: Int = 20_000,
@@ -187,12 +187,12 @@ struct C51Agent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         base_step: Int = 0,
         diag_every: Int = 0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
-        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
         eval_max_iters: Int = 20_000,
@@ -274,12 +274,12 @@ struct C51Agent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         base_step: Int = 0,
         diag_every: Int = 0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
-        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
         eval_max_iters: Int = 20_000,
@@ -397,7 +397,7 @@ struct C51Agent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> C51Metrics:
         """Drain trainer accumulators into a C51Metrics bundle."""

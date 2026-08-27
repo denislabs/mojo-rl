@@ -120,6 +120,9 @@ void main() {
         base_color = mix(base_color, fog_color, fog_factor);
     }
 
-    float alpha = 0.55 * edge_fade;
-    fragColor = vec4(base_color, alpha);
+    // ⚠ THE GROUND IS OPAQUE — see the MSL twin in gpu_shaders.mojo. Alpha was
+    // 0.55 so the reflection pass beneath could show through, and where no
+    // reflected geometry existed the other 45% was the SKYBOX: stars visible
+    // THROUGH THE FLOOR. Reflections are now composited on top instead.
+    fragColor = vec4(base_color, edge_fade);
 }

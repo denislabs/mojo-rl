@@ -6,7 +6,7 @@ to prevent interpenetration and enforce friction.
 
 from ..constants import dtype, BODY_STATE_SIZE, CONTACT_DATA_SIZE
 from layout import LayoutTensor, Layout
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 
 trait ConstraintSolver(ImplicitlyCopyable):

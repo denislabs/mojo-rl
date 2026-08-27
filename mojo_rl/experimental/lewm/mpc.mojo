@@ -22,8 +22,8 @@ non-collapsed model.
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn.constants import DT
@@ -48,13 +48,13 @@ def _tp[
     target: StaticString,
     ho: MutOrigin = MutAnyOrigin,
 ](
-    h: UnsafePointer[Scalar[DT], ho],
+    h: Pointer[Scalar[DT], ho],
     d: Optional[DeviceBuffer[DT]],
-) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+) -> Pointer[Scalar[DT], MutAnyOrigin]:
     comptime if target == "cpu":
         return h.as_unsafe_any_origin()
     else:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             d.value().unsafe_ptr()
         )
 
@@ -142,14 +142,14 @@ struct LeWMMPCScorer[
         go: MutOrigin = MutAnyOrigin,
     ](
         mut self,
-        start_src: UnsafePointer[Scalar[DT], so],
-        goal_src: UnsafePointer[Scalar[DT], go],
+        start_src: Pointer[Scalar[DT], so],
+        goal_src: Pointer[Scalar[DT], go],
     ) raises:
         """Set the fixed encoded start + goal latents (each (B, EMB))."""
         comptime BE = Self.BATCH * Self.EMB
         for i in range(BE):
-            self.emb_start_h[i] = start_src[i]
-            self.emb_goal_h[i] = goal_src[i]
+            self.emb_start_h[i] = start_src[unsafe_offset=i]
+            self.emb_goal_h[i] = goal_src[unsafe_offset=i]
         comptime if Self.target == "gpu":
             var c = self.ctx.value()
             c.enqueue_copy(
@@ -249,7 +249,7 @@ def lewm_mpc_eval[
         dtype=DT, address_space=AddressSpace.GENERIC,
         origin=MutAnyOrigin, ...,
     ],
-    expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
+    expert_act_host: Pointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
     num_random: Int = 16,
     cem_iters: Int = 3,
     cem_samples: Int = 32,
@@ -274,17 +274,17 @@ def lewm_mpc_eval[
     ]
 
     # ── encode the window: read the emb node, slice start + goal latents.
-    var pred_scratch = alloc[Scalar[DT]](BATCH * H * EMB)
-    var tgt_scratch = alloc[Scalar[DT]](BATCH * H * EMB)
+    var pred_scratch = alloc[Scalar[DT]]({count = BATCH * H * EMB}).unsafe_leak()
+    var tgt_scratch = alloc[Scalar[DT]]({count = BATCH * H * EMB}).unsafe_leak()
     trainer.forward_into(pix_t, act_t, pred_scratch, tgt_scratch)
-    var emb_host = alloc[Scalar[DT]](BATCH * TE)
+    var emb_host = alloc[Scalar[DT]]({count = BATCH * TE}).unsafe_leak()
     trainer.read_node_into["emb"](emb_host, BATCH * TE)
-    var start_host = alloc[Scalar[DT]](BE)
-    var goal_host = alloc[Scalar[DT]](BE)
+    var start_host = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
+    var goal_host = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
     for b in range(BATCH):
         for d in range(EMB):
-            start_host[b * EMB + d] = emb_host[b * TE + d]
-            goal_host[b * EMB + d] = emb_host[b * TE + (T - 1) * EMB + d]
+            start_host[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
+            goal_host[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + (T - 1) * EMB + d]
 
     # ── predictor: name-synced from the trainer.
     var pred_net = Predictor.make(ctx=ctx)
@@ -293,11 +293,11 @@ def lewm_mpc_eval[
     scorer.set_start_goal(start_host, goal_host)
 
     # ── expert plan: first NEEDED recorded actions.
-    var expert_plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var expert_plan = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
     for b in range(BATCH):
         for t in range(NEEDED):
             for a in range(ACT):
-                expert_plan[(b * NEEDED + t) * ACT + a] = expert_act_host[
+                expert_plan[unsafe_offset=(b * NEEDED + t) * ACT + a] = expert_act_host[unsafe_offset=
                     (b * T + t) * ACT + a
                 ]
     var expert_t = TileTensor(expert_plan, row_major[BATCH, NEEDED, ACT]())
@@ -307,12 +307,12 @@ def lewm_mpc_eval[
     var shooter = CategoricalRandomShooter[BATCH, ACT](
         horizon=NEEDED, num_samples=num_random
     )
-    var rs_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var rs_best = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
     var random_min = shooter.optimize(
         scorer, rs_best.as_unsafe_any_origin(), verbose=False
     )
     var random_mean = _mean(shooter.sample_scores)
-    rs_best.free()
+    rs_best.unsafe_free()
 
     # ── CEM.
     var cem_score = expert
@@ -321,11 +321,11 @@ def lewm_mpc_eval[
             horizon=NEEDED, cem_iters=cem_iters, cem_samples=cem_samples,
             cem_topk=cem_topk, cem_smoothing=cem_smoothing,
         )
-        var cem_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+        var cem_best = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )
-        cem_best.free()
+        cem_best.unsafe_free()
 
     if verbose:
         print("   [MPC horizon=", MPC_HORIZON, "] expert=", expert)
@@ -334,7 +334,7 @@ def lewm_mpc_eval[
         print("   expert/random_min=", expert / random_min,
               "  cem/random_min=", cem_score / random_min)
 
-    pred_scratch.free(); tgt_scratch.free(); emb_host.free()
-    start_host.free(); goal_host.free(); expert_plan.free()
+    pred_scratch.unsafe_free(); tgt_scratch.unsafe_free(); emb_host.unsafe_free()
+    start_host.unsafe_free(); goal_host.unsafe_free(); expert_plan.unsafe_free()
     _ = scorer^
     return (expert, random_mean, random_min, cem_score)

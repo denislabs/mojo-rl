@@ -14,7 +14,7 @@ caller passes per-row task ids (a host `Tensor` whose `.data` holds DT-encoded
 ids; on GPU the same `Tensor`'s `.dev` is read by the kernels). `gather` reads
 rows; `accumulate` scatter-adds row grads (atomic-free: one thread per table
 element loops rows). All inputs/outputs are storage `Tensor`s — no raw
-`UnsafePointer` / `mptr` / `MutUntrackedOrigin` fields remain; the hand-rolled
+`Pointer` / `mptr` / `MutUntrackedOrigin` fields remain; the hand-rolled
 Adam math is identical to the legacy version.
 
 Built LAST in the agent (RNG discipline): a non-zero init draws from the global
@@ -25,7 +25,7 @@ RNG, which would shift the rollout stream — irrelevant to the single-task agen
 from std.math import sqrt
 from std.random import random_float64
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -104,8 +104,33 @@ def _zero_k[N: Int](
         ptr[i] = Scalar[DT](0.0)
 
 
+def _renorm_k[
+    NTASKS: Int, EMB: Int
+](
+    param: LayoutTensor[DT, Layout.row_major(NTASKS * EMB), MutAnyOrigin],
+    max_norm: Scalar[DT],
+):
+    """Row-wise `max_norm` projection: rows longer than `max_norm` are scaled
+    back onto the ball; shorter rows are left alone. One thread per ROW — the
+    table is tiny (NUM_TASKS x TASK_EMB), so the per-thread loop is cheaper
+    than a reduction."""
+    var t = Int(global_idx.x)
+    if t < NTASKS:
+        var s: Scalar[DT] = 0.0
+        for e in range(EMB):
+            var x = rebind[Scalar[DT]](param[t * EMB + e])
+            s += x * x
+        var n = sqrt(s)
+        if n > max_norm:
+            var scale = max_norm / n
+            for e in range(EMB):
+                param[t * EMB + e] = (
+                    rebind[Scalar[DT]](param[t * EMB + e]) * scale
+                )
+
+
 struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     comptime N = Self.NUM_TASKS * Self.TASK_EMB
 
@@ -125,6 +150,18 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
     var b1pow: Scalar[DT]
     var b2pow: Scalar[DT]
 
+    # Row-norm ceiling, reference `nn.Embedding(..., max_norm=1)`
+    # (`world_model.py:21`). <= 0 disables the projection.
+    #
+    # ⚠ Not cosmetic. Without it the table is unbounded, and nothing downstream
+    # pushes back: the encoder's first layer is `Linear -> LayerNorm -> Mish`,
+    # so the loss is largely invariant to a shared component in the embedding
+    # and there is no restoring force on it. Measured on a 130k-step
+    # walker stand+walk+run run, the rows grew 22x (0.55 -> 11.9) while their
+    # pairwise cosines converged to 0.9995 — i.e. ~96% of each row was a
+    # SHARED direction carrying no task information.
+    var max_norm: Scalar[DT]
+
     def __init__(out self):
         self.param = Tensor()
         self.grad = Tensor()
@@ -138,6 +175,7 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         self.eps = Scalar[DT](1e-8)
         self.b1pow = Scalar[DT](1.0)
         self.b2pow = Scalar[DT](1.0)
+        self.max_norm = Scalar[DT](1.0)
 
     @staticmethod
     def make[
@@ -277,6 +315,19 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
                 self.param.data[i] = self.param.data[i] - self.lr * (
                     m_new / bc1
                 ) / (sqrt(v_new / bc2) + self.eps)
+            if self.max_norm > Scalar[DT](0.0):
+                for t in range(Self.NUM_TASKS):
+                    var s: Scalar[DT] = 0.0
+                    for e in range(Self.TASK_EMB):
+                        var x = self.param.data[t * Self.TASK_EMB + e]
+                        s += x * x
+                    var nrm = sqrt(s)
+                    if nrm > self.max_norm:
+                        var scale = self.max_norm / nrm
+                        for e in range(Self.TASK_EMB):
+                            self.param.data[t * Self.TASK_EMB + e] = (
+                                self.param.data[t * Self.TASK_EMB + e] * scale
+                            )
         else:
             var c = self.ctx.value()
             comptime nb = (N + TPB - 1) // TPB
@@ -294,6 +345,16 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
                 grid_dim=nb,
                 block_dim=TPB,
             )
+            if self.max_norm > Scalar[DT](0.0):
+                comptime nr = (Self.NUM_TASKS + TPB - 1) // TPB
+                c.enqueue_function[
+                    _renorm_k[Self.NUM_TASKS, Self.TASK_EMB]
+                ](
+                    self.param.lt["gpu", Layout.row_major(Self.N)](),
+                    self.max_norm,
+                    grid_dim=nr,
+                    block_dim=TPB,
+                )
 
     # ── Checkpoint (CPU-resident serialization; GPU syncs around it) ──────
     def sync_to_host(mut self) raises:

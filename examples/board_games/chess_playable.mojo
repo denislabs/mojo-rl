@@ -198,7 +198,7 @@ def main() raises:
 
     # Sprite setup (lazy — created after renderer is initialized on first frame)
     var sprite_pixels = create_sprite_sheet()
-    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
+    var sprite_texture = Pointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
     var has_sprites = False
     var sprite_draw_size = 48  # Scale 24→48 to fit in 64px cells
     var sprite_pad = (sq_size - sprite_draw_size) // 2
@@ -250,7 +250,7 @@ def main() raises:
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                    rebind[Pointer[NoneType, MutAnyOrigin]](
                         sprite_pixels
                     ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
@@ -284,8 +284,8 @@ def main() raises:
 
         # Mouse state
         var mouse_buttons = get_mouse_state(
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
         var cur_mouse_left = (
             Int(mouse_buttons.value) & 1
@@ -592,10 +592,10 @@ def main() raises:
                             render_texture(
                                 renderer.sdl_renderer.value(),
                                 sprite_texture,
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     src_rect
                                 ),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     dst_rect
                                 ),
                             )

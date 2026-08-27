@@ -10,7 +10,7 @@ numeric convergence on NVIDIA is HW-gated (legacy GPU-only kernel
 math is well-understood; the port is mechanical).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from layout import Layout, LayoutTensor

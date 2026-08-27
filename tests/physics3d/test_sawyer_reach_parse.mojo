@@ -1,9 +1,10 @@
 """Test: Sawyer Reach-v3 XML parses correctly and model dimensions are sane."""
 
 from std.testing import assert_equal, assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -52,12 +53,10 @@ def test_sawyer_reach_dimensions() raises:
     print("\n=== Model Setup Test (spec-direct fields build; G4) ===")
     comptime DTYPE = DType.float64
     comptime M = SawyerReachModel
+    comptime MD = ModelDims[M, 16*256]
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
-    ]()
-    M.init_fields[DTYPE, 16 * 256](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     print("Model built successfully!")
     print("Gravity Z:", mf.meta.data[MODEL_META_IDX_GRAVITY_Z])

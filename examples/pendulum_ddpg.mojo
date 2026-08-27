@@ -27,6 +27,7 @@ from mojo_rl.core import (
 )
 from mojo_rl.agents import DDPGAgent
 from mojo_rl.render import Renderer2D
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -92,7 +93,7 @@ def main() raises:
         num_episodes=10,
         max_steps_per_episode=200,
     )
-    print("Evaluation average reward:", String(eval_reward)[byte=:8])
+    print("Evaluation average reward:", fit(String(eval_reward), 8))
 
     # Demo with rendering (if SDL2 available)
     print("\nRunning visual demo (close window to exit)...")
@@ -121,7 +122,7 @@ def main() raises:
             if result[2]:
                 break
 
-        print("Demo episode", demo_ep + 1, "reward:", String(demo_reward)[byte=:8])
+        print("Demo episode", demo_ep + 1, "reward:", fit(String(demo_reward), 8))
 
     renderer.close()
     print("\nDemo complete!")

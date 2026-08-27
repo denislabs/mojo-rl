@@ -18,7 +18,7 @@ Concrete bundles live next to their trainers (`sac_metrics.mojo`,
 """
 
 
-trait Metric(Copyable, Movable, ImplicitlyDeletable):
+trait Metric(Copyable, Movable, Deinitable):
     """A value that can be reduced to Float64 for emission via
     `Logger.log_scalar`. Conforms must provide `to_f64(self)`."""
 

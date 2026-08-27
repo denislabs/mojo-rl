@@ -1,0 +1,125 @@
+---
+/**
+ * DeviceResidency — what stays on the GPU inside the loop, and what the two
+ * CUDA-graph flags actually cover.
+ *
+ * Two claims the page makes separately, drawn together because they constrain
+ * each other. The loop is device-resident, so the host band is crossed only at
+ * setup and checkpoint. And capture is split in two — the training step can be
+ * captured, the environment step cannot, because physics3d's blocked Newton
+ * kernel uses cooperative shared memory and replays to illegal addresses.
+ *
+ * The asymmetric brackets are the point. A single "CUDA graph" box over the
+ * whole loop would be the natural thing to draw and would be wrong.
+ */
+
+const STAGES = [
+	{ label: 'env step + obs', tone: 'spark' },
+	{ label: 'store', tone: 'spark' },
+	{ label: 'sample batch', tone: 'cyan' },
+	{ label: 'fwd / bwd', tone: 'cyan' },
+	{ label: 'target update', tone: 'cyan' },
+];
+
+const NODE_W = 140;
+const NODE_GAP = 15;
+const NODE_X = (i: number) => 60 + i * (NODE_W + NODE_GAP);
+const NODE_Y = 172;
+const NODE_H = 56;
+const MID = NODE_Y + NODE_H / 2;
+
+/** Bracket spans, in node indices: [first, last]. */
+const ENV_SPAN = [0, 1];
+const TRAIN_SPAN = [2, 4];
+const spanX = (s: number[]) => [NODE_X(s[0]), NODE_X(s[1]) + NODE_W];
+const [ENV_L, ENV_R] = spanX(ENV_SPAN);
+const [TR_L, TR_R] = spanX(TRAIN_SPAN);
+const BRACKET_Y = 322;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 470" role="img"
+		aria-label="On a GPU run the whole loop — environment step, store, sample batch, forward and backward passes, target update — stays resident in device memory. The host is crossed only at setup and checkpointing, never inside the loop. CUDA-graph capture covers the training half only: the environment step is left eager because the blocked Newton contact kernel is not capture-safe.">
+		<defs>
+			<marker id="dr-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="dr-muted" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-muted" />
+			</marker>
+		</defs>
+
+		<text x="20" y="30" class="dg-title dg-title--left">The loop never leaves the device</text>
+
+		{/* host band */}
+		<rect x="40" y="48" width="800" height="52" rx="9" class="dg-ghost" />
+		<text x="60" y="79" class="dg-sub dg-sub--left">host</text>
+		<text x="440" y="79" class="dg-caption">model build · checkpoint write · metrics — once, never per step</text>
+
+		{/* the two host crossings, deliberately thin and dashed */}
+		<path class="dg-edge dg-edge--muted dg-edge--dashed" marker-end="url(#dr-muted)"
+			d="M 200 100 L 200 132" />
+		<path class="dg-edge dg-edge--muted dg-edge--dashed" marker-end="url(#dr-muted)"
+			d="M 680 132 L 680 100" />
+
+		{/* device band */}
+		<g class="dg-node dg-node--cyan">
+			<rect x="40" y="132" width="800" height="164" rx="10" />
+		</g>
+		<text x="60" y="156" class="dg-label dg-label--cyan">device memory</text>
+
+		{
+			STAGES.map((stage, i) => (
+				<g>
+					<g class={`dg-node dg-node--${stage.tone}`}>
+						<rect x={NODE_X(i)} y={NODE_Y} width={NODE_W} height={NODE_H} rx="8" />
+					</g>
+					<text x={NODE_X(i) + NODE_W / 2} y={NODE_Y + 34} class="dg-sub">
+						{stage.label}
+					</text>
+					{i < STAGES.length - 1 && (
+						<path class="dg-edge dg-edge--cyan" marker-end="url(#dr-cyan)"
+							d={`M ${NODE_X(i) + NODE_W} ${MID} L ${NODE_X(i + 1) - 4} ${MID}`} />
+					)}
+				</g>
+			))
+		}
+
+		{/* loop back */}
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#dr-cyan)"
+			d={`M ${NODE_X(4) + NODE_W / 2} ${NODE_Y + NODE_H} L ${NODE_X(4) + NODE_W / 2} 268
+			    L ${NODE_X(0) + NODE_W / 2} 268 L ${NODE_X(0) + NODE_W / 2} ${NODE_Y + NODE_H + 4}`} />
+		{/* Clear of the return line at y=268 — "next step" has a descender. */}
+		<text x="440" y="256" class="dg-caption">next step</text>
+
+		{/* capture brackets — asymmetric, and that is the content */}
+		<path class="dg-edge dg-edge--muted"
+			d={`M ${ENV_L} ${BRACKET_Y - 12} L ${ENV_L} ${BRACKET_Y} L ${ENV_R} ${BRACKET_Y} L ${ENV_R} ${BRACKET_Y - 12}`} />
+		<text x={(ENV_L + ENV_R) / 2} y={BRACKET_Y + 24} class="dg-label dg-label--muted dg-label--center">
+			USE_ENV_CUDA_GRAPH=False
+		</text>
+		<text x={(ENV_L + ENV_R) / 2} y={BRACKET_Y + 46} class="dg-caption">stepped eagerly</text>
+
+		<path class="dg-edge dg-edge--spark"
+			d={`M ${TR_L} ${BRACKET_Y - 12} L ${TR_L} ${BRACKET_Y} L ${TR_R} ${BRACKET_Y} L ${TR_R} ${BRACKET_Y - 12}`} />
+		<text x={(TR_L + TR_R) / 2} y={BRACKET_Y + 24} class="dg-label dg-label--spark dg-label--center">
+			USE_TRAIN_CUDA_GRAPH=True
+		</text>
+		<text x={(TR_L + TR_R) / 2} y={BRACKET_Y + 46} class="dg-caption">captured once, replayed — ≈1.4× on SAC</text>
+
+		<text x="20" y="428" class="dg-sub dg-sub--left">
+			The split is not a tuning choice. physics3d solves pyramidal contacts with a
+		</text>
+		<text x="20" y="450" class="dg-sub dg-sub--left">
+			one-environment-per-block kernel that replays to illegal addresses once captured.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">environment side</span>
+		<span class="diagram__key diagram__key--cyan">training side</span>
+		<span class="diagram__key diagram__key--muted">host — outside the loop</span>
+	</figcaption>
+</figure>

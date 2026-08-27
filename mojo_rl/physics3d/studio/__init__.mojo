@@ -1,0 +1,45 @@
+"""`physics3d` studio — the authoring tool's own pieces.
+
+Deliberately NOT built on `Phyics3dEnv`: an env is the RL contract (obs /
+reward / done / action space) and a composed scene is not a task. Forcing the
+studio through it would mean inventing an observation and a reward for a table
+with two cubes on it — fabricating exactly what the user is meant to author
+later. The env belongs to the BAKE phase, where a scene becomes a task.
+See `docs/PHYSICS3D_STUDIO_PLAN.md` §5.1.
+"""
+
+from .pick import Ray, Hit, ray_through_pixel, pick_geom
+from .outline import outline_geom, outline_body, SELECT_COLOR
+from .panel import StudioPanel, PanelOut, build_ui, SIDEBAR_W, RIGHT_W
+from .scene import SceneDoc, Instance, scene_from_base
+from .writer import to_mjcf as export_mjcf, unwritable
+from .validate import (
+    Diagnostic, validate_document, validate_model, validate_all,
+    worst_severity, count_at,
+    format_diagnostic, severity_name, SEV_INFO, SEV_WARN, SEV_ERROR,
+)
+from .structure import (
+    EditResult, delete_body, delete_geom, delete_joint, delete_site,
+    delete_element, leftover_dangling, find_named,
+    add_body, add_geom, add_joint, rename_element, reparent_body,
+)
+from .history import (
+    History, HistoryEntry, edit_key, HISTORY_CAP,
+)
+from .mesh_bounds import (
+    empty_half_extents, measure_geom_from_file, biggest_half_extent,
+    FALLBACK_HALF,
+)
+from .remap import (
+    remap_state, RemapReport, joint_qpos_adr, joint_dof_adr,
+    PoseSnapshot, pose_snapshot, apply_pose_snapshot,
+)
+from .edit import (
+    Edit, EditLog, apply_edit, needs_rebuild, field_name,
+    TARGET_GEOM, TARGET_BODY, is_pos_field, is_quat_field,
+)
+from .gizmo import (
+    Frame, frame_to_cm, cm_to_frame, mat4_to_cm, parent_frame, local_frame, edit_frame,
+    frame_drift, edits_from_frame, gizmo_edits, gizmo_mode_name,
+    GIZMO_OFF, GIZMO_MOVE, GIZMO_TURN,
+)

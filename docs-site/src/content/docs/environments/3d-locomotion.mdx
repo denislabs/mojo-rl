@@ -1,0 +1,171 @@
+---
+title: 3D locomotion
+description: HalfCheetah, Hopper, Walker2d, Ant, Swimmer, Humanoid and the pendula — MuJoCo-style tasks on a generalized-coordinates engine.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" note="Contact-rich models (Humanoid, Ant) are the least settled part of physics3d." />
+
+MuJoCo-style continuous control on `mojo_rl.physics3d` — a generalized-coordinates
+engine with CRBA mass matrices, RNE bias forces, constraint solvers and MJCF
+model loading. Models are defined in MJCF XML, the same format MuJoCo uses.
+
+<DemoGrid min="15rem">
+	<Demo name="half_cheetah_sac_trained" caption="HalfCheetah" meta="17 obs · 6 act" />
+	<Demo name="hopper" caption="Hopper" meta="11 obs · 3 act" />
+	<Demo name="walker2d" caption="Walker2d" meta="17 obs · 6 act" />
+	<Demo name="ant" caption="Ant" meta="27 obs · 8 act" />
+	<Demo name="sac_humanoid" caption="Humanoid" meta="45 obs · 17 act" />
+	<Demo name="swimmer" caption="Swimmer" meta="8 obs · 2 act" />
+</DemoGrid>
+
+| Environment | Obs | Act | Frame skip | Terminates early |
+|---|---|---|---|---|
+| HalfCheetah | 17 | 6 | 5 | no |
+| Hopper | 11 | 3 | 4 | yes (unhealthy) |
+| Walker2d | 17 | 6 | 4 | yes (unhealthy) |
+| Ant | 27 | 8 | 5 | yes (unhealthy) |
+| Swimmer | 8 | 2 | 4 | no |
+| Humanoid | 45 | 17 | 5 | yes (torso z ∉ [1.0, 2.0]) |
+| HumanoidStandup | 45 | 17 | 5 | no |
+| InvertedPendulum | 4 | 1 | 2 | yes |
+| InvertedDoublePendulum | 9 | 1 | 5 | yes |
+
+<DemoGrid min="14rem">
+	<Demo name="inverted_pendulum" caption="InvertedPendulum" meta="4 obs · 1 act" />
+	<Demo name="inverted_double_pendulum" caption="InvertedDoublePendulum" meta="9 obs · 1 act" />
+	<Demo name="humanoid" caption="HumanoidStandup" meta="45 obs · 17 act" />
+</DemoGrid>
+
+## Using one
+
+Dimensions come from the **model** struct:
+
+```mojo
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM   # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM #  6
+comptime N_ENVS = 32
+
+comptime BatchedEnvT = Phyics3dBatchedEnv[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
+```
+
+Swapping environments means swapping the model and config pair — network
+definitions that read `OBS_DIM` and `ACT_DIM` adapt automatically. See
+[Quickstart: GPU training](/start/quickstart-gpu/) for a complete script.
+
+:::note[`Config` or `Model`?]
+HalfCheetah and Ant expose `OBS_DIM` on their config; the others expose it on the
+model (`HumanoidModel.OBS_DIM`). Both are compile-time constants resolving to the
+same value. If one does not exist, use the other — this inconsistency is a wart,
+not a design.
+:::
+
+## The environments
+
+**HalfCheetah** — a planar two-legged runner. Reward is forward velocity minus a
+control cost, with **no early termination**, so every episode runs the full 1000
+steps. That makes returns smooth and comparable, which is why it is the default
+benchmark for continuous control here. A trained SAC policy reaches a running
+gait in about six minutes on an RTX 5090.
+
+**Hopper** — one leg, three actuators, terminates when it falls. Deceptively
+hard: the healthy-state termination means a policy that has not learned to
+balance gets almost no data per episode.
+
+**Walker2d** — two legs in a plane. Hopper's problem with an extra limb to
+coordinate.
+
+**Ant** — a quadruped with a free-floating torso. Twenty-seven observations,
+eight actuators, and enough contact points that it exercises the collision
+pipeline properly.
+
+**Swimmer** — three links in a viscous fluid, no contacts at all. The odd one
+out: locomotion comes from fluid drag rather than ground reaction, so it uses a
+dedicated fluid force path. Notoriously hard to score well on because the reward
+rewards a gait most algorithms do not find.
+
+**Humanoid** — the stress test. Forty-five observations, seventeen actuators, and
+contact-rich dynamics that expose solver problems immediately. Terminates when
+the torso leaves the healthy height band `[1.0, 2.0]`.
+
+**HumanoidStandup** — the same body, starting on the ground, rewarded for rising.
+No early termination.
+
+**InvertedPendulum / InvertedDoublePendulum** — CartPole's problem in the 3D
+engine. Small, fast, and useful for checking that the engine and an algorithm are
+wired up correctly before spending time on Humanoid.
+
+## Validation against MuJoCo
+
+These are not approximations. The physics is checked against **live MuJoCo**:
+a family of tests steps both engines from the same state and compares
+trajectories, and the MJCF loader reads the same model files.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_humanoid_fk_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_hopper_fk_vs_mujoco.mojo
+```
+
+These require `mujoco` in the pixi environment, since they call `mj_step`
+directly rather than comparing against recorded fixtures.
+
+`references/mujoco-3.3.6/` in the repo matches the version pinned in `pixi.toml`,
+and is the first place to look when a mismatch appears.
+
+## Reward structure
+
+All follow the Gymnasium convention:
+
+```
+reward = forward_reward_weight · velocity − ctrl_cost_weight · ‖action‖²  [+ healthy_reward]
+```
+
+Weights are compile-time constants on the config, so they are visible and
+adjustable without touching the environment:
+
+```mojo
+comptime FORWARD_REWARD_WEIGHT = 1.25   # Humanoid
+comptime CTRL_COST_WEIGHT = 0.1
+comptime HEALTHY_REWARD = 5.0
+```
+
+One deliberate divergence: HalfCheetah's `ANGLE_PENALTY_WEIGHT` is `0.0`, matching
+reference dm_control. It was once 0.5 to suppress a "running on its head" local
+optimum that SAC found, but that penalty actively blocked TD-MPC2, and later
+optimizations made it unnecessary.
+
+## Performance notes
+
+**Frame skip** — each environment step runs several physics substeps
+(`FRAME_SKIP`, 2–5 here). The physics timestep stays small for stability while the
+agent acts at a manageable rate.
+
+**Integrator** — configurable per environment. HalfCheetah uses Euler with a
+Newton solver; Humanoid uses RK4, which needs extra workspace
+(`INTEGRATOR_WS_EXTRA`).
+
+:::caution[CUDA-graph capture and the blocked solver]
+The pyramidal-contact path uses a one-environment-per-block Newton kernel with
+cooperative shared memory. Capturing it in a CUDA graph illegal-addresses on
+replay, so the GPU examples set `USE_ENV_CUDA_GRAPH=False` while keeping
+`USE_TRAIN_CUDA_GRAPH=True`. Eager environment stepping is correct — only the
+per-step launch collapse is lost.
+
+Separately, do not pass `cone=ELLIPTIC` with the RK4 integrator: the serial
+solver's local memory requirement exceeds what the GPU provides. Use `PYRAMIDAL`.
+:::
+
+## Next
+
+- [3D manipulation](/environments/3d-manipulation/) — Reacher, Pusher, Sawyer
+- [Quickstart: GPU training](/start/quickstart-gpu/) — SAC on HalfCheetah end to end
+- [The layered stack](/concepts/architecture/) — where physics3d sits

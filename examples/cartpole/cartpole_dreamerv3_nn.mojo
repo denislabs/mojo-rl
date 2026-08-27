@@ -73,7 +73,7 @@ comptime EVAL_EPISODES = 10
 comptime EP_LEN = 500
 
 
-def _argmax(a: UnsafePointer[Scalar[DT], MutAnyOrigin]) -> Int:
+def _argmax(a: Pointer[Scalar[DT], MutAnyOrigin]) -> Int:
     var k = 0
     var best = a[0]
     for i in range(1, ACT):

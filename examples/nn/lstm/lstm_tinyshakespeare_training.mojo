@@ -22,7 +22,7 @@ launches), so keep SEQ modest. Run:
 
 from std.random import seed
 from std.math import log, exp
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
 from mojo_rl.nn.constants import DT
@@ -35,6 +35,7 @@ from mojo_rl.nn.training.autoregressive_trainer import (
     AutoregressiveTrainer,
 )
 from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.core.fmt import fit
 
 
 comptime VOCAB = 65
@@ -116,10 +117,10 @@ def main() raises:
 
     var acc = artr.val_top1(N_VAL_WINDOWS)
     print(
-        "[diagnostic] val per-token top-1=" + String(acc * 100.0)[byte=:5]
-        + "%  (random ≈ " + String(100.0 / Float64(VOCAB))[byte=:4]
-        + "%, from loss≈" + String(val_final)[byte=:5]
-        + " expect ~" + String(exp(-val_final) * 100.0)[byte=:5] + "%)"
+        "[diagnostic] val per-token top-1=" + fit(String(acc * 100.0), 5)
+        + "%  (random ≈ " + fit(String(100.0 / Float64(VOCAB)), 4)
+        + "%, from loss≈" + fit(String(val_final), 5)
+        + " expect ~" + fit(String(exp(-val_final) * 100.0), 5) + "%)"
     )
 
     var prompt = String("ROMEO:")

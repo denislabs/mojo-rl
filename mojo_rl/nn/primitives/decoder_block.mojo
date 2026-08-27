@@ -34,7 +34,7 @@ Because IN0 == IN1 == OUT == N·HID, this block drops straight into a
 /polyak_from recurse into the graph. CPU + GPU.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

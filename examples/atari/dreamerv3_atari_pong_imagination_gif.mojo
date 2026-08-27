@@ -29,7 +29,7 @@ Run (NVIDIA, after training has written a checkpoint; needs roms/pong.bin):
 
 from std.memory import alloc
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
@@ -116,7 +116,7 @@ comptime WC = 3 * IMG + 2 * SEP
 comptime HC = IMG
 
 
-def _argmax(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
+def _argmax(p: Pointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
     var best = 0
     var bv = p[0]
     for i in range(1, n):

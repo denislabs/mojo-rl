@@ -259,7 +259,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymCartPoleState:
+    def get_state(mut self) -> GymCartPoleState:
         """Return current discretized state."""
         return GymCartPoleState(index=self._discretize_obs())
 
@@ -595,7 +595,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymMountainCarState:
+    def get_state(mut self) -> GymMountainCarState:
         """Return current discretized state."""
         return GymMountainCarState(index=self._discretize_obs())
 
@@ -914,7 +914,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymAcrobotState:
+    def get_state(mut self) -> GymAcrobotState:
         """Return current discretized state."""
         return GymAcrobotState(index=self._discretize_obs())
 
@@ -1223,7 +1223,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymPendulumState:
+    def get_state(mut self) -> GymPendulumState:
         """Return current state."""
         return GymPendulumState(index=self._discretize_obs())
 

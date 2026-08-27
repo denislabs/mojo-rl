@@ -60,7 +60,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_muzero_selfplay_2p_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Deinitable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -110,13 +110,13 @@ def run_muzero_selfplay_2p_cpu[
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
     var rep_a = MZRepCPU[OBS, LATENT, REP](
-        net=untracked(UnsafePointer(to=rep))
+        net=untracked(Pointer(to=rep))
     )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=untracked(UnsafePointer(to=pred)),
+        net=untracked(Pointer(to=pred)),
         v_min=v_min, v_max=v_max
     )
 

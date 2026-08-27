@@ -7,7 +7,7 @@ Usage — pixel observations (e.g., 84x84 grayscale frame stacks):
 
     from mojo_rl.render.image_writer import save_reconstruction_grid
 
-    # originals, reconstructions: UnsafePointer[Scalar[float32]]
+    # originals, reconstructions: Pointer[Scalar[float32]]
     # laid out as [N, C, H, W] in CHW order, values in ~[0, 1] or [-1, 1]
     save_reconstruction_grid(
         "recon.ppm", originals, reconstructions,
@@ -18,7 +18,7 @@ Usage — flat observation vectors (e.g., Pendulum OBS_DIM=3):
 
     from mojo_rl.render.image_writer import save_vector_heatmap
 
-    # data: UnsafePointer[Scalar[float32]], shape [N, DIM]
+    # data: Pointer[Scalar[float32]], shape [N, DIM]
     save_vector_heatmap("obs_vs_recon.ppm", data, n_rows=16, dim=17)
 """
 
@@ -32,7 +32,7 @@ from std.math import min, max
 
 def save_ppm(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     height: Int,
     width: Int,
     channels: Int = 1,
@@ -62,16 +62,16 @@ def save_ppm(
     var scale = 255.0 / max(vmax - vmin, Float32(1e-8))
     if channels == 1:
         for i in range(n_pixels):
-            var v = Float32((data + i)[])
+            var v = Float32(data[unsafe_offset=i])
             var byte = UInt8(min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0)))
             buf.append(byte)
             buf.append(byte)
             buf.append(byte)
     elif channels == 3:
         for i in range(n_pixels):
-            var r = Float32((data + i)[])
-            var g = Float32((data + n_pixels + i)[])
-            var b = Float32((data + 2 * n_pixels + i)[])
+            var r = Float32(data[unsafe_offset=i])
+            var g = Float32(data[unsafe_offset=n_pixels + i])
+            var b = Float32(data[unsafe_offset=2 * n_pixels + i])
             buf.append(UInt8(min(max((r - vmin) * scale, Float32(0.0)), Float32(255.0))))
             buf.append(UInt8(min(max((g - vmin) * scale, Float32(0.0)), Float32(255.0))))
             buf.append(UInt8(min(max((b - vmin) * scale, Float32(0.0)), Float32(255.0))))
@@ -84,7 +84,7 @@ def save_ppm(
 
 def _write_pixel(
     mut buf: List[UInt8],
-    src: UnsafePointer[Scalar[DType.float32], _],
+    src: Pointer[Scalar[DType.float32], _],
     img_idx: Int,
     local_y: Int,
     local_x: Int,
@@ -97,15 +97,15 @@ def _write_pixel(
 ):
     var base = img_idx * img_size
     if channels == 1:
-        var v = Float32((src + base + local_y * width + local_x)[])
+        var v = Float32(src[unsafe_offset=base + local_y * width + local_x])
         var byte = UInt8(min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0)))
         buf.append(byte)
         buf.append(byte)
         buf.append(byte)
     else:
-        var rv = Float32((src + base + local_y * width + local_x)[])
-        var gv = Float32((src + base + hw + local_y * width + local_x)[])
-        var bv = Float32((src + base + 2 * hw + local_y * width + local_x)[])
+        var rv = Float32(src[unsafe_offset=base + local_y * width + local_x])
+        var gv = Float32(src[unsafe_offset=base + hw + local_y * width + local_x])
+        var bv = Float32(src[unsafe_offset=base + 2 * hw + local_y * width + local_x])
         buf.append(UInt8(min(max((rv - vmin) * scale, Float32(0.0)), Float32(255.0))))
         buf.append(UInt8(min(max((gv - vmin) * scale, Float32(0.0)), Float32(255.0))))
         buf.append(UInt8(min(max((bv - vmin) * scale, Float32(0.0)), Float32(255.0))))
@@ -118,8 +118,8 @@ def _write_pixel(
 
 def save_reconstruction_grid(
     path: String,
-    originals: UnsafePointer[Scalar[DType.float32], _],
-    reconstructions: UnsafePointer[Scalar[DType.float32], _],
+    originals: Pointer[Scalar[DType.float32], _],
+    reconstructions: Pointer[Scalar[DType.float32], _],
     n: Int,
     height: Int,
     width: Int,
@@ -199,7 +199,7 @@ def save_reconstruction_grid(
 
 def save_image_row(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     n: Int,
     height: Int,
     width: Int,
@@ -379,7 +379,7 @@ def _viridis_rgb(t: Float32) -> Tuple[UInt8, UInt8, UInt8]:
 
 def save_vector_heatmap(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     n_rows: Int,
     dim: Int,
     cell_w: Int = 16,
@@ -417,7 +417,7 @@ def save_vector_heatmap(
         var row = py // cell_h
         for px in range(img_w):
             var col = px // cell_w
-            var v = Float32((data + row * dim + col)[])
+            var v = Float32(data[unsafe_offset=row * dim + col])
             var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
             var rgb = _viridis_rgb(t)
             buf.append(rgb[0])
@@ -434,8 +434,8 @@ def save_vector_heatmap(
 
 def save_vector_comparison(
     path: String,
-    originals: UnsafePointer[Scalar[DType.float32], _],
-    reconstructions: UnsafePointer[Scalar[DType.float32], _],
+    originals: Pointer[Scalar[DType.float32], _],
+    reconstructions: Pointer[Scalar[DType.float32], _],
     n: Int,
     dim: Int,
     cell_w: Int = 16,
@@ -493,7 +493,7 @@ def save_vector_comparison(
                     buf.append(UInt8(230))
                 else:
                     var col = (px - marker_w) // cell_w
-                    var v = Float32((originals + pair_idx * dim + col)[])
+                    var v = Float32(originals[unsafe_offset=pair_idx * dim + col])
                     var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
                     var rgb = _viridis_rgb(t)
                     buf.append(rgb[0])
@@ -510,7 +510,7 @@ def save_vector_comparison(
                     buf.append(UInt8(50))
                 else:
                     var col = (px - marker_w) // cell_w
-                    var v = Float32((reconstructions + pair_idx * dim + col)[])
+                    var v = Float32(reconstructions[unsafe_offset=pair_idx * dim + col])
                     var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
                     var rgb = _viridis_rgb(t)
                     buf.append(rgb[0])
@@ -639,7 +639,7 @@ def _append_subblocks(mut buf: List[UInt8], data: List[UInt8]):
 
 def save_frame_sequence_gif(
     path: String,
-    frames: UnsafePointer[Scalar[DType.float32], _],
+    frames: Pointer[Scalar[DType.float32], _],
     n_frames: Int,
     height: Int,
     width: Int,
@@ -727,7 +727,7 @@ def save_frame_sequence_gif(
         indices.clear()
         var base = f * hw
         for p in range(hw):
-            var v = Float32((frames + base + p)[])
+            var v = Float32(frames[unsafe_offset=base + p])
             var idx = min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0))
             indices.append(UInt8(idx))
         # LZW image data: min code size byte + packed sub-blocks

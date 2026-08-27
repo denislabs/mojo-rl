@@ -33,7 +33,7 @@ output-count param (storage infers OUT_DIM from the last node) and the
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW
@@ -594,7 +594,7 @@ struct EZRewardLSTMAtari[BINS: Int](Module):
         var d = InlineArray[Int, 2](fill=0)
         d[0] = Self.LATENT
         d[1] = Self.RHID
-        return d
+        return d^
 
     comptime Stem = Sequential[
         Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],

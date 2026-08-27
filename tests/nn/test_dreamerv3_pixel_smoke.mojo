@@ -17,7 +17,7 @@ Run: pixi run mojo run -I . tests/nn/test_dreamerv3_pixel_smoke.mojo
 from std.math import isfinite
 from std.random import random_float64
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
@@ -80,8 +80,8 @@ def test_pixel_trainer_train_step() raises:
         var rew = Scalar[DT](random_float64() - 0.5)
         var done = Scalar[DT](1.0) if (s % 17 == 16) else Scalar[DT](0.0)
         tr.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](act),
             rew, done,
         )
     if not tr.can_train():
@@ -121,8 +121,8 @@ def test_pixel_agent_select_action() raises:
     for j in range(ACT):
         out_action[j] = Scalar[DT](0.0)
     ag.select_action(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs),
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_action),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](obs),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](out_action),
         explore=True,
     )
     for j in range(ACT):

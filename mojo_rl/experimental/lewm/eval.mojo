@@ -22,8 +22,8 @@ latents in latent space) is the remaining Phase F piece (see plan §2.5).
 
 from std.memory import alloc
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn.constants import DT
@@ -42,14 +42,14 @@ def _mse_latent[
     ao: MutOrigin = MutAnyOrigin,
     bo: MutOrigin = MutAnyOrigin,
 ](
-    a: UnsafePointer[Scalar[DT], ao],
-    b: UnsafePointer[Scalar[DT], bo],
+    a: Pointer[Scalar[DT], ao],
+    b: Pointer[Scalar[DT], bo],
     n: Int,
 ) -> Float64:
     """Mean squared error over `n` elements. Lower is better."""
     var s: Float64 = 0.0
     for i in range(n):
-        var d = Float64(a[i] - b[i])
+        var d = Float64(a[unsafe_offset=i] - b[unsafe_offset=i])
         s += d * d
     return s / Float64(n)
 
@@ -82,10 +82,10 @@ struct LeWMTFScorer[
     comptime HE = Self.H * Self.EMB
     comptime NPRED = Self.BATCH * Self.HE
 
-    var trainer: UnsafePointer[Self.TR, MutUntrackedOrigin]
-    var pix: UnsafePointer[Scalar[DT], MutUntrackedOrigin]    # target-resident, fixed
+    var trainer: Pointer[Self.TR, MutUntrackedOrigin]
+    var pix: Pointer[Scalar[DT], MutUntrackedOrigin]    # target-resident, fixed
     var ctx: Optional[DeviceContext]
-    var act_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]   # (B, T·ACT)
+    var act_host: Pointer[Scalar[DT], MutUntrackedOrigin]   # (B, T·ACT)
     var act_dev: Optional[DeviceBuffer[DT]]
     var pred_host: List[Scalar[DT]]  # (B, H·EMB)
     var goal_host: List[Scalar[DT]]  # (B, H·EMB) fixed
@@ -93,14 +93,16 @@ struct LeWMTFScorer[
 
     def __init__(
         out self,
-        trainer: UnsafePointer[Self.TR, MutAnyOrigin],
-        pix: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        trainer: Pointer[Self.TR, MutAnyOrigin],
+        pix: Pointer[Scalar[DT], MutAnyOrigin],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         self.trainer = untracked(trainer)
         self.pix = untracked(pix)
         self.ctx = ctx
-        self.act_host = untracked(alloc[Scalar[DT]](Self.BATCH * Self.ACTIN))
+        self.act_host = untracked(
+            alloc[Scalar[DT]]({count = Self.BATCH * Self.ACTIN}).unsafe_leak()
+        )
         self.pred_host = List[Scalar[DT]](
             length=Self.NPRED, fill=Scalar[DT](0)
         )
@@ -116,14 +118,14 @@ struct LeWMTFScorer[
                 Self.BATCH * Self.ACTIN
             )
 
-    def __del__(deinit self):
-        self.act_host.free()
+    def __deinit__(deinit self):
+        self.act_host.unsafe_free()
 
-    def _act_target_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def _act_target_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
             return self.act_host.as_unsafe_any_origin()
         else:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.act_dev.value().unsafe_ptr()
             )
 
@@ -151,7 +153,7 @@ struct LeWMTFScorer[
         """Precompute the fixed goal latents (zero actions — `tgt` is
         action-independent)."""
         for i in range(Self.BATCH * Self.ACTIN):
-            self.act_host[i] = Scalar[DT](0.0)
+            self.act_host[unsafe_offset=i] = Scalar[DT](0.0)
         self._forward(into_goal=True)
 
     def score_plan[
@@ -166,11 +168,11 @@ struct LeWMTFScorer[
         # HORIZON == H (only the first-H actions condition the prediction).
         # Fill act_host: first H steps from the plan, the trailing (T-H) zero.
         for i in range(Self.BATCH * Self.ACTIN):
-            self.act_host[i] = Scalar[DT](0.0)
+            self.act_host[unsafe_offset=i] = Scalar[DT](0.0)
         for b in range(Self.BATCH):
             for t in range(Self.H):
                 for a in range(Self.ACT):
-                    self.act_host[(b * Self.T + t) * Self.ACT + a] = rebind[
+                    self.act_host[unsafe_offset=(b * Self.T + t) * Self.ACT + a] = rebind[
                         Scalar[DT]
                     ](action_plan[b, t, a])
         self._forward(into_goal=False)
@@ -210,7 +212,7 @@ def lewm_shuffled_eval[
         dtype=DT, address_space=AddressSpace.GENERIC,
         origin=MutAnyOrigin, ...,
     ],
-    expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
+    expert_act_host: Pointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
     n_shuffles: Int = 0,
     ctx: Optional[DeviceContext] = None,
     verbose: Bool = True,
@@ -225,9 +227,9 @@ def lewm_shuffled_eval[
     comptime HE = H * EMB
     comptime ACTIN = T * ACT
     comptime NP = BATCH * HE
-    var act_host = alloc[Scalar[DT]](BATCH * ACTIN)
-    var pred = alloc[Scalar[DT]](NP)
-    var tgt = alloc[Scalar[DT]](NP)
+    var act_host = alloc[Scalar[DT]]({count = BATCH * ACTIN}).unsafe_leak()
+    var pred = alloc[Scalar[DT]]({count = NP}).unsafe_leak()
+    var tgt = alloc[Scalar[DT]]({count = NP}).unsafe_leak()
     var act_dev: Optional[DeviceBuffer[DT]] = None
     comptime if target == "gpu":
         act_dev = ctx.value().enqueue_create_buffer[DT](BATCH * ACTIN)
@@ -244,18 +246,18 @@ def lewm_shuffled_eval[
     for rnd in range(-1, ns):
         if rnd < 0:
             for i in range(BATCH * ACTIN):
-                act_host[i] = expert_act_host[i]
+                act_host[unsafe_offset=i] = expert_act_host[unsafe_offset=i]
         else:
             var shift = rnd + 1
             for b in range(BATCH):
                 var src = ((b + shift) % BATCH) * ACTIN
                 for i in range(ACTIN):
-                    act_host[b * ACTIN + i] = expert_act_host[src + i]
+                    act_host[unsafe_offset=b * ACTIN + i] = expert_act_host[unsafe_offset=src + i]
         comptime if target == "gpu":
             var c = ctx.value()
             c.enqueue_copy(act_dev.value(), act_host)
             var at = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     act_dev.value().unsafe_ptr()
                 ),
                 row_major[BATCH, ACTIN](),
@@ -286,7 +288,7 @@ def lewm_shuffled_eval[
         print("   action-aware (expert < shuffled_min):",
               "yes" if expert < shuffled_min else "no")
 
-    act_host.free(); pred.free(); tgt.free()
+    act_host.unsafe_free(); pred.unsafe_free(); tgt.unsafe_free()
     _ = act_dev^
     return (expert, shuffled_mean, shuffled_min, frac_worse)
 
@@ -304,8 +306,8 @@ def lewm_action_awareness_eval[
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
     ],
-    pix_host: UnsafePointer[Scalar[DT], MutAnyOrigin],          # (B, T·IMG_DIM)
-    expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT) one-hot
+    pix_host: Pointer[Scalar[DT], MutAnyOrigin],          # (B, T·IMG_DIM)
+    expert_act_host: Pointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT) one-hot
     num_random: Int = 16,
     cem_iters: Int = 3,
     cem_samples: Int = 32,
@@ -335,21 +337,21 @@ def lewm_action_awareness_eval[
         c.enqueue_copy(d, pix_host)
         c.synchronize()
         pix_dev = d^
-        pix_target = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        pix_target = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             pix_dev.value().unsafe_ptr()
         )
 
     var scorer = Scorer(
-        UnsafePointer(to=trainer).as_unsafe_any_origin(), pix_target, ctx=ctx
+        Pointer(to=trainer).as_unsafe_any_origin(), pix_target, ctx=ctx
     )
     scorer.prime()
 
     # ── Expert leg: the real recorded actions (first H steps).
-    var expert_plan = alloc[Scalar[DT]](BATCH * H * ACT)
+    var expert_plan = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
     for b in range(BATCH):
         for t in range(H):
             for a in range(ACT):
-                expert_plan[(b * H + t) * ACT + a] = expert_act_host[
+                expert_plan[unsafe_offset=(b * H + t) * ACT + a] = expert_act_host[unsafe_offset=
                     (b * T + t) * ACT + a
                 ]
     var expert_t = TileTensor(expert_plan, row_major[BATCH, H, ACT]())
@@ -359,12 +361,12 @@ def lewm_action_awareness_eval[
     var shooter = CategoricalRandomShooter[BATCH, ACT](
         horizon=H, num_samples=num_random
     )
-    var rs_best = alloc[Scalar[DT]](BATCH * H * ACT)
+    var rs_best = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
     var random_min = shooter.optimize(
         scorer, rs_best.as_unsafe_any_origin(), verbose=False
     )
     var random_mean = _mean(shooter.sample_scores)
-    rs_best.free()
+    rs_best.unsafe_free()
 
     # ── CEM leg (refines from uniform; skipped if cem_iters == 0).
     var cem_score = expert
@@ -376,11 +378,13 @@ def lewm_action_awareness_eval[
             cem_topk=cem_topk,
             cem_smoothing=cem_smoothing,
         )
-        var cem_best = alloc[Scalar[DT]](BATCH * H * ACT)
+        var cem_best = alloc[Scalar[DT]](
+            {count = BATCH * H * ACT}
+        ).unsafe_leak()
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )
-        cem_best.free()
+        cem_best.unsafe_free()
 
     if verbose:
         print("   expert     =", expert)
@@ -390,7 +394,7 @@ def lewm_action_awareness_eval[
               "  cem/random_min =", cem_score / random_min,
               "  cem/expert =", cem_score / expert)
 
-    expert_plan.free()
+    expert_plan.unsafe_free()
     _ = scorer^
     _ = pix_dev^
     return (expert, random_mean, random_min, cem_score)

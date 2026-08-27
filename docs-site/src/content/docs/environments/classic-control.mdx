@@ -1,0 +1,121 @@
+---
+title: Classic control
+description: CartPole, MountainCar, Acrobot and Pendulum — the canonical control benchmarks, ported to pure Mojo.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" />
+
+The four benchmarks every RL implementation is checked against. Physics matches
+Gymnasium, so results are directly comparable with published numbers.
+
+<DemoGrid min="14rem">
+	<Demo name="cartpole_demo" caption="CartPole" meta="4 obs · 2 actions" />
+	<Demo name="mountain_car_trained" caption="MountainCar" meta="2 obs · 3 actions" />
+	<Demo name="pendulum_sac_trained" caption="Pendulum" meta="3 obs · 1 continuous" />
+	<Demo name="acrobot_trained" caption="Acrobot" meta="6 obs · 3 actions" />
+</DemoGrid>
+
+| Environment | Obs | Actions | Integrator | GPU batch |
+|---|---|---|---|---|
+| CartPole | 4 | 2 discrete | semi-implicit Euler | yes |
+| MountainCar | 2 | 3 discrete | direct | no |
+| Acrobot | 6 | 3 discrete | RK4 | no |
+| Pendulum | 3 | 1 continuous | direct | yes (V2) |
+
+## CartPole
+
+Balance a pole on a cart by pushing left or right. Observation is
+`[cart position, cart velocity, pole angle, pole angular velocity]`; the episode
+ends when the pole falls past ~12° or the cart leaves the track.
+
+```mojo
+from mojo_rl.envs.cartpole import CartPoleEnv
+from mojo_rl.nn.constants import DT
+
+var env = CartPoleEnv[DT]()
+```
+
+The default benchmark for anything discrete. Dense reward (+1 per surviving
+step), four dimensions, and it trains in seconds — so if DQN cannot solve
+CartPole, the bug is in the agent, not the task.
+
+CartPole is GPU-batchable, and the native implementation is substantially faster
+than the Gymnasium original.
+
+## MountainCar
+
+An underpowered car in a valley must reach the flag on the right. The engine
+cannot climb directly — the agent has to learn to rock back and forth to build
+momentum.
+
+Two observations (position, velocity), three actions (push left, none, push
+right), and −1 per step until the goal.
+
+This is an **exploration** benchmark, not a control one. Random actions almost
+never reach the flag, so an agent with no reward signal learns nothing. It is
+where naive ε-greedy visibly struggles and where tile coding shines — the
+low-dimensional continuous state is exactly what tile coding was designed for:
+
+```bash
+pixi run mojo run -I . examples/mountain_car_tiled.mojo
+pixi run mojo run -I . examples/mountain_car_linear.mojo
+```
+
+## Acrobot
+
+A two-link pendulum, actuated only at the joint between the links. The goal is
+to swing the free end above a target height. Six observations —
+`[cos θ₁, sin θ₁, cos θ₂, sin θ₂, θ̇₁, θ̇₂]` — and three torque actions.
+
+Integrated with **RK4** rather than Euler, because the dynamics are stiff enough
+that a first-order integrator drifts noticeably.
+
+Harder than CartPole: the system is underactuated, so the agent must pump energy
+in over several swings rather than correcting continuously.
+
+## Pendulum
+
+Swing up an inverted pendulum and hold it there, with a **continuous** torque.
+Observation is `[cos θ, sin θ, θ̇]`; reward penalises angle, velocity and torque,
+so it is always negative and approaches zero as the policy improves.
+
+The go-to first test for continuous-control algorithms — DDPG, TD3, SAC — since
+it is three-dimensional and trains fast:
+
+```bash
+pixi run mojo run -I . examples/pendulum_sac.mojo
+pixi run mojo run -I . examples/pendulum_td3.mojo
+pixi run mojo run -I . examples/pendulum_ddpg.mojo
+```
+
+Two implementations exist:
+
+```mojo
+from mojo_rl.envs.pendulum import PendulumEnv   # V1 — CPU, single env
+from mojo_rl.envs.pendulum import PendulumV2    # V2 — GPU, batched
+```
+
+:::caution[Pendulum has no terminal state]
+Episodes end by time limit only — the pendulum never "fails". That makes it a
+trap for advantage estimation: treating the time-limit cutoff as a genuine
+terminal state truncates the value bootstrap and quietly degrades PPO's GAE.
+Use the environment's `was_terminated()` rather than `done` when computing
+advantages. See [Traits](/concepts/traits/#env--the-base-environment).
+:::
+
+## Fidelity
+
+These are faithful ports of Gymnasium's dynamics, not approximations — the
+physics constants, integration order and termination conditions match. The
+[Gymnasium wrappers](/environments/gymnasium/) let you run both side by side when
+you need to confirm that.
+
+## Next
+
+- [2D physics](/environments/2d-physics/) — LunarLander, BipedalWalker, CarRacing
+- [Tabular](/environments/tabular/) — smaller and fully discrete
+- [Quickstart: GPU training](/start/quickstart-gpu/) — scaling past these

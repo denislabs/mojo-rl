@@ -1,0 +1,118 @@
+---
+title: A2C
+description: Advantage Actor-Critic — the simplest deep policy gradient, and a degenerate case of PPO.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import OnPolicyLoop from '~/components/diagrams/OnPolicyLoop.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+**Advantage Actor-Critic** is the minimal on-policy deep policy gradient: collect
+a rollout, estimate advantages, take one gradient step, discard the data.
+
+```mojo
+from mojo_rl.deep_agents.a2c import A2CAgent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Asynchronous Methods for Deep Reinforcement Learning"
+		authors="Mnih et al."
+		year="2016"
+		arxiv="1602.01783"
+		venue="ICML 2016"
+		note="A3C; A2C is its synchronous variant."
+	/>
+</Papers>
+
+## The algorithm
+
+```
+actor loss  = −log π(a|s) · Â            + entropy bonus
+critic loss = (V(s) − return)²
+```
+
+An actor and a critic; the critic supplies a baseline so the actor is updated by
+the **advantage** rather than the raw return. That is the whole thing.
+
+<OnPolicyLoop
+	rollout="on-policy · used once, discarded"
+	updateLabel="minibatch · 1 pass"
+	formulaTitle="policy gradient"
+	formula="∇_θ J = 𝔼 [ ∇_θ log π(a|s) · Â ],   Â = GAE(λ) from the critic"
+/>
+
+Subtracting the critic's `V(s)` does not change what the gradient converges to —
+any function of the state alone has zero expected effect on the policy
+gradient — it changes the **variance** of the estimate. That is the entire
+justification for having a critic in a policy-gradient method, and it is why the
+critic being merely approximately right is acceptable: a wrong baseline costs
+you variance reduction, not correctness. Contrast [DDPG](/algorithms/ddpg/),
+where the critic *is* the gradient and being wrong points the actor the wrong
+way.
+
+The entropy bonus is the only thing keeping the policy from collapsing early.
+With no clipping and one pass per batch, a confident-and-wrong policy stops
+sampling the actions that would correct it.
+
+## Its relationship to PPO
+
+A2C is implemented here as a **degenerate single-epoch PPO** — the same trainer
+with `N_EPOCHS = 1` and no clipping.
+
+That framing is the useful way to understand both. [PPO](/algorithms/ppo/) adds
+exactly two things:
+
+**Multiple epochs.** Reuse the same rollout for several gradient passes,
+extracting far more from each batch of environment interaction.
+
+**The clipped surrogate.** Bound how far the policy can move per update, which is
+what makes reusing the data safe. Without the clip, the second and third epochs
+are optimising against a policy that has already changed, and the update
+diverges.
+
+So the clip is not an optimisation detail bolted onto A2C — it is the thing that
+makes epoch reuse possible, and epoch reuse is where PPO's sample efficiency
+comes from.
+
+## When to use it
+
+**Almost never, for results.** PPO is strictly better and costs nothing extra.
+
+A2C is worth having for two reasons:
+
+- **As a baseline.** If PPO underperforms A2C on a task, something is wrong with the clip range, the epoch count, or the advantage normalization.
+- **For understanding.** A2C is small enough to read end to end, and it makes clear what PPO's additions actually buy.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.a2c import A2CAgent
+```
+
+The facade mirrors [PPO](/algorithms/ppo/)'s — actor and critic types, dimensions,
+rollout length — without the epoch and clip parameters.
+
+For discrete actions, `PPODiscreteAgent` with `N_EPOCHS=1` gives the same
+behaviour through the PPO surface.
+
+## Watch out for
+
+**Time limits break GAE**, exactly as they do for PPO. Use `was_terminated()`
+rather than `done`, or every advantage in the rollout is corrupted on a
+truncation. [Pendulum](/environments/classic-control/) has no terminal state at
+all, so this bites immediately there.
+
+**High variance.** With one epoch and no clipping, A2C is sensitive to learning
+rate. If it is unstable, that is the algorithm, not a bug — which is the point
+of PPO.
+
+## Next
+
+- [PPO](/algorithms/ppo/) — A2C plus clipping and epoch reuse
+- [Classical policy gradient](/algorithms/tabular/policy-gradient/) — the linear ancestors
+- [SAC](/algorithms/sac/) — the off-policy alternative

@@ -40,8 +40,8 @@ grad is zeroed.
 
 from std.math import exp, log, tanh as ftanh
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -291,11 +291,11 @@ def _sg_backward_kernel[
 
 def squashed_gaussian_forward_gpu[ACT: Int, BATCH: Int](
     ctx: DeviceContext,
-    actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    z_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    actor_output_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    z_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     action_scale: Scalar[DT],
-    action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    log_prob_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    log_prob_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     """GPU forward — one thread per batch row, inner-j sequential.
 
@@ -318,12 +318,12 @@ def squashed_gaussian_forward_gpu[ACT: Int, BATCH: Int](
 
 def squashed_gaussian_backward_gpu[ACT: Int, BATCH: Int](
     ctx: DeviceContext,
-    actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    z_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_log_prob_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    actor_output_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    z_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    grad_action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+    grad_log_prob_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     action_scale: Scalar[DT],
-    grad_actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_actor_output_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     """GPU backward — one thread per [b, j], no reduction."""
     var ao_lt = LayoutTensor[

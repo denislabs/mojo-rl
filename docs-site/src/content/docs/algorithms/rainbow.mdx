@@ -1,0 +1,211 @@
+---
+title: C51 and Rainbow
+description: Distributional value learning — predicting a return distribution instead of a mean, and the six improvements Rainbow combines.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import CategoricalProjection from '~/components/diagrams/CategoricalProjection.astro';
+import Demo from '~/components/Demo.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" note="Mind the support range — the single most common way to get no learning at all." />
+
+[DQN](/algorithms/dqn/) predicts the **expected** return for each action. C51
+predicts the whole **distribution** over returns, and that turns out to help a
+lot — even though the policy still just takes the argmax of the mean.
+
+Rainbow combines C51 with five other improvements into the strongest
+discrete-action agent in the framework.
+
+<Demo name="rainbow_car_racing" caption="CarRacing — Rainbow" meta="pixel observations" />
+
+```mojo
+from mojo_rl.deep_agents.c51 import C51Agent
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="A Distributional Perspective on Reinforcement Learning"
+		authors="Bellemare, Dabney, Munos"
+		year="2017"
+		arxiv="1707.06887"
+		venue="ICML 2017"
+		note="C51 — the categorical value head."
+	/>
+	<Paper
+		title="Rainbow: Combining Improvements in Deep Reinforcement Learning"
+		authors="Hessel et al."
+		year="2017"
+		arxiv="1710.02298"
+		venue="AAAI 2018"
+	/>
+	<Paper
+		title="Prioritized Experience Replay"
+		authors="Schaul et al."
+		year="2015"
+		arxiv="1511.05952"
+		venue="ICLR 2016"
+	/>
+</Papers>
+
+## Distributional value learning
+
+Instead of one number per action, the network outputs a probability over a fixed
+set of **atoms** — 51 of them, hence the name — spanning a support
+`[v_min, v_max]`.
+
+The Bellman update becomes a distributional one: shift the next-state
+distribution by the reward, scale by `γ`, and project it back onto the fixed
+support. The loss is a cross-entropy between the projected target distribution
+and the prediction.
+
+<CategoricalProjection />
+
+The projection step is the part worth slowing down on, because it is where the
+implementations go wrong. `r + γz` is a real number and the support is a fixed
+grid, so the transformed atoms almost never land on it. Each one is placed
+between two neighbours and its mass split between them in proportion to
+closeness — the standard linear-interpolation rule. Do that for all 51 atoms,
+sum the contributions per grid point, and you have the target distribution.
+
+`γ < 1` also *contracts* the support toward zero on every update, which is what
+makes the fixed grid stable rather than a slowly widening mess.
+
+Two consequences follow directly, and both are practical:
+
+- The atoms nearest each other after contraction carry the most mass, so a support much wider than the true return range wastes most of its resolution
+- Anything falling outside `[v_min, v_max]` is clamped onto the end atoms, which is silent and destroys information rather than raising an error
+
+Why it helps, when the greedy policy only uses the mean: the network is forced
+to represent *how* returns vary, not just their average, which is a much richer
+learning signal per transition. It also handles multi-modal returns — "this
+action either wins big or loses" — which a mean squarely cannot express.
+
+Framed as a learning problem, the switch is from regression to classification.
+The head outputs logits over 51 fixed classes and trains under cross-entropy,
+which is far better conditioned than squared error against a moving scalar
+target — the gradient does not scale with the magnitude of the error, so an
+early wildly-wrong value estimate cannot produce a wildly-large update.
+
+:::caution[The support range must match your reward scale]
+This is the highest-value thing on this page.
+
+`[v_min, v_max]` is fixed at compile time. If it does not span the returns your
+task actually produces, most atoms sit in a region that never occurs and the
+distribution cannot represent the truth. The agent does not error — it just
+barely learns.
+
+On Pong, per-step rewards are −1, 0 or +1. A support of **`[-2, 2]`** works; the
+common default `[-10, 10]` does not. In this repository that was exactly the
+difference between "never converges" and "solves it".
+
+The same trap appears in [MuZero](/algorithms/muzero/)'s value head, where a ±10
+support saturates on CartPole with `gamma=0.997`.
+:::
+
+Pick the range from the return distribution you expect, not from a default.
+
+## The six components of Rainbow
+
+| Component | What it adds |
+|---|---|
+| **Double Q-learning** | select with the online net, evaluate with the target — less overestimation |
+| **Prioritized replay** | sample by TD-error magnitude via a sum-tree |
+| **Dueling heads** | split into `V(s)` and `A(s,a)` — learn state value without trying every action |
+| **Noisy networks** | learned parameter noise replaces ε-greedy |
+| **N-step returns** | bootstrap after n steps — faster reward propagation |
+| **Distributional (C51)** | the categorical value head above |
+
+Each is individually modest; together they compound.
+
+## Prioritized replay
+
+Sampling by TD error means transitions the network predicts badly are replayed
+more often. Two details matter:
+
+**Importance-sampling weights** correct the bias that non-uniform sampling
+introduces. Without them, the value estimate is skewed toward high-error
+transitions.
+
+**A sum-tree** gives O(log n) sampling by priority. `mojo_rl.core.sum_tree`
+implements it, and there is a device-resident version so the priorities never
+leave the GPU.
+
+:::caution[Prioritized replay is wrong for board games]
+Self-play in the zero-series samples uniformly, per the papers, and PER degrades
+results there. Pass `use_per=False`. See [MuZero](/algorithms/muzero/).
+:::
+
+## Noisy networks
+
+`NoisyLinear` adds learned noise to the weights, so exploration is part of the
+policy rather than bolted on. The network can learn to be more exploratory in
+states where that pays and more decisive elsewhere — which ε-greedy, being
+state-independent, cannot do.
+
+When Noisy layers are in use, ε-greedy should be **off**. Running both means
+exploring twice.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.c51 import C51Agent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
+from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+
+var agent = C51Agent[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, 1, BATCH, REPLAY_CAPACITY],
+    QNet,
+    N_ATOMS=51,
+    NUM_ACTIONS=6,
+    DOUBLE=True,          # the Double-DQN target
+](ctx=ctx, lr=1e-4, gamma=0.99, v_min=-2.0, v_max=2.0)
+```
+
+The `c51/` package covers both C51 and Rainbow — Rainbow is C51 with the other
+five components enabled, not a separate implementation. That is more than a
+packaging decision: the six components attach at three different places, and
+knowing which is which is what lets you enable them one at a time.
+
+| Component | Where it is configured |
+|---|---|
+| Distributional | `N_ATOMS`, `v_min`, `v_max` on the agent |
+| Double Q-learning | `DOUBLE=True` on the agent |
+| Prioritized replay, N-step | the `SAMPLE` block |
+| Dueling heads, Noisy nets | the `Q_NET` architecture |
+
+`Q_NET.OUT_DIM` must equal `NUM_ACTIONS · N_ATOMS` — the head emits per-atom
+logits for every action, and a mismatch here is a compile-time error rather than
+a silent one.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_pixel_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/car_racing/rainbow_car_racing_pixel_hybrid_training.mojo
+pixi run -e nvidia mojo run -I . examples/procgen/coinrun_rainbow_training_gpu.mojo
+```
+
+Clean-observation Pong is the fastest path to a working policy; the pixel
+variant is the real test.
+
+## Performance notes
+
+:::caution[Replay gather dominates at pixel scale]
+With 4×84×84 observations and a large buffer, **sampling the minibatch** — not
+the forward or backward pass — is the bottleneck. Profiling the Rainbow Pong
+pixel path made this clear. It remains an open optimization; profile before
+tuning the network.
+:::
+
+CUDA-graph capture of the training step is supported and on by default for the
+DQN/C51/Rainbow drivers on NVIDIA.
+
+## Next
+
+- [DQN](/algorithms/dqn/) — the foundation
+- [MuZero](/algorithms/muzero/) — where distributional heads appear again
+- [Arcade games](/environments/arcade/) — what to train on

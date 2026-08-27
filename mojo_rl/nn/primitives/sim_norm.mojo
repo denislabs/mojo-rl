@@ -16,7 +16,7 @@ Backward (per group, standard softmax Jacobian):
 
 from std.math import exp
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -152,27 +152,50 @@ struct SimNorm[DIM_: Int, GROUPS_: Int](Module):
         comptime if target == "cpu":
             out.ensure(B * Self.DIM_)
             self.cache_y.ensure(B * Self.DIM_)
-            var in_t = TileTensor(in0.data, row_major[B, Self.DIM_]())
-            var out_t = TileTensor(out.data, row_major[B, Self.DIM_]())
-            var cache_t = TileTensor(
-                self.cache_y.data, row_major[B, Self.DIM_]()
-            )
+            # ⚠ TWO fixes over the obvious form, both worth a lot here.
+            # (1) `exp` was evaluated TWICE per element — once to build
+            #     `sum_exp`, once to write the output. `exp` is the whole cost
+            #     of this kernel, and SimNorm runs on every Encoder/Dynamics
+            #     trunk, so that alone was ~137k redundant transcendentals per
+            #     call at B=268, DIM=512.
+            # (2) A group is `DIM // GROUPS` wide (8 for TD-MPC2's SN=8) and
+            #     independent of every other group, so a power-of-two group is
+            #     exactly one SIMD vector: load, reduce_max, one vector `exp`,
+            #     reduce_add, one multiply. `simd_softmax_group` below.
+            comptime GS = Self.GROUP_SIZE
+            comptime VEC_OK = GS > 1 and (GS & (GS - 1)) == 0
+            var ip = in0.data.unsafe_ptr()
+            var op = out.data.unsafe_ptr()
+            var cp = self.cache_y.data.unsafe_ptr()
             for b in range(B):
+                var row = b * Self.DIM_
                 for g in range(Self.GROUPS_):
-                    var base = g * Self.GROUP_SIZE
-                    var max_val: Scalar[DT] = in_t[b, base]
-                    for k in range(1, Self.GROUP_SIZE):
-                        var v = in_t[b, base + k]
-                        if v > max_val:
-                            max_val = v
-                    var sum_exp: Scalar[DT] = 0.0
-                    for k in range(Self.GROUP_SIZE):
-                        sum_exp += exp(in_t[b, base + k] - max_val)
-                    var inv_sum = Scalar[DT](1.0) / sum_exp
-                    for k in range(Self.GROUP_SIZE):
-                        var y = exp(in_t[b, base + k] - max_val) * inv_sum
-                        out_t[b, base + k] = y
-                        cache_t[b, base + k] = y
+                    var base = row + g * GS
+                    comptime if VEC_OK:
+                        var v = ip.unsafe_load[width=GS](base)
+                        var e = exp(v - v.reduce_max())
+                        var y = e * (Scalar[DT](1.0) / e.reduce_add())
+                        op.unsafe_store(base, y)
+                        cp.unsafe_store(base, y)
+                    else:
+                        var max_val: Scalar[DT] = ip[unsafe_offset=base]
+                        for k in range(1, GS):
+                            var v2 = ip[unsafe_offset=base + k]
+                            if v2 > max_val:
+                                max_val = v2
+                        var es = InlineArray[Scalar[DT], GS](
+                            fill=Scalar[DT](0)
+                        )
+                        var sum_exp: Scalar[DT] = 0.0
+                        for k in range(GS):
+                            var ev = exp(ip[unsafe_offset=base + k] - max_val)
+                            es[k] = ev
+                            sum_exp += ev
+                        var inv_sum = Scalar[DT](1.0) / sum_exp
+                        for k in range(GS):
+                            var y2 = es[k] * inv_sum
+                            op[unsafe_offset=base + k] = y2
+                            cp[unsafe_offset=base + k] = y2
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.DIM_)

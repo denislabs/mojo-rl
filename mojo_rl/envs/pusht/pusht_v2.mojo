@@ -22,9 +22,9 @@ to populate it from CPU shape definitions.
 from std.math import cos, sin, sqrt, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.core import (
     BoxContinuousActionEnv,
@@ -267,17 +267,17 @@ struct PushTV2[DTYPE: DType](
         self._cpu_reset()
 
     def __init__(out self, *, copy: Self):
-        self.state_data = copy.state_data
-        self.shapes_data = copy.shapes_data
-        self.contacts_data = copy.contacts_data
+        self.state_data = copy.state_data.copy()
+        self.shapes_data = copy.shapes_data.copy()
+        self.contacts_data = copy.contacts_data.copy()
         self.done = copy.done
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
 
     def __init__(out self, *, deinit move: Self):
-        self.state_data = move.state_data
-        self.shapes_data = move.shapes_data
-        self.contacts_data = move.contacts_data
+        self.state_data = move.state_data.copy()
+        self.shapes_data = move.shapes_data.copy()
+        self.contacts_data = move.contacts_data.copy()
         self.done = move.done
         self.rng_seed = move.rng_seed
         self.rng_counter = move.rng_counter
@@ -448,7 +448,7 @@ struct PushTV2[DTYPE: DType](
             self.done,
         )
 
-    def get_state(self) -> PushTState[Self.dtype]:
+    def get_state(mut self) -> PushTState[Self.dtype]:
         var out = PushTState[Self.dtype]()
         for i in range(PConstants.KEYPOINTS_DIM):
             out.keypoints[i] = rebind[Scalar[Self.dtype]](
@@ -587,10 +587,10 @@ struct PushTV2[DTYPE: DType](
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         var states_tensor = LayoutTensor[
@@ -713,10 +713,10 @@ struct PushTV2[DTYPE: DType](
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         # Must have a shape workspace
@@ -924,7 +924,7 @@ struct PushTV2[DTYPE: DType](
         # 1-batch state view aliased at this env's row.
         var state_one = LayoutTensor[
             dtype, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-        ](state.ptr + env * STATE_SIZE)
+        ](state.ptr.unsafe_offset(env * STATE_SIZE))
 
         for _ in range(PConstants.N_SUBSTEPS):
             pusht_substep_single_env[

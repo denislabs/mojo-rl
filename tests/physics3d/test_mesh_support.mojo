@@ -64,19 +64,27 @@ def test_mesh_support() raises:
 
     # Compare with box support at same position
     print("\n=== Box support (same cube at z=3) ===")
+    # ⚠ `corner` IS A REQUIRED OUT-PARAMETER, not an option. `support_box`
+    # returns MuJoCo's `obj->vertindex`, which for a box is the CORNER CODE
+    # `(x>0) | (y>0)<<1 | (z>0)<<2` — the reference stores a mesh vertex index
+    # and a box corner code in the same field, and EPA's repeated-support break
+    # compares it. This file does not read it back; omitting it stopped the
+    # file COMPILING, and a gate that does not compile is not a gate.
+    var corner1 = 0
     var b1 = support_box[DType.float64](
         0.0, 0.0, 1.0,
         0.0, 0.0, 3.0,
         0.0, 0.0, 0.0, 1.0,
-        0.5, 0.5, 0.5)
+        0.5, 0.5, 0.5, corner1)
     print("  dir=(0,0,1) → support=", Float64(b1[0]), Float64(b1[1]), Float64(b1[2]),
           "(expected z=3.5)")
 
+    var corner2 = 0
     var b2 = support_box[DType.float64](
         0.0, 0.0, -1.0,
         0.0, 0.0, 3.0,
         0.0, 0.0, 0.0, 1.0,
-        0.5, 0.5, 0.5)
+        0.5, 0.5, 0.5, corner2)
     print("  dir=(0,0,-1) → support=", Float64(b2[0]), Float64(b2[1]), Float64(b2[2]),
           "(expected z=2.5)")
 

@@ -1,0 +1,84 @@
+---
+/**
+ * Demo — a looping video of an agent or environment.
+ *
+ * Sources come from public/media/, produced by scripts/build-media.mjs from the
+ * repo's gifs/ directory. Pass the base name without an extension.
+ *
+ * Autoplays muted and loops, which is what makes a wall of these readable at a
+ * glance. Viewers who prefer reduced motion get the poster frame plus controls
+ * instead — see the `@media (prefers-reduced-motion)` block in noeira.css.
+ *
+ * Usage:
+ *   <Demo name="half_cheetah_sac_trained" caption="HalfCheetah — SAC" />
+ *   <DemoGrid>
+ *     <Demo name="hopper" caption="Hopper" meta="11 obs · 3 act" />
+ *     <Demo name="walker2d" caption="Walker2d" meta="17 obs · 6 act" />
+ *   </DemoGrid>
+ */
+interface Props {
+	/** Base name of the file in public/media, without extension. */
+	name: string;
+	/** Short label under the video. */
+	caption?: string;
+	/** Secondary line — observation/action dims, algorithm, etc. */
+	meta?: string;
+}
+
+const { name, caption, meta } = Astro.props;
+---
+
+<figure class="demo not-content">
+	<video
+		class="demo__video"
+		src={`/media/${name}.mp4`}
+		poster={`/media/${name}.webp`}
+		autoplay
+		loop
+		muted
+		playsinline
+		preload="metadata"
+		aria-label={caption ? `Demo: ${caption}` : `Demo: ${name}`}></video>
+	{
+		(caption || meta) && (
+			<figcaption class="demo__caption">
+				{caption && <span class="demo__title">{caption}</span>}
+				{meta && <span class="demo__meta">{meta}</span>}
+			</figcaption>
+		)
+	}
+</figure>
+
+<script>
+	// A page of autoplaying loops is exactly what prefers-reduced-motion is
+	// about, and CSS cannot pause a video. Pause every demo and hand over
+	// native controls so the viewer can opt in per clip.
+	//
+	// Registered once per page rather than once per <Demo>, and re-run on
+	// Astro's view transitions.
+	function applyReducedMotion() {
+		const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const videos = document.querySelectorAll<HTMLVideoElement>('.demo__video');
+
+		for (const video of videos) {
+			if (query.matches) {
+				video.autoplay = false;
+				video.controls = true;
+				video.pause();
+			} else {
+				video.controls = false;
+				// The element still carries the autoplay attribute; nudge it in
+				// case the preference changed after load.
+				video.play().catch(() => {
+					/* autoplay can still be refused; the poster stands in */
+				});
+			}
+		}
+	}
+
+	applyReducedMotion();
+	window
+		.matchMedia('(prefers-reduced-motion: reduce)')
+		.addEventListener('change', applyReducedMotion);
+	document.addEventListener('astro:page-load', applyReducedMotion);
+</script>

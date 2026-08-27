@@ -11,7 +11,7 @@ All physics data is packed per-environment for efficient GPU access.
 from std.math import sqrt, cos, sin, pi, tanh
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 
@@ -219,7 +219,7 @@ struct LunarLander[
     var cached_state: LunarLanderState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -769,7 +769,7 @@ struct LunarLander[
         obs[5] = Scalar[Self.dtype](omega_norm)
         obs[6] = left_contact
         obs[7] = right_contact
-        return obs
+        return obs^
 
     def _get_terrain_height(self, x: Float64) -> Float64:
         """Get terrain height at given x position."""
@@ -1260,7 +1260,7 @@ struct LunarLander[
 
         return (reward, terminated)
 
-    def get_state(self) -> Self.StateType:
+    def get_state(mut self) -> Self.StateType:
         """Return current state representation (from cache)."""
         return self.cached_state
 
@@ -1274,8 +1274,11 @@ struct LunarLander[
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a list."""
-        var state = self.get_state()
-        return state.to_list()
+        # Reads the cache directly rather than through `get_state`: the `Env`
+        # trait pins that one as `mut self` while `BoxDiscreteActionEnv` pins
+        # this one as `self`, so routing through it no longer type-checks.
+        # Same value either way — `get_state` only returns `cached_state`.
+        return self.cached_state.to_list()
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""
@@ -1456,7 +1459,7 @@ struct LunarLander[
         self.particles.clear()
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1467,7 +1470,7 @@ struct LunarLander[
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
@@ -1483,7 +1486,7 @@ struct LunarLander[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -1541,10 +1544,10 @@ struct LunarLander[
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Optimized GPU step kernel with fused obs extraction.
@@ -1565,19 +1568,19 @@ struct LunarLander[
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr.value()
         var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
-        ws = ws + SHAPES_SIZE
+        ws = ws.unsafe_offset(SHAPES_SIZE)
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
         )
-        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        ws = ws.unsafe_offset(BATCH_SIZE * CONTACTS_PER_ENV)
         var contact_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var edge_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var joint_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
@@ -1634,10 +1637,10 @@ struct LunarLander[
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU step kernel for continuous actions (GPUContinuousEnv trait).
@@ -1654,19 +1657,19 @@ struct LunarLander[
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr.value()
         var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
-        ws = ws + SHAPES_SIZE
+        ws = ws.unsafe_offset(SHAPES_SIZE)
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
         )
-        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        ws = ws.unsafe_offset(BATCH_SIZE * CONTACTS_PER_ENV)
         var contact_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var edge_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var joint_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
@@ -1772,10 +1775,10 @@ struct LunarLander[
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU selective reset kernel - resets only done environments.

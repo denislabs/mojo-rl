@@ -22,9 +22,9 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -33,6 +33,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.c51.config import Rainbow
 from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongEnv
+from mojo_rl.core.fmt import fit
 
 
 # =============================================================================
@@ -203,11 +204,11 @@ def main() raises:
                 print_every=20_000,
                 verbose=True,
                 nstep_gamma=Scalar[DT](0.99),
-                logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+                logger=Pointer(to=logger).as_unsafe_any_origin(),
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),
-                eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+                eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
                 eval_every=100_000,
                 eval_episodes=20,
             )
@@ -221,10 +222,10 @@ def main() raises:
             print("Rainbow GPU Training Complete")
             print("=" * 70)
             print("Total transitions:", NUM_STEPS)
-            print("Training time:", String(elapsed_s)[byte=:6], "seconds")
+            print("Training time:", fit(String(elapsed_s), 6), "seconds")
             print(
                 "Transitions/second:",
-                String(Float64(NUM_STEPS) / elapsed_s)[byte=:9],
+                fit(String(Float64(NUM_STEPS) / elapsed_s), 9),
             )
             print("Final mean return (last 10):", agent.mean_return())
             print("Episodes completed:", agent.ep_count())

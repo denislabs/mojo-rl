@@ -14,7 +14,7 @@ Three cases:
   (3) fp32 in -> fp32 out   (control; must be exactly 4096)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 

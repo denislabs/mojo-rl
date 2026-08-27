@@ -25,7 +25,7 @@ reuse + `ComputeGraph`'s fan-out accumulation kernel.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -54,8 +54,14 @@ def _rc_accum_kernel[
 
 struct RepeatConditional[N: Int, Inner: Module](Module):
     comptime ARITY = 2
-    comptime D = Self.Inner.OUT_DIM
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.D)
+    comptime DX = Self.Inner.OUT_DIM
+    """Width of the residual stream `x` — dim-preserving, so also OUT_DIM."""
+    comptime DC = Self.Inner.IN_DIMS[1]
+    """Width of the broadcast conditioning `c`. NEED NOT equal `DX`: the DETR
+    decoder stack packs `[query_pos | memory+pos | memory]` into one `c` that is
+    far wider than the query stream. The original code assumed `DX == DC`
+    because LeWM's AdaLN conditioning happened to match its stream width."""
+    comptime IN_DIMS = _rc_in_dims[Self.DX, Self.DC]()
     comptime OUT_DIM = Self.Inner.OUT_DIM
     # Both stream `x` and conditioning `c` flow at the block's activation dtype;
     # the pools (and the seeded x/c copies) are stored here.
@@ -75,8 +81,10 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         ), "RepeatConditional: Inner must be ARITY=2 (forward(x, c))"
         comptime assert (
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
-            and Self.Inner.IN_DIMS[1] == Self.Inner.OUT_DIM
-        ), "RepeatConditional: Inner must be dim-preserving (IN0==IN1==OUT)"
+        ), (
+            "RepeatConditional: Inner must be dim-preserving on the stream"
+            " (IN0 == OUT). The conditioning IN1 is unconstrained."
+        )
         self.children = List[Self.Inner]()
         self.pool = TensorPack[Self.N + 1, Self.ACT_DT]()
         self.gpool = TensorPack[Self.N + 1, Self.ACT_DT]()
@@ -155,7 +163,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime n = B * Self.D
+        comptime n = B * Self.DX
+        comptime nc = B * Self.DC
         # Child-edge dtypes (== Self.ACT_DT / ARITY, asserted, but distinct to
         # the checker). The 2-ary block input pack is built inline over two
         # pool slots (both `MutAnyOrigin` via `TensorPack.__getitem__`, §B0) and
@@ -165,7 +174,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         comptime cn = Self.Inner.ARITY
         # Seed pool: slot 0 = x copy, slot N = broadcast c copy.
         Self._copy_into[target](self.pool[0], inputs[0], n, ctx)
-        Self._copy_into[target](self.pool[Self.N], inputs[1], n, ctx)
+        Self._copy_into[target](self.pool[Self.N], inputs[1], nc, ctx)
         comptime for i in range(Self.N):
             comptime if i == Self.N - 1:
                 self.children[i].forward[target, B, POLICY=POLICY](
@@ -198,7 +207,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         grad_inputs: TensorRefs[2, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime n = B * Self.D
+        comptime n = B * Self.DX
+        comptime nc = B * Self.DC
         # Child-edge dtypes (see forward): the 2-ary forward-input pack (pool)
         # and grad_input scatter pack (gpool) are built inline + `rebind`-ed to
         # `(cn, ci)`; mut grad buffers via `rebind[TensorImpl[ci]]`.
@@ -206,7 +216,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         comptime cn = Self.Inner.ARITY
         # grad_c accumulator (caller slot) starts at zero; each block adds its
         # grad_c temp (gpool[N]) into it.
-        Self._zero[target](grad_inputs[1], n, ctx)
+        Self._zero[target](grad_inputs[1], nc, ctx)
         # Reverse-topo: block i's output-grad is grad_output (last) or block
         # i+1's already-computed grad_x (gpool[i+1]). Its grad_inputs scatter
         # into (gpool[i], gpool[N]=grad_c temp) — both from gpool (§B0).
@@ -242,11 +252,25 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                     ),
                     ctx,
                 )
-            Self._accum_into[target, B * Self.D](
+            Self._accum_into[target, B * Self.DC](
                 grad_inputs[1], self.gpool[Self.N], ctx
             )
         # Block 0's grad_x (gpool[0]) is the gradient w.r.t. the x input.
         Self._copy_into[target](grad_inputs[0], self.gpool[0], n, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Forward a named runtime attribute to every stacked block.
+
+        ⚠ Without this, `Module.set_attr`'s `pass` default applied and the call
+        silently did nothing — so a `Dropout` or `BatchNorm` inside a
+        `RepeatConditional` could never be switched to eval, no matter what the
+        caller asked for. `Repeat`, `Sequential`, `Tokenwise`, `Residual` and
+        `Parallel` all had this; `RepeatConditional` was the one that did not.
+        Found by the ACT DETR-encoder-stack gate, which read a 0.6 disagreement
+        against a reference where the bare layer matched at 5e-7.
+        """
+        for i in range(Self.N):
+            self.children[i].set_attr[ATTR](value)
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
@@ -279,3 +303,11 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     ) raises:
         for i in range(Self.N):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)
+
+
+def _rc_in_dims[DX: Int, DC: Int]() -> InlineArray[Int, 2]:
+    """`InlineArray` has no variadic-element literal in Mojo 1.0 (`Array` is not
+    `ImplicitlyCopyable`); mirrors `concat.mojo`'s comptime helpers."""
+    var a = InlineArray[Int, 2](fill=DX)
+    a[1] = DC
+    return a^

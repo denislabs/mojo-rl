@@ -18,7 +18,7 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu_noconsist.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming

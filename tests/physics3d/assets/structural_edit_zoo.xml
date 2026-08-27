@@ -1,0 +1,56 @@
+<mujoco model="structural_edit_zoo">
+  <!-- ⚠ A FIXTURE BUILT TO BE DELETED FROM, and mesh-free ON PURPOSE so the
+       edited text can be written to /tmp and handed to MuJoCo unchanged.
+       `<body name="arm">` is referenced by EVERY section that can reference
+       something, and one of those references is INDIRECT: the actuator
+       `cable_m` drives the tendon `cable`, which is only removed because the
+       site it routes through went with the arm. A single-pass prune leaves
+       `tendon='cable'` dangling and MuJoCo refuses the file. -->
+  <compiler angle="degree"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 .1"/>
+    <body name="trunk" pos="0 0 1">
+      <freejoint name="root"/>
+      <geom name="trunk_geom" type="capsule" fromto="0 0 0 0 0 .4" size=".08"/>
+      <site name="anchor" pos="0 0 .4"/>
+      <body name="arm" pos="0 0 .4">
+        <joint name="shoulder" type="hinge" axis="0 1 0" limited="true" range="-90 90"/>
+        <geom name="arm_geom" type="capsule" fromto="0 0 0 .3 0 0" size=".05"/>
+        <site name="tip" pos=".3 0 0"/>
+        <body name="hand" pos=".3 0 0">
+          <joint name="wrist" type="hinge" axis="0 0 1"/>
+          <geom name="hand_geom" type="sphere" size=".06"/>
+        </body>
+      </body>
+      <body name="post" pos="0 .3 0">
+        <geom name="post_geom" type="box" size=".05 .05 .2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="cable" width=".004">
+      <site site="anchor"/>
+      <site site="tip"/>
+    </spatial>
+  </tendon>
+  <equality>
+    <weld name="w" body1="hand" body2="post"/>
+  </equality>
+  <contact>
+    <pair geom1="arm_geom" geom2="post_geom"/>
+    <exclude body1="arm" body2="post"/>
+  </contact>
+  <actuator>
+    <motor name="shoulder_m" joint="shoulder" gear="10"/>
+    <motor name="wrist_m" joint="wrist" gear="5"/>
+    <motor name="cable_m" tendon="cable" gear="1"/>
+    <motor name="keep_me" joint="root" gear="1"/>
+  </actuator>
+  <sensor>
+    <framepos name="tip_pos" objtype="site" objname="tip"/>
+    <framepos name="anchor_pos" objtype="site" objname="anchor"/>
+  </sensor>
+  <keyframe>
+    <key name="home" qpos="0 0 1 1 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

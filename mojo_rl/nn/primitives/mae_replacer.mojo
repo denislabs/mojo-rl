@@ -32,8 +32,8 @@ CPU + GPU.
 """
 
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
@@ -85,11 +85,11 @@ def _mae_fwd_kernel[
     var bt = rem // NP
     var kept = _kept(SEED, base, BATCH, NP, bt, i, pmin, span)
     if kept:
-        output.ptr[idx] = rebind[Scalar[DT]](input.ptr[idx])
+        output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](input.ptr[unsafe_offset=idx])
     else:
-        output.ptr[idx] = rebind[Scalar[DT]](mask_token.ptr[d])
+        output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](mask_token.ptr[unsafe_offset=d])
     if d == 0:
-        keep.ptr[bt * NP + i] = Scalar[DT](1.0) if kept else Scalar[DT](0.0)
+        keep.ptr[unsafe_offset=bt * NP + i] = Scalar[DT](1.0) if kept else Scalar[DT](0.0)
 
 
 def _mae_grad_input_kernel[
@@ -106,9 +106,9 @@ def _mae_grad_input_kernel[
     var i = rem % NP
     var bt = rem // NP
     if _kept(SEED, base, BATCH, NP, bt, i, pmin, span):
-        grad_input.ptr[idx] = rebind[Scalar[DT]](grad_output.ptr[idx])
+        grad_input.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](grad_output.ptr[unsafe_offset=idx])
     else:
-        grad_input.ptr[idx] = Scalar[DT](0.0)
+        grad_input.ptr[unsafe_offset=idx] = Scalar[DT](0.0)
 
 
 def _mae_grad_token_kernel[
@@ -129,11 +129,11 @@ def _mae_grad_token_kernel[
         var bt = p // NP
         var i = p % NP
         if not _kept(SEED, base, BATCH, NP, bt, i, pmin, span):
-            acc += rebind[Scalar[DT]](grad_output.ptr[(bt * NP + i) * D + d])
+            acc += rebind[Scalar[DT]](grad_output.ptr[unsafe_offset=(bt * NP + i) * D + d])
         p += MAE_RTPB
     var total = block.sum[block_size=MAE_RTPB, broadcast=False](val=acc)
     if t == 0:
-        grad_token.ptr[d] = rebind[Scalar[DT]](grad_token.ptr[d]) + total[0]
+        grad_token.ptr[unsafe_offset=d] = rebind[Scalar[DT]](grad_token.ptr[unsafe_offset=d]) + total[0]
 
 
 struct MAEReplacer[
@@ -178,7 +178,7 @@ struct MAEReplacer[
     def mae_keep(ref self) -> ref [self.keep] Tensor:
         return self.keep
 
-    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def mae_mask_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Raw per-patch `keep` pointer for the masked-recon loss ABI — the
         device ptr when the keep Tensor lives on GPU, else the host ptr.
 
@@ -188,10 +188,10 @@ struct MAEReplacer[
         kernels (`masked_recon_loss` / `masked_recon_grad_gpu`) consume a raw
         target-resident pointer, not a `Tensor`."""
         if self.keep.dev:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 self.keep.dev.value().unsafe_ptr()
             )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             self.keep.data.unsafe_ptr()
         )
 

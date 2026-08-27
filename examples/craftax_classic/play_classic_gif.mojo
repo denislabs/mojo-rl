@@ -50,7 +50,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
 @always_inline
-def _read_action(keys: UnsafePointer[Bool, ImmutAnyOrigin]) -> Int:
+def _read_action(keys: Pointer[Bool, ImmutAnyOrigin]) -> Int:
     if keys[Int(Scancode.SCANCODE_LEFT)] or keys[Int(Scancode.SCANCODE_A)]:
         return ACTION_LEFT
     if keys[Int(Scancode.SCANCODE_RIGHT)] or keys[Int(Scancode.SCANCODE_D)]:

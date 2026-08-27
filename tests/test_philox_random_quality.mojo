@@ -27,7 +27,7 @@ from std.random.philox import Random as PhiloxRandom
 from std.random import random_float64, seed as global_seed
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.physics2d import dtype, TPB
 

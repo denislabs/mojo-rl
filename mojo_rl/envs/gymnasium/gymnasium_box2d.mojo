@@ -267,7 +267,7 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    def get_state(self) -> GymLunarLanderState:
+    def get_state(mut self) -> GymLunarLanderState:
         """Return current discretized state."""
         return GymLunarLanderState(index=self._discretize_obs())
 
@@ -557,7 +557,7 @@ struct GymLunarLanderContinuousEnv(BoxContinuousActionEnv & RenderableEnv):
         var r = self.step_continuous_vec(zeros, verbose)
         return (GymLunarLanderContinuousState(index=0), r[1], r[2])
 
-    def get_state(self) -> GymLunarLanderContinuousState:
+    def get_state(mut self) -> GymLunarLanderContinuousState:
         return GymLunarLanderContinuousState(index=0)
 
     # ========================================================================
@@ -806,7 +806,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
         var r = self.step_continuous_vec(zeros, verbose)
         return (GymBipedalWalkerState(index=0), r[1], r[2])
 
-    def get_state(self) -> GymBipedalWalkerState:
+    def get_state(mut self) -> GymBipedalWalkerState:
         """Return current state."""
         return GymBipedalWalkerState(index=0)
 
@@ -1131,7 +1131,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
         var r = self.step_continuous_vec(zeros, verbose)
         return (GymCarRacingState(index=0), r[1], r[2])
 
-    def get_state(self) -> GymCarRacingState:
+    def get_state(mut self) -> GymCarRacingState:
         """Return current state."""
         return GymCarRacingState(index=0)
 

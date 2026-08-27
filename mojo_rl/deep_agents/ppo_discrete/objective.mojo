@@ -54,7 +54,7 @@ legacy leaf; only the storage surface (`TensorRefs[4, o]` + owned `Tensor` out +
 
 from std.math import exp, log as flog
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -208,7 +208,7 @@ struct PPODiscreteObjective[N_: Int](Module):
         var d = InlineArray[Int, 4](fill=1)
         d[0] = Self.N_
         # d[1] = d[2] = d[3] = 1 already from fill=1
-        return d
+        return d^
 
     var clip_eps: Scalar[DT]
     var entropy_coef: Scalar[DT]

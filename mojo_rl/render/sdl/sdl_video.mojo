@@ -875,7 +875,7 @@ def get_display_bounds(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayBounds.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetDisplayBounds",
         def(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) thin -> Bool,
@@ -912,7 +912,7 @@ def get_display_usable_bounds(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayUsableBounds.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetDisplayUsableBounds",
         def(display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]) thin -> Bool,
@@ -1083,7 +1083,7 @@ def get_closest_fullscreen_display_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetClosestFullscreenDisplayMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetClosestFullscreenDisplayMode",
         def(
@@ -1340,7 +1340,7 @@ def set_window_fullscreen_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFullscreenMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFullscreenMode",
         def(
@@ -2071,7 +2071,7 @@ def set_window_title(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowTitle.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowTitle",
         def(
@@ -2137,7 +2137,7 @@ def set_window_icon(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowIcon.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowIcon",
         def(
@@ -2192,7 +2192,7 @@ def set_window_position(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowPosition.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowPosition",
         def(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) thin -> Bool,
@@ -2231,7 +2231,7 @@ def get_window_position(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowPosition.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowPosition",
         def(
@@ -2282,7 +2282,7 @@ def set_window_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowSize",
         def(window: Ptr[Window, MutAnyOrigin], w: c_int, h: c_int) thin -> Bool,
@@ -2317,7 +2317,7 @@ def get_window_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSize",
         def(
@@ -2357,7 +2357,7 @@ def get_window_safe_area(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSafeArea.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSafeArea",
         def(
@@ -2414,7 +2414,7 @@ def set_window_aspect_ratio(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowAspectRatio.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowAspectRatio",
         def(
@@ -2451,7 +2451,7 @@ def get_window_aspect_ratio(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowAspectRatio.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowAspectRatio",
         def(
@@ -2508,7 +2508,7 @@ def get_window_borders_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowBordersSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowBordersSize",
         def(
@@ -2547,7 +2547,7 @@ def get_window_size_in_pixels(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSizeInPixels.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSizeInPixels",
         def(
@@ -2580,7 +2580,7 @@ def set_window_minimum_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMinimumSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMinimumSize",
         def(
@@ -2615,7 +2615,7 @@ def get_window_minimum_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMinimumSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowMinimumSize",
         def(
@@ -2648,7 +2648,7 @@ def set_window_maximum_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMaximumSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMaximumSize",
         def(
@@ -2683,7 +2683,7 @@ def get_window_maximum_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMaximumSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowMaximumSize",
         def(
@@ -2721,7 +2721,7 @@ def set_window_bordered(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowBordered.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowBordered",
         def(window: Ptr[Window, MutAnyOrigin], bordered: Bool) thin -> Bool,
@@ -2755,7 +2755,7 @@ def set_window_resizable(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowResizable.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowResizable",
         def(window: Ptr[Window, MutAnyOrigin], resizable: Bool) thin -> Bool,
@@ -2786,7 +2786,7 @@ def set_window_always_on_top(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowAlwaysOnTop.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowAlwaysOnTop",
         def(window: Ptr[Window, MutAnyOrigin], on_top: Bool) thin -> Bool,
@@ -2811,7 +2811,7 @@ def show_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ShowWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ShowWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -2836,7 +2836,7 @@ def hide_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HideWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_HideWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -2868,7 +2868,7 @@ def raise_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RaiseWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_RaiseWindow", def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool
     ]()(window)
     if not ret:
@@ -2908,7 +2908,7 @@ def maximize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_MaximizeWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_MaximizeWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -2945,7 +2945,7 @@ def minimize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_MinimizeWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_MinimizeWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -2983,7 +2983,7 @@ def restore_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RestoreWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RestoreWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -3024,7 +3024,7 @@ def set_window_fullscreen(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFullscreen.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFullscreen",
         def(window: Ptr[Window, MutAnyOrigin], fullscreen: Bool) thin -> Bool,
@@ -3059,7 +3059,7 @@ def sync_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SyncWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SyncWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -3158,7 +3158,7 @@ def set_window_surface_vsync(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowSurfaceVSync.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowSurfaceVSync",
         def(window: Ptr[Window, MutAnyOrigin], vsync: c_int) thin -> Bool,
@@ -3187,7 +3187,7 @@ def get_window_surface_vsync(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSurfaceVSync.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetWindowSurfaceVSync",
         def(
@@ -3220,7 +3220,7 @@ def update_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateWindowSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateWindowSurface",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -3262,7 +3262,7 @@ def update_window_surface_rects(
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateWindowSurfaceRects.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateWindowSurfaceRects",
         def(
@@ -3291,7 +3291,7 @@ def destroy_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DestroyWindowSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_DestroyWindowSurface",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -3335,7 +3335,7 @@ def set_window_keyboard_grab(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowKeyboardGrab.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowKeyboardGrab",
         def(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) thin -> Bool,
@@ -3365,7 +3365,7 @@ def set_window_mouse_grab(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMouseGrab.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMouseGrab",
         def(window: Ptr[Window, MutAnyOrigin], grabbed: Bool) thin -> Bool,
@@ -3458,7 +3458,7 @@ def set_window_mouse_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMouseRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowMouseRect",
         def(
@@ -3521,7 +3521,7 @@ def set_window_opacity(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowOpacity.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowOpacity",
         def(window: Ptr[Window, MutAnyOrigin], opacity: c_float) thin -> Bool,
@@ -3593,7 +3593,7 @@ def set_window_parent(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowParent.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowParent",
         def(
@@ -3625,7 +3625,7 @@ def set_window_modal(window: Ptr[Window, MutAnyOrigin], modal: Bool) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowModal.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowModal",
         def(window: Ptr[Window, MutAnyOrigin], modal: Bool) thin -> Bool,
@@ -3653,7 +3653,7 @@ def set_window_focusable(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFocusable.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowFocusable",
         def(window: Ptr[Window, MutAnyOrigin], focusable: Bool) thin -> Bool,
@@ -3692,7 +3692,7 @@ def show_window_system_menu(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ShowWindowSystemMenu.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ShowWindowSystemMenu",
         def(window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int) thin -> Bool,
@@ -3820,7 +3820,7 @@ def set_window_hit_test(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowHitTest.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowHitTest",
         def(
@@ -3866,7 +3866,7 @@ def set_window_shape(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowShape.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowShape",
         def(
@@ -3897,7 +3897,7 @@ def flash_window(
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlashWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FlashWindow",
         def(
@@ -3968,7 +3968,7 @@ def enable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnableScreenSaver.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_EnableScreenSaver", def() thin -> Bool
     ]()()
     if not ret:
@@ -3994,7 +3994,7 @@ def disable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DisableScreenSaver.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_DisableScreenSaver", def() thin -> Bool
     ]()()
     if not ret:
@@ -4025,7 +4025,7 @@ def gl_load_library(var path: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_LoadLibrary.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GL_LoadLibrary",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
@@ -4204,7 +4204,7 @@ def gl_set_attribute(attr: GLAttr, value: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SetAttribute.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_GL_SetAttribute", def(attr: GLAttr, value: c_int) thin -> Bool
     ]()(attr, value)
     if not ret:
@@ -4229,7 +4229,7 @@ def gl_get_attribute(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetAttribute.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GL_GetAttribute",
         def(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) thin -> Bool,
@@ -4290,7 +4290,7 @@ def gl_make_current(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_MakeCurrent.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GL_MakeCurrent",
         def(window: Ptr[Window, MutAnyOrigin], context: GLContext) thin -> Bool,
@@ -4475,7 +4475,7 @@ def gl_set_swap_interval(interval: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SetSwapInterval.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_GL_SetSwapInterval", def(interval: c_int) thin -> Bool
     ]()(interval)
     if not ret:
@@ -4504,7 +4504,7 @@ def gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetSwapInterval.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GL_GetSwapInterval",
         def(interval: Ptr[c_int, MutAnyOrigin]) thin -> Bool,
@@ -4536,7 +4536,7 @@ def gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SwapWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GL_SwapWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -4561,7 +4561,7 @@ def gl_destroy_context(context: GLContext) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_DestroyContext.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_GL_DestroyContext", def(context: GLContext) thin -> Bool
     ]()(context)
     if not ret:

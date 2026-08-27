@@ -1,0 +1,188 @@
+---
+title: REDQ
+description: Randomized Ensembled Double Q-learning — an N-critic ensemble at high update-to-data ratio, trading compute for sample efficiency.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import CriticEnsemble from '~/components/diagrams/CriticEnsemble.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="High update-to-data amplifies any critic instability — LayerNorm is effectively required." />
+
+**Randomized Ensembled Double Q-learning** pushes sample efficiency well past
+[SAC](/algorithms/sac/), at a real compute cost.
+
+```mojo
+from mojo_rl.deep_agents.redq import REDQAgent
+from mojo_rl.deep_agents.redq_ofe import REDQOFEAgent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Randomized Ensembled Double Q-Learning: Learning Fast Without a Model"
+		authors="Chen, Wang, Zhou, Ross"
+		year="2021"
+		arxiv="2101.05982"
+		venue="ICLR 2021"
+	/>
+	<Paper
+		title="Can Increasing Input Dimensionality Improve Deep Reinforcement Learning?"
+		authors="Ota et al."
+		year="2020"
+		arxiv="2003.01629"
+		venue="ICML 2020"
+		note="OFENet — the feature extractor in REDQ-OFE."
+	/>
+</Papers>
+
+## Two changes from SAC
+
+**An ensemble of N critics.** Typically 10, instead of 2. For each target, take
+the minimum over a **random subset** of size M (typically 2) rather than over all
+of them.
+
+<CriticEnsemble />
+
+The random subset matters. Taking the min over all 10 would be far too
+pessimistic — value estimates would be dragged down and learning would stall.
+Sampling 2 of 10 keeps the pessimism at roughly SAC's level while the ensemble
+still reduces variance.
+
+The paper's framing is worth borrowing, because it turns two vague knobs into
+one quantity you can reason about. `(N, M)` together set the **bias** of the
+target: `M = 1` is an average and overestimates, `M = N` is a full min and is
+crushingly pessimistic, and everything useful lives between. `N` alone controls
+the **variance** of that estimate. So the ensemble is not "more critics for
+robustness" — it decouples two properties that SAC's fixed twin-min welds
+together, and only then is a high update rate survivable.
+
+**A much higher update-to-data ratio.** Around **20** gradient updates per
+collected transition, against 1 for SAC.
+
+That is where the sample efficiency comes from: each real transition is exploited
+far more. And it is only viable *because* the ensemble stabilises the value
+estimate — 20 updates per step on a single critic diverges.
+
+The failure it avoids has a name in the literature — the deadly triad of
+bootstrapping, function approximation and off-policy data. Raising the update
+ratio does not add a new failure mode; it multiplies the rate at which the
+existing one compounds. Twenty updates per transition means twenty chances for a
+target built from an overestimate to become the next target, between two pieces
+of ground truth from the environment.
+
+## The trade
+
+| | SAC | REDQ |
+|---|---|---|
+| Critics | 2 | ~10 |
+| Target | min of both | min of a random 2 |
+| Updates per transition | 1 | ~20 |
+| Environment steps to solve | baseline | substantially fewer |
+| Compute per environment step | baseline | ~20× |
+
+REDQ wins when **environment steps are expensive** and compute is not — a real
+robot, a slow simulator, an expensive query. With mojo-rl's batched GPU
+environments, simulation is usually cheap, which weakens the case: SAC with 32
+parallel environments may reach a policy in less wall-clock time even though it
+uses more environment steps.
+
+Measure wall-clock, not sample count, unless samples are genuinely what you are
+short of.
+
+## `BlockLinear`
+
+Evaluating 10 critics as 10 separate networks means 10 kernel launches per
+forward pass. `BlockLinear` — a block-diagonal layer — evaluates the whole
+ensemble in **one** kernel instead.
+
+```mojo
+from mojo_rl.nn.primitives.block_linear import BlockLinear
+```
+
+This primitive exists because of REDQ, and it is what makes the ensemble
+affordable at all.
+
+## REDQ-OFE
+
+`REDQOFEAgent` adds an **OFENet** feature extractor — an online-trained
+representation network shared across the ensemble, which enlarges the effective
+input representation. A further sample-efficiency gain, and further complexity.
+
+## Building it
+
+The `REDQ[...]` preset bakes in the paper-faithful ensemble configuration —
+`N = 10`, `M = 2`, `UTD = 20`, `policy_delay = 20` — so only the scalar
+hyperparameters, which are SAC's, remain to be passed:
+
+```mojo
+from mojo_rl.deep_agents.redq import REDQ
+
+var agent = REDQ[
+    "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN,
+    USE_TRAIN_CUDA_GRAPH,
+](
+    ctx=ctx,
+    actor_lr=3e-4, critic_lr=3e-4, alpha_lr=3e-4,
+    gamma=0.99, tau=0.005,
+    target_entropy=-Scalar[DT](ACT_DIM),
+    learning_starts=5_000,
+    max_grad_norm=0.0,          # the paper does not clip
+)
+```
+
+To vary the ensemble itself, drop to the underlying `REDQAgent`, which takes
+those four as compile-time parameters:
+
+```mojo
+REDQAgent[train_target, SAMPLE, ACTOR, CRITIC, N, N_MIN, UTD, POLICY_DELAY, Q_MODE]
+```
+
+`Q_MODE` selects how the subset is reduced: `0` is the min described above, `1`
+averages instead — the ablation the paper calls AVG, useful for confirming that
+the pessimism, and not the ensemble, is what is buying you stability.
+
+**`policy_delay = 20` is not a typo.** It matches `UTD`, so the actor still
+updates once per environment step while the critics update twenty times. Without
+it the actor would be re-optimised against a critic that has barely moved,
+twenty times over — the same coupling [TD3](/algorithms/td3/) introduced
+`policy_delay = 2` to break, at a twentyfold larger scale.
+
+REDQ ships single-env training only; `train_single` is the entry point, not
+SAC's batched `train`. That matches the paper's setup, where one environment
+step triggers `UTD` gradient updates.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo
+pixi run mojo run -I . examples/pendulum/pendulum_redq_ofe_training.mojo
+```
+
+## Watch out for
+
+:::caution[LayerNorm the critic — this is not optional here]
+A high update-to-data ratio amplifies any instability in the value estimate. The
+LayerNorm critic variant exists because the plain one diverges on
+high-dimensional tasks.
+
+It is the same failure seen with [SAC on Humanoid](/algorithms/sac/) and with
+[MBPO](/algorithms/mbpo/) — but REDQ hits it hardest, because it runs 20× more
+updates on the same data.
+
+If REDQ is not learning, check critic normalization before touching
+hyperparameters.
+:::
+
+**Watch `mean_q`.** Value explosion is the characteristic REDQ failure and it is
+visible in the metrics long before the return collapses. See
+[Logging and metrics](/tooling/logging/).
+
+**Ensemble size and subset size interact.** Raising N without raising M makes the
+target *less* pessimistic, not more — a larger pool means the random 2 are less
+likely to both be pessimistic. They are not independent knobs.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the base algorithm
+- [MBPO](/algorithms/mbpo/) — the other route to sample efficiency
+- [Logging and metrics](/tooling/logging/) — watching for value explosion

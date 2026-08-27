@@ -20,7 +20,7 @@ visitors (CheckpointWriter/Reader) only touch `param`, and no optimizer visitor
 ever reaches a State.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.reflection import reflect
 
 from .tensor import Tensor
@@ -28,7 +28,7 @@ from .param import ParamVisitor
 from .walkers import join_name
 
 
-trait IsState(Movable & ImplicitlyDeletable):
+trait IsState(Movable & Deinitable):
     """Marker — a non-trainable but persisted field (e.g. BatchNorm running
     stats). Visited by `for_each_state` (checkpoint), never by
     `for_each_param` (optimizer)."""

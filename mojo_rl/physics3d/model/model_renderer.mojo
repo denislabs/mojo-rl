@@ -8,11 +8,44 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 
 from std.collections import InlineArray
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.render import Renderer3D, Camera3D, Color
+from mojo_rl.render import Renderer3D, RendererHandoff, Camera3D, Color
+from mojo_rl.render.ui import UIRect, UIText
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
 
 from . import ModelDefLike
+from ..parser.render_fields import RenderFields
+from ..gpu.constants import (
+    MODEL_HFIELD_META_SIZE,
+    HFIELD_META_IDX_ADR,
+    HFIELD_META_IDX_NROW,
+    HFIELD_META_IDX_NCOL,
+    HFIELD_META_IDX_SIZE_X,
+    HFIELD_META_IDX_SIZE_Y,
+    HFIELD_META_IDX_SIZE_Z,
+    HFIELD_META_IDX_SIZE_BASE,
+)
+
+comptime _RGEOM_HFIELD: Int = 7
+"""`flat_model._GEOM_HFIELD`. ⚠ NOT MuJoCo's `mjGEOM_HFIELD` (1) — this engine
+numbers its geom types differently, and the two are easy to confuse because
+both enums start at PLANE = 0."""
+
+from ..kinematics.camera_frame import (
+    camera_world_pos,
+    camera_world_quat,
+    camera_look_dir,
+    camera_up_dir,
+)
+
+@fieldwise_init
+struct OverlayLine(Copyable, Movable):
+    """One world-space segment drawn over the scene. See `overlay_lines`."""
+
+    var a: Vec3Generic[DType.float64]
+    var b: Vec3Generic[DType.float64]
+    var color: Color
+
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -30,6 +63,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         MODEL_DEF: ModelDefLike type defining the model's definition.
     """
 
+    var rf: RenderFields
+    """The model's render records, built ONCE here.
+
+    ⚠ ONCE, NOT PER FRAME. This is what `ModelDefFromXML._rcd` was — data the
+    comptime interpreter produced at build time, so reading it cost nothing at
+    runtime. Now that it comes from `parse_xml_full`, rebuilding it inside
+    `render_frame` would re-parse the whole MJCF every frame. The hooks take
+    it as an argument for exactly this reason."""
+
     var renderer: Renderer3D
     var initialized: Bool
     var follow: Bool
@@ -38,7 +80,40 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     # Multi-camera support
     var cameras: List[Camera3D]
-    var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1
+    var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1, CAM_TARGETBODY=2
+    var camera_targets: List[Int]
+    """Body each camera aims at for CAM_TARGETBODY, -1 otherwise."""
+
+    var hfield_grid: List[Float64]
+    """The live elevation grid, NORMALISED TO [0, 1], or empty.
+
+    ⚠ RUNTIME STATE IN A COMPTIME-BUILT RENDERER, and it has to be. `RenderFields`
+    is produced by the comptime interpreter and knows the model's SHAPE; a
+    `<hfield nrow ncol>` with no `file` is a grid of zeros the TASK rewrites on
+    every reset, so its contents are `Data`, not model. `set_heightfield` is
+    how the env pushes them across.
+    """
+    var hfield_meta: List[Float64]
+    """Per-field `(adr, nrow, ncol, size_x, size_y, size_z, size_base)`, in
+    `MODEL_HFIELD_META_SIZE`-sized blocks — the same packing `Model.hfield_meta`
+    uses, copied rather than re-derived so the surface drawn and the surface
+    the rays hit come from ONE description."""
+    var hfield_rev: Int
+    """Bumped by the env when it rewrites the grid. ⚠ THE REASON THE RENDERER
+    DOES NOT DIFF THE GRID ITSELF: escape's is 40,401 samples and comparing them
+    every frame costs more than the draw does."""
+
+    var camera_bodies: List[Int]
+    """Body each camera is ATTACHED to (`mjModel.cam_bodyid`); 0 = worldbody."""
+    var camera_local_pos: List[Vec3]
+    var camera_local_quat: List[Quat]
+    """The camera's pose IN ITS BODY'S FRAME, kept because `Camera3D` stores
+    only the derived eye/target/up and those have to be rebuilt every frame
+    once the body moves. All three lists are parallel to `cameras`, including
+    the synthesised default orbit camera (body 0, identity), so
+    `active_camera` indexes all four.
+    """
+
     var active_camera: Int
 
     var axes_offset: Float64
@@ -49,7 +124,48 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     var vel_color: Color
 
     # Site marker visibility
+    # Extra HUD lines the APPLICATION owns — task name, drive mode, whatever
+    # the tool wants on screen. `_draw_hud` renders the fixed engine controls;
+    # these are appended under them so a viewer can label itself without the
+    # renderer knowing anything about viewers.
+    var hud_extra: List[String]
+    # Deferred UI command list. Widgets record into these off-frame and they
+    # are painted at HUD time, because an application cannot draw inside
+    # `render_frame`'s begin/end span.
+    var ui_rects: List[UIRect]
+    var ui_texts: List[UIText]
+
+    var overlay_lines: List[OverlayLine]
+    """World-space line segments painted ON TOP of the scene, replaced each
+    frame by the application.
+
+    ⚠ DEFERRED FOR THE SAME REASON `ui_rects` IS: an application cannot draw
+    inside `render_frame`'s begin/end span. A studio that called
+    `draw_line_3d` from its own loop would either be outside the span (the
+    call is dropped) or, worse, inside somebody else's — so the selection
+    outline is RECORDED here and painted below, between the tendons and the
+    HUD.
+
+    ⚠ REPLACED, NOT APPENDED. `set_overlay_lines` overwrites, so a frame that
+    forgets to set them clears them — which is the behaviour a selection
+    highlight wants (deselect = pass none) and the opposite of what an
+    append-only list would do (the outline of every geom ever selected)."""
+
     var show_sites: Bool
+
+    var free_cam_reframe: Bool
+    """One-shot: reposition the free camera to a 3/4 view on the next frame.
+
+    Deferred rather than done in `request_free_camera` because framing needs
+    the torso position, which only `render_frame` has."""
+
+    var show_hud: Bool
+    """Draw the built-in keybind/camera/step overlay.
+
+    ⚠ TURN THIS OFF WHEN AN ImGui SIDEBAR IS UP. The two report the same
+    facts — camera, step, pause, recording — and the HUD is drawn over the
+    SCENE, so leaving both on costs a strip of the robot to tell the user
+    something the panel already says."""
 
     # HUD state
     var step_count: Int
@@ -68,12 +184,40 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_sites: Bool = False,
         show_fog: Bool = False,
         title: String = String("Model Environment"),
+        adopt_rf: Optional[RenderFields] = None,
     ) raises:
+        # ⚠ BEFORE ANY HOOK — every one of them reads it.
+        #
+        # ⚠⚠ `adopt_rf` IS WHAT LETS ONE RENDERER DRAW A FILE CHOSEN AT
+        # RUNTIME, and it is the whole renderer half of the physics3d studio.
+        # `make_render_fields()` is the ONE hook that names a model — it reads
+        # `Self.xml_text()`, which only a comptime `ModelDefFromXML` has. Every
+        # OTHER hook is a pure function of `rf` (linted:
+        # `scripts/audit_render_hooks_are_rf_pure.py`), so handing the records
+        # in here is the entire difference between "this renderer draws
+        # walker2d" and "this renderer draws whatever you opened".
+        #
+        # A runtime caller builds them with
+        # `build_render_fields(fmd, xml_text, base_dir)` from the same
+        # `FlatModelDef` its `Model` was built from, instantiates
+        # `ModelRenderer[RfOnlyModelDef]`, and passes them here.
+        var rf: RenderFields
+        if adopt_rf:
+            rf = adopt_rf.value().copy()
+        else:
+            rf = Self.MODEL_DEF.make_render_fields()
+
         # Setup all cameras from spec (fallback to default if none defined)
-        var cam_list = Self.MODEL_DEF.setup_cameras(width, height)
-        var mode_list = Self.MODEL_DEF.setup_camera_modes()
+        var cam_list = Self.MODEL_DEF.setup_cameras(rf, width, height)
+        var mode_list = Self.MODEL_DEF.setup_camera_modes(rf)
         self.cameras = List[Camera3D]()
         self.camera_modes = List[Int]()
+        self.hfield_grid = List[Float64]()
+        self.hfield_meta = List[Float64]()
+        self.hfield_rev = -1
+        self.camera_bodies = List[Int]()
+        self.camera_local_pos = List[Vec3]()
+        self.camera_local_quat = List[Quat]()
         if len(cam_list) == 0:
             # No cameras in XML — add a default orbit camera
             self.cameras.append(Camera3D(
@@ -88,6 +232,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 screen_height=height,
             ))
             self.camera_modes.append(1)  # CAM_FIXED
+            # Synthesised, so it belongs to no body and has no local pose.
+            self.camera_bodies.append(0)
+            self.camera_local_pos.append(Vec3(0.0, 0.0, 0.0))
+            self.camera_local_quat.append(Quat(1.0, 0.0, 0.0, 0.0))
         else:
             for i in range(len(cam_list)):
                 self.cameras.append(cam_list[i].copy())
@@ -95,10 +243,33 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                     self.camera_modes.append(mode_list[i])
                 else:
                     self.camera_modes.append(0)  # CAM_TRACKCOM fallback
+                # ⚠ Read straight off `rf` rather than through a `MODEL_DEF`
+                # static like `get_camera_target_bodies`: these are a verbatim
+                # copy of a column, and the trait has two implementers, so a
+                # new member there is a second place to keep in sync for no
+                # gain.
+                if i < len(rf.cam_body):
+                    self.camera_bodies.append(rf.cam_body[i])
+                    self.camera_local_pos.append(
+                        Vec3(rf.cam_pos_x[i], rf.cam_pos_y[i], rf.cam_pos_z[i])
+                    )
+                    self.camera_local_quat.append(
+                        Quat(
+                            rf.cam_quat_w[i],
+                            rf.cam_quat_x[i],
+                            rf.cam_quat_y[i],
+                            rf.cam_quat_z[i],
+                        )
+                    )
+                else:
+                    self.camera_bodies.append(0)
+                    self.camera_local_pos.append(Vec3(0.0, 0.0, 0.0))
+                    self.camera_local_quat.append(Quat(1.0, 0.0, 0.0, 0.0))
         self.active_camera = 0
+        self.camera_targets = Self.MODEL_DEF.get_camera_target_bodies(rf)
 
         # Setup all lights from spec (fallback to default if none defined)
-        var lights = Self.MODEL_DEF.setup_lights()
+        var lights = Self.MODEL_DEF.setup_lights(rf)
         if len(lights) == 0:
             # No lights in XML — add default directional light
             lights.append(Light(
@@ -112,7 +283,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             ))
 
         # Read visual settings from model (znear, fog, shadow, headlight)
-        var vis = Self.MODEL_DEF.get_visual_settings()
+        var vis = Self.MODEL_DEF.get_visual_settings(rf)
         var shadow_size = Int(4096)
         var fog_start = Float32(0.0)
         var fog_end = Float32(0.0)
@@ -147,6 +318,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = follow
         self.show_velocity = show_velocity
         self.show_sites = show_sites
+        self.show_hud = True
+        self.free_cam_reframe = False
+        self.hud_extra = List[String]()
+        self.ui_rects = List[UIRect]()
+        self.ui_texts = List[UIText]()
+        self.overlay_lines = List[OverlayLine]()
 
         var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
@@ -162,7 +339,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         )
 
         # Configure skybox from GradientTexture (if model defines one)
-        var skybox = Self.MODEL_DEF.get_skybox_colors()
+        var skybox = Self.MODEL_DEF.get_skybox_colors(rf)
         if len(skybox) == 6:
             self.renderer.set_skybox(
                 top_r=Float32(skybox[0]),
@@ -172,9 +349,18 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 bottom_g=Float32(skybox[4]),
                 bottom_b=Float32(skybox[5]),
             )
+            # `mark="random"` on the same texture — dm_control's night sky.
+            var mark = Self.MODEL_DEF.get_skybox_mark(rf)
+            if len(mark) == 5 and Int(mark[0]) == 3:
+                self.renderer.set_skybox_stars(
+                    r=Float32(mark[1]),
+                    g=Float32(mark[2]),
+                    b=Float32(mark[3]),
+                    density=Float32(mark[4]),
+                )
 
         # Configure ground appearance from model textures/geom colors
-        var checker = Self.MODEL_DEF.get_checker_colors()
+        var checker = Self.MODEL_DEF.get_checker_colors(rf)
         if len(checker) == 3:
             # Model has a checker texture — use it
             self.renderer.set_ground_checker_colors(
@@ -184,7 +370,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             )
         else:
             # No checker texture — use plane geom's rgba as solid color
-            var ground_rgba = Self.MODEL_DEF.get_ground_rgba()
+            var ground_rgba = Self.MODEL_DEF.get_ground_rgba(rf)
             if len(ground_rgba) == 3:
                 self.renderer.set_ground_solid_color(
                     r=Float32(ground_rgba[0]),
@@ -192,18 +378,33 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                     b=Float32(ground_rgba[2]),
                 )
 
+        self.rf = rf^
         self.step_count = 0
         self.initialized = False
 
     def __init__(out self, *, deinit move: Self):
+        self.rf = move.rf^
         self.renderer = move.renderer^
         self.initialized = move.initialized
         self.follow = move.follow
         self.show_velocity = move.show_velocity
         self.show_sites = move.show_sites
+        self.show_hud = move.show_hud
+        self.free_cam_reframe = move.free_cam_reframe
+        self.hud_extra = move.hud_extra^
+        self.ui_rects = move.ui_rects^
+        self.ui_texts = move.ui_texts^
+        self.overlay_lines = move.overlay_lines^
         self.visual_radius_scale = move.visual_radius_scale
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
+        self.camera_targets = move.camera_targets^
+        self.hfield_grid = move.hfield_grid^
+        self.hfield_meta = move.hfield_meta^
+        self.hfield_rev = move.hfield_rev
+        self.camera_bodies = move.camera_bodies^
+        self.camera_local_pos = move.camera_local_pos^
+        self.camera_local_quat = move.camera_local_quat^
         self.active_camera = move.active_camera
         self.axes_offset = move.axes_offset
         self.vel_arrow_height = move.vel_arrow_height
@@ -212,14 +413,33 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.step_count = move.step_count
 
     def init(mut self) raises -> None:
+        self.init(None)
+
+    def init(mut self, adopt: Optional[RendererHandoff]) raises -> None:
+        """Open a window, or ADOPT one a previous model's renderer detached.
+
+        Adopting is what lets a model-swapping tool keep the same window across
+        the swap — same monitor, same position, same ImGui state. See
+        `RendererHandoff`.
+        """
         var title = String("Model Environment")
-        self.renderer.init(title)
+        self.renderer.init(title, adopt)
         self.initialized = True
 
     def close(mut self) raises -> None:
         if self.initialized:
             self.renderer.close()
             self.initialized = False
+
+    def detach(mut self) raises -> RendererHandoff:
+        """Give up this model's GPU caches and hand the window on.
+
+        ⚠ THE CALLER OWNS THE RESULT. Nothing frees it implicitly: pass it to
+        the next `init`, or end it with `Renderer3D.close_handoff`.
+        """
+        var h = self.renderer.detach()
+        self.initialized = False
+        return h^
 
     def check_quit(mut self) -> Bool:
         return self.renderer.check_quit()
@@ -321,14 +541,122 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         var torso_pos = positions[1]  # Body 1 = torso (body 0 = worldbody)
 
+        # ── free camera ──────────────────────────────────────────────────
+        # `active_camera == -1` is dm_control's free camera (its viewer starts
+        # there: `_camera_idx = -1`, model cameras only via cycling). It is not
+        # an entry in `cameras`; it is the ABSENCE of a model camera, so every
+        # per-frame re-aim below is skipped and the pose belongs entirely to
+        # mouse orbit/pan/zoom.
+        #
+        # ⚠ THIS IS WHY A MODEL CAMERA CAN FEEL "STUCK". A trackcom or
+        # targetbody camera is re-aimed by the branches below on EVERY frame,
+        # so dragging fights the model and loses. Only the free camera is
+        # actually free.
+        if self.free_cam_reframe:
+            self.free_cam_reframe = False
+            # Keep the DISTANCE that was on screen — it is the only
+            # model-scale information available here, and it is already correct
+            # for this model — but replace the direction with a 3/4 view. That
+            # fixes the complaint (fish's camera 0 looks straight down) without
+            # needing to know how big the robot is.
+            var cur_off = self.renderer.camera.eye - self.renderer.camera.target
+            var dist = cur_off.length()
+            if dist < 1e-6:
+                dist = 3.0
+            var dir = Vec3(0.6, -1.0, 0.5).normalized()
+            self.renderer.camera.target = torso_pos
+            self.renderer.camera.eye = torso_pos + dir * dist
+            self.renderer.camera.up = Vec3(0.0, 0.0, 1.0)
+
         # Camera follow torso (only for trackcom mode cameras)
-        var cam_mode = self.camera_modes[self.active_camera]
+        var cam_mode = -1
+        if self.active_camera >= 0 and self.active_camera < len(
+            self.camera_modes
+        ):
+            cam_mode = self.camera_modes[self.active_camera]
+
+        # ── mj_camlight's default: take the camera into the world ─────────
+        # `mj_camlight` calls `mj_local2Global(cam_pos, cam_quat, cam_bodyid)`
+        # for EVERY mode before it dispatches, because `cam_pos`/`cam_quat` are
+        # stored in the parent BODY's frame. We never did, so a camera declared
+        # inside a body was drawn at its LOCAL pose read as a world pose: a
+        # wrist camera stayed welded to the origin while the wrist moved. The
+        # arithmetic is `xpos[b] + xmat[b]*cam_pos` / `xmat[b]*cam_quat`, here
+        # in quaternion form since `render` is handed `quaternions`, not mats.
+        #
+        # ⚠ GATED ON `body > 0`, WHICH IS A DELIBERATE DEVIATION and a
+        # deliberately EMPTY one. For the worldbody the transform is the
+        # identity, so the pose this would produce is bit-identical to the one
+        # `setup_cameras` already baked; skipping it only preserves today's
+        # behaviour that a world-fixed camera can still be dragged with the
+        # mouse. MuJoCo's own fixed cameras cannot be dragged — see the "STUCK"
+        # note above, which now applies to body-attached cameras too, on
+        # purpose.
+        if (
+            self.active_camera >= 0
+            and self.active_camera < len(self.camera_bodies)
+            and self.camera_bodies[self.active_camera] > 0
+            and self.camera_bodies[self.active_camera] < len(positions)
+            and (cam_mode == 1 or cam_mode == 2)
+        ):
+            var cb = self.camera_bodies[self.active_camera]
+            var bq = quaternions[cb]
+            var cam_xpos = camera_world_pos(
+                positions[cb], bq, self.camera_local_pos[self.active_camera]
+            )
+            var cam_xquat = camera_world_quat(
+                bq, self.camera_local_quat[self.active_camera]
+            )
+            self.renderer.camera.eye = cam_xpos
+            if cam_mode == 1:
+                # MuJoCo's camera frame looks down its own -Z with +Y up
+                # (`mjCCamera`) — the same convention `setup_cameras` resolves
+                # at load, applied here to the composed world orientation.
+                self.renderer.camera.target = cam_xpos + camera_look_dir(
+                    cam_xquat
+                )
+                self.renderer.camera.up = camera_up_dir(cam_xquat)
+            # cam_mode == 2 (targetbody) keeps only the POSITION from here and
+            # is re-aimed by the branch below, which is what `mj_camlight`
+            # does: the targetbody case overwrites the orientation and leaves
+            # `cam_xpos` from the local2Global default standing.
         if self.follow and cam_mode == 0:  # CAM_TRACKCOM
             # Preserve the current eye-to-target offset so mouse orbit is respected.
             # Each frame we only translate both eye and target to follow the torso.
             var offset = self.renderer.camera.eye - self.renderer.camera.target
             self.renderer.camera.target = Vec3(torso_pos.x, 0.0, torso_pos.z)
             self.renderer.camera.eye = self.renderer.camera.target + offset
+        elif cam_mode == 2:  # CAM_TARGETBODY
+            # MuJoCo `mj_camlight`, mjCAMLIGHT_TARGETBODY: the camera does NOT
+            # move — it TURNS to face the body every frame. That is the whole
+            # difference from trackcom, which moves it and leaves its
+            # orientation alone, and it is why collapsing the two was wrong.
+            #
+            #   zaxis = normalize(cam_pos - target_pos)   (points AT the camera)
+            #   xaxis = normalize(cross(+Z, zaxis))
+            #   yaxis = cross(zaxis, xaxis)               (the camera's up)
+            #
+            # ⚠ targetbodycom is aimed at the body's ORIGIN here, not its
+            # subtree centre of mass, which the renderer does not have. The two
+            # coincide for a single-body target — cartpole's `cart`, the only
+            # user in the suite — and diverge for a multi-body subtree.
+            var tgt = -1
+            if self.active_camera < len(self.camera_targets):
+                tgt = self.camera_targets[self.active_camera]
+            if tgt >= 0 and tgt < len(positions):
+                var eye = self.renderer.camera.eye
+                var zax = (eye - positions[tgt]).normalized()
+                if zax.length_squared() > 1e-12:
+                    var world_up = Vec3(0.0, 0.0, 1.0)
+                    var xax = world_up.cross(zax)
+                    if xax.length_squared() < 1e-12:
+                        # Camera directly above or below the target: +Z gives no
+                        # usable xaxis, so fall back to +X the way a look-at has
+                        # to when the view direction is the world vertical.
+                        xax = Vec3(1.0, 0.0, 0.0).cross(zax)
+                    xax = xax.normalized()
+                    self.renderer.camera.target = eye - zax
+                    self.renderer.camera.up = zax.cross(xax).normalized()
 
         # Prevent camera from going below ground
         if self.renderer.has_ground:
@@ -339,6 +667,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # Render ground geoms (planes or fallback grid)
         try:
             Self.MODEL_DEF.render_ground_geoms(
+                self.rf,
                 self.renderer,
                 torso_pos.x,
                 self.follow,
@@ -350,6 +679,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # Render body-attached geoms
         try:
             Self.MODEL_DEF.render_body_geoms(
+                self.rf,
                 self.renderer,
                 positions,
                 quaternions,
@@ -358,10 +688,50 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+        # ⚠ AFTER THE GEOMS AND BEFORE THE SKIN, for the depth reason the skin
+        # note below gives: the terrain is opaque ground, and the robot standing
+        # on it must be drawn against it, not through it.
+        self._draw_heightfields(positions, quaternions)
+
+        # Deformable skin (dog's envelope). Unconditional for the same reason
+        # as the tendons — `render_skin` compiles to nothing on a model with no
+        # `<skin>`, since `has_skin` is comptime.
+        #
+        # ⚠ AFTER THE GEOMS, BEFORE THE TENDONS. The skin is opaque and encloses
+        # the group 0-2 geoms it shares a body with, so drawing it first would
+        # have it depth-fight whatever pokes through; the tendons are lines and
+        # want to sit on top of everything solid.
+        try:
+            Self.MODEL_DEF.render_skin(
+                self.rf,
+                self.renderer, positions, quaternions
+            )
+        except e:
+            print("render_skin failed:", e)
+
+        # Spatial tendons (ball_in_cup's string). Unconditional: models
+        # without any record zero of them and the call costs a loop bound.
+        try:
+            Self.MODEL_DEF.render_spatial_tendons(
+                self.rf,
+                self.renderer, positions, quaternions
+            )
+        except:
+            pass
+
+        # ⚠ APPLICATION OVERLAY, AFTER EVERYTHING SOLID. The selection outline
+        # is the reason this exists, and it has to be drawn last among the 3D
+        # passes or the geom it outlines occludes its own highlight — a
+        # highlight that disappears exactly when you select something is worse
+        # than none.
+        for ln in self.overlay_lines:
+            self.renderer.draw_line_3d(ln.a, ln.b, ln.color)
+
         # Render site markers (bright green spheres, optional)
         if self.show_sites:
             try:
                 Self.MODEL_DEF.render_sites(
+                self.rf,
                     self.renderer, positions, quaternions
                 )
             except:
@@ -372,7 +742,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self._draw_velocity_indicator(torso_pos, vel_x)
 
         # HUD overlay
-        self._draw_hud()
+        if self.show_hud:
+            self._draw_hud()
 
         # Increment step counter AFTER drawing (so first frame shows 0)
         # Only increment when not paused (paused display should freeze the count)
@@ -385,10 +756,242 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+    def set_heightfield(
+        mut self,
+        grid: List[Float64],
+        meta: List[Float64],
+        revision: Int,
+    ):
+        """Hand the renderer the live elevation grid.
+
+        Args:
+            grid: Elevations, NORMALISED TO [0, 1], all fields concatenated.
+            meta: `MODEL_HFIELD_META_SIZE` floats per field — see `hfield_meta`.
+            revision: Bump when `grid` changes; the surface is rebuilt only then.
+
+        ⚠ COPIES, AND DELIBERATELY. The alternative is holding a borrow of
+        `Data.hfield_data` across frames, which Mojo will not let a struct field
+        do (`AnyOrigin`) — the same constraint that put the `mut` on
+        `Env.get_state`. The copy costs 40,401 doubles ONCE PER RESET, not per
+        frame, because the caller only calls this when `revision` moves.
+        """
+        if revision == self.hfield_rev:
+            return
+        self.hfield_rev = revision
+        self.hfield_grid = grid.copy()
+        self.hfield_meta = meta.copy()
+
+    def _draw_heightfields(mut self, positions: List[Vec3], quats: List[Quat]):
+        """Draw every `type="hfield"` geom, surface and base.
+
+        ⚠ NOT IN `render_body_geoms`, WHICH IS WHERE EVERY OTHER GEOM TYPE IS
+        DRAWN. That routine is a static method on `MODEL_DEF` taking only
+        `RenderFields` — comptime model shape — and a heightfield's elevations
+        are runtime `Data`. Widening its signature would push a runtime grid
+        through the comptime path for all fifty models to carry; this reads the
+        geom's pose and colour from `rf` exactly as that routine does, and the
+        heights from the state the env pushed.
+        """
+        if len(self.hfield_grid) == 0 or len(self.hfield_meta) == 0:
+            return
+        for g in range(len(self.rf.geom_type)):
+            if self.rf.geom_type[g] != _RGEOM_HFIELD:
+                continue
+            if g >= len(self.rf.geom_hfield_id):
+                continue
+            var hid = self.rf.geom_hfield_id[g]
+            if hid < 0:
+                continue
+            var b = hid * MODEL_HFIELD_META_SIZE
+            if b + MODEL_HFIELD_META_SIZE > len(self.hfield_meta):
+                continue
+            var adr = Int(self.hfield_meta[b + HFIELD_META_IDX_ADR])
+            var nrow = Int(self.hfield_meta[b + HFIELD_META_IDX_NROW])
+            var ncol = Int(self.hfield_meta[b + HFIELD_META_IDX_NCOL])
+            var sx = self.hfield_meta[b + HFIELD_META_IDX_SIZE_X]
+            var sy = self.hfield_meta[b + HFIELD_META_IDX_SIZE_Y]
+            var sz = self.hfield_meta[b + HFIELD_META_IDX_SIZE_Z]
+            var sb = self.hfield_meta[b + HFIELD_META_IDX_SIZE_BASE]
+
+            # The geom's world pose, composed the way `render_body_geoms`
+            # composes every other geom's.
+            var bid = self.rf.geom_body_id[g]
+            if bid >= len(positions):
+                continue
+            var lpos = Vec3(
+                self.rf.geom_pos_x[g],
+                self.rf.geom_pos_y[g],
+                self.rf.geom_pos_z[g],
+            )
+            var lq = Quat(
+                self.rf.geom_quat_w[g],
+                self.rf.geom_quat_x[g],
+                self.rf.geom_quat_y[g],
+                self.rf.geom_quat_z[g],
+            )
+            var wq = quats[bid] * lq
+            var wpos = positions[bid] + quats[bid].rotate_vec(lpos)
+
+            var col = Color(
+                UInt8(Int(self.rf.geom_rgba_r[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_g[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_b[g] * 255.0)),
+                UInt8(Int(self.rf.geom_rgba_a[g] * 255.0)),
+            )
+
+            try:
+                self.renderer.draw_heightfield(
+                    name=String("hfield_") + String(hid),
+                    center=wpos,
+                    orientation=wq,
+                    nrow=nrow,
+                    ncol=ncol,
+                    size_x=sx,
+                    size_y=sy,
+                    size_z=sz,
+                    grid=self.hfield_grid,
+                    adr=adr,
+                    revision=self.hfield_rev,
+                    color=col,
+                )
+                # ⚠ THE BASE, WITHOUT WHICH THE TERRAIN IS A SHEET. A
+                # `<hfield>` sits on a solid box `size[3]` deep — the same box
+                # `mj_rayHfield` intersects first — and drawing only the
+                # surface makes the rim read as infinitely thin from below.
+                # Skipped when it is degenerate rather than drawn zero-thick.
+                if sb > 1e-9:
+                    self.renderer.draw_box(
+                        center=wpos
+                        + wq.rotate_vec(Vec3(0.0, 0.0, -0.5 * sb)),
+                        orientation=wq,
+                        half_extents=Vec3(sx, sy, 0.5 * sb),
+                        color=col,
+                    )
+            except:
+                pass
+
+    def set_hud_extra(mut self, lines: List[String]):
+        """Replace the application-owned HUD lines."""
+        self.hud_extra = lines.copy()
+
+    def n_cameras(self) -> Int:
+        return len(self.cameras)
+
+    def current_camera(self) -> Int:
+        return self.active_camera
+
+    def request_camera(mut self, index: Int):
+        self.renderer.request_camera(index)
+
+    def request_free_camera(mut self):
+        """Detach from model cameras — dm_control's free camera.
+
+        Set directly rather than through `renderer.request_camera`, whose
+        `camera_switch_request` already uses -1 to mean "no request"; routing
+        free through it would be indistinguishable from silence.
+        """
+        self.active_camera = -1
+        self.free_cam_reframe = True
+
+    def is_free_camera(self) -> Bool:
+        return self.active_camera < 0
+
+    def request_screenshot(mut self):
+        self.renderer.request_screenshot()
+
+    def is_recording(self) -> Bool:
+        return self.renderer.is_recording()
+
+    def recording_frames(self) -> Int:
+        return self.renderer.recording_frames()
+
+    def toggle_recording(mut self) raises:
+        self.renderer.toggle_recording()
+
+    def paused(self) -> Bool:
+        return self.renderer.paused()
+
+    def toggle_pause(mut self):
+        self.renderer.toggle_pause()
+
+    def set_text_input_mode(mut self, on: Bool):
+        self.renderer.set_text_input_mode(on)
+
+    def set_ui_sidebar_width(mut self, w: Int):
+        """Reserve `w` px on the left for UI; the scene renders to the rest."""
+        self.renderer.set_ui_sidebar_width(w)
+
+    def set_pointer_claimed(mut self, on: Bool):
+        """Declare that a viewport overlay owns the pointer this frame.
+
+        For overlays ImGui cannot report on — a transform gizmo's window is
+        created with `NoInputs`, so `ig_want_mouse()` returns False while it
+        is being dragged and the same drag would also orbit the camera."""
+        self.renderer.set_pointer_claimed(on)
+
+    def imgui_init(mut self) raises -> Bool:
+        """Attach a Dear ImGui overlay; False if the shim is not built."""
+        return self.renderer.imgui_init()
+
+    def imgui_new_frame(mut self) raises:
+        """Open an ImGui frame. Call before building widgets and before
+        `render_frame`."""
+        self.renderer.imgui_new_frame()
+
+    def imgui_active(self) -> Bool:
+        return self.renderer.imgui_active()
+
+    def set_capture_scene_only(mut self, on: Bool):
+        """Crop screenshots/recordings to the 3D viewport (default on)."""
+        self.renderer.set_capture_scene_only(on)
+
+    def set_show_sites(mut self, on: Bool):
+        """Show or hide the site markers."""
+        self.show_sites = on
+
+    def set_show_hud(mut self, on: Bool):
+        """Show or hide the built-in text HUD."""
+        self.show_hud = on
+
+    def set_render_fields(mut self, rf: RenderFields):
+        """Swap the model's render records — what an EDIT needs.
+
+        ⚠ THE GEOM MESH CACHE IS KEYED BY NAME AND SURVIVES, which is the
+        point: re-parsing is not needed for a colour or a size change, so an
+        edit stays interactive. A structural change (a different model) goes
+        through `detach`/`init` instead, which drops the caches."""
+        self.rf = rf.copy()
+
+    def set_overlay_lines(mut self, lines: List[OverlayLine]):
+        """Replace the world-space overlay for the next frame."""
+        self.overlay_lines = lines.copy()
+
+    def set_ui(mut self, rects: List[UIRect], texts: List[UIText]):
+        """Replace the deferred UI command list for the next frame."""
+        self.ui_rects = rects.copy()
+        self.ui_texts = texts.copy()
+
+    def take_click(mut self) -> Bool:
+        return self.renderer.take_click()
+
+    def mouse_x(self) -> Float32:
+        return self.renderer.mouse_x
+
+    def mouse_y(self) -> Float32:
+        return self.renderer.mouse_y
+
+    def take_key(mut self) -> Int:
+        """Consume a keycode the renderer's own bindings did not claim."""
+        return self.renderer.take_key()
+
     def _draw_hud(mut self):
         """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator.
         """
-        var x0 = Float32(12)
+        # ⚠ START AFTER THE RESERVED STRIP. The engine HUD belongs over the
+        # SCENE, not under the application's sidebar: panels are drawn
+        # semi-transparent, so a HUD at x=12 ghosts through a sidebar rather
+        # than being hidden by it.
+        var x0 = Float32(self.renderer.ui_sidebar_width + 12)
         var y = Float32(12)
         var s = 2  # 2× scale → 16×16 px per char
 
@@ -426,7 +1029,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         y += 28  # gap
 
         # Camera name (bright white)
-        var cam_name = String("Cam ") + String(self.active_camera + 1)
+        # `active_camera + 1` would read "Cam 0" for the free camera, which is
+        # a real camera index in every other line of this HUD.
+        var cam_name = (
+            String("Cam free") if self.active_camera < 0
+            else String("Cam ") + String(self.active_camera + 1)
+        )
         self.renderer.draw_text(x0 + 1, y + 1, cam_name, Color(0, 0, 0, 160), s)
         self.renderer.draw_text(x0, y, cam_name, Color(255, 255, 255, 255), s)
         y += 20
@@ -456,6 +1064,18 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s
             )
             self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
+
+        # Widget command list first, so HUD text stays legible over panels.
+        for rc in self.ui_rects:
+            self.renderer.draw_rect(rc.x, rc.y, rc.w, rc.h, rc.color)
+        for tx in self.ui_texts:
+            self.renderer.draw_text(tx.x, tx.y, tx.text, tx.color, tx.scale)
+
+        # Application-owned lines last, in cyan so they read as "not engine".
+        for line in self.hud_extra:
+            self.renderer.draw_text(x0 + 1, y + 1, line, Color(0, 0, 0, 160), s)
+            self.renderer.draw_text(x0, y, line, Color(120, 230, 255, 255), s)
+            y += 20
 
     def _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""

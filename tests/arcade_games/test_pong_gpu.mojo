@@ -1,7 +1,7 @@
 """Test native Pong environment — GPU path."""
 
 from mojo_rl.envs.arcade_games.pong import PongEnv
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 comptime dtype = DType.float32
 comptime BATCH_SIZE = 64

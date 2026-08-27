@@ -23,7 +23,7 @@ path is byte-for-byte the legacy NoAMP path; the bf16 path is GPU-only.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -79,6 +79,9 @@ def _qkv_to_major_bwd_kernel[
 struct QKVToMajor[SEQ: Int, DIM: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=3 * Self.SEQ * Self.DIM)
+    # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
+    # `IN_DIMS` from a runtime context would materialize the whole array.
+    comptime IN_DIM0 = 3 * Self.SEQ * Self.DIM
     comptime OUT_DIM = 3 * Self.SEQ * Self.DIM
     # Activation-flow dtype. `QKVToMajor[SEQ, DIM]` = fp32 (ACT_DT == DT, the
     # legacy path); `QKVToMajor[SEQ, DIM, bfloat16]` flows activations at bf16.
@@ -128,7 +131,7 @@ struct QKVToMajor[SEQ: Int, DIM: Int, ADT: DType = DT](Module):
                         for t in range(Self.SEQ):
                             for d in range(Self.DIM):
                                 op[b * Self.OUT_DIM + g * SD + t * Self.DIM + d] = (
-                                    ip[b * Self.IN_DIMS[0] + t * D3 + g * Self.DIM + d]
+                                    ip[b * Self.IN_DIM0 + t * D3 + g * Self.DIM + d]
                                 )
             else:
                 var c = ctx.value()
@@ -176,7 +179,7 @@ struct QKVToMajor[SEQ: Int, DIM: Int, ADT: DType = DT](Module):
         grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime N = B * Self.IN_DIMS[0]
+        comptime N = B * Self.IN_DIM0
         comptime D3 = 3 * Self.DIM
         comptime SD = Self.SEQ * Self.DIM
         ref gin = grad_inputs[0]
@@ -192,7 +195,7 @@ struct QKVToMajor[SEQ: Int, DIM: Int, ADT: DType = DT](Module):
                     for g in range(3):
                         for t in range(Self.SEQ):
                             for d in range(Self.DIM):
-                                gip[b * Self.IN_DIMS[0] + t * D3 + g * Self.DIM + d] = (
+                                gip[b * Self.IN_DIM0 + t * D3 + g * Self.DIM + d] = (
                                     gop[b * Self.OUT_DIM + g * SD + t * Self.DIM + d]
                                 )
             else:

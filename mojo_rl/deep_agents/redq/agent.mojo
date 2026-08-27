@@ -32,7 +32,7 @@ as a follow-up — it needs validation across the (env_target ×
 N_ENVS) matrix that R.4 didn't touch.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -60,7 +60,7 @@ struct REDQAgent[
     POLICY_DELAY: Int,
     Q_MODE: Int,
     USE_TRAIN_CUDA_GRAPH: Bool = False,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `REDQTrainer` + off-policy drivers.
 
     Comptime params mirror `REDQTrainer` one-for-one. Dimensions
@@ -140,7 +140,7 @@ struct REDQAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -246,7 +246,7 @@ struct REDQAgent[
         L: Logger = NoOpLogger,
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> REDQMetrics:
         """Drain trainer accumulators into a REDQMetrics bundle."""

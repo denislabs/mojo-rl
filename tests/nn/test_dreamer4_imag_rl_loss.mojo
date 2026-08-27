@@ -30,12 +30,12 @@ from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_fwd, UNIMIX
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def _logp(
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin], base: Int, C: Int, k: Int
+    logits: Pointer[Scalar[DT], MutAnyOrigin], base: Int, C: Int, k: Int
 ) -> Float64:
     var sm = _alloc(C)
     var pp = _alloc(C)

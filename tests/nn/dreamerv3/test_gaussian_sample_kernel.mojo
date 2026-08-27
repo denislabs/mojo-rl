@@ -10,7 +10,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/dreamerv3/test_gaussian_sample_ker
 """
 
 from std.math import tanh, exp, abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout
 
@@ -62,7 +62,7 @@ def main() raises:
             acts.lt["gpu", Layout.row_major(NS * TI * ACT)](),
             MINSTD,
             MAXSTD,
-            t,
+            Int64(t),
             grid_dim=nb,
             block_dim=TPB,
         )

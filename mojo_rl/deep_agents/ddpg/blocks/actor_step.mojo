@@ -4,7 +4,7 @@ Writes state.actor_loss. Thin wrapper over the storage `DDPGActorLoss`
 (forward_backward takes owned Tensors + Adam + ctx).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -20,7 +20,7 @@ struct DDPGActorStep[
     BATCH_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

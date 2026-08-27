@@ -17,7 +17,7 @@ method. The real E1 frozen-vs-adapt comparison is the trained-ckpt run
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/lewm/test_closedloop_tta.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.testing import assert_true
 

@@ -9,7 +9,7 @@ Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_decoder.mojo
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
@@ -34,12 +34,12 @@ comptime N_LAYERS = 2
 comptime BATCH = 3
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _det(i: Int) -> Scalar[DT]:

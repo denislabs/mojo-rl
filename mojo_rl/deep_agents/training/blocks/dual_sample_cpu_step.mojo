@@ -10,7 +10,7 @@ rollout generator separately calls `synth_add(...)`.
 """
 
 from mojo_rl.nn.constants import DT
-from ...data.cpu_replay import CPUReplay
+from mojo_rl.data.replay import StoreReplay
 from ..trainer_block import TrainerState
 
 
@@ -22,13 +22,13 @@ struct DualSampleCpuStep[
     SYNTH_CAP: Int,
     REAL_BS: Int,
     SYNTH_BS: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
 
-    var real_buf:  Optional[CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
-    var synth_buf: Optional[CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
+    var real_buf:  Optional[StoreReplay[Self.OBS, Self.ACT, Self.REAL_CAP, False]]
+    var synth_buf: Optional[StoreReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP, False]]
     var learning_starts: Int
 
     def __init__(out self):
@@ -37,10 +37,8 @@ struct DualSampleCpuStep[
         self.learning_starts = 0
 
     def setup(mut self, learning_starts: Int) raises:
-        self.real_buf = CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP].new()
-        self.synth_buf = CPUReplay[
-            Self.OBS, Self.ACT, Self.SYNTH_CAP
-        ].new()
+        self.real_buf = StoreReplay[Self.OBS, Self.ACT, Self.REAL_CAP, False].make()
+        self.synth_buf = StoreReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP, False].make()
         self.learning_starts = learning_starts
 
     def real_add(
@@ -50,7 +48,13 @@ struct DualSampleCpuStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
+    ) raises:
+        """`raises` because `StoreReplay.add` does (the legacy `CPUReplay.add`
+        did not) — the trait already declares `add` as raising, so this is the
+        conformer catching up with its own trait rather than a new failure
+        mode. Same fix as `dual_sample_step.mojo`, which this file was missed
+        alongside in the 4d alias repoint.
+        """
         self.real_buf.value().add(obs, action, reward, next_obs, done)
 
     def synth_add(
@@ -60,7 +64,7 @@ struct DualSampleCpuStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.synth_buf.value().add(obs, action, reward, next_obs, done)
 
     # Uniform readiness accessors (mirror DualSampleGpuStep) so the

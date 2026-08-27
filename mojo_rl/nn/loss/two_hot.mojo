@@ -16,14 +16,14 @@ Storage-surface port of the legacy nn helpers
 (`mojo_rl/nn/loss/two_hot.mojo`):
   * scalar helpers stay InlineArray-based (compile-time-sized inline use)
   * batched helpers operate on `Tensor` storages (CPU `.data` loops) instead
-    of the legacy raw `UnsafePointer` form; they keep the `_ptr` suffix off
+    of the legacy raw `Pointer` form; they keep the `_ptr` suffix off
     their names since they no longer take pointers.
 """
 
 from std.math import exp, log
 from std.math import abs as math_abs
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

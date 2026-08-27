@@ -27,7 +27,7 @@ comptime ITERS = 250
 
 
 def bench[N: Int](
-    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
 ) raises -> Float64:
     var envs = List[PongPixel]()
     for _ in range(N):
