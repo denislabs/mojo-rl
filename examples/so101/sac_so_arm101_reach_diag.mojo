@@ -230,8 +230,15 @@ def main() raises:
         )
     print("  " + "-" * 62)
     print(
-        "  alpha 1.0 is the raw policy. `deploy_reach_real.mojo` ships 0.15;"
-        "\n  anything in 0.1-0.3 has cost nothing measurable in reach rate"
-        " while\n  cutting the command's per-step motion several-fold."
+        "  alpha 1.0 is the raw policy. `deploy_reach_real.mojo` ships 0.05,"
+        "\n  which on the current checkpoint holds the reach rate exactly"
+        " while cutting\n  command motion ~48x (4438 -> 93 ticks/step)."
+        "\n  ⚠ A VELOCITY PENALTY CANNOT SEE OSCILLATION, only speed: across"
+        " five\n  checkpoints mean |qvel| fell 1.21 -> 0.92 while the"
+        " REVERSAL rate rose\n  59% -> 92%. The policy paid for lower speed"
+        " with higher frequency,\n  which is exactly what the metric asked"
+        " for. Penalising the ACTION RATE\n  is the fix that targets the"
+        " oscillation itself, and it needs the previous\n  action in the"
+        " observation to stay Markov."
     )
     print("=" * 72)
