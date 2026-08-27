@@ -149,7 +149,9 @@ struct AtariRenderer(Movable):
         self.window = None
         self.sdl_renderer = None
         self.texture = None
-        self.pixel_buf = untracked(alloc[UInt8](FRAME_BUF_SIZE))
+        self.pixel_buf = untracked(
+            alloc[UInt8]({count = FRAME_BUF_SIZE}).unsafe_leak()
+        )
 
         self.screen_width = width
         self.screen_height = height

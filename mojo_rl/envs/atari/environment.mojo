@@ -337,7 +337,7 @@ def load_rom(path: String) raises -> RomData:
     with open(path, "r") as f:
         var content = f.read_bytes()
         result.size = len(content)
-        result.data = alloc[UInt8](result.size)
+        result.data = alloc[UInt8]({count = result.size}).unsafe_leak()
         var raw = result.data.value()
         for i in range(result.size):
             raw[unsafe_offset=i] = content[i]

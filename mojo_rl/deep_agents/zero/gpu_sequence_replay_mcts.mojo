@@ -48,7 +48,7 @@ from .nstep_targets import compute_nstep_value_targets
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) feeding the shared raw-pointer
     `compute_nstep_value_targets`; alloc'd + freed within one sample call."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 # ──────────────────────────────────────────────────────────────────────

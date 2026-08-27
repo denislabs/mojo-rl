@@ -68,7 +68,7 @@ from .nets_atari import EZRewardLSTMAtari
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw host scratch for optional unroll outputs (loss_parts) — function-local;
     the unroll's optional-output params are Optional[Pointer]."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 # ── PER kernels (6c-2) ──────────────────────────────────────────────────

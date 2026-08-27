@@ -398,13 +398,21 @@ struct TrajectoryStore(Movable):
         var n = ds.n_elements()
         var out = List[Int64](capacity=n)
         if ds.elem_size == 8:
-            var b = alloc[Scalar[DType.int64]](n).as_unsafe_any_origin()
+            var b = (
+                alloc[Scalar[DType.int64]]({count = n})
+                .unsafe_leak()
+                .as_unsafe_any_origin()
+            )
             ds.read_all[DType.int64](b)
             for i in range(n):
                 out.append(b[unsafe_offset=i])
             b.unsafe_free()
         elif ds.elem_size == 4:
-            var b = alloc[Scalar[DType.int32]](n).as_unsafe_any_origin()
+            var b = (
+                alloc[Scalar[DType.int32]]({count = n})
+                .unsafe_leak()
+                .as_unsafe_any_origin()
+            )
             ds.read_all[DType.int32](b)
             for i in range(n):
                 out.append(Int64(b[unsafe_offset=i]))

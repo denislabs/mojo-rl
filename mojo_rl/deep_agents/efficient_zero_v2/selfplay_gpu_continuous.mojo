@@ -45,7 +45,7 @@ from ..zero.mz_diagnostics import append_value_diagnostics
 
 
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def run_ezv2_sampled_selfplay_gpu[

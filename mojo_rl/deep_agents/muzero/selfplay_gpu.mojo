@@ -50,7 +50,7 @@ from ..zero.temperature import visit_temperature
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Category-B raw batch scratch feeding the raw-pointer replay + unroll
     inputs (not the nn surface)."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def mz_sync_gpu_to_cpu[M: Module](

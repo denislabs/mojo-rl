@@ -689,7 +689,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         except e:
             print("Craftax-Full pixel env: atlas load failed (",
                   String(e), ")")
-            self._atlas = alloc[Float32](ATLAS_FLOATS)
+            self._atlas = alloc[Float32]({count = ATLAS_FLOATS}).unsafe_leak()
             for i in range(ATLAS_FLOATS):
                 self._atlas[unsafe_offset=i] = Float32(0.0)
 

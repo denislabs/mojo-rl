@@ -84,15 +84,15 @@ from ..zero.temperature import visit_temperature
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw scratch for optional unroll outputs + diag/staging host buffers
     (the unroll's optional-output params are Optional[Pointer])."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _ai32(n: Int) -> Pointer[Int32, MutAnyOrigin]:
-    return alloc[Int32](n).as_unsafe_any_origin()
+    return alloc[Int32]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _aint(n: Int) -> Pointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 @always_inline

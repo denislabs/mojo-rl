@@ -431,47 +431,83 @@ struct AtariEnv[
 
         # Pixel mode buffers
         comptime if Self.OBS_MODE == 1:
-            self.frame_stack = alloc[UInt8](FRAME_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = FRAME_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
         elif Self.OBS_MODE == 2:
-            self.frame_stack = alloc[UInt8](RGB_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = RGB_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
             self.gray_buf = None
-            self.rgb_buf = alloc[UInt8](3 * RGB_SRC_PLANE)
+            self.rgb_buf = alloc[UInt8](
+                {count = 3 * RGB_SRC_PLANE}
+            ).unsafe_leak()
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
         elif Self.OBS_MODE == 3:
             # Grayscale-96 single frame: `frame_stack` holds ONE 96×96 frame
             # (no ring). Reuse gray_buf (160×210) as the maxpool scratch.
-            self.frame_stack = alloc[UInt8](GRAY96_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8]({count = GRAY96_SIZE}).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY96_SIZE)
         elif Self.OBS_MODE == 4:
             # Grayscale-96 4-frame stack: `frame_stack` is a 4-slot ring.
-            self.frame_stack = alloc[UInt8](GRAY96_STACK_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8](
+                {count = GRAY96_STACK_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY96_STACK_SIZE)
         elif Self.OBS_MODE == 5:
             # Grayscale-64 single frame (reference DreamerV3 resolution):
             # one 64×64 slot, no ring; gray_buf as the maxpool scratch.
-            self.frame_stack = alloc[UInt8](GRAY64_SIZE)
-            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
-            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.frame_stack = alloc[UInt8]({count = GRAY64_SIZE}).unsafe_leak()
+            self.raw_frame_a = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.raw_frame_b = alloc[UInt8](
+                {count = FRAME_BGRA_SIZE}
+            ).unsafe_leak()
+            self.gray_buf = alloc[UInt8](
+                {count = GRAY_FRAME_SIZE}
+            ).unsafe_leak()
             self.rgb_buf = None
             self.frame_idx = 0
             unsafe_memset(self.frame_stack.value(), 0, GRAY64_SIZE)

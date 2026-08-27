@@ -649,7 +649,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(
                 CRConstants.WINDOW_W,

@@ -60,11 +60,11 @@ from ..muzero.selfplay_gpu_batched import _sample_action
 
 
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _ai(n: Int) -> Pointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def run_ezv2_gumbel_selfplay_gpu_batched[

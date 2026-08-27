@@ -140,7 +140,7 @@ def build_sprite_sheet(
     Returns a heap buffer the caller owns (must be freed via `.free()`).
     Sheet layout matches the comptime SPR_* indices above.
     """
-    var sheet = alloc[UInt8](SHEET_BYTES)
+    var sheet = alloc[UInt8]({count = SHEET_BYTES}).unsafe_leak()
     # Zero the sheet first so SPR_INVALID is transparent and SPR_OOB stays
     # at solid black-with-alpha (we set its alpha explicitly below).
     unsafe_memset(sheet, UInt8(0), SHEET_BYTES)
@@ -279,7 +279,7 @@ def build_agent_atlas(
     """
     var bps = block_pixel_size
     var size = NUM_SPRITES * bps * bps * 4
-    var atlas = alloc[Float32](size)
+    var atlas = alloc[Float32]({count = size}).unsafe_leak()
     # Zero (transparent) by default.
     for i in range(size):
         atlas[unsafe_offset=i] = Float32(0.0)

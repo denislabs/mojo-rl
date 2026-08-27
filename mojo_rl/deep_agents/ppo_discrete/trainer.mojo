@@ -360,12 +360,14 @@ struct PPODiscreteTrainer[
         t.state = OnPolicyState[
             Self.OBS_DIM, 1, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
         ].make[Self.train_target](ctx=ctx)
-        t._obs1  = alloc[Scalar[DT]](Self.OBS_DIM)
-        t._act1  = alloc[Scalar[DT]](1)
-        t._rew1  = alloc[Scalar[DT]](1)
-        t._done1 = alloc[Scalar[DT]](1)
-        t._nobs1 = alloc[Scalar[DT]](Self.OBS_DIM)
-        var ep_returns_p = alloc[Scalar[DT]](Self.N_ENVS)
+        t._obs1  = alloc[Scalar[DT]]({count = Self.OBS_DIM}).unsafe_leak()
+        t._act1  = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._rew1  = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._done1 = alloc[Scalar[DT]]({count = 1}).unsafe_leak()
+        t._nobs1 = alloc[Scalar[DT]]({count = Self.OBS_DIM}).unsafe_leak()
+        var ep_returns_p = alloc[Scalar[DT]](
+            {count = Self.N_ENVS}
+        ).unsafe_leak()
         for e in range(Self.N_ENVS):
             ep_returns_p[unsafe_offset=e] = Scalar[DT](0.0)
         t._ep_returns = ep_returns_p

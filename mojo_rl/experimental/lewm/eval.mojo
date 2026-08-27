@@ -100,7 +100,9 @@ struct LeWMTFScorer[
         self.trainer = untracked(trainer)
         self.pix = untracked(pix)
         self.ctx = ctx
-        self.act_host = untracked(alloc[Scalar[DT]](Self.BATCH * Self.ACTIN))
+        self.act_host = untracked(
+            alloc[Scalar[DT]]({count = Self.BATCH * Self.ACTIN}).unsafe_leak()
+        )
         self.pred_host = List[Scalar[DT]](
             length=Self.NPRED, fill=Scalar[DT](0)
         )
@@ -376,7 +378,9 @@ def lewm_action_awareness_eval[
             cem_topk=cem_topk,
             cem_smoothing=cem_smoothing,
         )
-        var cem_best = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
+        var cem_best = alloc[Scalar[DT]](
+            {count = BATCH * H * ACT}
+        ).unsafe_leak()
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )

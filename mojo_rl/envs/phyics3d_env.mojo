@@ -713,7 +713,9 @@ struct Phyics3dEnv[
         if self._renderer_initialized:
             return True
 
-        self._renderer = alloc[ModelRenderer[Self.MODEL_DEF]](1)
+        self._renderer = alloc[ModelRenderer[Self.MODEL_DEF]](
+            {count = 1}
+        ).unsafe_leak()
 
         var renderer = ModelRenderer[Self.MODEL_DEF](
             width=Self.RENDER_WIDTH,

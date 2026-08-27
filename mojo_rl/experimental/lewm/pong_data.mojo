@@ -71,9 +71,15 @@ struct WindowSource[
                 " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
             )
         self.buf = buf^
-        self.pix_u8_host = untracked(alloc[Scalar[DType.uint8]](Self.NPIX))
-        self.act_host = untracked(alloc[Scalar[DT]](Self.NACT))
-        self.pix_fp32_host = untracked(alloc[Scalar[DT]](Self.NPIX))
+        self.pix_u8_host = untracked(
+            alloc[Scalar[DType.uint8]]({count = Self.NPIX}).unsafe_leak()
+        )
+        self.act_host = untracked(
+            alloc[Scalar[DT]]({count = Self.NACT}).unsafe_leak()
+        )
+        self.pix_fp32_host = untracked(
+            alloc[Scalar[DT]]({count = Self.NPIX}).unsafe_leak()
+        )
         self.pix_u8_dev = None
         self.pix_fp32_dev = None
         self.act_dev = None

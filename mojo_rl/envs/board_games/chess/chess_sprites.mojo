@@ -327,7 +327,7 @@ def create_sprite_sheet() -> Pointer[UInt8, MutAnyOrigin]:
 
     Piece order: wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP.
     """
-    var raw_pixels = alloc[UInt8](SHEET_BYTES)
+    var raw_pixels = alloc[UInt8]({count = SHEET_BYTES}).unsafe_leak()
     unsafe_memset(raw_pixels, 0, SHEET_BYTES)  # fully transparent
     var pixels = rebind[Pointer[UInt8, MutAnyOrigin]](raw_pixels)
 

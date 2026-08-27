@@ -157,7 +157,7 @@ trait AgentDynamics(ShortcutDynamics):
 
 
 def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
-    return _mao(alloc[Scalar[DT]](n))
+    return _mao(alloc[Scalar[DT]]({count = n}).unsafe_leak())
 
 
 def _dyn_fwd[

@@ -119,9 +119,11 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
     def __init__(out self, capacity: Int):
         self.capacity = capacity
         self.n_frames = 0
-        self.frames = alloc[UInt8](capacity * PONG_FRAME_BYTES)
-        self.actions = alloc[UInt8](capacity)
-        self.dones = alloc[UInt8](capacity)
+        self.frames = alloc[UInt8](
+            {count = capacity * PONG_FRAME_BYTES}
+        ).unsafe_leak()
+        self.actions = alloc[UInt8]({count = capacity}).unsafe_leak()
+        self.dones = alloc[UInt8]({count = capacity}).unsafe_leak()
         # Zero-fill so partial writes don't leave garbage.
         for i in range(capacity * PONG_FRAME_BYTES):
             self.frames[unsafe_offset=i] = 0

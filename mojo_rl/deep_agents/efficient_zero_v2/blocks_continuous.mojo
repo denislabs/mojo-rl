@@ -57,7 +57,7 @@ from ..zero.twohot_targets import mz_two_hot_target_batch
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw host scratch for optional unroll outputs (loss_parts) — function-local;
     the unroll's optional-output params are Optional[Pointer]."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def ezv2_unroll_train_step_continuous_cpu[

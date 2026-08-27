@@ -35,7 +35,7 @@ def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) that feeds the shared
     `compute_nstep_value_targets` (raw-pointer, used by every replay incl.
     un-migrated GPU/continuous). Function-local: alloc'd + freed in one call."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](

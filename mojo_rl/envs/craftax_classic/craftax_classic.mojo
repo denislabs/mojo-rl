@@ -884,7 +884,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(
                 width=Self.WIN_PX_W,

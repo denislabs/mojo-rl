@@ -165,6 +165,6 @@ struct OnPolicyState[
         s.mb_v = Self._mk[target](Self.MINIBATCH * 1, ctx)
         s.mb_gv = Self._mk[target](Self.MINIBATCH * 1, ctx)
         s.mb_gi = Self._mk[target](Self.MINIBATCH * Self.OBS, ctx)
-        s.indices = alloc[Int32](RN)
+        s.indices = alloc[Int32]({count = RN}).unsafe_leak()
         s.ctx = ctx
         return s^

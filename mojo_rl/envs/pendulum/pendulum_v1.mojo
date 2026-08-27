@@ -794,7 +794,7 @@ struct PendulumEnv[DTYPE: DType](
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True

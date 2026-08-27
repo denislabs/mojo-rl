@@ -63,11 +63,11 @@ from ..zero.temperature import visit_temperature
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw scratch for optional unroll outputs (loss_parts) + diag host buffers
     (the unroll's optional-output params are Optional[Pointer])."""
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _aint(n: Int) -> Pointer[Int, MutAnyOrigin]:
-    return alloc[Int](n).as_unsafe_any_origin()
+    return alloc[Int]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _avg_last_n(returns: List[Float64], n: Int) -> Float64:

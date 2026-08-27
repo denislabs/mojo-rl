@@ -41,7 +41,7 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
+    return alloc[Scalar[DT]]({count = n}).unsafe_leak().as_unsafe_any_origin()
 
 
 def _mean_perdim_std[ROWS: Int, DIM: Int](

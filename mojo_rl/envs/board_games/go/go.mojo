@@ -612,7 +612,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         var margin = 30
         var win_w = 2 * margin + (Self.SIZE - 1) * cell_size
         var win_h = 2 * margin + (Self.SIZE - 1) * cell_size + 50
-        self._renderer = alloc[Renderer2D](1)
+        self._renderer = alloc[Renderer2D]({count = 1}).unsafe_leak()
         self._renderer.value().unsafe_write(
             Renderer2D(width=win_w, height=win_h, fps=30, title="Go " + String(Self.SIZE) + "x" + String(Self.SIZE))
         )

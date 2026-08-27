@@ -271,8 +271,12 @@ struct PongPixelEnv[
 
     def __init__(out self):
         self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
-        self._frame_buf = untracked(alloc[UInt8](SCREEN_W * SCREEN_H))
-        self._frame_stack = untracked(alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM))
+        self._frame_buf = untracked(
+            alloc[UInt8]({count = SCREEN_W * SCREEN_H}).unsafe_leak()
+        )
+        self._frame_stack = untracked(
+            alloc[Scalar[Self.DTYPE]]({count = PIXEL_OBS_DIM}).unsafe_leak()
+        )
         self._frame_idx = 0
         # Zero frame stack
         for i in range(PIXEL_OBS_DIM):
