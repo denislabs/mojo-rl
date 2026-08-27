@@ -82,12 +82,35 @@ comptime TG = ACTTrainer[
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
-comptime TOL_FWD = 3e-4
-comptime TOL_GRAD = 3e-3
-"""fp32 on both sides with different reduction orders, through 20 convolutions,
-20 BatchNorms and two transformer stacks. Gradients accumulate more of that than
-activations do, hence the looser bound; the per-primitive GPU gates hold the
-tight ones."""
+comptime PARITY_ATOL: Float64 = 1e-5
+comptime PARITY_RTOL: Float64 = 2e-2
+"""⚠⚠ RELATIVE, and set by the HARDWARE rather than by taste.
+
+NVIDIA runs fp32 matmuls on TF32 tensor cores — a 10-bit mantissa, so ~1e-3
+relative per matmul, compounding with depth. Apple has no TF32 and sits at
+~1e-7. A tolerance calibrated on Metal FAILS on CUDA for a correct kernel:
+`feedback_fd_gradcheck_tf32`, which cost three false bug reports before it was
+understood. Measured here — every one of these is a CORRECT kernel:
+
+    BatchNorm2D alone (no matmul)   CUDA 6.0e-8   Apple 0.0
+    ACT eval L1  (2 convs)          CUDA rel 3.6e-4
+    ACT eval KL                     CUDA rel 1.4e-3
+    ACT gradient norm               CUDA rel 1.3e-3
+
+The split between "contains a matmul" and "does not" is the discriminator, and
+it is why an absolute tolerance cannot serve both backends. 2e-2 is loose enough
+that this gate can only catch a STRUCTURAL error — a wrong index, a dropped
+term, a missing accumulation — which is what CPU/GPU parity is for. Numerical
+accuracy against the reference is gated on CPU, in fp32."""
+
+
+def within(a: Float64, b: Float64) -> Bool:
+    """numpy-`allclose` semantics: `|a-b| <= atol + rtol*|a|`."""
+    return abs(a - b) <= PARITY_ATOL + PARITY_RTOL * abs(a)
+
+
+def parity_ratio(a: Float64, b: Float64) -> Float64:
+    return abs(a - b) / (PARITY_ATOL + PARITY_RTOL * abs(a))
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
@@ -172,6 +195,10 @@ struct _Inject(ParamVisitor):
 
 
 def worst(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Float64:
+    """Worst elementwise parity ratio; < 1.0 means everything is in tolerance.
+
+    ⚠ NOT `max|a-b|`. That compared against `max|a|` is not a relative error —
+    the two maxima come from different elements."""
     if len(a) != len(b):
         raise Error(
             "gate: walk lengths differ — " + String(len(a)) + " vs "
@@ -179,7 +206,7 @@ def worst(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Float64:
         )
     var w = Float64(0.0)
     for i in range(len(a)):
-        w = max(w, abs(Float64(a[i]) - Float64(b[i])))
+        w = max(w, parity_ratio(Float64(a[i]), Float64(b[i])))
     return w
 
 
@@ -245,20 +272,23 @@ def main() raises:
     check(
         fails,
         "eval L1",
-        abs(ec.l1 - eg.l1) < TOL_FWD,
-        "cpu " + String(ec.l1) + "  gpu " + String(eg.l1),
+        within(ec.l1, eg.l1),
+        "cpu " + String(ec.l1) + "  gpu " + String(eg.l1) + "  ratio "
+        + String(parity_ratio(ec.l1, eg.l1)),
     )
     check(
         fails,
         "eval KL",
-        abs(ec.kl - eg.kl) < TOL_FWD,
-        "cpu " + String(ec.kl) + "  gpu " + String(eg.kl),
+        within(ec.kl, eg.kl),
+        "cpu " + String(ec.kl) + "  gpu " + String(eg.kl) + "  ratio "
+        + String(parity_ratio(ec.kl, eg.kl)),
     )
     check(
         fails,
         "eval total loss",
-        abs(ec.loss - eg.loss) < TOL_FWD,
-        "cpu " + String(ec.loss) + "  gpu " + String(eg.loss),
+        within(ec.loss, eg.loss),
+        "cpu " + String(ec.loss) + "  gpu " + String(eg.loss) + "  ratio "
+        + String(parity_ratio(ec.loss, eg.loss)),
     )
     # A zero loss on both sides would satisfy the checks above and mean nothing.
     check(
@@ -284,8 +314,8 @@ def main() raises:
     check(
         fails,
         "predict() action chunk (identical weights)",
-        aw < TOL_FWD,
-        "max|cpu-gpu| = " + String(aw),
+        aw < 1.0,
+        "worst |d|/(atol+rtol|a|) = " + String(aw),
     )
 
     # ── one training step: forward, backward, and the resulting weights ──
@@ -296,28 +326,60 @@ def main() raises:
     check(
         fails,
         "train-step L1 (train mode: BN batch stats, latent pinned)",
-        abs(rc.l1 - rg.l1) < TOL_FWD,
-        "cpu " + String(rc.l1) + "  gpu " + String(rg.l1),
+        within(rc.l1, rg.l1),
+        "cpu " + String(rc.l1) + "  gpu " + String(rg.l1) + "  ratio "
+        + String(parity_ratio(rc.l1, rg.l1)),
     )
     check(
         fails,
         "gradient norm",
-        abs(rc.grad_norm - rg.grad_norm)
-        < TOL_GRAD * (1.0 + abs(rc.grad_norm)),
-        "cpu " + String(rc.grad_norm) + "  gpu " + String(rg.grad_norm),
+        within(rc.grad_norm, rg.grad_norm),
+        "cpu " + String(rc.grad_norm) + "  gpu " + String(rg.grad_norm)
+        + "  ratio " + String(parity_ratio(rc.grad_norm, rg.grad_norm)),
     )
 
-    var pc = _Collect()
+    # ⚠ Compare the GRADIENTS, not the post-Adam parameters. `train_step` leaves
+    # the gradients populated, and they are what the GPU backward actually
+    # produced. Parameters after one Adam step are a BAD parity target: at t=1
+    # the update is `lr * m_hat/sqrt(v_hat)`, which is ~`±lr` regardless of
+    # gradient MAGNITUDE — so a near-zero gradient that lands on opposite signs
+    # between two correct backends yields a full `2*lr` parameter difference.
+    # Measured at 2e-5 with `lr = 1e-5`: exactly `2*lr`, and it reads as a 2x
+    # tolerance breach while nothing is wrong.
+    var pc = _Collect(grads=True)
     tc.graph.for_each_param["cpu"](pc, None, String(""))
-    var pg = _Collect()
+    var pg = _Collect(grads=True)
     tg.graph.for_each_param["gpu"](pg, ctx, String(""))
     var pw = worst(pc.vals, pg.vals)
     check(
         fails,
-        "parameters agree after one Adam step",
-        pw < TOL_GRAD,
-        "max|cpu-gpu| over " + String(len(pc.vals)) + " values = "
-        + String(pw),
+        "gradients agree over every parameter",
+        pw < 1.0,
+        "worst |d|/(atol+rtol|a|) over " + String(len(pc.vals))
+        + " values = " + String(pw),
+    )
+
+    # The parameters too, but with an absolute floor sized to Adam's step —
+    # see above. This checks the optimizer walked every parameter on device,
+    # which the gradient comparison alone does not.
+    var qc = _Collect()
+    tc.graph.for_each_param["cpu"](qc, None, String(""))
+    var qg = _Collect()
+    tg.graph.for_each_param["gpu"](qg, ctx, String(""))
+    var qw = Float64(0.0)
+    comptime ADAM_STEP_ATOL = 4.0 * 1e-5  # 4 * the trainer's default lr
+    for i in range(len(qc.vals)):
+        var x = Float64(qc.vals[i])
+        qw = max(
+            qw,
+            abs(x - Float64(qg.vals[i]))
+            / (ADAM_STEP_ATOL + PARITY_RTOL * abs(x)),
+        )
+    check(
+        fails,
+        "parameters after one Adam step (atol = 4*lr)",
+        qw < 1.0,
+        "worst ratio over " + String(len(qc.vals)) + " values = " + String(qw),
     )
 
     var sc2 = _Collect()
@@ -328,9 +390,9 @@ def main() raises:
     check(
         fails,
         "BatchNorm running statistics agree after one step",
-        sw < TOL_GRAD,
-        "max|cpu-gpu| over " + String(len(sc2.vals)) + " values = "
-        + String(sw),
+        sw < 1.0,
+        "worst |d|/(atol+rtol|a|) over " + String(len(sc2.vals))
+        + " values = " + String(sw),
     )
 
     print("")

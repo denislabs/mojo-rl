@@ -71,10 +71,41 @@ comptime OW = ResNet18OutW[IMG_W]
 comptime IN_N = B * 3 * IMG_H * IMG_W
 comptime OUT_N = B * RESNET18_OUT_CH * OH * OW
 
-comptime TOL = 2e-4
-"""20 convolutions and 20 BatchNorms of fp32 accumulation in two different
-reduction orders. The CPU path's agreement with torchvision (1e-5) is the tight
-comparison; this is the device-agreement bound."""
+# ── CPU/GPU parity statistic ─────────────────────────────────────────────
+# ⚠ `max|a-b|` compared against `max|a|` is NOT a relative error — the two
+# maxima come from different elements. What matters is elementwise
+# `|a-b| <= ATOL + RTOL*|a|` (numpy `allclose` semantics), reported as the
+# worst ratio so a failure says HOW far out it is.
+#
+# ⚠⚠ RTOL is set by the HARDWARE, not by taste. NVIDIA runs fp32 matmuls on
+# TF32 tensor cores — a 10-bit mantissa, so ~1e-3 relative per matmul, and it
+# compounds with depth. Apple has no TF32 and sits at ~1e-7. A tolerance
+# calibrated on Metal therefore FAILS on CUDA for a correct kernel; this is
+# `feedback_fd_gradcheck_tf32`, which cost three false bug reports before.
+# Elementwise ops (BatchNorm alone) stay at ~1e-8 on BOTH — the split between
+# "has a matmul" and "does not" is the discriminator.
+comptime PARITY_ATOL: Float64 = 1e-5
+comptime PARITY_RTOL: Float64 = 2e-2
+"""2e-2 covers TF32 compounded through a 20-layer conv stack. It is loose
+enough that it can only catch a STRUCTURAL error — a wrong index, a dropped
+term, a missing accumulation — which is exactly what a CPU/GPU parity gate is
+for. Numerical accuracy against the reference is gated on CPU, in fp32."""
+
+
+def parity(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Float64:
+    """Worst `|a-b| / (ATOL + RTOL*|a|)`. < 1.0 means every element is within
+    tolerance."""
+    if len(a) != len(b):
+        raise Error(
+            "parity: length mismatch " + String(len(a)) + " vs "
+            + String(len(b))
+        )
+    var w = Float64(0.0)
+    for i in range(len(a)):
+        var x = Float64(a[i])
+        var d = abs(x - Float64(b[i]))
+        w = max(w, d / (PARITY_ATOL + PARITY_RTOL * abs(x)))
+    return w
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
@@ -209,16 +240,19 @@ def main() raises:
     ctx.synchronize()
     og.download(ctx)
 
-    var w = Float64(0.0)
+    var lc = List[Scalar[DT]]()
+    var lg = List[Scalar[DT]]()
     var mag = Float64(0.0)
     for i in range(OUT_N):
-        w = max(w, abs(Float64(oc.data[i]) - Float64(og.data[i])))
+        lc.append(oc.data[i])
+        lg.append(og.data[i])
         mag = max(mag, abs(Float64(oc.data[i])))
+    var w = parity(lc, lg)
     check(
         fails,
         "layer4 output",
-        w < TOL,
-        "max|cpu-gpu| = " + String(w),
+        w < 1.0,
+        "worst |d|/(atol+rtol|a|) = " + String(w),
     )
     # A dead output would satisfy the comparison and mean nothing.
     check(
@@ -256,16 +290,19 @@ def main() raises:
     ctx.synchronize()
     ggg[0].download(ctx)
 
-    var gw = Float64(0.0)
+    var gic = List[Scalar[DT]]()
+    var gig = List[Scalar[DT]]()
     var gmag = Float64(0.0)
     for i in range(IN_N):
-        gw = max(gw, abs(Float64(ggc[0].data[i]) - Float64(ggg[0].data[i])))
+        gic.append(ggc[0].data[i])
+        gig.append(ggg[0].data[i])
         gmag = max(gmag, abs(Float64(ggc[0].data[i])))
+    var gw = parity(gic, gig)
     check(
         fails,
         "grad_input",
-        gw < TOL,
-        "max|cpu-gpu| = " + String(gw),
+        gw < 1.0,
+        "worst |d|/(atol+rtol|a|) = " + String(gw),
     )
     check(
         fails,
@@ -307,7 +344,12 @@ def main() raises:
         )
         var d = Float64(0.0)
         for i in range(lo, hi):
-            d = max(d, abs(Float64(pgc.vals[i]) - Float64(pgg.vals[i])))
+            var x = Float64(pgc.vals[i])
+            d = max(
+                d,
+                abs(x - Float64(pgg.vals[i]))
+                / (PARITY_ATOL + PARITY_RTOL * abs(x)),
+            )
         if d > worst_val:
             worst_val = d
             worst_name = pgc.names[k]
@@ -338,15 +380,15 @@ def main() raises:
             continue
         n_conv += 1
         for i in range(lo, hi):
-            conv_w = max(
-                conv_w, abs(Float64(pgc.vals[i]) - Float64(pgg.vals[i]))
-            )
-            conv_mag = max(conv_mag, abs(Float64(pgc.vals[i])))
+            var x = Float64(pgc.vals[i])
+            var d = abs(x - Float64(pgg.vals[i]))
+            conv_w = max(conv_w, d / (PARITY_ATOL + PARITY_RTOL * abs(x)))
+            conv_mag = max(conv_mag, abs(x))
     check(
         fails,
         "convolution parameter gradients (" + String(n_conv) + " tensors)",
-        conv_w < TOL,
-        "max|cpu-gpu| = " + String(conv_w),
+        conv_w < 1.0,
+        "worst |d|/(atol+rtol|a|) = " + String(conv_w),
     )
     check(
         fails,
