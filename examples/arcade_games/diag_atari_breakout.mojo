@@ -116,7 +116,15 @@ def main() raises:
     )
     env.reset()
 
-    var buf = alloc[UInt8](FRAME_WIDTH * FRAME_HEIGHT * 4)
+    # `.as_unsafe_any_origin()` at the SOURCE, not at each call: `alloc`
+    # hands back `MutUntrackedOrigin`, and every helper below (and
+    # `run_frame_video`) wants an Any origin. Converting once here is one
+    # edit instead of one per call site.
+    var buf = (
+        alloc[UInt8]({count = FRAME_WIDTH * FRAME_HEIGHT * 4})
+        .unsafe_leak()
+        .as_unsafe_any_origin()
+    )
 
     comptime COLS = 18
     comptime ROWS = 6
@@ -148,7 +156,10 @@ def main() raises:
         var served = False
         for _ in range(120):
             set_action(env.state, pa)
-            run_frame_video(env.state, env.rom, env.rom_size, buf)
+            run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
             if Int(env.state.enabl) != 0 or Int(env.state.enabl_old) != 0:
                 served = True
         print(
@@ -219,7 +230,10 @@ def main() raises:
             paddle_target = 255
         env.state.paddle_pos = UInt8(paddle_target)
 
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
         step += 1
 
         if step == 60 or step == 300 or step == 1200:

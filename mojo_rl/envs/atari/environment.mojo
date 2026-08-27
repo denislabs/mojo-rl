@@ -12,7 +12,6 @@ Usage:
 """
 
 from .atari_state import AtariState
-from mojo_rl.nn.core.ptr import untracked
 from .cpu6502 import cpu_reset, run_frame, mem_read
 from .cartridge import init_bank
 from .riot import set_action
@@ -55,7 +54,12 @@ struct AtariEnvironment(Movable):
 
     def __init__(
         out self,
-        rom: Pointer[UInt8, MutAnyOrigin],
+        # `MutUntrackedOrigin`, matching `load_rom`'s `RomData.data` and the
+        # `rom` field below. It was `MutAnyOrigin`, which nothing produced:
+        # every caller starts at `load_rom`, so each one carried an
+        # `.as_unsafe_any_origin()` — and the ones outside this package that
+        # forgot did not fail the package build, only their own.
+        rom: Pointer[UInt8, MutUntrackedOrigin],
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,  # Standard ALE default (~30 min at 60fps)
@@ -64,7 +68,7 @@ struct AtariEnvironment(Movable):
         paddles: Bool = False,
     ):
         self.state = AtariState()
-        self.rom = untracked(rom)
+        self.rom = rom
         self.rom_size = rom_size
         self.frame_skip = frame_skip
         self.max_frames = max_frames

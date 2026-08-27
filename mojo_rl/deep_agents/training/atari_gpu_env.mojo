@@ -178,7 +178,7 @@ struct AtariGpuBatchedEnv[
     def __init__(
         out self,
         ctx: DeviceContext,
-        rom_ptr: Pointer[UInt8, MutAnyOrigin],
+        rom_ptr: Pointer[UInt8, MutUntrackedOrigin],
         rom_size: Int,
     ) raises:
         self.rom_size = rom_size

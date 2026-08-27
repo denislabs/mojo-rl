@@ -39,7 +39,7 @@ def _in_unit(v: Scalar[DT]) -> Bool:
 def test_gray96_single_frame_obs() raises:
     print("test gray-96 single-frame obs (Pong, OBS_MODE=3) ...")
     var rom = load_rom("roms/pong.bin")
-    var env = AtariEnv[3, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[3, DT](AtariGame.PONG, rom.data.value(), rom.size)
 
     # (1) dims
     assert_equal(env.obs_dim(), GRAY96, "obs_dim == 9216 (single 96x96 frame)")
@@ -87,10 +87,10 @@ def test_sticky_actions_pin_the_action() raises:
     # ALE action regardless of what we request. So two envs that agree on step 0
     # but then request DIFFERENT actions must produce IDENTICAL trajectories.
     var a = AtariEnv[3, DT](
-        AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size, sticky_prob=1.0
+        AtariGame.PONG, rom.data.value(), rom.size, sticky_prob=1.0
     )
     var b = AtariEnv[3, DT](
-        AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size, sticky_prob=1.0
+        AtariGame.PONG, rom.data.value(), rom.size, sticky_prob=1.0
     )
     _ = a.reset_obs_list()
     _ = b.reset_obs_list()
@@ -119,7 +119,7 @@ def test_noop_starts_construct_and_step() raises:
     var rom = load_rom("roms/pong.bin")
     var env = AtariEnv[3, DT](
         AtariGame.PONG,
-        rom.data.value().as_unsafe_any_origin(),
+        rom.data.value(),
         rom.size,
         sticky_prob=0.25,
         noop_max=30,
@@ -144,7 +144,7 @@ comptime GRAY96_STACK = 4 * 96 * 96  # 36864
 def test_gray96_4stack_carries_motion() raises:
     print("test gray-96 4-STACK obs (OBS_MODE=4) carries motion ...")
     var rom = load_rom("roms/pong.bin")
-    var env = AtariEnv[4, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[4, DT](AtariGame.PONG, rom.data.value(), rom.size)
     assert_equal(env.obs_dim(), GRAY96_STACK, "obs_dim == 36864 (4x96x96)")
 
     var o0 = env.reset_obs_list()
@@ -183,7 +183,7 @@ comptime GRAY64 = 64 * 64  # 4096
 def test_gray64_single_frame_obs() raises:
     print("test gray-64 single-frame obs (Pong, OBS_MODE=5) ...")
     var rom = load_rom("roms/pong.bin")
-    var env = AtariEnv[5, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var env = AtariEnv[5, DT](AtariGame.PONG, rom.data.value(), rom.size)
 
     assert_equal(env.obs_dim(), GRAY64, "obs_dim == 4096 (single 64x64 frame)")
     var obs0 = env.reset_obs_list()
@@ -222,8 +222,8 @@ def test_gray64_consistent_with_gray96() raises:
     # box-filter resizes of that same frame, so their global mean brightness
     # must agree (up to integer-division truncation, well under 2/255).
     var rom = load_rom("roms/pong.bin")
-    var e96 = AtariEnv[3, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
-    var e64 = AtariEnv[5, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
+    var e96 = AtariEnv[3, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    var e64 = AtariEnv[5, DT](AtariGame.PONG, rom.data.value(), rom.size)
     var o96 = e96.reset_obs_list()
     var o64 = e64.reset_obs_list()
     for t in range(10):

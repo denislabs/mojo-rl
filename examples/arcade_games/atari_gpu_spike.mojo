@@ -144,7 +144,12 @@ def main() raises:
     comptime assert has_accelerator(), "spike requires a GPU"
 
     var rom = load_rom("roms/pong.bin")
+    # Two names for one buffer, deliberately: `load_rom` owns the
+    # allocation so it hands back `MutUntrackedOrigin`, which is what
+    # `AtariEnvironment` stores in its field; every free helper here and
+    # in `cpu6502` takes an Any origin. Convert once, at the source.
     var rom_ptr = rom.data.value()
+    var rom_any = rom_ptr.as_unsafe_any_origin()
     var rom_size = rom.size
     print(
         "ROM:",
@@ -176,7 +181,7 @@ def main() raises:
         var st = cpu_states[i].copy()
         for _ in range(F):
             set_action(st, actions[i])
-            run_frame(st, rom_ptr, rom_size)
+            run_frame(st, rom_any, rom_size)
         cpu_states[i] = st^
 
     # ---- GPU ----
@@ -186,11 +191,11 @@ def main() raises:
     var ctx = DeviceContext()
     run_frames_gpu(
         ctx,
-        gpu_states.unsafe_ptr(),
+        gpu_states.unsafe_ptr().as_unsafe_any_origin(),
         N,
-        rom_ptr,
+        rom_any,
         rom_size,
-        actions.unsafe_ptr(),
+        actions.unsafe_ptr().as_unsafe_any_origin(),
         F,
     )
 

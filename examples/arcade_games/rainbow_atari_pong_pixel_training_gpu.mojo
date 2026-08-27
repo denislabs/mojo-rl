@@ -118,7 +118,11 @@ comptime BatchedAtariPong = BatchedCpuDiscreteEnv[
 
 
 def _make_envs(
-    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
+    # `MutUntrackedOrigin` on both sides of this helper: it takes what
+    # `load_rom` owns and hands it straight to `AtariEnv`, which stores it
+    # in a field. Nothing here needs an Any origin.
+    rom: Pointer[UInt8, MutUntrackedOrigin],
+    rom_size: Int,
 ) -> List[AtariPongPixel]:
     """N_ENVS independent emulator instances sharing the read-only ROM."""
     var envs = List[AtariPongPixel]()

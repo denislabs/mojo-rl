@@ -54,7 +54,7 @@ comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 
 
 def _make_envs(
-    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutUntrackedOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):
@@ -74,7 +74,7 @@ def main() raises:
 
     var ctx = DeviceContext()
     var rom = load_rom("roms/pong.bin")
-    var env = BatchedPong(_make_envs(rom.data.value().as_unsafe_any_origin(), rom.size), noop_max=4)
+    var env = BatchedPong(_make_envs(rom.data.value(), rom.size), noop_max=4)
 
     var rep = Cfg.Rep.make["gpu", Kaiming](Optional(ctx))
     var dyn = Cfg.Dyn.make["gpu", Kaiming](Optional(ctx))

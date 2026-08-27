@@ -44,7 +44,15 @@ def main() raises:
         rom_data.data.value(), rom_data.size, frame_skip=1, max_frames=0
     )
     env.reset()
-    var buf = alloc[UInt8](FRAME_WIDTH * FRAME_HEIGHT * 4)
+    # `.as_unsafe_any_origin()` at the SOURCE, not at each call: `alloc`
+    # hands back `MutUntrackedOrigin`, and every helper below (and
+    # `run_frame_video`) wants an Any origin. Converting once here is one
+    # edit instead of one per call site.
+    var buf = (
+        alloc[UInt8]({count = FRAME_WIDTH * FRAME_HEIGHT * 4})
+        .unsafe_leak()
+        .as_unsafe_any_origin()
+    )
 
     var gap_frames = 0
     var gap_scanlines = 0
@@ -54,7 +62,10 @@ def main() raises:
         set_action(env.state, ACTION_RIGHT)
         env.state.paddle_pos = 8
         env.state.sys_flags = env.state.sys_flags | FLAG_CON_RIGHT
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
 
         var frame_gaps = 0
         for y in range(50, 100):

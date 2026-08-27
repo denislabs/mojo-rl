@@ -97,7 +97,7 @@ comptime VPDyn = EZDynVPNetAtari[ACT, BINS]
 
 
 def _make_envs(
-    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutUntrackedOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):

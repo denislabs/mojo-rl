@@ -127,12 +127,23 @@ def main() raises:
         rom_data.data.value(), rom_data.size, frame_skip=1, max_frames=0
     )
     env.reset()
-    var buf = alloc[UInt8](FRAME_WIDTH * FRAME_HEIGHT * 4)
+    # `.as_unsafe_any_origin()` at the SOURCE, not at each call: `alloc`
+    # hands back `MutUntrackedOrigin`, and every helper below (and
+    # `run_frame_video`) wants an Any origin. Converting once here is one
+    # edit instead of one per call site.
+    var buf = (
+        alloc[UInt8]({count = FRAME_WIDTH * FRAME_HEIGHT * 4})
+        .unsafe_leak()
+        .as_unsafe_any_origin()
+    )
 
     # Warm up past the title/attract transition.
     for _ in range(120):
         set_action(env.state, ACTION_NOOP)
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
 
     print("=== SI vertical stability ===")
 
@@ -141,7 +152,10 @@ def main() raises:
     comptime N_ATTRACT = 300
     for _ in range(N_ATTRACT):
         set_action(env.state, ACTION_NOOP)
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
         attract.record(
             top_lit_row(buf),
             Int(env.state.dbg_frame_lines),
@@ -152,10 +166,16 @@ def main() raises:
     # Start the game: hold the console RESET switch a few frames.
     for _ in range(4):
         set_action(env.state, ACTION_RESET)
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
     for _ in range(30):
         set_action(env.state, ACTION_NOOP)
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
 
     # Phase 2: gameplay — alternate fire and movement like a player would.
     var play = GeomStats()
@@ -168,7 +188,10 @@ def main() raises:
             )
         )
         set_action(env.state, a)
-        run_frame_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state,
+            env.rom.as_unsafe_any_origin(),
+            env.rom_size,
+            buf,)
         play.record(
             top_lit_row(buf),
             Int(env.state.dbg_frame_lines),

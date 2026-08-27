@@ -115,8 +115,17 @@ def main() raises:
 
         # CPU reference step + compare
         for e in range(N):
-            var res = cpu_step(cpu[e], actions[e], rom_ptr, rom_size,
-                               optab.unsafe_ptr())
+            # `.as_unsafe_any_origin()` on both: `rom_ptr` is
+            # `MutUntrackedOrigin` (it comes from `load_rom`) and
+            # `optab.unsafe_ptr()` is tracked. Neither converts implicitly
+            # to the `MutAnyOrigin` this helper shares with the GPU kernel.
+            var res = cpu_step(
+                cpu[e],
+                actions[e],
+                rom_ptr.as_unsafe_any_origin(),
+                rom_size,
+                optab.unsafe_ptr().as_unsafe_any_origin(),
+            )
             var c_reward = res[0]
             var c_done = res[1]
             if abs(Float64(rew_h.unsafe_ptr()[e]) - Float64(c_reward)) > 0.5:

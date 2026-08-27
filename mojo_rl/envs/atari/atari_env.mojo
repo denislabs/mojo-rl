@@ -351,7 +351,7 @@ struct AtariEnv[
         var rom_data = load_rom(game.rom_file())
         self = Self(
             game,
-            rom_data.data.value().as_unsafe_any_origin(),
+            rom_data.data.value(),
             rom_data.size,
             frame_skip=frame_skip,
             max_frames=max_frames,
@@ -365,7 +365,7 @@ struct AtariEnv[
     def __init__(
         out self,
         game: AtariGame,
-        rom: Pointer[UInt8, MutAnyOrigin],
+        rom: Pointer[UInt8, MutUntrackedOrigin],
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,

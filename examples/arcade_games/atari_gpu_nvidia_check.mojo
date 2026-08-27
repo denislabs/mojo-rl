@@ -65,21 +65,24 @@ def atari_frames_kernel[
 ](
     states: Pointer[AtariState, MutAnyOrigin],
     rom: Pointer[UInt8, MutAnyOrigin],
-    rom_size: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    rom_size: Int32,
     op_table: Pointer[OpcodeEntry, MutAnyOrigin],
     actions: Pointer[UInt8, MutAnyOrigin],
-    n_envs: Int,
-    n_frames: Int,
+    n_envs: Int32,
+    n_frames: Int32,
 ):
     var i = Int(global_idx.x)
-    if i < n_envs:
+    if i < Int(n_envs):
         var st = states[i].copy()
         var act = actions[i]
         var dummy = InlineArray[UInt8, 4](fill=0)
-        for _ in range(n_frames):
+        for _ in range(Int(n_frames)):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False, UNIFORM=UNIFORM](
-                st, rom, rom_size, dummy.unsafe_ptr(), op_table
+                st, rom, Int(rom_size), dummy.unsafe_ptr(), op_table
             )
         states[i] = st^
 
@@ -129,11 +132,11 @@ def run_frames_gpu[
     ctx.enqueue_function[kern](
         d_states.unsafe_ptr().bitcast[AtariState](),
         d_rom.unsafe_ptr(),
-        rom_size,
+        Int32(rom_size),
         d_opt.unsafe_ptr().bitcast[OpcodeEntry](),
         d_act.unsafe_ptr(),
-        n_envs,
-        n_frames,
+        Int32(n_envs),
+        Int32(n_frames),
         grid_dim=blocks,
         block_dim=TPB,
     )
@@ -223,14 +226,15 @@ def bench_throughput[
     comptime kern = atari_frames_kernel[UNIFORM]
 
     ctx.enqueue_function[kern](
-        sp, rp, rom_size, op, ap, n_envs, MEAS, grid_dim=blocks, block_dim=TPB
+        sp, rp, Int32(rom_size), op, ap, Int32(n_envs), Int32(MEAS),
+        grid_dim=blocks, block_dim=TPB,
     )
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(REPS):
         ctx.enqueue_function[kern](
-            sp, rp, rom_size, op, ap, n_envs, MEAS,
+            sp, rp, Int32(rom_size), op, ap, Int32(n_envs), Int32(MEAS),
             grid_dim=blocks, block_dim=TPB,
         )
         ctx.synchronize()
@@ -275,7 +279,12 @@ def parity_gate(
     for _ in range(n_envs):
         gpu.append(s0.copy())
     run_frames_gpu[False](
-        ctx, gpu.unsafe_ptr(), n_envs, rom, rom_size, actions.unsafe_ptr(),
+        ctx,
+        gpu.unsafe_ptr().as_unsafe_any_origin(),
+        n_envs,
+        rom,
+        rom_size,
+        actions.unsafe_ptr().as_unsafe_any_origin(),
         n_frames,
     )
 
@@ -314,7 +323,12 @@ def parity_gate(
 def main() raises:
     comptime assert has_accelerator(), "requires a GPU"
     var rom = load_rom("roms/pong.bin")
+    # Two names for one buffer, deliberately: `load_rom` owns the
+    # allocation so it hands back `MutUntrackedOrigin`, which is what
+    # `AtariEnvironment` stores in its field; every free helper here and
+    # in `cpu6502` takes an Any origin. Convert once, at the source.
     var rom_ptr = rom.data.value()
+    var rom_any = rom_ptr.as_unsafe_any_origin()
     var rom_size = rom.size
     var env = AtariEnvironment(rom_ptr, rom_size)
     env.reset()
@@ -332,8 +346,8 @@ def main() raises:
     var b = s0.copy()
     for f in range(200):
         var act = UInt8(f % 6)
-        cpu_step[False](a, rom_ptr, rom_size, act)
-        cpu_step[True](b, rom_ptr, rom_size, act)
+        cpu_step[False](a, rom_any, rom_size, act)
+        cpu_step[True](b, rom_any, rom_size, act)
     var d0 = ram_diff(a, b)
     if d0 < 0:
         print("    OK — RAM bit-identical over 200 frames\n")
@@ -342,16 +356,16 @@ def main() raises:
 
     # ---- Phase 1: parity gate ----
     print("[1] Parity gate (CPU vs GPU, full state):")
-    parity_gate(ctx, 256, PARITY_FRAMES, s0, rom_ptr, rom_size)
-    parity_gate(ctx, PARITY_N, PARITY_FRAMES, s0, rom_ptr, rom_size)
+    parity_gate(ctx, 256, PARITY_FRAMES, s0, rom_any, rom_size)
+    parity_gate(ctx, PARITY_N, PARITY_FRAMES, s0, rom_any, rom_size)
 
     # ---- Phase 2: throughput (bulk runner) ----
     print("\n[2] Throughput — BULK runner:")
     var sweep = [256, 1024, 4096, 16384, 65536]
     for n in sweep:
-        bench_throughput[False](ctx, n, s0, rom_ptr, rom_size)
+        bench_throughput[False](ctx, n, s0, rom_any, rom_size)
 
     # ---- Phase 3: throughput (uniform runner) ----
     print("\n[3] Throughput — UNIFORM (per-clock) runner:")
     for n in sweep:
-        bench_throughput[True](ctx, n, s0, rom_ptr, rom_size)
+        bench_throughput[True](ctx, n, s0, rom_any, rom_size)

@@ -103,7 +103,7 @@ def launch_pattern_a[
 # =============================================================================
 # Pattern B: Layout as type param + size as runtime UInt (puzzle p07 pattern)
 # The kernel has [out_layout: Layout] - the layout TYPE, not a dimension Int
-# Size is passed as runtime UInt for bounds checking
+# Size is passed as a runtime fixed-width scalar for bounds checking
 # =============================================================================
 
 
@@ -116,9 +116,13 @@ def pattern_b_kernel[
     output: LayoutTensor[dtype, out_layout, MutAnyOrigin],
     input: LayoutTensor[dtype, in_layout, MutAnyOrigin],
     W: LayoutTensor[dtype, W_layout, MutAnyOrigin],
-    batch: UInt,  # <-- Runtime parameter for bounds checking!
+    # ⚠ Int32, NOT UInt. The p07 puzzle spells this `UInt`, but `Int`/`UInt`
+    # stopped conforming to `DevicePassable` in Mojo 1.0.0rc2, so the puzzle's
+    # literal form no longer compiles. What Pattern B actually contrasts —
+    # a RUNTIME size vs Pattern A's comptime one — is unchanged.
+    batch: Int32,  # <-- Runtime parameter for bounds checking!
 ):
-    """Layout as type param, batch as runtime UInt (puzzle p07 pattern)."""
+    """Layout as type param, batch as a runtime scalar (puzzle p07 pattern)."""
     var row = Int(block_idx.y * TILE + thread_idx.y)
     var col = Int(block_idx.x * TILE + thread_idx.x)
 
@@ -164,7 +168,7 @@ def launch_pattern_b[
         output,
         input,
         W,
-        UInt(actual_batch),  # Pass batch as runtime UInt
+        Int32(actual_batch),  # Pass batch as a runtime scalar
         grid_dim=(grid_x, grid_y),
         block_dim=(TILE, TILE),
     )

@@ -21,7 +21,8 @@ conversion even when the signature is right. See
 `planners/trajectory/mppi_kernels.mojo::mppi_sample_actions_batched_kernel`.
 
 Usage:
-    python3 scripts/audit_kernel_scalar_args.py [roots...]    # default: mojo_rl
+    python3 scripts/audit_kernel_scalar_args.py [roots...]
+        # default roots: mojo_rl examples tests
 
 Exit code is the number of findings, so it can gate CI.
 
@@ -82,9 +83,17 @@ def _split_top(params):
     return out
 
 
+# `examples/archive/README.md` states these "do NOT compile and are excluded
+# from the `examples-compile` CI manifest" — they reference removed APIs on
+# purpose. Scanning them only ever produces unresolvable imports.
+SKIP = ("examples/archive",)
+
+
 def _sources(roots):
     for root in roots:
         for d, _, files in os.walk(root):
+            if any(d.startswith(s) for s in SKIP):
+                continue
             for f in files:
                 if f.endswith(".mojo"):
                     yield os.path.join(d, f)
@@ -133,7 +142,10 @@ def scan(roots):
 
 
 def main():
-    roots = sys.argv[1:] or ["mojo_rl"]
+    # Defaults span all three roots on purpose: `pixi run build` only covers
+    # `mojo_rl`, and tests/examples define kernels of their own that nothing
+    # else compiles. Three of the first four findings here were in an example.
+    roots = sys.argv[1:] or ["mojo_rl", "examples", "tests"]
     findings, unresolved, n_launched = scan(roots)
     resolved = n_launched - len(unresolved)
     print(f"kernels launched: {n_launched}   resolved to a def: {resolved}")
