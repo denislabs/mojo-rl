@@ -133,7 +133,7 @@ comptime WRIST_ROLL_ADR: Int = 4
 comptime GRIPPER_ADR: Int = 5
 
 # Same layout as SO-100's, so one config shape serves both.
-comptime SO_ARM101_OBS_DIM: Int = 21
+comptime SO_ARM101_OBS_DIM: Int = 27
 
 # ⚠⚠ SIZED FROM **OUR** HULL: `fields_build` needs **32 934** vertices where
 # MuJoCo's `mesh_graph` totals 26 198 — ours keeps 26% more. 33 280 is that

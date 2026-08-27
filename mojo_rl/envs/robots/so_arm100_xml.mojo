@@ -130,7 +130,7 @@ comptime WRIST_ROLL_ADR: Int = 4
 comptime JAW_ADR: Int = 5
 
 # obs = qpos(6) + qvel(6) + jaw_xyz(3) + target_xyz(3) + jaw_to_target(3)
-comptime SO_ARM100_OBS_DIM: Int = 21
+comptime SO_ARM100_OBS_DIM: Int = 27
 
 # Convex-hull vertex budget for the ten collidable meshes.
 #

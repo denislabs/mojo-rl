@@ -42,7 +42,7 @@ from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False
 ]
-comptime OBS_DIM = EnvT.OBS_DIM  # 21
+comptime OBS_DIM = EnvT.OBS_DIM  # 27 (incl. the previous action)
 comptime ACT_DIM = EnvT.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime BATCH = 256

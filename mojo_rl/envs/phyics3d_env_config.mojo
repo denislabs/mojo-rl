@@ -188,6 +188,36 @@ trait Phyics3dEnvConfig:
     # Setting this True and not implementing the hook gives a permanently zero
     # `qfrc` — every actuator dead, which trains to a flat curve rather than
     # crashing. Flip it in the same commit as the hook.
+    comptime RECORD_PREV_ACTION: Bool = False
+    """The env records each control step's action into `Data.meta`, so a
+    config can put the PREVIOUS ACTION in its observation and penalise the
+    ACTION RATE.
+
+    Layout, when set: `META_IDX_TASK_PARAM_0..5` hold the action of the
+    PREVIOUS control step and `..._6..11` the CURRENT one. The env shifts
+    current -> previous and writes the new action, once per control step,
+    AT ACTION-APPLICATION TIME.
+
+    ⚠⚠ THE WRITE SITE IS THE WHOLE DESIGN. The obvious place is the reward
+    hook, which already receives both `actions` and a mutable `meta` — and it
+    is WRONG, because the two devices run the hooks in OPPOSITE ORDER:
+
+        CPU (`Phyics3dEnv.step`)          physics -> REWARD -> obs
+        GPU (`Phyics3dBatchedEnv`)        physics -> OBS -> reward
+
+    so an action stashed by the reward hook is visible to the CPU's obs on the
+    SAME step and to the GPU's obs only on the NEXT one. That is a silent
+    one-step skew between a policy's training and its evaluation, with nothing
+    raising. Action application happens before physics on both paths, so a
+    write there is the same value at every later hook on both devices.
+
+    ⚠ Costs 12 of the 12 `TASK_PARAM` slots for a 6-DOF model, so a config
+    cannot combine this with per-episode randomised model parameters without
+    widening `METADATA_SIZE`.
+
+    ⚠ `init_qpos` must clear both groups, or the first step of an episode sees
+    the last step of the previous one — `_reset_env_lane` does not zero these.
+    """
     comptime NORMALIZED_ACTIONS: Bool = False
     """Actions arrive in [-1, 1] and are mapped AFFINELY onto each actuator's
     own `ctrlrange`, instead of being taken as raw control values and clamped.

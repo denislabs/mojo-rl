@@ -63,6 +63,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
     META_IDX_SIM_TIME,
+    META_IDX_TASK_PARAM_0,
+    META_IDX_TASK_PARAM_6,
 )
 from mojo_rl.nn.core.tensor import TensorImpl
 
@@ -548,6 +550,17 @@ struct Phyics3dEnv[
         # + gear), written straight into the fields qfrc.
         var clamped_action = action.copy()
         var action_list = clamped_action.to_list()
+        # ⚠ BEFORE PHYSICS AND BEFORE EVERY HOOK — see
+        # `Phyics3dEnvConfig.RECORD_PREV_ACTION` for why the reward hook is
+        # the wrong place (the two devices order obs and reward oppositely).
+        comptime if Self.CONFIG.RECORD_PREV_ACTION:
+            for j in range(Self.ACTION_DIM):
+                self.d.meta.data[META_IDX_TASK_PARAM_0 + j] = (
+                    self.d.meta.data[META_IDX_TASK_PARAM_6 + j]
+                )
+                self.d.meta.data[META_IDX_TASK_PARAM_6 + j] = Scalar[
+                    Self.dtype
+                ](action_list[j])
         # The CONFIG hook keeps ONCE-PER-CONTROL-STEP semantics: it is action
         # semantics, not a force law, and SawyerReach's applies a mocap DELTA
         # that would compound `frame_skip` times inside the loop below.

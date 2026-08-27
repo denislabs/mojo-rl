@@ -75,6 +75,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     METADATA_SIZE,
     META_IDX_STEP_COUNT,
+    META_IDX_TASK_PARAM_0,
+    META_IDX_TASK_PARAM_6,
     META_IDX_NUM_CONTACTS,
     MODEL_CURRICULUM_SIZE,
 )
@@ -1393,6 +1395,43 @@ struct Phyics3dBatchedEnv[
         var actions_t = LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM)
         ](self._action)
+
+        # 2a') Record the action for configs that put the PREVIOUS one in
+        # their observation. ⚠ HERE, not in the reward hook: this path runs
+        # obs BEFORE reward while `Phyics3dEnv` runs reward before obs, so a
+        # write from the reward hook lands one step apart on the two devices.
+        # See `Phyics3dEnvConfig.RECORD_PREV_ACTION`.
+        comptime if Self.CONFIG.RECORD_PREV_ACTION:
+
+            @parameter
+            @always_inline
+            def record_action_kernel(
+                actions: LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
+                    MutAnyOrigin,
+                ],
+                meta: LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                    MutAnyOrigin,
+                ],
+            ):
+                var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if env >= Self.N_ENVS:
+                    return
+                for j in range(Self.ACT_DIM):
+                    meta[env, META_IDX_TASK_PARAM_0 + j] = meta[
+                        env, META_IDX_TASK_PARAM_6 + j
+                    ]
+                    meta[env, META_IDX_TASK_PARAM_6 + j] = actions[env, j]
+
+            c.enqueue_function[record_action_kernel](
+                actions_t,
+                self.d.meta.lt["gpu", type_of(self.d).L_META](),
+                grid_dim=(Self.BLOCKS,),
+                block_dim=(TPB,),
+            )
 
         # 2b) Mocap-controlled models: push the updated target into the
         #     body pose BEFORE the step so the weld solve tracks it.

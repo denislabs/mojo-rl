@@ -55,6 +55,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_TASK_PARAM_0,
+    META_IDX_TASK_PARAM_6,
     MODEL_JOINT_SIZE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
@@ -264,6 +266,20 @@ struct SoArmReachConfig[
     # steps and holds its pose to 0.03 deg. The behaviour is available; it has
     # simply never been worth more than the noise.
     VEL_FLOOR: Float64 = 0.5,
+    # ── the action-rate term ──────────────────────────────────────────────
+    # L2 change in the NORMALIZED action per control step. The action box is
+    # [-1, 1] per joint, so an L2 rate of 0.05 is a gentle command and 1.0 is
+    # a quarter of the full range on every joint at once, every step.
+    #
+    # ⚠ MEASURED: the raw greedy policy commands ~4438 servo ticks/step summed
+    # over six joints, which is ~1.1 in normalized L2 — so `RATE_FREE = 0.05`
+    # with a margin of 1.0 puts today's behaviour near the floor and a smooth
+    # command near 1.0, with gradient across the whole span.
+    RATE_FREE: Float64 = 0.05,
+    RATE_MARGIN: Float64 = 1.0,
+    # Same strength knob as `VEL_FLOOR`, and deliberately the same value: the
+    # two terms multiply, so an arm that both drifts and chatters pays twice.
+    RATE_FLOOR: Float64 = 0.5,
     # Uniform noise on each joint at reset, radians, clipped to joint range.
     RESET_NOISE: Float64 = 0.05,
     MAX_STEPS_P: Int = 500,
@@ -312,6 +328,30 @@ struct SoArmReachConfig[
     # 2.0 here would map [-2, 2] onto the range and put the useful band back
     # inside the rails, i.e. undo the fix while still looking configured.
     comptime NORMALIZED_ACTIONS: Bool = True
+    # ⚠⚠ THE PREVIOUS ACTION IS IN THE OBSERVATION (indices 21..26) AND THE
+    # REWARD PENALISES THE ACTION RATE. Five checkpoints reduced joint SPEED
+    # and none reduced OSCILLATION, because a velocity penalty cannot see one:
+    #
+    #     ckpt                 mean |qvel|   reversals
+    #     margin .25              1.214         59%
+    #     margin .05              0.737         85%
+    #     normalized actions      1.061         85%
+    #     gaussian, margin 5      0.923         92%
+    #
+    # Amplitude fell and FREQUENCY ROSE every time — a small fast oscillation
+    # has a lower mean speed than a large slow one, so the policy kept
+    # satisfying the term the cheapest way available. `|a_t - a_{t-1}|` is the
+    # quantity that actually distinguishes them.
+    #
+    # ⚠ AND IT ONLY WORKS BECAUSE THE PREVIOUS ACTION IS OBSERVABLE. Penalise
+    # a quantity the agent cannot see and it can only learn a blurred average
+    # of it; that is why this waited for the observation to widen rather than
+    # being added to the reward alone.
+    #
+    # ⚠ The orbit is the POLICY's, not the deploy wrapper's — measured: with
+    # NO smoothing and NO rate clamp the sim arm still swings 12.0 mm after
+    # settling, against 14.5 mm through the full deploy loop.
+    comptime RECORD_PREV_ACTION: Bool = True
 
     # ⚠⚠ NOT A SIZE HINT. Zero silently disables every mesh contact — both
     # narrow phases guard their mesh branch on `NMESH_VERTS > 0`. The value is
@@ -367,6 +407,31 @@ struct SoArmReachConfig[
             Scalar[DTYPE](Self.TARGET_RADIUS),
             Scalar[DTYPE](Self.REWARD_MARGIN),
         )
+
+    @always_inline
+    @staticmethod
+    def _smooth[DTYPE: DType](rate_sq: Scalar[DTYPE]) -> Scalar[DTYPE]:
+        """Multiplicative action-rate term in `[RATE_FLOOR, 1]`, from the
+        SQUARED L2 change in the normalized action since the last control step.
+
+        ⚠ THE QUANTITY IS THE RATE, NOT THE SPEED, and that distinction is the
+        entire reason this exists — see `RECORD_PREV_ACTION`. An action that
+        alternates +-0.5 every step has a large rate and a small net motion;
+        joint speed cannot tell it from a slow drift.
+
+        ⚠ GAUSSIAN, so the term never reaches exactly zero. `_still` was
+        quadratic-with-value-0 and spent 69.5% of its steps in a region with
+        no derivative at all; that mistake is not repeated here.
+        """
+        var calm = tolerance[SIGMOID_GAUSSIAN, 0.1, DTYPE](
+            sqrt(rate_sq),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](Self.RATE_FREE),
+            Scalar[DTYPE](Self.RATE_MARGIN),
+        )
+        return Scalar[DTYPE](Self.RATE_FLOOR) + Scalar[DTYPE](
+            1.0 - Self.RATE_FLOOR
+        ) * calm
 
     @always_inline
     @staticmethod
@@ -430,6 +495,12 @@ struct SoArmReachConfig[
         obs.append(tx - ex)
         obs.append(ty - ey)
         obs.append(tz - ez)
+        # ⚠ THE PREVIOUS ACTION, indices 21..26 — the env wrote it at
+        # action-application time (`RECORD_PREV_ACTION`), which is the one
+        # point the CPU and GPU paths share; the reward hook is NOT, because
+        # the two devices run obs and reward in opposite order.
+        for i in range(6):
+            obs.append(d.meta.data[META_IDX_TASK_PARAM_6 + i])
         return True
 
     # === CPU: Reset ===
@@ -488,6 +559,14 @@ struct SoArmReachConfig[
         d.mocap_pos.data[Self.TARGET_BODY * 3 + 2] = Scalar[DTYPE](
             Self.BASE_Z + r * sin(el)
         )
+        # ⚠ CLEAR THE ACTION SLOTS. `_reset_env_lane` does not touch the
+        # TASK_PARAM range, so without this the first step of an episode reads
+        # the LAST action of the previous one — an enormous fake action rate on
+        # step 0, and a previous-action observation belonging to another
+        # episode's target.
+        for i in range(6):
+            d.meta.data[META_IDX_TASK_PARAM_0 + i] = Scalar[DTYPE](0)
+            d.meta.data[META_IDX_TASK_PARAM_6 + i] = Scalar[DTYPE](0)
         # Identity orientation, stored [x, y, z, w].
         d.mocap_quat.data[Self.TARGET_BODY * 4 + 0] = Scalar[DTYPE](0)
         d.mocap_quat.data[Self.TARGET_BODY * 4 + 1] = Scalar[DTYPE](0)
@@ -531,8 +610,17 @@ struct SoArmReachConfig[
         for i in range(D.NV):
             var v = d.qvel.data[i]
             speed2 += v * v
+        var rate2 = Scalar[DTYPE](0)
+        for i in range(6):
+            var dA = (
+                d.meta.data[META_IDX_TASK_PARAM_6 + i]
+                - d.meta.data[META_IDX_TASK_PARAM_0 + i]
+            )
+            rate2 += dA * dA
         return (
-            Self._reach(Scalar[DTYPE](dist)) * Self._still(speed2),
+            Self._reach(Scalar[DTYPE](dist))
+            * Self._still(speed2)
+            * Self._smooth(rate2),
             False,
         )
 
@@ -663,6 +751,9 @@ struct SoArmReachConfig[
         obs[env, b + 6] = tx - ex
         obs[env, b + 7] = ty - ey
         obs[env, b + 8] = tz - ez
+        # The previous action, 21..26 — byte-for-byte the CPU hook's tail.
+        for i in range(6):
+            obs[env, b + 9 + i] = meta[env, META_IDX_TASK_PARAM_6 + i]
         return True
 
     @always_inline
@@ -786,7 +877,16 @@ struct SoArmReachConfig[
         for i in range(NV_F):
             var v = rebind[Scalar[DTYPE]](qvel[env, i])
             speed2 += v * v
-        return (Self._reach(dist) * Self._still(speed2), False)
+        var rate2 = Scalar[DTYPE](0)
+        for i in range(6):
+            var dA = rebind[Scalar[DTYPE]](
+                meta[env, META_IDX_TASK_PARAM_6 + i]
+            ) - rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + i])
+            rate2 += dA * dA
+        return (
+            Self._reach(dist) * Self._still(speed2) * Self._smooth(rate2),
+            False,
+        )
 
     @always_inline
     @staticmethod
@@ -895,6 +995,10 @@ struct SoArmReachConfig[
             Self.BASE_Z
         ) + r * sin_dt[DTYPE](el)
         # Identity orientation, [x, y, z, w].
+        # ⚠ The GPU twin of the CPU reset's clear — same reason, same slots.
+        for i in range(6):
+            meta[env, META_IDX_TASK_PARAM_0 + i] = Scalar[DTYPE](0)
+            meta[env, META_IDX_TASK_PARAM_6 + i] = Scalar[DTYPE](0)
         mocap_quat[env, Self.TARGET_BODY * 4 + 0] = Scalar[DTYPE](0)
         mocap_quat[env, Self.TARGET_BODY * 4 + 1] = Scalar[DTYPE](0)
         mocap_quat[env, Self.TARGET_BODY * 4 + 2] = Scalar[DTYPE](0)

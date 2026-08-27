@@ -77,7 +77,7 @@ comptime BatchedEnvT = Phyics3dBatchedEnv[
     SoArm101Model, SoArm101ReachConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
 ]
 
-comptime OBS_DIM = BatchedEnvT.OBS_DIM  # 21
+comptime OBS_DIM = BatchedEnvT.OBS_DIM  # 27 (incl. the previous action)
 comptime ACT_DIM = 6
 comptime HIDDEN = 256
 

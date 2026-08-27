@@ -67,7 +67,11 @@ from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
 from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
 from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from mojo_rl.physics3d.gpu.constants import (
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_MIN,
+    META_IDX_TASK_PARAM_6,
+)
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
@@ -78,7 +82,7 @@ comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False
 ]
-comptime OBS_DIM = EnvT.OBS_DIM  # 21
+comptime OBS_DIM = EnvT.OBS_DIM  # 27 (incl. the previous action)
 comptime ACT_DIM = EnvT.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime BATCH = 256
@@ -434,6 +438,23 @@ def main() raises:
                 Scalar[DT](TARGET_Z)
             )
             env.set_state(qp, qv)
+            # ⚠⚠ THE PREVIOUS ACTION, WRITTEN BY HAND. The observation's last
+            # six entries are it (`SoArmReachConfig.RECORD_PREV_ACTION`), and
+            # the ENV fills them at action-application time inside `step` —
+            # which this program never calls. It drives the simulator purely
+            # as a kinematics oracle through `set_state`, so nothing would
+            # write those slots and the policy would read six zeros forever:
+            # a policy trained to see its own last command, deployed blind to
+            # it, with no error anywhere.
+            #
+            # `action` still holds the PREVIOUS tick's output at this point —
+            # it is overwritten by `select_greedy_action` below — which is
+            # exactly the value the env would have recorded. On the first tick
+            # it is zero, matching a fresh reset.
+            for i in range(SO101_N):
+                env.d.meta.data[META_IDX_TASK_PARAM_6 + i] = Scalar[DT](
+                    action[i]
+                )
 
             var st = env.get_state()
             for i in range(OBS_DIM):

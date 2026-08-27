@@ -80,7 +80,10 @@ from mojo_rl.utils.fmt import fixed
 
 comptime SEED: Int = 0
 
-comptime OBS_DIM = 21  # qpos(6) + qvel(6) + ee(3) + target(3) + ee_to_target(3)
+comptime OBS_DIM = 27
+"""qpos(6) + qvel(6) + ee(3) + target(3) + ee_to_target(3) + PREV ACTION(6).
+⚠ The last six are `SoArmReachConfig.RECORD_PREV_ACTION`; a policy trained
+with them cannot be evaluated without them."""
 comptime ACT_DIM = 6
 comptime HIDDEN = 256
 """⚠ ARCHITECTURE ONLY, AND IT MUST MATCH THE TRAINER'S — `nn-ckpt v2` loads by
