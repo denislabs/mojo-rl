@@ -215,7 +215,24 @@ struct SoArmReachConfig[
     # VEL_MARGIN`. Defaults put the measured shake (L2 ~3 rad/s) at the floor
     # and a still arm at 1.0.
     VEL_FREE: Float64 = 0.3,
-    VEL_MARGIN: Float64 = 2.0,
+    # ⚠⚠ 5.0, NOT 2.0, AND THIS IS WHY FOUR CHECKPOINTS SAT AT THE FLOOR.
+    # `_still` used `SIGMOID_QUADRATIC` with value-at-margin 0, which has
+    # COMPACT SUPPORT: exactly zero past `VEL_FREE + VEL_MARGIN` = 2.3 rad/s,
+    # and exactly zero means ZERO DERIVATIVE. Measured on the trained policy:
+    # L2 joint speed after arrival averages **2.483 rad/s** over a 0.96..4.42
+    # range, so **69.5% of control steps sat in the flat region** and the term
+    # said nothing at all about slowing down. Mean `calm` was 0.080.
+    #
+    # That is the same defect as the action clamp — a dead gradient band —
+    # built by taking dm_control's `small_control` margin (1.0 on a [-1, 1]
+    # control) without checking it against THIS arm's speed range.
+    #
+    #     speed   quad m=2   gauss m=5
+    #      1.0      0.878       0.956
+    #      2.0      0.278       0.766
+    #      2.5      0.000       0.640     <- where the policy lives
+    #      4.4      0.000       0.213
+    VEL_MARGIN: Float64 = 5.0,
     # The floor of the multiplicative term — THE STRENGTH KNOB.
     #
     # ⚠⚠ 0.5, NOT dm_control's 0.8 ((4 + s) / 5), BECAUSE 0.8 WAS MEASURABLY
@@ -356,7 +373,16 @@ struct SoArmReachConfig[
     def _still[DTYPE: DType](speed_sq: Scalar[DTYPE]) -> Scalar[DTYPE]:
         """Multiplicative stillness term in `[VEL_FLOOR, 1]`, from the SQUARED
         L2 joint speed. See `VEL_FREE` for the measurement behind it."""
-        var calm = tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](
+        # ⚠⚠ GAUSSIAN, NOT QUADRATIC, AND value_at_margin 0.1 NOT 0. A
+        # quadratic with value-at-margin 0 reaches exactly zero at the margin
+        # and stays there, so any policy beyond it gets no gradient — see
+        # `VEL_MARGIN` for the 69.5% of steps that was true for. A gaussian
+        # never reaches zero, so the term keeps a derivative however fast the
+        # arm happens to be moving. The margin is wide enough that this is
+        # belt-and-braces rather than the load-bearing part, and that is the
+        # point: the shape should not be able to create a dead zone again if
+        # the operating range moves.
+        var calm = tolerance[SIGMOID_GAUSSIAN, 0.1, DTYPE](
             sqrt(speed_sq),
             Scalar[DTYPE](0.0),
             Scalar[DTYPE](Self.VEL_FREE),
