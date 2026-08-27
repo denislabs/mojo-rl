@@ -193,10 +193,13 @@ def _hit_capsule(r: Ray, c: Vec3, q: Quat, radius: Float64,
     var e = seg.dot(w0)
     var den = a * cc - b * b
 
-    var t_ray = 0.0
-    var s_seg = 0.0
+    # ⚠ ONLY `s_seg` IS SOLVED HERE. The closest-approach `t` that goes with
+    # it is never used: the clamp below can move the segment point, so `t` is
+    # re-solved against the CLAMPED point either way (see the re-solve).
+    # Computing it here too would be a second, unclamped answer to the same
+    # question — the shape of defect this file already met once at the caps.
+    var s_seg: Float64
     if den > 1e-12 or den < -1e-12:
-        t_ray = (b * e - cc * d) / den
         s_seg = (a * e - b * d) / den
     else:
         # ⚠⚠ RAY PARALLEL TO THE AXIS — AND THE NEAR CAP IS NOT ALWAYS `s=0`.
@@ -219,7 +222,7 @@ def _hit_capsule(r: Ray, c: Vec3, q: Quat, radius: Float64,
     # Re-solve the ray parameter against the clamped segment point, or a click
     # near either cap reports a distance from the wrong place.
     var sp = p0 + seg * s_seg
-    t_ray = (sp - r.origin).dot(r.dir)
+    var t_ray = (sp - r.origin).dot(r.dir)
     if t_ray < 1e-6:
         return -1.0
     var rp = r.origin + r.dir * t_ray
@@ -266,7 +269,7 @@ def pick_geom(
         var wc = bp + bq.rotate_vec(lp)
         var wq = bq * lq
 
-        var t = -1.0
+        var t: Float64
         var rad = rf.geom_radius[i] * visual_radius_scale
         if gt == RF_SPHERE:
             t = _hit_sphere(r, wc, rad)

@@ -259,9 +259,9 @@ def _minv_jt[
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
         for k in range(nv):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * Je[
-                row * nv + k
-            ]
+            acc += rebind[Scalar[DTYPE]](
+                m_inv[env, i * nv + k]
+            ) * Je[unsafe_offset = row * nv + k]
         out_v[i] = acc
 
 
@@ -279,7 +279,7 @@ def _dot_row[
     """`J_row . v`."""
     var acc = Scalar[DTYPE](0)
     for i in range(nv):
-        acc += Je[row * nv + i] * v[i]
+        acc += Je[unsafe_offset=row * nv + i] * v[i]
     return acc
 
 
@@ -305,7 +305,10 @@ def _refresh_jar[
     at most `noslip_iterations` times per step.
     """
     for e in range(num_edges):
-        jar[e] = _dot_row[DTYPE, V_CAP, JE_AS](Je, e, qacc, nv) + bias_e[e]
+        jar[e] = (
+            _dot_row[DTYPE, V_CAP, JE_AS](Je, e, qacc, nv)
+            + bias_e[unsafe_offset=e]
+        )
 
 
 @always_inline
@@ -434,12 +437,12 @@ def noslip_pyramidal[
         # primal solver's own.
         if it == 0:
             for i in range(num_edges):
-                var f = force[i]
-                improvement += HALF * f * f * R_e[i]
+                var f = force[unsafe_offset=i]
+                improvement += HALF * f * f * R_e[unsafe_offset=i]
 
         # ── sweep 1: dry-friction dof rows, box-clamped to +-frictionloss ──
         for i in range(num_edges):
-            if Int(kind_e[i]) != SROW_FRICTION:
+            if Int(kind_e[unsafe_offset=i]) != SROW_FRICTION:
                 continue
             _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](env, nv, m_inv, Je, i, mj_a)
             var a_ii = _dot_row[DTYPE, V_CAP, JE_AS](Je, i, mj_a, nv)
@@ -448,9 +451,9 @@ def noslip_pyramidal[
             )
 
             var res = jar[i]
-            var old = force[i]
+            var old = force[unsafe_offset=i]
             var f = old - res * arinv
-            var lim = floss_e[i]
+            var lim = floss_e[unsafe_offset=i]
             if f < -lim:
                 f = -lim
             elif f > lim:
@@ -458,7 +461,7 @@ def noslip_pyramidal[
 
             var d = f - old
             if d != ZERO:
-                force[i] = f
+                force[unsafe_offset=i] = f
                 for k in range(nv):
                     qacc[k] += d * mj_a[k]
                 _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS](
@@ -499,8 +502,8 @@ def noslip_pyramidal[
 
                 var r0 = jar[j0]
                 var r1 = jar[j1]
-                var old0 = force[j0]
-                var old1 = force[j1]
+                var old0 = force[unsafe_offset=j0]
+                var old1 = force[unsafe_offset=j1]
 
                 # `bc = res - Ac * oldforce`
                 var b0 = r0 - (a00 * old0 + a01 * old1)
@@ -540,8 +543,8 @@ def noslip_pyramidal[
                 var d0 = f0 - old0
                 var d1 = f1 - old1
                 if d0 != ZERO or d1 != ZERO:
-                    force[j0] = f0
-                    force[j1] = f1
+                    force[unsafe_offset=j0] = f0
+                    force[unsafe_offset=j1] = f1
                     for q in range(nv):
                         qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
                     _refresh_jar[DTYPE, E_CAP, V_CAP](
@@ -563,11 +566,11 @@ def noslip_pyramidal[
     for i in range(nv):
         qfrc[i] = Scalar[DTYPE](0)
     for e in range(num_edges):
-        var f = force[e]
+        var f = force[unsafe_offset=e]
         if f == Scalar[DTYPE](0):
             continue
         for i in range(nv):
-            qfrc[i] += Je[e * nv + i] * f
+            qfrc[i] += Je[unsafe_offset=e * nv + i] * f
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
         for k in range(nv):

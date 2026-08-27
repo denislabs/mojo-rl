@@ -4213,8 +4213,7 @@ def box_box_manifold[
     # Menagerie board is measured at float64 and must not move; this is a
     # float32 noise-floor repair, not a change of algorithm.
     var tie_floor = Scalar[DTYPE](0)
-    @parameter
-    if DTYPE != DType.float64:
+    comptime if DTYPE != DType.float64:
         # float32's eps. Anything narrower is noisier still, so this is a
         # lower bound rather than a wrong one; physics3d runs f32 and f64.
         comptime _EPS32 = Scalar[DTYPE](1.1920929e-07)

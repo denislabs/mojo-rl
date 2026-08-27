@@ -516,7 +516,7 @@ def settle_free_props[
     # against 0.01. The prop is at rest and carrying a residual contact
     # acceleration; a message saying it is moving would send the reader after
     # the wrong quantity.
-    var why = String("")
+    var why: String
     if mv >= SETTLE_QVEL_TOL and ma >= SETTLE_QACC_TOL:
         why = "|qvel| AND |qacc|"
     elif mv >= SETTLE_QVEL_TOL:

@@ -1,4 +1,4 @@
-"""physics3d studio — the authoring tool's own pieces.
+"""`physics3d` studio — the authoring tool's own pieces.
 
 Deliberately NOT built on `Phyics3dEnv`: an env is the RL contract (obs /
 reward / done / action space) and a composed scene is not a task. Forcing the

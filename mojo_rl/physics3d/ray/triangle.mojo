@@ -51,7 +51,7 @@ def ray_basis[
     Returns `(b0, b1)` in the reference's final order: `b1` is the
     Gram-Schmidt result, `b0` is `b1 x lvec`.
     """
-    var b0 = Vec3Generic[DTYPE](1, 1, 1)
+    var b0: Vec3Generic[DTYPE]
     var ax = abs(lvec.x)
     var ay = abs(lvec.y)
     var az = abs(lvec.z)

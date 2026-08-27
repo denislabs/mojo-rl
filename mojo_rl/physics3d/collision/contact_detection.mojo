@@ -3329,11 +3329,15 @@ def _detect_contacts_env[
                     # instead of returning one point. See
                     # `collision/native_multicontact.mojo`; BOX x BOX is not
                     # here because MuJoCo sends it to `mjc_BoxBox`.
+                    # `MC_ENABLED` sits LAST because it is a comptime
+                    # `True`: on the left it folds and the compiler flags the
+                    # rest of the chain unreachable. Every other operand is a
+                    # pure comparison, so the order is not observable.
                     var mc_pair = (
-                        MC_ENABLED
-                        and (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
+                        (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
                         and (gj_type == GEOM_MESH or gj_type == GEOM_BOX)
                         and contact_margin <= Scalar[DTYPE](0)
+                        and MC_ENABLED
                     )
                     var wf1 = InlineArray[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)

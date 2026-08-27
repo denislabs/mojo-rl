@@ -327,19 +327,25 @@ struct ModelDefFromXML[
     # neither is.
     xml: String = "",
 ](ModelDefLike):
-    """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
+    """`ModelDefLike` driven entirely from an MJCF document.
 
-    All physics dimensions must be provided; obtain them from `parse_xml()`:
+    The document is a FILE (`xml_path`) for every shipped model since phase
+    1b; `xml` carries inline MJCF and is for fixtures. Exactly one of the two
+    must be set.
+
+    All physics dimensions must be provided; obtain them from `parse_xml()`.
+    ⚠ NAME THEM — `xml_path` and `xml` are the LAST two parameters (28 and
+    29), so the positional form no longer starts with the document:
 
         comptime pm = parse_xml(xml)
         comptime XmlModel = ModelDefFromXML[
-            xml,
-            pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
-            pm.NTEX, pm.NMAT, pm.NLIGHT, pm.NCAM,
+            xml_path="path/to/model.xml",
+            nbody=pm.NBODY, njoint=pm.NJOINT, nq=pm.NQ, nv=pm.NV,
+            ngeom=pm.NGEOM, nact=pm.NACT, ntex=pm.NTEX, nmat=pm.NMAT,
+            nlight=pm.NLIGHT, ncam=pm.NCAM,
         ]
 
     Parameters:
-        xml:           Embedded MJCF XML string (must be comptime-known).
         nbody:         Total body count including worldbody.
         njoint:        Total joint count.
         nq:            Total position DOF.
@@ -391,6 +397,19 @@ struct ModelDefFromXML[
             the cone, so there is nothing to permit. Kept as an accepted
             parameter so existing model defs still compile; new code must not
             pass it.
+        na:            MuJoCo's `m->na`, the actuator-activation count. Hand
+            supplied — `parse_xml` does not compute it — and asserted against
+            `FlatModelDef` by `init_fields`. Non-zero only for quadruped (12),
+            dog (38) and dog_fetch.
+        nkey:          MuJoCo's `m->nkey`, the `<keyframe>` count. Hand
+            supplied on the same terms as `na`; non-zero only for so_arm100
+            (2).
+        xml_path:      Path to the model's `.xml`. Asset paths inside it
+            resolve against its DIRECTORY, which is MuJoCo's own rule. Every
+            shipped model uses this.
+        xml:           Inline MJCF, for FIXTURES (must be comptime-known).
+            Assets inside one resolve against the process CWD, since there is
+            no model file to be relative to.
     """
 
     # === Dimensions required by ModelDefLike ===

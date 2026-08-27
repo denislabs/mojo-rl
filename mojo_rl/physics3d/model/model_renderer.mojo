@@ -201,7 +201,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # `build_render_fields(fmd, xml_text, base_dir)` from the same
         # `FlatModelDef` its `Model` was built from, instantiates
         # `ModelRenderer[RfOnlyModelDef]`, and passes them here.
-        var rf = RenderFields()
+        var rf: RenderFields
         if adopt_rf:
             rf = adopt_rf.value().copy()
         else:

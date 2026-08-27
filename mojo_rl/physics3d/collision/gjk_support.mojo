@@ -182,7 +182,7 @@ def support_capsule[
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """`mjc_capsuleSupport` (`engine_collision_convex.c`), in the LOCAL frame:
+    """`mjc_capsuleSupport` (`engine_collision_convex.c`), in the LOCAL frame.
 
         mulMatTVec3(local_dir, mat, dir)
         local_supp = local_dir * radius
@@ -275,7 +275,7 @@ def support_ellipsoid[
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """`mjc_ellipsoidSupport` (`engine_collision_convex.c:562`), verbatim:
+    """`mjc_ellipsoidSupport` (`engine_collision_convex.c:562`), verbatim.
 
         res = local_dir * size          (elementwise)
         normalize(res)
@@ -336,7 +336,7 @@ def support_cylinder[
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """`mjc_cylinderSupport` (`engine_collision_convex.c`), in the LOCAL frame:
+    """`mjc_cylinderSupport` (`engine_collision_convex.c`), in the LOCAL frame.
 
         mulMatTVec3(local_dir, mat, dir)
         n2  = local_dir[0]^2 + local_dir[1]^2

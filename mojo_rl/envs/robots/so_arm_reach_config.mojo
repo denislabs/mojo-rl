@@ -377,7 +377,7 @@ struct SoArmReachConfig[
         act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        """qpos, qvel, the end-effector, the target, and the vector between.
+        """`qpos`, `qvel`, the end-effector, the target, and the vector between.
 
         ⚠ `ee_to_target` is redundant with the two absolute positions and is
         included anyway: it is the only term whose scale matches the reward,
@@ -606,7 +606,7 @@ struct SoArmReachConfig[
         ],
         env: Int,
     ) -> Bool:
-        """qpos, qvel, the end-effector, the target, and the vector between.
+        """`qpos`, `qvel`, the end-effector, the target, and the vector between.
 
         ⚠⚠ MUST STAY BYTE-FOR-BYTE IN THE SAME ORDER AS
         `custom_extract_obs_cpu`. The batched trainer writes a checkpoint the

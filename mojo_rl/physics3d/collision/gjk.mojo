@@ -1192,9 +1192,9 @@ def _gjk_intersect[
                     )
             return 1
 
-        var nx = Scalar[DTYPE](0)
-        var ny = Scalar[DTYPE](0)
-        var nz = Scalar[DTYPE](0)
+        var nx: Scalar[DTYPE]
+        var ny: Scalar[DTYPE]
+        var nz: Scalar[DTYPE]
         if index == 0:
             nx = f0[1]
             ny = f0[2]

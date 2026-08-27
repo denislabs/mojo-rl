@@ -286,10 +286,7 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
             rmin[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MIN])
             rmax[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MAX])
             factors[i] = close
-        try:
-            set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
-        except:
-            pass
+        set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
     # === CPU: the prop placer, the settle, and the TCP initializer ========
     @staticmethod

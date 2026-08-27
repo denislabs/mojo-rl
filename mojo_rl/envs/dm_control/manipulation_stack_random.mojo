@@ -212,7 +212,7 @@ def brick_hole_0_of(phys: Int) -> Int:
 
 @always_inline
 def brick_qpos_adr_of(free_slot: Int) -> Int:
-    """qpos address of the `free_slot`-th FREE brick, counting from 0.
+    """`qpos` address of the `free_slot`-th FREE brick, counting from 0.
 
     ⚠ INDEXED BY FREE SLOT, NOT BY PHYSICAL BRICK. Physical brick
     `FIXED_BRICK` has no address at all, so the free bricks occupy slots 0 and

@@ -127,38 +127,36 @@ comptime MC_EDGE_TOL: Float64 = 0.00159999931
 # refusing to load a third-party model over it would be worse.
 # See `tests/physics3d/test_multicontact_polygon_caps_vs_mujoco.mojo`.
 
-# ⚠⚠ OFF: THIS PATH IS NOT CORRECT YET AND MUST NOT DRIVE THE ENGINE.
+# ⚠⚠ ON since `8b55a978`, and exact. The kill switch stays for ABLATION.
 #
-# Landed switched off so the code is preserved and keeps COMPILING — a branch
-# behind `comptime if False` is uncompiled code, which is how this repo lost a
-# GPU path once already
-# (`feedback_ungated_generic_is_uncompiled_code`). This flag is read in a
-# RUNTIME boolean, so the whole routine is type-checked and codegen'd on every
-# build; only the dispatch is dead.
+# It landed OFF (`aca8c509`) so the code was preserved and kept COMPILING — a
+# branch behind `comptime if False` is uncompiled code, which is how this repo
+# lost a GPU path once already (`feedback_ungated_generic_is_uncompiled_code`).
+# That is why the flag is read in a RUNTIME boolean and not a `comptime if`:
+# the whole routine is type-checked and codegen'd either way, and flipping this
+# to False for an A/B costs a rebuild, not a repair.
 #
-# What `test_mesh_manifold_vs_mujoco` measured with it ON (160 poses x 5
-# groups), against 160 points and |dn| 1.6e-3 with it off:
+# `8b55a978` turned it on. What `test_mesh_manifold_vs_mujoco` measures with it
+# ON (160 poses x 5 groups) — point counts EXACT on all five, against the ~40%
+# shortfall and the |dn| ~ 2.0 reversals it showed before:
 #
-#     group                MuJoCo pts   ours   worst|dn|
-#     mesh(cube) x box        321        196   1.5e-03
-#     box x mesh(cube)        339        198   1.006
-#     mesh(cube) x mesh       336        172   1.846
-#     mesh(hex)  x box        333        201   1.5e-03
-#     mesh(hex)  x mesh       329        165   1.988
+#     group                MuJoCo   ours   cnt!=   worst|dn|
+#     mesh(cube) x box       321     321     0      5.5e-15
+#     box x mesh(cube)       339     339     0      2.8e-13
+#     mesh(cube) x mesh      336     336     0      6.3e-13
+#     mesh(hex)  x box       333     333     0      7.8e-13
+#     mesh(hex)  x mesh      329     329     0      9.8e-13
 #
-# So it fires (the count moves) and then gets two things wrong. |dn| ~ 2.0 on a
-# unit vector is a near-total REVERSAL, and it appears only on the MESH x MESH
-# groups while the two MESH x BOX groups sit unchanged at the single-point
-# path's 1.5e-3 — i.e. the sign fault is branch-dependent, not a global flip,
-# and the box-side groups may not be entering the manifold path at all. The
-# count being ~40% short says most poses still take one of the `return 0` exits.
+# The three defects behind the old numbers were a flat offset indexing a 2-D
+# `mesh_polys` (polygon 3 read row 15, so every normal was garbage), our pair
+# order not being `mj_collideGeoms`' `type1 <= type2` (BOX before MESH), and
+# the witness pair `(x1, x2)` not swapping with the operands — `dir = x2 - x1`
+# is a SIGNED input to `boxNormals2`, not just a magnitude.
 #
-# ⚠ DO NOT DEBUG THIS BY RE-READING THE REFERENCE. That is what produced these
-# numbers. The next step is to INSTRUMENT the live call — per pose, log which
-# exit was taken (no aligned faces / edge-face / face-face), `nface1`/`nface2`,
-# and the chosen face indices — and compare against the reference's own choice
-# on the same pose. Three separate defects in this arc were "fixed" at inferred
-# locations and changed nothing; see
+# ⚠ ALL THREE WERE FOUND BY INSTRUMENTING THE LIVE CALL, and every a-priori
+# hypothesis was wrong. If this path regresses, reach for `MC_DEBUG` below
+# before the reference — three defects in this arc were "fixed" at inferred
+# locations and changed nothing. See
 # `feedback_confirm_the_code_under_test_actually_runs`.
 comptime MC_ENABLED: Bool = True
 
@@ -1612,9 +1610,9 @@ def native_multicontact_contacts[
     # ---- clip -------------------------------------------------------------
     # The clipped ring lands in `MC_WS_OUT`.
     var nx_out = 0
-    var adx = Scalar[DTYPE](0)
-    var ady = Scalar[DTYPE](0)
-    var adz = Scalar[DTYPE](0)
+    var adx: Scalar[DTYPE]
+    var ady: Scalar[DTYPE]
+    var adz: Scalar[DTYPE]
     var swap = False
 
     if edgecon1:

@@ -316,14 +316,11 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
         var draws = InlineArray[Float64, 3](fill=0.0)
         for k in range(3):
             draws[k] = random_float64()
-        try:
-            var p = sample_bbox_uniform[DTYPE](lower, upper, draws)
-            var tb = SITE_TARGET * MODEL_SITE_SIZE
-            m_sites[tb + SITE_IDX_POS_X] = p[0]
-            m_sites[tb + SITE_IDX_POS_Y] = p[1]
-            m_sites[tb + SITE_IDX_POS_Z] = p[2]
-        except:
-            pass
+        var p = sample_bbox_uniform[DTYPE](lower, upper, draws)
+        var tb = SITE_TARGET * MODEL_SITE_SIZE
+        m_sites[tb + SITE_IDX_POS_X] = p[0]
+        m_sites[tb + SITE_IDX_POS_Y] = p[1]
+        m_sites[tb + SITE_IDX_POS_Z] = p[2]
 
     # === CPU: per-episode STATE — the grasp ================================
     @staticmethod
@@ -354,12 +351,7 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
             rmin[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MIN])
             rmax[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MAX])
             factors[i] = close
-        try:
-            set_grasp[DTYPE, N_HAND](
-                d.qpos.data, qadr, rmin, rmax, factors
-            )
-        except:
-            pass
+        set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
     # === CPU: the TCP initializer — needs the whole Model =================
     @staticmethod

@@ -319,7 +319,7 @@ def pyramidal_linesearch[
     var n1_d1 = ZERO
     peval(n1_a, n1_c, n1_d0, n1_d1, lsiter)
 
-    var pm_a = ZERO
+    var pm_a: Scalar[DTYPE]
     var pm_c = ZERO
     var pm_d0 = ZERO
     var pm_d1 = ZERO
@@ -341,9 +341,15 @@ def pyramidal_linesearch[
             best_a = n2_a
             best_c = n2_c
             has_best = True
+        # ⚠ NO `best_c = pm_c` HERE, and the reference is not being
+        # deviated from. `engine_solver.c:1842` writes `bestcost` inside a
+        # LOOP over `candidates[3] = {p1next, p2next, pmid}`; we unrolled the
+        # loop, and `pmid` is the last candidate, so that write is read by
+        # nothing. `newton_solve.mojo` drops it at the same place — the two
+        # copies of this linesearch stay identical. A FOURTH candidate would
+        # need it back.
         if abs(pm_d0) < gtol and (not has_best or pm_c < best_c):
             best_a = pm_a
-            best_c = pm_c
             has_best = True
         if has_best:
             return best_a

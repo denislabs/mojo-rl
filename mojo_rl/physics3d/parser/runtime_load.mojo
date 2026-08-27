@@ -119,7 +119,7 @@ def read_model_source(
     # `<asset><model>` entry) — loud and wrong beats quiet and wrong. NOTHING
     # that parsed correctly before parses differently now; the sweep found no
     # model that went from right to refused.
-    return (expand_mjcf(text, base)^, base^)
+    return (expand_mjcf(text, base), base^)
 
 
 def parse_model_runtime(

@@ -157,9 +157,13 @@ def validate_document(xml: String) -> List[Diagnostic]:
     """What is wrong with this MJCF text, without loading it.
 
     ⚠⚠ THIS FUNCTION MUST NOT PROPAGATE. It is the thing standing between an
-    invalid edit and an abort, so every call it makes is wrapped: a checker
-    that itself raises becomes a diagnostic saying so. `def` in Mojo raises by
-    default, so "cannot fail" has to be built, not declared.
+    invalid edit and an abort — and since Mojo 1.0 the LANGUAGE enforces that
+    rather than this function hand-building it. `def` no longer raises by
+    default: neither this function nor any checker it calls declares `raises`,
+    so a checker that grows a `raise` breaks the BUILD here instead of
+    propagating past the panel at runtime. This used to be three `try` blocks
+    turning a raised checker into a diagnostic; the compiler proved all three
+    unreachable, and a compile error is the stronger guarantee.
 
     ⚠ THE DANGLING-REFERENCE SCAN IS `expander.dangling_references`, THE SAME
     FUNCTION `check_references` RAISES FROM. Re-implementing it here is the
@@ -170,59 +174,47 @@ def validate_document(xml: String) -> List[Diagnostic]:
     """
     var out = List[Diagnostic]()
 
-    try:
-        var gens = generator_elements(xml)
-        for g in gens:
-            out.append(
-                Diagnostic(
-                    SEV_ERROR,
-                    String("generator-unsupported"),
-                    g,
-                    String(
-                        "generates bodies from a description; this engine"
-                        " does not implement it, and the loader refuses the"
-                        " model rather than building the few elements that"
-                        " were written out literally."
-                    ),
-                )
+    var gens = generator_elements(xml)
+    for g in gens:
+        out.append(
+            Diagnostic(
+                SEV_ERROR,
+                String("generator-unsupported"),
+                g,
+                String(
+                    "generates bodies from a description; this engine"
+                    " does not implement it, and the loader refuses the"
+                    " model rather than building the few elements that"
+                    " were written out literally."
+                ),
             )
-    except e:
-        out.append(_checker_failed(String("generator-unsupported"), String(e)))
+        )
 
-    try:
-        var bad = dangling_references(xml)
-        for b in bad:
-            out.append(
-                Diagnostic(
-                    SEV_ERROR,
-                    String("dangling-ref"),
-                    b,
-                    String(
-                        "names nothing this document declares. MuJoCo refuses"
-                        " the model; deleting the element that DECLARED the"
-                        " name is the usual cause."
-                    ),
-                )
+    var bad = dangling_references(xml)
+    for b in bad:
+        out.append(
+            Diagnostic(
+                SEV_ERROR,
+                String("dangling-ref"),
+                b,
+                String(
+                    "names nothing this document declares. MuJoCo refuses"
+                    " the model; deleting the element that DECLARED the"
+                    " name is the usual cause."
+                ),
             )
-    except e:
-        out.append(_checker_failed(String("dangling-ref"), String(e)))
+        )
 
     return out^
 
 
-def _checker_failed(code: String, msg: String) -> Diagnostic:
-    """A checker that raised is itself a finding — never a lost check.
-
-    ⚠ SEV_ERROR, NOT A SILENT SKIP. "the validator could not answer" and "the
-    validator found nothing" must not look the same in the panel; the second
-    is the one that lets a broken model through.
-    """
-    return Diagnostic(
-        SEV_ERROR,
-        String("checker-failed"),
-        String("validator (") + code + ")",
-        String("this check could not run: ") + msg,
-    )
+# `_checker_failed` lived here: the diagnostic a raised checker turned into.
+# Deleted with the three `try` blocks that were its only callers (see
+# `validate_document`). Its rule still stands if a checker is ever ALLOWED to
+# fail — "the validator could not answer" and "the validator found nothing"
+# must not look the same in the panel, because the second is the one that lets
+# a broken model through. Today neither can happen: a checker that raises does
+# not compile.
 
 
 # =============================================================================
@@ -245,21 +237,18 @@ def validate_model(
     _check_duplicate_names(fmd, out)
     _check_soft(fmd, out)
 
-    try:
-        var missing = unwritable(fmd)
-        if missing.byte_length() > 0:
-            out.append(
-                Diagnostic(
-                    SEV_INFO,
-                    String("not-exportable"),
-                    String("model"),
-                    String(
-                        "flattened export would drop:"
-                    ) + missing + ". The scene document still round-trips.",
-                )
+    var missing = unwritable(fmd)
+    if missing.byte_length() > 0:
+        out.append(
+            Diagnostic(
+                SEV_INFO,
+                String("not-exportable"),
+                String("model"),
+                String(
+                    "flattened export would drop:"
+                ) + missing + ". The scene document still round-trips.",
             )
-    except e:
-        out.append(_checker_failed(String("not-exportable"), String(e)))
+        )
 
     _ = nb
     return out^

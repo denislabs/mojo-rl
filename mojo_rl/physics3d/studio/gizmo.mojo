@@ -193,7 +193,7 @@ def parent_frame(
     picker, the outline and the renderer were handed, so the gizmo cannot sit
     on a pose one step old.
     """
-    var b = -1
+    var b: Int
     if target == TARGET_GEOM:
         if index < 0 or index >= len(fmd.geoms):
             return Frame.identity()
@@ -258,7 +258,6 @@ def frame_drift(
     if target == TARGET_GEOM:
         if index < 0 or index >= len(fmd.geoms):
             return 0.0
-        b = fmd.geoms[index].body_id
         # A geom's drawn pose IS `body_world ∘ geom_local`; there is nothing
         # for it to drift from.
         return 0.0

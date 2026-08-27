@@ -645,8 +645,8 @@ def ui_file_browser(mut p: StudioPanel, mut out: PanelOut) raises:
                     is_d = Path(full).is_dir()
                     if not is_d:
                         continue
-                var sz = 0
-                var mt = 0
+                var sz: Int
+                var mt: Int
                 try:
                     var st = stat(Path(full))
                     sz = Int(st.st_size)
@@ -1079,46 +1079,52 @@ def ui_problems(diags: List[Diagnostic], h: Float32) raises:
     noise until that is fixed, and a list in discovery order buries the one
     line the user needs under twelve `zero-gear`s.
     """
-    ig_begin_child(String("problems"), 0.0, h)
-    var n_err = 0
-    var n_warn = 0
-    for d in diags:
-        if d.severity >= SEV_ERROR:
-            n_err += 1
-        elif d.severity == SEV_WARN:
-            n_warn += 1
-    if len(diags) == 0:
-        ig_text_colored(String("No problems."), 0.55, 0.85, 0.55)
-        ig_text_disabled(
-            String("Checked against what MuJoCo refuses, not against taste.")
-        )
-    else:
-        ig_text(
-            String(n_err) + " error(s), " + String(n_warn) + " warning(s)"
-        )
-    ig_separator()
-
-    # ⚠ THREE PASSES, NOT A SORT. `List` has no stable sort here and the
-    # order WITHIN a severity is the order the checks ran, which is the model
-    # order the user is reading — worth keeping.
-    for sev in [SEV_ERROR, SEV_WARN, SEV_INFO]:
+    if ig_begin_child(String("problems"), 0.0, h):
+        var n_err = 0
+        var n_warn = 0
         for d in diags:
-            if d.severity != Int(sev):
-                continue
-            if Int(sev) >= SEV_ERROR:
-                ig_text_colored(String("[error] ") + d.subject, 0.95, 0.4, 0.4)
-            elif Int(sev) == SEV_WARN:
-                ig_text_colored(String("[warn]  ") + d.subject, 0.95, 0.8, 0.35)
-            else:
-                ig_text_disabled(String("[info]  ") + d.subject)
-            if ig_is_item_hovered():
-                ig_set_tooltip(d.code + "\n\n" + d.message)
-            # ⚠ THE MESSAGE IS SHOWN, NOT ONLY TOOLTIPPED. A diagnostic whose
-            # text only appears on hover is one the user has to guess is
-            # there; the tooltip carries the CODE, which is what they would
-            # search the source for.
-            ig_text_disabled(String("        ") + d.message)
-            ig_spacing()
+            if d.severity >= SEV_ERROR:
+                n_err += 1
+            elif d.severity == SEV_WARN:
+                n_warn += 1
+        if len(diags) == 0:
+            ig_text_colored(String("No problems."), 0.55, 0.85, 0.55)
+            ig_text_disabled(
+                String(
+                    "Checked against what MuJoCo refuses, not against taste."
+                )
+            )
+        else:
+            ig_text(
+                String(n_err) + " error(s), " + String(n_warn) + " warning(s)"
+            )
+        ig_separator()
+
+        # ⚠ THREE PASSES, NOT A SORT. `List` has no stable sort here and the
+        # order WITHIN a severity is the order the checks ran, which is
+        # the model order the user is reading — worth keeping.
+        for sev in [SEV_ERROR, SEV_WARN, SEV_INFO]:
+            for d in diags:
+                if d.severity != Int(sev):
+                    continue
+                if Int(sev) >= SEV_ERROR:
+                    ig_text_colored(
+                        String("[error] ") + d.subject, 0.95, 0.4, 0.4
+                    )
+                elif Int(sev) == SEV_WARN:
+                    ig_text_colored(
+                        String("[warn]  ") + d.subject, 0.95, 0.8, 0.35
+                    )
+                else:
+                    ig_text_disabled(String("[info]  ") + d.subject)
+                if ig_is_item_hovered():
+                    ig_set_tooltip(d.code + "\n\n" + d.message)
+                # ⚠ THE MESSAGE IS SHOWN, NOT ONLY TOOLTIPPED. A
+                # diagnostic whose text only appears on hover is one the
+                # user has to guess is there; the tooltip carries the
+                # CODE, which is what they would search the source for.
+                ig_text_disabled(String("        ") + d.message)
+                ig_spacing()
     ig_end_child()
 
 

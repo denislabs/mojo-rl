@@ -307,10 +307,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
             rmin[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MIN])
             rmax[i] = Float64(m_joints[jb + JOINT_IDX_RANGE_MAX])
             factors[i] = close
-        try:
-            set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
-        except:
-            pass
+        set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
     # === CPU: both bricks, then the settle, then the arm ==================
     @staticmethod

@@ -4362,7 +4362,7 @@ def _newton_blocked_fields_kernel[
                     var n1_d1 = Scalar[DTYPE](0)
                     _bl_peval(n1_a, n1_c, n1_d0, n1_d1, lsiter_b)
 
-                    var pm_a = Scalar[DTYPE](0)
+                    var pm_a: Scalar[DTYPE]
                     var pm_c = Scalar[DTYPE](0)
                     var pm_d0 = Scalar[DTYPE](0)
                     var pm_d1 = Scalar[DTYPE](0)
@@ -4385,11 +4385,14 @@ def _newton_blocked_fields_kernel[
                             best_a = n2_a
                             best_c = n2_c
                             has_best = True
+                        # ⚠ NO `best_c = pm_c` — see `primal.mojo`'s note
+                        # at the same candidate: `engine_solver.c:1842`
+                        # writes it inside a LOOP over three candidates, and
+                        # `pmid` is the last, so the unrolled write is dead.
                         if abs(pm_d0) < gtol_b and (
                             not has_best or pm_c < best_c
                         ):
                             best_a = pm_a
-                            best_c = pm_c
                             has_best = True
                         if has_best:
                             alpha = best_a

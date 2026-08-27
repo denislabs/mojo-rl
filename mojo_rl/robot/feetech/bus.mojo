@@ -35,7 +35,7 @@ comptime TX_CAP = 8 + MAX_MOTORS * 5
 comptime RX_CAP = MAX_MOTORS * 10 + 16
 
 comptime DEFAULT_TIMEOUT_MS = 50
-"""lerobot patches the PyPI SDK's timeout to `transit + 3 bytes + 50 ms`
+"""`lerobot` patches the PyPI SDK's timeout to `transit + 3 bytes + 50 ms`
 (`feetech.py:76`, working around gitee IBY2S6) because the SDK's own formula
 is wrong. At 1 Mbaud transit is ~0.01 ms/byte, so 50 ms IS the timeout. It
 only costs anything when a packet is genuinely lost — see

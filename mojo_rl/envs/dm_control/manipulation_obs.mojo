@@ -158,7 +158,7 @@ def append_robot_block[DTYPE: DType, D: DimsLike](
     mut obs: List[Scalar[DTYPE]],
 ) raises:
     """The 42 floats every `_features` task carries, in `observation_spec`
-    order:
+    order.
 
         jaco_arm/joints_pos                 12   [sin, cos] per joint
         jaco_arm/joints_torque               6   symlog1p(tau . axis)

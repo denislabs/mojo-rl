@@ -1843,11 +1843,15 @@ def _detect_contacts_sap_env[
                     # four. Same model, different contacts, decided by which
                     # broadphase the config happened to select. See
                     # `feedback_one_field_two_producers`.
+                    # `MC_ENABLED` sits LAST because it is a comptime
+                    # `True`: on the left it folds and the compiler flags the
+                    # rest of the chain unreachable. Every other operand is a
+                    # pure comparison, so the order is not observable.
                     var mc_pair = (
-                        MC_ENABLED
-                        and (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
+                        (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
                         and (gj_type == GEOM_MESH or gj_type == GEOM_BOX)
                         and cm <= Scalar[DTYPE](0)
+                        and MC_ENABLED
                     )
                     var wf1 = InlineArray[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)
