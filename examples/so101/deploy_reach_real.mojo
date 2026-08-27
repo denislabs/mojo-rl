@@ -275,56 +275,76 @@ def main() raises:
     # convention wrong in both directions round-trips perfectly — `to_sim` is
     # what pins that, and it is separately gated), but it is proof the two are
     # consistent, which is the failure this file could introduce on its own.
-    var worst = 0
-    var n_outside = 0
+    # ⚠⚠ THE MAP IS TESTED AT KNOWN-INTERIOR POINTS, NOT AT THE ARM'S POSE.
+    # The first version round-tripped each joint's MEASURED position and
+    # refused to arm when it did not come back — which conflates two entirely
+    # different things, because `to_sim` CLAMPS. A joint parked outside its
+    # range cannot round-trip by construction, so the check fired on a healthy
+    # arm twice: `shoulder_lift` 72 ticks past the MODEL range, then the
+    # gripper 11 ticks past its CALIBRATED range. Neither was a mapping fault.
+    #
+    # What the check is actually for is a SIGN or OFFSET error in `from_sim`,
+    # the one link nothing else exercises, whose failure on hardware is a
+    # MIRRORED POSE AT FULL SLEW. That is a property of the MAP and can be
+    # tested at points chosen to be interior — where no clamp can fire —
+    # independently of where the arm happens to be sitting.
+    var worst = 0.0
     for i in range(SO101_N):
-        # ⚠⚠ A CLAMPED JOINT CANNOT ROUND-TRIP, AND THAT IS NOT A DEFECT.
-        # `to_sim` clamps to the MODEL's `ctrlrange`, and three of these
-        # joints have calibrated travel that EXCEEDS it (the `gap` column in
-        # `SimJointMap.range_report`, and a faithful port of the upstream
-        # ranges — see `teleop_sim.mojo`). Sitting outside the model's range,
-        # `from_sim(to_sim(raw))` returns the LIMIT, not `raw`, by
-        # construction. Asserting on it would block a live run for a condition
-        # the mapping is documented to have — the first version of this check
-        # did exactly that, on `shoulder_lift`, 68 ticks out.
-        var over = jmap.clamped_by(arm.cal, i, raw[i])
-        var rad = jmap.to_sim(arm.cal, i, raw[i])
-        var back = jmap.from_sim(arm.cal, i, rad)
-        var err = Int(back) - Int(raw[i])
-        if err < 0:
-            err = -err
-        var note = String("")
-        if over > 0.0:
-            n_outside += 1
-            note = " ⚠ OUTSIDE the model range by " + fixed(over, 3) + " rad"
-        elif err > worst:
-            worst = err
-        print(
-            "  " + col_name(i), "raw", pad_left(String(Int(raw[i])), 6),
-            "-> rad", col(rad, 7, 3),
-            "-> raw", pad_left(String(Int(back)), 6),
-            "  (err " + String(err) + ")" + note,
-        )
-    if worst > 2:
+        for k in range(3):
+            var frac = 0.25 + 0.25 * Float64(k)
+            var v = jmap.sim_lo[i] + frac * (jmap.sim_hi[i] - jmap.sim_lo[i])
+            var back = jmap.to_sim(arm.cal, i, jmap.from_sim(arm.cal, i, v))
+            var e = back - v
+            if e < 0.0:
+                e = -e
+            if e > worst:
+                worst = e
+    if worst > 0.02:
         raise Error(
-            "deploy: to_sim/from_sim do not round-trip inside the model range"
-            " (worst " + String(worst) + " ticks) — NOT arming. A sign or"
+            "deploy: to_sim/from_sim do not round-trip at INTERIOR points"
+            " (worst " + fixed(worst, 4) + " rad) — NOT arming. A sign or"
             " offset in the joint mapping is inconsistent, and the failure it"
             " produces on hardware is a MIRRORED pose at full slew."
         )
     print(
-        "  mapping round-trips inside the model range, worst", worst, "ticks"
+        "  map round-trips at interior points, worst",
+        fixed(worst, 4), "rad (tick quantisation is ~0.0015)",
     )
-    if n_outside > 0:
-        # Not fatal, and worth saying out loud: until the arm moves back
-        # inside, the policy's observation carries a CLAMPED angle rather than
-        # the arm's true one, so its first action is taken on a pose that is
-        # off by that much. Every command it issues is clamped INTO the range,
-        # so the first motion fixes it.
+
+    # ── where the arm is parked, reported and never fatal ──────────────────
+    # Two different "outside"s, and they are not the same fault:
+    #   MODEL   — past the `ctrlrange` the policy trained in. Common: three
+    #             joints have calibrated travel that exceeds the model's.
+    #   CALIB   — past `lerobot-calibrate`'s own recorded endpoints. Means the
+    #             arm was moved beyond where it was calibrated, or drifted.
+    # Either way the first command clamps back inside, so neither blocks a run.
+    var n_model = 0
+    var n_calib = 0
+    for i in range(SO101_N):
+        var over = jmap.clamped_by(arm.cal, i, raw[i])
+        var note = String("")
+        if over > 0.0:
+            n_model += 1
+            note += " ⚠ past the MODEL range by " + fixed(over, 3) + " rad"
+        if raw[i] < arm.cal.range_min[i]:
+            n_calib += 1
+            note += " ⚠ " + String(Int(arm.cal.range_min[i] - raw[i])) + (
+                " ticks BELOW the calibrated minimum"
+            )
+        elif raw[i] > arm.cal.range_max[i]:
+            n_calib += 1
+            note += " ⚠ " + String(Int(raw[i] - arm.cal.range_max[i])) + (
+                " ticks ABOVE the calibrated maximum"
+            )
         print(
-            "  ⚠", n_outside, "joint(s) are parked outside the model's range."
-            " The policy's first\n     observation is clamped there; its"
-            " first command moves them back inside."
+            "  " + col_name(i), "raw", pad_left(String(Int(raw[i])), 6),
+            "-> rad", col(jmap.to_sim(arm.cal, i, raw[i]), 7, 3), note,
+        )
+    if n_model > 0 or n_calib > 0:
+        print(
+            "  ⚠", n_model, "joint(s) past the model range,", n_calib,
+            "past calibration. The policy's first\n     observation is"
+            " clamped there; its first command moves them back inside."
         )
     print()
 

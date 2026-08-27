@@ -105,7 +105,20 @@ struct SimJointMap(Copyable, Movable):
             # Fraction of the servo's calibrated opening, mapped onto the
             # model's hinge range. `sign` flips the fraction; `offset_rad`
             # does not apply — this is not an angle on the servo side.
-            var frac = cal.degrees(i, raw) / 100.0
+            #
+            # ⚠⚠ THE FRACTION IS COMPUTED HERE, NOT VIA `cal.degrees`, WHICH
+            # CLAMPS. `degrees()` opens with `min(hi, max(lo, raw))` for the
+            # gripper, so this function — whose entire contract is to be
+            # unclamped, because `clamped_by` cannot report an overshoot it
+            # cannot see — was silently clamped for exactly one joint. A
+            # gripper parked below its CALIBRATED minimum then reported zero
+            # overshoot while `to_sim`/`from_sim` disagreed by the whole
+            # shortfall, which `deploy_reach_real.mojo`'s round-trip check
+            # reported as a sign error in the mapping. Measured: 11 ticks.
+            var lo_t = Float64(cal.range_min[i])
+            var hi_t = Float64(cal.range_max[i])
+            var span_t = hi_t - lo_t
+            var frac = (Float64(raw) - lo_t) / span_t if span_t != 0.0 else 0.0
             if self.sign[i] < 0.0:
                 frac = 1.0 - frac
             return self.sim_lo[i] + frac * (self.sim_hi[i] - self.sim_lo[i])
