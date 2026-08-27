@@ -351,6 +351,23 @@ struct SoArmReachConfig[
     # ⚠ The orbit is the POLICY's, not the deploy wrapper's — measured: with
     # NO smoothing and NO rate clamp the sim arm still swings 12.0 mm after
     # settling, against 14.5 mm through the full deploy loop.
+    # ⚠ MEASURED OUTCOME (2026-08-27), the sixth attempt at the shake and the
+    # first that moved it. On the REAL ARM, one central target, 10 s:
+    #
+    #                       before          after
+    #     steps inside 20mm   32%            82%
+    #     final error         31.0 mm         9.7 mm
+    #     the trace          9..44 mm orbit  9.1/10.6/10.8/10.7/10.9/9.5/11.6
+    #
+    # It arrives and HOLDS to about +-1 mm where it used to swing +-20.
+    #
+    # ⚠ AND IT COST COVERAGE AT THE NEAR EDGE. Over the full target shell the
+    # successes got much tighter (finals of 9..20 mm against a 14.3 mm mean
+    # before) while two of 24 became outright failures — r=0.180 stopping at
+    # 43 mm and r=0.193 never approaching at all, 176 mm. The aggregate
+    # 15/24 is those two dragging a distribution that is otherwise better.
+    # A near-edge coverage problem is NOT the oscillation problem and wants
+    # its own diagnosis rather than another reward term.
     comptime RECORD_PREV_ACTION: Bool = True
 
     # ⚠⚠ NOT A SIZE HINT. Zero silently disables every mesh contact — both
