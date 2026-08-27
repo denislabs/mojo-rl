@@ -39,7 +39,15 @@ uses ordinary trainable `BatchNorm2D`. A deliberate, labelled deviation —
 revisit it together with any pretrained-weight loading, never separately.
 """
 
+from max.gpu.host import DeviceContext
+
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.initializer import Initializer
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
 from ..primitives.max_pool_2d import MaxPool2D
 from ..combinators.sequential import Sequential
 from .conv import Conv2DBatchNormReLU
@@ -61,7 +69,7 @@ comptime ResNet18Stem[
 ]
 
 
-comptime ResNet18Backbone[
+comptime ResNet18Seq[
     IN_CH: Int, H: Int, W: Int, LAYOUT: Int = LAYOUT_NCHW
 ] = Sequential[
     ResNet18Stem[IN_CH, H, W, LAYOUT],
@@ -107,3 +115,102 @@ comptime ResNet18Backbone[
 comptime ResNet18OutH[H: Int] = _D[_D[_D[_MP[_S2[H]]]]]
 comptime ResNet18OutW[W: Int] = _D[_D[_D[_MP[_S2[W]]]]]
 comptime RESNET18_OUT_CH: Int = 512
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ResNet18Backbone — the same stack, behind a NAMED struct
+# ══════════════════════════════════════════════════════════════════════════
+"""⚠ A struct, not a `comptime` alias, and that is the whole point.
+
+A parametric alias is pure substitution: every type that mentions
+`ResNet18Seq[3, 240, 320]` carries its FULL expansion — 20 `Conv2D`, 20
+`BatchNorm2D`, 22 `Sequential`, each with its own spelled-out spatial
+parameters. `ComputeGraph[*DECLS]` mangles its whole decl list into
+`__init__`'s symbol, so embedding the alias there produced a **4.5 MB mangled
+name** — 70x over Apple's linker limit, which is why these builds needed
+`-Xlinker -ld_classic`.
+
+Holding the `Sequential` as an INTERNAL `comptime` member instead means the
+enclosing type sees only `ResNet18Backbone,IN_CH=3,H=240,W=320`. The expansion
+happens once, inside this struct, rather than at every use site. Same
+mechanism `primitives/decoder_block.mojo` uses for its `ComputeGraph`.
+
+Behaviour is unchanged — every method delegates to the same `Sequential`.
+"""
+
+
+struct ResNet18Backbone[
+    IN_CH: Int, H: Int, W: Int, LAYOUT: Int = LAYOUT_NCHW
+](Module):
+    comptime Net = ResNet18Seq[Self.IN_CH, Self.H, Self.W, Self.LAYOUT]
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](
+        fill=Self.IN_CH * Self.H * Self.W
+    )
+    comptime OUT_DIM: Int = Self.Net.OUT_DIM
+
+    var net: Self.Net
+
+    def __init__(out self):
+        self.net = Self.Net()
+
+    def __init__(out self, *, deinit move: Self):
+        self.net = move.net^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var b = Self()
+        b.net = Self.Net.make[target, INIT](ctx)
+        return b^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.net.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.net.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.net.for_each_param[target](visitor, ctx, prefix)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.net.for_each_state[target](visitor, ctx, prefix)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.net.zero_grad[target](ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.net.set_attr[ATTR](value)
+
+    def polyak_from[
+        target: StaticString
+    ](mut self, mut src: Self, tau: Scalar[DT],
+      ctx: Optional[DeviceContext]) raises:
+        self.net.polyak_from[target](src.net, tau, ctx)

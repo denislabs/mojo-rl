@@ -248,6 +248,26 @@ def main() raises:
         "cpu L1 = " + String(ec.l1),
     )
 
+    # ── the inference path, on IDENTICAL weights ─────────────────────────
+    # ⚠ BEFORE the training step, deliberately. Run after it, this comparison
+    # conflates "is the GPU inference path correct" with "do two fp32 Adam
+    # steps land on the same weights" — they do not, quite: one step leaves a
+    # ~2e-5 spread over 11.2M parameters, and a 20-layer ResNet plus two
+    # transformer stacks amplifies that by ~1e3 into the output. Measured at
+    # 0.025 that way, versus round-off here. The optimizer's agreement is
+    # already checked directly, on the parameters themselves.
+    var ac = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
+    var ag = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
+    tc.predict(qpos, images, actions, valid, ac)
+    tg.predict(qpos, images, actions, valid, ag)
+    var aw = worst(ac, ag)
+    check(
+        fails,
+        "predict() action chunk (identical weights)",
+        aw < TOL_FWD,
+        "max|cpu-gpu| = " + String(aw),
+    )
+
     # ── one training step: forward, backward, and the resulting weights ──
     # `train_step` runs the optimizer, so comparing the PARAMETERS after it
     # covers the backward AND the Adam walk on device in one comparison.
@@ -291,19 +311,6 @@ def main() raises:
         sw < TOL_GRAD,
         "max|cpu-gpu| over " + String(len(sc2.vals)) + " values = "
         + String(sw),
-    )
-
-    # ── the inference path ───────────────────────────────────────────────
-    var ac = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
-    var ag = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
-    tc.predict(qpos, images, actions, valid, ac)
-    tg.predict(qpos, images, actions, valid, ag)
-    var aw = worst(ac, ag)
-    check(
-        fails,
-        "predict() action chunk",
-        aw < TOL_GRAD,
-        "max|cpu-gpu| = " + String(aw),
     )
 
     print("")
