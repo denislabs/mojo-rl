@@ -274,6 +274,75 @@ def _bn2d_eval_bwd_kernel[
             s += BN2D_TPB
 
 
+def _bn2d_eval_bwd_affine_kernel[
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    EPSILON: Float64,
+    LAYOUT: Int = LAYOUT_NCHW,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    """Eval-mode backward INCLUDING the affine gradients.
+
+    Running stats are constants, so there is no batch coupling in the input
+    gradient — but γ and β still receive gradient, because the loss depends on
+    them:
+
+        inv_std   = 1/sqrt(running_var + eps)
+        xhat      = (x - running_mean) * inv_std
+        gi        = gamma * inv_std * dy
+        dgamma[c] = sum_over(b,s) dy * xhat
+        dbeta[c]  = sum_over(b,s) dy
+
+    `xhat` is RECOMPUTED from the input rather than read from a cache: the eval
+    forward does not populate `cache_xhat` on GPU, and making it do so would put
+    a `[BATCH, FLAT]` write on every inference forward — a real cost on a path
+    (AlphaZero/MuZero selfplay) that never backwards at all. Recomputing here
+    keeps the cost on the rare backward.
+
+    One block per channel, threads striding the batch*spatial extent, then a
+    block reduction — the same shape as the eval forward kernel.
+    """
+    var c = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if c >= C:
+        return
+    var eps = Scalar[DT](EPSILON)
+    var inv_std: grad_output.element_type = 1.0 / sqrt(running_var[c] + eps)
+    var mean = running_mean[c]
+    var g = gamma[c]
+    var acc_dg: Scalar[DT] = 0.0
+    var acc_db: Scalar[DT] = 0.0
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            var dy = rebind[Scalar[DT]](grad_output[b, off])
+            var xh = (
+                rebind[Scalar[DT]](input[b, off]) - rebind[Scalar[DT]](mean)
+            ) * rebind[Scalar[DT]](inv_std)
+            grad_input[b, off] = g * inv_std * grad_output[b, off]
+            acc_dg += dy * xh
+            acc_db += dy
+            s += BN2D_TPB
+    var sg = block.sum[block_size=BN2D_TPB, broadcast=False](val=acc_dg)
+    var sb = block.sum[block_size=BN2D_TPB, broadcast=False](val=acc_db)
+    if t == 0:
+        # ACCUMULATE (+=), matching the CPU path and every other param grad in
+        # the framework — a graph may reach one module through several edges.
+        grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + sg[0]
+        grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + sb[0]
+
+
 def _bn2d_bwd_partial_kernel[
     BATCH: Int,
     C: Int,
@@ -1229,7 +1298,8 @@ struct BatchNorm2D[
         comptime if Self.ACT_DT == DT:
             ref god = rebind[Tensor](grad_output)
             ref gind = rebind[Tensor](grad_inputs[0])
-            self._vjp_f32[target, B](god, gind, ctx)
+            ref find = rebind[Tensor](forward_input[0])
+            self._vjp_f32[target, B](god, gind, find, ctx)
         else:
             comptime N = B * Self.FLAT_DIM
             # LOCAL fp32 scratch (not self-fields → no mut-self aliasing).
@@ -1250,7 +1320,8 @@ struct BatchNorm2D[
                     grid_dim=(N + 255) // 256,
                     block_dim=256,
                 )
-            self._vjp_f32[target, B](go_f32, gin_f32, ctx)
+            ref find2 = rebind[Tensor](forward_input[0])
+            self._vjp_f32[target, B](go_f32, gin_f32, find2, ctx)
             comptime if target == "cpu":
                 for i in range(N):
                     gin.data[i] = gin_f32.data[i].cast[Self.ACT_DT]()
@@ -1267,8 +1338,12 @@ struct BatchNorm2D[
         mut self,
         mut grad_output: Tensor,
         mut gin: Tensor,
+        mut fin: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        """`fin` is the forward INPUT. Only the GPU eval-mode branch reads it,
+        to recompute `xhat` for the affine gradients — the eval forward does not
+        cache it on GPU, deliberately (see `_bn2d_eval_bwd_affine_kernel`)."""
         comptime if target == "cpu":
             gin.ensure(B * Self.FLAT_DIM)
             var go_p = grad_output.data.unsafe_ptr()
@@ -1344,18 +1419,25 @@ struct BatchNorm2D[
             comptime l2d = Layout.row_major(B, Self.FLAT_DIM)
             comptime lc = Layout.row_major(Self.C_)
             if not self.cache_is_training:
-                # Eval-mode backward: gi = γ·inv_std_running·dy (no reductions;
-                # running stats are constants). Frozen-backbone perceptual loss.
+                # Eval-mode backward. Running stats are constants, so the input
+                # gradient has no batch coupling — but γ and β still receive
+                # gradient, and this path used to drop them silently while the
+                # CPU accumulated them. See
+                # `tests/nn/test_batch_norm_2d_eval_backward_gpu.mojo`.
                 c.enqueue_function[
-                    _bn2d_eval_bwd_kernel[
+                    _bn2d_eval_bwd_affine_kernel[
                         B, Self.C_, Self.SPATIAL, Self.FLAT_DIM,
                         Self.EPSILON, Self.LAYOUT,
                     ]
                 ](
                     grad_output.lt["gpu", l2d](),
+                    fin.lt["gpu", l2d](),
                     self.gamma.val.lt["gpu", lc](),
+                    self.running_mean.t.lt["gpu", lc](),
                     self.running_var.t.lt["gpu", lc](),
                     gin.lt["gpu", l2d](),
+                    self.gamma.grd.lt["gpu", lc](),
+                    self.beta.grd.lt["gpu", lc](),
                     grid_dim=Self.C_,
                     block_dim=BN2D_TPB,
                 )

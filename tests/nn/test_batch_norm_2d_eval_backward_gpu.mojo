@@ -1,37 +1,35 @@
 # +--------------------------------------------------------------------------+ #
 # | BatchNorm2D eval-mode backward — CPU and GPU disagree
 # +--------------------------------------------------------------------------+ #
-"""⚠⚠ THIS TEST DOCUMENTS A DIVERGENCE. It is not currently a pass/fail gate.
+"""BatchNorm2D's backward, CPU vs GPU, in BOTH modes — a pass/fail gate.
 
     pixi run -e apple mojo run -I . tests/nn/test_batch_norm_2d_eval_backward_gpu.mojo
 
-One `BatchNorm2D`, CPU against GPU, backward, in both modes. Measured:
+⚠ THE EVAL-MODE ARM IS WHY THIS FILE EXISTS. The GPU used to produce EXACTLY
+ZERO for dgamma/dbeta in eval while the CPU accumulated them — each path had
+made a different choice and each documented its own as fine:
 
-    training=True   fwd 3.6e-07  grad_in 3.0e-08  dgamma 8.9e-08  dbeta 1.5e-08
-    training=False  fwd 0.0      grad_in 0.0      dgamma 0.136    dbeta 0.100
+    cpu  accumulated dgamma/dbeta, "harmless for a frozen backbone"
+    gpu  `_bn2d_eval_bwd_kernel` was passed only (grad_output, gamma,
+         running_var, gin) — it never touched gamma.grd / beta.grd
 
-In EVAL the forward and grad_input agree BIT-EXACTLY while dgamma and dbeta
-differ by precisely the CPU's own magnitude — i.e. **the GPU produces exactly
-zero**. The two paths each made a different choice and each documented it as
-fine:
+Before the fix, on BOTH Metal and CUDA:
 
-    cpu  batch_norm_2d.mojo:1286  accumulates dgamma/dbeta,
-                                  "harmless for a frozen backbone"
-    gpu  batch_norm_2d.mojo:1352  `_bn2d_eval_bwd_kernel` is passed only
-                                  (grad_output, gamma, running_var, gin) —
-                                  it never touches gamma.grd / beta.grd
+    training=False  fwd 0.0  grad_in 0.0  dgamma 0.136  dbeta 0.100
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+                                          = the CPU's own magnitudes
 
-The CPU is mathematically right: the loss does depend on gamma and beta, so the
-GPU drops real gradient. It is invisible in ordinary training (BN runs in
-training mode) and bites exactly the frozen-BN fine-tuning setup — which is what
-ACT's own reference uses (`FrozenBatchNorm2d`), and what any pretrained-backbone
-transfer run would use.
+The CPU was right — the loss does depend on gamma and beta — so the GPU was
+dropping real gradient, in exactly the frozen-BN fine-tuning setup. Invisible in
+ordinary training (BN runs in training mode), and a trap for the first person to
+freeze BN statistics while still adapting the affine parameters.
 
-Deciding WHICH way to converge them is a call with blast radius: making the GPU
-accumulate would start updating gamma/beta in existing GPU runs that currently
-do not. Hence a report rather than a fix, and hence this file prints rather than
-asserts. Found via `tests/nn/test_resnet18_gpu.mojo`, which pins the current
-behaviour so a change cannot pass unnoticed.
+Fixed by `_bn2d_eval_bwd_affine_kernel`, which recomputes `xhat` from the input
+rather than caching it in the eval forward — that forward is on the hot
+inference path (AlphaZero/MuZero selfplay) and never backwards.
+
+Both arms must now agree. A regression here means the eval branch has been
+"optimized" back into dropping them.
 """
 from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
@@ -70,7 +68,7 @@ struct Grab(ParamVisitor):
             self.v.append(grad.data[i])
 
 
-def run[training: Bool](ctx: DeviceContext) raises:
+def run[training: Bool](ctx: DeviceContext, mut fails: Int) raises:
     var mc = BatchNorm2D[C, H, W].make["cpu", Kaiming]()
     var mg = BatchNorm2D[C, H, W].make["gpu", Kaiming](ctx)
     var tv = Scalar[DT](1.0) if training else Scalar[DT](0.0)
@@ -112,8 +110,15 @@ def run[training: Bool](ctx: DeviceContext) raises:
 
     var a = Grab(); mc.for_each_param["cpu"](a, None, String(""))
     var b = Grab(); mg.for_each_param["gpu"](b, ctx, String(""))
+    # No matmul anywhere in BatchNorm, so this is fp32 on both backends and the
+    # tolerance is a genuine round-off bound — not the TF32-aware one the
+    # conv/attention parity gates need (`feedback_fd_gradcheck_tf32`).
+    comptime TOL = 1e-5
     print("  training=" + String(training)
           + "  fwd " + String(fw) + "  grad_in " + String(gi))
+    if fw > TOL or gi > TOL:
+        fails += 1
+        print("    FAIL  forward/grad_input")
     for k in range(len(a.nm)):
         var lo = k * C
         var d = Float64(0.0)
@@ -121,12 +126,26 @@ def run[training: Bool](ctx: DeviceContext) raises:
         for i in range(lo, lo + C):
             d = max(d, abs(Float64(a.v[i]) - Float64(b.v[i])))
             cm = max(cm, abs(Float64(a.v[i])))
-        print("    " + a.nm[k] + ": max|cpu-gpu| " + String(d)
-              + "   max|cpu| " + String(cm))
+        var ok = d <= TOL
+        # A gradient that is zero on BOTH sides would pass the comparison and
+        # prove nothing — the whole bug was one side being zero.
+        if cm <= TOL:
+            ok = False
+        if not ok:
+            fails += 1
+        print("    " + ("PASS  " if ok else "FAIL  ") + a.nm[k]
+              + ": max|cpu-gpu| " + String(d) + "   max|cpu| " + String(cm))
 
 
 def main() raises:
     var ctx = DeviceContext()
     print("BatchNorm2D CPU-vs-GPU backward  [" + String(ctx.name()) + "]")
-    run[False](ctx)
-    run[True](ctx)
+    var fails = 0
+    run[False](ctx, fails)
+    run[True](ctx, fails)
+    print("")
+    if fails == 0:
+        print("ALL PASS")
+    else:
+        print(String(fails) + " FAILURES")
+        raise Error("batch norm 2d eval backward gate failed")

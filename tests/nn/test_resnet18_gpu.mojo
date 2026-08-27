@@ -24,27 +24,10 @@ would measure two reduction orders rather than the convolutions. Weights and
 running statistics are copied from the CPU model so the two are the same
 function.
 
-⚠⚠ The BACKWARD runs in TRAINING mode, and that is not a convenience.
-`BatchNorm2D`'s CPU and GPU eval-mode backwards DISAGREE BY CONSTRUCTION, and
-each documents its own choice as fine:
-
-    cpu (batch_norm_2d.mojo:1286)  accumulates dgamma/dbeta
-                                   "harmless for a frozen backbone"
-    gpu (batch_norm_2d.mojo:1352)  `_bn2d_eval_bwd_kernel` takes only
-                                   (grad_output, gamma, running_var, gin) —
-                                   it never touches gamma.grd / beta.grd
-
-So on GPU, BatchNorm's affine parameters receive EXACTLY ZERO gradient in eval
-mode. Measured on one BatchNorm2D in isolation: forward and grad_input agree
-bit-exactly (0.0), while d/dgamma and d/dbeta differ by precisely the CPU's own
-magnitude. The CPU is mathematically right — the loss does depend on gamma and
-beta — so the GPU is dropping real gradient, in exactly the frozen-BN
-fine-tuning setup ACT's own reference uses (`FrozenBatchNorm2d`).
-
-Comparing the backward in TRAINING mode (where the two agree to 1e-7) keeps
-this gate measuring the convolutions rather than re-reporting that known
-divergence. It is filed separately; do not "fix" this gate by loosening its
-tolerance.
+The BACKWARD also runs in eval, and covers BatchNorm's affine gradients as well
+as the convolutions. Those affine gradients used to be dropped entirely on GPU
+in eval mode — this gate is what found it; see
+`tests/nn/test_batch_norm_2d_eval_backward_gpu.mojo` for the isolated case.
 """
 
 from max.gpu.host import DeviceContext
@@ -355,14 +338,15 @@ def main() raises:
             worst_name = pgc.names[k]
     print("    worst parameter: " + worst_name + "  " + String(worst_val))
 
-    # CONVOLUTION gradients only. BatchNorm's gamma/beta are excluded because
-    # the GPU drops them in eval mode — a framework divergence this gate must
-    # not restate as its own failure, and must not hide either. It is named in
-    # the header and reproduced in isolation there.
+    # Split conv from BatchNorm affine, because they used to behave differently
+    # (the GPU dropped the affine gradients in eval) and a single aggregate
+    # number would not have shown which. Both are now checked.
     var conv_w = Float64(0.0)
     var conv_mag = Float64(0.0)
     var n_conv = 0
     var bn_dropped = 0
+    var bn_w = Float64(0.0)
+    var bn_mag = Float64(0.0)
     for k in range(len(pgc.names)):
         var nm = pgc.names[k]
         var is_bn = nm.endswith(".gamma") or nm.endswith(".beta")
@@ -371,12 +355,15 @@ def main() raises:
             pgc.vals
         )
         if is_bn:
-            var gpu_all_zero = True
             for i in range(lo, hi):
-                if pgg.vals[i] != Scalar[DT](0.0):
-                    gpu_all_zero = False
-            if gpu_all_zero:
-                bn_dropped += 1
+                var xb = Float64(pgc.vals[i])
+                bn_w = max(
+                    bn_w,
+                    abs(xb - Float64(pgg.vals[i]))
+                    / (PARITY_ATOL + PARITY_RTOL * abs(xb)),
+                )
+                bn_mag = max(bn_mag, abs(xb))
+            bn_dropped += 1
             continue
         n_conv += 1
         for i in range(lo, hi):
@@ -396,16 +383,20 @@ def main() raises:
         conv_mag > 1e-6,
         "max|cpu| = " + String(conv_mag),
     )
-    # Pin the KNOWN divergence so it cannot change unnoticed: if the GPU ever
-    # starts producing BN affine gradients in eval, this fires and the header
-    # needs rewriting.
-    var n_bn = len(pgc.names) - n_conv
     check(
         fails,
-        "BN affine grads are still dropped on GPU in eval (known divergence)",
-        bn_dropped == n_bn and n_bn > 0,
-        String(bn_dropped) + "/" + String(n_bn)
-        + " BN tensors zero on GPU — see the header",
+        "BatchNorm affine gradients in eval ("
+        + String(bn_dropped) + " tensors)",
+        bn_w < 1.0,
+        "worst |d|/(atol+rtol|a|) = " + String(bn_w),
+    )
+    # These were EXACTLY ZERO on GPU before the fix, so a non-trivial check is
+    # the one that matters: agreement on two zeros would prove nothing.
+    check(
+        fails,
+        "the BatchNorm affine gradients are non-trivial",
+        bn_mag > 1e-6,
+        "max|cpu| = " + String(bn_mag),
     )
 
     print("")
