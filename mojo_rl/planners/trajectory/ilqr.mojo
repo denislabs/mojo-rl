@@ -1483,7 +1483,7 @@ struct ILQRGPUBatched[
                 ztrial_view,
                 Scalar[dtype](alpha),
                 Utrial_view,
-                t,
+                Int32(t),
                 grid_dim=Self._N,
                 block_dim=Self._A,
             )

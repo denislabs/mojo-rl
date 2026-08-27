@@ -142,19 +142,23 @@ def ilqr_apply_control_update_kernel[
         Layout.row_major(HORIZON * N_ENVS * ACTION_DIM),
         MutAnyOrigin,
     ],
-    t: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    t: Int32,
 ):
     var e = Int(block_idx.x)
     var i = Int(thread_idx.x)
     if e >= N_ENVS or i >= ACTION_DIM:
         return
 
-    var u_base = (t * N_ENVS + e) * ACTION_DIM
+    var tt = Int(t)
+    var u_base = (tt * N_ENVS + e) * ACTION_DIM
     var k_idx = u_base + i
     var ff = rebind[Scalar[dtype]](k_seq[k_idx])
 
-    var K_row_base = (t * N_ENVS + e) * ACTION_DIM * LATENT_DIM + i * LATENT_DIM
-    var z_base = (t * N_ENVS + e) * LATENT_DIM
+    var K_row_base = (tt * N_ENVS + e) * ACTION_DIM * LATENT_DIM + i * LATENT_DIM
+    var z_base = (tt * N_ENVS + e) * LATENT_DIM
     var fb = Scalar[dtype](0.0)
     for j in range(LATENT_DIM):
         var k_val = rebind[Scalar[dtype]](K_seq[K_row_base + j])

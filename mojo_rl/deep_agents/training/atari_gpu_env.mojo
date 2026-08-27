@@ -69,15 +69,18 @@ def _atari_reset_kernel[
     states: Pointer[AtariState, MutAnyOrigin],
     s0: Pointer[AtariState, MutAnyOrigin],
     rom: Pointer[UInt8, MutAnyOrigin],
-    rom_size: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    rom_size: Int32,
     op_table: Pointer[OpcodeEntry, MutAnyOrigin],
     dones: Pointer[Scalar[DT], MutAnyOrigin],
     obs: Pointer[Scalar[DT], MutAnyOrigin],
-    n_envs: Int,
+    n_envs: Int32,
     seed: UInt64,
 ):
     var i = Int(global_idx.x)
-    if i >= n_envs:
+    if i >= Int(n_envs):
         return
     comptime if SELECTIVE:
         if dones[unsafe_offset=i] <= 0.5:
@@ -89,7 +92,7 @@ def _atari_reset_kernel[
         for _ in range(k):
             set_action(st, ACTION_NOOP)
             run_frame_cycle_accurate[RENDER=False](
-                st, rom, rom_size, dummy.unsafe_ptr(), op_table
+                st, rom, Int(rom_size), dummy.unsafe_ptr(), op_table
             )
     # Rebase: episode reward baseline + frame budget start fresh post-decorrelation.
     st.score = Int32(GAME.get_score(st.ram))
@@ -109,17 +112,20 @@ def _atari_step_kernel[
 ](
     states: Pointer[AtariState, MutAnyOrigin],
     rom: Pointer[UInt8, MutAnyOrigin],
-    rom_size: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    rom_size: Int32,
     op_table: Pointer[OpcodeEntry, MutAnyOrigin],
     actions: Pointer[Scalar[DT], MutAnyOrigin],
     rewards: Pointer[Scalar[DT], MutAnyOrigin],
     dones: Pointer[Scalar[DT], MutAnyOrigin],
     terminated: Pointer[Scalar[DT], MutAnyOrigin],
     obs: Pointer[Scalar[DT], MutAnyOrigin],
-    n_envs: Int,
+    n_envs: Int32,
 ):
     var i = Int(global_idx.x)
-    if i >= n_envs:
+    if i >= Int(n_envs):
         return
     var st = states[unsafe_offset=i].copy()
     var ale = GAME.map_action(Int(actions[unsafe_offset=i]))
@@ -128,7 +134,7 @@ def _atari_step_kernel[
     for _ in range(FRAME_SKIP):
         set_action(st, ale)
         run_frame_cycle_accurate[RENDER=False](
-            st, rom, rom_size, dummy.unsafe_ptr(), op_table
+            st, rom, Int(rom_size), dummy.unsafe_ptr(), op_table
         )
     var new_score = GAME.get_score(st.ram)
     st.score = Int32(new_score)
@@ -272,11 +278,11 @@ struct AtariGpuBatchedEnv[
             self._states_p(),
             self._s0_p(),
             self._rom_p(),
-            self.rom_size,
+            Int32(self.rom_size),
             self._opt_p(),
             mptr(self._done.unsafe_ptr()),
             mptr(self._obs.unsafe_ptr()),
-            Self.N_ENVS,
+            Int32(Self.N_ENVS),
             rng_seed,
             grid_dim=(blocks,),
             block_dim=(_TPB,),
@@ -295,14 +301,14 @@ struct AtariGpuBatchedEnv[
         c.enqueue_function[k](
             self._states_p(),
             self._rom_p(),
-            self.rom_size,
+            Int32(self.rom_size),
             self._opt_p(),
             mptr(self._action.unsafe_ptr()),
             mptr(self._reward.unsafe_ptr()),
             mptr(self._done.unsafe_ptr()),
             mptr(self._terminated.unsafe_ptr()),
             mptr(self._obs.unsafe_ptr()),
-            Self.N_ENVS,
+            Int32(Self.N_ENVS),
             grid_dim=(blocks,),
             block_dim=(_TPB,),
         )
@@ -318,11 +324,11 @@ struct AtariGpuBatchedEnv[
             self._states_p(),
             self._s0_p(),
             self._rom_p(),
-            self.rom_size,
+            Int32(self.rom_size),
             self._opt_p(),
             mptr(self._done.unsafe_ptr()),
             mptr(self._obs.unsafe_ptr()),
-            Self.N_ENVS,
+            Int32(Self.N_ENVS),
             rng_seed,
             grid_dim=(blocks,),
             block_dim=(_TPB,),

@@ -71,7 +71,10 @@ def gather_rows_kernel[
     batch_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     full: LayoutTensor[dtype, Layout.row_major(N_TOTAL, DIM), MutAnyOrigin],
     indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
-    offset: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    offset: Int32,
 ):
     """`batch_out[b, d]` = full[indices[offset + b], d]. Parallel over
     BATCH * DIM threads."""
@@ -80,5 +83,5 @@ def gather_rows_kernel[
         return
     var b = i // DIM
     var d = i % DIM
-    var src = Int(indices[offset + b])
+    var src = Int(indices[Int(offset) + b])
     batch_out[b, d] = full[src, d]

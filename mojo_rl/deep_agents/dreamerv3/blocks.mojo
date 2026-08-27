@@ -522,12 +522,16 @@ def _imag_ret_k[NS_: Int, TI_: Int, BINS_: Int](
     bins: LayoutTensor[DT, Layout.row_major(BINS_), MutAnyOrigin],
     ret: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
     lam: Scalar[DT],
-    slowtar: Int,  # 1 → bootstrap from svlog (EMA slowvalue); 0 → online vlog
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    slowtar: Int32,  # 1 → bootstrap from svlog (EMA slowvalue); 0 → vlog
 ):
     """λ-return over the imagined rollout (disc=1) → ret[NS,TM1]. `slowtar`
     bootstraps from the EMA slowvalue (svlog) instead of the online value (vlog)
     — matches `imag_loss_cpu`'s slowtar branch. Per-start downward scan.
-    (`slowtar` is Int not Bool — Bool isn't a valid GPU kernel scalar arg.)"""
+    (`slowtar` is a flag, not a Bool: neither `Bool` nor `Int` is a valid
+    GPU kernel scalar arg — see the note on the parameter.)"""
     var b = Int(global_idx.x)
     if b < NS_:
         comptime TM1 = TI_ - 1
@@ -3042,7 +3046,8 @@ struct ACStep[
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, 1 if self.slowtar else 0, grid_dim=nbBS, block_dim=BLKS,
+            self.lam, Int32(1) if self.slowtar else Int32(0),
+            grid_dim=nbBS, block_dim=BLKS,
         )
         # ── device-resident percentile retnorm (NO D2H — capture-safe) ──
         # Constant floor/frac indices (perclo/perchi over a fixed-size sample)
@@ -3391,7 +3396,8 @@ struct ACStep[
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, 1 if self.slowtar else 0, grid_dim=nbBS, block_dim=BLKS,
+            self.lam, Int32(1) if self.slowtar else Int32(0),
+            grid_dim=nbBS, block_dim=BLKS,
         )
         # ── device-resident percentile retnorm (no D2H) ──
         comptime NRET = NS * TM1

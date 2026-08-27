@@ -1113,7 +1113,10 @@ def gpu_mcts_extract_actions_temp_kernel[
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
-    temp_threshold: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    temp_threshold: Int32,
     rng_seed: Scalar[DType.uint32],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ) where dtype.is_floating_point():
@@ -1184,7 +1187,7 @@ def gpu_mcts_extract_actions_temp_kernel[
 
     # ── Temperature-controlled action selection ──
     var temp: Scalar[dtype]
-    if move_count < temp_threshold:
+    if move_count < Int(temp_threshold):
         temp = Scalar[dtype](1.0)
     else:
         temp = temp_min

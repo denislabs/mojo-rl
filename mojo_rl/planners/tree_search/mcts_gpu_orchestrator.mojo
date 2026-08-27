@@ -1049,7 +1049,7 @@ struct GenericGPUMCTS[
             ep_steps,
             act_out_t,
             pol_out_t,
-            TEMP_THRESHOLD,
+            Int32(TEMP_THRESHOLD),
             rng_seed,
             Scalar[dtype](temp_min),
             grid_dim=(Self.ENV_BLOCKS,),

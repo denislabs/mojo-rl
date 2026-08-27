@@ -250,7 +250,10 @@ def gz_extract_actions_temp_kernel[
     ],
     ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    temp_threshold: Int,
+    # ⚠ Int32, NOT Int — `Int`/`UInt` are not `DevicePassable`. A bare
+    # `Int` still compiles in `pixi run build` and fails only where the
+    # kernel is LAUNCHED; keep the `Int32(...)` casts at the call sites.
+    temp_threshold: Int32,
     rng_seed: Scalar[DType.uint32],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ) where dtype.is_floating_point():
@@ -302,7 +305,7 @@ def gz_extract_actions_temp_kernel[
         return
 
     # ── 2. Branch on move_count ────────────────────────────────────────
-    if move_count < temp_threshold:
+    if move_count < Int(temp_threshold):
         # Sample ∝ policies_out (legal-masked).
         var philox = PhiloxRandom(
             seed=(UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15))
@@ -1121,7 +1124,7 @@ struct GumbelGPUMCTS[
             lm_t,
             ep_steps,
             act_t,
-            TEMP_THRESHOLD,
+            Int32(TEMP_THRESHOLD),
             rng_seed,
             Scalar[dtype](temp_min),
             grid_dim=(Self.ENV_BLOCKS,),

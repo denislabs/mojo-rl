@@ -727,7 +727,7 @@ struct Trainer[
                                 indices.lt[
                                     "gpu", Layout.row_major(N_TRAIN)
                                 ](),
-                                off,
+                                Int32(off),
                                 grid_dim=blocks_gx,
                                 block_dim=TPB,
                             )
@@ -746,7 +746,7 @@ struct Trainer[
                                 indices.lt[
                                     "gpu", Layout.row_major(N_TRAIN)
                                 ](),
-                                off,
+                                Int32(off),
                                 grid_dim=blocks_gx,
                                 block_dim=TPB,
                             )
@@ -760,7 +760,7 @@ struct Trainer[
                                 "gpu", Layout.row_major(N_TRAIN, Self.NC)
                             ](),
                             indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                            off,
+                            Int32(off),
                             grid_dim=blocks_gy,
                             block_dim=TPB,
                         )
