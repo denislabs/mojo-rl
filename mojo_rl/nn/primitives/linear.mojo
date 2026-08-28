@@ -340,11 +340,23 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # padded to 32) and `latent_proj` (N = 64) are BOTH still on the allocating
     # path under this rule.
     #
-    # The fix is a FLOOR (`max(round_up(OUT_), N_MIN)`) rather than a rounding,
-    # and `N_MIN` is a MEASURED constant, not a guess — it is somewhere in
-    # (64, 256]. `bench_matmul_alloc_threshold.mojo` sweeps N to find it. Do
-    # not raise this without that run: too low leaves the allocation in place,
-    # too high burns FLOPs on every call for nothing.
+    # ANSWERED — and it is not a threshold, it is a line of MAX source.
+    # `matmul/gpu/__init__.mojo:591` gates its own (non-allocating) kernel on
+    #
+    #     multi_gemm_cond = m > 1 and n % 128 == 0 and k % 32 == 0 and k >= 128
+    #
+    # (on a 5090; the H100/AMD disjuncts are False). Fail it and control falls
+    # through to the VENDOR BLAS fallback — cuBLAS, a cutlass kernel, and a
+    # workspace allocated + memset + freed per call. 29/29 against measurement.
+    #
+    # So the two axes obey DIFFERENT tests, which is why one "pad to X" rule
+    # never fit: N wants `% 128`, K wants `% 32` AND a `>= 128` FLOOR. Both
+    # constants here are therefore half right — `PAD_TO = 32` is exactly the K
+    # term (TD-MPC2's 518 -> 544 was this line, not a tensor-core cliff), and
+    # N=101 -> 128 worked because 128 % 128 == 0, not because 128 is wide.
+    #
+    # The remaining fix is: floor K at 128, and pad N to a multiple of 128.
+    # Neither is done yet — see `docs/GPU_STEP_PERF.md`.
     comptime NEEDS_N_PAD = Self.OUT_ % Self.PAD_TO != 0
     comptime N_PAD = (
         (Self.OUT_ + Self.PAD_TO - 1) // Self.PAD_TO
