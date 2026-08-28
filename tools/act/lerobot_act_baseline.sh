@@ -89,12 +89,25 @@ TRAIN_EPS="0,1,2,3,5,6,7,8,9,10,11,12,13,14,15,16,17,19,20,21,22,23,24,25,26,27,
 VAL_EPS="4,18,30,31,34,37,41,43,45,46"
 EPISODES="[${TRAIN_EPS},${VAL_EPS}]"
 
+# ⚠ `--policy.push_to_hub=false`. It defaults to TRUE, and `validate()` then
+# refuses to start without a `--policy.repo_id`
+# (`configs/train.py:329`) — a fail-fast that fires AFTER the dataset is
+# resolved, so it costs a download before it tells you.
+#
+# ⚠ The output directory must NOT already exist (`configs/train.py:334`,
+# FileExistsError, no --force). Timestamped so a second run of the same mode
+# does not fail on the first one's directory.
+STAMP="$(date +%Y%m%d_%H%M%S)"
+
 COMMON=(
+  # `--policy.type` FIRST: draccus resolves the policy config class from it,
+  # and the other `--policy.*` flags have nowhere to land until it has.
+  --policy.type=act
+  --policy.device=cuda
+  --policy.push_to_hub=false
   --dataset.repo_id="${REPO_ID}"
   --dataset.episodes="${EPISODES}"
   --dataset.eval_split=0.2
-  --policy.type=act
-  --policy.device=cuda
   --steps=40000          # ~26 epochs at batch 8; ours plateaus by epoch 8-15
   --eval_steps=1000      # matches our VAL_EVERY
   --log_freq=200
@@ -113,7 +126,7 @@ case "${MODE}" in
     # reaches 0.20, we have a real defect and `matched` becomes the bisect.
     echo "=== LeRobot ACT, stock defaults ==="
     lerobot-train "${COMMON[@]}" \
-      --output_dir=outputs/act_so101_lerobot_defaults \
+      --output_dir="outputs/act_so101_lerobot_defaults_${STAMP}" \
       --job_name=act_so101_lerobot_defaults
     ;;
 
@@ -132,7 +145,7 @@ case "${MODE}" in
       --policy.chunk_size=60 \
       --policy.n_action_steps=60 \
       --batch_size=16 \
-      --output_dir=outputs/act_so101_lerobot_matched \
+      --output_dir="outputs/act_so101_lerobot_matched_${STAMP}" \
       --job_name=act_so101_lerobot_matched
     ;;
 
@@ -146,7 +159,7 @@ cat <<'EOF'
 
 Done. What to read out of it:
 
-  grep -E "eval_loss|l1_loss|kld_loss" <output_dir>/*.log
+  grep -E "eval_loss|l1_loss|kld_loss" outputs/act_so101_lerobot_*/*.log
 
   * the eval_loss PLATEAU, against our 0.3941 (allowing the ~5% denominator
     difference in caveat 2 above)
