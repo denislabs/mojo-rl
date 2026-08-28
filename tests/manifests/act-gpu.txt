@@ -1,11 +1,25 @@
-# ACT GPU manifest — `pixi run -e apple test-act-gpu` (or -e nvidia).
+# ACT / nn GPU manifest — `pixi run -e nvidia test-act-gpu` (or -e apple).
 #
 # GPU paths are gated against the CPU paths, which carry the comparison against
-# the reference. Prerequisite (for the cross-attention gate's fixed inputs):
+# the reference. ZERO setup except one 16 KB untar for the first entry:
 #
-#   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+#   mkdir -p /tmp/act_ref && tar xzf tests/fixtures/act_ref_xattn.tgz -C /tmp/act_ref
+#
+# No torch, no dataset, no `act-ref` environment. The other three are fully
+# self-contained.
+#
+# ⚠ These run under `mojo run` (JIT), which never invokes ld. Building them with
+# `mojo build` on APPLE needs `-Xlinker -ld_classic` — the expanded graph types
+# mangle past that linker's symbol-length limit. Not an issue on CUDA.
 
-# The attention leaf: forward, backward, masked and unmasked.
+# The attention leaf: forward, backward, masked and unmasked. Reads the fixture.
 tests/nn/test_cross_attention_gpu.mojo
-# The whole model: forward, one Adam step, BN state, and predict().
+# BatchNorm2D's backward in BOTH modes. The eval arm is the one that was
+# silently returning zero for gamma/beta on GPU.
+tests/nn/test_batch_norm_2d_eval_backward_gpu.mojo
+# The real ResNet18 backbone: forward, grad_input, conv grads, BN affine grads.
+tests/nn/test_resnet18_gpu.mojo
+# The whole ACT model: forward, one Adam step, BN state, and predict().
+# Uses a two-conv stub backbone so it compiles in reasonable time; the real
+# backbone is covered by the entry above.
 tests/deep_agents/act/test_act_gpu_vs_cpu.mojo
