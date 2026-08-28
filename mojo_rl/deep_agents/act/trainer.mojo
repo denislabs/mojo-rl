@@ -382,11 +382,22 @@ struct ACTTrainer[
                 self.t_valid.data[base + 2 + t] = valid[b * Self.K + t]
 
         comptime if Self.target != "cpu":
+            # ⚠ `upload_resident`, NOT `upload`. `upload` recreates the device
+            # buffer on EVERY call and synchronizes TWICE; these four tensors
+            # are fixed-size (BATCH x the model dims) and allocated once at
+            # `make`, so every one of those reallocations was pure churn.
+            #
+            # nsys on a 5090, 60 steps: 8,783 device alloc/free pairs, mean
+            # `cuMemFree` 310 us (a plain free is 10-20 us — this one drains
+            # outstanding work), totalling **3.45 s against 3.43 s of kernel
+            # time**. The whole step spent as long managing memory as
+            # computing. These four are 4 of the ~70 pairs per pass and 4 of
+            # the ~148 synchronizations; the rest is below.
             var c = self.ctx.value()
-            self.t_qpos.upload(c)
-            self.t_images.upload(c)
-            self.t_actions.upload(c)
-            self.t_valid.upload(c)
+            self.t_qpos.upload_resident(c)
+            self.t_images.upload_resident(c)
+            self.t_actions.upload_resident(c)
+            self.t_valid.upload_resident(c)
         self.graph.set_input["qpos", Self.BATCH](self.t_qpos, self.ctx)
         self.graph.set_input["images", Self.BATCH](self.t_images, self.ctx)
         self.graph.set_input["actions", Self.BATCH](self.t_actions, self.ctx)
