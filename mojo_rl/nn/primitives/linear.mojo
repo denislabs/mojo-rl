@@ -295,11 +295,23 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # at their logical size, so this changes no on-disk format and no existing
     # checkpoint. The alternative (widening the caller's concat) would have
     # changed every TD-MPC2 net shape and invalidated every checkpoint.
+    #
+    # ⚠ The gate has TWO K terms and this pad must satisfy BOTH: `k % 32 == 0`
+    # (PAD_TO) AND `k >= 128` (K_MIN). The floor is not decoration — it is the
+    # whole fix for `Linear[6, 256]`, whose K=32 is a perfectly good multiple
+    # of 32 and still lands on cuBLAS. Measured at [960 x K] @ [K x 256]:
+    #
+    #     K =  32 / 64 / 96   288 / 285 / 286 us   cutlass   ALLOCATES
+    #     K = 128 / 160 / 192   8.6 / 10.1 / 11.9 us  multistage  free
+    #
+    # (160 and 192 are NOT multiples of 128 and are free — K is a FLOOR, N is
+    # a MODULUS. The two axes do not obey the same test.)
     comptime PAD_TO = 32
-    comptime NEEDS_PAD = Self.IN_ % Self.PAD_TO != 0
-    comptime K_PAD = (
-        (Self.IN_ + Self.PAD_TO - 1) // Self.PAD_TO
-    ) * Self.PAD_TO
+    comptime K_MIN = 128
+    comptime K_PAD = Self._round_up(Self.IN_, Self.PAD_TO) if Self._round_up(
+        Self.IN_, Self.PAD_TO
+    ) > Self.K_MIN else Self.K_MIN
+    comptime NEEDS_PAD = Self.K_PAD != Self.IN_
 
     # ── N-alignment padding — a DIFFERENT defect from the K one ──────────
     # A narrow, unaligned OUTPUT width makes cuBLAS pick a split-K path, and
@@ -355,13 +367,42 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # term (TD-MPC2's 518 -> 544 was this line, not a tensor-core cliff), and
     # N=101 -> 128 worked because 128 % 128 == 0, not because 128 is wide.
     #
-    # The remaining fix is: floor K at 128, and pad N to a multiple of 128.
-    # Neither is done yet — see `docs/GPU_STEP_PERF.md`.
-    comptime NEEDS_N_PAD = Self.OUT_ % Self.PAD_TO != 0
-    comptime N_PAD = (
-        (Self.OUT_ + Self.PAD_TO - 1) // Self.PAD_TO
-    ) * Self.PAD_TO
+    # Both terms are now honoured below: `K_MIN = 128` and `N_PAD_TO = 128`.
+    #
+    # ⚠ The pad is UNCONDITIONAL, and that is a judgement about scale, not an
+    # oversight. It costs FLOPs, and it only pays while the extra work is
+    # cheaper than the ~277 us the allocator charges per call. Break-even for a
+    # 3x FLOP increase is ~4.6 GFLOP unpadded, i.e. M around 560,000 for a
+    # 64x64 `Linear` — two orders beyond anything here (ACT's widest is
+    # M = 2592, TD-MPC2's 2144). A `Linear` fed a genuinely huge M with tiny
+    # IN_/OUT_ would want a comptime opt-out; none exists in this repo today.
+    #
+    # ⚠ These are HARDCODED MAX CONSTANTS, not hardware properties — the source
+    # says "Hard coded this condition to 128 for now. TODO: Need to find a
+    # better dispatch strategy." This padding is pinned to a MAX VERSION
+    # (v26.5), not to a GPU. Re-run `benchmarks/bench_matmul_alloc_threshold`
+    # after a MAX upgrade; if that TODO ever lands, the right pad may be none.
+    # The K terms carry no device check at all, so this is not 5090-specific;
+    # only H100-with-bfloat16 (`n % 8`) and AMD (`n % 4`) relax the N term, and
+    # B200 never reaches this gate.
+    #
+    # ⚠ 128, NOT `PAD_TO`. The gate's N term is `n % 128 == 0`, so rounding to
+    # 32 lands on the ALLOCATING side — which is what `Linear[256, 6]` (padded
+    # to 32) was doing. Measured at [960 x 256] @ [256 x N]:
+    #
+    #     N = 32 / 48 / 64 / 96 / 160 / 192   ~285-293 us   cutlass  ALLOCATES
+    #     N = 128 / 256                       14.3 / 14.9 us  multistage  free
+    #
+    # N=160 and N=192 are WIDER than 128 and still allocate: this is a
+    # modulus, not a threshold.
+    comptime N_PAD_TO = 128
+    comptime N_PAD = Self._round_up(Self.OUT_, Self.N_PAD_TO)
+    comptime NEEDS_N_PAD = Self.N_PAD != Self.OUT_
     comptime WPAD_SIZE = Self.K_PAD * Self.N_PAD
+
+    @staticmethod
+    def _round_up(v: Int, to: Int) -> Int:
+        return ((v + to - 1) // to) * to
     # Activation-flow dtype (satisfies the Module trait). `Linear[IN, OUT]` =
     # fp32 (ACT_DT == DT, the legacy path); `Linear[IN, OUT, bfloat16]` flows
     # activations at bf16 (the AMP "Step B" memory win).

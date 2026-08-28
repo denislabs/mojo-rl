@@ -241,22 +241,27 @@ def _im2col_kernel[
 
 
 def _pad_w_cols_kernel[
-    OC: Int, COL: Int, DCOL: Int
+    OC: Int, COL: Int, DCOL: Int, OCP: Int = OC
 ](
     src: LayoutTensor[DT, Layout.row_major(OC * COL), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(OC * DCOL), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(OCP * DCOL), MutAnyOrigin],
 ):
-    """`W[OC, COL]` -> `W_pad[OC, DCOL]`, zeros in `[COL, DCOL)`.
+    """`W[OC, COL]` -> `W_pad[OCP, DCOL]`, zeros outside the source rectangle.
 
-    The weight side of the K pad. Row-major with a WIDER row stride, so this
-    is a 2-D copy, not a flat tail append — every row after the first moves.
-    Twin of `linear.mojo`'s `_pad_2d_kernel`."""
+    Both axes of the forward GEMM: `DCOL` is the K pad (the contraction) and
+    `OCP` is the N pad (the output width). Row-major with a WIDER row stride,
+    so this is a 2-D copy, not a flat tail append — every row after the first
+    moves. Twin of `linear.mojo`'s `_pad_2d_kernel`.
+
+    The zero ROWS matter as much as the zero columns: `out_packed[:, oc]` for
+    `oc >= OC` is computed against them and comes out 0, and the scatter never
+    reads it."""
     var i = Int(global_idx.x)
-    if i >= OC * DCOL:
+    if i >= OCP * DCOL:
         return
     var r = i // DCOL
     var c = i % DCOL
-    dst[i] = src[r * COL + c] if c < COL else Scalar[DT](0)
+    dst[i] = src[r * COL + c] if (r < OC and c < COL) else Scalar[DT](0)
 
 
 def _accum_w_2d_kernel[
@@ -289,11 +294,18 @@ def _scatter_bias_kernel[
     BS: Int,
     ADT: DType = DT,
     LAYOUT: Int = LAYOUT_NCHW,
+    OCP: Int = OC,
 ](
-    out_packed: LayoutTensor[ADT, Layout.row_major(BS, OC), MutAnyOrigin],
+    out_packed: LayoutTensor[ADT, Layout.row_major(BS, OCP), MutAnyOrigin],
     bias: LayoutTensor[ADT, Layout.row_major(OC), MutAnyOrigin],
     output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
 ):
+    """Scatter + bias, reading `out_packed` at a row stride of `OCP >= OC`.
+
+    `OCP` is the N-alignment pad. The slice back to `OC` rides here and costs
+    NO extra launch — channels `[OC, OCP)` are simply never read — exactly the
+    way `linear.mojo`'s `_bias_add_slice_kernel` rides on its bias add.
+    `OCP == OC` is the unpadded case and this is then the original kernel."""
     var idx = Int(global_idx.x)
     if idx >= BATCH * OUT_FLAT:
         return
@@ -303,6 +315,7 @@ def _scatter_bias_kernel[
     output[b, out_pos] = rebind[Scalar[ADT]](
         out_packed[b * SO + s, oc]
     ) + rebind[Scalar[ADT]](bias[oc])
+
 
 
 def _fwd_oc1_matvec_kernel[
@@ -559,14 +572,55 @@ struct Conv2D[
     #
     # ⚠ fp32 GPU only, matching `Linear`: the bf16-flow path keeps `COL`.
     comptime PAD_TO = 32
-    comptime NEEDS_COL_PAD = Self.COL % Self.PAD_TO != 0
-    comptime CPAD = (
-        ((Self.COL + Self.PAD_TO - 1) // Self.PAD_TO) * Self.PAD_TO
-    ) if Self.NEEDS_COL_PAD else Self.COL
+    comptime K_MIN = 128
+    comptime CPAD = Self._round_up(Self.COL, Self.PAD_TO) if Self._round_up(
+        Self.COL, Self.PAD_TO
+    ) > Self.K_MIN else Self.K_MIN
+    comptime NEEDS_COL_PAD = Self.CPAD != Self.COL
     """The im2col row stride the fp32 GPU path uses — `COL` rounded up to
     `PAD_TO`, and exactly `COL` when it is already aligned (then every kernel
     below is byte-for-byte the unpadded one)."""
-    comptime WPAD_SIZE = Self.OC_ * Self.CPAD
+    # ── N-alignment padding on OC — the axis this block used to skip ─────
+    # The forward GEMM's N is `OC_`, and the gate wants `n % 128 == 0`. The
+    # note below said OC is "always a multiple of 32" and left it — true, and
+    # the wrong test: 32 and 64 are multiples of 32 and both land on cuBLAS.
+    # Measured on the ResNet18 stem, `[307200 x 160] @ [160 x N]`:
+    #
+    #     OC =  64   433.37 us   cutlass      ALLOCATES
+    #     OC = 128   280.37 us   multistage   free
+    #
+    # 2x the FLOPs and 1.55x FASTER. The slice back to `OC_` rides on
+    # `_scatter_bias_kernel` (channels `[OC_, OCPAD)` are never read), so it
+    # costs no extra launch — the same trick `Linear`'s bias add uses.
+    #
+    # ⚠ OC_ == 1 is EXCLUDED: that path is `_fwd_oc1_matvec_kernel`, a direct
+    # matvec that never calls `max_matmul`, so there is no dispatch gate to
+    # satisfy and padding would only waste a buffer.
+    #
+    # ⚠ Only the FORWARD is fixed. `vjp`'s dW GEMM has N = `CPAD` and its
+    # d_col GEMM has N = `BS` = BATCH*OH*OW — a batch-times-spatial size that
+    # is not ours to pad. Those stay on the vendor path.
+    comptime N_PAD_TO = 128
+    comptime OCPAD = Self._round_up(
+        Self.OC_, Self.N_PAD_TO
+    ) if Self.OC_ != 1 else 1
+    comptime NEEDS_OC_PAD = Self.OCPAD != Self.OC_
+    comptime NEEDS_W_PAD = Self.NEEDS_COL_PAD or Self.NEEDS_OC_PAD
+    comptime WPAD_SIZE = Self.OCPAD * Self.CPAD
+    """Size of the padded FORWARD weight `[OCPAD, CPAD]`."""
+    comptime DWPAD_SIZE = Self.OC_ * Self.CPAD
+    """Size of the `vjp` dW temp `[OC_, CPAD]` — a DIFFERENT rectangle.
+
+    ⚠ These were one constant until `OCPAD` split them. The forward GEMM pads
+    N (= `OC_`); the dW GEMM's N is `CPAD` and its M is the true `OC_`, so it
+    must NOT be widened. Sharing the name silently oversized `dW_tmp` and fed
+    `_accum_w_2d_kernel` a view of the wrong extent — the compiler caught it
+    here, but the same shape of mistake with matching sizes would have been a
+    wrong gradient that still trains."""
+
+    @staticmethod
+    def _round_up(v: Int, to: Int) -> Int:
+        return ((v + to - 1) // to) * to
     # Activation-flow dtype (satisfies the Module trait). `Conv2D[...]` = fp32
     # (ACT_DT == DT, the legacy NoAMP path); `Conv2D[..., DType.bfloat16]` flows
     # activations at bf16 (the AMP "Step B" memory win). Master weights/grads/
@@ -656,7 +710,9 @@ struct Conv2D[
         self.w_pad.ensure_gpu(c, Self.WPAD_SIZE)
         if self._force_recast or self.weight.val.version != self._w_pad_version:
             c.enqueue_function[
-                _pad_w_cols_kernel[Self.OC_, Self.COL, Self.CPAD]
+                _pad_w_cols_kernel[
+                    Self.OC_, Self.COL, Self.CPAD, Self.OCPAD
+                ]
             ](
                 self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
                 self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
@@ -666,10 +722,10 @@ struct Conv2D[
             self._w_pad_version = self.weight.val.version
 
     def _w_col_buf(mut self, c: DeviceContext) raises -> DeviceBuffer[DT]:
-        """The `[OC, CPAD]` weight the fp32 GEMMs contract against: the padded
-        copy when `NEEDS_COL_PAD`, otherwise the master weight itself (no copy,
-        no extra kernel — `CPAD == COL` there)."""
-        comptime if Self.NEEDS_COL_PAD:
+        """The `[OCPAD, CPAD]` weight the fp32 forward GEMM contracts against:
+        the padded copy when EITHER axis needs it, otherwise the master weight
+        itself (no copy, no extra kernel — both pads are identities there)."""
+        comptime if Self.NEEDS_W_PAD:
             self._ensure_w_pad(c)
             return self.w_pad.dev.value()
         else:
@@ -776,7 +832,7 @@ struct Conv2D[
                 outd.ensure_gpu(c, B * Self.OUT_FLAT)
                 # K-aligned im2col stride (== COL when already aligned).
                 self.col_t.ensure_gpu(c, BS * Self.CPAD)
-                self.outp_t.ensure_gpu(c, BS * Self.OC_)
+                self.outp_t.ensure_gpu(c, BS * Self.OCPAD)
                 # (1) im2col → col[BS, CPAD] (tail columns zeroed)
                 comptime nb_col = (BS * Self.CPAD + CONV_TPB - 1) // CONV_TPB
                 c.enqueue_function[
@@ -833,10 +889,10 @@ struct Conv2D[
                         self.col_t.dev.value(), row_major[BS, Self.CPAD]()
                     )
                     var w_tt = TileTensor(
-                        w_buf, row_major[Self.OC_, Self.CPAD]()
+                        w_buf, row_major[Self.OCPAD, Self.CPAD]()
                     )
                     var outp_tt = TileTensor(
-                        self.outp_t.dev.value(), row_major[BS, Self.OC_]()
+                        self.outp_t.dev.value(), row_major[BS, Self.OCPAD]()
                     )
                     max_matmul[transpose_b=True, target="gpu"](
                         outp_tt, col_tt, w_tt, c
@@ -854,9 +910,10 @@ struct Conv2D[
                             BS,
                             DT,
                             Self.LAYOUT,
+                            Self.OCPAD,
                         ]
                     ](
-                        self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                        self.outp_t.lt["gpu", Layout.row_major(BS, Self.OCPAD)](),
                         self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
                         outd.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
                         grid_dim=nb_sc,
@@ -1156,7 +1213,7 @@ struct Conv2D[
             self.goT_t.ensure_gpu(c, Self.OC_ * BS)
             # [OC, CPAD] when padding — the dW GEMM's OUTPUT width is COL, the
             # axis that picks the split-K workspace path on cuBLAS.
-            self.dW_tmp.ensure_gpu(c, Self.WPAD_SIZE)
+            self.dW_tmp.ensure_gpu(c, Self.DWPAD_SIZE)
             # (1) col = im2col(x) — A2: REUSE the forward's col_t when this vjp's
             # forward_input is the buffer the forward im2col'd; else recompute
             # (safe fallback). See `_col_src_ptr`.
@@ -1228,7 +1285,7 @@ struct Conv2D[
                     _accum_w_2d_kernel[Self.OC_, Self.COL, Self.CPAD]
                 ](
                     self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                    self.dW_tmp.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+                    self.dW_tmp.lt["gpu", Layout.row_major(Self.DWPAD_SIZE)](),
                     grid_dim=nb_acc,
                     block_dim=TPB,
                 )
