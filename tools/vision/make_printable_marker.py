@@ -1,8 +1,9 @@
-"""Generate a printable ArUco marker at an EXACT physical size.
+"""Generate a printable ArUco marker or ChArUco board at an EXACT physical size.
 
     pixi run python tools/vision/make_printable_marker.py
     pixi run python tools/vision/make_printable_marker.py --id 7 --size-mm 60
     pixi run python tools/vision/make_printable_marker.py --sheet 0,1,2,3
+    pixi run python tools/vision/make_printable_marker.py --charuco
 
 Writes a PNG and a PDF into `scratch/markers/` (gitignored). Print the **PDF**.
 
@@ -26,6 +27,19 @@ the same PDF. An earlier version packed everything into one page with no bounds
 check and crashed on three 60 mm markers; the crash was the GOOD outcome, since
 the other way a missing bounds check fails is a marker silently clipped at the
 page edge — which still prints, still detects, and is no longer square.
+
+⚠⚠ **THE CHARUCO BOARD'S NUMBERS ARE A CONTRACT, NOT A DESCRIPTION.** A board
+is defined by (squares_x, squares_y, square_mm, marker_mm, dict), and the
+detector must be built with the SAME five. Give it different ones and it does
+not fail — it finds a different set of corners at different board coordinates
+and calibrates to a confidently wrong camera. They are printed on the sheet for
+that reason, and the studio's calibration panel defaults to them.
+
+⚠ WHY A CHARUCO BOARD RATHER THAN A CHESSBOARD. Its corners are identified by
+the ArUco markers in the white squares, so a PARTIALLY VISIBLE board still
+contributes — which is what lets you fill the frame corners, where lens
+distortion actually lives. A plain chessboard must be wholly visible in every
+view, so the views that matter most are the ones it rejects.
 
 ⚠ MOUNT IT FLAT. A marker taped to a curved or floppy surface is not the planar
 target the maths assumes; the corner estimate degrades and the pose wanders.
@@ -79,6 +93,66 @@ def draw_ruler(img, x_mm, y_mm, length_mm=100.0):
         if t % 50 == 0:
             draw_text(img, f"{t}", x_mm + t - 2, y_mm + 6, 0.5, 1)
     draw_text(img, "measure me: this line is 100 mm", x_mm, y_mm + 14, 0.5, 1)
+
+
+def build_charuco(dict_name: str, squares_x: int, squares_y: int,
+                  square_mm: float, marker_mm: float):
+    """One A4 page carrying a ChArUco board at an exact physical size.
+
+    ⚠ THE MARGIN IS NOT COSMETIC. `generateImage`'s board fills its output
+    edge to edge, and the outer ArUco markers then sit against the paper's
+    white with no defined quiet zone of their own. The margin below is what
+    guarantees one.
+    """
+    dictionary = cv2.aruco.getPredefinedDictionary(DICTS[dict_name])
+    board = cv2.aruco.CharucoBoard(
+        (squares_x, squares_y), square_mm / 1000.0, marker_mm / 1000.0,
+        dictionary)
+
+    board_w_mm = squares_x * square_mm
+    board_h_mm = squares_y * square_mm
+
+    page_w_mm, page_h_mm = 210.0, 297.0
+    margin_mm = 12.0
+    header_mm = 26.0
+    ruler_mm = 26.0
+    avail_h = page_h_mm - 2 * margin_mm - header_mm - ruler_mm
+    avail_w = page_w_mm - 2 * margin_mm
+    if board_w_mm > avail_w or board_h_mm > avail_h:
+        raise SystemExit(
+            f"a {squares_x}x{squares_y} board of {square_mm:g} mm squares is "
+            f"{board_w_mm:.0f}x{board_h_mm:.0f} mm and only "
+            f"{avail_w:.0f}x{avail_h:.0f} mm is usable on A4 — reduce "
+            f"--square-mm or the square count"
+        )
+
+    page = np.full((mm_to_px(page_h_mm), mm_to_px(page_w_mm)), 255, np.uint8)
+    img = board.generateImage((mm_to_px(board_w_mm), mm_to_px(board_h_mm)))
+
+    y_mm = margin_mm + 8.0
+    draw_text(page, f"ChArUco  {squares_x}x{squares_y} squares  "
+                    f"{square_mm:g} mm square  {marker_mm:g} mm marker",
+              margin_mm, y_mm, 0.6, 2)
+    y_mm += 7.0
+    draw_text(page, f"dict {dict_name}   -   PRINT AT 100%, then measure the "
+                    "ruler below", margin_mm, y_mm, 0.45, 1)
+    y_mm += 9.0
+
+    x0 = mm_to_px((page_w_mm - board_w_mm) / 2.0)
+    y0 = mm_to_px(y_mm)
+    page[y0:y0 + img.shape[0], x0:x0 + img.shape[1]] = img
+
+    # Crop marks on the board's own outer edge — the square grid's boundary is
+    # what `square_mm * squares_x` measures, and it is easy to mistake for the
+    # printed margin.
+    for (mx, my) in ((x0, y0), (x0 + img.shape[1], y0),
+                     (x0, y0 + img.shape[0]),
+                     (x0 + img.shape[1], y0 + img.shape[0])):
+        cv2.line(page, (mx - mm_to_px(4), my), (mx - mm_to_px(1.5), my), 0, 3)
+        cv2.line(page, (mx, my - mm_to_px(4)), (mx, my - mm_to_px(1.5)), 0, 3)
+
+    draw_ruler(page, margin_mm + 4.0, y_mm + board_h_mm + 16.0)
+    return page, board
 
 
 def build_pages(dict_name: str, ids, size_mm: float):
@@ -176,6 +250,50 @@ def build_pages(dict_name: str, ids, size_mm: float):
     return pages
 
 
+def main_charuco(args) -> int:
+    sx, sy = (int(v) for v in args.squares.lower().split("x"))
+    if args.marker_mm >= args.square_mm:
+        print("--marker-mm must be smaller than --square-mm (the marker sits "
+              "INSIDE a white square)", file=sys.stderr)
+        return 1
+    page, board = build_charuco(args.dict, sx, sy, args.square_mm,
+                                args.marker_mm)
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    stem = (f"charuco_{args.dict}_{sx}x{sy}_{args.square_mm:g}mm"
+            f"_{args.marker_mm:g}mm")
+    png = OUT_DIR / f"{stem}.png"
+    pdf = OUT_DIR / f"{stem}.pdf"
+    cv2.imwrite(str(png), page)
+    Image.open(png).save(pdf, resolution=DPI)
+
+    # ⚠ SELF-CHECK AT 1/8 SCALE, and against the FULL corner count. A board
+    # that yields only some of its corners on a clean render will yield fewer
+    # still through a lens, and calibrating from a handful of corners is how a
+    # confidently wrong camera matrix happens.
+    det = cv2.aruco.CharucoDetector(board)
+    small = cv2.resize(page, (page.shape[1] // 8, page.shape[0] // 8),
+                       interpolation=cv2.INTER_AREA)
+    corners, ids, _, _ = det.detectBoard(small)
+    n = 0 if ids is None else len(ids)
+    expect = (sx - 1) * (sy - 1)
+    if n != expect:
+        print(f"⚠ the board yields {n} of {expect} corners at 1/8 scale",
+              file=sys.stderr)
+        return 1
+
+    print(f"wrote {pdf}")
+    print(f"      {png}")
+    print(f"  board {sx}x{sy} squares, {args.square_mm:g} mm square, "
+          f"{args.marker_mm:g} mm marker, dict {args.dict}")
+    print(f"  outer size {sx * args.square_mm:g} x {sy * args.square_mm:g} mm, "
+          f"{expect} chessboard corners")
+    print(f"  detected {n}/{expect} corners in a 1/8-scale self-check")
+    print("  ⚠ type these five numbers into whatever calibrates from it —")
+    print("    a different set does not fail, it calibrates a different camera")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dict", default="4x4_50", choices=sorted(DICTS))
@@ -183,7 +301,16 @@ def main() -> int:
     ap.add_argument("--sheet", default="", help="comma-separated ids")
     ap.add_argument("--size-mm", type=float, default=40.0,
                     help="side of the BLACK square, millimetres")
+    ap.add_argument("--charuco", action="store_true",
+                    help="print a ChArUco calibration board instead")
+    ap.add_argument("--squares", default="5x7",
+                    help="ChArUco grid, e.g. 5x7")
+    ap.add_argument("--square-mm", type=float, default=30.0)
+    ap.add_argument("--marker-mm", type=float, default=22.0)
     args = ap.parse_args()
+
+    if args.charuco:
+        return main_charuco(args)
 
     ids = ([int(v) for v in args.sheet.split(",")] if args.sheet
            else [args.id])

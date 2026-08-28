@@ -24,6 +24,27 @@ to read a marker.
 ⚠ NO CAMERA NEEDED. `--file` plays any video (it loops), so the whole UI can be
 exercised on the committed 3 KB fixture. `--image` shows a still.
 
+CALIBRATING A CAMERA WITH IT
+============================
+1. `pixi run python tools/vision/make_printable_marker.py --charuco`
+2. Print at 100%, measure the ruler, mount it FLAT (a clipboard is fine).
+3. Run the studio, tick **detect board**. It should report 24 / 24 corners.
+4. Click **capture view** at six or more DIFFERENT poses — near, far, tilted
+   left/right/up/down, and with the board out toward the frame CORNERS.
+5. Click **calibrate**. fx/fy/cx/cy/rms appear and `fx` is applied.
+
+⚠⚠ **THE VIEWS MUST DIFFER, AND `rms` WILL NOT TELL YOU IF THEY DO NOT.** Six
+captures of one pose is one view with six times the confidence in a badly
+determined focal length, and it fits *beautifully* — rms is a residual of the
+model against the corners it was given, never a statement about accuracy. Tilt
+between every capture; put the board where distortion actually lives, at the
+edges.
+
+⚠ The board's five numbers are a CONTRACT with the printed sheet, not settings:
+`--board 5x7 --square-mm 30 --marker-mm 22` must match what was printed. A
+mismatched board does not fail — it finds different corners at different board
+coordinates and calibrates a confidently wrong camera.
+
 TESTING IT WITH A REAL PRINTED MARKER
 =====================================
 1. `pixi run python tools/vision/make_printable_marker.py --size-mm 60`
@@ -86,9 +107,13 @@ from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.utils.fmt import fixed
 from mojo_rl.vision.opencv import (
     ArucoDetector,
+    CALIB_FIX_K3,
+    CALIB_ZERO_TANGENT_DIST,
+    CharucoBoard,
     DICT_4X4_50,
     SOLVEPNP_IPPE_SQUARE,
     VideoCapture,
+    calibrate_camera,
     imread,
     opencv_shim_available,
     solve_pnp,
@@ -108,6 +133,28 @@ calibration (`tests/vision/`, group E) before any of this drives an arm."""
 
 comptime MARKER_MM: Float32 = 40.0
 
+# ⚠⚠ THESE FIVE NUMBERS ARE A CONTRACT WITH THE PRINTED SHEET, not settings.
+# They must match `tools/vision/make_printable_marker.py --charuco` exactly —
+# a board built from different numbers does not fail, it finds a different set
+# of corners at different board coordinates and calibrates a confidently wrong
+# camera. The generator prints them on its sheet for exactly this reason.
+#
+# ⚠ RUNTIME, NOT COMPTIME (`--board`, `--square-mm`, `--marker-mm`). These are
+# defaults, and they match the generator's. Printing a different board must not
+# cost a rebuild — the same reasoning `deploy_reach_real.mojo` records for its
+# own bring-up knobs, and the same trap: five numbers now live in the
+# generator, this file and the calibration fixture, so they can drift.
+comptime BOARD_SX = 5
+comptime BOARD_SY = 7
+comptime BOARD_SQUARE_MM: Float32 = 30.0
+comptime BOARD_MARKER_MM: Float32 = 22.0
+
+comptime MIN_CORNERS = 8
+"""Below this a view constrains almost nothing and mostly adds noise."""
+comptime MIN_VIEWS = 6
+"""⚠ AND THEY MUST DIFFER. Six views of the same pose is one view with six
+times the confidence in the wrong answer — tilt the board between captures."""
+
 
 def _plot_push(mut buf: List[Float32], v: Float32, cap: Int = 180):
     """A scrolling history for `ig_plot_lines`. Oldest first."""
@@ -124,6 +171,10 @@ def main() raises:
     var device_index = 0
     var path = String("")
     var is_image = False
+    var board_sx = BOARD_SX
+    var board_sy = BOARD_SY
+    var square_mm = BOARD_SQUARE_MM
+    var board_marker_mm = BOARD_MARKER_MM
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -134,6 +185,17 @@ def main() raises:
         elif a == "--image" and i + 1 < len(args):
             path = String(args[i + 1])
             is_image = True
+        elif a == "--board" and i + 1 < len(args):
+            # "5x7"
+            var spec = String(args[i + 1])
+            var xi = spec.find("x")
+            if xi > 0:
+                board_sx = Int(spec[byte=0:xi])
+                board_sy = Int(spec[byte = xi + 1 :])
+        elif a == "--square-mm" and i + 1 < len(args):
+            square_mm = Float32(Float64(String(args[i + 1])))
+        elif a == "--marker-mm" and i + 1 < len(args):
+            board_marker_mm = Float32(Float64(String(args[i + 1])))
 
     if not opencv_shim_available():
         print("OpenCV shim not built.  Run:  pixi run build-opencv")
@@ -237,6 +299,30 @@ def main() raises:
     var fx = FX_GUESS
     var marker_mm = MARKER_MM
     var known_mm = Float32(300.0)
+    var calib_on = False
+    if board_marker_mm >= square_mm:
+        print("--marker-mm must be smaller than --square-mm")
+        return
+    var board = CharucoBoard(
+        board_sx,
+        board_sy,
+        square_mm / 1000.0,
+        board_marker_mm / 1000.0,
+        DICT_4X4_50,
+    )
+    var board_corner_total = (board_sx - 1) * (board_sy - 1)
+    var board_xyz = List[Float32]()
+    _ = board.board_corners(board_xyz)
+    var b_corners = List[Float32]()
+    var b_ids = List[Int32]()
+    var n_board_seen: Int
+    var cal_obj = List[Float64]()
+    var cal_img = List[Float64]()
+    var cal_counts = List[Int32]()
+    var cal_k = List[Float64]()
+    var cal_dist = List[Float64]()
+    var cal_rms = Float64(0.0)
+    var cal_done = False
     var last_z_mm = Float64(0.0)
     var have_z: Bool
     var paused = False
@@ -300,6 +386,15 @@ def main() raises:
             n_markers = det.detect(bgr, frame_w, frame_h, 3, ids, corners)
         else:
             n_markers = 0
+        # ⚠ ONLY WHEN ASKED. ChArUco detection runs its own marker pass, so
+        # leaving it on doubles the per-frame cost for a panel nobody is
+        # looking at — and this window's whole job is to report honest timings.
+        if calib_on:
+            n_board_seen = board.detect(
+                bgr, frame_w, frame_h, 3, b_corners, b_ids
+            )
+        else:
+            n_board_seen = 0
 
         # ── UI ──────────────────────────────────────────────────────────────
         r.imgui_new_frame()
@@ -419,6 +514,90 @@ def main() raises:
         else:
             ig_text_disabled(String("show a marker to enable"))
 
+        # ── calibration ─────────────────────────────────────────────────────
+        ig_separator_text(String("calibration (ChArUco)"))
+        _ = ig_checkbox(String("detect board"), calib_on)
+        ig_text_disabled(
+            String("board ")
+            + String(BOARD_SX)
+            + "x"
+            + String(BOARD_SY)
+            + "  "
+            + fixed(Float64(BOARD_SQUARE_MM), 0)
+            + "/"
+            + fixed(Float64(BOARD_MARKER_MM), 0)
+            + " mm"
+        )
+        if calib_on:
+            ig_text(
+                String("corners ")
+                + String(n_board_seen)
+                + " / "
+                + String(board_corner_total)
+            )
+            ig_text(String("views   ") + String(len(cal_counts)))
+            if n_board_seen >= MIN_CORNERS:
+                if ig_button(String("capture view")):
+                    # ⚠ BY ID, NEVER POSITIONALLY. Only VISIBLE corners come
+                    # back, so the n-th detection is not the n-th board corner
+                    # — pairing them by position calibrates to nonsense while
+                    # looking entirely healthy.
+                    for i in range(n_board_seen):
+                        var bid = Int(b_ids[i])
+                        cal_obj.append(Float64(board_xyz[bid * 3]))
+                        cal_obj.append(Float64(board_xyz[bid * 3 + 1]))
+                        cal_obj.append(Float64(board_xyz[bid * 3 + 2]))
+                        cal_img.append(Float64(b_corners[i * 2]))
+                        cal_img.append(Float64(b_corners[i * 2 + 1]))
+                    cal_counts.append(Int32(n_board_seen))
+            else:
+                ig_text_disabled(
+                    String("need ") + String(MIN_CORNERS) + "+ corners"
+                )
+            if len(cal_counts) >= MIN_VIEWS:
+                if ig_button(String("calibrate")):
+                    var out = calibrate_camera(
+                        cal_obj,
+                        cal_img,
+                        cal_counts,
+                        frame_w,
+                        frame_h,
+                        cal_k,
+                        cal_dist,
+                        CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3,
+                    )
+                    cal_rms = out[1]
+                    cal_done = True
+                    fx = Float32(cal_k[0])
+                    print("calibrated from", len(cal_counts), "views:")
+                    print("  fx", cal_k[0], " fy", cal_k[4])
+                    print("  cx", cal_k[2], " cy", cal_k[5])
+                    print("  k1", cal_dist[0], " k2", cal_dist[1])
+                    print("  rms", cal_rms, "px")
+            else:
+                ig_text_disabled(
+                    String("need ") + String(MIN_VIEWS) + " views, TILTED"
+                )
+            if ig_button(String("clear views")):
+                cal_obj = List[Float64]()
+                cal_img = List[Float64]()
+                cal_counts = List[Int32]()
+                cal_done = False
+            if cal_done:
+                ig_text(String("fx ") + fixed(cal_k[0], 1))
+                ig_text(String("fy ") + fixed(cal_k[4], 1))
+                ig_text(String("cx ") + fixed(cal_k[2], 1))
+                ig_text(String("cy ") + fixed(cal_k[5], 1))
+                # ⚠ RMS IS A FIT RESIDUAL, NOT AN ACCURACY. It says the model
+                # explains the corners it was given; a set of views that all
+                # face the board head-on fits beautifully and still leaves the
+                # focal length badly determined.
+                ig_text(String("rms ") + fixed(cal_rms, 3) + " px")
+                if cal_rms > 1.0:
+                    ig_text_colored(
+                        String("rms > 1 px: recapture"), 1.0, 0.5, 0.3, 1.0
+                    )
+
         ig_separator()
         _ = ig_slider_float(String("zoom"), scale, 0.25, 2.0)
         ig_end()
@@ -455,6 +634,7 @@ def main() raises:
         r.begin_frame()
         r.end_frame()
 
+    board.close()
     det.close()
     tex.close()
     if not is_image:
