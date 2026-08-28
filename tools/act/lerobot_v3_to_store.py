@@ -187,9 +187,11 @@ def read_episodes(root: Path, cameras):
 
 
 def decode_camera(root, cam, video_map, lengths, from_index, fps, h, w, out):
-    """Decode one camera's mp4 files into `out[:, cam_slot]` as CHW uint8.
+    """Decode one camera's mp4 files, writing each frame as CHW uint8.
 
-    `out` is a preallocated `(N, 3, h, w)` uint8 view for this camera.
+    `out` takes `out[row] = chw_frame` and is a `_CamRows` view onto this
+    camera's slice of the on-disk images dataset — NOT a numpy array. Frames
+    go straight to the file: see `_CamRows` for why.
     """
     import imageio.v3 as iio
     from PIL import Image
@@ -240,6 +242,33 @@ def decode_camera(root, cam, video_map, lengths, from_index, fps, h, w, out):
         raise SystemExit(
             f"{cam}: filled {filled} rows, expected {int(lengths.sum())}"
         )
+
+
+class _CamRows:
+    """`out[row] = chw` onto ONE camera's slice of the flat images dataset.
+
+    ⚠ THIS EXISTS TO KEEP THE CONVERTER'S MEMORY BOUNDED. It used to decode
+    into `np.zeros((n_rows, n_cams, 3, h, w))` and hand that to h5py at the
+    end — **7.12 GB resident** for 50 episodes at 240x320, on top of the 7.12 GB
+    it then writes. That is a machine-killer on a 16 GB laptop and it scales
+    with the recording, so the next dataset would be worse. Decoding is already
+    strictly row-at-a-time; the array was pure accumulation.
+
+    The images dataset is chunked `(1, cam_elems)` rather than one chunk per
+    full row, so each write here lands on exactly ONE chunk. Chunked at the
+    full row, every camera write would be half a chunk and HDF5 would
+    read-modify-write it — twice the write traffic for no gain. A reader taking
+    a whole row now touches two chunks instead of one, and they are adjacent on
+    disk, which is why that side does not care.
+    """
+
+    def __init__(self, dset, slot, cam_elems):
+        self._d = dset
+        self._o = slot * cam_elems
+        self._n = cam_elems
+
+    def __setitem__(self, row, chw):
+        self._d[row, self._o : self._o + self._n] = chw.reshape(-1)
 
 
 # ── stats --------------------------------------------------------------------
@@ -418,23 +447,6 @@ def main():
         )
     print(f"      {n_rows} frames over {n_ep} episodes: {lengths.tolist()}")
 
-    print(f"[3/5] decoding video ({len(cams)} camera(s)) ...")
-    images = np.zeros((n_rows, len(cams), 3, h, w), dtype=np.uint8)
-    for slot, cam in enumerate(cams):
-        decode_camera(
-            root, cam, video_map, lengths, from_index, fps, h, w,
-            images[:, slot],
-        )
-
-    print("[4/5] computing norm stats ...")
-    q_mean, q_std = norm_stats(fr["qpos"])
-    a_mean, a_std = norm_stats(fr["action"])
-    print(f"      qpos   mean={np.round(q_mean, 3).tolist()}")
-    print(f"      qpos   std ={np.round(q_std, 3).tolist()}")
-    print(f"      action mean={np.round(a_mean, 3).tolist()}")
-    print(f"      action std ={np.round(a_std, 3).tolist()}")
-
-    print(f"[5/5] writing {out} ...")
     import h5py
 
     columns = [
@@ -451,18 +463,39 @@ def main():
         columns=columns,
     )
 
+    # The output file is opened BEFORE the decode, so frames go straight into
+    # it — see `_CamRows`. `.h5.tmp` + `os.replace` at the end still means an
+    # interrupted run leaves no half-written store at the real path.
+    cam_elems = 3 * h * w
     tmp = out.with_suffix(".h5.tmp")
     with h5py.File(tmp, "w") as f:
         # Columns are rank-2 `[N, row_dim]`; the manifest carries the true
         # trailing shape (`TrajectoryStoreWriter._create_for`).
         f.create_dataset("qpos", data=fr["qpos"], dtype="f4")
         f.create_dataset("action", data=fr["action"], dtype="f4")
-        f.create_dataset(
+        images = f.create_dataset(
             "images",
-            data=images.reshape(n_rows, -1),
+            shape=(n_rows, len(cams) * cam_elems),
             dtype="u1",
-            chunks=(1, len(cams) * 3 * h * w),
+            chunks=(1, cam_elems),
         )
+
+        print(f"[3/5] decoding video ({len(cams)} camera(s)) -> {tmp} ...")
+        for slot, cam in enumerate(cams):
+            decode_camera(
+                root, cam, video_map, lengths, from_index, fps, h, w,
+                _CamRows(images, slot, cam_elems),
+            )
+
+        print("[4/5] computing norm stats ...")
+        q_mean, q_std = norm_stats(fr["qpos"])
+        a_mean, a_std = norm_stats(fr["action"])
+        print(f"      qpos   mean={np.round(q_mean, 3).tolist()}")
+        print(f"      qpos   std ={np.round(q_std, 3).tolist()}")
+        print(f"      action mean={np.round(a_mean, 3).tolist()}")
+        print(f"      action std ={np.round(a_std, 3).tolist()}")
+
+        print(f"[5/5] finishing {out} ...")
         f.create_dataset("ep_len", data=lengths.astype(np.int64))
         f.create_dataset("ep_offset", data=from_index.astype(np.int64))
         f.create_dataset("norm_qpos_mean", data=q_mean)
@@ -475,7 +508,15 @@ def main():
         )
     os.replace(tmp, out)
 
-    sha = hashlib.sha256(out.read_bytes()).hexdigest()[:16]
+    # Hashed in blocks. `read_bytes()` pulls the WHOLE store into one bytes
+    # object — 7.12 GB for 50 episodes, and it was the last remaining place
+    # this converter's memory scaled with the recording. Measured: RSS is flat
+    # at 0.17 GB through the entire decode and spiked only here.
+    _h = hashlib.sha256()
+    with open(out, "rb") as _fh:
+        for _block in iter(lambda: _fh.read(8 << 20), b""):
+            _h.update(_block)
+    sha = _h.hexdigest()[:16]
     print(
         f"\nwrote {out}\n"
         f"  {out.stat().st_size / 1e9:.2f} GB   sha256:{sha}\n"
