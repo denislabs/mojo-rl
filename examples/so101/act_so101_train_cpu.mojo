@@ -213,9 +213,11 @@ def main() raises:
     )
     print("")
 
-    var t0 = perf_counter_ns()
-    var t_mark = t0
-    var s_mark = 0
+    # Train-step time only — see the GPU example. A wall-clock interval folds
+    # in the validation pass, and at step 0 it folds in EVERYTHING.
+    var train_ns = 0
+    var data_ns = 0
+    var train_steps = 0
 
     var acc_l1 = Float64(0.0)
     var acc_kl = Float64(0.0)
@@ -233,8 +235,20 @@ def main() raises:
     val_names.append(String("best/val_l1"))
 
     for s in range(steps):
+        # Split, because "0.176 s/step" does not say WHICH half. `sample_batch`
+        # is host-side, single-threaded and serial with the device: per sample
+        # it converts N_CAM*3*H*W uint8 to float32 one element at a time
+        # (divide, subtract, multiply) and reads a row from HDF5. At batch 16
+        # that is 7.4M elements before the GPU sees anything, and if it is the
+        # larger half then no kernel work will fix the step time.
+        var step_t0 = perf_counter_ns()
         ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        var t_data = perf_counter_ns()
         var r = tr.train_step(qpos, images, actions, valid)
+        var t_end = perf_counter_ns()
+        data_ns += t_data - step_t0
+        train_ns += t_end - step_t0
+        train_steps += 1
 
         acc_l1 += r.l1
         acc_kl += r.kl
@@ -268,14 +282,17 @@ def main() raises:
             vkl /= Float64(VAL_BATCHES)
             ds.rng = saved_rng
 
-            # Rate over the interval just finished — the cumulative average
-            # never sheds the first step's warm-up.
-            var now = perf_counter_ns()
-            var recent = Float64(now - t_mark) / 1e9
-            var d_steps = s - s_mark
-            var sps = recent / Float64(d_steps) if d_steps > 0 else recent
-            t_mark = now
-            s_mark = s
+            var sps = (
+                Float64(train_ns) / Float64(train_steps) / 1e9
+                if train_steps > 0 else 0.0
+            )
+            var sps_data = (
+                Float64(data_ns) / Float64(train_steps) / 1e9
+                if train_steps > 0 else 0.0
+            )
+            train_ns = 0
+            data_ns = 0
+            train_steps = 0
             var eta = sps * Float64(steps - s) / 60.0
 
             print(
@@ -284,8 +301,9 @@ def main() raises:
                 + "  train l1 " + String(r.l1)
                 + "  kl " + String(r.kl)
                 + "  |  val l1 " + String(vl1)
-                + "  |  " + String(sps) + " s/step, ~"
-                + String(Int(eta)) + " min left"
+                + "  |  " + String(sps) + " s/step ("
+                + String(Int(100.0 * sps_data / (sps + 1e-12)))
+                + "% data), ~" + String(Int(eta)) + " min left"
             )
             tr.save(last_ckpt)
             if vl1 < best_val:

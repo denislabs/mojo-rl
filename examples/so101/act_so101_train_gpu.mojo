@@ -313,9 +313,28 @@ def main() raises:
     )
     print("")
 
-    var t0 = perf_counter_ns()
-    var t_mark = t0
-    var s_mark = 0
+    var t_run0 = perf_counter_ns()
+
+    # ⚠ TIMED AROUND THE TRAINING STEP ONLY. Measuring wall clock between
+    # report points folds the validation pass into the rate, and at step 0 —
+    # where the interval is zero steps wide — it folded in 16 validation
+    # batches plus every first-launch kernel compilation and called the result
+    # "1.38 s/step", then multiplied it by 100,000 and printed 38 hours. A
+    # progress line that cannot be trusted on its first appearance is worse
+    # than none.
+    var train_ns = 0
+    var data_ns = 0
+    var train_steps = 0
+
+    # Log-spaced early probes so the real rate is known in seconds rather than
+    # after the first validation 1000 steps in. No validation, no checkpoint —
+    # just the number that decides whether this run is worth leaving alone.
+    var probes = List[Int]()
+    probes.append(1)
+    probes.append(5)
+    probes.append(20)
+    probes.append(100)
+    probes.append(300)
 
     # Windowed training means — see LOG_EVERY.
     var acc_l1 = Float64(0.0)
@@ -335,11 +354,42 @@ def main() raises:
     val_names.append(String("val/l1"))
     val_names.append(String("val/kl"))
     val_names.append(String("perf/s_per_step"))
+    val_names.append(String("perf/s_data"))
+    val_names.append(String("perf/s_gpu"))
     val_names.append(String("best/val_l1"))
 
     for s in range(steps):
+        # Split, because "0.176 s/step" does not say WHICH half. `sample_batch`
+        # is host-side, single-threaded and serial with the device: per sample
+        # it converts N_CAM*3*H*W uint8 to float32 one element at a time
+        # (divide, subtract, multiply) and reads a row from HDF5. At batch 16
+        # that is 7.4M elements before the GPU sees anything, and if it is the
+        # larger half then no kernel work will fix the step time.
+        var step_t0 = perf_counter_ns()
         ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        var t_data = perf_counter_ns()
         var r = tr.train_step(qpos, images, actions, valid)
+        var t_end = perf_counter_ns()
+        data_ns += t_data - step_t0
+        train_ns += t_end - step_t0
+        train_steps += 1
+
+        var is_probe = False
+        for i in range(len(probes)):
+            if s == probes[i]:
+                is_probe = True
+        if is_probe:
+            var rate = Float64(train_ns) / Float64(train_steps) / 1e9
+            var rate_d = Float64(data_ns) / Float64(train_steps) / 1e9
+            print(
+                "  step " + String(s) + "  train l1 " + String(r.l1)
+                + "  |  " + String(rate) + " s/step (" + String(rate_d)
+                + " data), ~" + String(Int(rate * Float64(steps) / 60.0))
+                + " min for " + String(steps) + " steps"
+            )
+            train_ns = 0
+            data_ns = 0
+            train_steps = 0
 
         acc_l1 += r.l1
         acc_kl += r.kl
@@ -383,15 +433,20 @@ def main() raises:
             vkl /= Float64(VAL_BATCHES)
             ds.rng = saved_rng
 
-            # Rate over the interval just finished, not since step 0 — the
-            # cumulative average never sheds the first step's warm-up and
-            # reads slow for the whole run.
-            var now = perf_counter_ns()
-            var recent = Float64(now - t_mark) / 1e9
-            var d_steps = s - s_mark
-            var sps = recent / Float64(d_steps) if d_steps > 0 else recent
-            t_mark = now
-            s_mark = s
+            # The mean over the training steps since the last report — never
+            # a wall-clock interval, which would include this validation pass
+            # and the checkpoint writes.
+            var sps = (
+                Float64(train_ns) / Float64(train_steps) / 1e9
+                if train_steps > 0 else 0.0
+            )
+            var sps_data = (
+                Float64(data_ns) / Float64(train_steps) / 1e9
+                if train_steps > 0 else 0.0
+            )
+            train_ns = 0
+            data_ns = 0
+            train_steps = 0
             var eta = sps * Float64(steps - s) / 60.0
 
             print(
@@ -400,8 +455,9 @@ def main() raises:
                 + "  train l1 " + String(r.l1)
                 + "  kl " + String(r.kl)
                 + "  |  val l1 " + String(vl1)
-                + "  |  " + String(sps) + " s/step, ~"
-                + String(Int(eta)) + " min left"
+                + "  |  " + String(sps) + " s/step ("
+                + String(Int(100.0 * sps_data / (sps + 1e-12)))
+                + "% data), ~" + String(Int(eta)) + " min left"
             )
             # Written EVERY pass: a run killed at hour three otherwise leaves
             # nothing to evaluate or resume from.
@@ -415,6 +471,8 @@ def main() raises:
             vvals.append(vl1)
             vvals.append(vkl)
             vvals.append(sps)
+            vvals.append(sps_data)
+            vvals.append(sps - sps_data)
             vvals.append(best_val)
             logger.log_scalars(val_names, vvals, s)
             # Flushed at every validation rather than only when the buffer
@@ -425,6 +483,10 @@ def main() raises:
     logger.close()
 
     print("")
+    print(
+        "  wall clock " + String(Float64(perf_counter_ns() - t_run0) / 6e10)
+        + " min for " + String(steps) + " steps"
+    )
     print(
         "  best validation l1 " + String(best_val) + " at step "
         + String(best_step) + " (epoch "
