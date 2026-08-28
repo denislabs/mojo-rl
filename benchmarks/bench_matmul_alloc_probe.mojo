@@ -23,6 +23,15 @@ PREALLOCATED buffers and does nothing else in the loop — no Tensor, no Module,
 no agent. So every `cuMemAlloc_v2` nsys reports beyond the handful at startup
 belongs to `linalg.matmul`.
 
+## The companion
+
+`bench_matmul_alloc_act_shapes.mojo` runs this same method over ACT's shapes,
+and corrects one thing this file's conclusion implies: the allocation is not
+about ALIGNMENT. Padding N=101 to 128 worked because it moved that shape onto
+`multistage_gemm`; on ACT, three of the top five allocating kernels are
+`_align4`. Every cutlass or split-K launch allocates, aligned or not — which
+PATH cuBLAS picks is the question, not how the operands divide.
+
 ## Reading it
 
 Compare `cuMemAlloc_v2`'s `Num Calls` against `REPS` (printed at the end):
