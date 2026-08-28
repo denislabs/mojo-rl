@@ -10,7 +10,10 @@
 #
 #   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
 #   pixi run python tools/act/lerobot_v3_to_store.py \
-#       --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
+#       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+#
+# The dataset gate takes ANY store at 240x320 — `$ACT_STORE` if set, else the
+# newest one in the cache. It pins no row or episode count; see its header.
 #
 # ⚠ These run under `mojo run` (JIT), which never invokes ld. Building them with
 # `mojo build` needs `-Xlinker -ld_classic`: the fully-expanded ResNet18 / graph

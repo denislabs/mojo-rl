@@ -86,7 +86,19 @@ def joint_names() -> List[String]:
 
 
 def store_path() raises -> String:
+    """`$ACT_STORE` if set, else the recording the header names.
+
+    The default is a specific recording, not a pattern: an example that
+    silently picked up whichever store happened to be newest in the cache
+    would report numbers nobody could attribute to a dataset. Point
+    `ACT_STORE` at another store to train on it.
+    """
     var os = Python.import_module("os")
+    var env = String(
+        os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
+    )
+    if env.byte_length() > 0:
+        return env
     var home = String(os.path.expanduser(PythonObject("~")))
     return (
         home

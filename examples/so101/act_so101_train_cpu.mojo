@@ -8,6 +8,9 @@
     pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_train \\
         examples/so101/act_so101_train_cpu.mojo && /tmp/act_train
 
+Set `ACT_STORE=<path/to/store.h5>` to train on a different recording — the
+50-episode store, say. Nothing below is pinned to the row or episode count.
+
 ⚠ `-Xlinker -ld_classic` is required: the fully-expanded graph type mangles to a
 symbol longer than Apple's new linker accepts. The source is healthy; `mojo run`
 JITs past it and never invokes ld.
@@ -78,7 +81,19 @@ comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
 
 def store_path() raises -> String:
+    """`$ACT_STORE` if set, else the recording the header names.
+
+    The default is a specific recording, not a pattern: an example that
+    silently picked up whichever store happened to be newest in the cache
+    would report numbers nobody could attribute to a dataset. Point
+    `ACT_STORE` at another store to train on it.
+    """
     var os = Python.import_module("os")
+    var env = String(
+        os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
+    )
+    if env.byte_length() > 0:
+        return env
     var home = String(os.path.expanduser(PythonObject("~")))
     return (
         home
@@ -168,8 +183,12 @@ def main() raises:
     print("  checkpoint -> " + ckpt)
     print("")
     print(
-        "  ⚠ validation L1 rising while training L1 falls is EXPECTED at 4"
-        " episodes."
+        "  ⚠ validation L1 rising while training L1 falls is what a"
+        " from-scratch"
+    )
+    print(
+        "    backbone does on " + String(len(ds.train_eps))
+        + " training episodes with no augmentation."
     )
     print(
         "    The best checkpoint above is the one to evaluate; see"

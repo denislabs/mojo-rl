@@ -257,7 +257,16 @@ def norm_stats(x: np.ndarray):
     only sqrt(N/(N-1)) — 1.00025 at N=1997, invisible in any single check — but
     it is a systematic offset that would sit under every sim-to-reference
     comparison afterwards, so it is matched rather than waved off.
+
+    ⚠ ACCUMULATE IN FLOAT64. The columns are float32 and `ndarray.mean` uses
+    the array's own dtype as the accumulator, so reducing them in place drifts
+    with the row count: at 1997 rows the mean was 2.4e-4 off the exact value,
+    at 15447 rows it was **2.3e-3** — and `ACTDataset._moments`, which sums in
+    Float64, was the side that was right. The gate that compares the two saw a
+    growing gap and had no way to say which implementation it was accusing.
+    The cast costs one temporary over a (N, 6) table.
     """
+    x = np.asarray(x, dtype=np.float64)
     mean = x.mean(axis=0)
     std = x.std(axis=0, ddof=1)
     return mean.astype(np.float32), np.clip(std, STD_FLOOR, np.inf).astype(
@@ -265,12 +274,61 @@ def norm_stats(x: np.ndarray):
     )
 
 
+def refresh_stats(out: Path) -> int:
+    """Recompute `norm_*` in place from the store's OWN qpos/action columns.
+
+    The statistics are four 6-vectors derived from two tiny columns, but they
+    live in a file whose bulk is a multi-GB image column that costs a download
+    and a full video decode to reproduce. When the definition of the statistic
+    changes — as it did when `norm_stats` moved to a float64 accumulator —
+    rebuilding the whole store to update 48 floats is the wrong trade. This
+    recomputes them from what the store already holds, so the refreshed values
+    are derived from exactly the rows the store serves.
+
+    The `.json` sidecar is patched key-by-key rather than rewritten, so a field
+    this function does not know about survives.
+    """
+    if not out.exists():
+        raise SystemExit(f"--refresh-stats: no store at {out}")
+    import h5py  # local, matching the write path below
+
+    with h5py.File(out, "r+") as f:
+        q_mean, q_std = norm_stats(f["qpos"][:])
+        a_mean, a_std = norm_stats(f["action"][:])
+        for name, val in (
+            ("norm_qpos_mean", q_mean),
+            ("norm_qpos_std", q_std),
+            ("norm_action_mean", a_mean),
+            ("norm_action_std", a_std),
+        ):
+            before = f[name][:]
+            f[name][...] = val
+            print(
+                f"  {name:18s} max|delta| ="
+                f" {np.abs(before - val).max():.3e}"
+            )
+    side = out.with_suffix(".json")
+    if side.exists():
+        meta = json.loads(side.read_text())
+        meta["qpos_mean"] = q_mean.tolist()
+        meta["qpos_std"] = q_std.tolist()
+        meta["action_mean"] = a_mean.tolist()
+        meta["action_std"] = a_std.tolist()
+        side.write_text(json.dumps(meta, indent=2))
+    print(f"refreshed norm_* in {out}")
+    return 0
+
+
 # ── main ---------------------------------------------------------------------
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo", required=True, help="HF dataset repo id")
+    ap.add_argument(
+        "--repo",
+        default=None,
+        help="HF dataset repo id (optional with --refresh-stats + --out)",
+    )
     ap.add_argument("--revision", default=None)
     ap.add_argument("--height", type=int, default=240)
     ap.add_argument("--width", type=int, default=320)
@@ -281,18 +339,27 @@ def main():
     )
     ap.add_argument("--out", default=None, help="output .h5 (default: cache)")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument(
+        "--refresh-stats",
+        action="store_true",
+        help="recompute norm_* in an EXISTING store from its own qpos/action"
+        " columns and exit — no download, no video decode",
+    )
     args = ap.parse_args()
 
     h, w = args.height, args.width
 
-    slug = args.repo.replace("/", "__")
-    out = (
-        Path(args.out)
-        if args.out
-        else Path.home()
-        / ".cache/mojo_rl/act_so101"
-        / f"{slug}_{h}x{w}.h5"
-    )
+    if args.out:
+        out = Path(args.out)
+    elif args.repo:
+        slug = args.repo.replace("/", "__")
+        out = Path.home() / ".cache/mojo_rl/act_so101" / f"{slug}_{h}x{w}.h5"
+    else:
+        raise SystemExit("need --repo (or --out with --refresh-stats)")
+    if args.refresh_stats:
+        return refresh_stats(out)
+    if not args.repo:
+        raise SystemExit("--repo is required to build a store")
     if out.exists() and not args.force:
         print(f"already present: {out}  (pass --force to rebuild)")
         return

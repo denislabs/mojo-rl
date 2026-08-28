@@ -9,10 +9,28 @@ observation AT that step and the next `K` actions FROM it, zero-padding past
 the episode end.
 
 Input is a `TrajectoryStore` `.h5` written by `tools/act/lerobot_v3_to_store.py`
-with columns `qpos` (S,), `action` (A,), `images` (C,3,H,W) uint8. All three
-are loaded RESIDENT: `store.mojo` measured scattered per-row HDF5 gathers at
-~4500x the cost of the same gather from RAM, and the sampler's access pattern
-is exactly that scatter. 2 cameras at 240x320 over 1997 frames is 920 MB.
+with columns `qpos` (S,), `action` (A,), `images` (C,3,H,W) uint8.
+
+## Images are resident only while they fit
+
+`qpos` and `action` are always resident — 15 k rows of 6 floats is 370 KB. The
+image column is the one that scales with the recording, and it is the one that
+stops fitting: 5 episodes at 240x320 is 878 MB, but 50 episodes is **7.1 GiB**,
+which does not belong in RAM on a 16 GB machine alongside the model.
+
+So residency is a decision, taken on the column's byte count against
+`max_image_bytes`, and `images_resident` reports which way it went. The
+streamed path reads ONE row per sample with `read_range` on a held-open
+handle.
+
+`store.mojo`'s residency note quotes scattered per-row HDF5 gathers at ~4500x
+the cost of the same gather from RAM — but that ratio was measured on a state
+column whose row is a few floats, where the per-row call overhead IS the cost.
+An image row here is 460,800 bytes in one chunk, and a random 8-row gather
+measures **4 ms** (1.0 GB/s) — bandwidth-bound, the overhead gone. Next to a
+ResNet18 forward+backward over the same 8 samples that is free, so streaming
+costs the training loop nothing it can measure. Do not carry the 4500x
+conclusion across to a fat column; it is a statement about narrow rows.
 
 ## Two things the reference does that look like bugs and are not
 
@@ -45,6 +63,7 @@ from std.memory import alloc, dealloc
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.data.store import TrajectoryStore
+from mojo_rl.io.hdf5 import H5Dataset
 
 from .config import (
     IMAGENET_MEAN_B,
@@ -56,6 +75,15 @@ from .config import (
     NORM_STD_FLOOR,
     TRAIN_SPLIT_RATIO,
 )
+
+
+# ── residency budget ─────────────────────────────────────────────────────
+# 2 GiB. Big enough that every store built so far at 240x320 from a few dozen
+# episodes stays resident (5 episodes = 878 MB), small enough that the 50
+# episode store (7.1 GiB) streams instead of pushing a 16 GB machine into
+# swap. Not a hardware probe: a caller who knows its box can pass its own
+# `max_image_bytes`, and the streamed path is correct at any size.
+comptime IMAGES_RESIDENT_MAX_BYTES: Int = 2 << 30
 
 
 # ── deterministic RNG ────────────────────────────────────────────────────
@@ -85,10 +113,14 @@ def _rand_below(mut state: UInt64, n: Int) -> Int:
 struct ACTDataset[
     QPOS: Int, ADIM: Int, N_CAM: Int, IMG_H: Int, IMG_W: Int
 ](Movable & Deinitable):
-    """Resident columns + normalization statistics + the episode split.
+    """Columns + normalization statistics + the episode split.
 
     ONE instance serves both splits (`sample_batch[..](val=…)`); holding two
-    would duplicate the ~1 GB image column for no reason.
+    would duplicate the image column — or its file handle — for no reason.
+
+    `qpos`/`action` are always resident. `images` is resident only if the
+    column fits `max_image_bytes`; otherwise it is streamed a row at a time.
+    Read `images_resident` to know which happened.
     """
 
     comptime CAM_ELEMS: Int = 3 * Self.IMG_H * Self.IMG_W
@@ -99,7 +131,14 @@ struct ACTDataset[
     """[n_rows, QPOS] — UNNORMALIZED, as recorded (lerobot degrees / 0-100)."""
     var action_raw: List[Scalar[DT]]
     var images_raw: List[Scalar[DType.uint8]]
-    """[n_rows, N_CAM, 3, IMG_H, IMG_W] — uint8, CHW per camera."""
+    """[n_rows, N_CAM, 3, IMG_H, IMG_W] uint8 CHW — EMPTY when streaming."""
+    var images_resident: Bool
+    """False = one `read_range` per sample from `_img_dset` into `_img_row`."""
+    var _img_dset: H5Dataset
+    """Held open either way: reopening per row is the one overhead that does
+    NOT amortise over a 460 KB read."""
+    var _img_row: List[Scalar[DType.uint8]]
+    """[IMG_ELEMS] staging for one streamed row — empty when resident."""
 
     var qpos_mean: List[Scalar[DT]]
     var qpos_std: List[Scalar[DT]]
@@ -110,7 +149,12 @@ struct ACTDataset[
     var val_eps: List[Int]
     var rng: UInt64
 
-    def __init__(out self, var path: String, seed: UInt64 = 0) raises:
+    def __init__(
+        out self,
+        var path: String,
+        seed: UInt64 = 0,
+        max_image_bytes: Int = IMAGES_RESIDENT_MAX_BYTES,
+    ) raises:
         self.store = TrajectoryStore(path^)
 
         ref m = self.store.manifest
@@ -140,9 +184,24 @@ struct ACTDataset[
 
         self.qpos_raw = self.store.load_column[DT](String("qpos"))
         self.action_raw = self.store.load_column[DT](String("action"))
-        self.images_raw = self.store.load_column[DType.uint8](
-            String("images")
-        )
+
+        # Residency is decided on the column's actual size, not on the type of
+        # column it is. The handle is opened either way: the resident path
+        # never touches it, and paying an H5Dopen once costs nothing, while
+        # making it conditional would need an Optional field for no gain.
+        self._img_dset = self.store.open_column[DType.uint8](String("images"))
+        var img_bytes = self.store.n_rows() * Self.IMG_ELEMS
+        self.images_resident = img_bytes <= max_image_bytes
+        if self.images_resident:
+            self.images_raw = self.store.load_column[DType.uint8](
+                String("images"), max_bytes=max_image_bytes
+            )
+            self._img_row = List[Scalar[DType.uint8]]()
+        else:
+            self.images_raw = List[Scalar[DType.uint8]]()
+            self._img_row = List[Scalar[DType.uint8]](
+                unsafe_uninit_length=Self.IMG_ELEMS
+            )
 
         # Statistics are RECOMPUTED here rather than read from the converter's
         # `norm_*` datasets. `utils.py:get_norm_stats` is four lines; a second
@@ -168,6 +227,9 @@ struct ACTDataset[
         self.qpos_raw = move.qpos_raw^
         self.action_raw = move.action_raw^
         self.images_raw = move.images_raw^
+        self.images_resident = move.images_resident
+        self._img_dset = move._img_dset^
+        self._img_row = move._img_row^
         self.qpos_mean = move.qpos_mean^
         self.qpos_std = move.qpos_std^
         self.action_mean = move.action_mean^
@@ -318,8 +380,22 @@ struct ACTDataset[
             ) if valid else Scalar[DT](0.0)
 
         # Images at g: uint8 CHW -> /255 -> per-channel ImageNet normalize.
+        # Resident: read row `g` in place. Streamed: pull that one row (one
+        # HDF5 chunk, contiguous) into the staging buffer, which then holds it
+        # at offset 0. The `ref` is bound AFTER the read so the read still has
+        # `_img_row` mutably; both branches leave one buffer + one base index
+        # for the loop below, so the per-pixel work is branch-free.
+        var src: Int
+        if self.images_resident:
+            src = g * Self.IMG_ELEMS
+        else:
+            self._img_dset.read_range[DType.uint8](
+                g, g + 1, mptr(self._img_row)
+            )
+            src = 0
+        ref img = self.images_raw if self.images_resident else self._img_row
+
         var io = slot * Self.IMG_ELEMS
-        var src = g * Self.IMG_ELEMS
         comptime HW = Self.IMG_H * Self.IMG_W
         for c in range(Self.N_CAM):
             var cbase = c * Self.CAM_ELEMS
@@ -340,7 +416,7 @@ struct ACTDataset[
                 var base = cbase + ch * HW
                 for p in range(HW):
                     var v = (
-                        Scalar[DT](Int(self.images_raw[src + base + p]))
+                        Scalar[DT](Int(img[src + base + p]))
                         / Scalar[DT](255.0)
                     )
                     out_images[io + base + p] = (v - mean) * inv

@@ -28,6 +28,18 @@ Gathering a minibatch row-by-row from HDF5 is ~4500x worse than from RAM, so
 gather-by-index-from-disk API — it would be a performance trap wearing a
 convenient name.
 
+⚠ THAT RATIO IS A PROPERTY OF NARROW ROWS, NOT OF HDF5. Those numbers came
+from a state column whose row is a handful of floats, so the per-row call
+overhead is the whole cost and residency wins by that overhead. It inverts as
+the row grows: an ACT image row is 2 cameras x 3 x 240 x 320 = 460,800 bytes,
+one chunk, and a random 8-row gather measured **4 ms** — 1.0 GB/s, i.e. the
+overhead has amortised away entirely and the read is bandwidth-bound. Against
+a ResNet18 forward+backward on that same batch, 4 ms is free, while the
+resident column would be 7.1 GiB. So: decide residency on ROW WIDTH and total
+size, not on this file's headline ratio, and loop `read_range` per row (see
+`open_column`) when the rows are fat. `deep_agents/act/data.mojo` does both,
+picking on the column's byte count.
+
 Ingest of FOREIGN files (a HuggingFace dataset with no manifest of ours) works
 by enumerating the datasets and introspecting each one's shape and dtype.
 """
@@ -473,6 +485,22 @@ struct TrajectoryStore(Movable):
             )
         var ds = self._file.open_dataset(String(name))
         ds.read_range[dtype](start, end, buf)
+
+    def open_column[dtype: DType](self, name: String) raises -> H5Dataset:
+        """A held-open handle for repeated per-row `read_range` on ONE column.
+
+        `TrajectoryStore.read_range` reopens the dataset on every call, which
+        is invisible next to a contiguous multi-row slab and is not invisible
+        next to a single row. Hold this instead when the pattern is "one row
+        at a time, many times" — which is only the right pattern for columns
+        whose rows are fat enough to amortise a read, per the residency note
+        at the top of this file.
+
+        Validates the dtype the same way `read_range` does, so a column read
+        as the wrong type still fails at open rather than at the first row.
+        """
+        _ = self._checked_spec[dtype](name)
+        return self._file.open_dataset(String(name))
 
     def load_column[
         dtype: DType

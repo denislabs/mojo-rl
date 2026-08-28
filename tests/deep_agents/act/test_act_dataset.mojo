@@ -11,15 +11,26 @@ shares its reference implementation cannot see a shared mistake.
 
     pixi run mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
 
-Requires the store:
+Requires a store; point `ACT_STORE` at one, or let it find the newest under
+`~/.cache/mojo_rl/act_so101/`:
 
     pixi run python tools/act/lerobot_v3_to_store.py \
-        --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
+        --repo <hf-dataset> --height 240 --width 320
+
+⚠ DATASET-AGNOSTIC BY CONSTRUCTION. An earlier version pinned 1997 rows / 5
+episodes / a literal length list from one recording, which broke the moment a
+second dataset arrived — and the pin was weak anyway: both the literals and the
+store's `ep_len`/`ep_offset` trace back to the same `meta/episodes` parquet, so
+agreement proved little. What carries the gate is the CROSS-IMPLEMENTATION work
+that holds for any dataset: statistics recomputed in Mojo against the
+converter's independent numpy pass, the padding semantics, the normalization
+round-trip, and the structural invariants below.
 """
 
 from std.python import Python, PythonObject
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.io.hdf5 import H5File
 from mojo_rl.deep_agents.act.config import (
     IMAGENET_MEAN_R,
@@ -44,22 +55,6 @@ comptime IMG_ELEMS = N_CAM * CAM_ELEMS
 comptime K = 100
 comptime BATCH = 4
 
-# LeRobot metadata for this repo (meta/info.json, meta/episodes/*.parquet).
-comptime EXPECT_ROWS = 1997
-comptime EXPECT_EPISODES = 5
-
-
-def expected_lengths() -> List[Int]:
-    """`length` column of meta/episodes, ordered by `episode_index`."""
-    var v = List[Int]()
-    v.append(467)
-    v.append(325)
-    v.append(680)
-    v.append(235)
-    v.append(290)
-    return v^
-
-
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
     if ok:
         print("  PASS  " + name + ("  " + detail if detail else ""))
@@ -69,17 +64,35 @@ def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
 
 
 def store_path() raises -> String:
+    """`$ACT_STORE`, else the most recently written store at this resolution."""
     var os = Python.import_module("os")
+    var env = os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
+    var envs = String(env)
+    if envs.byte_length() > 0:
+        return envs
+    var glob = Python.import_module("glob")
     var home = String(os.path.expanduser(PythonObject("~")))
-    return (
-        home
-        + "/.cache/mojo_rl/act_so101/"
-        + "DenisLabs__record-test_20260825_094319_"
-        + String(H)
-        + "x"
-        + String(W)
+    var pat = (
+        home + "/.cache/mojo_rl/act_so101/*_" + String(H) + "x" + String(W)
         + ".h5"
     )
+    var hits = glob.glob(PythonObject(pat))
+    var builtins = Python.import_module("builtins")
+    var n_hits = Int(String(builtins.len(hits)))
+    if n_hits == 0:
+        raise Error(
+            "no ACT store at " + pat + " — build one with"
+            " tools/act/lerobot_v3_to_store.py, or set ACT_STORE"
+        )
+    var best = String(hits[0])
+    var best_t = Float64(0.0)
+    for i in range(n_hits):
+        var cand = String(hits[i])
+        var mt = Float64(String(os.path.getmtime(PythonObject(cand))))
+        if mt > best_t:
+            best_t = mt
+            best = cand
+    return best
 
 
 def read_f32(path: String, name: String, n: Int) raises -> List[Scalar[DT]]:
@@ -111,35 +124,53 @@ def main() raises:
 
     var ds = ACTDataset[QPOS, ADIM, N_CAM, H, W](String(path), seed=1234)
 
-    # ── 1. shape / episode structure, vs LeRobot's own metadata ──────────
-    check(
-        fails,
-        "n_rows",
-        ds.n_rows() == EXPECT_ROWS,
-        String(ds.n_rows()) + " (expect " + String(EXPECT_ROWS) + ")",
-    )
-    check(
-        fails,
-        "n_episodes",
-        ds.n_episodes() == EXPECT_EPISODES,
-        String(ds.n_episodes()),
+    print(
+        "  images: "
+        + ("RESIDENT" if ds.images_resident else "STREAMED")
+        + " ("
+        + String(
+            (ds.n_rows() * IMG_ELEMS) // (1 << 20)
+        )
+        + " MiB column)"
     )
 
-    var lens = expected_lengths()
-    var structure_ok = ds.n_episodes() == len(lens)
-    var total = 0
-    if structure_ok:
-        for e in range(len(lens)):
-            if ds.store.episodes.length_of(e) != lens[e]:
-                structure_ok = False
-            if ds.store.episodes.start_of(e) != total:
-                structure_ok = False
-            total += ds.store.episodes.length_of(e)
+    # ── 1. structural invariants (any dataset) ───────────────────────────
+    print(
+        "  " + String(ds.n_episodes()) + " episodes, "
+        + String(ds.n_rows()) + " rows"
+    )
     check(
         fails,
-        "episode index == LeRobot length / dataset_from_index",
-        structure_ok and total == EXPECT_ROWS,
-        "sum=" + String(total),
+        "enough episodes for a train/val split",
+        ds.n_episodes() >= 2,
+        String(ds.n_episodes()) + " episodes",
+    )
+    # Episodes must TILE the row axis exactly: start at 0, each starting where
+    # the last ended, summing to n_rows. A sampler reading a row outside any
+    # episode, or two episodes overlapping, silently trains on transitions that
+    # never happened.
+    var contiguous = ds.n_episodes() > 0
+    var total = 0
+    var min_len = 1 << 30
+    for e in range(ds.n_episodes()):
+        if ds.store.episodes.start_of(e) != total:
+            contiguous = False
+        var le = ds.store.episodes.length_of(e)
+        if le <= 0:
+            contiguous = False
+        min_len = min(min_len, le)
+        total += le
+    check(
+        fails,
+        "episodes tile the row axis exactly",
+        contiguous and total == ds.n_rows(),
+        "sum=" + String(total) + " vs n_rows=" + String(ds.n_rows()),
+    )
+    check(
+        fails,
+        "every episode is longer than one chunk boundary probe",
+        min_len >= 2,
+        "shortest episode = " + String(min_len),
     )
 
     # ── 2. statistics: Mojo (ddof=1) vs the converter's numpy (ddof=1) ───
@@ -150,26 +181,39 @@ def main() raises:
     var am = read_f32(path, String("norm_action_mean"), ADIM)
     var as_ = read_f32(path, String("norm_action_std"), ADIM)
 
+    # Scored in units of the column's own std, not in absolute degrees. An
+    # absolute threshold here is a threshold on how wide the operator happened
+    # to swing that joint, and it also scales with the row count: the earlier
+    # absolute 1e-3 passed at 1997 rows and failed at 15447 for two
+    # implementations that were both computing the right quantity. The std is
+    # the scale everything downstream divides by, so an error small in those
+    # units is small where it is actually used.
     var worst_stat = Float64(0.0)
     for j in range(QPOS):
+        var sc = Float64(qs[j])
         worst_stat = max(
-            worst_stat, abs(Float64(ds.qpos_mean[j]) - Float64(qm[j]))
+            worst_stat, abs(Float64(ds.qpos_mean[j]) - Float64(qm[j])) / sc
         )
         worst_stat = max(
-            worst_stat, abs(Float64(ds.qpos_std[j]) - Float64(qs[j]))
+            worst_stat, abs(Float64(ds.qpos_std[j]) - Float64(qs[j])) / sc
         )
     for j in range(ADIM):
+        var sc = Float64(as_[j])
         worst_stat = max(
-            worst_stat, abs(Float64(ds.action_mean[j]) - Float64(am[j]))
+            worst_stat, abs(Float64(ds.action_mean[j]) - Float64(am[j])) / sc
         )
         worst_stat = max(
-            worst_stat, abs(Float64(ds.action_std[j]) - Float64(as_[j]))
+            worst_stat, abs(Float64(ds.action_std[j]) - Float64(as_[j])) / sc
         )
+    # Both sides accumulate in float64 and the store rounds to float32, so
+    # what is left is storage rounding — parts in 1e7, not 1e5. Anything
+    # larger means one of the two reductions changed, which is the whole
+    # point of keeping two of them.
     check(
         fails,
-        "norm stats vs numpy (12 values)",
-        worst_stat < 1e-3,
-        "max|diff| = " + String(worst_stat),
+        "norm stats vs numpy (12 values, in std units)",
+        worst_stat < 1e-5,
+        "max rel = " + String(worst_stat),
     )
     # The stats must also be non-degenerate — a std pinned at the 1e-2 floor
     # everywhere would pass the comparison above and destroy training.
@@ -185,11 +229,11 @@ def main() raises:
 
     # ── 3. split is a partition ──────────────────────────────────────────
     var split_ok = (
-        len(ds.train_eps) + len(ds.val_eps) == EXPECT_EPISODES
+        len(ds.train_eps) + len(ds.val_eps) == ds.n_episodes()
         and len(ds.val_eps) >= 1
         and len(ds.train_eps) >= 1
     )
-    var seen = List[Bool](length=EXPECT_EPISODES, fill=False)
+    var seen = List[Bool](length=ds.n_episodes(), fill=False)
     for i in range(len(ds.train_eps)):
         if seen[ds.train_eps[i]]:
             split_ok = False
@@ -198,7 +242,7 @@ def main() raises:
         if seen[ds.val_eps[i]]:
             split_ok = False
         seen[ds.val_eps[i]] = True
-    for i in range(EXPECT_EPISODES):
+    for i in range(ds.n_episodes()):
         if not seen[i]:
             split_ok = False
     check(
@@ -305,11 +349,18 @@ def main() raises:
     )
 
     # ── 6. images ────────────────────────────────────────────────────────
+    # Row `g` read here, by this test, straight off the store — not through
+    # the sampler that produced `ibuf`. That is what makes this a check and
+    # not a restatement, and it is the same reference for both residency
+    # modes.
+    var row = List[Scalar[DType.uint8]](unsafe_uninit_length=IMG_ELEMS)
+    var img_ds = ds.store.open_column[DType.uint8](String("images"))
+    img_ds.read_range[DType.uint8](g, g + 1, mptr(row))
+
     var worst_img = Float64(0.0)
     for p in range(0, HW, 4099):  # coprime stride across the R plane
         var v = (Float64(ibuf[p]) * IMAGENET_STD_R + IMAGENET_MEAN_R) * 255.0
-        var raw = Float64(Int(ds.images_raw[g * IMG_ELEMS + p]))
-        worst_img = max(worst_img, abs(v - raw))
+        worst_img = max(worst_img, abs(v - Float64(Int(row[p]))))
     check(
         fails,
         "image normalization round-trips to the stored uint8",
@@ -327,6 +378,53 @@ def main() raises:
         "camera slots carry different images",
         cam_diff > 1.0,
         "sum|front-side| = " + String(cam_diff),
+    )
+
+    # ── 6b. the streamed image path == the resident one ──────────────────
+    # `max_image_bytes=0` forces streaming regardless of the store's size, so
+    # this runs on any dataset. Against a store small enough to be resident it
+    # is a genuine cross-path comparison (whole-column `load_column` read vs
+    # per-row `read_range`); against one too large to be resident both sides
+    # stream and it degrades to checking that the staging buffer is not
+    # reused across slots. Bit-exact either way — no arithmetic differs.
+    var dstream = ACTDataset[QPOS, ADIM, N_CAM, H, W](
+        String(path), seed=1234, max_image_bytes=0
+    )
+    check(
+        fails,
+        "max_image_bytes=0 forces the streamed path",
+        not dstream.images_resident,
+    )
+    var sbuf_q = List[Scalar[DT]](unsafe_uninit_length=2 * QPOS)
+    var sbuf_i = List[Scalar[DT]](unsafe_uninit_length=2 * IMG_ELEMS)
+    var sbuf_a = List[Scalar[DT]](unsafe_uninit_length=2 * K * ADIM)
+    var sbuf_v = List[Scalar[DT]](unsafe_uninit_length=2 * K)
+    # Two different steps into two different slots: a staging buffer that is
+    # not refilled per sample would leave slot 1 holding slot 0's frame.
+    dstream.fill_at[K](0, ep0, 7, sbuf_q, sbuf_i, sbuf_a, sbuf_v)
+    dstream.fill_at[K](1, ep0, ep0_len - 1, sbuf_q, sbuf_i, sbuf_a, sbuf_v)
+
+    var worst_stream = Float64(0.0)
+    for pi in range(0, IMG_ELEMS, 1021):
+        worst_stream = max(
+            worst_stream, abs(Float64(sbuf_i[pi]) - Float64(ibuf[pi]))
+        )
+    check(
+        fails,
+        "streamed images == the images the live path produced",
+        worst_stream == 0.0,
+        "max|diff| = " + String(worst_stream),
+    )
+    var slot_diff = Float64(0.0)
+    for pi in range(0, IMG_ELEMS, 1021):
+        slot_diff += abs(
+            Float64(sbuf_i[pi]) - Float64(sbuf_i[IMG_ELEMS + pi])
+        )
+    check(
+        fails,
+        "each streamed slot holds its OWN frame",
+        slot_diff > 1.0,
+        "sum|slot0-slot1| = " + String(slot_diff),
     )
 
     # ── 7. batch sampling ────────────────────────────────────────────────
