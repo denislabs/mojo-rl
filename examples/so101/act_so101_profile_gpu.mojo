@@ -61,6 +61,13 @@ optimizer, which is the one decomposition available without instrumenting the
 trainer. It is a HOST wall-clock difference over device-synchronous calls, so
 treat it as an attribution hint and let nsys settle the per-kernel truth.
 
+⚠ **`docs/GPU_STEP_PERF.md` already carries a full profile of this
+script and the three workstreams it found** — allocation churn (3.45 s, equal
+to all kernel time), the launch storm (85% of launches are sub-20 us kernels
+worth 16% of the work), and `naive_batched_matmul`. Read it before re-deriving
+any of that. What this script is still for: measuring a CHANGE against the
+table there, and the knobs below.
+
 Two performance gaps are already documented in `docs/ACT_PORT.md` and are worth
 looking for in the timeline before hunting anything new:
 
