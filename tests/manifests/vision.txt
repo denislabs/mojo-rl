@@ -26,3 +26,9 @@
 # detection), D (solvePnP, Rodrigues), E (ChArUco, calibrateCamera) and F (the
 # 3x3 SVD the extrinsics fit needs). 36 checks.
 tests/vision/test_opencv_shim.mojo
+# The camera -> ACT tensor path, against PIL BILINEAR. ⚠ A DIFFERENT KIND OF
+# EXACTNESS than the line above: nothing is shared with PIL here, so bit
+# equality is a claim about having REPRODUCED libImaging/Resample.c rather than
+# about having called it. Regenerate its fixture with
+#   pixi run python tools/vision/make_resize_fixture.py
+tests/vision/test_act_preprocess.mojo
