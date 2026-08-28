@@ -24,6 +24,10 @@ from std.pathlib import Path
 
 from mojo_rl.vision.opencv import (
     ArucoDetector,
+    CALIB_FIX_K3,
+    CALIB_ZERO_TANGENT_DIST,
+    CharucoBoard,
+    calibrate_camera,
     DICT_4X4_50,
     SOLVEPNP_IPPE_SQUARE,
     VideoCapture,
@@ -34,6 +38,7 @@ from mojo_rl.vision.opencv import (
     opencv_shim_available,
     rodrigues,
     solve_pnp,
+    svd_3x3,
 )
 
 comptime FIX = "tests/fixtures/vision/"
@@ -42,6 +47,44 @@ comptime W = 64
 comptime H = 48
 comptime C = 3
 comptime FRAME_BYTES = W * H * C
+
+
+def read_f32(path: String) raises -> List[Float32]:
+    """Read a flat float32 dump. Same `unsafe_bitcast` idiom as `act/refload`.
+    """
+    with open(path, "r") as f:
+        var raw = f.read_bytes()
+        var n = len(raw) // 4
+        var out = List[Float32](unsafe_uninit_length=n)
+        var p = raw.unsafe_ptr().unsafe_bitcast[Float32]()
+        for i in range(n):
+            out[i] = p[unsafe_offset=i]
+        _ = raw^
+        return out^
+
+
+def read_f64(path: String) raises -> List[Float64]:
+    with open(path, "r") as f:
+        var raw = f.read_bytes()
+        var n = len(raw) // 8
+        var out = List[Float64](unsafe_uninit_length=n)
+        var p = raw.unsafe_ptr().unsafe_bitcast[Float64]()
+        for i in range(n):
+            out[i] = p[unsafe_offset=i]
+        _ = raw^
+        return out^
+
+
+def read_i32(path: String) raises -> List[Int32]:
+    with open(path, "r") as f:
+        var raw = f.read_bytes()
+        var n = len(raw) // 4
+        var out = List[Int32](unsafe_uninit_length=n)
+        var p = raw.unsafe_ptr().unsafe_bitcast[Int32]()
+        for i in range(n):
+            out[i] = p[unsafe_offset=i]
+        _ = raw^
+        return out^
 
 
 def read_bin(path: String) raises -> List[UInt8]:
@@ -383,6 +426,219 @@ def main() raises:
         print("  FAIL: rodrigues determinant is", det3, "not 1")
         failures += 1
     print("  rodrigues: det =", det3)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # E — ChArUco detection and camera calibration
+    # ═══════════════════════════════════════════════════════════════════════
+    #
+    # Nine synthetic views of a 5x7 board, projected through a KNOWN camera.
+    # ⚠ The known camera is a vacuity guard; the claim is bit equality.
+    comptime N_VIEWS = 11
+    comptime SQ_X = 5
+    comptime SQ_Y = 7
+    var board = CharucoBoard(SQ_X, SQ_Y, 0.030, 0.022, DICT_4X4_50)
+
+    var board_xyz = List[Float32]()
+    var n_board = board.board_corners(board_xyz)
+    checks += 1
+    if n_board != (SQ_X - 1) * (SQ_Y - 1):
+        print("  FAIL: board has", n_board, "corners, expected 24")
+        failures += 1
+
+    var cv2_counts = read_i32(String(FIX) + "charuco_cv2_counts.bin")
+    var cv2_ids = read_i32(String(FIX) + "charuco_cv2_ids.bin")
+    var cv2_xy = read_f32(String(FIX) + "charuco_cv2_xy.bin")
+
+    var all_obj = List[Float64]()
+    var all_img = List[Float64]()
+    var counts = List[Int32]()
+    var det_compared = 0
+    var det_differing = 0
+    var off = 0
+
+    for v in range(N_VIEWS):
+        var vimg = List[UInt8]()
+        var vname = (
+            String(FIX)
+            + "charuco_"
+            + ("0" + String(v) if v < 10 else String(v))
+            + ".png"
+        )
+        var g = imread(vname, vimg)
+        var cc = List[Float32]()
+        var cids = List[Int32]()
+        var n = board.detect(vimg, g[0], g[1], g[2], cc, cids)
+
+        checks += 1
+        if Int32(n) != cv2_counts[v]:
+            print(
+                "  FAIL: view",
+                v,
+                "found",
+                n,
+                "corners, cv2 found",
+                cv2_counts[v],
+            )
+            failures += 1
+            break
+
+        for i in range(n):
+            det_compared += 3  # one id and two coordinates
+            if cids[i] != cv2_ids[off + i]:
+                det_differing += 1
+            if cc[i * 2] != cv2_xy[(off + i) * 2]:
+                det_differing += 1
+            if cc[i * 2 + 1] != cv2_xy[(off + i) * 2 + 1]:
+                det_differing += 1
+            # ⚠ BY ID, NOT POSITIONALLY. Only visible corners come back, so
+            # pairing the v-th detection with the v-th board corner is a
+            # silent mismatch that calibrates to nonsense.
+            var bid = Int(cids[i])
+            all_obj.append(Float64(board_xyz[bid * 3]))
+            all_obj.append(Float64(board_xyz[bid * 3 + 1]))
+            all_obj.append(Float64(board_xyz[bid * 3 + 2]))
+            all_img.append(Float64(cc[i * 2]))
+            all_img.append(Float64(cc[i * 2 + 1]))
+        counts.append(Int32(n))
+        off += n
+
+    board.close()
+    checks += 1
+    if det_differing != 0:
+        print(
+            "  FAIL:",
+            det_differing,
+            "of",
+            det_compared,
+            "charuco values differ",
+        )
+        failures += 1
+    print(
+        "  charuco: compared", det_compared, "values,", det_differing, "differ"
+    )
+
+    # ⚠ THE FLAGS ARE PART OF THE PINNED ANSWER, not a tuning knob: they decide
+    # which coefficients are fitted and how long `dist` is.
+    var k_out = List[Float64]()
+    var dist_out = List[Float64]()
+    var cal = calibrate_camera(
+        all_obj,
+        all_img,
+        counts,
+        640,
+        480,
+        k_out,
+        dist_out,
+        CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3,
+    )
+    var n_dist = cal[0]
+    var rms = cal[1]
+
+    var cv2_k = read_f64(String(FIX) + "charuco_cv2_K.bin")
+    var cv2_dist = read_f64(String(FIX) + "charuco_cv2_dist.bin")
+    var cv2_rms = read_f64(String(FIX) + "charuco_cv2_rms.bin")
+    var cal_compared = 0
+    var cal_differing = 0
+    checks += 1
+    if n_dist != len(cv2_dist):
+        print("  FAIL: n_dist is", n_dist, "cv2 says", len(cv2_dist))
+        failures += 1
+    for i in range(9):
+        cal_compared += 1
+        if k_out[i] != cv2_k[i]:
+            cal_differing += 1
+    for i in range(n_dist):
+        cal_compared += 1
+        if dist_out[i] != cv2_dist[i]:
+            cal_differing += 1
+    cal_compared += 1
+    if rms != cv2_rms[0]:
+        cal_differing += 1
+    checks += 1
+    if cal_differing != 0:
+        print(
+            "  FAIL:",
+            cal_differing,
+            "of",
+            cal_compared,
+            "calibration values differ",
+        )
+        print("        fx", k_out[0], "cv2", cv2_k[0])
+        failures += 1
+    print(
+        "  calib:   compared",
+        cal_compared,
+        "values,",
+        cal_differing,
+        "differ (n_dist",
+        n_dist,
+        ", rms",
+        rms,
+        ")",
+    )
+
+    # ⚠ VACUITY: the fixture was drawn through fx = fy = 600, cx = 320,
+    # cy = 240. Measured recovery is fx 602.379 — 0.4% — which is the
+    # detector's contour-level corners again, not a calibration defect. A
+    # degenerate fixture (all views head-on) would be far worse, so this
+    # asserts the views really do constrain the intrinsics.
+    checks += 1
+    if abs(k_out[0] - 600.0) > 6.0 or abs(k_out[4] - 600.0) > 6.0:
+        print("  FAIL: focal length", k_out[0], k_out[4], "far from 600")
+        failures += 1
+    checks += 1
+    if abs(k_out[2] - 320.0) > 5.0 or abs(k_out[5] - 240.0) > 5.0:
+        print("  FAIL: principal point", k_out[2], k_out[5], "far from 320,240")
+        failures += 1
+    print("  truth:   fx", k_out[0], "cx", k_out[2], "cy", k_out[5])
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # F — the 3x3 SVD the extrinsics fit needs
+    # ═══════════════════════════════════════════════════════════════════════
+    #
+    # Gated on PROPERTIES rather than against a pinned decomposition: the SVD
+    # of a matrix is not unique (column signs), so pinning U and Vt would gate
+    # a convention rather than the arithmetic. A * V = U * S and orthonormality
+    # hold for every valid answer.
+    var a9 = List[Float64]()
+    a9.append(1.0)
+    a9.append(2.0)
+    a9.append(3.0)
+    a9.append(4.0)
+    a9.append(5.0)
+    a9.append(6.0)
+    a9.append(7.0)
+    a9.append(8.0)
+    a9.append(10.0)
+    var u9 = List[Float64]()
+    var s3 = List[Float64]()
+    var vt9 = List[Float64]()
+    svd_3x3(a9, u9, s3, vt9)
+
+    # Reconstruct: U * diag(S) * Vt must be A again.
+    var recon_err = 0.0
+    for r in range(3):
+        for c in range(3):
+            var acc = 0.0
+            for j in range(3):
+                acc += u9[r * 3 + j] * s3[j] * vt9[j * 3 + c]
+            var e = abs(acc - a9[r * 3 + c])
+            if e > recon_err:
+                recon_err = e
+    checks += 1
+    if recon_err > 1e-12:
+        print("  FAIL: SVD reconstruction error", recon_err)
+        failures += 1
+    checks += 1
+    if not (s3[0] >= s3[1] and s3[1] >= s3[2] and s3[2] >= 0.0):
+        print(
+            "  FAIL: singular values not sorted descending:",
+            s3[0],
+            s3[1],
+            s3[2],
+        )
+        failures += 1
+    print("  svd:     reconstruction error", recon_err)
 
     print("-" * 70)
     if failures == 0:

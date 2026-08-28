@@ -18,6 +18,7 @@ Outputs, into tests/fixtures/vision/:
     capture_12f_rgb_chw.bin  frame 0 only, converted to RGB CHW
     capture_12f_meta.txt     frames, width, height, channels
     marker_640x480_cv2.txt   ids, corners, rvec, tvec — cv2's answer
+    charuco_cv2.txt          per-view corner ids/xy, K, dist, rms — cv2's answer
 """
 import sys
 from pathlib import Path
@@ -81,6 +82,84 @@ def dump_marker() -> int:
     return 0
 
 
+def dump_charuco() -> int:
+    """Pin cv2's ChArUco detection and calibration on the 9 committed views.
+
+    ⚠ EVERY FLOAT IS WRITTEN WITH `repr`. `calibrateCamera` is an iterative
+    fit, so a shortened decimal would quietly turn the gate's bit-equality
+    claim into a tolerance one.
+    """
+    truth_path = FIX / "charuco_truth.txt"
+    if not truth_path.exists():
+        print("run make_charuco_fixture.py first", file=sys.stderr)
+        return 1
+    t = dict(line.split(None, 1) for line in truth_path.read_text().splitlines())
+    sx, sy = int(t["squares_x"]), int(t["squares_y"])
+    sq, mk = float(t["square_m"]), float(t["marker_m"])
+    n_views, iw, ih = int(t["views"]), int(t["img_w"]), int(t["img_h"])
+
+    board = cv2.aruco.CharucoBoard(
+        (sx, sy), sq, mk,
+        cv2.aruco.getPredefinedDictionary(int(t["dict_id"])))
+    det = cv2.aruco.CharucoDetector(board)
+    bc = board.getChessboardCorners()
+
+    lines = [f"views {n_views}", f"board_corners {len(bc)}"]
+    obj_all, img_all, all_ids = [], [], []
+    for i in range(n_views):
+        img = cv2.imread(str(FIX / f"charuco_{i:02d}.png"), cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"missing view {i}", file=sys.stderr)
+            return 1
+        corners, ids, _, _ = det.detectBoard(img)
+        if ids is None or len(ids) < 6:
+            print(f"view {i} detected too little", file=sys.stderr)
+            return 1
+        ids_flat = [int(v) for v in ids.ravel()]
+        xy = np.asarray(corners, dtype=np.float32).reshape(-1)
+        lines.append(f"view {i} n {len(ids_flat)}")
+        lines.append("  ids " + " ".join(str(v) for v in ids_flat))
+        lines.append("  xy " + " ".join(repr(float(v)) for v in xy))
+        all_ids.append(ids_flat)
+        obj_all.append(np.array([bc[k] for k in ids_flat], dtype=np.float32))
+        img_all.append(corners.reshape(-1, 2).astype(np.float32))
+
+    # ⚠ THE FLAGS ARE PART OF THE PINNED ANSWER. A homography warp cannot
+    # render lens distortion, so the fixture's truth is dist = 0 and fitting a
+    # full model would be fitting corner noise. The Mojo side passes the same
+    # integer, which is why it is written into the file rather than assumed.
+    flags = int(cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3)
+    rms, K, dist, _, _ = cv2.calibrateCamera(
+        obj_all, img_all, (iw, ih), None, None, flags=flags)
+    lines.append(f"flags {flags}")
+    lines.append("K " + " ".join(repr(float(v)) for v in K.reshape(-1)))
+    lines.append(f"n_dist {dist.size}")
+    lines.append("dist " + " ".join(repr(float(v)) for v in dist.reshape(-1)))
+    lines.append("rms " + repr(float(rms)))
+    (FIX / "charuco_cv2.txt").write_text("\n".join(lines) + "\n")
+
+    # ⚠ THE BINARIES ARE WHAT THE GATE READS; the text above is for humans.
+    # A gate that parsed decimal text would be comparing whatever the
+    # formatter chose to print, which is a tolerance wearing a disguise.
+    counts = np.array([len(o) for o in obj_all], dtype=np.int32)
+    (FIX / "charuco_cv2_counts.bin").write_bytes(counts.tobytes())
+    (FIX / "charuco_cv2_ids.bin").write_bytes(
+        np.concatenate([np.array(a, dtype=np.int32) for a in all_ids]).tobytes())
+    (FIX / "charuco_cv2_xy.bin").write_bytes(
+        np.concatenate([c.reshape(-1) for c in img_all]).astype(np.float32).tobytes())
+    (FIX / "charuco_cv2_obj.bin").write_bytes(
+        np.concatenate([o.reshape(-1) for o in obj_all]).astype(np.float64).tobytes())
+    (FIX / "charuco_cv2_K.bin").write_bytes(
+        np.asarray(K, dtype=np.float64).reshape(-1).tobytes())
+    (FIX / "charuco_cv2_dist.bin").write_bytes(
+        np.asarray(dist, dtype=np.float64).reshape(-1).tobytes())
+    (FIX / "charuco_cv2_rms.bin").write_bytes(
+        np.array([rms], dtype=np.float64).tobytes())
+    print(f"pinned charuco: {n_views} views, rms {rms:.6f}, "
+          f"fx {K[0, 0]:.3f} (truth {t['fx']})")
+    return 0
+
+
 def main() -> int:
     if not SRC.exists():
         print(f"missing {SRC}; run make_capture_fixture.py first", file=sys.stderr)
@@ -129,7 +208,8 @@ def main() -> int:
     print(f"pinned {len(frames)} frames {w}x{h}x{c}")
     print(f"  {(FIX / 'capture_12f_bgr.bin').stat().st_size} bytes BGR HWC")
     print(f"  {(FIX / 'capture_12f_rgb_chw.bin').stat().st_size} bytes RGB CHW (frame 0)")
-    return dump_marker()
+    rc = dump_marker()
+    return rc if rc else dump_charuco()
 
 
 if __name__ == "__main__":

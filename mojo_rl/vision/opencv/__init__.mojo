@@ -71,6 +71,23 @@ comptime SOLVEPNP_IPPE_SQUARE: Int = 5
 is a different and worse estimator that still returns an answer."""
 comptime DICT_4X4_50: Int = 0
 
+comptime CALIB_ZERO_TANGENT_DIST: Int = 8
+comptime CALIB_FIX_K3: Int = 128
+"""⚠ THE CALIBRATION FLAGS ARE PART OF THE ANSWER, NOT A TUNING KNOB.
+
+They decide how long the distortion vector is and which coefficients are fitted
+at all, so two runs with different flags are not two estimates of one quantity
+— they are answers to different questions. Whatever a gate pins, the caller
+must pass.
+
+⚠⚠ `CALIB_FIX_K3` IS 128, AND THIS FILE FIRST SAID 64. That is the second time
+a remembered OpenCV constant was wrong here (see `SOLVEPNP_IPPE_SQUARE`), and
+it is the same failure mode: the wrong flag does not raise, it fits a DIFFERENT
+MODEL and returns a plausible calibration — fx 602.311 against cv2's 602.379,
+a disagreement in the fourth digit that no sanity check on "is fx near 600"
+would ever catch. The bit-equality gate caught it on the first run. PRINT EVERY
+CONSTANT FROM THE INSTALLED cv2."""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # dylib loading — the `render/imgui` and `io/serial` pattern
@@ -652,4 +669,254 @@ def rodrigues(rvec: List[Float64], mut r9: List[Float64]) raises:
             ) thin -> Int32,
         ]()(untracked(Ptr(to=rvec[0])), untracked(Ptr(to=r9[0]))),
         "rodrigues",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E — calibration
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct CharucoBoard(Movable):
+    """A ChArUco board and its detector, as one object.
+
+    ⚠ ONE HANDLE ON PURPOSE. `CharucoDetector` is built FROM a board and the
+    caller must keep that board alive; two handles would let one be freed while
+    the other reads it, with no diagnostic. Close it explicitly, like the
+    others.
+    """
+
+    var _h: Int
+    var squares_x: Int
+    var squares_y: Int
+
+    def __init__(
+        out self,
+        squares_x: Int,
+        squares_y: Int,
+        square_m: Float32,
+        marker_m: Float32,
+        dict_id: Int = DICT_4X4_50,
+    ) raises:
+        self._h = _get_dylib_function[
+            lib,
+            "mrl_cv_charuco_create",
+            def(Int32, Int32, Float32, Float32, Int32) thin -> Int,
+        ]()(
+            Int32(squares_x),
+            Int32(squares_y),
+            square_m,
+            marker_m,
+            Int32(dict_id),
+        )
+        if self._h == 0:
+            raise String("opencv: cannot create board: ") + cv_last_error()
+        self.squares_x = squares_x
+        self.squares_y = squares_y
+
+    def board_corners(self, mut xyz: List[Float32]) raises -> Int:
+        """The board's chessboard corners in BOARD metres, indexed by id.
+
+        ⚠⚠ ASK THE BOARD, DO NOT DERIVE IT. The ChArUco corner layout CHANGED
+        in OpenCV 4.6 for even row counts (`setLegacyPattern` exists to restore
+        the old one). Computing these from `squares_x`/`squares_y` in Mojo
+        would be a second implementation of a convention that has already moved
+        once, and it would be silently wrong on exactly one board shape.
+        """
+        var cap = (self.squares_x - 1) * (self.squares_y - 1)
+        if len(xyz) < cap * 3:
+            xyz.resize(cap * 3, 0.0)
+        var n = Int32(0)
+        _check(
+            _get_dylib_function[
+                lib,
+                "mrl_cv_charuco_board_corners",
+                def(
+                    Int,
+                    Ptr[Float32, MutUntrackedOrigin],
+                    Int32,
+                    Ptr[Int32, MutUntrackedOrigin],
+                ) thin -> Int32,
+            ]()(
+                self._h,
+                untracked(Ptr(to=xyz[0])),
+                Int32(len(xyz) // 3),
+                untracked(Ptr(to=n)),
+            ),
+            "charuco_board_corners",
+        )
+        return Int(n)
+
+    def detect(
+        self,
+        img: List[UInt8],
+        width: Int,
+        height: Int,
+        channels: Int,
+        mut corners: List[Float32],
+        mut ids: List[Int32],
+    ) raises -> Int:
+        """Detect the board's corners. Returns how many were VISIBLE.
+
+        ⚠ ONLY VISIBLE CORNERS COME BACK, and `ids` says which. Pairing them
+        with `board_corners` POSITIONALLY instead of BY ID is a silent
+        mismatch that calibrates to nonsense — the count is right, the
+        correspondence is not, and nothing raises.
+        """
+        var cap = (self.squares_x - 1) * (self.squares_y - 1)
+        if len(ids) < cap:
+            ids.resize(cap, 0)
+        if len(corners) < cap * 2:
+            corners.resize(cap * 2, 0.0)
+        var n = Int32(0)
+        _check(
+            _get_dylib_function[
+                lib,
+                "mrl_cv_charuco_detect",
+                def(
+                    Int,
+                    Ptr[UInt8, MutUntrackedOrigin],
+                    Int32,
+                    Int32,
+                    Int32,
+                    Int32,
+                    Int32,
+                    Ptr[Float32, MutUntrackedOrigin],
+                    Ptr[Int32, MutUntrackedOrigin],
+                    Ptr[Int32, MutUntrackedOrigin],
+                ) thin -> Int32,
+            ]()(
+                self._h,
+                untracked(Ptr(to=img[0])),
+                Int32(width),
+                Int32(height),
+                Int32(channels),
+                Int32(0),
+                Int32(len(ids)),
+                untracked(Ptr(to=corners[0])),
+                untracked(Ptr(to=ids[0])),
+                untracked(Ptr(to=n)),
+            ),
+            "charuco_detect",
+        )
+        return Int(n)
+
+    def close(mut self):
+        if self._h == 0:
+            return
+        try:
+            _get_dylib_function[
+                lib, "mrl_cv_charuco_destroy", def(Int) thin -> None
+            ]()(self._h)
+        except:
+            pass
+        self._h = 0
+
+
+def calibrate_camera(
+    obj_xyz: List[Float64],
+    img_xy: List[Float64],
+    counts: List[Int32],
+    img_w: Int,
+    img_h: Int,
+    mut k: List[Float64],
+    mut dist: List[Float64],
+    flags: Int = 0,
+) raises -> Tuple[Int, Float64]:
+    """Intrinsics from several views. Returns `(n_dist, rms)`.
+
+    `obj_xyz` and `img_xy` are the views' correspondences CONCATENATED;
+    `counts[v]` says how many belong to view v.
+
+    ⚠⚠ `n_dist` IS RETURNED, AND ASSUMING 5 IS A SILENT TRUNCATION. The
+    distortion vector is 4, 5, 8, 12 or 14 long depending on `flags`; a caller
+    that copies a fixed 5 out of a 14-long answer keeps a lens model that is
+    wrong in a way nothing reports. `dist` is sized to 14 here for that reason.
+
+    ⚠ ITERATIVE (Levenberg-Marquardt). Comparing this against Python cv2 bit
+    for bit also requires the same thread count — see `cv_set_num_threads`.
+    """
+    if len(k) < 9:
+        k.resize(9, 0.0)
+    if len(dist) < 14:
+        dist.resize(14, 0.0)
+    var n_dist = Int32(0)
+    var rms = Float64(0.0)
+    _check(
+        _get_dylib_function[
+            lib,
+            "mrl_cv_calibrate_camera",
+            def(
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Int32, MutUntrackedOrigin],
+                Int32,
+                Int32,
+                Int32,
+                Int32,
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Int32, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+            ) thin -> Int32,
+        ]()(
+            untracked(Ptr(to=obj_xyz[0])),
+            untracked(Ptr(to=img_xy[0])),
+            untracked(Ptr(to=counts[0])),
+            Int32(len(counts)),
+            Int32(img_w),
+            Int32(img_h),
+            Int32(flags),
+            untracked(Ptr(to=k[0])),
+            untracked(Ptr(to=dist[0])),
+            untracked(Ptr(to=n_dist)),
+            untracked(Ptr(to=rms)),
+        ),
+        "calibrate_camera",
+    )
+    return (Int(n_dist), rms)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# F — the one piece of linear algebra we would otherwise have to write
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def svd_3x3(
+    a9: List[Float64],
+    mut u9: List[Float64],
+    mut s3: List[Float64],
+    mut vt9: List[Float64],
+) raises:
+    """3x3 SVD, all row-major. `vt` is ALREADY TRANSPOSED, as OpenCV names it.
+
+    Exists so the camera->base extrinsics fit does not need a Jacobi
+    implementation: `math3d` has no SVD or eigensolver, and `cv::SVD` is
+    already linked.
+    """
+    if len(a9) != 9:
+        raise String("svd_3x3: input must be 9 values, got ") + String(len(a9))
+    if len(u9) < 9:
+        u9.resize(9, 0.0)
+    if len(s3) < 3:
+        s3.resize(3, 0.0)
+    if len(vt9) < 9:
+        vt9.resize(9, 0.0)
+    _check(
+        _get_dylib_function[
+            lib,
+            "mrl_cv_svd_3x3",
+            def(
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+            ) thin -> Int32,
+        ]()(
+            untracked(Ptr(to=a9[0])),
+            untracked(Ptr(to=u9[0])),
+            untracked(Ptr(to=s3[0])),
+            untracked(Ptr(to=vt9[0])),
+        ),
+        "svd_3x3",
     )

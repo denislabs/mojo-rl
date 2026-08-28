@@ -32,6 +32,8 @@
 #include <opencv2/videoio.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/objdetect/aruco_detector.hpp>
+#include <opencv2/objdetect/charuco_detector.hpp>
+#include <opencv2/calib.hpp>
 #include <opencv2/geometry/3d.hpp>
 
 #include <vector>
@@ -108,6 +110,27 @@ static MrlDetector* as_detector(void* h) {
     MrlDetector* d = static_cast<MrlDetector*>(h);
     if (d == nullptr || d->magic != MRL_DET_MAGIC) return nullptr;
     return d;
+}
+
+static const unsigned int MRL_CHB_MAGIC = 0x4d434231u;  // "MCB1"
+
+// ⚠ THE BOARD AND ITS DETECTOR LIVE IN ONE STRUCT ON PURPOSE.
+// `CharucoDetector` is constructed FROM a board and the caller must keep that
+// board alive; two handles would let a caller free the board and leave the
+// detector reading freed memory, with no diagnostic.
+struct MrlCharuco {
+    unsigned int magic;
+    cv::aruco::CharucoBoard board;
+    cv::aruco::CharucoDetector det;
+    MrlCharuco(const cv::Size& sz, float sq, float mk,
+               const cv::aruco::Dictionary& d)
+        : magic(MRL_CHB_MAGIC), board(sz, sq, mk, d), det(board) {}
+};
+
+static MrlCharuco* as_charuco(void* h) {
+    MrlCharuco* c = static_cast<MrlCharuco*>(h);
+    if (c == nullptr || c->magic != MRL_CHB_MAGIC) return nullptr;
+    return c;
 }
 
 // Rule 1: images arrive as raw bytes and are wrapped in a NON-OWNING header.
@@ -482,6 +505,196 @@ int mrl_cv_rodrigues(const double* rvec, double* R9) {
         cv::Mat R;
         cv::Rodrigues(r, R);
         for (int i = 0; i < 9; ++i) R9[i] = R.at<double>(i / 3, i % 3);
+        return MRL_CV_OK;
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// E — calibration
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠ WRAPPED NOW EVEN THOUGH THE DRIVER IS STILL PYTHON.  The scope document
+// argues this at length: covering the whole capability costs two extra entry
+// points today and lets the prep script be DELETED later without redrawing the
+// boundary.  A shim that stopped at detection would have needed a second
+// design pass to reach "no Python in the project".
+
+void* mrl_cv_charuco_create(int squares_x, int squares_y, float square_len,
+                            float marker_len, int dict_id) {
+    try {
+        return new MrlCharuco(cv::Size(squares_x, squares_y),
+                              square_len, marker_len,
+                              cv::aruco::getPredefinedDictionary(dict_id));
+    } catch (const cv::Exception& e) {
+        mrl_cv_set_error(e.what());
+        return nullptr;
+    } catch (...) {
+        mrl_cv_set_error("CharucoBoard: unknown C++ exception");
+        return nullptr;
+    }
+}
+
+// The board's chessboard corners in BOARD coordinates (metres, Z = 0), indexed
+// by charuco id — 3 floats each.
+//
+// ⚠ THIS IS NOT A CONVENIENCE.  `calibrateCamera` needs the 3D point for every
+// detected corner, and the caller cannot compute it: the ChArUco corner layout
+// CHANGED in OpenCV 4.6 for even row counts (see `setLegacyPattern`).  Deriving
+// it in Mojo from squares_x/squares_y would be a second implementation of a
+// convention that has already moved once, and it would be silently wrong on
+// exactly one board shape.  Ask the board.
+int mrl_cv_charuco_board_corners(void* h, float* xyz_out, int max_corners,
+                                 int* n_out) {
+    MrlCharuco* c = as_charuco(h);
+    if (c == nullptr) { mrl_cv_set_error("bad charuco handle"); return MRL_CV_ERR_ARG; }
+    if (xyz_out == nullptr || n_out == nullptr) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        const std::vector<cv::Point3f> pts = c->board.getChessboardCorners();
+        *n_out = static_cast<int>(pts.size());
+        if (static_cast<int>(pts.size()) > max_corners) {
+            mrl_cv_set_error("charuco_board_corners: buffer too small");
+            return MRL_CV_ERR_CAPACITY;
+        }
+        for (size_t i = 0; i < pts.size(); ++i) {
+            xyz_out[i * 3 + 0] = pts[i].x;
+            xyz_out[i * 3 + 1] = pts[i].y;
+            xyz_out[i * 3 + 2] = pts[i].z;
+        }
+        return MRL_CV_OK;
+    })
+}
+
+// ⚠ ONLY VISIBLE CORNERS COME BACK, and `ids_out` says which ones.  A view of
+// a partially occluded or off-frame board yields fewer corners than the board
+// has, which is normal — pairing them with the board's 3D points POSITIONALLY
+// instead of BY ID is a silent mismatch that calibrates to nonsense.
+int mrl_cv_charuco_detect(void* h, const unsigned char* img, int w, int height,
+                          int channels, int stride, int max_corners,
+                          float* corners_xy, int* ids_out, int* n_out) {
+    MrlCharuco* c = as_charuco(h);
+    if (c == nullptr) { mrl_cv_set_error("bad charuco handle"); return MRL_CV_ERR_ARG; }
+    if (corners_xy == nullptr || ids_out == nullptr || n_out == nullptr)
+        return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        cv::Mat image = wrap_image(img, w, height, channels, stride);
+        if (image.empty()) {
+            mrl_cv_set_error("charuco_detect: bad image geometry");
+            return MRL_CV_ERR_ARG;
+        }
+        cv::Mat corners;
+        cv::Mat ids;
+        c->det.detectBoard(image, corners, ids);
+
+        const int n = ids.empty() ? 0 : static_cast<int>(ids.total());
+        *n_out = n;
+        if (n > max_corners) {
+            mrl_cv_set_error("charuco_detect: more corners than max_corners");
+            return MRL_CV_ERR_CAPACITY;
+        }
+        for (int i = 0; i < n; ++i) {
+            const cv::Point2f p = corners.at<cv::Point2f>(i);
+            corners_xy[i * 2 + 0] = p.x;
+            corners_xy[i * 2 + 1] = p.y;
+            ids_out[i] = ids.at<int>(i);
+        }
+        return MRL_CV_OK;
+    })
+}
+
+void mrl_cv_charuco_destroy(void* h) {
+    MrlCharuco* c = as_charuco(h);
+    if (c == nullptr) return;
+    c->magic = 0;
+    delete c;
+}
+
+// Intrinsics from several views.  `obj_xyz` and `img_xy` are the views'
+// correspondences CONCATENATED, and `counts[v]` says how many belong to view v.
+//
+// ⚠⚠ `n_dist_out` IS AN OUTPUT, AND ASSUMING 5 IS A SILENT TRUNCATION.  The
+// distortion vector is 4, 5, 8, 12 or 14 long depending on `flags`; a caller
+// that copies a fixed 5 out of a 14-long answer keeps a lens model that is
+// wrong in a way nothing reports.  `dist_out` must have room for 14.
+//
+// ⚠ THIS IS ITERATIVE (Levenberg-Marquardt), so a bit-equality gate against
+// Python cv2 also requires the SAME THREAD COUNT — see mrl_cv_set_num_threads.
+int mrl_cv_calibrate_camera(const double* obj_xyz, const double* img_xy,
+                            const int* counts, int n_views,
+                            int img_w, int img_h, int flags,
+                            double* K_out, double* dist_out, int* n_dist_out,
+                            double* rms_out) {
+    if (obj_xyz == nullptr || img_xy == nullptr || counts == nullptr ||
+        K_out == nullptr || dist_out == nullptr || n_dist_out == nullptr ||
+        rms_out == nullptr || n_views < 1) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        std::vector<std::vector<cv::Point3f> > obj;
+        std::vector<std::vector<cv::Point2f> > img;
+        int off = 0;
+        for (int v = 0; v < n_views; ++v) {
+            const int n = counts[v];
+            if (n < 4) {
+                mrl_cv_set_error("calibrate_camera: a view has < 4 points");
+                return MRL_CV_ERR_ARG;
+            }
+            std::vector<cv::Point3f> o;
+            std::vector<cv::Point2f> p;
+            o.reserve(n);
+            p.reserve(n);
+            for (int i = 0; i < n; ++i) {
+                o.push_back(cv::Point3f(
+                    static_cast<float>(obj_xyz[(off + i) * 3 + 0]),
+                    static_cast<float>(obj_xyz[(off + i) * 3 + 1]),
+                    static_cast<float>(obj_xyz[(off + i) * 3 + 2])));
+                p.push_back(cv::Point2f(
+                    static_cast<float>(img_xy[(off + i) * 2 + 0]),
+                    static_cast<float>(img_xy[(off + i) * 2 + 1])));
+            }
+            obj.push_back(o);
+            img.push_back(p);
+            off += n;
+        }
+
+        cv::Mat K;
+        cv::Mat dist;
+        std::vector<cv::Mat> rvecs;
+        std::vector<cv::Mat> tvecs;
+        const double rms = cv::calibrateCamera(obj, img, cv::Size(img_w, img_h),
+                                               K, dist, rvecs, tvecs, flags);
+        for (int i = 0; i < 9; ++i) K_out[i] = K.at<double>(i / 3, i % 3);
+        const int nd = static_cast<int>(dist.total());
+        *n_dist_out = nd;
+        for (int i = 0; i < nd; ++i) dist_out[i] = dist.at<double>(i);
+        *rms_out = rms;
+        return MRL_CV_OK;
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// F — the one piece of linear algebra we would otherwise have to write
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ⚠ THIS EXISTS SO THAT KABSCH DOES NOT NEED A JACOBI IMPLEMENTATION.  The
+// camera->robot-base extrinsics fit is Kabsch/Umeyama, which needs a 3x3 SVD,
+// and `math3d` has no SVD or eigensolver.  `cv::SVD` is already linked, so
+// this is one entry point instead of an algorithm plus its own gate.
+//
+// All three outputs are row-major.  `Vt` is ALREADY TRANSPOSED, as OpenCV
+// names it: R = U * Vt is the Kabsch rotation, with the usual determinant
+// correction if det < 0.
+int mrl_cv_svd_3x3(const double* A9, double* U9, double* S3, double* Vt9) {
+    if (A9 == nullptr || U9 == nullptr || S3 == nullptr || Vt9 == nullptr)
+        return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        const cv::Mat A(3, 3, CV_64F, const_cast<double*>(A9));
+        cv::Mat w;
+        cv::Mat u;
+        cv::Mat vt;
+        cv::SVD::compute(A, w, u, vt);
+        for (int i = 0; i < 9; ++i) {
+            U9[i]  = u.at<double>(i / 3, i % 3);
+            Vt9[i] = vt.at<double>(i / 3, i % 3);
+        }
+        for (int i = 0; i < 3; ++i) S3[i] = w.at<double>(i);
         return MRL_CV_OK;
     })
 }

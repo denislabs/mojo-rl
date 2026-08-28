@@ -14,14 +14,15 @@
 # regenerate them after an intentional change:
 #   pixi run python tools/vision/make_capture_fixture.py    # the video
 #   pixi run python tools/vision/make_marker_fixture.py     # the marker scene
+#   pixi run python tools/vision/make_charuco_fixture.py    # 11 board views
 #   pixi run python tools/vision/dump_cv_reference.py       # cv2's answers
 #
 # ⚠⚠ THE ASSERTIONS ARE EXACT BIT EQUALITY, NOT A TOLERANCE. Both sides call
 # the SAME dylib, so a difference is a marshalling bug and never a numerical
 # one. If a future change here needs a tolerance, the change is wrong.
 
-# A (version, error string, thread count), B (capture + the one BGR HWC ->
-# RGB CHW conversion), C (imread, ArUco detection) and D (solvePnP, Rodrigues).
-# Groups E and F of docs/OPENCV_SHIM_SCOPE.md add their own lines when they
-# land.
+# ALL SIX GROUPS of docs/OPENCV_SHIM_SCOPE.md: A (version, error string, thread
+# count), B (capture + the one BGR HWC -> RGB CHW conversion), C (imread, ArUco
+# detection), D (solvePnP, Rodrigues), E (ChArUco, calibrateCamera) and F (the
+# 3x3 SVD the extrinsics fit needs). 36 checks.
 tests/vision/test_opencv_shim.mojo
