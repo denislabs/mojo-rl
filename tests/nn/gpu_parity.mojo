@@ -43,6 +43,9 @@ RTOL until it passes buys nothing: the next seed puts a bigger gradient at the
 boundary. Two rounds of this gate were lost to exactly that, the second time
 with RTOL "measured" on Apple hardware that has no TF32 to measure.
 
+Confirmed on both: `test-act-gpu` 4/4 on an RTX 5090 (645 s) and 4/4 on an
+M1 Pro (250 s), on the split verdicts below.
+
 ## So the verdicts differ by what is being compared
 
 `ok_continuous` — forward activations, outputs, weights. Every element must be
