@@ -216,17 +216,31 @@ def main() raises:
         os.environ.get(PythonObject("ACT_PRETRAINED"), PythonObject(""))
     )
     if pretrained.byte_length() > 0:
-        var n_loaded = tr.load_backbone(pretrained)
+        # `ACT_NO_FREEZE_BN=1` loads the weights and leaves BatchNorm trainable
+        # — the ablation, not a normal setting. Both references pass
+        # `norm_layer=FrozenBatchNorm2d` at the same call that loads the
+        # weights, and unfrozen BatchNorm EMAs the ImageNet statistics away in
+        # a few hundred steps while never reading them.
+        var no_freeze = String(
+            os.environ.get(PythonObject("ACT_NO_FREEZE_BN"), PythonObject(""))
+        )
+        var freeze = no_freeze.byte_length() == 0
+        var n_loaded = tr.load_backbone(pretrained, freeze_norm=freeze)
         print(
             "  backbone  ImageNet weights, " + String(n_loaded)
-            + " tensors from " + pretrained
+            + " tensors, BatchNorm "
+            + ("FROZEN" if freeze else "TRAINABLE (ACT_NO_FREEZE_BN)")
         )
         logger.set_config("backbone_init", "imagenet")
+        logger.set_config(
+            "backbone_norm", "frozen" if freeze else "trainable"
+        )
     else:
         print(
             "  backbone  RANDOM (set ACT_PRETRAINED to use ImageNet weights)"
         )
         logger.set_config("backbone_init", "random")
+        logger.set_config("backbone_norm", "trainable")
 
     var qpos = List[Scalar[DT]](unsafe_uninit_length=BATCH * QPOS)
     var images = List[Scalar[DT]](unsafe_uninit_length=BATCH * IMG_ELEMS)

@@ -38,5 +38,8 @@ tests/deep_agents/act/test_act_overfit_one_batch.mojo
 tests/deep_agents/act/test_act_temporal_ensemble.mojo
 # M3b — ImageNet weights land in the right slots (needs the resnet18 dump)
 tests/deep_agents/act/test_act_pretrained_backbone.mojo
+# Wiring: does `freeze_backbone_norm` REACH the backbone's BatchNorms?
+# Self-contained (stub backbone, no reference dump, seconds).
+tests/deep_agents/act/test_act_freeze_backbone_norm.mojo
 # M0 — the dataset path (needs the converted store)
 tests/deep_agents/act/test_act_dataset.mojo

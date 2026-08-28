@@ -8,18 +8,34 @@ shape for "one ComputeGraph, one optimizer": a step is
 
     zero_grad -> set_input x4 -> forward -> seed grad 1/B -> vjp -> clip -> step
 
-`Adam` is itself a `ParamVisitor`, so stepping a graph (which is not a `Module`,
-and so cannot use `opt.adopt`/`opt.step`) is `opt.begin_step()` followed by
-`graph.for_each_param(opt)`.
+On GPU the optimizer runs in GROUPED ARENA mode: `Adam.adopt` packs every
+parameter into contiguous val/grd/m/v device buffers, so `zero_grad`, the
+grad-norm clip and the update are a handful of kernels over the whole model
+instead of one kernel per parameter. On CPU `adopt` is a no-op and `Adam` is
+used as a `ParamVisitor` over `graph.for_each_param`, as before.
 
 CPU and GPU: `target` is a comptime parameter. On GPU the sampler still produces
 host `List`s, so a step is host-fill -> upload -> graph -> download the three
 per-sample loss vectors. Weights, activations and gradients stay on device.
 
-⚠ `Adam.adopt`'s grouped arena is NOT engaged, because it requires a `Module`
-and a `ComputeGraph` is not one — the step walks `for_each_param` with per-param
-kernels. Same limitation `lewm/trainer.mojo` records; a graph-aware arena is a
-GPU-perf follow-up, not a correctness gap.
+## The arena, and when it is engaged
+
+`Adam.adopt` used to require a `Module`, which a `ComputeGraph` is not, so this
+trainer walked `for_each_param` launching one kernel per parameter. The bound is
+now `ParamWalkable` (`nn/core/param.mojo`) — the param walk and nothing else —
+which a graph satisfies. Measured on `act_so101_profile_gpu.mojo`, the per-param
+path was 10.5% of every kernel launch in the run for 1.0% of the kernel time,
+and the unconditional host-side grad-norm walk below it was a device
+synchronization PER PARAMETER (see `_SumSq`).
+
+⚠ Adoption is LAZY — first `train_step`, not `make`. `ParamArena.adopt` rebinds
+each Param's device buffer to a slice of the arena, and `Tensor.upload`
+RECREATES a device buffer: anything that uploads into a parameter after
+adoption (a checkpoint load, a test injecting reference weights) would silently
+detach it, after which the grouped step updates arena memory the model no
+longer reads. Loading before the first step is therefore always safe; the
+checkpoint and refload paths additionally use `upload_resident`, which reuses
+the existing buffer, so a load AFTER adoption is safe too.
 
 ## Train vs eval
 
@@ -96,13 +112,15 @@ from .refload import LoadPrefixedParams, RefDump
 struct _SumSq(ParamVisitor):
     """Sum of squared gradients over every parameter.
 
-    ⚠ On GPU this DOWNLOADS each gradient slab to sum it on the host. That is a
-    synchronisation point per parameter and it is the wrong shape for a hot
-    loop — `lewm/trainer.mojo` has the device-reduce kernels for exactly this.
-    It is correct, and it is only reached when `max_grad_norm > 0`; a training
-    run that wants speed on GPU should set `max_grad_norm = 0.0`, which is also
-    what the reference effectively does (it parses `clip_max_norm` and never
-    applies it).
+    ⚠ CPU ONLY now. On GPU this DOWNLOADS each gradient slab to sum it on the
+    host — a device synchronization PER PARAMETER, and (contrary to what this
+    note used to claim) it was NOT gated on `max_grad_norm`: only the SCALING
+    was conditional, the sum ran on every step because the norm is reported in
+    `ACTStepResult`. For an ACT model that is ~150 syncs per step, which is
+    most of the 148 synchronizations per pass in `docs/GPU_STEP_PERF.md`. The
+    GPU path now uses the optimizer's arena reduction (`clip_grads_device`):
+    three kernels over the contiguous grad arena and one D2H for the reported
+    norm.
     """
 
     var sum_sq: Float64
@@ -157,11 +175,12 @@ struct _ScaleGrads(ParamVisitor):
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target != "cpu":
-            # `_SumSq` already brought the host copy down this step, so the
-            # scale is applied there and re-uploaded. Same caveat as `_SumSq`.
+            # ⚠ Unreachable: the GPU clip is the optimizer's arena path. Kept
+            # only so the visitor stays target-generic — and `upload` here
+            # would DETACH the param from the arena (see the header).
             for i in range(N):
                 grad.data[i] = grad.data[i] * self.scale
-            grad.upload(ctx.value())
+            grad.upload_resident(ctx.value())
         else:
             for i in range(N):
                 grad.data[i] = grad.data[i] * self.scale
@@ -238,6 +257,12 @@ struct ACTTrainer[
     var t_actions: Tensor
     var t_valid: Tensor
     var ctx: Optional[DeviceContext]
+    var _adopted: Bool
+    """Has `opt.adopt` packed the graph into the grouped arena yet? (GPU only.)
+
+    Lazy on purpose — see "The arena, and when it is engaged" in the header:
+    adoption rebinds every parameter's device buffer, so it must happen after
+    anything that loads or injects weights by recreating one."""
     var deterministic_latent: Bool
     """Pin the CVAE draw to its mean in TRAINING mode too.
 
@@ -259,6 +284,7 @@ struct ACTTrainer[
         self.t_actions = Tensor()
         self.t_valid = Tensor()
         self.ctx = None
+        self._adopted = False
         self.deterministic_latent = False
 
     def __init__(out self, *, deinit move: Self):
@@ -272,6 +298,7 @@ struct ACTTrainer[
         self.t_actions = move.t_actions^
         self.t_valid = move.t_valid^
         self.ctx = move.ctx^
+        self._adopted = move._adopted
         self.deterministic_latent = move.deterministic_latent
 
     @staticmethod
@@ -344,6 +371,31 @@ struct ACTTrainer[
             Scalar[DT](0.0) if (
                 training and not self.deterministic_latent
             ) else Scalar[DT](1.0)
+        )
+
+    def freeze_backbone_norm(mut self, v: Bool = True):
+        """`FrozenBatchNorm2d` for the vision backbone — what BOTH ACT
+        implementations build theirs with.
+
+        Statistics AND affine become constants, so the ImageNet values survive
+        training instead of being EMA'd away in the first few hundred steps
+        (momentum 0.1 leaves 2.7e-05 of the original after 100). See
+        `BatchNorm2D.frozen`.
+
+        ⚠ ONLY MEANINGFUL WITH PRETRAINED STATISTICS. Frozen at the init values
+        — mean 0, var 1, gamma 1, beta 0 — BatchNorm is the identity, so
+        freezing a RANDOM backbone does not "hold" a normalization, it deletes
+        one. `load_backbone` therefore turns this on itself, and this method is
+        for the ablation.
+
+        Broadcast to the whole graph, which is safe because the backbone is the
+        only thing in it carrying BatchNorm: the transformer stacks use
+        LayerNorm and every other module's `set_attr` ignores an unknown name.
+        `frozen` overrides `training`, so a later `train_mode(True)` cannot
+        undo this.
+        """
+        self.graph.set_attr["frozen"](
+            Scalar[DT](1.0) if v else Scalar[DT](0.0)
         )
 
     def set_deterministic_latent(mut self, v: Bool):
@@ -423,6 +475,19 @@ struct ACTTrainer[
         var n = Float64(Self.BATCH)
         return ACTStepResult(lo / n, l1 / n, kl / n, 0.0)
 
+    def _ensure_adopted(mut self) raises:
+        """Pack the graph into the optimizer's grouped arena, once, on GPU.
+
+        Deliberately NOT done in `make`: see the header. Everything that seeds
+        weights — `load`, `load_reference_params`, a test injecting a CPU
+        model's parameters — runs between `make` and the first `train_step`,
+        and adoption after that point is only safe because those paths upload
+        into the RESIDENT buffer."""
+        comptime if Self.target != "cpu":
+            if not self._adopted:
+                self.opt.adopt[Self.target](self.graph, self.ctx)
+                self._adopted = True
+
     def train_step(
         mut self,
         ref qpos: List[Scalar[DT]],
@@ -430,28 +495,47 @@ struct ACTTrainer[
         ref actions: List[Scalar[DT]],
         ref valid: List[Scalar[DT]],
     ) raises -> ACTStepResult:
-        self.graph.zero_grad[Self.target](self.ctx)
+        self._ensure_adopted()
+        # GPU+adopted: ONE fill over the contiguous grad arena. CPU: the
+        # per-param walk, unchanged.
+        self.opt.zero_grad[Self.target](self.graph, self.ctx)
         self._seed_inputs(qpos, images, actions, valid)
         self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
         var terms = self._read_terms()
         self.graph.vjp[Self.BATCH, Self.target](self.grad_seed, self.ctx)
 
-        var ss = _SumSq()
-        self.graph.for_each_param[Self.target](ss, self.ctx, String(""))
-        var gn = ss.sum_sq ** 0.5
-        if self.max_grad_norm > Scalar[DT](0.0) and gn > Float64(
-            self.max_grad_norm
-        ):
-            # A non-finite norm scales to zero rather than propagating NaN into
-            # every weight — mirrors `lewm/trainer.mojo::_scale_from_norm`.
-            var sc = Scalar[DT](0.0)
-            if gn == gn:
-                sc = self.max_grad_norm / Scalar[DT](gn)
-            var scaler = _ScaleGrads(sc)
-            self.graph.for_each_param[Self.target](scaler, self.ctx, String(""))
+        var gn: Float64
+        comptime if Self.target == "cpu":
+            var ss = _SumSq()
+            self.graph.for_each_param[Self.target](ss, self.ctx, String(""))
+            gn = ss.sum_sq ** 0.5
+            if self.max_grad_norm > Scalar[DT](0.0) and gn > Float64(
+                self.max_grad_norm
+            ):
+                # A non-finite norm scales to zero rather than propagating NaN
+                # into every weight — mirrors
+                # `lewm/trainer.mojo::_scale_from_norm`.
+                var sc = Scalar[DT](0.0)
+                if gn == gn:
+                    sc = self.max_grad_norm / Scalar[DT](gn)
+                var scaler = _ScaleGrads(sc)
+                self.graph.for_each_param[Self.target](
+                    scaler, self.ctx, String("")
+                )
+        else:
+            # Same clip, on device: sum-of-squares over the grad arena →
+            # `scale = min(1, max_norm/‖g‖)` (non-finite → 0, `max_norm <= 0` →
+            # 1) → one scaling pass. Persistent scratch, so no allocation. The
+            # ONE D2H is the pre-clip norm, which `ACTStepResult` reports; the
+            # host walk it replaces synchronized once per PARAMETER.
+            self.opt.clip_grads_device[Self.target](
+                self.graph, self.max_grad_norm, self.ctx
+            )
+            gn = Float64(self.opt.read_clip_norm(self.ctx.value()))
 
-        self.opt.begin_step()
-        self.graph.for_each_param[Self.target](self.opt, self.ctx, String(""))
+        # GPU+adopted: one grouped kernel over the whole arena. CPU: the
+        # per-param `ParamVisitor` walk `begin_step` + `for_each_param` did.
+        self.opt.step[Self.target](self.graph, self.ctx)
         return ACTStepResult(terms.loss, terms.l1, terms.kl, gn)
 
     def eval_step(
@@ -521,7 +605,9 @@ struct ACTTrainer[
         self.graph.for_each_state[Self.target, BinaryCheckpointWriter](w, self.ctx)
         _write_file_bytes(path, w.content)
 
-    def load_backbone(mut self, dump_dir: String) raises -> Int:
+    def load_backbone(
+        mut self, dump_dir: String, freeze_norm: Bool = True
+    ) raises -> Int:
         """Fill the vision backbone from a `dump_resnet18_imagenet.py` dump.
 
         Returns the number of tensors filled. Raises if the dump names a tensor
@@ -569,6 +655,15 @@ struct ACTTrainer[
                 + "' — the graph's backbone path changed and this loader did"
                 " not, so the weights would have been silently discarded"
             )
+        # ⚠ FREEZING IS PART OF LOADING, not a separate decision, because the
+        # references never do one without the other: `norm_layer=
+        # FrozenBatchNorm2d` is passed at the same `resnet18(pretrained=...)`
+        # call. Loading ImageNet statistics and then letting training-mode
+        # BatchNorm EMA them away is the worst of both — the cost of the load
+        # with none of the benefit, and it reads as "pretraining did not help".
+        # `freeze_norm=False` is for the ablation that measures exactly that.
+        if freeze_norm:
+            self.freeze_backbone_norm(True)
         return len(wl.loaded) + len(sl.loaded)
 
     def load(mut self, path: String) raises:
