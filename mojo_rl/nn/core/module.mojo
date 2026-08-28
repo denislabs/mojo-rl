@@ -15,14 +15,14 @@ from mojo_rl.nn.constants import DT
 from .initializer import Initializer
 from .tensor import Tensor, TensorImpl
 from .tensor_refs import TensorRefs
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamWalkable
 from .walkers import for_each_param_auto, zero_grad_auto
 from .state import for_each_state_auto
 from .amp import AMPPolicy, NoAMP
 from .graph_visitor import DisplayStep
 
 
-trait Module(Defaultable & Movable & Deinitable):
+trait Module(ParamWalkable & Defaultable):
     comptime ARITY: Int
     comptime IN_DIMS: InlineArray[Int, Self.ARITY]
     comptime OUT_DIM: Int

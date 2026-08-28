@@ -20,13 +20,13 @@ reference them (DeviceBuffer is refcounted → destruction order is safe).
 
 from std.math import sqrt
 from std.gpu import global_idx
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor, ParamVersionBump
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from .param_arena import ParamArena
 from .grad_clip import (
     clip_grad_norm, clip_arena_grads, clip_arena_grads_captured,
@@ -192,6 +192,59 @@ def _grouped_adam_kernel_devlr(
     val[unsafe_offset=i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
+# ── arena moment placement ───────────────────────────────────────────────
+
+
+struct _MomentPlacer(ParamVisitor):
+    """Rebind every Param's `m`/`v` Tensors to slices of the arena moments.
+
+    ⚠ Without this, arena mode SILENTLY DROPS the optimizer moments from every
+    checkpoint. `BinaryCheckpointWriter` gates on `m.n >= N and v.n >= N`, and
+    in arena mode the per-param `m`/`v` are never touched (the grouped kernel
+    reads `m_arena`/`v_arena` directly) — so they stay EMPTY, `has_m` is
+    written as "0", and a resumed run restarts Adam from zero moments while
+    reporting a successful load. The values are on the device the whole time;
+    only the handle the checkpoint walk reads was missing.
+
+    The slices alias the same offsets `ParamArena` used for val/grd, so the
+    walk order is the one `adopt` just used. Placement only — no copy: the
+    moment arenas are freshly zeroed, which is exactly Adam's initial state.
+    """
+
+    var m_arena: DeviceBuffer[DT]
+    var v_arena: DeviceBuffer[DT]
+    var off: Int
+
+    def __init__(out self, m_arena: DeviceBuffer[DT], v_arena: DeviceBuffer[DT]):
+        self.m_arena = m_arena
+        self.v_arena = v_arena
+        self.off = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.m_arena = move.m_arena
+        self.v_arena = move.v_arena
+        self.off = move.off
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            m.dev = Optional(self.m_arena.create_sub_buffer[DT](self.off, N))
+            m.n = N
+            v.dev = Optional(self.v_arena.create_sub_buffer[DT](self.off, N))
+            v.n = N
+            self.off += N
+
+
 struct Adam(Movable, ParamVisitor, Optimizer):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -283,7 +336,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self.bc2 = Scalar[DT](1.0) - self._b2_pow
 
     def adopt[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Engage arena mode (GPU); NO-OP on CPU. Packs val/grd via the shared
         ParamArena and allocates this optimizer's m/v arenas to match."""
@@ -307,9 +360,17 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             self._lr_dev.dev.value().enqueue_fill(self.lr)
             self._step_dev = Tensor.alloc_gpu(c, 1)
             self._step_dev.dev.value().enqueue_fill(Scalar[DT](0.0))
+            # Give every Param a HANDLE on its slice of the moment arenas, so
+            # the checkpoint walk still finds moments to write. See
+            # `_MomentPlacer` — without it, adopting silently turns
+            # `save_moments=True` into a no-op.
+            var mp = _MomentPlacer(
+                self.m_arena.dev.value(), self.v_arena.dev.value()
+            )
+            model.for_each_param["gpu"](mp, ctx)
 
     def step[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Bump the step then update every Param. GPU+adopted → one arena kernel;
         CPU or un-adopted GPU → per-param walk."""
@@ -420,7 +481,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self._grouped_step(c)
 
     def zero_grad[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """GPU+adopted → zero the grad arena in ONE fill; else per-param via the
         model."""
@@ -464,7 +525,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self._lr_dev.dev.value().enqueue_fill(lr)
 
     def clip_grads[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](
         mut self, mut model: M, max_norm: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -478,7 +539,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         return clip_grad_norm[target](model, max_norm, ctx)
 
     def clip_grads_device[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](
         mut self, mut model: M, max_norm: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -559,6 +620,18 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 grid_dim=nblk,
                 block_dim=TPB,
             )
+        # ⚠ THE WRITE IS HERE, so the invalidation belongs here. `step` also
+        # runs a `ParamVersionBump` walk — needed for the ARENA path, where
+        # `visit` never runs — but a caller that drives this visitor DIRECTLY
+        # (`for_each_param(opt)`, which is what every ComputeGraph trainer did
+        # before `adopt` took a `ParamWalkable`) got no bump at all. Leaves
+        # cache DERIVED copies of the weight gated on this counter: `w_pad`
+        # (the K/N-alignment pad) and `w_bf` (the AMP recast). Without it, a
+        # `Linear[6, 256]` on GPU keeps contracting against its PRE-TRAINING
+        # weight forever — the loss moves (the bias is not padded) and nothing
+        # reports an error. Measured: after an Adam step with lr 0.5 and a
+        # gradient of 1, the forward output moved by EXACTLY 0.0.
+        param.version += 1
 
 
 # AdamW is Adam with decoupled weight decay (`wd > 0`, gated per param by

@@ -397,6 +397,7 @@ struct Conv2DTranspose[
                     Self.W_,
                     Self.OUT_FLAT,
                     Self.COLT,
+                    Self.COLT,  # DCOL: no K pad on the transpose path yet
                     Self.SI,
                     BS,
                     DT,

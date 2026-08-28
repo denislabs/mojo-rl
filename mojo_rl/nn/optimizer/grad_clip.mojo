@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from .param_arena import ParamArena
 
 
@@ -168,7 +168,7 @@ def _scale_from_norm(
 
 
 def clip_grad_norm[
-    target: StaticString, M: Module
+    target: StaticString, M: ParamWalkable
 ](
     mut model: M,
     max_norm: Scalar[DT],

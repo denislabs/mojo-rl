@@ -39,7 +39,7 @@ from std.sys.info import size_of
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 from .param import ParamVisitor
-from .module import Module
+from .param import ParamWalkable
 
 comptime _CKPT_CHUNK = 1 << 30  # 1 GiB — below every single-syscall I/O cap
 
@@ -239,10 +239,17 @@ struct CheckpointReader(ParamVisitor):
             for i in range(N):
                 v.data[i] = Scalar[DT](atof(self._next()))
             comptime if target == "gpu":
-                m.upload(ctx.value())
-                v.upload(ctx.value())
+                m.upload_resident(ctx.value())
+                v.upload_resident(ctx.value())
         comptime if target == "gpu":
-            param.upload(ctx.value())
+            # ⚠ `upload_resident`, NOT `upload`. `upload` RECREATES the device
+            # buffer, and under an adopted `ParamArena` this Param's val/grd/m/v
+            # ARE sub-buffers of the optimizer's contiguous arenas — a fresh
+            # buffer silently detaches the param from the arena, after which the
+            # grouped step updates arena memory the model no longer reads. These
+            # are fixed-size slabs, so the resident path is also two fewer
+            # synchronizations per parameter.
+            param.upload_resident(ctx.value())
 
 
 struct BinaryCheckpointWriter(ParamVisitor):
@@ -360,14 +367,21 @@ struct BinaryCheckpointReader(ParamVisitor):
             self._take_vals(m, N)
             self._take_vals(v, N)
             comptime if target == "gpu":
-                m.upload(ctx.value())
-                v.upload(ctx.value())
+                m.upload_resident(ctx.value())
+                v.upload_resident(ctx.value())
         comptime if target == "gpu":
-            param.upload(ctx.value())
+            # ⚠ `upload_resident`, NOT `upload`. `upload` RECREATES the device
+            # buffer, and under an adopted `ParamArena` this Param's val/grd/m/v
+            # ARE sub-buffers of the optimizer's contiguous arenas — a fresh
+            # buffer silently detaches the param from the arena, after which the
+            # grouped step updates arena memory the model no longer reads. These
+            # are fixed-size slabs, so the resident path is also two fewer
+            # synchronizations per parameter.
+            param.upload_resident(ctx.value())
 
 
 def save_params[
-    target: StaticString, M: Module
+    target: StaticString, M: ParamWalkable
 ](
     mut model: M, path: String,
     ctx: Optional[DeviceContext] = None,
@@ -383,7 +397,7 @@ def save_params[
 
 
 def load_params[
-    target: StaticString, M: Module
+    target: StaticString, M: ParamWalkable
 ](mut model: M, path: String, ctx: Optional[DeviceContext] = None) raises:
     """Load a named checkpoint (v3 binary, or legacy v2 text — dispatched on
     the header line), validating names/sizes against `model`."""
@@ -414,7 +428,7 @@ def load_params[
 
 
 def save_params_multi[
-    target: StaticString, *Ms: Module
+    target: StaticString, *Ms: ParamWalkable
 ](
     path: String,
     ctx: Optional[DeviceContext],
@@ -437,7 +451,7 @@ def save_params_multi[
 
 
 def load_params_multi[
-    target: StaticString, *Ms: Module
+    target: StaticString, *Ms: ParamWalkable
 ](
     path: String,
     ctx: Optional[DeviceContext],

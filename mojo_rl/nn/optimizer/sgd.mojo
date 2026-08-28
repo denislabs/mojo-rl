@@ -16,7 +16,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor, ParamVersionBump
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from .param_arena import ParamArena
 from .grad_clip import clip_grad_norm, clip_arena_grads
 from .optimizer import Optimizer
@@ -79,13 +79,13 @@ struct SGD(Movable, ParamVisitor, Optimizer):
         self.arena = ParamArena()
 
     def adopt[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Engage arena mode (GPU); NO-OP on CPU."""
         self.arena.adopt[target](model, ctx)
 
     def step[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """GPU+adopted → one arena kernel; CPU or un-adopted GPU → per-param."""
         comptime if target == "cpu":
@@ -116,7 +116,7 @@ struct SGD(Movable, ParamVisitor, Optimizer):
         )
 
     def zero_grad[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """GPU+adopted → zero the grad arena in ONE fill; else per-param."""
         comptime if target == "gpu":
@@ -132,7 +132,7 @@ struct SGD(Movable, ParamVisitor, Optimizer):
         return self.lr
 
     def clip_grads[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](
         mut self, mut model: M, max_norm: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -176,3 +176,8 @@ struct SGD(Movable, ParamVisitor, Optimizer):
                 grid_dim=nblk,
                 block_dim=256,
             )
+        # The write is here, so the cache invalidation is too — see the same
+        # note in `Adam.visit`. A caller that drives this visitor directly gets
+        # no `ParamVersionBump` walk, and `Linear.w_pad` / `w_bf` would then
+        # serve a stale weight forever.
+        param.version += 1

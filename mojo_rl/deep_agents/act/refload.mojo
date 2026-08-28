@@ -266,7 +266,7 @@ def _fill(
     for i in range(len(vals)):
         param.data[i] = vals[i]
     if ctx:
-        param.upload(ctx.value())
+        param.upload_resident(ctx.value())
 
 
 struct ListParams(ParamVisitor):

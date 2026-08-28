@@ -49,7 +49,7 @@ from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamWalkable
 from ..core.graph_visitor import GraphVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
@@ -69,7 +69,7 @@ def _cg_accum_kernel[
         dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
-struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph):
+struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
     # `TwoInputGraph` already implies `Defaultable & Movable & Deinitable`. It
     # is the bound `GraphModule2` needs to drive a graph generically — see
     # `combinators/graph_module2.mojo` for why `Module` cannot serve.

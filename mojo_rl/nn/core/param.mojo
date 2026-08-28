@@ -40,6 +40,59 @@ trait ParamVisitor(Deinitable):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# ParamWalkable — the parameter surface an OPTIMIZER needs, which is
+# strictly less than being a `Module`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+trait ParamWalkable(Movable & Deinitable):
+    """Everything `Adam`/`SGD` actually touch on a model: the param walk and
+    the grad zero. Nothing else — not `forward`, not `ARITY`, not `make`.
+
+    `adopt` / `step` / `zero_grad` / `clip_grads` were all bound to `Module`
+    for no reason beyond convenience; each one only ever calls
+    `for_each_param` (and `zero_grad`). `ComputeGraph` has both and CANNOT be
+    a `Module` — it is addressed by slot NAME rather than by a `TensorRefs`
+    input pack, which is why `TwoInputGraph` exists at all — so every
+    graph-driven trainer (ACT, lewm) was locked out of the grouped arena and
+    fell back to launching one Adam kernel per parameter. In the ACT profile
+    that is 16,445 launches, **10.5% of every kernel launch in the run for
+    1.0% of the kernel time** (`docs/GPU_STEP_PERF.md`).
+
+    `Module` INHERITS this trait and satisfies both members with the defaults
+    it already had, so every existing model is a `ParamWalkable` and no
+    conformer changes. `ComputeGraph` declares it directly.
+    """
+
+    def for_each_param[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        """Dispatch `visitor` at every trainable Param, in a stable order."""
+        ...
+
+    def zero_grad[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
+        """Zero every Param's gradient buffer."""
+        ...
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        """Dispatch `visitor` at every persisted State (BatchNorm running
+        statistics and friends). Not the optimizer's business, but the
+        checkpoint walk runs it right after `for_each_param` and both walks
+        want the same bound."""
+        ...
+
+
+# ──────────────────────────────────────────────────────────────────────
 # IsParam — marker trait so reflection (core/walkers.mojo) can filter the
 # Param-typed fields of a leaf and dispatch the visitor / zero_grad. The
 # `Module.for_each_param` / `zero_grad` trait DEFAULTS reflection-walk

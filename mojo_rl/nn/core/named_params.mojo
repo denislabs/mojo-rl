@@ -17,7 +17,7 @@ from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
 from .param import ParamVisitor
-from .module import Module
+from .param import ParamWalkable
 
 
 struct NamedParam(Copyable):
@@ -57,7 +57,7 @@ struct _NamedCollector(ParamVisitor):
 
 
 def named_params[
-    target: StaticString, M: Module
+    target: StaticString, M: ParamWalkable
 ](mut model: M, ctx: Optional[DeviceContext] = None) raises -> List[NamedParam]:
     """Flat (name, size, decay) list of every trainable Param, in
     `for_each_param` walk order with dotted names."""
@@ -67,7 +67,7 @@ def named_params[
 
 
 def named_states[
-    target: StaticString, M: Module
+    target: StaticString, M: ParamWalkable
 ](mut model: M, ctx: Optional[DeviceContext] = None) raises -> List[NamedParam]:
     """Flat (name, size, decay=False) list of every persisted State (e.g.
     BatchNorm running stats), in `for_each_state` walk order."""

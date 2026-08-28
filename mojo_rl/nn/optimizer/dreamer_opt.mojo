@@ -56,7 +56,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from .optimizer import Optimizer
 
 
@@ -257,7 +257,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
         )
 
     def step[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Bump the step then update every Param (per-param walk, both targets).
         GPU advances the device `[β₁ᵗ, β₂ᵗ]` (capture-safe); CPU bumps host bc."""

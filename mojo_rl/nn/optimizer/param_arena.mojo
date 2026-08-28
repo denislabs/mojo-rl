@@ -24,7 +24,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from ..core.named_params import named_params
 
 
@@ -72,7 +72,7 @@ struct ParamArena(Movable & ParamVisitor):
             self._off += N
 
     def adopt[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Pack `model` into the arena (GPU); NO-OP on CPU. Call ONCE after the
         model is made + initialized, before the first step."""

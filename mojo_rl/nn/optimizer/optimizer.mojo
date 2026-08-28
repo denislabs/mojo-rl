@@ -23,33 +23,33 @@ variants). `set_lr` / `get_lr` default to no-op / 1.0 (schedules read/write them
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from ..core.module import Module
+from ..core.param import ParamWalkable
 from .grad_clip import clip_grad_norm
 
 
 trait Optimizer(Defaultable & Movable & Deinitable):
     def step[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Apply one optimizer update to every Param of `model`."""
         ...
 
     def adopt[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Engage a contiguous-arena GPU mode if the optimizer has one (NO-OP on
         CPU). Default: no-op — optimizers without an arena ignore it."""
         pass
 
     def zero_grad[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Default: per-param zero via the model. Arena optimizers override with a
         single grad-arena fill when adopted."""
         model.zero_grad[target](ctx)
 
     def clip_grads[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](
         mut self, mut model: M, max_norm: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -59,7 +59,7 @@ trait Optimizer(Defaultable & Movable & Deinitable):
         return clip_grad_norm[target](model, max_norm, ctx)
 
     def clip_grads_device[
-        target: StaticString, M: Module
+        target: StaticString, M: ParamWalkable
     ](
         mut self, mut model: M, max_norm: Scalar[DT],
         ctx: Optional[DeviceContext] = None,

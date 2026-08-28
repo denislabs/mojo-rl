@@ -26,7 +26,7 @@ legacy package (which gets deleted at the end of the migration).
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.primitives import block
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -201,19 +201,30 @@ def _im2col_kernel[
     OW: Int,
     IN_FLAT: Int,
     COL: Int,
+    DCOL: Int,
     SO: Int,
     BS: Int,
     ADT: DType = DT,
     LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
-    col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
+    col: LayoutTensor[ADT, Layout.row_major(BS, DCOL), MutAnyOrigin],
 ):
+    """im2col into a row stride of `DCOL >= COL`, zero-filling `[COL, DCOL)`.
+
+    `DCOL` is the K-alignment pad (`Conv2D.CPAD`); `DCOL == COL` is the
+    unpadded case and the kernel is then exactly what it was. The zeros are
+    what make the pad free: the forward GEMM contracts over `DCOL`, and a
+    zero column contributes exactly 0 to every output — the same argument that
+    made `Linear`'s K pad bit-identical."""
     var idx = Int(global_idx.x)
-    if idx >= BS * COL:
+    if idx >= BS * DCOL:
         return
-    var row = idx // COL
-    var ck = idx % COL
+    var row = idx // DCOL
+    var ck = idx % DCOL
+    if ck >= COL:
+        col[row, ck] = Scalar[ADT](0)
+        return
     var b = row // SO
     var s = row % SO
     var oh = s // OW
@@ -227,6 +238,47 @@ def _im2col_kernel[
         col[row, ck] = rebind[Scalar[ADT]](
             input[b, _in_off[LAYOUT, IC, H, W](ic, ih, iw)]
         )
+
+
+def _pad_w_cols_kernel[
+    OC: Int, COL: Int, DCOL: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(OC * COL), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(OC * DCOL), MutAnyOrigin],
+):
+    """`W[OC, COL]` -> `W_pad[OC, DCOL]`, zeros in `[COL, DCOL)`.
+
+    The weight side of the K pad. Row-major with a WIDER row stride, so this
+    is a 2-D copy, not a flat tail append — every row after the first moves.
+    Twin of `linear.mojo`'s `_pad_2d_kernel`."""
+    var i = Int(global_idx.x)
+    if i >= OC * DCOL:
+        return
+    var r = i // DCOL
+    var c = i % DCOL
+    dst[i] = src[r * COL + c] if c < COL else Scalar[DT](0)
+
+
+def _accum_w_2d_kernel[
+    OC: Int, COL: Int, DCOL: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(OC * COL), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(OC * DCOL), MutAnyOrigin],
+):
+    """`grad_w[oc, c] += dW_pad[oc, c]` where `src` has the WIDER row stride.
+
+    ⚠ The flat `_accum_kernel` is WRONG the moment the dW GEMM writes a padded
+    `[OC, DCOL]`: the strides differ, so a flat add folds each row's padding
+    into the next row's leading weights — a wrong gradient that still trains.
+    Same trap `linear.mojo::_accum_2d_kernel` documents."""
+    var i = Int(global_idx.x)
+    if i >= OC * COL:
+        return
+    var r = i // COL
+    var c = i % COL
+    dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](
+        src[r * DCOL + c]
+    )
 
 
 def _scatter_bias_kernel[
@@ -257,10 +309,11 @@ def _fwd_oc1_matvec_kernel[
     BATCH: Int,
     SO: Int,
     COL: Int,
+    DCOL: Int,
     BS: Int,
     ADT: DType = DT,
 ](
-    col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
+    col: LayoutTensor[ADT, Layout.row_major(BS, DCOL), MutAnyOrigin],
     weight: LayoutTensor[ADT, Layout.row_major(COL), MutAnyOrigin],
     bias: LayoutTensor[ADT, Layout.row_major(1), MutAnyOrigin],
     output: LayoutTensor[ADT, Layout.row_major(BATCH, SO), MutAnyOrigin],
@@ -472,6 +525,48 @@ struct Conv2D[
     comptime B_SIZE = Self.OC_
     comptime COL = Self.IC_ * Self.K_ * Self.K_
     comptime SO = Self.OH * Self.OW
+
+    # ── K-alignment padding (GPU fp32) — the SAME defect `Linear` documents ──
+    # `max_matmul` falls off a ~10x cliff when the CONTRACTION dim is
+    # misaligned, on BOTH backends (Metal wants K%16, an RTX 5090 wants K%32,
+    # so 32 satisfies both); and a narrow, unaligned OUTPUT width makes cuBLAS
+    # pick a split-K path whose workspace is allocated, memset and freed on
+    # EVERY call. Read the two comment blocks at `Linear.PAD_TO` /
+    # `Linear.NEEDS_N_PAD` before changing anything here — `PAD_TO` is
+    # calibrated by `benchmarks/bench_matmul_k_alignment.mojo`.
+    #
+    # This conv is im2col + GEMM, and `COL = IC*K*K` lands on BOTH bad axes:
+    #
+    #     forward   out[BS, OC]     = col[BS, COL] @ W[OC, COL]ᵀ    K = COL
+    #     vjp dW    dW[OC, COL]     = goᵀ[OC, BS] @ col[BS, COL]    N = COL
+    #     vjp dx    d_colᵀ[COL, BS] = Wᵀ[COL, OC] @ goᵀ[OC, BS]     (K = OC)
+    #
+    # so ONE pad on COL fixes the forward's contraction and the dW GEMM's
+    # output width at once. `docs/GPU_STEP_PERF.md` ranks conv2d as suspect #1
+    # for the allocation churn precisely because it had no padding at all.
+    #
+    # ⚠ Which convs this actually moves: 3x3 stages give COL = 576 / 1152 /
+    # 2304 / 4608 and 1x1 downsamples give COL = IC — all already multiples of
+    # 32, so a ResNet18 has exactly ONE offender, the 7x7x3 stem at COL = 147
+    # (padded to 160). That stem is also the largest GEMM in the backbone
+    # (BS = 307,200 at 240x320 batch 16), so it is worth its own pad. Elsewhere
+    # in the repo COL = 25 (MNIST 5x5x1), 72 and 400 are the misaligned ones.
+    #
+    # ⚠ NOT the N=OC axis. `OC` is a multiple of 32 in every net here, and
+    # padding it produces a WIDER out_packed that `_scatter_bias_kernel` would
+    # have to slice — the asymmetry `Linear.NEEDS_N_PAD` spells out. Left
+    # undone deliberately, not overlooked.
+    #
+    # ⚠ fp32 GPU only, matching `Linear`: the bf16-flow path keeps `COL`.
+    comptime PAD_TO = 32
+    comptime NEEDS_COL_PAD = Self.COL % Self.PAD_TO != 0
+    comptime CPAD = (
+        ((Self.COL + Self.PAD_TO - 1) // Self.PAD_TO) * Self.PAD_TO
+    ) if Self.NEEDS_COL_PAD else Self.COL
+    """The im2col row stride the fp32 GPU path uses — `COL` rounded up to
+    `PAD_TO`, and exactly `COL` when it is already aligned (then every kernel
+    below is byte-for-byte the unpadded one)."""
+    comptime WPAD_SIZE = Self.OC_ * Self.CPAD
     # Activation-flow dtype (satisfies the Module trait). `Conv2D[...]` = fp32
     # (ACT_DT == DT, the legacy NoAMP path); `Conv2D[..., DType.bfloat16]` flows
     # activations at bf16 (the AMP "Step B" memory win). Master weights/grads/
@@ -488,6 +583,15 @@ struct Conv2D[
     var goT_t: Tensor  # [OC, BS]   (goᵀ — for dW AND d_colᵀ, O2)
     var dW_tmp: Tensor  # [OC, COL]  (fp32 dW temp; bf16-in → fp32-out GEMM)
     var wT_t: Tensor  # [COL, OC]  (O2: fp32 Wᵀ for the d_colᵀ GEMM)
+    # K-alignment scratch (lazy; fp32 GPU only, and only when `NEEDS_COL_PAD`).
+    # `w_pad` is the zero-tailed [OC, CPAD] weight, re-padded only when the
+    # optimizer bumped `weight.val.version` — once per optimizer step, not per
+    # forward, exactly like `w_bf`. The padded `col` needs no separate buffer:
+    # `col_t` is simply allocated at the wider stride and im2col zero-fills the
+    # tail. `dW_tmp` grows to [OC, CPAD] and is accumulated into the [OC, COL]
+    # master grad with a STRIDED add.
+    var w_pad: Tensor
+    var _w_pad_version: Int
     # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
     # target == "gpu"). `col_t_bf`/`outp_t_bf`/`goT_t_bf` are the bf16 activation
     # scratch (im2col col, out_packed/go_packed, goᵀ). `w_bf` is the CACHED bf16
@@ -524,6 +628,8 @@ struct Conv2D[
         self.goT_t = Tensor()
         self.dW_tmp = Tensor()
         self.wT_t = Tensor()
+        self.w_pad = Tensor()
+        self._w_pad_version = -1  # < any real version → first forward pads
         self.col_t_bf = TensorImpl[Self.ADT]()
         self.outp_t_bf = TensorImpl[Self.ADT]()
         self.goT_t_bf = TensorImpl[Self.ADT]()
@@ -537,6 +643,37 @@ struct Conv2D[
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
             self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_pad(mut self, c: DeviceContext) raises:
+        """Ensure `w_pad` is `weight.val` widened to `[OC, CPAD]` with zeros.
+
+        Re-pads ONLY when the optimizer bumped `val.version` since the last
+        pad, so training pays it once per step and inference once ever.
+
+        ⚠ `_force_recast` (CUDA-graph capture) must make this UNCONDITIONAL for
+        the same reason it does for the bf16 cast: the version gate would skip
+        the pad on replay and the GEMM would read a STALE weight."""
+        self.w_pad.ensure_gpu(c, Self.WPAD_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_pad_version:
+            c.enqueue_function[
+                _pad_w_cols_kernel[Self.OC_, Self.COL, Self.CPAD]
+            ](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+                grid_dim=(Self.WPAD_SIZE + CONV_TPB - 1) // CONV_TPB,
+                block_dim=CONV_TPB,
+            )
+            self._w_pad_version = self.weight.val.version
+
+    def _w_col_buf(mut self, c: DeviceContext) raises -> DeviceBuffer[DT]:
+        """The `[OC, CPAD]` weight the fp32 GEMMs contract against: the padded
+        copy when `NEEDS_COL_PAD`, otherwise the master weight itself (no copy,
+        no extra kernel — `CPAD == COL` there)."""
+        comptime if Self.NEEDS_COL_PAD:
+            self._ensure_w_pad(c)
+            return self.w_pad.dev.value()
+        else:
+            return self.weight.val.dev.value()
 
     def _ensure_w_bf(mut self, c: DeviceContext) raises:
         """Ensure the cached bf16 weight `w_bf` reflects the current fp32
@@ -637,10 +774,11 @@ struct Conv2D[
                 var c = ctx.value()
                 comptime BS = B * Self.SO
                 outd.ensure_gpu(c, B * Self.OUT_FLAT)
-                self.col_t.ensure_gpu(c, BS * Self.COL)
+                # K-aligned im2col stride (== COL when already aligned).
+                self.col_t.ensure_gpu(c, BS * Self.CPAD)
                 self.outp_t.ensure_gpu(c, BS * Self.OC_)
-                # (1) im2col → col[BS, COL]
-                comptime nb_col = (BS * Self.COL + CONV_TPB - 1) // CONV_TPB
+                # (1) im2col → col[BS, CPAD] (tail columns zeroed)
+                comptime nb_col = (BS * Self.CPAD + CONV_TPB - 1) // CONV_TPB
                 c.enqueue_function[
                     _im2col_kernel[
                         B,
@@ -654,6 +792,7 @@ struct Conv2D[
                         Self.OW,
                         Self.IN_FLAT,
                         Self.COL,
+                        Self.CPAD,
                         Self.SO,
                         BS,
                         DT,
@@ -661,7 +800,7 @@ struct Conv2D[
                     ]
                 ](
                     in0d.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
-                    self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    self.col_t.lt["gpu", Layout.row_major(BS, Self.CPAD)](),
                     grid_dim=nb_col,
                     block_dim=CONV_TPB,
                 )
@@ -673,9 +812,11 @@ struct Conv2D[
                     # direct matvec + bias (see _fwd_oc1_matvec_kernel).
                     comptime nb_mv = (BS + CONV_TPB - 1) // CONV_TPB
                     c.enqueue_function[
-                        _fwd_oc1_matvec_kernel[B, Self.SO, Self.COL, BS, DT]
+                        _fwd_oc1_matvec_kernel[
+                            B, Self.SO, Self.COL, Self.CPAD, BS, DT
+                        ]
                     ](
-                        self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                        self.col_t.lt["gpu", Layout.row_major(BS, Self.CPAD)](),
                         self.weight.val.lt["gpu", Layout.row_major(Self.COL)](),
                         self.bias.val.lt["gpu", Layout.row_major(1)](),
                         outd.lt["gpu", Layout.row_major(B, Self.SO)](),
@@ -683,13 +824,16 @@ struct Conv2D[
                         block_dim=CONV_TPB,
                     )
                 else:
-                    # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
+                    # (2) out_packed[BS,OC] = col[BS,CPAD] @ W[OC,CPAD]ᵀ.
+                    # The padded columns are zero on BOTH operands, so they
+                    # contribute exactly 0 — the result is the unpadded GEMM's,
+                    # bit for bit, at an aligned contraction length.
+                    var w_buf = self._w_col_buf(c)
                     var col_tt = TileTensor(
-                        self.col_t.dev.value(), row_major[BS, Self.COL]()
+                        self.col_t.dev.value(), row_major[BS, Self.CPAD]()
                     )
                     var w_tt = TileTensor(
-                        self.weight.val.dev.value(),
-                        row_major[Self.OC_, Self.COL](),
+                        w_buf, row_major[Self.OC_, Self.CPAD]()
                     )
                     var outp_tt = TileTensor(
                         self.outp_t.dev.value(), row_major[BS, Self.OC_]()
@@ -751,6 +895,7 @@ struct Conv2D[
                     Self.OW,
                     Self.IN_FLAT,
                     Self.COL,
+                    Self.COL,  # DCOL: bf16 flow keeps the unpadded stride
                     Self.SO,
                     BS,
                     Self.ADT,
@@ -769,7 +914,9 @@ struct Conv2D[
                 # direct matvec + bias (see _fwd_oc1_matvec_kernel).
                 comptime nb_mv = (BS + CONV_TPB - 1) // CONV_TPB
                 c.enqueue_function[
-                    _fwd_oc1_matvec_kernel[B, Self.SO, Self.COL, BS, Self.ADT]
+                    _fwd_oc1_matvec_kernel[
+                        B, Self.SO, Self.COL, Self.COL, BS, Self.ADT
+                    ]
                 ](
                     self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
                     self.w_bf.lt["gpu", Layout.row_major(Self.COL)](),
@@ -1005,9 +1152,11 @@ struct Conv2D[
             var c = ctx.value()
             comptime BS = B * Self.SO
             gind.ensure_gpu(c, B * Self.IN_FLAT)
-            self.col_t.ensure_gpu(c, BS * Self.COL)
+            self.col_t.ensure_gpu(c, BS * Self.CPAD)
             self.goT_t.ensure_gpu(c, Self.OC_ * BS)
-            self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
+            # [OC, CPAD] when padding — the dW GEMM's OUTPUT width is COL, the
+            # axis that picks the split-K workspace path on cuBLAS.
+            self.dW_tmp.ensure_gpu(c, Self.WPAD_SIZE)
             # (1) col = im2col(x) — A2: REUSE the forward's col_t when this vjp's
             # forward_input is the buffer the forward im2col'd; else recompute
             # (safe fallback). See `_col_src_ptr`.
@@ -1015,7 +1164,7 @@ struct Conv2D[
                 self._col_src_ptr == 0
                 or Int(find.dev.value().unsafe_ptr()) != self._col_src_ptr
             ):
-                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                comptime nb_col = (BS * Self.CPAD + TPB - 1) // TPB
                 c.enqueue_function[
                     _im2col_kernel[
                         B,
@@ -1029,6 +1178,7 @@ struct Conv2D[
                         Self.OW,
                         Self.IN_FLAT,
                         Self.COL,
+                        Self.CPAD,
                         Self.SO,
                         BS,
                         DT,
@@ -1036,7 +1186,7 @@ struct Conv2D[
                     ]
                 ](
                     find.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
-                    self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    self.col_t.lt["gpu", Layout.row_major(BS, Self.CPAD)](),
                     grid_dim=nb_col,
                     block_dim=TPB,
                 )
@@ -1063,19 +1213,32 @@ struct Conv2D[
                 self.goT_t.dev.value(), row_major[Self.OC_, BS]()
             )
             var col_tt = TileTensor(
-                self.col_t.dev.value(), row_major[BS, Self.COL]()
+                self.col_t.dev.value(), row_major[BS, Self.CPAD]()
             )
             var dW_tmp_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
+                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.CPAD]()
             )
             max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            # ⚠ STRIDED accumulate: dW comes back `[OC, CPAD]` and the master
+            # grad is `[OC, COL]`. A flat add folds each row's padding into the
+            # next row's leading weights — see `_accum_w_2d_kernel`.
             comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
-            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                grid_dim=nb_acc,
-                block_dim=TPB,
-            )
+            comptime if Self.NEEDS_COL_PAD:
+                c.enqueue_function[
+                    _accum_w_2d_kernel[Self.OC_, Self.COL, Self.CPAD]
+                ](
+                    self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    self.dW_tmp.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+                    grid_dim=nb_acc,
+                    block_dim=TPB,
+                )
+            else:
+                c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                    self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    grid_dim=nb_acc,
+                    block_dim=TPB,
+                )
             # (4) d_bias — 1 block per OC
             c.enqueue_function[
                 _backward_db_kernel[
@@ -1171,6 +1334,7 @@ struct Conv2D[
                         Self.OW,
                         Self.IN_FLAT,
                         Self.COL,
+                        Self.COL,  # DCOL: bf16 flow keeps the unpadded stride
                         Self.SO,
                         BS,
                         Self.ADT,
