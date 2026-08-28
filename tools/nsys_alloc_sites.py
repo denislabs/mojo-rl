@@ -23,6 +23,26 @@ identified the caller.
 
 ⚠ The timings in a backtrace-enabled run are NOT comparable to a plain profile.
 Read counts and call-site shares from this one, wall clock from the other.
+
+## If the callchain table comes back empty
+
+nsys ACCEPTS `--cudabacktrace` and then silently collects nothing when the
+unwinder cannot walk the stack. In rough order of likelihood:
+
+  1. The threshold was above every call. Lower it: `--cudabacktrace=memory:1000`.
+  2. Sampling was not actually on. `--cudabacktrace` needs it to unwind;
+     `--sample=process-tree` on current nsys, `--sample=cpu` on older ones.
+     nsys does not always warn when it downgrades this.
+  3. The unwinder cannot walk a JIT frame. Try `--backtrace=lbr` (Intel
+     last-branch, cheap and needs no frame pointers) or `--backtrace=fp`
+     instead of `dwarf`.
+  4. The nsys shipped inside `nsight-compute/.../target-linux-x64/` is a cut-down
+     target-side binary. A standalone `nsys` from a Nsight Systems install
+     (`/opt/nvidia/nsight-systems/*/bin/nsys`) collects backtraces the embedded
+     one may not — check `nsys --version` and `nsys profile --help | grep -A3
+     cudabacktrace`.
+
+Run with `--list` to see what an export DOES contain before debugging further.
 """
 
 from __future__ import annotations
@@ -46,14 +66,54 @@ def columns(cur, table: str) -> set[str]:
 
 
 def die(msg: str, cur=None) -> None:
-    print(f"error: {msg}", file=sys.stderr)
+    """⚠ STDOUT, not stderr. The caller pipes this through `tee`, and a
+    diagnosis that goes to stderr lands in the terminal while the log file
+    comes out EMPTY — which is exactly how the first run of this script was
+    lost."""
+    print(f"\nerror: {msg}")
     if cur is not None:
-        names = [r[0] for r in cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        print("\ntables present in this export:", file=sys.stderr)
-        for n in names:
-            print(f"    {n}", file=sys.stderr)
+        inventory(cur)
     sys.exit(1)
+
+
+def inventory(cur) -> None:
+    """Every non-empty table, with its row count. Printed BEFORE any analysis,
+    so a schema that does not match this script is legible instead of fatal."""
+    names = [r[0] for r in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+    rows = []
+    for n in names:
+        try:
+            c = cur.execute(f"SELECT count(*) FROM [{n}]").fetchone()[0]
+        except sqlite3.Error:
+            c = -1
+        if c:
+            rows.append((n, c))
+    print(f"\n=== non-empty tables ({len(rows)} of {len(names)}) ===")
+    for n, c in rows:
+        star = "  <== callchains" if "CALLCHAIN" in n.upper() else ""
+        print(f"  {c:>12}  {n}{star}")
+    # The columns that decide whether this export can be attributed at all.
+    for t in ("CUPTI_ACTIVITY_KIND_RUNTIME", "CUDA_CALLCHAINS",
+              "SAMPLING_CALLCHAINS"):
+        if table_exists(cur, t):
+            print(f"\n  {t} columns: {sorted(columns(cur, t))}")
+
+
+def find_callchain_table(cur) -> tuple[str, str, str] | None:
+    """(table, id column, ip column) for whichever callchain table this nsys
+    version wrote. The name and the column spellings both drift between
+    versions, so probe instead of hardcoding `CUDA_CALLCHAINS.originalIP`."""
+    for t in ("CUDA_CALLCHAINS", "SAMPLING_CALLCHAINS", "CUDA_CALLCHAIN"):
+        if not table_exists(cur, t):
+            continue
+        cols = columns(cur, t)
+        idc = next((c for c in ("id", "callchainId", "chainId") if c in cols), None)
+        ipc = next((c for c in ("originalIP", "ip", "originalIp", "address")
+                    if c in cols), None)
+        if idc and ipc and cur.execute(f"SELECT count(*) FROM [{t}]").fetchone()[0]:
+            return t, idc, ipc
+    return None
 
 
 def main() -> None:
@@ -65,17 +125,31 @@ def main() -> None:
     ap.add_argument("--api", default=None,
                     help="only this API (substring, e.g. cuMemAlloc). "
                          "Default: every memory API found.")
+    ap.add_argument("--list", action="store_true",
+                    help="print the table inventory and stop")
     args = ap.parse_args()
 
     con = sqlite3.connect(args.sqlite)
     cur = con.cursor()
 
+    # ⚠ ALWAYS first, and always on stdout. A schema this script cannot read is
+    # a fact about the capture, not a crash, and it has to survive `tee`.
+    inventory(cur)
+    if args.list:
+        return
+
     rt = "CUPTI_ACTIVITY_KIND_RUNTIME"
     if not table_exists(cur, rt):
-        die(f"no {rt} table — was the run captured with --trace=cuda?", cur)
-    if not table_exists(cur, "CUDA_CALLCHAINS"):
-        die("no CUDA_CALLCHAINS table — the run had no --cudabacktrace=memory:<ns>. "
-            "Re-capture with the command in this file's docstring.", cur)
+        die(f"no {rt} table — was the run captured with --trace=cuda?")
+
+    cc = find_callchain_table(cur)
+    if cc is None:
+        die("no non-empty callchain table (looked for CUDA_CALLCHAINS, "
+            "SAMPLING_CALLCHAINS). nsys accepted --cudabacktrace but collected "
+            "nothing, which means the UNWINDER produced no frames — see the "
+            "'if this comes back empty' notes in the header.")
+    cc_table, cc_id, cc_ip = cc
+    print(f"\nusing callchains from {cc_table}({cc_id}, {cc_ip})")
 
     rtcols = columns(cur, rt)
     if "callchainId" not in rtcols:
@@ -88,25 +162,27 @@ def main() -> None:
         f"SELECT nameId, callchainId, start, end FROM {rt} "
         f"WHERE callchainId IS NOT NULL AND callchainId != 0"))
     if not rows:
-        die("no runtime rows carry a callchainId. Only MEMORY APIs do under "
-            "--cudabacktrace=memory, so this usually means the threshold was "
-            "higher than every call: lower the `:<ns>` (try :1000).")
+        n_rt = cur.execute(f"SELECT count(*) FROM {rt}").fetchone()[0]
+        die(f"{n_rt} runtime rows, NONE with a callchainId. Only MEMORY APIs "
+            "carry one under --cudabacktrace=memory, so this is usually the "
+            "threshold sitting above every call: lower the `:<ns>` to :1000.")
 
     # ── the address tuple IS the identity (see the header) ───────────────
+    order = "stackDepth" if "stackDepth" in columns(cur, cc_table) else cc_id
     chains: dict[int, list[int]] = defaultdict(list)
     for cid, ip in cur.execute(
-            "SELECT id, originalIP FROM CUDA_CALLCHAINS ORDER BY id, stackDepth"):
+            f"SELECT [{cc_id}], [{cc_ip}] FROM [{cc_table}] "
+            f"ORDER BY [{cc_id}], [{order}]"):
         chains[cid].append(ip)
 
     # optional symbol/module resolution, when nsys managed any
     sym = {}
-    if table_exists(cur, "CUDA_CALLCHAINS"):
-        ccols = columns(cur, "CUDA_CALLCHAINS")
-        if {"originalIP", "symbol", "module"} <= ccols:
-            for ip, s, m in cur.execute(
-                    "SELECT originalIP, symbol, module FROM CUDA_CALLCHAINS"):
-                if s or m:
-                    sym.setdefault(ip, (names.get(s, ""), names.get(m, "")))
+    ccols = columns(cur, cc_table)
+    if {cc_ip, "symbol", "module"} <= ccols:
+        for ip, sy, m in cur.execute(
+                f"SELECT [{cc_ip}], symbol, module FROM [{cc_table}]"):
+            if sy or m:
+                sym.setdefault(ip, (names.get(sy, ""), names.get(m, "")))
 
     per_api: dict[str, Counter] = defaultdict(Counter)
     per_api_ns: dict[str, Counter] = defaultdict(Counter)
