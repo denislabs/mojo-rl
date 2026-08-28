@@ -84,24 +84,32 @@ comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
 comptime PARITY_ATOL: Float64 = 1e-5
 comptime PARITY_RTOL: Float64 = 2e-2
-"""⚠⚠ RELATIVE, and set by the HARDWARE rather than by taste.
+comptime PARITY_ELEM_RTOL: Float64 = 0.1
+comptime PARITY_NORM_RTOL: Float64 = 1e-2
+"""Elementwise comparisons scale their tolerance by the TENSOR's magnitude, and
+are paired with an L2-norm check.
 
-NVIDIA runs fp32 matmuls on TF32 tensor cores — a 10-bit mantissa, so ~1e-3
-relative per matmul, compounding with depth. Apple has no TF32 and sits at
-~1e-7. A tolerance calibrated on Metal FAILS on CUDA for a correct kernel:
-`feedback_fd_gradcheck_tf32`, which cost three false bug reports before it was
-understood. Measured here — every one of these is a CORRECT kernel:
-
-    BatchNorm2D alone (no matmul)   CUDA 6.0e-8   Apple 0.0
-    ACT eval L1  (2 convs)          CUDA rel 3.6e-4
-    ACT eval KL                     CUDA rel 1.4e-3
-    ACT gradient norm               CUDA rel 1.3e-3
-
-The split between "contains a matmul" and "does not" is the discriminator, and
-it is why an absolute tolerance cannot serve both backends. 2e-2 is loose enough
-that this gate can only catch a STRUCTURAL error — a wrong index, a dropped
-term, a missing accumulation — which is what CPU/GPU parity is for. Numerical
-accuracy against the reference is gated on CPU, in fp32."""
+⚠⚠ PER-ELEMENT relative error is the WRONG statistic across precisions. A
+gradient is a sum of large cancelling terms, and TF32's error scales with the
+TERMS, not the sum — so an element whose true value is ~0 has unbounded relative
+error while being perfectly correct. On a 5090 this reported a ratio of 78 for a
+discrepancy of ~2e-4 relative to the gradient's own scale, on the same run where
+the gradient NORM agreed to 0.13% across every value. The norm is the check with
+teeth; the elementwise one only has to catch gross outliers."""
+# ⚠ The remaining absolute-tolerance constants above are for SCALAR comparisons
+# (a loss, a norm), where per-element relative error is well defined because
+# there is only one element. NVIDIA runs fp32 matmuls on TF32 tensor cores — a
+# 10-bit mantissa, ~1e-3 relative per matmul, compounding with depth — while
+# Apple has no TF32 and sits at ~1e-7. Measured on a 5090, all correct kernels:
+#
+#     BatchNorm2D alone (no matmul)   6.0e-8
+#     ACT eval L1  (2 convs)          rel 3.6e-4
+#     ACT eval KL                     rel 1.4e-3
+#     ACT gradient norm               rel 1.3e-3
+#
+# "contains a matmul" vs "does not" is the discriminator, and it is why a
+# tolerance calibrated on Metal cannot serve CUDA (`feedback_fd_gradcheck_tf32`,
+# which cost three false bug reports, then a fourth here).
 
 
 def within(a: Float64, b: Float64) -> Bool:
@@ -194,20 +202,46 @@ struct _Inject(ParamVisitor):
             param.upload(ctx.value())
 
 
-def worst(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Float64:
-    """Worst elementwise parity ratio; < 1.0 means everything is in tolerance.
+@fieldwise_init
+struct Parity(ImplicitlyCopyable):
+    """`worst` scale-relative ratio, `nrel` L2-norm relative error, `n_over`
+    count past tolerance — the count is what separates a few cancelling
+    elements from a systematic disagreement."""
 
-    ⚠ NOT `max|a-b|`. That compared against `max|a|` is not a relative error —
-    the two maxima come from different elements."""
+    var worst: Float64
+    var nrel: Float64
+    var n_over: Int
+
+
+def worst(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Parity:
+    """Scale-relative elementwise comparison + an L2-norm aggregate.
+
+    ⚠ NOT `max|a-b|` against `max|a|` (two different elements), and NOT
+    per-element relative error (unbounded at a true zero — see the header)."""
     if len(a) != len(b):
         raise Error(
             "gate: walk lengths differ — " + String(len(a)) + " vs "
             + String(len(b))
         )
-    var w = Float64(0.0)
+    var scale = Float64(0.0)
     for i in range(len(a)):
-        w = max(w, parity_ratio(Float64(a[i]), Float64(b[i])))
-    return w
+        scale = max(scale, abs(Float64(a[i])))
+    var tol = PARITY_ATOL + PARITY_ELEM_RTOL * scale
+    var w = Float64(0.0)
+    var n_over = 0
+    var sa = Float64(0.0)
+    var sb = Float64(0.0)
+    for i in range(len(a)):
+        var x = Float64(a[i])
+        var y = Float64(b[i])
+        var r = abs(x - y) / tol
+        w = max(w, r)
+        if r > 1.0:
+            n_over += 1
+        sa += x * x
+        sb += y * y
+    var na = sa ** 0.5
+    return Parity(w, abs(na - (sb ** 0.5)) / (na + 1e-30), n_over)
 
 
 def main() raises:
@@ -314,8 +348,9 @@ def main() raises:
     check(
         fails,
         "predict() action chunk (identical weights)",
-        aw < 1.0,
-        "worst |d|/(atol+rtol|a|) = " + String(aw),
+        aw.worst < 1.0 and aw.nrel < PARITY_NORM_RTOL,
+        "worst " + String(aw.worst) + "  norm-rel " + String(aw.nrel)
+        + "  over-tol " + String(aw.n_over),
     )
 
     # ── one training step: forward, backward, and the resulting weights ──
@@ -354,9 +389,9 @@ def main() raises:
     check(
         fails,
         "gradients agree over every parameter",
-        pw < 1.0,
-        "worst |d|/(atol+rtol|a|) over " + String(len(pc.vals))
-        + " values = " + String(pw),
+        pw.worst < 1.0 and pw.nrel < PARITY_NORM_RTOL,
+        "worst " + String(pw.worst) + "  norm-rel " + String(pw.nrel)
+        + "  over-tol " + String(pw.n_over) + "/" + String(len(pc.vals)),
     )
 
     # The parameters too, but with an absolute floor sized to Adam's step —
@@ -373,7 +408,7 @@ def main() raises:
         qw = max(
             qw,
             abs(x - Float64(qg.vals[i]))
-            / (ADAM_STEP_ATOL + PARITY_RTOL * abs(x)),
+            / (ADAM_STEP_ATOL + PARITY_ELEM_RTOL * abs(x)),
         )
     check(
         fails,
@@ -390,9 +425,9 @@ def main() raises:
     check(
         fails,
         "BatchNorm running statistics agree after one step",
-        sw < 1.0,
-        "worst |d|/(atol+rtol|a|) over " + String(len(sc2.vals))
-        + " values = " + String(sw),
+        sw.worst < 1.0 and sw.nrel < PARITY_NORM_RTOL,
+        "worst " + String(sw.worst) + "  norm-rel " + String(sw.nrel)
+        + "  over-tol " + String(sw.n_over) + "/" + String(len(sc2.vals)),
     )
 
     print("")

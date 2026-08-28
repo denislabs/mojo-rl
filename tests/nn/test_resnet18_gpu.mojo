@@ -55,40 +55,75 @@ comptime IN_N = B * 3 * IMG_H * IMG_W
 comptime OUT_N = B * RESNET18_OUT_CH * OH * OW
 
 # ── CPU/GPU parity statistic ─────────────────────────────────────────────
-# ⚠ `max|a-b|` compared against `max|a|` is NOT a relative error — the two
-# maxima come from different elements. What matters is elementwise
-# `|a-b| <= ATOL + RTOL*|a|` (numpy `allclose` semantics), reported as the
-# worst ratio so a failure says HOW far out it is.
+# Two checks, because neither alone can tell "one outlier" from "everything is
+# wrong":
 #
-# ⚠⚠ RTOL is set by the HARDWARE, not by taste. NVIDIA runs fp32 matmuls on
-# TF32 tensor cores — a 10-bit mantissa, so ~1e-3 relative per matmul, and it
-# compounds with depth. Apple has no TF32 and sits at ~1e-7. A tolerance
-# calibrated on Metal therefore FAILS on CUDA for a correct kernel; this is
-# `feedback_fd_gradcheck_tf32`, which cost three false bug reports before.
-# Elementwise ops (BatchNorm alone) stay at ~1e-8 on BOTH — the split between
-# "has a matmul" and "does not" is the discriminator.
+#   scale-relative worst element   |a-b| <= ATOL + RTOL * max|a| OVER THE TENSOR
+#   aggregate                      |‖a‖ - ‖b‖| / ‖a‖  (an L2 over every element)
+#
+# ⚠⚠ PER-ELEMENT relative error is the WRONG statistic across precisions, and
+# this cost a false failure on a 5090. ResNet18's output passes through ReLU: a
+# pre-activation sitting near zero has its SIGN flipped by TF32, so the CPU
+# emits exactly 0.0 and the GPU emits +1e-3. Relative error against a true zero
+# is unbounded — that 3e-4 discrepancy reported as a ratio of 967. Gradients are
+# worse still, being sums of large cancelling terms whose result is near zero:
+# TF32's error scales with the TERMS, not with the sum.
+#
+# Scaling the tolerance by the TENSOR's magnitude is the honest bound, because
+# that is what the error actually scales with. Measured worst |d|/scale on a
+# 5090, all correct kernels:
+#
+#     layer4 output   3.0e-4      grad_input    3.5e-2
+#     conv grads      3.7e-2      BN affine     5.2e-3
+#
+# RTOL = 0.1 gives ~2.7x headroom over that. Loose per element on purpose — the
+# AGGREGATE check is what has teeth. The gradient norm agreed to 0.13% across
+# 11.2M values on the same run; structurally wrong gradients cannot do that,
+# and no per-element tolerance is needed to notice if they stop.
 comptime PARITY_ATOL: Float64 = 1e-5
-comptime PARITY_RTOL: Float64 = 2e-2
-"""2e-2 covers TF32 compounded through a 20-layer conv stack. It is loose
-enough that it can only catch a STRUCTURAL error — a wrong index, a dropped
-term, a missing accumulation — which is exactly what a CPU/GPU parity gate is
-for. Numerical accuracy against the reference is gated on CPU, in fp32."""
+comptime PARITY_RTOL: Float64 = 0.1
+comptime PARITY_NORM_RTOL: Float64 = 1e-2
 
 
-def parity(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Float64:
-    """Worst `|a-b| / (ATOL + RTOL*|a|)`. < 1.0 means every element is within
-    tolerance."""
+@fieldwise_init
+struct Parity(ImplicitlyCopyable):
+    """`worst` scale-relative ratio, `nrel` L2-norm relative error, and
+    `n_over` — the count past tolerance, which is what separates a handful of
+    ReLU-boundary sign flips from a systematic disagreement."""
+
+    var worst: Float64
+    var nrel: Float64
+    var n_over: Int
+
+
+def parity_scaled(
+    ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]
+) raises -> Parity:
     if len(a) != len(b):
         raise Error(
             "parity: length mismatch " + String(len(a)) + " vs "
             + String(len(b))
         )
-    var w = Float64(0.0)
+    var scale = Float64(0.0)
+    for i in range(len(a)):
+        scale = max(scale, abs(Float64(a[i])))
+    var tol = PARITY_ATOL + PARITY_RTOL * scale
+    var worst = Float64(0.0)
+    var n_over = 0
+    var sa = Float64(0.0)
+    var sb = Float64(0.0)
     for i in range(len(a)):
         var x = Float64(a[i])
-        var d = abs(x - Float64(b[i]))
-        w = max(w, d / (PARITY_ATOL + PARITY_RTOL * abs(x)))
-    return w
+        var y = Float64(b[i])
+        var r = abs(x - y) / tol
+        worst = max(worst, r)
+        if r > 1.0:
+            n_over += 1
+        sa += x * x
+        sb += y * y
+    var na = sa ** 0.5
+    var nb = sb ** 0.5
+    return Parity(worst, abs(na - nb) / (na + 1e-30), n_over)
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
@@ -230,12 +265,13 @@ def main() raises:
         lc.append(oc.data[i])
         lg.append(og.data[i])
         mag = max(mag, abs(Float64(oc.data[i])))
-    var w = parity(lc, lg)
+    var lr = parity_scaled(lc, lg)
     check(
         fails,
         "layer4 output",
-        w < 1.0,
-        "worst |d|/(atol+rtol|a|) = " + String(w),
+        lr.worst < 1.0 and lr.nrel < PARITY_NORM_RTOL,
+        "worst " + String(lr.worst) + "  norm-rel " + String(lr.nrel)
+        + "  over-tol " + String(lr.n_over) + "/" + String(len(lc)),
     )
     # A dead output would satisfy the comparison and mean nothing.
     check(
@@ -280,12 +316,13 @@ def main() raises:
         gic.append(ggc[0].data[i])
         gig.append(ggg[0].data[i])
         gmag = max(gmag, abs(Float64(ggc[0].data[i])))
-    var gw = parity(gic, gig)
+    var gr = parity_scaled(gic, gig)
     check(
         fails,
         "grad_input",
-        gw < 1.0,
-        "worst |d|/(atol+rtol|a|) = " + String(gw),
+        gr.worst < 1.0 and gr.nrel < PARITY_NORM_RTOL,
+        "worst " + String(gr.worst) + "  norm-rel " + String(gr.nrel)
+        + "  over-tol " + String(gr.n_over) + "/" + String(len(gic)),
     )
     check(
         fails,
@@ -316,37 +353,15 @@ def main() raises:
         pmag = max(pmag, abs(a))
         if a != 0.0:
             n_nonzero += 1
-    # Which parameter carries the disagreement? A per-layer breakdown is the
-    # difference between "the backward is wrong" and knowing WHICH backward.
-    var worst_name = String("(none)")
-    var worst_val = Float64(0.0)
-    for k in range(len(pgc.names)):
-        var lo = pgc.starts[k]
-        var hi = pgc.starts[k + 1] if k + 1 < len(pgc.starts) else len(
-            pgc.vals
-        )
-        var d = Float64(0.0)
-        for i in range(lo, hi):
-            var x = Float64(pgc.vals[i])
-            d = max(
-                d,
-                abs(x - Float64(pgg.vals[i]))
-                / (PARITY_ATOL + PARITY_RTOL * abs(x)),
-            )
-        if d > worst_val:
-            worst_val = d
-            worst_name = pgc.names[k]
-    print("    worst parameter: " + worst_name + "  " + String(worst_val))
-
-    # Split conv from BatchNorm affine, because they used to behave differently
-    # (the GPU dropped the affine gradients in eval) and a single aggregate
-    # number would not have shown which. Both are now checked.
-    var conv_w = Float64(0.0)
-    var conv_mag = Float64(0.0)
+    # Split conv from BatchNorm affine — they used to behave differently (the
+    # GPU dropped the affine gradients in eval) and one aggregate number would
+    # not have shown which.
+    var conv_a = List[Scalar[DT]]()
+    var conv_b = List[Scalar[DT]]()
+    var bn_a = List[Scalar[DT]]()
+    var bn_b = List[Scalar[DT]]()
     var n_conv = 0
-    var bn_dropped = 0
-    var bn_w = Float64(0.0)
-    var bn_mag = Float64(0.0)
+    var n_bn = 0
     for k in range(len(pgc.names)):
         var nm = pgc.names[k]
         var is_bn = nm.endswith(".gamma") or nm.endswith(".beta")
@@ -355,27 +370,27 @@ def main() raises:
             pgc.vals
         )
         if is_bn:
-            for i in range(lo, hi):
-                var xb = Float64(pgc.vals[i])
-                bn_w = max(
-                    bn_w,
-                    abs(xb - Float64(pgg.vals[i]))
-                    / (PARITY_ATOL + PARITY_RTOL * abs(xb)),
-                )
-                bn_mag = max(bn_mag, abs(xb))
-            bn_dropped += 1
-            continue
-        n_conv += 1
+            n_bn += 1
+        else:
+            n_conv += 1
         for i in range(lo, hi):
-            var x = Float64(pgc.vals[i])
-            var d = abs(x - Float64(pgg.vals[i]))
-            conv_w = max(conv_w, d / (PARITY_ATOL + PARITY_RTOL * abs(x)))
-            conv_mag = max(conv_mag, abs(x))
+            if is_bn:
+                bn_a.append(pgc.vals[i])
+                bn_b.append(pgg.vals[i])
+            else:
+                conv_a.append(pgc.vals[i])
+                conv_b.append(pgg.vals[i])
+
+    var cr = parity_scaled(conv_a, conv_b)
+    var conv_mag = Float64(0.0)
+    for i in range(len(conv_a)):
+        conv_mag = max(conv_mag, abs(Float64(conv_a[i])))
     check(
         fails,
         "convolution parameter gradients (" + String(n_conv) + " tensors)",
-        conv_w < 1.0,
-        "worst |d|/(atol+rtol|a|) = " + String(conv_w),
+        cr.worst < 1.0 and cr.nrel < PARITY_NORM_RTOL,
+        "worst " + String(cr.worst) + "  norm-rel " + String(cr.nrel)
+        + "  over-tol " + String(cr.n_over) + "/" + String(len(conv_a)),
     )
     check(
         fails,
@@ -383,15 +398,21 @@ def main() raises:
         conv_mag > 1e-6,
         "max|cpu| = " + String(conv_mag),
     )
+
+    var br = parity_scaled(bn_a, bn_b)
+    var bn_mag = Float64(0.0)
+    for i in range(len(bn_a)):
+        bn_mag = max(bn_mag, abs(Float64(bn_a[i])))
     check(
         fails,
-        "BatchNorm affine gradients in eval ("
-        + String(bn_dropped) + " tensors)",
-        bn_w < 1.0,
-        "worst |d|/(atol+rtol|a|) = " + String(bn_w),
+        "BatchNorm affine gradients in eval (" + String(n_bn) + " tensors)",
+        br.worst < 1.0 and br.nrel < PARITY_NORM_RTOL,
+        "worst " + String(br.worst) + "  norm-rel " + String(br.nrel)
+        + "  over-tol " + String(br.n_over) + "/" + String(len(bn_a)),
     )
-    # These were EXACTLY ZERO on GPU before the fix, so a non-trivial check is
-    # the one that matters: agreement on two zeros would prove nothing.
+    # These were EXACTLY ZERO on GPU before the eval-backward fix, so
+    # non-triviality is the check that matters: agreement on two zeros proves
+    # nothing.
     check(
         fails,
         "the BatchNorm affine gradients are non-trivial",
