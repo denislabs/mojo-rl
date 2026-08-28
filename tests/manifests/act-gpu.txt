@@ -23,3 +23,7 @@ tests/nn/test_resnet18_gpu.mojo
 # Uses a two-conv stub backbone so it compiles in reasonable time; the real
 # backbone is covered by the entry above.
 tests/deep_agents/act/test_act_gpu_vs_cpu.mojo
+# FrozenBatchNorm2d semantics (CPU + GPU legs), vs torchvision's own class.
+# Needs `--only frozen_bn` from the reference dump. Not wired into ACT yet —
+# `set_attr["frozen"]` is what a backbone would be built with.
+tests/nn/test_batch_norm_2d_frozen_gpu.mojo

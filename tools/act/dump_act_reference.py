@@ -69,11 +69,37 @@ class Dump:
         return a
 
     def close(self):
-        lines = [
-            f"{n}\t{','.join(str(d) for d in s)}" for n, s in self.entries
-        ]
-        (self.root / "manifest.txt").write_text("\n".join(lines) + "\n")
-        print(f"  wrote {len(self.entries)} arrays to {self.root}")
+        """Write the manifest, MERGING with whatever is already there.
+
+        ⚠ It used to overwrite. `--only frozen_bn` into an existing dump then
+        left a manifest naming 8 arrays, the other ~200 `.bin` files still on
+        disk and unreachable, and five ACT gates failing with
+        `RefDump: no array named 'ens_chunks'` — which reads as a code
+        regression and is not one. `--only` exists to avoid re-running the slow
+        sections; silently invalidating them defeats it.
+
+        Names written this run win, so re-dumping one section refreshes it.
+        """
+        merged: dict[str, str] = {}
+        existing = self.root / "manifest.txt"
+        if existing.is_file():
+            for line in existing.read_text().splitlines():
+                if "\t" in line:
+                    name, shape = line.split("\t", 1)
+                    # Drop entries whose blob has since been removed, so a
+                    # hand-cleaned directory does not resurrect them.
+                    if (self.root / f"{name}.bin").is_file():
+                        merged[name] = shape
+        for n, sh in self.entries:
+            merged[n] = ",".join(str(d) for d in sh)
+        existing.write_text(
+            "\n".join(f"{n}\t{sh}" for n, sh in merged.items()) + "\n"
+        )
+        kept = len(merged) - len(self.entries)
+        print(
+            f"  wrote {len(self.entries)} arrays to {self.root}"
+            + (f" ({kept} kept from a previous run)" if kept > 0 else "")
+        )
 
 
 def mha(q, k, v, n_heads, key_valid=None):
@@ -428,6 +454,49 @@ def section_resnet(dump: Dump, seed: int):
     dump.add("rn18_out", y)
     print(f"      resnet18 {IN_H}x{IN_W} -> {tuple(y.shape)}")
     emit_resnet18(dump, net, "rn18")
+
+
+def section_frozen_bn(dump: Dump, seed: int):
+    """torchvision `FrozenBatchNorm2d` — what BOTH ACT implementations wrap the
+    ResNet backbone's normalization in.
+
+    Statistics AND affine are `register_buffer`, so all four are constants and
+    none of them takes a gradient. Dumped with statistics that are DELIBERATELY
+    far from the init values (running_var != 1, running_mean != 0): at the init
+    values frozen BN is near-identity and a gate that ignored the statistics
+    entirely would still pass.
+
+    `grad_input` is dumped too. A frozen BatchNorm still PASSES gradient — it is
+    a fixed affine map, `gi = gamma * inv_std * dy` — and a "freeze" that also
+    stopped the gradient reaching the convolutions below would train nothing and
+    look like a learning-rate problem.
+    """
+    from torchvision.ops.misc import FrozenBatchNorm2d
+
+    torch.manual_seed(seed + 700)
+    B, C, H, W = 2, 6, 5, 4
+    bn = FrozenBatchNorm2d(C)
+    with torch.no_grad():
+        bn.weight.copy_(torch.randn(C) * 0.5 + 1.0)
+        bn.bias.copy_(torch.randn(C) * 0.3)
+        bn.running_mean.copy_(torch.randn(C) * 0.7)
+        bn.running_var.copy_(torch.rand(C) * 2.0 + 0.5)  # far from 1.0
+
+    x = torch.randn(B, C, H, W, requires_grad=True)
+    y = bn(x)
+    go = torch.randn(B, C, H, W)
+    y.backward(go)
+
+    dump.add("fbn.gamma", bn.weight)
+    dump.add("fbn.beta", bn.bias)
+    dump.add("fbn.running_mean", bn.running_mean)
+    dump.add("fbn.running_var", bn.running_var)
+    dump.add("fbn_x", x)
+    dump.add("fbn_out", y)
+    dump.add("fbn_go", go)
+    dump.add("fbn_gin", x.grad)
+    print(f"      FrozenBatchNorm2d {B}x{C}x{H}x{W}, running_var in "
+          f"[{bn.running_var.min():.3f}, {bn.running_var.max():.3f}]")
 
 
 # ── CVAE + losses ───────────────────────────────────────────────────────
@@ -795,6 +864,10 @@ def main():
     if args.only in ("all", "pos"):
         print("[pos] 1-D ACT table + 2-D DETR sine table")
         section_pos(dump, args.seed)
+    if args.only in ("all", "frozen_bn"):
+        print("[frozen_bn] torchvision FrozenBatchNorm2d")
+        section_frozen_bn(dump, args.seed)
+
     if args.only in ("all", "resnet"):
         print("[resnet] torchvision resnet18 through layer4")
         section_resnet(dump, args.seed)

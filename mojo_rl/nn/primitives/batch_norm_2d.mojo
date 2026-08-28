@@ -880,6 +880,21 @@ struct BatchNorm2D[
     var bn_m2: Tensor
     var cache_is_training: Bool
     var training: Bool
+    var frozen: Bool
+    """`FrozenBatchNorm2d`: eval-mode ALWAYS, and gamma/beta take no gradient.
+
+    ⚠ NOT the same as `training = False`. Eval mode still trains gamma/beta —
+    it only stops the batch statistics being used and the running statistics
+    being updated. DETR's `FrozenBatchNorm2d` (`references/act-main/detr/models/
+    backbone.py:21`, and LeRobot imports torchvision's) registers weight, bias,
+    running_mean and running_var as BUFFERS, so all four are constants. Both
+    ACT implementations build their ResNet backbone with it.
+
+    That matters exactly when the four are worth keeping: with pretrained
+    weights loaded, training-mode BatchNorm EMAs the ImageNet statistics away
+    at momentum 0.1 — 2.7e-05 of the original after 100 steps — while never
+    reading them, because training-mode forward uses batch statistics. Freezing
+    is what makes ImageNet statistics mean anything downstream."""
 
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.C_]()
@@ -898,6 +913,7 @@ struct BatchNorm2D[
         self.bn_m2 = Tensor()
         self.cache_is_training = False
         self.training = True
+        self.frozen = False
 
     @staticmethod
     def make[
@@ -951,9 +967,15 @@ struct BatchNorm2D[
         """Named-attr hook so a parent `Sequential`/`Repeat`/… can toggle BN
         train/eval via `net.set_attr["training"](1.0/0.0)` (the AZ CNN/ResNet
         drivers' BN switch). `value != 0` → training (batch stats + running-stat
-        updates); else eval (running stats)."""
+        updates); else eval (running stats).
+
+        `set_attr["frozen"](1.0)` additionally pins gamma/beta — see `frozen`.
+        It OVERRIDES `training`, so the two can be set in either order and a
+        later `train_mode(True)` cannot silently unfreeze a backbone."""
         comptime if ATTR == "training":
             self.training = value != Scalar[DT](0.0)
+        comptime if ATTR == "frozen":
+            self.frozen = value != Scalar[DT](0.0)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
@@ -1018,7 +1040,7 @@ struct BatchNorm2D[
             var rm_v = TileTensor(self.running_mean.t.data, row_major[Self.C_]())
             var rv_v = TileTensor(self.running_var.t.data, row_major[Self.C_]())
             var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
-            if self.training:
+            if self.training and not self.frozen:
                 self.cache_xhat.ensure(B * Self.FLAT_DIM)
                 self.cache_inv_std.ensure(Self.C_)
                 var xhat_p = self.cache_xhat.data.unsafe_ptr()
@@ -1103,7 +1125,7 @@ struct BatchNorm2D[
             out.ensure_gpu(c, B * Self.FLAT_DIM)
             comptime l2d = Layout.row_major(B, Self.FLAT_DIM)
             comptime lc = Layout.row_major(Self.C_)
-            if self.training:
+            if self.training and not self.frozen:
                 self.cache_xhat.ensure_gpu(c, B * Self.FLAT_DIM)
                 comptime if Self.LAYOUT == LAYOUT_NHWC:
                     # Coalesced transposed reduction (channels-last perf path).
@@ -1280,6 +1302,50 @@ struct BatchNorm2D[
                 self.cache_is_training = False
 
     def vjp[
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Backward, then the frozen-mode affine-gradient reset.
+
+        ⚠ A WRAPPER, not a tail added to the body, because `_vjp_impl` RETURNS
+        EARLY from both eval-mode branches (CPU and GPU) — which is exactly the
+        path frozen mode takes, so a tail would be unreachable in the only mode
+        that needs it. Written as a tail first; the gate caught it.
+
+        Zeroing after the fact rather than skipping the five write sites (one
+        CPU, four GPU kernels) is deliberate: a skip that misses one is silent,
+        the parameter keeps training, and the run reads as "freezing did not
+        help". Zeroing is also correct under accumulation, which matters —
+        `Tokenwise[N_CAM, backbone]` runs this module once per camera and the
+        gradients add across those calls.
+        """
+        self._vjp_impl[target, B, ofi, ogi, POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+        if not self.frozen:
+            return
+        # gamma/beta are `register_buffer` in the reference — constants.
+        comptime if target == "cpu":
+            for k in range(Self.C_):
+                self.gamma.grd.data[k] = Scalar[DT](0.0)
+                self.beta.grd.data[k] = Scalar[DT](0.0)
+        else:
+            var cz = ctx.value()
+            self.gamma.grd.ensure_gpu(cz, Self.C_)
+            self.beta.grd.ensure_gpu(cz, Self.C_)
+            self.gamma.grd.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self.beta.grd.dev.value().enqueue_fill(Scalar[DT](0.0))
+
+    def _vjp_impl[
         target: StaticString,
         B: Int,
         ofi: MutOrigin,

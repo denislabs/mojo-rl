@@ -90,10 +90,21 @@ comptime RUN_FF: Int = 1024
 comptime RUN_LATENT: Int = ACT_LATENT
 comptime RUN_ENC_LAYERS: Int = 4
 comptime RUN_DEC_LAYERS: Int = ACT_DEC_LAYERS
-comptime RUN_LR: Float64 = 1e-4
-"""Paper: 1e-5, with a PRETRAINED backbone. This one starts random and has to
-learn vision from scratch, so it needs the higher rate — the same reasoning as
-the single-lr deviation in `ACT_PORT.md`."""
+comptime RUN_LR: Float64 = 1e-5
+"""Both references: 1e-5, for the model AND the backbone (`act-main`'s
+`detr/main.py`, LeRobot's `optimizer_lr` / `optimizer_lr_backbone`).
+
+This was 1e-4, justified as "the backbone is random at step 0 and has to learn
+vision from scratch". That stopped being true the moment `ACT_PRETRAINED`
+started loading ImageNet weights, and the justification outlived the condition
+by one run: with a pretrained backbone the first 50-episode run reached the
+old floor 12x sooner but only 3.3% lower, which is what a rate that washes the
+pretraining out in the first few hundred steps would look like.
+
+⚠ Our single learning rate remains a deviation in FORM — the references put the
+backbone in its own parameter group — but no longer in VALUE, since both set
+that group to 1e-5 as well. `Adam` here has no name filter; a filtered
+`ParamVisitor` is what a second group would need."""
 
 
 comptime ACT_TEMPORAL_ENSEMBLE_M: Float64 = 0.01
