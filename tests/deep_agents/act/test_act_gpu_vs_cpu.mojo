@@ -37,6 +37,11 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from tests.nn.gpu_parity import (
+    PARITY_RTOL_GRAD,
+    parity,
+    parity_gradient,
+)
 
 
 # ⚠ A STUB backbone, deliberately. This gate instantiates the whole ACT graph
@@ -82,21 +87,14 @@ comptime TG = ACTTrainer[
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
-comptime PARITY_ATOL: Float64 = 1e-5
-comptime PARITY_RTOL: Float64 = 2e-2
-comptime PARITY_ELEM_RTOL: Float64 = 0.1
-comptime PARITY_NORM_RTOL: Float64 = 1e-2
-"""Elementwise comparisons scale their tolerance by the TENSOR's magnitude, and
-are paired with an L2-norm check.
-
-⚠⚠ PER-ELEMENT relative error is the WRONG statistic across precisions. A
-gradient is a sum of large cancelling terms, and TF32's error scales with the
-TERMS, not the sum — so an element whose true value is ~0 has unbounded relative
-error while being perfectly correct. On a 5090 this reported a ratio of 78 for a
-discrepancy of ~2e-4 relative to the gradient's own scale, on the same run where
-the gradient NORM agreed to 0.13% across every value. The norm is the check with
-teeth; the elementwise one only has to catch gross outliers."""
-# ⚠ The remaining absolute-tolerance constants above are for SCALAR comparisons
+comptime SCALAR_ATOL: Float64 = 1e-5
+comptime SCALAR_RTOL: Float64 = 2e-2
+"""For SCALAR comparisons only — a loss, a norm — where per-element relative
+error IS well defined because there is one element. Tensor comparisons use
+`tests/nn/gpu_parity.mojo`, which argues at length why a per-element relative
+error is the wrong statistic across precisions and why forward values and
+gradients cannot be judged by the same rule."""
+# ⚠ The absolute-tolerance constants above are for SCALAR comparisons
 # (a loss, a norm), where per-element relative error is well defined because
 # there is only one element. NVIDIA runs fp32 matmuls on TF32 tensor cores — a
 # 10-bit mantissa, ~1e-3 relative per matmul, compounding with depth — while
@@ -113,12 +111,12 @@ teeth; the elementwise one only has to catch gross outliers."""
 
 
 def within(a: Float64, b: Float64) -> Bool:
-    """numpy-`allclose` semantics: `|a-b| <= atol + rtol*|a|`."""
-    return abs(a - b) <= PARITY_ATOL + PARITY_RTOL * abs(a)
+    """`numpy.allclose` semantics: `|a-b| <= atol + rtol*|a|`."""
+    return abs(a - b) <= SCALAR_ATOL + SCALAR_RTOL * abs(a)
 
 
 def parity_ratio(a: Float64, b: Float64) -> Float64:
-    return abs(a - b) / (PARITY_ATOL + PARITY_RTOL * abs(a))
+    return abs(a - b) / (SCALAR_ATOL + SCALAR_RTOL * abs(a))
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
@@ -200,48 +198,6 @@ struct _Inject(ParamVisitor):
         self.pos += N
         comptime if target != "cpu":
             param.upload(ctx.value())
-
-
-@fieldwise_init
-struct Parity(ImplicitlyCopyable):
-    """`worst` scale-relative ratio, `nrel` L2-norm relative error, `n_over`
-    count past tolerance — the count is what separates a few cancelling
-    elements from a systematic disagreement."""
-
-    var worst: Float64
-    var nrel: Float64
-    var n_over: Int
-
-
-def worst(ref a: List[Scalar[DT]], ref b: List[Scalar[DT]]) raises -> Parity:
-    """Scale-relative elementwise comparison + an L2-norm aggregate.
-
-    ⚠ NOT `max|a-b|` against `max|a|` (two different elements), and NOT
-    per-element relative error (unbounded at a true zero — see the header)."""
-    if len(a) != len(b):
-        raise Error(
-            "gate: walk lengths differ — " + String(len(a)) + " vs "
-            + String(len(b))
-        )
-    var scale = Float64(0.0)
-    for i in range(len(a)):
-        scale = max(scale, abs(Float64(a[i])))
-    var tol = PARITY_ATOL + PARITY_ELEM_RTOL * scale
-    var w = Float64(0.0)
-    var n_over = 0
-    var sa = Float64(0.0)
-    var sb = Float64(0.0)
-    for i in range(len(a)):
-        var x = Float64(a[i])
-        var y = Float64(b[i])
-        var r = abs(x - y) / tol
-        w = max(w, r)
-        if r > 1.0:
-            n_over += 1
-        sa += x * x
-        sb += y * y
-    var na = sa ** 0.5
-    return Parity(w, abs(na - (sb ** 0.5)) / (na + 1e-30), n_over)
 
 
 def main() raises:
@@ -344,13 +300,16 @@ def main() raises:
     var ag = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
     tc.predict(qpos, images, actions, valid, ac)
     tg.predict(qpos, images, actions, valid, ag)
-    var aw = worst(ac, ag)
+    # A forward value is continuous in its inputs, so no element may sit
+    # outside tolerance. (Held at the GRADIENT rtol rather than the tighter
+    # continuous one only because this gate has no CUDA measurement to
+    # calibrate against yet — ResNet18's does. Tighten when it has.)
+    var aw = parity(ac, ag, PARITY_RTOL_GRAD)
     check(
         fails,
         "predict() action chunk (identical weights)",
-        aw.worst < 1.0 and aw.nrel < PARITY_NORM_RTOL,
-        "worst " + String(aw.worst) + "  norm-rel " + String(aw.nrel)
-        + "  over-tol " + String(aw.n_over),
+        aw.ok_continuous(),
+        aw.detail(),
     )
 
     # ── one training step: forward, backward, and the resulting weights ──
@@ -385,13 +344,16 @@ def main() raises:
     tc.graph.for_each_param["cpu"](pc, None, String(""))
     var pg = _Collect(grads=True)
     tg.graph.for_each_param["gpu"](pg, ctx, String(""))
-    var pw = worst(pc.vals, pg.vals)
+    # Gradients: judged on the norm, the FRACTION past tolerance and a cap on
+    # any one outlier — a ReLU whose pre-activation sits inside TF32's noise
+    # band has its sign decided by rounding, and the gradient it gates then
+    # differs by whatever was flowing through it. See `tests/nn/gpu_parity`.
+    var pw = parity_gradient(pc.vals, pg.vals)
     check(
         fails,
         "gradients agree over every parameter",
-        pw.worst < 1.0 and pw.nrel < PARITY_NORM_RTOL,
-        "worst " + String(pw.worst) + "  norm-rel " + String(pw.nrel)
-        + "  over-tol " + String(pw.n_over) + "/" + String(len(pc.vals)),
+        pw.ok_gradient(),
+        pw.detail(),
     )
 
     # The parameters too, but with an absolute floor sized to Adam's step —
@@ -408,7 +370,7 @@ def main() raises:
         qw = max(
             qw,
             abs(x - Float64(qg.vals[i]))
-            / (ADAM_STEP_ATOL + PARITY_ELEM_RTOL * abs(x)),
+            / (ADAM_STEP_ATOL + PARITY_RTOL_GRAD * abs(x)),
         )
     check(
         fails,
@@ -421,13 +383,14 @@ def main() raises:
     tc.graph.for_each_state["cpu"](sc2, None, String(""))
     var sg2 = _Collect()
     tg.graph.for_each_state["gpu"](sg2, ctx, String(""))
-    var sw = worst(sc2.vals, sg2.vals)
+    # Running statistics are an EMA of batch means — continuous, no
+    # derivative involved, so every element must agree.
+    var sw = parity(sc2.vals, sg2.vals, PARITY_RTOL_GRAD)
     check(
         fails,
         "BatchNorm running statistics agree after one step",
-        sw.worst < 1.0 and sw.nrel < PARITY_NORM_RTOL,
-        "worst " + String(sw.worst) + "  norm-rel " + String(sw.nrel)
-        + "  over-tol " + String(sw.n_over) + "/" + String(len(sc2.vals)),
+        sw.ok_continuous(),
+        sw.detail(),
     )
 
     print("")
