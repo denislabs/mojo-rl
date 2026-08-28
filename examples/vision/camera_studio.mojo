@@ -99,6 +99,7 @@ from mojo_rl.render.imgui import (
     ig_separator_text,
     ig_slider_float,
     ig_text,
+    ig_text_wrapped,
     ig_text_colored,
     ig_text_disabled,
     imgui_shim_available,
@@ -416,31 +417,39 @@ def main() raises:
             if ig_button(String("pause") if not paused else String("resume")):
                 paused = not paused
 
+        # ⚠⚠ EVERY CLICKABLE CONTROL BELOW SITS AT A FIXED POSITION, AND THAT
+        # IS THE WHOLE LAYOUT RULE HERE. The first version printed one line per
+        # detected marker id and hid whole sections behind `if`, so the panel's
+        # height changed with what the camera happened to see. A ChArUco board
+        # oscillating between 15 and 17 corners then moved every checkbox and
+        # button below it, several times a second — a UI you have to CHASE.
+        # Volatile text is therefore fixed-line-count, and a control that
+        # cannot act is still DRAWN, just greyed and inert.
         ig_separator_text(String("markers"))
         _ = ig_checkbox(String("detect"), detect_on)
         if ig_combo(String("dict"), dict_sel, src_names):
             det.close()
             det = ArucoDetector(dict_vals[Int(dict_sel)])
+        # One line, always: the ids joined rather than listed.
         if detect_on:
-            ig_text(String("found   ") + String(n_markers))
-            for m in range(n_markers):
-                ig_text(String("  id ") + String(ids[m]))
+            var id_line = String("found ") + String(n_markers)
+            if n_markers > 0:
+                id_line += ":"
+                for m in range(n_markers):
+                    if m > 0:
+                        id_line += ","
+                    id_line += " " + String(ids[m])
+            ig_text_wrapped(id_line)
         else:
             ig_text_disabled(String("detection off"))
 
         ig_separator_text(String("pose (uncalibrated)"))
-        # ⚠⚠ THE READOUT IS AN ORDER OF MAGNITUDE, NOT A MEASUREMENT. Z scales
-        # linearly with `fx`, so this slider is a scale factor on every
-        # distance below it. Group E's calibration replaces it with a number.
         ig_text_colored(
-            String("fx is a GUESS — calibrate before trusting Z"),
-            1.0,
-            0.75,
-            0.2,
-            1.0,
+            String("fx is a GUESS until you calibrate"), 1.0, 0.75, 0.2, 1.0
         )
         _ = ig_slider_float(String("fx px"), fx, 200.0, 2000.0)
         _ = ig_slider_float(String("marker mm"), marker_mm, 5.0, 200.0)
+        have_z = False
         if detect_on and n_markers > 0:
             var half = Float64(marker_mm) / 2000.0
             obj = List[Float64]()
@@ -473,20 +482,22 @@ def main() raises:
                 solve_pnp(
                     obj, img_xy, k, dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
                 )
-                # ⚠ CAMERA CONVENTION: x right, y DOWN, z along the optical
-                # axis. With the marker centred in the frame x and y read near
-                # zero — which is a free check on the assumed principal point,
-                # and needs no tape measure.
-                ig_text(String("x ") + fixed(tvec[0] * 1000.0, 1) + " mm")
-                ig_text(String("y ") + fixed(tvec[1] * 1000.0, 1) + " mm")
-                ig_text(String("z ") + fixed(tvec[2] * 1000.0, 1) + " mm")
                 last_z_mm = tvec[2] * 1000.0
                 have_z = True
             except:
-                ig_text_disabled(String("no pose"))
                 have_z = False
+        # ⚠ CAMERA CONVENTION: x right, y DOWN, z along the optical axis. With
+        # the marker centred in the frame x and y read near zero — a free check
+        # on the assumed principal point that needs no tape measure.
+        # Three lines whether or not there is a pose.
+        if have_z:
+            ig_text(String("x ") + fixed(tvec[0] * 1000.0, 1) + " mm")
+            ig_text(String("y ") + fixed(tvec[1] * 1000.0, 1) + " mm")
+            ig_text(String("z ") + fixed(tvec[2] * 1000.0, 1) + " mm")
         else:
-            have_z = False
+            ig_text_disabled(String("x -"))
+            ig_text_disabled(String("y -"))
+            ig_text_disabled(String("z -"))
 
         # ── the range check, done FOR you ───────────────────────────────────
         #
@@ -497,8 +508,8 @@ def main() raises:
         # measured distance fixes ranging, and there is no reason to make
         # anyone do that arithmetic by hand.
         ig_separator_text(String("range check"))
+        _ = ig_slider_float(String("known z mm"), known_mm, 50.0, 1500.0)
         if have_z:
-            _ = ig_slider_float(String("known z mm"), known_mm, 50.0, 1500.0)
             var suggested = Float64(fx) * Float64(known_mm) / last_z_mm
             var err_pct = (
                 (last_z_mm - Float64(known_mm)) / Float64(known_mm) * 100.0
@@ -507,25 +518,27 @@ def main() raises:
             ig_text(String("z is off by ") + fixed(err_pct, 1) + " %")
             if ig_button(String("snap fx to this distance")):
                 fx = Float32(suggested)
-            ig_text_disabled(String("Hold the marker at a distance you"))
-            ig_text_disabled(String("MEASURED, set it above, click. Then"))
-            ig_text_disabled(String("check a second distance: it should"))
-            ig_text_disabled(String("now agree too, or the model is off."))
         else:
-            ig_text_disabled(String("show a marker to enable"))
+            ig_text_disabled(String("implied fx -"))
+            ig_text_disabled(String("z is off by -"))
+            # ⚠ DRAWN BUT INERT, not hidden: a button that vanishes takes
+            # everything below it with it.
+            _ = ig_button(String("snap fx (needs a marker)"))
+        ig_text_disabled(String("Measure a real distance, set it above,"))
+        ig_text_disabled(String("click, then verify at a SECOND distance."))
 
         # ── calibration ─────────────────────────────────────────────────────
         ig_separator_text(String("calibration (ChArUco)"))
         _ = ig_checkbox(String("detect board"), calib_on)
         ig_text_disabled(
             String("board ")
-            + String(BOARD_SX)
+            + String(board_sx)
             + "x"
-            + String(BOARD_SY)
+            + String(board_sy)
             + "  "
-            + fixed(Float64(BOARD_SQUARE_MM), 0)
+            + fixed(Float64(square_mm), 0)
             + "/"
-            + fixed(Float64(BOARD_MARKER_MM), 0)
+            + fixed(Float64(board_marker_mm), 0)
             + " mm"
         )
         if calib_on:
@@ -535,68 +548,97 @@ def main() raises:
                 + " / "
                 + String(board_corner_total)
             )
-            ig_text(String("views   ") + String(len(cal_counts)))
-            if n_board_seen >= MIN_CORNERS:
-                if ig_button(String("capture view")):
-                    # ⚠ BY ID, NEVER POSITIONALLY. Only VISIBLE corners come
-                    # back, so the n-th detection is not the n-th board corner
-                    # — pairing them by position calibrates to nonsense while
-                    # looking entirely healthy.
-                    for i in range(n_board_seen):
-                        var bid = Int(b_ids[i])
-                        cal_obj.append(Float64(board_xyz[bid * 3]))
-                        cal_obj.append(Float64(board_xyz[bid * 3 + 1]))
-                        cal_obj.append(Float64(board_xyz[bid * 3 + 2]))
-                        cal_img.append(Float64(b_corners[i * 2]))
-                        cal_img.append(Float64(b_corners[i * 2 + 1]))
-                    cal_counts.append(Int32(n_board_seen))
-            else:
-                ig_text_disabled(
-                    String("need ") + String(MIN_CORNERS) + "+ corners"
+        else:
+            ig_text_disabled(String("corners -"))
+        ig_text(String("views   ") + String(len(cal_counts)))
+
+        # ⚠ A PARTIAL BOARD IS NOT A PROBLEM, IT IS THE POINT. `detectBoard`
+        # returns only VISIBLE corners with their ids, so a count that wanders
+        # between 15 and 17 still contributes every corner it found — that is
+        # exactly why a ChArUco board beats a plain chessboard, which must be
+        # wholly visible or is discarded. The count moving is not a reason to
+        # wait; a count below `MIN_CORNERS` is.
+        var can_capture = calib_on and n_board_seen >= MIN_CORNERS
+        if ig_button(String("capture view")) and can_capture:
+            # ⚠ BY ID, NEVER POSITIONALLY. Only visible corners come back, so
+            # the n-th detection is not the n-th board corner — pairing them by
+            # position calibrates to nonsense while looking entirely healthy.
+            for i in range(n_board_seen):
+                var bid = Int(b_ids[i])
+                cal_obj.append(Float64(board_xyz[bid * 3]))
+                cal_obj.append(Float64(board_xyz[bid * 3 + 1]))
+                cal_obj.append(Float64(board_xyz[bid * 3 + 2]))
+                cal_img.append(Float64(b_corners[i * 2]))
+                cal_img.append(Float64(b_corners[i * 2 + 1]))
+            cal_counts.append(Int32(n_board_seen))
+        ig_same_line()
+        if ig_button(String("clear")):
+            cal_obj = List[Float64]()
+            cal_img = List[Float64]()
+            cal_counts = List[Int32]()
+            cal_done = False
+
+        var can_calibrate = len(cal_counts) >= MIN_VIEWS
+        if ig_button(String("calibrate")) and can_calibrate:
+            var out = calibrate_camera(
+                cal_obj,
+                cal_img,
+                cal_counts,
+                frame_w,
+                frame_h,
+                cal_k,
+                cal_dist,
+                CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3,
+            )
+            cal_rms = out[1]
+            cal_done = True
+            fx = Float32(cal_k[0])
+            print("calibrated from", len(cal_counts), "views:")
+            print("  fx", cal_k[0], " fy", cal_k[4])
+            print("  cx", cal_k[2], " cy", cal_k[5])
+            print("  k1", cal_dist[0], " k2", cal_dist[1])
+            print("  rms", cal_rms, "px")
+        if not can_capture:
+            ig_text_disabled(
+                String("capture needs ") + String(MIN_CORNERS) + "+ corners"
+            )
+        elif not can_calibrate:
+            ig_text_disabled(
+                String("calibrate needs ") + String(MIN_VIEWS) + ", TILTED"
+            )
+        else:
+            ig_text(String("ready — tilt between captures"))
+
+        # ⚠ RMS IS A FIT RESIDUAL, NOT AN ACCURACY. It says the model explains
+        # the corners it was given; views that all face the board head-on fit
+        # beautifully and still leave the focal length badly determined.
+        if cal_done:
+            ig_text(
+                String("fx ")
+                + fixed(cal_k[0], 1)
+                + "  fy "
+                + fixed(cal_k[4], 1)
+            )
+            ig_text(
+                String("cx ")
+                + fixed(cal_k[2], 1)
+                + "  cy "
+                + fixed(cal_k[5], 1)
+            )
+            if cal_rms > 1.0:
+                ig_text_colored(
+                    String("rms ") + fixed(cal_rms, 3) + " px — recapture",
+                    1.0,
+                    0.5,
+                    0.3,
+                    1.0,
                 )
-            if len(cal_counts) >= MIN_VIEWS:
-                if ig_button(String("calibrate")):
-                    var out = calibrate_camera(
-                        cal_obj,
-                        cal_img,
-                        cal_counts,
-                        frame_w,
-                        frame_h,
-                        cal_k,
-                        cal_dist,
-                        CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3,
-                    )
-                    cal_rms = out[1]
-                    cal_done = True
-                    fx = Float32(cal_k[0])
-                    print("calibrated from", len(cal_counts), "views:")
-                    print("  fx", cal_k[0], " fy", cal_k[4])
-                    print("  cx", cal_k[2], " cy", cal_k[5])
-                    print("  k1", cal_dist[0], " k2", cal_dist[1])
-                    print("  rms", cal_rms, "px")
             else:
-                ig_text_disabled(
-                    String("need ") + String(MIN_VIEWS) + " views, TILTED"
-                )
-            if ig_button(String("clear views")):
-                cal_obj = List[Float64]()
-                cal_img = List[Float64]()
-                cal_counts = List[Int32]()
-                cal_done = False
-            if cal_done:
-                ig_text(String("fx ") + fixed(cal_k[0], 1))
-                ig_text(String("fy ") + fixed(cal_k[4], 1))
-                ig_text(String("cx ") + fixed(cal_k[2], 1))
-                ig_text(String("cy ") + fixed(cal_k[5], 1))
-                # ⚠ RMS IS A FIT RESIDUAL, NOT AN ACCURACY. It says the model
-                # explains the corners it was given; a set of views that all
-                # face the board head-on fits beautifully and still leaves the
-                # focal length badly determined.
                 ig_text(String("rms ") + fixed(cal_rms, 3) + " px")
-                if cal_rms > 1.0:
-                    ig_text_colored(
-                        String("rms > 1 px: recapture"), 1.0, 0.5, 0.3, 1.0
-                    )
+        else:
+            ig_text_disabled(String("fx -  fy -"))
+            ig_text_disabled(String("cx -  cy -"))
+            ig_text_disabled(String("rms -"))
 
         ig_separator()
         _ = ig_slider_float(String("zoom"), scale, 0.25, 2.0)
