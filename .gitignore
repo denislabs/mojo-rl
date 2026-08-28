@@ -244,6 +244,10 @@ skills-lock.json
 # Training artifacts (large; not source)
 checkpoints/
 *.mp4
+# ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
+# this 3 KB file is a committed test fixture, and without it a fresh checkout
+# cannot run tests/vision/test_opencv_shim.mojo at all.
+!tests/fixtures/vision/*.mp4
 # Rendered media dropped at the repo root by demo/diagnostic scripts
 # (root-anchored on purpose - tracked images elsewhere stay addable)
 /*.png

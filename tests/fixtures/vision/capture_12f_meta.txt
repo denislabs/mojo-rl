@@ -1,0 +1,4 @@
+frames 12
+width 64
+height 48
+channels 3

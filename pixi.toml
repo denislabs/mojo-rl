@@ -163,6 +163,12 @@ build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the 
 # qhull shim for `mojo_rl/physics3d/collision/`. MuJoCo does not implement a
 # convex hull — `MakeGraph` CALLS qhull and walks `FORALLfacets`, and that
 # order decides every polygon normal. Prerequisite of any MESH model.
+# OpenCV shim for `mojo_rl/vision/opencv/`. OpenCV has had no C API since 4.x,
+# so this is a C++ shim like the ImGui one -- but nothing is vendored: every
+# pixi env already carries the full C++ OpenCV 5.0. Groups A (lifecycle) and
+# B (capture) today; see docs/OPENCV_SHIM_SCOPE.md. Prerequisite of any camera
+# capture from Mojo, which is what the ACT closed-loop rollout is blocked on.
+build-opencv = { cmd = "bash scripts/build_opencv.sh", description = "Build the OpenCV shim (mojo_rl/vision/opencv/)" }
 build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (mojo_rl/physics3d/collision/)" }
 # The SO-101 hardware gate: dump both arms from Mojo, diff against
 # `tools/soarm/so101_diag.py` (Python + lerobot). Read-only — writes no
