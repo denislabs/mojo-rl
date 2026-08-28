@@ -236,6 +236,9 @@ def main() raises:
     var scale = Float32(1.0)
     var fx = FX_GUESS
     var marker_mm = MARKER_MM
+    var known_mm = Float32(300.0)
+    var last_z_mm = Float64(0.0)
+    var have_z: Bool
     var paused = False
     var n_markers: Int
     var frames = 0
@@ -375,11 +378,47 @@ def main() raises:
                 solve_pnp(
                     obj, img_xy, k, dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
                 )
+                # ⚠ CAMERA CONVENTION: x right, y DOWN, z along the optical
+                # axis. With the marker centred in the frame x and y read near
+                # zero — which is a free check on the assumed principal point,
+                # and needs no tape measure.
                 ig_text(String("x ") + fixed(tvec[0] * 1000.0, 1) + " mm")
                 ig_text(String("y ") + fixed(tvec[1] * 1000.0, 1) + " mm")
                 ig_text(String("z ") + fixed(tvec[2] * 1000.0, 1) + " mm")
+                last_z_mm = tvec[2] * 1000.0
+                have_z = True
             except:
                 ig_text_disabled(String("no pose"))
+                have_z = False
+        else:
+            have_z = False
+
+        # ── the range check, done FOR you ───────────────────────────────────
+        #
+        # ⚠ WHY THIS IS ONE CLICK AND NOT A PROCEDURE. `z` scales LINEARLY with
+        # `fx`: solvePnP sees a marker `fx * S / Z` pixels wide, so assuming
+        # the wrong focal length returns `Z * fx_assumed / fx_true`. That
+        # inverts exactly — `fx_true = fx_assumed * z_known / z_shown` — so ONE
+        # measured distance fixes ranging, and there is no reason to make
+        # anyone do that arithmetic by hand.
+        ig_separator_text(String("range check"))
+        if have_z:
+            _ = ig_slider_float(String("known z mm"), known_mm, 50.0, 1500.0)
+            var suggested = Float64(fx) * Float64(known_mm) / last_z_mm
+            var err_pct = (
+                (last_z_mm - Float64(known_mm)) / Float64(known_mm) * 100.0
+            )
+            ig_text(String("implied fx ") + fixed(suggested, 1) + " px")
+            ig_text(String("z is off by ") + fixed(err_pct, 1) + " %")
+            if ig_button(String("snap fx to this distance")):
+                fx = Float32(suggested)
+            ig_text_disabled(String("Hold the marker at a distance you"))
+            ig_text_disabled(String("MEASURED, set it above, click. Then"))
+            ig_text_disabled(String("check a second distance: it should"))
+            ig_text_disabled(String("now agree too, or the model is off."))
+        else:
+            ig_text_disabled(String("show a marker to enable"))
+
         ig_separator()
         _ = ig_slider_float(String("zoom"), scale, 0.25, 2.0)
         ig_end()
