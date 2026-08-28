@@ -324,6 +324,27 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     #
     # ⚠ NVIDIA-only in effect: Metal has no split-K path and measures N=101 and
     # N=128 within 3%. The padding is harmless there (a few extra MFLOPs).
+    #
+    # ⚠⚠ ALIGNMENT IS NOT THE CRITERION — WIDTH IS. This rounding is NOT
+    # sufficient for a small `OUT_`, and the comment above overstates what it
+    # buys. Measured on an RTX 5090 by `bench_matmul_alloc_act_shapes.mojo`,
+    # same M and same K, only N changing:
+    #
+    #     [960 x 256] @ [256 x  32]   291.60 us   cutlass      ALLOCATES
+    #     [960 x 256] @ [256 x 256]    14.87 us   multistage   free
+    #
+    # **N = 32 is a multiple of 32 and still allocates.** 8x the FLOPs at
+    # N=256 and 19.6x FASTER, the difference being one cuMemAlloc + memset +
+    # cuMemFree per call. N=101 -> 128 fixed TD-MPC2's head because 128 is WIDE
+    # ENOUGH, not because it is aligned. So ACT's `ahat` (`Linear[256, 6]`,
+    # padded to 32) and `latent_proj` (N = 64) are BOTH still on the allocating
+    # path under this rule.
+    #
+    # The fix is a FLOOR (`max(round_up(OUT_), N_MIN)`) rather than a rounding,
+    # and `N_MIN` is a MEASURED constant, not a guess — it is somewhere in
+    # (64, 256]. `bench_matmul_alloc_threshold.mojo` sweeps N to find it. Do
+    # not raise this without that run: too low leaves the allocation in place,
+    # too high burns FLOPs on every call for nothing.
     comptime NEEDS_N_PAD = Self.OUT_ % Self.PAD_TO != 0
     comptime N_PAD = (
         (Self.OUT_ + Self.PAD_TO - 1) // Self.PAD_TO
