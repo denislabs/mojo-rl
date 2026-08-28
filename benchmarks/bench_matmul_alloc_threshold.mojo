@@ -1,4 +1,15 @@
-"""How WIDE does N have to be before cuBLAS stops allocating?
+"""When does `max_matmul` take the ALLOCATING cuBLAS path, on an RTX 5090?
+
+**ANSWERED, 22/22 over every shape measured so far:**
+
+    free (multistage_gemm, no workspace)  <=>  K % 128 == 0  AND  N % 128 == 0
+
+M is irrelevant. Alignment to 32 is irrelevant. Width is irrelevant — N=128 and
+N=256 are free while N=160 and N=192 ALLOCATE, which is what killed the "wide
+enough" reading this file was originally written to test. Sections D and E
+below are what remains: K has never been varied on its own, and nothing has
+measured whether the pad PAYS on a large GEMM.
+
 
     pixi run -e nvidia nsys profile --trace=cuda -o alloc_thresh \\
         pixi run -e nvidia mojo run -I . \\
@@ -43,21 +54,28 @@ cuBLAS is keying on, it is not the M alignment, so the tiny-M sites
 narrow-N sites — most likely not going through `max_matmul` at all, the way
 `conv2d`'s `_fwd_oc1_matvec_kernel` already sidesteps it at OC == 1.
 
-## What this file answers, and why it must run BEFORE any constant changes
+## What A, B and C came back with
 
-Three questions, none of which the sweep above can answer:
+    A. N sweep at M=960 K=256    32  48  64  96 | 128 | 160 192 | 256
+                                  A   A   A   A |  F  |  A   A  |  F
+    B. M sweep at K=32  N=256    16  64 256 1024   -> ALL allocate
+    C. conv stem  [307200x160] @ [160x64] 411.72   [160x128] 280.18  both ALLOC
 
-  A. Where between N=64 and N=256 does the allocating path stop? The new
-     `N_PAD` floor is that number, and guessing it wrong either leaves the
-     allocation in place (too low) or burns FLOPs for nothing (too high).
-  B. Can a tiny M ever escape by itself? [16 x 32] @ [32 x 256] allocates with
-     N ALREADY at 256, so widening N is clearly not the lever there. Sweeping M
-     at fixed N says whether there is a row count that escapes, or whether
-     these shapes need to leave `max_matmul` entirely.
-  C. Does the conv stem's forward escape at OC = 128? Its N is `OC_ = 64` and
-     `conv2d` deliberately does NOT pad that axis — the decision is recorded in
-     `Conv2D`'s comment block as "OC is always aligned", which the data above
-     shows was the wrong criterion.
+A is not a floor and not an alignment: 160 and 192 are wider than 128 and both
+allocate. B: M never mattered — those rows allocate because K=32. C: widening
+OC alone does not free the stem, because its K (`COL` = 160) is not a multiple
+of 128 either. Every one of those falls out of the single rule at the top.
+
+## What is left, and why nothing has changed yet
+
+  D. K has only ever moved together with M or N. Holding N at a known-free 256
+     and sweeping K alone is what turns a 22-point curve-fit into a rule.
+  E. Does the pad PAY? The allocator costs a roughly FIXED ~277 us per call, so
+     padding wins only where the extra FLOPs cost less than that. On the tiny
+     heads it is free money (`ahat` 291.60 -> 14.34 us for 4x the FLOPs of a
+     GEMM that is nothing). On the conv stem, COL 160 -> 256 and OC 64 -> 128
+     is 3.5x the FLOPs of a 6.3 GFLOP GEMM — predicted to LOSE, and that is a
+     measurement, not a deduction.
 
 ⚠ Do not calibrate any of this on Apple. Metal has no split-K path and no
 equivalent workspace, and a threshold read off an M1 would be a fiction.
@@ -149,12 +167,40 @@ def main() raises:
     run[307200, 160, 64](ctx, 11, "OC=64  (real)")
     run[307200, 160, 128](ctx, 13, "OC=128 (padded)")
 
+    # ── D. K sweep — the half of the rule never varied ALONE ─────────────
+    # A varied N at K=256, B varied M at K=32. Across all 22 shapes measured
+    # so far the fit is `free <=> K%128==0 AND N%128==0`, 22/22 — but K has
+    # only ever moved together with something else, so this is the leg that
+    # turns a curve-fit into a rule. N is held at 256 (a known-free width), so
+    # any row that allocates is K's doing and nothing else.
+    print("D. K sweep, M=960 N=256 (the leg the rule was inferred from)")
+    run[960, 32, 256](ctx, 163, "K=32   (predict ALLOC)")
+    run[960, 64, 256](ctx, 167, "K=64   (predict ALLOC)")
+    run[960, 96, 256](ctx, 173, "K=96   (predict ALLOC)")
+    run[960, 128, 256](ctx, 179, "K=128  (predict free)")
+    run[960, 160, 256](ctx, 181, "K=160  (predict ALLOC)")
+    run[960, 192, 256](ctx, 191, "K=192  (predict ALLOC)")
+    run[960, 256, 256](ctx, 193, "K=256  (predict free)")
+
+    # ── E. does the pad PAY on a big GEMM? ───────────────────────────────
+    # The allocator costs a roughly FIXED ~277 us per call, so a pad wins only
+    # when the extra FLOPs cost less than that. On the tiny heads it is free
+    # money; on the conv stem, COL 160 -> 256 and OC 64 -> 128 is 3.5x the
+    # FLOPs, and at the ~50 TFLOP/s the stem measures that is ~400 us of extra
+    # work against ~277 us saved. **Predicted to LOSE.** Measure it rather than
+    # reason about it — this row decides whether Conv2D's PAD_TO moves at all.
+    print("E. does padding to 128/128 pay on the conv stem?")
+    run[307200, 256, 128](ctx, 17, "COL->256 OC->128 (3.5x FLOPs, predict free path)")
+
     print("=" * 78)
     print("  reps + 5 warm-up = the `Instances` count to look for.")
     print("    multistage_gemm_kernel...  -> free")
     print("    cutlass::Kernel2<...>      -> allocates (splitK or not)")
     print()
-    print("  A's first `multistage` row is the N_PAD floor.")
+    print("  A: free at N=128 and N=256, ALLOCATING at 160 and 192.")
+    print("     -> not a floor. The fit over all 22 shapes measured so far is")
+    print("        free <=> K%128==0 AND N%128==0, with M irrelevant. D is the")
+    print("        leg that confirms or kills it.")
     print("  If every row of B allocates, tiny-M needs its own kernel, not a pad.")
     print("  If C's OC=128 is free, Conv2D's OC axis needs padding after all.")
     print("=" * 78)
