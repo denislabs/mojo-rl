@@ -235,10 +235,18 @@ comptime DEFAULT_STEPS = 100000
 `ACT_STEPS`; the graph takes minutes to compile and extending a run must not
 require rebuilding it."""
 comptime VAL_EVERY = 1000
-comptime VAL_BATCHES = 16
-"""256 validation samples per pass, from a pinned RNG — see the header. Four
-batches was fine for a 2000-step smoke and is far too noisy to select a
-checkpoint from over a hundred passes."""
+comptime VAL_BATCHES = 64
+"""1024 validation samples per pass, from a pinned RNG — see the header.
+
+Was 16 (256 samples). The held-out split is **3,036 frames**, so that scored
+**8%** of it, and the LeRobot baseline — which evaluates the ENTIRE held-out
+set — kept improving through epochs where our curve had gone flat. A fixed
+sample has no noise BETWEEN passes (the RNG is pinned), but 8% of the holdout
+is a weak estimate of the holdout, and `PATIENCE` stops the run on it.
+
+64 batches is 34% and costs ~3 s per validation. Full coverage would want a
+deterministic sweep rather than 190 random draws with replacement, which is a
+different change to `ACTDataset`."""
 comptime PATIENCE = 10
 """Stop after this many validations with no improvement on the best. 0 = never.
 
