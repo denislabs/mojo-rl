@@ -24,6 +24,27 @@ to read a marker.
 ⚠ NO CAMERA NEEDED. `--file` plays any video (it loops), so the whole UI can be
 exercised on the committed 3 KB fixture. `--image` shows a still.
 
+TESTING IT WITH A REAL PRINTED MARKER
+=====================================
+1. `pixi run python tools/vision/make_printable_marker.py --size-mm 60`
+2. Print the **PDF** at **100%**, never "fit to page".
+3. Measure the ruler on the sheet. If it is not 100 mm, measure the marker's
+   BLACK SQUARE and use that number instead of the nominal one.
+4. Tape it to something FLAT and run the studio.
+5. Set `marker mm` to the measured side. Leave `dict` at 4x4_50.
+
+⚠⚠ **`marker mm` IS THE BLACK SQUARE, NOT THE WHITE BORDER.** Every distance
+below scales linearly with it, and the pose will look perfectly reasonable
+either way — a wrong marker size does not produce a wrong-looking answer, it
+produces a wrong-scaled one.
+
+⚠ THE `fx` SLIDER IS A ONE-PARAMETER CALIBRATION, AND A CRUDE ONE. Hold the
+marker at a distance you have actually measured, then move `fx` until `z`
+agrees. That gets ranging roughly right and fixes NOTHING else: the principal
+point stays assumed at the image centre and lens distortion stays ignored, so
+accuracy degrades toward the edges of the frame. It is a sanity check, not a
+substitute for the ChArUco calibration in `tests/vision/` (group E).
+
 WHAT TO LOOK FOR
 ================
   * **capture ms** — the time `cap.read()` blocks. A camera that quietly

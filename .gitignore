@@ -284,3 +284,7 @@ fb_walker_d128.ckpt
 # qhull shim (built by `pixi run build-qhull`, not tracked)
 mojo_rl/physics3d/collision/libmrl_qhull.dylib
 mojo_rl/physics3d/collision/libmrl_qhull.so
+
+# Generated printable markers and other local scratch output
+# (tools/vision/make_printable_marker.py writes here).
+scratch/
