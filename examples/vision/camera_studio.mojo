@@ -187,6 +187,7 @@ def main() raises:
     var board_sy = BOARD_SY
     var square_mm = BOARD_SQUARE_MM
     var board_marker_mm = BOARD_MARKER_MM
+    var calib_path = String("scratch/camera_calib.txt")
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -208,6 +209,8 @@ def main() raises:
             square_mm = Float32(Float64(String(args[i + 1])))
         elif a == "--marker-mm" and i + 1 < len(args):
             board_marker_mm = Float32(Float64(String(args[i + 1])))
+        elif a == "--calib" and i + 1 < len(args):
+            calib_path = String(args[i + 1])
 
     if not opencv_shim_available():
         print("OpenCV shim not built.  Run:  pixi run build-opencv")
@@ -341,6 +344,38 @@ def main() raises:
     # confident, low-residual fit with `cy` dragged toward them. Measured on a
     # real run: cx was 0.7% off centre and cy 6.1%, from six views that never
     # reached the top of the image.
+    # ⚠ A CALIBRATION THAT LIVES ONLY IN A WINDOW IS A CALIBRATION YOU WILL DO
+    # AGAIN. Loading is best-effort and silent on absence: a first run has no
+    # file, and that is not an error.
+    var cal_loaded = False
+    try:
+        with open(calib_path, "r") as f:
+            var raw = f.read_bytes()
+            var text = String("")
+            for i in range(len(raw)):
+                text += chr(Int(raw[i]))
+            var parts = text.split()
+            if len(parts) >= 6:
+                cal_k = List[Float64]()
+                cal_k.append(Float64(parts[0]))
+                cal_k.append(0.0)
+                cal_k.append(Float64(parts[2]))
+                cal_k.append(0.0)
+                cal_k.append(Float64(parts[1]))
+                cal_k.append(Float64(parts[3]))
+                cal_k.append(0.0)
+                cal_k.append(0.0)
+                cal_k.append(1.0)
+                cal_dist = List[Float64]()
+                cal_dist.append(Float64(parts[4]))
+                cal_dist.append(Float64(parts[5]))
+                fx = Float32(cal_k[0])
+                cal_done = True
+                cal_loaded = True
+                print("loaded calibration from", calib_path, "fx", cal_k[0])
+    except:
+        pass
+
     var cov_x0 = Float32(1.0e9)
     var cov_x1 = Float32(-1.0e9)
     var cov_y0 = Float32(1.0e9)
@@ -634,6 +669,20 @@ def main() raises:
             print("  cx", cal_k[2], " cy", cal_k[5])
             print("  k1", cal_dist[0], " k2", cal_dist[1])
             print("  rms", cal_rms, "px")
+            cal_loaded = False
+            # ⚠ WRITTEN IMMEDIATELY, not behind a button. The expensive part of
+            # a calibration is the twelve poses you held a board through; the
+            # cheap part is a file. Making the save a separate click is how the
+            # expensive part gets repeated.
+            try:
+                with open(calib_path, "w") as f:
+                    f.write(String(cal_k[0]) + " " + String(cal_k[4]) + " ")
+                    f.write(String(cal_k[2]) + " " + String(cal_k[5]) + " ")
+                    f.write(String(cal_dist[0]) + " " + String(cal_dist[1]))
+                    f.write(String("\n"))
+                print("  saved to", calib_path)
+            except e:
+                print("  COULD NOT SAVE to", calib_path, "-", e)
         if not can_capture:
             ig_text_disabled(
                 String("capture needs ") + String(MIN_CORNERS) + "+ corners"
@@ -722,9 +771,12 @@ def main() raises:
                 ig_text_colored(off_line + " HIGH", 1.0, 0.5, 0.3, 1.0)
             else:
                 ig_text(off_line)
-            # 2*atan(w/2/fx), in degrees, without pulling in a trig import for
-            # one line: atan via the identity is not worth it, so use the
-            # small helper below.
+            if cal_loaded:
+                ig_text_disabled(String("(loaded from file, not measured"))
+                ig_text_disabled(String(" this session)"))
+            else:
+                ig_text_disabled(String("views ") + String(len(cal_counts)))
+                ig_text_disabled(String(" "))
             ig_text(
                 String("H fov ")
                 + fixed(_fov_deg(Float64(frame_w), cal_k[0]), 1)
