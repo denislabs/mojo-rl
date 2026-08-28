@@ -3,28 +3,91 @@
 # +--------------------------------------------------------------------------+ #
 """Train ACT on the LeRobot v3 dataset, on GPU.
 
-    pixi run python tools/act/lerobot_v3_to_store.py \\
-        --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+## Launching a run on a fresh NVIDIA box, start to finish
 
-    export ACT_STORE=~/.cache/mojo_rl/act_so101/\\
-DenisLabs__record-test_20260828_092736_240x320.h5
+Nothing below assumes a previous checkout. Every path is created by a step
+above it; `$ACT_STORE` and `$ACT_PRETRAINED` name files that do not exist until
+steps 3 and 4 write them.
 
-    pixi run -e nvidia mojo build -I . -o /tmp/act_train_gpu \\
-        examples/so101/act_so101_train_gpu.mojo && /tmp/act_train_gpu
+```bash
+# ── 0. the repo and its environments ──────────────────────────────────────
+git clone <this repo> mojo-rl && cd mojo-rl
+pixi install -e nvidia      # CUDA toolkit, cuDNN, nsight — tens of GB
+pixi install -e act-ref     # PyTorch, ~3 GB. Needed ONLY for step 4.
+
+# ── 1. disk ───────────────────────────────────────────────────────────────
+#   pixi envs   ~20 GB (nvidia) + ~3 GB (act-ref)
+#   HF cache     0.7 GB   dataset snapshot
+#   store        7.2 GB   the converted .h5
+#   resnet dump   47 MB
+#   checkpoints  0.3 GB   best + last, ~130 MB each
+# Budget 35 GB and do not cut it fine: a pixi fetch that runs out of space
+# fails mid-solve and leaves the environment unusable.
+df -h .
+
+# ── 2. HuggingFace auth — ONLY if the dataset repo is private ─────────────
+pixi run -e nvidia hf auth login          # or: export HF_TOKEN=hf_...
+
+# ── 3. the dataset -> a TrajectoryStore (~81 s, 0.2 GB RAM) ───────────────
+pixi run -e nvidia python tools/act/lerobot_v3_to_store.py \\
+    --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_092736_240x320.h5
+
+# ── 4. ImageNet ResNet18 weights (~6 s, 47 MB) ───────────────────────────
+# The ONLY step that needs PyTorch, and nothing under mojo_rl/ imports it.
+pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
+    --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+export ACT_PRETRAINED=~/.cache/mojo_rl/act_so101/resnet18_imagenet
+
+# ── 5. check both before spending GPU hours on them ──────────────────────
+pixi run -e nvidia mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
+pixi run -e nvidia mojo run -I . \\
+    tests/deep_agents/act/test_act_pretrained_backbone.mojo
+
+# ── 6. metrics (optional) ────────────────────────────────────────────────
+# `.env` in the project root, read by mojo_rl/core/dotenv.mojo:
+#     RL_MONITOR_URL=https://...
+#     RL_MONITOR_API_KEY=...
+# Absent, the run is unaffected. It is NOT copied by git — put it there by
+# hand on the new box or the run streams nothing and says so.
+
+# ── 7. build (~6 min) and run ────────────────────────────────────────────
+pixi run -e nvidia mojo build -I . -o /tmp/act_train_gpu \\
+    examples/so101/act_so101_train_gpu.mojo
+/tmp/act_train_gpu
+```
+
+The startup lines name the store, the backbone initialization (`ImageNet
+weights, N tensors` or `RANDOM`), and whether metrics are streaming. Read all
+three: each is an environment variable whose absence is silent and legal, so a
+run configured wrong looks exactly like a run configured right until the curve
+comes back different.
 
 ⚠ **Run it from the project root.** `mojo_rl/io/hdf5` resolves libhdf5 through
 a path relative to the working directory (`.pixi/envs/<env>/lib/`), so the
 binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 `.env` from the working directory.
 
-`ACT_STEPS` overrides the step count WITHOUT a rebuild — the graph type takes
-minutes to compile, so "run it a bit longer" must not mean "build it again":
+### Environment variables, all optional
 
-    ACT_STEPS=200000 /tmp/act_train_gpu
+| | |
+|---|---|
+| `ACT_STORE` | the `.h5` to train on; default is the 5-episode recording |
+| `ACT_PRETRAINED` | ImageNet backbone dump; default is a RANDOM backbone |
+| `ACT_STEPS` | step count, **without a rebuild** — the graph takes ~6 min to compile, so "run it longer" must not mean "build it again" |
+| `ACT_NO_MONITOR` | force the logger inert with the keys present; what a smoke run should use so it does not land in the dashboard beside a real one |
+| `ACT_CKPT` | read by `act_so101_openloop_eval.mojo`, not by this file |
 
 On Apple add `-Xlinker -ld_classic`: the fully-expanded graph type mangles to a
 symbol longer than the new linker accepts. Healthy source, toolchain limit;
 `mojo run` JITs and never invokes ld. NVIDIA needs no flag.
+
+### Resuming, and what a killed run leaves
+
+`/tmp/act_so101_last_gpu.ckpt` is rewritten at every validation and
+`..._best_gpu.ckpt` whenever validation improves, so a kill loses at most
+`VAL_EVERY` steps of progress and never the best model. ⚠ `/tmp` — copy them
+somewhere durable before rebooting a rented box.
 
 ## What this configuration is, and what it is not
 
@@ -97,12 +160,27 @@ never applies it.
 
 ## What to expect
 
-40 training episodes / 10 held out, ~12,400 training frames, a from-scratch
-ResNet18, no augmentation. Validation L1 should fall considerably further than
-the 5-episode store allowed before it turns; where it turns is the number worth
-having, and the `best` checkpoint is what `act_so101_openloop_eval.mojo` should
-be pointed at. The paper used 50 demonstrations per task, so this is the first
-run at the data scale it assumes.
+40 training episodes / 10 held out, ~12,400 training frames, no augmentation.
+
+The FIRST 50-episode run, with a random backbone, is the baseline to beat:
+best val L1 **0.4076 at epoch 15.5**, then 26 consecutive validations all worse
+while train L1 fell another 1.7x. 0.159 s/step, ~4.9 h if left to 100,000 steps
+— which is why `PATIENCE` exists.
+
+A pretrained backbone should push the turn later and lower; that it does is not
+yet measured. `best/val_l1` against the 0.4076 line is the comparison, and
+`backbone_init` in the run config distinguishes the two runs in the dashboard.
+
+⚠ Watch `train/kl`. In the random-backbone run it collapsed 12.1 -> 0.0002 —
+posterior collapse at `kl_weight = 10`, meaning the CVAE encoder matched the
+prior exactly, `z` carried no information, and ACT ran as a plain chunk
+predictor with a decorative encoder. The paper's own ablation says the CVAE is
+what matters for HUMAN-collected demonstrations, which is what this dataset is.
+Whether the reference collapses the same way at this scale is unmeasured.
+
+The `best` checkpoint is what `act_so101_openloop_eval.mojo` should be pointed
+at; it reports a `hold` baseline so "it produces plausible actions" cannot be
+mistaken for "it learned something".
 """
 from std.time import perf_counter_ns
 
