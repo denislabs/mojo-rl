@@ -382,4 +382,128 @@ bool mrl_gz_manipulate(const float* view, const float* proj, int op, int mode,
 bool mrl_gz_is_over(void) { return ImGuizmo::IsOver(); }
 bool mrl_gz_is_using(void) { return ImGuizmo::IsUsing(); }
 
+// ─── textures: showing a camera frame (or any RGBA image) in a window ────────
+//
+// ⚠ `ImTextureID` IS AN `SDL_GPUTexture*` IN THIS BACKEND, and that is what
+// makes this small: the backend supplies the sampler itself
+// (`bd->CurrentSampler`), so a user texture is just a texture — no descriptor
+// set, no binding object.  It changed in ImGui 1.92.2 (it used to be an
+// `SDL_GPUTextureSamplerBinding*`), so older examples pass the wrong thing.
+//
+// The transfer buffer is kept ALIVE with the texture rather than created per
+// upload.  A camera at 30 Hz would otherwise allocate and free a GPU staging
+// buffer thirty times a second for the lifetime of the window.
+
+struct MrlIgTexture {
+    SDL_GPUDevice*         device;
+    SDL_GPUTexture*        tex;
+    SDL_GPUTransferBuffer* xfer;
+    int                    w;
+    int                    h;
+};
+
+void* mrl_ig_texture_create(void* device, int w, int h) {
+    if (device == nullptr || w <= 0 || h <= 0) return nullptr;
+    SDL_GPUDevice* dev = (SDL_GPUDevice*)device;
+
+    SDL_GPUTextureCreateInfo ti = {};
+    ti.type                 = SDL_GPU_TEXTURETYPE_2D;
+    ti.format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width                = (Uint32)w;
+    ti.height               = (Uint32)h;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels           = 1;
+    SDL_GPUTexture* tex = SDL_CreateGPUTexture(dev, &ti);
+    if (tex == nullptr) return nullptr;
+
+    SDL_GPUTransferBufferCreateInfo xi = {};
+    xi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    xi.size  = (Uint32)(w * h * 4);
+    SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(dev, &xi);
+    if (xfer == nullptr) {
+        SDL_ReleaseGPUTexture(dev, tex);
+        return nullptr;
+    }
+
+    MrlIgTexture* t = new MrlIgTexture();
+    t->device = dev;
+    t->tex    = tex;
+    t->xfer   = xfer;
+    t->w      = w;
+    t->h      = h;
+    return t;
+}
+
+// `rgba` is w*h*4 bytes, tightly packed.
+//
+// ⚠ THIS RUNS ITS OWN COMMAND BUFFER, deliberately.  SDL_GPU forbids a copy
+// pass while a render pass is open, and this is called from application code
+// that has no idea where the renderer is in its frame.  One submit per upload
+// is the price of that safety, and at one camera frame per display frame it is
+// not a cost worth engineering away.
+bool mrl_ig_texture_upload(void* handle, const unsigned char* rgba) {
+    MrlIgTexture* t = (MrlIgTexture*)handle;
+    if (t == nullptr || rgba == nullptr) return false;
+
+    void* dst = SDL_MapGPUTransferBuffer(t->device, t->xfer, false);
+    if (dst == nullptr) return false;
+    memcpy(dst, rgba, (size_t)(t->w * t->h * 4));
+    SDL_UnmapGPUTransferBuffer(t->device, t->xfer);
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(t->device);
+    if (cmd == nullptr) return false;
+    SDL_GPUCopyPass* pass = SDL_BeginGPUCopyPass(cmd);
+
+    SDL_GPUTextureTransferInfo src = {};
+    src.transfer_buffer = t->xfer;
+    src.offset          = 0;
+    src.pixels_per_row  = (Uint32)t->w;
+    src.rows_per_layer  = (Uint32)t->h;
+
+    SDL_GPUTextureRegion dstr = {};
+    dstr.texture = t->tex;
+    dstr.w       = (Uint32)t->w;
+    dstr.h       = (Uint32)t->h;
+    dstr.d       = 1;
+
+    SDL_UploadToGPUTexture(pass, &src, &dstr, false);
+    SDL_EndGPUCopyPass(pass);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    return true;
+}
+
+void mrl_ig_image(void* handle, float w, float h) {
+    MrlIgTexture* t = (MrlIgTexture*)handle;
+    if (t == nullptr) return;
+    ImGui::Image((ImTextureID)(intptr_t)t->tex, ImVec2(w, h));
+}
+
+// Where the last `mrl_ig_image` landed on screen, in window coordinates, so a
+// caller can draw an overlay over it without duplicating ImGui's layout rules.
+void mrl_ig_last_item_rect(float* x, float* y, float* w, float* h) {
+    ImVec2 mn = ImGui::GetItemRectMin();
+    ImVec2 mx = ImGui::GetItemRectMax();
+    if (x) *x = mn.x;
+    if (y) *y = mn.y;
+    if (w) *w = mx.x - mn.x;
+    if (h) *h = mx.y - mn.y;
+}
+
+// A line on the CURRENT window's foreground draw list, in window coordinates.
+// Used to draw detected marker corners over the image.
+void mrl_ig_overlay_line(float x0, float y0, float x1, float y1,
+                         unsigned int rgba, float thickness) {
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(x0, y0), ImVec2(x1, y1),
+                                        rgba, thickness);
+}
+
+void mrl_ig_texture_destroy(void* handle) {
+    MrlIgTexture* t = (MrlIgTexture*)handle;
+    if (t == nullptr) return;
+    if (t->xfer) SDL_ReleaseGPUTransferBuffer(t->device, t->xfer);
+    if (t->tex)  SDL_ReleaseGPUTexture(t->device, t->tex);
+    delete t;
+}
+
 }  // extern "C"

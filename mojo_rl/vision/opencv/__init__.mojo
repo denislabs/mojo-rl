@@ -263,7 +263,7 @@ struct VideoCapture(Movable):
     """0 for a live device; only meaningful for a file."""
 
     def __init__(out self, _h: Int) raises:
-        """Private — use `from_file` or `device`."""
+        """Private — use `from_file`, `device` or `closed`."""
         self._h = _h
         self.width = 0
         self.height = 0
@@ -273,7 +273,26 @@ struct VideoCapture(Movable):
         self.channels = 3
         self.fps = 0.0
         self.frame_count = 0
-        self._refresh_props()
+        # ⚠ A CLOSED CAPTURE HAS NO PROPERTIES TO READ. Asking the shim about
+        # handle 0 is an error, not a zero, so the closed state must skip it.
+        if _h != 0:
+            self._refresh_props()
+
+    @staticmethod
+    def closed() raises -> Self:
+        """A capture that owns nothing, for a variable declared before its
+        source is known.
+
+        ⚠ THIS EXISTS BECAUSE THE OBVIOUS PLACEHOLDER IS A LANDMINE:
+        `VideoCapture.from_file("")` RAISES — an empty path is not a file —
+        so using it to declare a variable kills the program at startup rather
+        than at first use. `close()` already produces this state; this makes it
+        constructible.
+        """
+        return Self(0)
+
+    def is_open(self) -> Bool:
+        return self._h != 0
 
     @staticmethod
     def from_file(path: String) raises -> Self:

@@ -160,11 +160,7 @@ def _c(mut s: String) -> Ptr[c_char, MutUntrackedOrigin]:
 
 def ig_init[
     W: AnyType, D: AnyType, ow: Origin, od: Origin
-](
-    window: Ptr[W, ow],
-    device: Ptr[D, od],
-    color_format: UInt32,
-) raises -> Bool:
+](window: Ptr[W, ow], device: Ptr[D, od], color_format: UInt32,) raises -> Bool:
     """Attach ImGui to an EXISTING window and GPU device.
 
     Parameterised on the handle types so this module needs no dependency on
@@ -195,9 +191,7 @@ def ig_new_frame() raises:
     _get_dylib_function[lib, "mrl_ig_new_frame", def() thin -> None]()()
 
 
-def ig_prepare[
-    T: AnyType, o: Origin
-](cmd_buf: Ptr[T, o]) raises:
+def ig_prepare[T: AnyType, o: Origin](cmd_buf: Ptr[T, o]) raises:
     """Close the frame and upload its geometry.
 
     ⚠ MUST RUN BEFORE ANY RENDER PASS IS OPEN on this command buffer — the
@@ -205,7 +199,8 @@ def ig_prepare[
     passes while a render pass is active.
     """
     _get_dylib_function[
-        lib, "mrl_ig_prepare",
+        lib,
+        "mrl_ig_prepare",
         def(Ptr[NoneType, MutUntrackedOrigin]) thin -> None,
     ]()(untracked(cmd_buf.unsafe_bitcast[NoneType]()))
 
@@ -215,7 +210,8 @@ def ig_render[
 ](cmd_buf: Ptr[T, oc], render_pass: Ptr[P, op]) raises:
     """Draw the prepared frame INSIDE an open render pass."""
     _get_dylib_function[
-        lib, "mrl_ig_render",
+        lib,
+        "mrl_ig_render",
         def(
             Ptr[NoneType, MutUntrackedOrigin],
             Ptr[NoneType, MutUntrackedOrigin],
@@ -226,21 +222,18 @@ def ig_render[
     )
 
 
-def ig_process_event[
-    E: AnyType, o: Origin
-](event: Ptr[E, o]) raises:
+def ig_process_event[E: AnyType, o: Origin](event: Ptr[E, o]) raises:
     """Feed one SDL event to ImGui. Every event, or input desynchronises."""
     _get_dylib_function[
-        lib, "mrl_ig_process_event",
+        lib,
+        "mrl_ig_process_event",
         def(Ptr[NoneType, MutUntrackedOrigin]) thin -> None,
     ]()(untracked(event.unsafe_bitcast[NoneType]()))
 
 
 def ig_want_mouse() raises -> Bool:
     """True when the pointer is over ImGui. The host must NOT orbit then."""
-    return _get_dylib_function[
-        lib, "mrl_ig_want_mouse", def() thin -> Bool
-    ]()()
+    return _get_dylib_function[lib, "mrl_ig_want_mouse", def() thin -> Bool]()()
 
 
 def ig_want_keyboard() raises -> Bool:
@@ -262,7 +255,8 @@ def ig_set_ini_filename(var path: String) raises:
     """Persist window layout to `path`; "" disables persistence (the default —
     ImGui would otherwise write `imgui.ini` into the repo root)."""
     _get_dylib_function[
-        lib, "mrl_ig_set_ini_filename",
+        lib,
+        "mrl_ig_set_ini_filename",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(path))
 
@@ -272,30 +266,38 @@ def ig_set_ini_filename(var path: String) raises:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ig_begin_panel(var name: String, x: Float32, y: Float32, w: Float32,
-                   h: Float32) raises:
+def ig_begin_panel(
+    var name: String, x: Float32, y: Float32, w: Float32, h: Float32
+) raises:
     """A borderless panel pinned to an exact rect — the sidebar shape.
 
     Position and size are re-applied every frame, so the caller's layout stays
     authoritative across window resizes. Always pair with `ig_end()`.
     """
     _get_dylib_function[
-        lib, "mrl_ig_begin_panel",
+        lib,
+        "mrl_ig_begin_panel",
         def(
             Ptr[c_char, MutUntrackedOrigin], c_float, c_float, c_float, c_float
         ) thin -> None,
     ]()(_c(name), x, y, w, h)
 
 
-def ig_begin_window(var name: String, x: Float32 = 60.0, y: Float32 = 60.0,
-                    w: Float32 = 320.0, h: Float32 = 240.0) raises -> Bool:
+def ig_begin_window(
+    var name: String,
+    x: Float32 = 60.0,
+    y: Float32 = 60.0,
+    w: Float32 = 320.0,
+    h: Float32 = 240.0,
+) raises -> Bool:
     """A movable, resizable window; the geometry applies on FIRST use only.
 
     Returns False when collapsed — skip the contents, but call `ig_end()`
     either way.
     """
     return _get_dylib_function[
-        lib, "mrl_ig_begin_window",
+        lib,
+        "mrl_ig_begin_window",
         def(
             Ptr[c_char, MutUntrackedOrigin], c_float, c_float, c_float, c_float
         ) thin -> Bool,
@@ -306,15 +308,17 @@ def ig_end() raises:
     _get_dylib_function[lib, "mrl_ig_end", def() thin -> None]()()
 
 
-def ig_begin_child(var id: String, w: Float32 = 0.0, h: Float32 = 0.0,
-                   border: Bool = True) raises -> Bool:
+def ig_begin_child(
+    var id: String, w: Float32 = 0.0, h: Float32 = 0.0, border: Bool = True
+) raises -> Bool:
     """A scrolling sub-region. 0 for a dimension means "fill the parent".
 
     This is what makes an 85-task list a non-problem: the child scrolls, so
     the list no longer has to fit the window.
     """
     return _get_dylib_function[
-        lib, "mrl_ig_begin_child",
+        lib,
+        "mrl_ig_begin_child",
         def(
             Ptr[c_char, MutUntrackedOrigin], c_float, c_float, Bool
         ) thin -> Bool,
@@ -332,7 +336,8 @@ def ig_separator() raises:
 def ig_separator_text(var label: String) raises:
     """A horizontal rule with an embedded caption — a section heading."""
     _get_dylib_function[
-        lib, "mrl_ig_separator_text",
+        lib,
+        "mrl_ig_separator_text",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(label))
 
@@ -340,7 +345,9 @@ def ig_separator_text(var label: String) raises:
 def ig_same_line(offset_x: Float32 = 0.0, spacing: Float32 = -1.0) raises:
     """Put the NEXT widget on the same line as the previous one."""
     _get_dylib_function[
-        lib, "mrl_ig_same_line", def(c_float, c_float) thin -> None,
+        lib,
+        "mrl_ig_same_line",
+        def(c_float, c_float) thin -> None,
     ]()(offset_x, spacing)
 
 
@@ -349,15 +356,11 @@ def ig_spacing() raises:
 
 
 def ig_indent(w: Float32 = 0.0) raises:
-    _get_dylib_function[
-        lib, "mrl_ig_indent", def(c_float) thin -> None
-    ]()(w)
+    _get_dylib_function[lib, "mrl_ig_indent", def(c_float) thin -> None]()(w)
 
 
 def ig_unindent(w: Float32 = 0.0) raises:
-    _get_dylib_function[
-        lib, "mrl_ig_unindent", def(c_float) thin -> None
-    ]()(w)
+    _get_dylib_function[lib, "mrl_ig_unindent", def(c_float) thin -> None]()(w)
 
 
 def ig_set_next_item_width(w: Float32) raises:
@@ -379,14 +382,15 @@ def ig_push_id_int(id: Int) raises:
     """Disambiguate identical labels inside a loop. See the ID RULES note at
     the top of this module — without it, N buttons sharing a label are one
     button."""
-    _get_dylib_function[
-        lib, "mrl_ig_push_id_int", def(c_int) thin -> None
-    ]()(c_int(id))
+    _get_dylib_function[lib, "mrl_ig_push_id_int", def(c_int) thin -> None]()(
+        c_int(id)
+    )
 
 
 def ig_push_id_str(var id: String) raises:
     _get_dylib_function[
-        lib, "mrl_ig_push_id_str",
+        lib,
+        "mrl_ig_push_id_str",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(id))
 
@@ -402,16 +406,19 @@ def ig_pop_id() raises:
 
 def ig_text(var s: String) raises:
     _get_dylib_function[
-        lib, "mrl_ig_text",
+        lib,
+        "mrl_ig_text",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(s))
 
 
-def ig_text_colored(var s: String, r: Float32, g: Float32, b: Float32,
-                    a: Float32 = 1.0) raises:
+def ig_text_colored(
+    var s: String, r: Float32, g: Float32, b: Float32, a: Float32 = 1.0
+) raises:
     """Colour components are 0..1 floats, NOT the 0..255 bytes `Color` uses."""
     _get_dylib_function[
-        lib, "mrl_ig_text_colored",
+        lib,
+        "mrl_ig_text_colored",
         def(
             Ptr[c_char, MutUntrackedOrigin], c_float, c_float, c_float, c_float
         ) thin -> None,
@@ -420,14 +427,16 @@ def ig_text_colored(var s: String, r: Float32, g: Float32, b: Float32,
 
 def ig_text_disabled(var s: String) raises:
     _get_dylib_function[
-        lib, "mrl_ig_text_disabled",
+        lib,
+        "mrl_ig_text_disabled",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(s))
 
 
 def ig_text_wrapped(var s: String) raises:
     _get_dylib_function[
-        lib, "mrl_ig_text_wrapped",
+        lib,
+        "mrl_ig_text_wrapped",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(s))
 
@@ -437,26 +446,32 @@ def ig_text_wrapped(var s: String) raises:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ig_button(var label: String, w: Float32 = 0.0, h: Float32 = 0.0) raises -> Bool:
+def ig_button(
+    var label: String, w: Float32 = 0.0, h: Float32 = 0.0
+) raises -> Bool:
     """0 sizes auto-fit the label; a negative width fills the region."""
     return _get_dylib_function[
-        lib, "mrl_ig_button",
+        lib,
+        "mrl_ig_button",
         def(Ptr[c_char, MutUntrackedOrigin], c_float, c_float) thin -> Bool,
     ]()(_c(label), w, h)
 
 
 def ig_small_button(var label: String) raises -> Bool:
     return _get_dylib_function[
-        lib, "mrl_ig_small_button",
+        lib,
+        "mrl_ig_small_button",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
     ]()(_c(label))
 
 
-def ig_toggle_button(var label: String, active: Bool, w: Float32 = 0.0,
-                     h: Float32 = 0.0) raises -> Bool:
+def ig_toggle_button(
+    var label: String, active: Bool, w: Float32 = 0.0, h: Float32 = 0.0
+) raises -> Bool:
     """A button drawn "pressed" when `active` — the radio-group idiom."""
     return _get_dylib_function[
-        lib, "mrl_ig_toggle_button",
+        lib,
+        "mrl_ig_toggle_button",
         def(
             Ptr[c_char, MutUntrackedOrigin], Bool, c_float, c_float
         ) thin -> Bool,
@@ -466,7 +481,8 @@ def ig_toggle_button(var label: String, active: Bool, w: Float32 = 0.0,
 def ig_selectable(var label: String, selected: Bool = False) raises -> Bool:
     """A full-width list row, highlighted when `selected`."""
     return _get_dylib_function[
-        lib, "mrl_ig_selectable",
+        lib,
+        "mrl_ig_selectable",
         def(Ptr[c_char, MutUntrackedOrigin], Bool) thin -> Bool,
     ]()(_c(label), selected)
 
@@ -474,7 +490,8 @@ def ig_selectable(var label: String, selected: Bool = False) raises -> Bool:
 def ig_checkbox(var label: String, mut v: Bool) raises -> Bool:
     """Mutates `v` in place; returns True on the frame it changed."""
     return _get_dylib_function[
-        lib, "mrl_ig_checkbox",
+        lib,
+        "mrl_ig_checkbox",
         def(
             Ptr[c_char, MutUntrackedOrigin], Ptr[Bool, MutUntrackedOrigin]
         ) thin -> Bool,
@@ -483,48 +500,75 @@ def ig_checkbox(var label: String, mut v: Bool) raises -> Bool:
 
 def ig_radio(var label: String, active: Bool) raises -> Bool:
     return _get_dylib_function[
-        lib, "mrl_ig_radio",
+        lib,
+        "mrl_ig_radio",
         def(Ptr[c_char, MutUntrackedOrigin], Bool) thin -> Bool,
     ]()(_c(label), active)
 
 
-def ig_slider_float(var label: String, mut v: Float32, lo: Float32, hi: Float32,
-                    var fmt: String = String("%.3f")) raises -> Bool:
+def ig_slider_float(
+    var label: String,
+    mut v: Float32,
+    lo: Float32,
+    hi: Float32,
+    var fmt: String = String("%.3f"),
+) raises -> Bool:
     """A DRAGGABLE slider — it streams values for the whole gesture, which is
     the capability the hand-rolled widget layer could not provide at all."""
     return _get_dylib_function[
-        lib, "mrl_ig_slider_float",
+        lib,
+        "mrl_ig_slider_float",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
-            c_float, c_float, Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            c_float,
+            c_float,
+            Ptr[c_char, MutUntrackedOrigin],
         ) thin -> Bool,
     ]()(_c(label), untracked(Ptr(to=v)), lo, hi, _c(fmt))
 
 
-def ig_slider_int(var label: String, mut v: Int32, lo: Int32, hi: Int32) raises -> Bool:
+def ig_slider_int(
+    var label: String, mut v: Int32, lo: Int32, hi: Int32
+) raises -> Bool:
     return _get_dylib_function[
-        lib, "mrl_ig_slider_int",
+        lib,
+        "mrl_ig_slider_int",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_int, MutUntrackedOrigin],
-            c_int, c_int,
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_int, MutUntrackedOrigin],
+            c_int,
+            c_int,
         ) thin -> Bool,
     ]()(_c(label), untracked(Ptr(to=v)), lo, hi)
 
 
-def ig_drag_float(var label: String, mut v: Float32, speed: Float32 = 0.01,
-                  lo: Float32 = 0.0, hi: Float32 = 0.0,
-                  var fmt: String = String("%.3f")) raises -> Bool:
+def ig_drag_float(
+    var label: String,
+    mut v: Float32,
+    speed: Float32 = 0.01,
+    lo: Float32 = 0.0,
+    hi: Float32 = 0.0,
+    var fmt: String = String("%.3f"),
+) raises -> Bool:
     """Unbounded drag. lo == hi == 0 means no clamping."""
     return _get_dylib_function[
-        lib, "mrl_ig_drag_float",
+        lib,
+        "mrl_ig_drag_float",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
-            c_float, c_float, c_float, Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            c_float,
+            c_float,
+            c_float,
+            Ptr[c_char, MutUntrackedOrigin],
         ) thin -> Bool,
     ]()(_c(label), untracked(Ptr(to=v)), speed, lo, hi, _c(fmt))
 
 
-def ig_combo(var label: String, mut current: Int32, items: List[String]) raises -> Bool:
+def ig_combo(
+    var label: String, mut current: Int32, items: List[String]
+) raises -> Bool:
     """A dropdown. `items` is joined into ImGui's NUL-separated form here, so
     callers pass an ordinary list."""
     var packed = String("")
@@ -533,9 +577,11 @@ def ig_combo(var label: String, mut current: Int32, items: List[String]) raises 
         packed += String(chr(0))
     packed += String(chr(0))
     return _get_dylib_function[
-        lib, "mrl_ig_combo",
+        lib,
+        "mrl_ig_combo",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_int, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_int, MutUntrackedOrigin],
             Ptr[c_char, MutUntrackedOrigin],
         ) thin -> Bool,
     ]()(_c(label), untracked(Ptr(to=current)), _c(packed))
@@ -548,7 +594,8 @@ def ig_tree_node(var label: String) raises -> Bool:
     open/closed state itself, so nothing needs storing on the caller's side.
     """
     return _get_dylib_function[
-        lib, "mrl_ig_tree_node",
+        lib,
+        "mrl_ig_tree_node",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
     ]()(_c(label))
 
@@ -584,15 +631,14 @@ def ig_begin_main_menu_bar() raises -> Bool:
 
 
 def ig_end_main_menu_bar() raises:
-    _get_dylib_function[
-        lib, "mrl_ig_end_main_menu_bar", def() thin -> None
-    ]()()
+    _get_dylib_function[lib, "mrl_ig_end_main_menu_bar", def() thin -> None]()()
 
 
 def ig_begin_menu(var label: String) raises -> Bool:
     """A drop-down. `ig_end_menu` ONLY if this returned True."""
     return _get_dylib_function[
-        lib, "mrl_ig_begin_menu",
+        lib,
+        "mrl_ig_begin_menu",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
     ]()(_c(label))
 
@@ -609,10 +655,13 @@ def ig_menu_item(
 ) raises -> Bool:
     """A row in a menu. True on the frame it is clicked."""
     return _get_dylib_function[
-        lib, "mrl_ig_menu_item",
+        lib,
+        "mrl_ig_menu_item",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_char, MutUntrackedOrigin],
-            Bool, Bool,
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
+            Bool,
+            Bool,
         ) thin -> Bool,
     ]()(_c(label), _c(shortcut), selected, enabled)
 
@@ -627,7 +676,8 @@ def ig_frame_height_with_spacing() raises -> Float32:
 def ig_begin_tab_bar(var id: String) raises -> Bool:
     """`ig_end_tab_bar` ONLY if this returned True."""
     return _get_dylib_function[
-        lib, "mrl_ig_begin_tab_bar",
+        lib,
+        "mrl_ig_begin_tab_bar",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
     ]()(_c(id))
 
@@ -642,7 +692,8 @@ def ig_begin_tab_item(var label: String) raises -> Bool:
     mistake in a debug build and corrupts the id stack silently in a release
     one, which surfaces as a DIFFERENT widget going dead."""
     return _get_dylib_function[
-        lib, "mrl_ig_begin_tab_item",
+        lib,
+        "mrl_ig_begin_tab_item",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> Bool,
     ]()(_c(label))
 
@@ -653,9 +704,9 @@ def ig_end_tab_item() raises:
 
 def ig_columns(count: Int, border: Bool = False) raises:
     """Split the region into `count` columns; `ig_columns(1)` ends them."""
-    _get_dylib_function[
-        lib, "mrl_ig_columns", def(c_int, Bool) thin -> None
-    ]()(c_int(count), border)
+    _get_dylib_function[lib, "mrl_ig_columns", def(c_int, Bool) thin -> None]()(
+        c_int(count), border
+    )
 
 
 def ig_next_column() raises:
@@ -668,17 +719,26 @@ def ig_set_column_width(index: Int, w: Float32) raises:
     ]()(c_int(index), w)
 
 
-def ig_collapsing_header(var label: String, default_open: Bool = False) raises -> Bool:
+def ig_collapsing_header(
+    var label: String, default_open: Bool = False
+) raises -> Bool:
     """Like a tree node but styled as a full-width bar; needs NO pop."""
     return _get_dylib_function[
-        lib, "mrl_ig_collapsing_header",
+        lib,
+        "mrl_ig_collapsing_header",
         def(Ptr[c_char, MutUntrackedOrigin], Bool) thin -> Bool,
     ]()(_c(label), default_open)
 
 
-def ig_plot_lines(var label: String, values: List[Float32], offset: Int = 0,
-                  lo: Float32 = 0.0, hi: Float32 = 0.0, w: Float32 = 0.0,
-                  h: Float32 = 40.0) raises:
+def ig_plot_lines(
+    var label: String,
+    values: List[Float32],
+    offset: Int = 0,
+    lo: Float32 = 0.0,
+    hi: Float32 = 0.0,
+    w: Float32 = 0.0,
+    h: Float32 = 40.0,
+) raises:
     """A sparkline. `offset` is the write cursor of a ring buffer, so a
     rolling history plots in order without being rotated first.
 
@@ -687,21 +747,39 @@ def ig_plot_lines(var label: String, values: List[Float32], offset: Int = 0,
     if len(values) == 0:
         return
     _get_dylib_function[
-        lib, "mrl_ig_plot_lines",
+        lib,
+        "mrl_ig_plot_lines",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
-            c_int, c_int, c_float, c_float, c_float, c_float,
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            c_int,
+            c_int,
+            c_float,
+            c_float,
+            c_float,
+            c_float,
         ) thin -> None,
     ]()(
-        _c(label), untracked(values.unsafe_ptr()), c_int(len(values)),
-        c_int(offset), lo, hi, w, h,
+        _c(label),
+        untracked(values.unsafe_ptr()),
+        c_int(len(values)),
+        c_int(offset),
+        lo,
+        hi,
+        w,
+        h,
     )
 
 
-def ig_progress_bar(frac: Float32, w: Float32 = -1.0, h: Float32 = 0.0,
-                    var overlay: String = String("")) raises:
+def ig_progress_bar(
+    frac: Float32,
+    w: Float32 = -1.0,
+    h: Float32 = 0.0,
+    var overlay: String = String(""),
+) raises:
     _get_dylib_function[
-        lib, "mrl_ig_progress_bar",
+        lib,
+        "mrl_ig_progress_bar",
         def(
             c_float, c_float, c_float, Ptr[c_char, MutUntrackedOrigin]
         ) thin -> None,
@@ -724,7 +802,8 @@ def ig_is_item_hovered() raises -> Bool:
 def ig_set_tooltip(var s: String) raises:
     """Tooltip for the widget emitted immediately before this call."""
     _get_dylib_function[
-        lib, "mrl_ig_set_tooltip",
+        lib,
+        "mrl_ig_set_tooltip",
         def(Ptr[c_char, MutUntrackedOrigin]) thin -> None,
     ]()(_c(s))
 
@@ -790,8 +869,9 @@ struct TextBuffer(Copyable, Movable):
         self.data[0] = 0
 
 
-def ig_input_text(var label: String, mut buf: TextBuffer,
-                  var hint: String = String("")) raises -> Bool:
+def ig_input_text(
+    var label: String, mut buf: TextBuffer, var hint: String = String("")
+) raises -> Bool:
     """An editable text field. Returns True on the frames the text changed.
 
     `hint` is greyed placeholder text shown while the field is empty; ImGui
@@ -804,17 +884,21 @@ def ig_input_text(var label: String, mut buf: TextBuffer,
     var ptr = untracked(Ptr(to=buf.data).unsafe_bitcast[c_char]())
     if hint.byte_length() > 0:
         return _get_dylib_function[
-            lib, "mrl_ig_input_text_hint",
+            lib,
+            "mrl_ig_input_text_hint",
             def(
                 Ptr[c_char, MutUntrackedOrigin],
                 Ptr[c_char, MutUntrackedOrigin],
-                Ptr[c_char, MutUntrackedOrigin], c_int,
+                Ptr[c_char, MutUntrackedOrigin],
+                c_int,
             ) thin -> Bool,
         ]()(_c(label), _c(hint), ptr, c_int(TextBuffer.CAP))
     return _get_dylib_function[
-        lib, "mrl_ig_input_text",
+        lib,
+        "mrl_ig_input_text",
         def(
-            Ptr[c_char, MutUntrackedOrigin], Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[c_char, MutUntrackedOrigin],
             c_int,
         ) thin -> Bool,
     ]()(_c(label), ptr, c_int(TextBuffer.CAP))
@@ -862,7 +946,8 @@ def gz_set_rect(x: Float32, y: Float32, w: Float32, h: Float32) raises:
     missing strip, and the symptom reads as a projection bug.
     """
     _get_dylib_function[
-        lib, "mrl_gz_set_rect",
+        lib,
+        "mrl_gz_set_rect",
         def(c_float, c_float, c_float, c_float) thin -> None,
     ]()(x, y, w, h)
 
@@ -880,8 +965,12 @@ def gz_set_size(v: Float32 = 0.1) raises:
 
 
 def gz_manipulate(
-    view: List[Float32], proj: List[Float32], op: Int, mode: Int,
-    mut matrix: List[Float32], snap: Float32 = 0.0,
+    view: List[Float32],
+    proj: List[Float32],
+    op: Int,
+    mode: Int,
+    mut matrix: List[Float32],
+    snap: Float32 = 0.0,
 ) raises -> Bool:
     """Draw the gizmo at `matrix` and let the pointer move it. IN-OUT.
 
@@ -898,17 +987,25 @@ def gz_manipulate(
     # takes the flag instead.
     var s = [snap, snap, snap]
     return _get_dylib_function[
-        lib, "mrl_gz_manipulate",
+        lib,
+        "mrl_gz_manipulate",
         def(
-            Ptr[c_float, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
-            c_int, c_int,
-            Ptr[c_float, MutUntrackedOrigin], Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            c_int,
+            c_int,
+            Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
             c_int,
         ) thin -> Bool,
     ]()(
-        untracked(view.unsafe_ptr()), untracked(proj.unsafe_ptr()),
-        c_int(op), c_int(mode), untracked(matrix.unsafe_ptr()),
-        untracked(s.unsafe_ptr()), c_int(1 if snap > 0.0 else 0),
+        untracked(view.unsafe_ptr()),
+        untracked(proj.unsafe_ptr()),
+        c_int(op),
+        c_int(mode),
+        untracked(matrix.unsafe_ptr()),
+        untracked(s.unsafe_ptr()),
+        c_int(1 if snap > 0.0 else 0),
     )
 
 
@@ -920,3 +1017,128 @@ def gz_is_over() raises -> Bool:
 def gz_is_using() raises -> Bool:
     """True while a handle is being dragged. See the header note."""
     return _get_dylib_function[lib, "mrl_gz_is_using", def() thin -> Bool]()()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# textures — showing an image (a camera frame) inside a window
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct IgTexture(Movable):
+    """A GPU texture ImGui can draw, fed from CPU RGBA bytes.
+
+    ⚠ RGBA, TIGHTLY PACKED, 4 BYTES PER PIXEL. A camera frame from
+    `mojo_rl.vision.opencv` is BGR HWC with 3 — converting is the caller's job
+    and is deliberately not hidden here, because a silent channel swap is
+    invisible in a preview that still looks like an image.
+
+    ⚠ CLOSE IT BEFORE THE RENDERER. It holds GPU objects created on the
+    device; releasing them after the device is gone is a use-after-free.
+    """
+
+    var _h: Int
+    var width: Int
+    var height: Int
+
+    def __init__[
+        D: AnyType, o: Origin
+    ](out self, device: Ptr[D, o], width: Int, height: Int) raises:
+        self._h = _get_dylib_function[
+            lib,
+            "mrl_ig_texture_create",
+            def(Ptr[NoneType, MutUntrackedOrigin], c_int, c_int) thin -> Int,
+        ]()(
+            untracked(device.unsafe_bitcast[NoneType]()),
+            c_int(width),
+            c_int(height),
+        )
+        if self._h == 0:
+            raise String("imgui: could not create a ") + String(
+                width
+            ) + "x" + String(height) + " texture"
+        self.width = width
+        self.height = height
+
+    def upload(self, rgba: List[UInt8]) raises -> Bool:
+        """Push `width * height * 4` bytes to the GPU. False if SDL refused."""
+        if len(rgba) < self.width * self.height * 4:
+            raise String("IgTexture.upload: got ") + String(
+                len(rgba)
+            ) + " bytes, need " + String(self.width * self.height * 4)
+        return _get_dylib_function[
+            lib,
+            "mrl_ig_texture_upload",
+            def(Int, Ptr[UInt8, MutUntrackedOrigin]) thin -> Bool,
+        ]()(self._h, untracked(Pointer(to=rgba[0])))
+
+    def image(self, w: Float32, h: Float32) raises:
+        """Draw it as a widget, `w` x `h` logical pixels."""
+        _get_dylib_function[
+            lib, "mrl_ig_image", def(Int, c_float, c_float) thin -> None
+        ]()(self._h, c_float(w), c_float(h))
+
+    def close(mut self):
+        if self._h == 0:
+            return
+        try:
+            _get_dylib_function[
+                lib, "mrl_ig_texture_destroy", def(Int) thin -> None
+            ]()(self._h)
+        except:
+            pass
+        self._h = 0
+
+
+def ig_last_item_rect() raises -> Tuple[Float32, Float32, Float32, Float32]:
+    """Where the previous widget landed, `(x, y, w, h)` in window coordinates.
+
+    Exists so an overlay can be drawn over an image without reimplementing
+    ImGui's layout rules — ask where the image actually went.
+    """
+    var x = c_float(0)
+    var y = c_float(0)
+    var w = c_float(0)
+    var h = c_float(0)
+    _get_dylib_function[
+        lib,
+        "mrl_ig_last_item_rect",
+        def(
+            Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+            Ptr[c_float, MutUntrackedOrigin],
+        ) thin -> None,
+    ]()(
+        untracked(Pointer(to=x)),
+        untracked(Pointer(to=y)),
+        untracked(Pointer(to=w)),
+        untracked(Pointer(to=h)),
+    )
+    return (Float32(x), Float32(y), Float32(w), Float32(h))
+
+
+def ig_overlay_line(
+    x0: Float32,
+    y0: Float32,
+    x1: Float32,
+    y1: Float32,
+    rgba: UInt32 = 0xFF00FF00,
+    thickness: Float32 = 2.0,
+) raises:
+    """A line on the current window's draw list, in WINDOW coordinates.
+
+    ⚠ `rgba` IS ImGui's PACKED ORDER, which is ABGR in memory: 0xFF00FF00 is
+    opaque green, not opaque red.
+    """
+    _get_dylib_function[
+        lib,
+        "mrl_ig_overlay_line",
+        def(c_float, c_float, c_float, c_float, UInt32, c_float) thin -> None,
+    ]()(
+        c_float(x0),
+        c_float(y0),
+        c_float(x1),
+        c_float(y1),
+        rgba,
+        c_float(thickness),
+    )

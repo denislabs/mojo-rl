@@ -168,6 +168,10 @@ build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the 
 # pixi env already carries the full C++ OpenCV 5.0. Groups A (lifecycle) and
 # B (capture) today; see docs/OPENCV_SHIM_SCOPE.md. Prerequisite of any camera
 # capture from Mojo, which is what the ACT closed-loop rollout is blocked on.
+# The vision playground: a live camera (or any video file) in an ImGui window,
+# with ArUco detection drawn over it. Needs BOTH shims. Build the binary rather
+# than `mojo run` -- it links ResNet-free but still takes ~40 s to compile.
+camera-studio = { cmd = "mojo run -I . examples/vision/camera_studio.mojo", depends-on = ["build-imgui", "build-opencv"], description = "Live camera + ArUco playground (examples/vision/camera_studio.mojo)" }
 build-opencv = { cmd = "bash scripts/build_opencv.sh", description = "Build the OpenCV shim (mojo_rl/vision/opencv/)" }
 build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (mojo_rl/physics3d/collision/)" }
 # The SO-101 hardware gate: dump both arms from Mojo, diff against
