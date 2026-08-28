@@ -80,6 +80,7 @@ WHAT TO LOOK FOR
 """
 
 from std.sys import argv
+from std.math import atan
 from std.time import perf_counter_ns
 
 from mojo_rl.render.imgui import (
@@ -155,6 +156,16 @@ comptime MIN_CORNERS = 8
 comptime MIN_VIEWS = 6
 """⚠ AND THEY MUST DIFFER. Six views of the same pose is one view with six
 times the confidence in the wrong answer — tilt the board between captures."""
+
+
+def _fov_deg(pixels: Float64, f: Float64) -> Float64:
+    """Full field of view in degrees for a sensor `pixels` wide and focal `f`.
+
+    ⚠ THE CHEAPEST REALITY CHECK THERE IS. A calibration can be internally
+    consistent and still describe a lens you do not own; the field of view is
+    the one output you can verify by looking at the picture.
+    """
+    return 2.0 * atan(pixels / 2.0 / f) * 180.0 / 3.14159265358979323846
 
 
 def _plot_push(mut buf: List[Float32], v: Float32, cap: Int = 180):
@@ -324,6 +335,16 @@ def main() raises:
     var cal_dist = List[Float64]()
     var cal_rms = Float64(0.0)
     var cal_done = False
+    # ⚠ WHERE THE CAPTURED CORNERS LANDED, which is the diagnostic a low `rms`
+    # cannot give you. `calibrateCamera` puts the principal point where the
+    # DATA is: views that all sit in the middle-bottom of the frame produce a
+    # confident, low-residual fit with `cy` dragged toward them. Measured on a
+    # real run: cx was 0.7% off centre and cy 6.1%, from six views that never
+    # reached the top of the image.
+    var cov_x0 = Float32(1.0e9)
+    var cov_x1 = Float32(-1.0e9)
+    var cov_y0 = Float32(1.0e9)
+    var cov_y1 = Float32(-1.0e9)
     var last_z_mm = Float64(0.0)
     var have_z: Bool
     var paused = False
@@ -571,12 +592,27 @@ def main() raises:
                 cal_img.append(Float64(b_corners[i * 2]))
                 cal_img.append(Float64(b_corners[i * 2 + 1]))
             cal_counts.append(Int32(n_board_seen))
+            for i in range(n_board_seen):
+                var px = b_corners[i * 2]
+                var py = b_corners[i * 2 + 1]
+                if px < cov_x0:
+                    cov_x0 = px
+                if px > cov_x1:
+                    cov_x1 = px
+                if py < cov_y0:
+                    cov_y0 = py
+                if py > cov_y1:
+                    cov_y1 = py
         ig_same_line()
         if ig_button(String("clear")):
             cal_obj = List[Float64]()
             cal_img = List[Float64]()
             cal_counts = List[Int32]()
             cal_done = False
+            cov_x0 = 1.0e9
+            cov_x1 = -1.0e9
+            cov_y0 = 1.0e9
+            cov_y1 = -1.0e9
 
         var can_calibrate = len(cal_counts) >= MIN_VIEWS
         if ig_button(String("calibrate")) and can_calibrate:
@@ -609,6 +645,37 @@ def main() raises:
         else:
             ig_text(String("ready — tilt between captures"))
 
+        # ── coverage: the number `rms` cannot give you ──────────────────────
+        #
+        # ⚠⚠ A LOW `rms` WITH POOR COVERAGE IS THE DANGEROUS COMBINATION, not
+        # a reassuring one. The residual only says the model explains the
+        # corners it was given; if those corners all sit in one part of the
+        # frame it explains them beautifully AND puts the principal point in
+        # the middle of them. 70% is a floor, not a target — lens distortion
+        # lives at the EDGES, so a calibration whose corners never went there
+        # has no evidence about the part of the image it will be used on.
+        if len(cal_counts) > 0:
+            var cw = (cov_x1 - cov_x0) / Float32(frame_w) * 100.0
+            var ch = (cov_y1 - cov_y0) / Float32(frame_h) * 100.0
+            var cov_line = (
+                String("coverage ")
+                + fixed(Float64(cw), 0)
+                + "% x "
+                + fixed(Float64(ch), 0)
+                + "%"
+            )
+            if cw < 70.0 or ch < 70.0:
+                ig_text_colored(cov_line + " LOW", 1.0, 0.5, 0.3, 1.0)
+                ig_text_disabled(String("push the board into the frame"))
+                ig_text_disabled(String("corners, especially top and bottom"))
+            else:
+                ig_text(cov_line)
+                ig_text_disabled(String("(70% is a floor, not a target)"))
+        else:
+            ig_text_disabled(String("coverage -"))
+            ig_text_disabled(String(" "))
+            ig_text_disabled(String(" "))
+
         # ⚠ RMS IS A FIT RESIDUAL, NOT AN ACCURACY. It says the model explains
         # the corners it was given; views that all face the board head-on fit
         # beautifully and still leave the focal length badly determined.
@@ -635,6 +702,35 @@ def main() raises:
                 )
             else:
                 ig_text(String("rms ") + fixed(cal_rms, 3) + " px")
+
+            # ⚠ THE THREE CHECKS THAT COST NOTHING AND ARE WORTH MORE THAN THE
+            # RESIDUAL. Square pixels means fx/fy ~ 1; a webcam's principal
+            # point lands within ~1-2% of centre; and the field of view has to
+            # match the picture you can see with your own eyes.
+            var ar = cal_k[0] / cal_k[4]
+            var ppx = (cal_k[2] - Float64(frame_w) / 2.0) / Float64(frame_w)
+            var ppy = (cal_k[5] - Float64(frame_h) / 2.0) / Float64(frame_h)
+            ig_text(String("fx/fy ") + fixed(ar, 4))
+            var off_line = (
+                String("centre off ")
+                + fixed(ppx * 100.0, 1)
+                + "% , "
+                + fixed(ppy * 100.0, 1)
+                + "%"
+            )
+            if abs(ppx) > 0.02 or abs(ppy) > 0.02:
+                ig_text_colored(off_line + " HIGH", 1.0, 0.5, 0.3, 1.0)
+            else:
+                ig_text(off_line)
+            # 2*atan(w/2/fx), in degrees, without pulling in a trig import for
+            # one line: atan via the identity is not worth it, so use the
+            # small helper below.
+            ig_text(
+                String("H fov ")
+                + fixed(_fov_deg(Float64(frame_w), cal_k[0]), 1)
+                + "  V "
+                + fixed(_fov_deg(Float64(frame_h), cal_k[4]), 1)
+            )
         else:
             ig_text_disabled(String("fx -  fy -"))
             ig_text_disabled(String("cx -  cy -"))
@@ -659,6 +755,20 @@ def main() raises:
         # window has padding, a title bar and possibly a scrollbar, and an
         # overlay drawn at a guessed origin is subtly and permanently offset.
         var rect = ig_last_item_rect()
+        # ⚠ THE COVERAGE BOX, DRAWN. A percentage tells you the fit is
+        # under-constrained; seeing the rectangle tells you WHERE to move the
+        # board next, which is the only actionable form of that information.
+        if calib_on and len(cal_counts) > 0:
+            var bx0 = rect[0] + cov_x0 * scale
+            var by0 = rect[1] + cov_y0 * scale
+            var bx1 = rect[0] + cov_x1 * scale
+            var by1 = rect[1] + cov_y1 * scale
+            var amber = UInt32(0xFF20A0FF)
+            ig_overlay_line(bx0, by0, bx1, by0, amber, 2.0)
+            ig_overlay_line(bx1, by0, bx1, by1, amber, 2.0)
+            ig_overlay_line(bx1, by1, bx0, by1, amber, 2.0)
+            ig_overlay_line(bx0, by1, bx0, by0, amber, 2.0)
+
         if detect_on and n_markers > 0:
             for m in range(n_markers):
                 for c in range(4):
