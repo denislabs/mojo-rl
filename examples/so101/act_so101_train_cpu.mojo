@@ -46,6 +46,8 @@ from mojo_rl.deep_agents.act.config import (
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
 from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 
 from std.python import Python, PythonObject
 
@@ -67,8 +69,14 @@ comptime N_ENC = 1  # paper: 4
 comptime N_DEC = 1  # paper: 7, but output-equivalent to 1 (see config.mojo)
 comptime BATCH = 4  # paper: 8
 
-comptime STEPS = 400
+comptime DEFAULT_STEPS = 400
+"""Override with `ACT_STEPS` — no rebuild. Same knob as the GPU example."""
 comptime VAL_EVERY = 50
+comptime VAL_SEED: UInt64 = 0x5DEECE66D
+"""Validation draws the SAME batches every pass. Left random, `best_val` is the
+minimum of a noisy estimate and selects the luckiest draw rather than the best
+model — and successive points on the curve are not comparable."""
+comptime LOG_EVERY = 10
 comptime VAL_BATCHES = 4
 comptime LR = 1e-4
 comptime KL_WEIGHT = 10.0
@@ -111,6 +119,15 @@ def main() raises:
         print("build it with tools/act/lerobot_v3_to_store.py — see the header")
         raise Error("store not found")
 
+    var steps = Int(DEFAULT_STEPS)
+    var env_steps = String(
+        os.environ.get(PythonObject("ACT_STEPS"), PythonObject(""))
+    )
+    if env_steps.byte_length() > 0:
+        steps = Int(env_steps)
+        if steps < 1:
+            raise Error("ACT_STEPS must be >= 1, got " + env_steps)
+
     print("ACT / SO-ARM101 — CPU training")
     print("  store   " + path)
     print(
@@ -132,6 +149,46 @@ def main() raises:
     )
     print("")
 
+    # Same metric stream as the GPU example — see its header. Inert without
+    # `RL_MONITOR_URL` in `.env`, and forced inert by `ACT_NO_MONITOR=1`.
+    var env_vars = load_dotenv()
+    var no_monitor = String(
+        os.environ.get(PythonObject("ACT_NO_MONITOR"), PythonObject(""))
+    )
+    var monitor_url = (
+        String("") if no_monitor.byte_length() > 0
+        else env_vars.get("RL_MONITOR_URL", "")
+    )
+    var logger = RemoteLogger(
+        server_url=monitor_url,
+        run_name="ACT SO-ARM101 (CPU)",
+        buffer_size=64,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    logger.set_config("algorithm", "ACT")
+    logger.set_config("robot", "SO-ARM101")
+    logger.set_config("target", "cpu")
+    logger.set_config("store", path)
+    logger.set_config("chunk_k", String(K))
+    logger.set_config("hidden_dim", String(DIM))
+    logger.set_config("dim_feedforward", String(FF))
+    logger.set_config("enc_layers", String(N_ENC))
+    logger.set_config("dec_layers", String(N_DEC))
+    logger.set_config("batch", String(BATCH))
+    logger.set_config("lr", String(LR))
+    logger.set_config("kl_weight", String(KL_WEIGHT))
+    logger.set_config("steps", String(steps))
+    logger.set_config("train_episodes", String(len(ds.train_eps)))
+    print(
+        "  metrics " + (
+            "streaming to " + monitor_url if logger.is_active()
+            else (
+                "OFF (ACT_NO_MONITOR)" if no_monitor.byte_length() > 0
+                else "local only (set RL_MONITOR_URL in .env)"
+            )
+        )
+    )
+
     var tr = T.make(lr=Scalar[DT](LR), kl_weight=Scalar[DT](KL_WEIGHT))
 
     var qpos = List[Scalar[DT]](unsafe_uninit_length=BATCH * QPOS)
@@ -141,17 +198,65 @@ def main() raises:
 
     var best_val = Float64(1e30)
     var best_step = -1
-    var ckpt = String("/tmp/act_so101_best.ckpt")
-    var t0 = perf_counter_ns()
+    var best_ckpt = String("/tmp/act_so101_best.ckpt")
+    var last_ckpt = String("/tmp/act_so101_last.ckpt")
 
-    for s in range(STEPS):
+    var train_frames = 0
+    for i in range(len(ds.train_eps)):
+        train_frames += ds.store.episodes.length_of(ds.train_eps[i])
+    var steps_per_epoch = train_frames // BATCH
+    if steps_per_epoch < 1:
+        steps_per_epoch = 1
+    print(
+        "  run     " + String(steps) + " steps, " + String(steps_per_epoch)
+        + " per epoch (" + String(train_frames) + " train frames)"
+    )
+    print("")
+
+    var t0 = perf_counter_ns()
+    var t_mark = t0
+    var s_mark = 0
+
+    var acc_l1 = Float64(0.0)
+    var acc_kl = Float64(0.0)
+    var acc_n = 0
+
+    var names = List[String]()
+    names.append(String("train/l1"))
+    names.append(String("train/kl"))
+    names.append(String("train/epoch"))
+
+    var val_names = List[String]()
+    val_names.append(String("val/l1"))
+    val_names.append(String("val/kl"))
+    val_names.append(String("perf/s_per_step"))
+    val_names.append(String("best/val_l1"))
+
+    for s in range(steps):
         ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
         var r = tr.train_step(qpos, images, actions, valid)
 
-        if s % VAL_EVERY == 0 or s == STEPS - 1:
+        acc_l1 += r.l1
+        acc_kl += r.kl
+        acc_n += 1
+        if acc_n == LOG_EVERY:
+            var vals = List[Float64]()
+            vals.append(acc_l1 / Float64(acc_n))
+            vals.append(acc_kl / Float64(acc_n))
+            vals.append(Float64(s) / Float64(steps_per_epoch))
+            logger.log_scalars(names, vals, s)
+            acc_l1 = 0.0
+            acc_kl = 0.0
+            acc_n = 0
+
+        if s % VAL_EVERY == 0 or s == steps - 1:
             # Validation L1 is the reference's model-selection metric
             # (`imitate_episodes.py` keeps the checkpoint with the lowest
             # validation loss), so that is what the best checkpoint tracks.
+            # ⚠ The stream is PINNED and restored, so every pass scores the
+            # SAME batches — see VAL_SEED.
+            var saved_rng = ds.rng
+            ds.rng = VAL_SEED
             var vl1 = Float64(0.0)
             var vkl = Float64(0.0)
             for _ in range(VAL_BATCHES):
@@ -161,26 +266,51 @@ def main() raises:
                 vkl += v.kl
             vl1 /= Float64(VAL_BATCHES)
             vkl /= Float64(VAL_BATCHES)
+            ds.rng = saved_rng
 
-            var el = Float64(perf_counter_ns() - t0) / 1e9
+            # Rate over the interval just finished — the cumulative average
+            # never sheds the first step's warm-up.
+            var now = perf_counter_ns()
+            var recent = Float64(now - t_mark) / 1e9
+            var d_steps = s - s_mark
+            var sps = recent / Float64(d_steps) if d_steps > 0 else recent
+            t_mark = now
+            s_mark = s
+            var eta = sps * Float64(steps - s) / 60.0
+
             print(
                 "  step " + String(s)
+                + " (epoch " + String(s // steps_per_epoch) + ")"
                 + "  train l1 " + String(r.l1)
                 + "  kl " + String(r.kl)
                 + "  |  val l1 " + String(vl1)
-                + "  |  " + String(el / Float64(s + 1)) + " s/step"
+                + "  |  " + String(sps) + " s/step, ~"
+                + String(Int(eta)) + " min left"
             )
+            tr.save(last_ckpt)
             if vl1 < best_val:
                 best_val = vl1
                 best_step = s
-                tr.save(ckpt)
+                tr.save(best_ckpt)
+
+            var vvals = List[Float64]()
+            vvals.append(vl1)
+            vvals.append(vkl)
+            vvals.append(sps)
+            vvals.append(best_val)
+            logger.log_scalars(val_names, vvals, s)
+            logger.flush()
+
+    logger.close()
 
     print("")
     print(
         "  best validation l1 " + String(best_val) + " at step "
-        + String(best_step)
+        + String(best_step) + " (epoch "
+        + String(best_step // steps_per_epoch) + ")"
     )
-    print("  checkpoint -> " + ckpt)
+    print("  best -> " + best_ckpt)
+    print("  last -> " + last_ckpt)
     print("")
     print(
         "  ⚠ validation L1 rising while training L1 falls is what a"
