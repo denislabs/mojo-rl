@@ -70,6 +70,32 @@ comptime ACT_CLIP_MAX_NORM: Float64 = 0.1  # `detr/main.py --clip_max_norm`
 # filter; and with a FROM-SCRATCH backbone a lower backbone lr would freeze the
 # vision tower rather than gently fine-tune it. One lr for everything.
 
+# ── the configuration the SO-101 examples actually run ───────────────────
+# SEPARATE FROM THE PAPER CONSTANTS ABOVE, and shared BECAUSE it drifted: the
+# training example and the open-loop evaluation each carried their own copy,
+# the training run moved to K=60/dim=256 and the evaluation stayed at the CPU
+# smoke's K=20/dim=64. A checkpoint written by the run the trainer tells you to
+# evaluate could not be loaded by the evaluator. Parameter shapes are the one
+# thing two programs must agree on exactly, so they read it from one place.
+#
+# These are NOT `ACT_*` above. Deviations and why, in `docs/ACT_PORT.md`:
+#   RUN_K = 60 is the paper's TWO-SECOND horizon at 30 fps, not its frame
+#   count (ALOHA is 50 Hz x 100 steps). RUN_DIM/RUN_FF are below the paper's
+#   512/3200 because compile time bounds the graph type, not accuracy.
+
+comptime RUN_K: Int = 60
+comptime RUN_DIM: Int = 256
+comptime RUN_HEADS: Int = 8
+comptime RUN_FF: Int = 1024
+comptime RUN_LATENT: Int = ACT_LATENT
+comptime RUN_ENC_LAYERS: Int = 4
+comptime RUN_DEC_LAYERS: Int = ACT_DEC_LAYERS
+comptime RUN_LR: Float64 = 1e-4
+"""Paper: 1e-5, with a PRETRAINED backbone. This one starts random and has to
+learn vision from scratch, so it needs the higher rate — the same reasoning as
+the single-lr deviation in `ACT_PORT.md`."""
+
+
 comptime ACT_TEMPORAL_ENSEMBLE_M: Float64 = 0.01
 """`k = 0.01` in `imitate_episodes.py:253` — `w_i = exp(-k*i)`, i indexing
 oldest-first. Called `m` in Algorithm 2 of the paper."""

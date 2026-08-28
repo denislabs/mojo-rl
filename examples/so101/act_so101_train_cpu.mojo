@@ -72,6 +72,20 @@ comptime BATCH = 4  # paper: 8
 comptime DEFAULT_STEPS = 400
 """Override with `ACT_STEPS` — no rebuild. Same knob as the GPU example."""
 comptime VAL_EVERY = 50
+comptime PATIENCE = 10
+"""Stop after this many validations with no improvement on the best. 0 = never.
+
+Sized from the run that motivated it: 50 episodes, best val L1 0.4076 at epoch
+15.5, then **26 consecutive validations all worse** (mean 0.4376) while train
+L1 fell another 1.7x. That is 33 epochs and ~2.7 GPU-hours after the last
+checkpoint that would ever be written. 10 is loose enough to ride out the
+noise in a 256-sample validation and tight enough that the waste is bounded at
+~10 epochs.
+
+⚠ This bounds WASTE, not quality. It cannot make a run better — the best
+checkpoint is already on disk when it fires. If a run stops early and you think
+it was still learning, the fix is more data or regularization, not more
+patience."""
 comptime VAL_SEED: UInt64 = 0x5DEECE66D
 """Validation draws the SAME batches every pass. Left random, `best_val` is the
 minimum of a noisy estimate and selects the luckiest draw rather than the best
@@ -198,6 +212,8 @@ def main() raises:
 
     var best_val = Float64(1e30)
     var best_step = -1
+    var stale = 0
+    """Validations since the best. See PATIENCE."""
     var best_ckpt = String("/tmp/act_so101_best.ckpt")
     var last_ckpt = String("/tmp/act_so101_last.ckpt")
 
@@ -309,7 +325,10 @@ def main() raises:
             if vl1 < best_val:
                 best_val = vl1
                 best_step = s
+                stale = 0
                 tr.save(best_ckpt)
+            else:
+                stale += 1
 
             var vvals = List[Float64]()
             vvals.append(vl1)
@@ -318,6 +337,18 @@ def main() raises:
             vvals.append(best_val)
             logger.log_scalars(val_names, vvals, s)
             logger.flush()
+
+            if PATIENCE > 0 and stale >= PATIENCE:
+                print(
+                    "  early stop: " + String(stale) + " validations with no"
+                    " improvement on " + String(best_val) + " (step "
+                    + String(best_step) + "). The best checkpoint is written;"
+                )
+                print(
+                    "    more steps will not produce a better one. See"
+                    " PATIENCE."
+                )
+                break
 
     logger.close()
 

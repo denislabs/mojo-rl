@@ -110,6 +110,14 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.act.config import (
+    RUN_DEC_LAYERS,
+    RUN_DIM,
+    RUN_ENC_LAYERS,
+    RUN_FF,
+    RUN_HEADS,
+    RUN_K,
+    RUN_LATENT,
+    RUN_LR,
     SO101_ADIM,
     SO101_IMG_H,
     SO101_IMG_W,
@@ -132,13 +140,16 @@ comptime IMG_H = SO101_IMG_H
 comptime IMG_W = SO101_IMG_W
 
 # ── model (see the table in the header) ──────────────────────────────────
-comptime K = 60  # 2.0 s at 30 fps — the paper's horizon, not its frame count
-comptime DIM = 256  # paper: 512
-comptime HEADS = 8  # paper: 8
-comptime FF = 1024  # paper: 3200
-comptime LATENT = 32  # paper: 32 (unchanged — it is small already)
-comptime N_ENC = 4  # paper: 4
-comptime N_DEC = 1  # paper: 7, but output-equivalent to 1 (see config.mojo)
+# ⚠ FROM `act.config`'s RUN_* block, because these dims ARE the checkpoint's
+# parameter shapes and `act_so101_openloop_eval.mojo` must agree with them
+# exactly. They drifted once; one definition now.
+comptime K = RUN_K  # 2.0 s at 30 fps — the paper's horizon, not its frame count
+comptime DIM = RUN_DIM  # paper: 512
+comptime HEADS = RUN_HEADS  # paper: 8
+comptime FF = RUN_FF  # paper: 3200
+comptime LATENT = RUN_LATENT  # paper: 32 (unchanged — it is small already)
+comptime N_ENC = RUN_ENC_LAYERS  # paper: 4
+comptime N_DEC = RUN_DEC_LAYERS  # paper: 7, output-equivalent to 1
 comptime BATCH = 16  # paper: 8
 
 comptime DEFAULT_STEPS = 100000
@@ -150,8 +161,22 @@ comptime VAL_BATCHES = 16
 """256 validation samples per pass, from a pinned RNG — see the header. Four
 batches was fine for a 2000-step smoke and is far too noisy to select a
 checkpoint from over a hundred passes."""
+comptime PATIENCE = 10
+"""Stop after this many validations with no improvement on the best. 0 = never.
+
+Sized from the run that motivated it: 50 episodes, best val L1 0.4076 at epoch
+15.5, then **26 consecutive validations all worse** (mean 0.4376) while train
+L1 fell another 1.7x. That is 33 epochs and ~2.7 GPU-hours after the last
+checkpoint that would ever be written. 10 is loose enough to ride out the
+noise in a 256-sample validation and tight enough that the waste is bounded at
+~10 epochs.
+
+⚠ This bounds WASTE, not quality. It cannot make a run better — the best
+checkpoint is already on disk when it fires. If a run stops early and you think
+it was still learning, the fix is more data or regularization, not more
+patience."""
 comptime VAL_SEED: UInt64 = 0x5DEECE66D
-comptime LR = 1e-4
+comptime LR = RUN_LR
 """Paper: 1e-5, with a pretrained backbone it barely moves. This backbone is
 random at step 0 and has to learn vision from scratch, so it needs the higher
 rate — the same reasoning as the single-lr deviation in `ACT_PORT.md`."""
@@ -298,6 +323,8 @@ def main() raises:
 
     var best_val = Float64(1e30)
     var best_step = -1
+    var stale = 0
+    """Validations since the best. See PATIENCE."""
     var best_ckpt = String("/tmp/act_so101_best_gpu.ckpt")
     var last_ckpt = String("/tmp/act_so101_last_gpu.ckpt")
 
@@ -465,7 +492,10 @@ def main() raises:
             if vl1 < best_val:
                 best_val = vl1
                 best_step = s
+                stale = 0
                 tr.save(best_ckpt)
+            else:
+                stale += 1
 
             var vvals = List[Float64]()
             vvals.append(vl1)
@@ -479,6 +509,18 @@ def main() raises:
             # fills: the point of streaming a multi-hour run is watching it
             # while it runs, and a partly-full buffer is invisible.
             logger.flush()
+
+            if PATIENCE > 0 and stale >= PATIENCE:
+                print(
+                    "  early stop: " + String(stale) + " validations with no"
+                    " improvement on " + String(best_val) + " (step "
+                    + String(best_step) + "). The best checkpoint is written;"
+                )
+                print(
+                    "    more steps will not produce a better one. See"
+                    " PATIENCE."
+                )
+                break
 
     logger.close()
 
