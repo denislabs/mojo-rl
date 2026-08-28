@@ -12,7 +12,10 @@ positional loader cannot see. Everything here is addressed by the dotted
 `for_each_param` name, and a name present on one side but not the other is an
 error naming the name.
 
-Test-only. Nothing in a training or inference path reads it.
+Originally test-only. It is now also the path by which ImageNet-pretrained
+ResNet18 weights reach the backbone (`LoadPrefixedParams` +
+`ACTTrainer.load_backbone`), so it ships and is on a training path. The gate
+usage is unchanged.
 
 ## Dump format
 
@@ -160,7 +163,6 @@ struct LoadRefParams[PREFIX: StaticString](ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime assert target == "cpu", "LoadRefParams: CPU only"
         var key = String(Self.PREFIX) + name
         if not self.dump.has(key):
             self.missing.append(key^)
@@ -171,10 +173,100 @@ struct LoadRefParams[PREFIX: StaticString](ParamVisitor):
                 "LoadRefParams: '" + key + "' has " + String(len(vals))
                 + " values but the param holds " + String(N)
             )
-        param.ensure(N)
-        for i in range(N):
-            param.data[i] = vals[i]
+        _fill(param, vals, ctx)
         self.loaded.append(key^)
+
+
+struct LoadPrefixedParams[GRAPH_PREFIX: StaticString, DUMP_PREFIX: StaticString](
+    ParamVisitor
+):
+    """Fill ONE SUBTREE of a graph from a dump that names it differently.
+
+    `LoadRefParams` assumes the dump uses the walked name verbatim, which holds
+    when the dump was written for that exact module. It does not hold for
+    pretrained ResNet18 weights: the dump names them `rn18in.0.0.0.weight`
+    (backbone-local, the same mapping the standalone gate uses) while the ACT
+    graph walks them as `vae.feat.0.0.0.0.weight` — `Tokenwise[N_CAM, ...]`
+    contributes a naming level of its own.
+
+    So: visit only names under `GRAPH_PREFIX`, and look each one up as
+    `DUMP_PREFIX + name[len(GRAPH_PREFIX):]`. Params outside the subtree are
+    SKIPPED, not recorded as missing — that is the point of loading a subtree,
+    and counting the rest of the model as missing would bury a real miss under
+    two hundred expected ones.
+
+    ⚠ Used for `for_each_state` as well as `for_each_param`. BatchNorm running
+    statistics are state, not parameters, and pretrained weights carrying the
+    framework's init statistics (mean 0, var 1) are not the pretrained network
+    — they are a different function that happens to share its convolutions.
+    """
+
+    var dump: RefDump
+    var loaded: List[String]
+    var missing: List[String]
+    var skipped: Int
+
+    def __init__(out self, var dump: RefDump):
+        self.dump = dump^
+        self.loaded = List[String]()
+        self.missing = List[String]()
+        self.skipped = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.dump = move.dump^
+        self.loaded = move.loaded^
+        self.missing = move.missing^
+        self.skipped = move.skipped
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime GP = String(Self.GRAPH_PREFIX)
+        if not name.startswith(GP):
+            self.skipped += 1
+            return
+        var key = String(Self.DUMP_PREFIX) + String(
+            name[byte=GP.byte_length() :]
+        )
+        if not self.dump.has(key):
+            self.missing.append(key^)
+            return
+        var vals = self.dump.get(key)
+        if len(vals) != N:
+            raise Error(
+                "LoadPrefixedParams: '" + key + "' has " + String(len(vals))
+                + " values but the param holds " + String(N)
+            )
+        _fill(param, vals, ctx)
+        self.loaded.append(key^)
+
+
+def _fill(
+    mut param: Tensor,
+    ref vals: List[Scalar[DT]],
+    ctx: Optional[DeviceContext],
+) raises:
+    """Host fill, then upload when the module lives on a device.
+
+    ⚠ The upload is not optional and its absence is silent: the host tensor
+    would hold the pretrained weights, every device kernel would keep reading
+    the random init, and the run would look like pretraining simply did not
+    help.
+    """
+    param.ensure(len(vals))
+    for i in range(len(vals)):
+        param.data[i] = vals[i]
+    if ctx:
+        param.upload(ctx.value())
 
 
 struct ListParams(ParamVisitor):

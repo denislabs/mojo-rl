@@ -9,6 +9,8 @@
 # Prerequisites:
 #
 #   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+#   pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
+#       --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
 #   pixi run python tools/act/lerobot_v3_to_store.py \
 #       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
 #
@@ -34,5 +36,7 @@ tests/deep_agents/act/test_act_forward_vs_reference.mojo
 tests/deep_agents/act/test_act_overfit_one_batch.mojo
 # M7 — temporal ensembling (vs imitate_episodes.py's buffer scheme)
 tests/deep_agents/act/test_act_temporal_ensemble.mojo
+# M3b — ImageNet weights land in the right slots (needs the resnet18 dump)
+tests/deep_agents/act/test_act_pretrained_backbone.mojo
 # M0 — the dataset path (needs the converted store)
 tests/deep_agents/act/test_act_dataset.mojo

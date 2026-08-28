@@ -84,6 +84,7 @@ from .config import (
     ACT_WEIGHT_DECAY,
 )
 from .loss_graph import ACTLossGraph
+from .refload import LoadPrefixedParams, RefDump
 
 
 # ── grad-norm clip over a graph ──────────────────────────────────────────
@@ -508,6 +509,56 @@ struct ACTTrainer[
         w.mode = 1
         self.graph.for_each_state[Self.target, BinaryCheckpointWriter](w, self.ctx)
         _write_file_bytes(path, w.content)
+
+    def load_backbone(mut self, dump_dir: String) raises -> Int:
+        """Fill the vision backbone from a `dump_resnet18_imagenet.py` dump.
+
+        Returns the number of tensors filled. Raises if the dump names a tensor
+        the backbone does not have, or sizes it differently — a pretrained
+        loader that silently leaves half the network random is worse than none,
+        because the run then reports "pretraining did not help".
+
+        ⚠ `feat.0.` is the backbone's path inside the ACT graph:
+        `Tokenwise[N_CAM, BACKBONE]` contributes the `.0`. The dump names the
+        same tensors `rn18in.*`, backbone-local, which is the mapping
+        `dump_act_reference.py:emit_resnet18` writes for the standalone gate —
+        so both use one mapping and the gate covers this path too.
+
+        ⚠ TWO WALKS. Weights are parameters; BatchNorm running statistics are
+        STATE. Pretrained convolutions carrying init statistics (mean 0, var 1)
+        are not the pretrained network, so skipping the second walk would load
+        45 MB of weights and still change the function.
+        """
+        comptime GP = "feat.0."
+        comptime DP = "rn18in."
+        var wl = LoadPrefixedParams[GP, DP](RefDump(String(dump_dir)))
+        self.graph.for_each_param[Self.target, LoadPrefixedParams[GP, DP]](
+            wl, self.ctx
+        )
+        if len(wl.missing) > 0:
+            raise Error(
+                "load_backbone: " + String(len(wl.missing))
+                + " backbone weights absent from the dump, first '"
+                + wl.missing[0] + "' — the dump was written for a different"
+                " ResNet variant or a different resolution"
+            )
+        var sl = LoadPrefixedParams[GP, DP](RefDump(String(dump_dir)))
+        self.graph.for_each_state[Self.target, LoadPrefixedParams[GP, DP]](
+            sl, self.ctx
+        )
+        if len(sl.missing) > 0:
+            raise Error(
+                "load_backbone: " + String(len(sl.missing))
+                + " BatchNorm running statistics absent, first '"
+                + sl.missing[0] + "'"
+            )
+        if len(wl.loaded) == 0:
+            raise Error(
+                "load_backbone: matched NOTHING under '" + String(GP)
+                + "' — the graph's backbone path changed and this loader did"
+                " not, so the weights would have been silently discarded"
+            )
+        return len(wl.loaded) + len(sl.loaded)
 
     def load(mut self, path: String) raises:
         var bytes = _read_file_bytes(path)

@@ -344,21 +344,13 @@ def section_pos(dump: Dump, seed: int):
     dump.add("pos2d_table", p[0].flatten(1).permute(1, 0).contiguous())
 
 
-def section_resnet(dump: Dump, seed: int):
-    """torchvision `resnet18` truncated at `layer4` — the ACT backbone.
+def resnet18_trunk(net, x):
+    """torchvision `resnet18` forward, truncated at `layer4` — the ACT backbone.
 
-    Emitted under the Mojo side's `for_each_param` names, which come from the
-    `Sequential` child indices of `models/resnet18.mojo`. The mapping is written
-    out rather than derived, so a topology change breaks it loudly.
+    One definition, because the pretrained-weight dump must run EXACTLY the
+    same truncation as the gate does or the two disagree for a reason that has
+    nothing to do with the weights.
     """
-    import torchvision
-
-    torch.manual_seed(seed + 300)
-    IN_H, IN_W, B = 64, 96, 2
-    net = torchvision.models.resnet18(weights=None)
-    net.eval()  # BN in eval -> running stats (init: mean 0, var 1) => identity-ish
-
-    x = torch.randn(B, 3, IN_H, IN_W)
     with torch.no_grad():
         y = net.conv1(x)
         y = net.bn1(y)
@@ -368,9 +360,18 @@ def section_resnet(dump: Dump, seed: int):
         y = net.layer2(y)
         y = net.layer3(y)
         y = net.layer4(y)
-    dump.add("rn18_x", x)
-    dump.add("rn18_out", y)
-    print(f"      resnet18 {IN_H}x{IN_W} -> {tuple(y.shape)}")
+    return y
+
+
+def emit_resnet18(dump: Dump, net, prefix: str = "rn18"):
+    """Every `resnet18` weight + BN statistic under the Mojo side's
+    `for_each_param` names, which come from the `Sequential` child indices of
+    `models/resnet18.mojo`.
+
+    ⚠ ONE COPY OF THIS MAPPING. `dump_resnet18_imagenet.py` calls it too. A
+    second transcription is a second thing to keep in step with a topology
+    change, and this file has already paid for that lesson elsewhere.
+    """
 
     def emit_conv(name, conv):
         # Conv weights are [OC, IC, KH, KW] on both sides — NO transpose. Only
@@ -390,29 +391,43 @@ def section_resnet(dump: Dump, seed: int):
         dump.add(f"{name}.running_mean", bn.running_mean)
         dump.add(f"{name}.running_var", bn.running_var)
 
+    def emit_basic(pre, blk, downsample: bool):
+        emit_conv(f"{pre}.0.0", blk.conv1)
+        emit_bn(f"{pre}.0.1", blk.bn1)
+        emit_conv(f"{pre}.0.3", blk.conv2)
+        emit_bn(f"{pre}.0.4", blk.bn2)
+        if downsample:
+            emit_conv(f"{pre}.1.0", blk.downsample[0])
+            emit_bn(f"{pre}.1.1", blk.downsample[1])
+
     # Stem: Sequential[Conv2DBatchNormReLU[...], MaxPool2D] -> "0.0" / "0.1"
-    emit_conv("rn18.0.0.0", net.conv1)
-    emit_bn("rn18.0.0.1", net.bn1)
+    emit_conv(f"{prefix}.0.0.0", net.conv1)
+    emit_bn(f"{prefix}.0.0.1", net.bn1)
 
     # Blocks. ResBlockConv2DBN  = Sequential[Residual[Seq[conv,bn,relu,conv,bn]], relu]
     #         ResBlockDownsampleBN = Sequential[ProjectedResidual[main, skip], relu]
-    # Child indices below are checked against the Mojo param listing by the gate.
-    def emit_basic(prefix, blk, downsample: bool):
-        emit_conv(f"{prefix}.0.0", blk.conv1)
-        emit_bn(f"{prefix}.0.1", blk.bn1)
-        emit_conv(f"{prefix}.0.3", blk.conv2)
-        emit_bn(f"{prefix}.0.4", blk.bn2)
-        if downsample:
-            emit_conv(f"{prefix}.1.0", blk.downsample[0])
-            emit_bn(f"{prefix}.1.1", blk.downsample[1])
-
-    layers = [net.layer1, net.layer2, net.layer3, net.layer4]
     idx = 1  # Sequential child 0 is the stem
-    for li, layer in enumerate(layers):
-        for bi, blk in enumerate(layer):
-            down = blk.downsample is not None
-            emit_basic(f"rn18.{idx}.0", blk, down)
+    for layer in (net.layer1, net.layer2, net.layer3, net.layer4):
+        for blk in layer:
+            emit_basic(f"{prefix}.{idx}.0", blk, blk.downsample is not None)
             idx += 1
+
+
+def section_resnet(dump: Dump, seed: int):
+    """torchvision `resnet18` truncated at `layer4`, on RANDOM weights."""
+    import torchvision
+
+    torch.manual_seed(seed + 300)
+    IN_H, IN_W, B = 64, 96, 2
+    net = torchvision.models.resnet18(weights=None)
+    net.eval()  # BN in eval -> running stats (init: mean 0, var 1) => identity-ish
+
+    x = torch.randn(B, 3, IN_H, IN_W)
+    y = resnet18_trunk(net, x)
+    dump.add("rn18_x", x)
+    dump.add("rn18_out", y)
+    print(f"      resnet18 {IN_H}x{IN_W} -> {tuple(y.shape)}")
+    emit_resnet18(dump, net, "rn18")
 
 
 # ── CVAE + losses ───────────────────────────────────────────────────────

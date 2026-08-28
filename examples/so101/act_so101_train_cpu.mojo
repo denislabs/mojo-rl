@@ -205,6 +205,29 @@ def main() raises:
 
     var tr = T.make(lr=Scalar[DT](LR), kl_weight=Scalar[DT](KL_WEIGHT))
 
+    # ── ImageNet-pretrained backbone, if one was dumped ──────────────────
+    # `ACT_PRETRAINED=<dir>` from tools/act/dump_resnet18_imagenet.py. The
+    # paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random at
+    # step 0 and has to learn vision from 12,411 frames, which is what the
+    # first 50-episode run overfit doing. Absent the variable the run is
+    # unchanged, and it says which happened rather than leaving it to be
+    # inferred from the loss curve.
+    var pretrained = String(
+        os.environ.get(PythonObject("ACT_PRETRAINED"), PythonObject(""))
+    )
+    if pretrained.byte_length() > 0:
+        var n_loaded = tr.load_backbone(pretrained)
+        print(
+            "  backbone  ImageNet weights, " + String(n_loaded)
+            + " tensors from " + pretrained
+        )
+        logger.set_config("backbone_init", "imagenet")
+    else:
+        print(
+            "  backbone  RANDOM (set ACT_PRETRAINED to use ImageNet weights)"
+        )
+        logger.set_config("backbone_init", "random")
+
     var qpos = List[Scalar[DT]](unsafe_uninit_length=BATCH * QPOS)
     var images = List[Scalar[DT]](unsafe_uninit_length=BATCH * IMG_ELEMS)
     var actions = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
