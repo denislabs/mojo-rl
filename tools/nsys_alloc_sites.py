@@ -99,6 +99,29 @@ def inventory(cur) -> None:
         if table_exists(cur, t):
             print(f"\n  {t} columns: {sorted(columns(cur, t))}")
 
+    # ⚠ nsys records WHY it disabled a feature here, and nowhere else that
+    # survives into the export. When `--cudabacktrace` silently collects
+    # nothing, this table says so.
+    if table_exists(cur, "DIAGNOSTIC_EVENT"):
+        strs = dict(cur.execute("SELECT id, value FROM StringIds"))
+        cols = columns(cur, "DIAGNOSTIC_EVENT")
+        textcol = next((c for c in ("textId", "text", "messageId", "message")
+                        if c in cols), None)
+        print("\n=== DIAGNOSTIC_EVENT (nsys's own warnings) ===")
+        if textcol is None:
+            print(f"  (no text column; columns: {sorted(cols)})")
+        else:
+            seen = set()
+            for (t,) in cur.execute(
+                    f"SELECT [{textcol}] FROM DIAGNOSTIC_EVENT"):
+                msg = strs.get(t, t) if isinstance(t, int) else t
+                msg = str(msg).strip()
+                if msg and msg not in seen:
+                    seen.add(msg)
+                    print(f"  {msg}")
+            if not seen:
+                print("  (empty)")
+
 
 def find_callchain_table(cur) -> tuple[str, str, str] | None:
     """(table, id column, ip column) for whichever callchain table this nsys
@@ -116,6 +139,108 @@ def find_callchain_table(cur) -> tuple[str, str, str] | None:
     return None
 
 
+def neighbour_report(cur, args) -> None:
+    """Attribute each allocation to the kernel launched immediately after it.
+
+    No backtraces required — only the runtime + kernel activity every
+    `--trace=cuda` capture already has. The premise is narrow and it is the one
+    that matters here: **cuBLAS allocates its workspace immediately before
+    launching the kernel that uses it**, on the same thread, with nothing in
+    between. So "the next launch on this thread" names the allocator's caller
+    for the whole cutlass/split-K family, which is the population under
+    suspicion.
+
+    ⚠ This is a PROXY, not a stack. It answers "which kernel followed this
+    alloc", and for an allocation made far from any launch — a `Tensor.upload`
+    recreating a buffer, a fresh scratch tensor — the next launch is whatever
+    happened to come next, not the culprit. Read a site as evidence only when
+    its share is large AND its kernel is one that plausibly allocates. When
+    ~everything lands on one unrelated kernel, that is the signature of the
+    proxy failing, not of a single hot site.
+    """
+    strs = dict(cur.execute("SELECT id, value FROM StringIds"))
+    rt = "CUPTI_ACTIVITY_KIND_RUNTIME"
+
+    # ── the launch timeline, per thread ──────────────────────────────────
+    kcols = columns(cur, "CUPTI_ACTIVITY_KIND_KERNEL")
+    namecol = next((c for c in ("demangledName", "shortName", "mangledName")
+                    if c in kcols), None)
+    if namecol is None:
+        die(f"CUPTI_ACTIVITY_KIND_KERNEL has no name column "
+            f"(columns: {sorted(kcols)})")
+    kname = {corr: strs.get(nid, f"<{nid}>") for corr, nid in cur.execute(
+        f"SELECT correlationId, [{namecol}] FROM CUPTI_ACTIVITY_KIND_KERNEL")}
+
+    launches = defaultdict(list)   # globalTid -> [(start, correlationId)]
+    mem = []                       # (start, end, tid, api)
+    for nameid, corr, start, end, tid in cur.execute(
+            f"SELECT nameId, correlationId, start, end, globalTid FROM {rt}"):
+        api = strs.get(nameid, "")
+        if api.startswith("cuLaunchKernel"):
+            launches[tid].append((start, corr))
+        elif any(api.startswith(p) for p in MEMORY_APIS):
+            if args.api and args.api not in api:
+                continue
+            mem.append((start, end, tid, api))
+    for tid in launches:
+        launches[tid].sort()
+
+    if not mem:
+        die("no memory-API rows at all in the runtime trace.")
+
+    import bisect
+    per_api = defaultdict(Counter)
+    per_api_ns = defaultdict(Counter)
+    totals, totals_ns = Counter(), Counter()
+    unattributed = Counter()
+
+    for start, end, tid, api in mem:
+        lst = launches.get(tid)
+        label = "<no launch after this on this thread>"
+        if lst:
+            i = bisect.bisect_left(lst, (end, -1))
+            if i < len(lst):
+                label = kname.get(lst[i][1], "<unknown kernel>")
+            else:
+                unattributed[api] += 1
+        else:
+            unattributed[api] += 1
+        dur = (end or 0) - (start or 0)
+        per_api[api][label] += 1
+        per_api_ns[api][label] += dur
+        totals[api] += 1
+        totals_ns[api] += dur
+
+    print(f"\n=== memory APIs, attributed to the NEXT kernel launch "
+          f"on the same thread ===\n")
+    print(f"  {'API':<24}{'calls':>10}{'total ms':>12}{'mean us':>11}")
+    for api, n in totals.most_common():
+        print(f"  {api:<24}{n:>10}{totals_ns[api]/1e6:>12.1f}"
+              f"{totals_ns[api]/n/1e3:>11.1f}")
+
+    for api, n in totals.most_common():
+        print(f"\n\n=== {api}: {len(per_api[api])} distinct followers, "
+              f"{n} calls ===")
+        if unattributed[api]:
+            print(f"  ({unattributed[api]} had no following launch on their "
+                  f"thread)")
+        for rank, (label, count) in enumerate(
+                per_api[api].most_common(args.top), 1):
+            ms = per_api_ns[api][label] / 1e6
+            print(f"  #{rank:<3}{count:>7} ({100.0*count/n:>5.1f}%) "
+                  f"{ms:>9.1f} ms   {label[:96]}")
+
+    print("\n\nReading this: a cutlass/gemm follower is cuBLAS allocating its "
+          "own workspace —\nthat is the split-K story in docs/GPU_STEP_PERF.md "
+          "and it is fixed by SHAPE, not by\ncaching. A Mojo kernel as the "
+          "follower means OUR code allocated: look for a\n`Tensor.upload` or "
+          "an `ensure_gpu` on a tensor that is not resident.\n"
+          "⚠ `cuMemAlloc` count is NOT 1:1 with `splitKreduce`: cuBLAS "
+          "allocates whenever it\npicks a cutlass kernel, and only about half "
+          "of those also split-K. Deriving 'a\nsecond allocation source' from "
+          "that mismatch was wrong once already.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,6 +252,9 @@ def main() -> None:
                          "Default: every memory API found.")
     ap.add_argument("--list", action="store_true",
                     help="print the table inventory and stop")
+    ap.add_argument("--neighbour", action="store_true",
+                    help="force the next-launch attribution even when "
+                         "backtraces ARE present (a useful cross-check)")
     args = ap.parse_args()
 
     con = sqlite3.connect(args.sqlite)
@@ -143,11 +271,16 @@ def main() -> None:
         die(f"no {rt} table — was the run captured with --trace=cuda?")
 
     cc = find_callchain_table(cur)
-    if cc is None:
-        die("no non-empty callchain table (looked for CUDA_CALLCHAINS, "
-            "SAMPLING_CALLCHAINS). nsys accepted --cudabacktrace but collected "
-            "nothing, which means the UNWINDER produced no frames — see the "
-            "'if this comes back empty' notes in the header.")
+    if cc is None or args.neighbour:
+        if cc is None:
+            print("\nno non-empty callchain table (looked for CUDA_CALLCHAINS, "
+                  "SAMPLING_CALLCHAINS).\nnsys accepted --cudabacktrace and "
+                  "collected nothing — read DIAGNOSTIC_EVENT above for why,\n"
+                  "and the 'if the callchain table comes back empty' notes in "
+                  "this file's header.\n\nFalling back to NEIGHBOUR-KERNEL "
+                  "attribution, which needs no unwinder.")
+        neighbour_report(cur, args)
+        return
     cc_table, cc_id, cc_ip = cc
     print(f"\nusing callchains from {cc_table}({cc_id}, {cc_ip})")
 
