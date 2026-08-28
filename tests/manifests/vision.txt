@@ -12,14 +12,16 @@
 # The fixtures ARE committed (3 KB of .mp4, 117 KB of pinned decode), so unlike
 # the ACT manifest this needs no reference tree, no torch and no camera. To
 # regenerate them after an intentional change:
-#   pixi run python tools/vision/make_capture_fixture.py    # the input
-#   pixi run python tools/vision/dump_cv_reference.py       # cv2's answer
+#   pixi run python tools/vision/make_capture_fixture.py    # the video
+#   pixi run python tools/vision/make_marker_fixture.py     # the marker scene
+#   pixi run python tools/vision/dump_cv_reference.py       # cv2's answers
 #
 # ⚠⚠ THE ASSERTIONS ARE EXACT BIT EQUALITY, NOT A TOLERANCE. Both sides call
 # the SAME dylib, so a difference is a marshalling bug and never a numerical
 # one. If a future change here needs a tolerance, the change is wrong.
 
-# A (version, error string, thread count) + B (capture, and the one BGR HWC ->
-# RGB CHW conversion). Groups C-F of docs/OPENCV_SHIM_SCOPE.md add their own
-# lines here as they land.
+# A (version, error string, thread count), B (capture + the one BGR HWC ->
+# RGB CHW conversion), C (imread, ArUco detection) and D (solvePnP, Rodrigues).
+# Groups E and F of docs/OPENCV_SHIM_SCOPE.md add their own lines when they
+# land.
 tests/vision/test_opencv_shim.mojo

@@ -44,9 +44,11 @@ if [ -z "$PREFIX" ] || [ ! -d "$PREFIX/include/opencv5" ]; then
     exit 1
 fi
 
-# Only what groups A and B touch.  Detection, pose and calibration add
-# objdetect / geometry / calib here when they land.
-LIBS="-lopencv_core -lopencv_videoio"
+# Groups A-D.  Calibration (E) adds -lopencv_calib when it lands.
+# ⚠ solvePnP lives in libopencv_GEOMETRY in OpenCV 5, not libopencv_calib --
+# the header moved to geometry/3d.hpp and the symbol moved with it.
+
+LIBS="-lopencv_core -lopencv_videoio -lopencv_imgcodecs -lopencv_objdetect -lopencv_geometry"
 
 CXX="${CXX:-c++}"
 echo "building opencv shim from $SRC"

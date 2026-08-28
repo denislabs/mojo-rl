@@ -57,6 +57,20 @@ comptime CV_ERR_ARG: Int32 = -4
 comptime CV_ERR_CAPACITY: Int32 = -5
 comptime CV_ERR_NO_FRAME: Int32 = -6
 
+# ── OpenCV enum values, READ OFF THIS BUILD, not remembered ─────────────────
+#
+# ⚠⚠ `SOLVEPNP_IPPE_SQUARE` IS 5 HERE AND WAS 7 IN OpenCV 4.x. The enum was
+# renumbered. A stale 7 does not fail — it selects a DIFFERENT ESTIMATOR and
+# returns a pose, which is the worst possible failure mode. Every constant
+# below was printed from the installed cv2, and any addition must be too.
+comptime SOLVEPNP_ITERATIVE: Int = 0
+comptime SOLVEPNP_IPPE_SQUARE: Int = 5
+"""The four-coplanar-corner estimator a square fiducial actually is.
+
+⚠ NOT INTERCHANGEABLE WITH `SOLVEPNP_ITERATIVE`, which on four coplanar points
+is a different and worse estimator that still returns an answer."""
+comptime DICT_4X4_50: Int = 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # dylib loading — the `render/imgui` and `io/serial` pattern
@@ -418,3 +432,224 @@ def bgr_hwc_to_rgb_chw(
         dst[i] = src[i * 3 + 2]
         dst[n + i] = src[i * 3 + 1]
         dst[2 * n + i] = src[i * 3]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# C — marker detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def imread(path: String, mut out: List[UInt8]) raises -> Tuple[Int, Int, Int]:
+    """Read an image file as BGR HWC, returning `(width, height, channels)`.
+
+    The detection gate's input, and the only way to exercise detection without
+    a camera. Same output contract as `VideoCapture.read`: caller-sized buffer,
+    resized here if short.
+    """
+    var p = path
+    var need = 1920 * 1080 * 3
+    if len(out) < need:
+        out.resize(need, 0)
+    var w = Int32(0)
+    var h = Int32(0)
+    var c = Int32(0)
+    var st = _get_dylib_function[
+        lib,
+        "mrl_cv_imread",
+        def(
+            Ptr[c_char, MutUntrackedOrigin],
+            Ptr[UInt8, MutUntrackedOrigin],
+            Int32,
+            Ptr[Int32, MutUntrackedOrigin],
+            Ptr[Int32, MutUntrackedOrigin],
+            Ptr[Int32, MutUntrackedOrigin],
+        ) thin -> Int32,
+    ]()(
+        untracked(p.as_c_string_slice().unsafe_ptr()),
+        untracked(Ptr(to=out[0])),
+        Int32(len(out)),
+        untracked(Ptr(to=w)),
+        untracked(Ptr(to=h)),
+        untracked(Ptr(to=c)),
+    )
+    _check(st, String("imread ") + path)
+    return (Int(w), Int(h), Int(c))
+
+
+struct ArucoDetector(Movable):
+    """A marker detector over one predefined dictionary.
+
+    ⚠ CLOSE IT EXPLICITLY, like `VideoCapture` — see that struct for why there
+    is no destructor.
+    """
+
+    var _h: Int
+
+    def __init__(out self, dict_id: Int = DICT_4X4_50) raises:
+        self._h = _get_dylib_function[
+            lib, "mrl_cv_aruco_create", def(Int32) thin -> Int
+        ]()(Int32(dict_id))
+        if self._h == 0:
+            raise String("opencv: cannot create detector: ") + cv_last_error()
+
+    def detect(
+        self,
+        img: List[UInt8],
+        width: Int,
+        height: Int,
+        channels: Int,
+        mut ids: List[Int32],
+        mut corners: List[Float32],
+        max_markers: Int = 32,
+    ) raises -> Int:
+        """Detect markers. Returns how many were found.
+
+        `corners` receives 8 floats per marker — four corners, xy, in OpenCV's
+        CLOCKWISE order starting top-left.
+
+        ⚠⚠ THAT ORDER IS THE CONTRACT, NOT A DETAIL. `solve_pnp` pairs image
+        points with object points POSITIONALLY, so reordering one without the
+        other yields a plausible pose that is silently rotated.
+
+        ⚠ FINDING NOTHING IS NOT AN ERROR. An empty view returns 0, because
+        "no marker" is the normal state of a camera and an exception would make
+        every caller's loop the wrong shape.
+        """
+        if len(ids) < max_markers:
+            ids.resize(max_markers, 0)
+        if len(corners) < max_markers * 8:
+            corners.resize(max_markers * 8, 0.0)
+        var n = Int32(0)
+        var st = _get_dylib_function[
+            lib,
+            "mrl_cv_aruco_detect",
+            def(
+                Int,
+                Ptr[UInt8, MutUntrackedOrigin],
+                Int32,
+                Int32,
+                Int32,
+                Int32,
+                Int32,
+                Ptr[Int32, MutUntrackedOrigin],
+                Ptr[Float32, MutUntrackedOrigin],
+                Ptr[Int32, MutUntrackedOrigin],
+            ) thin -> Int32,
+        ]()(
+            self._h,
+            untracked(Ptr(to=img[0])),
+            Int32(width),
+            Int32(height),
+            Int32(channels),
+            Int32(0),  # stride 0 = tightly packed
+            Int32(max_markers),
+            untracked(Ptr(to=ids[0])),
+            untracked(Ptr(to=corners[0])),
+            untracked(Ptr(to=n)),
+        )
+        _check(st, "aruco_detect")
+        return Int(n)
+
+    def close(mut self):
+        """Idempotent, like `VideoCapture.close`."""
+        if self._h == 0:
+            return
+        try:
+            _get_dylib_function[
+                lib, "mrl_cv_aruco_destroy", def(Int) thin -> None
+            ]()(self._h)
+        except:
+            pass
+        self._h = 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D — pose
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def solve_pnp(
+    obj_xyz: List[Float64],
+    img_xy: List[Float64],
+    k: List[Float64],
+    dist: List[Float64],
+    mut rvec: List[Float64],
+    mut tvec: List[Float64],
+    flags: Int = SOLVEPNP_IPPE_SQUARE,
+) raises:
+    """Object pose from 3D-2D correspondences. `k` is a row-major 3x3.
+
+    ⚠ A SQUARE MARKER HAS A GENUINE TWO-FOLD POSE AMBIGUITY NEAR HEAD-ON.
+    Position stays solid; ORIENTATION can flip between two solutions frame to
+    frame. That is the geometry of four coplanar points, not a defect here —
+    design against `tvec`, and treat `rvec` near head-on with suspicion.
+    """
+    var n = len(obj_xyz) // 3
+    if n < 4:
+        raise String("solve_pnp: need >= 4 points, got ") + String(n)
+    if len(img_xy) < n * 2:
+        raise String("solve_pnp: ") + String(
+            n
+        ) + " object points but " + String(len(img_xy) // 2) + " image points"
+    if len(k) != 9:
+        raise String("solve_pnp: K must be 9 values, got ") + String(len(k))
+    if len(rvec) < 3:
+        rvec.resize(3, 0.0)
+    if len(tvec) < 3:
+        tvec.resize(3, 0.0)
+
+    # An empty `dist` means "already undistorted"; the shim substitutes zeros.
+    var n_dist = len(dist)
+    var dist_ptr = untracked(Ptr(to=k[0]))  # never read when n_dist == 0
+    if n_dist > 0:
+        dist_ptr = untracked(Ptr(to=dist[0]))
+
+    var st = _get_dylib_function[
+        lib,
+        "mrl_cv_solve_pnp",
+        def(
+            Ptr[Float64, MutUntrackedOrigin],
+            Ptr[Float64, MutUntrackedOrigin],
+            Int32,
+            Ptr[Float64, MutUntrackedOrigin],
+            Ptr[Float64, MutUntrackedOrigin],
+            Int32,
+            Int32,
+            Ptr[Float64, MutUntrackedOrigin],
+            Ptr[Float64, MutUntrackedOrigin],
+        ) thin -> Int32,
+    ]()(
+        untracked(Ptr(to=obj_xyz[0])),
+        untracked(Ptr(to=img_xy[0])),
+        Int32(n),
+        untracked(Ptr(to=k[0])),
+        dist_ptr,
+        Int32(n_dist),
+        Int32(flags),
+        untracked(Ptr(to=rvec[0])),
+        untracked(Ptr(to=tvec[0])),
+    )
+    _check(st, "solve_pnp")
+
+
+def rodrigues(rvec: List[Float64], mut r9: List[Float64]) raises:
+    """Axis-angle to a row-major 3x3 rotation matrix.
+
+    A pose is only useful once it composes with the robot's frames, and `rvec`
+    is not a matrix.
+    """
+    if len(rvec) < 3:
+        raise String("rodrigues: rvec must be 3 values")
+    if len(r9) < 9:
+        r9.resize(9, 0.0)
+    _check(
+        _get_dylib_function[
+            lib,
+            "mrl_cv_rodrigues",
+            def(
+                Ptr[Float64, MutUntrackedOrigin],
+                Ptr[Float64, MutUntrackedOrigin],
+            ) thin -> Int32,
+        ]()(untracked(Ptr(to=rvec[0])), untracked(Ptr(to=r9[0]))),
+        "rodrigues",
+    )

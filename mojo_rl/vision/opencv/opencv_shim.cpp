@@ -30,6 +30,11 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/objdetect/aruco_detector.hpp>
+#include <opencv2/geometry/3d.hpp>
+
+#include <vector>
 
 #include <string>
 #include <cstring>
@@ -58,6 +63,12 @@ static void mrl_cv_set_error(const char* what) {
 
 // The one place an exception is allowed to stop.  Every entry point that can
 // throw is written as `MRL_CV_TRY({ ... })`.
+//
+// ⚠ A BARE COMMA INSIDE THE BRACES SPLITS THE MACRO ARGUMENT.  The
+// preprocessor only protects commas inside PARENTHESES, not inside braces, so
+// `cv::Mat rvec, tvec;` in a body reads as two macro arguments and fails with
+// "too many arguments provided to function-like macro invocation" pointing at
+// a line that looks fine.  Declare one variable per statement in here.
 #define MRL_CV_TRY(BODY)                                                      \
     try {                                                                     \
         BODY                                                                  \
@@ -83,6 +94,34 @@ struct MrlCapture {
     cv::VideoCapture cap;
     MrlCapture() : magic(MRL_CAP_MAGIC) {}
 };
+
+static const unsigned int MRL_DET_MAGIC = 0x4d444531u;  // "MDE1"
+
+struct MrlDetector {
+    unsigned int magic;
+    cv::aruco::ArucoDetector det;
+    MrlDetector(const cv::aruco::Dictionary& d)
+        : magic(MRL_DET_MAGIC), det(d) {}
+};
+
+static MrlDetector* as_detector(void* h) {
+    MrlDetector* d = static_cast<MrlDetector*>(h);
+    if (d == nullptr || d->magic != MRL_DET_MAGIC) return nullptr;
+    return d;
+}
+
+// Rule 1: images arrive as raw bytes and are wrapped in a NON-OWNING header.
+// `stride` is the byte distance between rows; pass 0 for "tightly packed".
+static cv::Mat wrap_image(const unsigned char* data, int w, int h,
+                          int channels, int stride) {
+    const int type = (channels == 1) ? CV_8UC1
+                   : (channels == 3) ? CV_8UC3
+                   : (channels == 4) ? CV_8UC4 : -1;
+    if (type < 0 || data == nullptr || w <= 0 || h <= 0) return cv::Mat();
+    const size_t step = (stride > 0) ? static_cast<size_t>(stride)
+                                     : cv::Mat::AUTO_STEP;
+    return cv::Mat(h, w, type, const_cast<unsigned char*>(data), step);
+}
 
 static MrlCapture* as_capture(void* h) {
     MrlCapture* c = static_cast<MrlCapture*>(h);
@@ -279,6 +318,172 @@ void mrl_cv_cap_close(void* h) {
     }
     c->magic = 0;
     delete c;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// C — marker detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+// `dict_id` is one of OpenCV's `cv::aruco::PredefinedDictionaryType` values —
+// DICT_4X4_50 is 0.  Passing the int rather than a string keeps the boundary
+// free of allocation and matches what `cv2.aruco.DICT_*` already is.
+void* mrl_cv_aruco_create(int dict_id) {
+    try {
+        return new MrlDetector(cv::aruco::getPredefinedDictionary(dict_id));
+    } catch (const cv::Exception& e) {
+        mrl_cv_set_error(e.what());
+        return nullptr;
+    } catch (...) {
+        mrl_cv_set_error("ArucoDetector: unknown C++ exception");
+        return nullptr;
+    }
+}
+
+// Rule 2: the caller sizes the outputs and this reports what it filled.
+//
+// `corners_out` receives 8 floats per marker — four corners, xy, in OpenCV's
+// own CLOCKWISE order.  ⚠ THAT ORDER IS PART OF THE CONTRACT, not an
+// implementation detail: solvePnP pairs image points with object points
+// POSITIONALLY, so a caller that reorders the corners without reordering the
+// object points gets a plausible pose that is silently rotated.
+//
+// ⚠ FINDING NOTHING IS NOT AN ERROR.  An image with no marker returns
+// MRL_CV_OK with *n_out == 0, because "no marker in view" is the normal state
+// of a camera and an exception would make the caller's loop the wrong shape.
+int mrl_cv_aruco_detect(void* h, const unsigned char* img, int w, int height,
+                        int channels, int stride, int max_markers,
+                        int* ids_out, float* corners_out, int* n_out) {
+    MrlDetector* d = as_detector(h);
+    if (d == nullptr) { mrl_cv_set_error("bad detector handle"); return MRL_CV_ERR_ARG; }
+    if (ids_out == nullptr || corners_out == nullptr || n_out == nullptr ||
+        max_markers < 0) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        cv::Mat image = wrap_image(img, w, height, channels, stride);
+        if (image.empty()) {
+            mrl_cv_set_error("aruco_detect: bad image geometry");
+            return MRL_CV_ERR_ARG;
+        }
+        std::vector<std::vector<cv::Point2f> > corners;
+        std::vector<int> ids;
+        d->det.detectMarkers(image, corners, ids);
+
+        *n_out = static_cast<int>(ids.size());
+        if (static_cast<int>(ids.size()) > max_markers) {
+            // Reported before the refusal, as in cap_read: a caller that hits
+            // this learns how many it should have made room for.
+            mrl_cv_set_error("aruco_detect: more markers than max_markers");
+            return MRL_CV_ERR_CAPACITY;
+        }
+        for (size_t m = 0; m < ids.size(); ++m) {
+            ids_out[m] = ids[m];
+            for (int k = 0; k < 4; ++k) {
+                corners_out[m * 8 + k * 2 + 0] = corners[m][k].x;
+                corners_out[m * 8 + k * 2 + 1] = corners[m][k].y;
+            }
+        }
+        return MRL_CV_OK;
+    })
+}
+
+void mrl_cv_aruco_destroy(void* h) {
+    MrlDetector* d = as_detector(h);
+    if (d == nullptr) return;
+    d->magic = 0;
+    delete d;
+}
+
+// An image from disk, BGR HWC — the detection gate's input, and the only way
+// to test detection without a camera.  Same output contract as `cap_read`.
+int mrl_cv_imread(const char* path, unsigned char* out, int max_bytes,
+                  int* w, int* height, int* channels) {
+    if (path == nullptr || out == nullptr || w == nullptr ||
+        height == nullptr || channels == nullptr) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        cv::Mat img = cv::imread(std::string(path), cv::IMREAD_COLOR);
+        if (img.empty()) {
+            mrl_cv_set_error((std::string("imread: cannot read ") + path).c_str());
+            return MRL_CV_ERR_ARG;
+        }
+        const int need = img.rows * img.cols * img.channels();
+        *w        = img.cols;
+        *height   = img.rows;
+        *channels = img.channels();
+        if (need > max_bytes) {
+            mrl_cv_set_error("imread: output buffer too small");
+            return MRL_CV_ERR_CAPACITY;
+        }
+        if (img.isContinuous()) {
+            std::memcpy(out, img.data, static_cast<size_t>(need));
+        } else {
+            const size_t row_bytes =
+                static_cast<size_t>(img.cols) * img.channels();
+            for (int r = 0; r < img.rows; ++r) {
+                std::memcpy(out + static_cast<size_t>(r) * row_bytes,
+                            img.ptr(r), row_bytes);
+            }
+        }
+        return MRL_CV_OK;
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// D — pose
+// ═══════════════════════════════════════════════════════════════════════════
+
+// `obj_xyz` is 3n doubles, `img_xy` is 2n.  `K` is 9 (row-major 3x3).
+// `dist` is `n_dist` doubles; pass n_dist = 0 for an undistorted image.
+//
+// ⚠ `flags` IS NOT COSMETIC.  SOLVEPNP_IPPE_SQUARE (7) is the four-coplanar-
+// corner case a fiducial actually is, and it is what the ArUco path wants;
+// SOLVEPNP_ITERATIVE (0) on four coplanar points is a different, worse
+// estimator.  Passing the wrong one produces a pose, not an error.
+//
+// ⚠ AND A SQUARE MARKER HAS A GENUINE TWO-FOLD POSE AMBIGUITY NEAR HEAD-ON.
+// Position stays solid; ORIENTATION can flip between two solutions frame to
+// frame.  That is the geometry, not a bug here — design against `tvec`, and
+// treat `rvec` near head-on with suspicion.
+int mrl_cv_solve_pnp(const double* obj_xyz, const double* img_xy, int n,
+                     const double* K, const double* dist, int n_dist,
+                     int flags, double* rvec_out, double* tvec_out) {
+    if (obj_xyz == nullptr || img_xy == nullptr || K == nullptr ||
+        rvec_out == nullptr || tvec_out == nullptr || n < 4)
+        return MRL_CV_ERR_ARG;
+    if (n_dist < 0 || (n_dist > 0 && dist == nullptr)) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        // Non-owning headers over the caller's memory: rule 1 again.
+        const cv::Mat obj(n, 3, CV_64F, const_cast<double*>(obj_xyz));
+        const cv::Mat img(n, 2, CV_64F, const_cast<double*>(img_xy));
+        const cv::Mat cam(3, 3, CV_64F, const_cast<double*>(K));
+        cv::Mat dc = (n_dist > 0)
+            ? cv::Mat(1, n_dist, CV_64F, const_cast<double*>(dist))
+            : cv::Mat::zeros(1, 4, CV_64F);
+
+        cv::Mat rvec;
+        cv::Mat tvec;
+        if (!cv::solvePnP(obj, img, cam, dc, rvec, tvec, false, flags)) {
+            mrl_cv_set_error("solvePnP: no solution");
+            return MRL_CV_ERR_CV;
+        }
+        for (int i = 0; i < 3; ++i) {
+            rvec_out[i] = rvec.at<double>(i);
+            tvec_out[i] = tvec.at<double>(i);
+        }
+        return MRL_CV_OK;
+    })
+}
+
+// Rotation vector -> 3x3 row-major rotation matrix.  Needed because a pose is
+// only useful once it composes with the robot's frames, and `rvec` is an
+// axis-angle, not a matrix.
+int mrl_cv_rodrigues(const double* rvec, double* R9) {
+    if (rvec == nullptr || R9 == nullptr) return MRL_CV_ERR_ARG;
+    MRL_CV_TRY({
+        const cv::Mat r(3, 1, CV_64F, const_cast<double*>(rvec));
+        cv::Mat R;
+        cv::Rodrigues(r, R);
+        for (int i = 0; i < 9; ++i) R9[i] = R.at<double>(i / 3, i % 3);
+        return MRL_CV_OK;
+    })
 }
 
 }  // extern "C"

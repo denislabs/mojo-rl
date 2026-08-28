@@ -14,9 +14,10 @@ tolerance anywhere in this gate, and there must not be: a tolerance here would
 hide precisely the class of defect the shim can have.
 
 Outputs, into tests/fixtures/vision/:
-    capture_12f_bgr.bin     all 12 frames, BGR HWC uint8, contiguous
-    capture_12f_rgb_chw.bin frame 0 only, converted to RGB CHW
-    capture_12f_meta.txt    frames, width, height, channels
+    capture_12f_bgr.bin      all 12 frames, BGR HWC uint8, contiguous
+    capture_12f_rgb_chw.bin  frame 0 only, converted to RGB CHW
+    capture_12f_meta.txt     frames, width, height, channels
+    marker_640x480_cv2.txt   ids, corners, rvec, tvec — cv2's answer
 """
 import sys
 from pathlib import Path
@@ -27,6 +28,57 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests/fixtures/vision"
 SRC = FIX / "capture_12f.mp4"
+
+
+def dump_marker() -> int:
+    """Pin cv2's detection and pose on the marker fixture.
+
+    ⚠ THE CORNERS ARE float32 AND THE POSE IS float64, and they are written
+    with `repr` so the text round-trips EXACTLY. A shortened decimal here would
+    silently turn a bit-equality gate into a tolerance one.
+    """
+    png = FIX / "marker_640x480.png"
+    if not png.exists():
+        print(f"missing {png}; run make_marker_fixture.py first", file=sys.stderr)
+        return 1
+    truth = dict(
+        line.split(None, 1)
+        for line in (FIX / "marker_640x480_truth.txt").read_text().splitlines()
+    )
+    dict_id = int(truth["dict_id"])
+    marker_m = float(truth["marker_m"])
+
+    img = cv2.imread(str(png), cv2.IMREAD_COLOR)
+    if img is None:
+        print(f"cannot read {png}", file=sys.stderr)
+        return 1
+
+    det = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(dict_id))
+    corners, ids, _ = det.detectMarkers(img)
+    if ids is None or len(ids) == 0:
+        print("detected nothing — the gate would be vacuous", file=sys.stderr)
+        return 1
+
+    h = marker_m / 2.0
+    obj = np.array([[-h, h, 0.0], [h, h, 0.0], [h, -h, 0.0], [-h, -h, 0.0]],
+                   dtype=np.float64)
+    K = np.array([[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+                 dtype=np.float64)
+    img_pts = corners[0].reshape(4, 2).astype(np.float64)
+    ok, rvec, tvec = cv2.solvePnP(
+        obj, img_pts, K, np.zeros((1, 5)), flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    if not ok:
+        print("solvePnP failed", file=sys.stderr)
+        return 1
+
+    lines = [f"n {len(ids)}", "ids " + " ".join(str(int(i)) for i in ids.ravel())]
+    c = np.asarray(corners[0], dtype=np.float32).reshape(-1)
+    lines.append("corners " + " ".join(repr(float(v)) for v in c))
+    lines.append("rvec " + " ".join(repr(float(v)) for v in rvec.ravel()))
+    lines.append("tvec " + " ".join(repr(float(v)) for v in tvec.ravel()))
+    (FIX / "marker_640x480_cv2.txt").write_text("\n".join(lines) + "\n")
+    print(f"pinned marker: {len(ids)} marker(s), id {int(ids.ravel()[0])}")
+    return 0
 
 
 def main() -> int:
@@ -77,7 +129,7 @@ def main() -> int:
     print(f"pinned {len(frames)} frames {w}x{h}x{c}")
     print(f"  {(FIX / 'capture_12f_bgr.bin').stat().st_size} bytes BGR HWC")
     print(f"  {(FIX / 'capture_12f_rgb_chw.bin').stat().st_size} bytes RGB CHW (frame 0)")
-    return 0
+    return dump_marker()
 
 
 if __name__ == "__main__":
