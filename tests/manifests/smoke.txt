@@ -64,3 +64,9 @@ tests/utils/test_fmt.mojo
 # arms' calibration and so_arm101.xml. ⚠ ~25 s: it builds the SO-101 model to
 # read its ctrlrange rather than transcribing the limits.
 tests/robot/test_so101_sim_map.mojo
+# Ticks <-> lerobot units, against expressions EXTRACTED from lerobot's own
+# `MotorsBus._normalize`/`_unnormalize` rather than transcribed. This is the map
+# ACT deploys through; `test_so101_sim_map.mojo` above gates the DIFFERENT map
+# the reach policy uses, and swapping them feeds a network numbers it has never
+# seen while raising nothing. Self-contained: the fixture is committed.
+tests/robot/test_so101_lerobot_units.mojo

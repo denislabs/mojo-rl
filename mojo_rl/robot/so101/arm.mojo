@@ -23,6 +23,13 @@ speak the same numbers a LeRobot dataset recorded (`so101-nexus`'s
 * gripper — `MotorNormMode.RANGE_0_100`:
   `pct = (clamp(raw) - min) / (max - min) * 100`.
 
+⚠⚠ **AND `DEGREES` IS A RECORDING-TIME CHOICE, NOT A FACT.** lerobot's
+`so_follower.py` selects `DEGREES if config.use_degrees else RANGE_M100_100`,
+with `use_degrees: bool = True` as the default. Both write `*.pos` columns and
+neither records which was used, so a dataset is the only witness — and the tell
+is CLAMPING, since `RANGE_M100_100` cannot leave [-100, 100]. `range_m100_100`
+below exists so that mode is reachable BY NAME rather than by accident.
+
 Note the `4096 - 1`: the inclusive tick range 0..4095 spans one turn. Using
 4096 is a systematic ~0.09 degree error, small enough to survive a review and
 large enough to sit in every sim-to-real comparison afterwards.
@@ -103,7 +110,9 @@ struct SO101Calibration(Copyable, Movable):
         over-travel; it is a continuous joint meeting a bounded model, which
         is a different problem with a different fix.
         """
-        return self.range_min[i] == 0 and self.range_max[i] == STS_RESOLUTION - 1
+        return (
+            self.range_min[i] == 0 and self.range_max[i] == STS_RESOLUTION - 1
+        )
 
     def degrees(self, i: Int, raw: Int32) -> Float64:
         """Ticks to the units lerobot records — degrees, or 0..100 for the
@@ -123,15 +132,42 @@ struct SO101Calibration(Copyable, Movable):
             return self.degrees(i, raw)
         return self.degrees(i, raw) * pi / 180.0
 
+    def range_m100_100(self, i: Int, raw: Int32) -> Float64:
+        """lerobot's OTHER body-joint mode: percent of calibrated travel.
+
+        ⚠⚠ WHICH MODE A DATASET USED IS A RECORDING-TIME FLAG, NOT A PROPERTY
+        OF THIS ARM. `so_follower.py` picks
+        `MotorNormMode.DEGREES if config.use_degrees else RANGE_M100_100`, and
+        `use_degrees` defaults to True — so `degrees()` is the usual answer and
+        this exists so the other one cannot be reached by accident, only by
+        name.
+
+        ⚠ THE ONLY WITNESS IS THE DATA. Both modes write `*.pos` columns with
+        no unit recorded anywhere. They are told apart by CLAMPING: this one is
+        exactly [-100, 100] by construction, `degrees()` is unbounded. The
+        50-demo store has `shoulder_lift` at -107.16 and `wrist_flex` at
+        +102.29, which THIS FUNCTION CANNOT PRODUCE — that is the proof it was
+        recorded in degrees. `tools/act/dump_lerobot_units_reference.py
+        --check-dataset` re-runs that test on any store.
+        """
+        var lo = Float64(self.range_min[i])
+        var hi = Float64(self.range_max[i])
+        var v = min(hi, max(lo, Float64(raw)))
+        return ((v - lo) / (hi - lo)) * 200.0 - 100.0
+
+    def raw_from_range_m100_100(self, i: Int, value: Float64) -> Int32:
+        var lo = Float64(self.range_min[i])
+        var hi = Float64(self.range_max[i])
+        var v = min(100.0, max(-100.0, value))
+        return Int32(Int(((v + 100.0) / 200.0) * (hi - lo) + lo))
+
     def raw_from_degrees(self, i: Int, value: Float64) -> Int32:
         if i == GRIPPER:
             var lo = Float64(self.range_min[i])
             var hi = Float64(self.range_max[i])
             var pct = min(100.0, max(0.0, value))
             return Int32(Int(pct / 100.0 * (hi - lo) + lo))
-        return Int32(
-            Int(value * Float64(TICKS_PER_TURN) / 360.0 + self.mid(i))
-        )
+        return Int32(Int(value * Float64(TICKS_PER_TURN) / 360.0 + self.mid(i)))
 
     def raw_from_radians(self, i: Int, value: Float64) -> Int32:
         if i == GRIPPER:
@@ -246,9 +282,7 @@ struct SO101Arm(Movable):
     def set_torque(mut self, on: Bool) raises:
         var v = TORQUE_ENABLED if on else TORQUE_DISABLED
         for i in range(SO101_N):
-            self.bus.write_register(
-                self.ids[i], STS_TORQUE_ENABLE, v, SIZE_1
-            )
+            self.bus.write_register(self.ids[i], STS_TORQUE_ENABLE, v, SIZE_1)
             if not on:
                 # `Lock` guards the EEPROM; lerobot clears it alongside torque
                 # (`feetech.py:291 disable_torque`) so a subsequent
