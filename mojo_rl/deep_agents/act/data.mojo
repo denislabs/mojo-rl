@@ -59,6 +59,7 @@ multiplies by it and the attention node turns it into an additive bias.
 """
 
 from std.memory import alloc, dealloc
+from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.ptr import mptr
@@ -149,12 +150,29 @@ struct ACTDataset[
     var val_eps: List[Int]
     var rng: UInt64
 
+    # ── where does `sample_batch` actually spend its time? ───────────────
+    # It is 16.1 ms of a 144.8 ms ACT iteration with the GPU idle throughout,
+    # and it does two very different things: an HDF5 row read (I/O, 7.37 MB of
+    # uint8 per batch) and a per-pixel normalize (7.37M elements, scalar,
+    # single-threaded, writing 29.5 MB of float32). ONLY THE SECOND CAN MOVE
+    # TO THE GPU, and moving it would also cut the H2D transfer 4x by sending
+    # uint8 instead of float32 — so the split decides whether that rewrite is
+    # worth anything. Accumulated in nanoseconds, never reset; the caller
+    # takes differences.
+    var ns_img_io: Int
+    """Time inside `read_range` (streamed) — the part that CANNOT move."""
+    var ns_img_norm: Int
+    """Time in the per-pixel uint8 -> normalized float32 loop — the part that
+    can, and that a GPU kernel would do in ~0.04 ms."""
+
     def __init__(
         out self,
         var path: String,
         seed: UInt64 = 0,
         max_image_bytes: Int = IMAGES_RESIDENT_MAX_BYTES,
     ) raises:
+        self.ns_img_io = 0
+        self.ns_img_norm = 0
         self.store = TrajectoryStore(path^)
 
         ref m = self.store.manifest
@@ -223,6 +241,8 @@ struct ACTDataset[
         self._split_episodes()
 
     def __init__(out self, *, deinit move: Self):
+        self.ns_img_io = move.ns_img_io
+        self.ns_img_norm = move.ns_img_norm
         self.store = move.store^
         self.qpos_raw = move.qpos_raw^
         self.action_raw = move.action_raw^
@@ -389,14 +409,17 @@ struct ACTDataset[
         if self.images_resident:
             src = g * Self.IMG_ELEMS
         else:
+            var t_io0 = perf_counter_ns()
             self._img_dset.read_range[DType.uint8](
                 g, g + 1, mptr(self._img_row)
             )
+            self.ns_img_io += perf_counter_ns() - t_io0
             src = 0
         ref img = self.images_raw if self.images_resident else self._img_row
 
         var io = slot * Self.IMG_ELEMS
         comptime HW = Self.IMG_H * Self.IMG_W
+        var t_nm0 = perf_counter_ns()
         for c in range(Self.N_CAM):
             var cbase = c * Self.CAM_ELEMS
             for ch in range(3):
@@ -420,6 +443,7 @@ struct ACTDataset[
                         / Scalar[DT](255.0)
                     )
                     out_images[io + base + p] = (v - mean) * inv
+        self.ns_img_norm += perf_counter_ns() - t_nm0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

@@ -303,6 +303,25 @@ def main() raises:
         "    sample_batch    " + String(data_ms) + " ms  ("
         + String(Int(100.0 * data_ms / (step_ms + 1e-12))) + "%)"
     )
+    # ⚠ The split that decides whether the image path is worth moving to the
+    # GPU. `io` is the HDF5 row read and CANNOT move; `normalize` is 7.37M
+    # scalar uint8 -> float32 conversions that a kernel would do in ~0.04 ms,
+    # and moving it would also cut the H2D transfer 4x (upload uint8, not
+    # float32). Anything left over is qpos/actions plus the RNG.
+    var io_ms = Float64(ds.ns_img_io) / 1e6 / n
+    var nm_ms = Float64(ds.ns_img_norm) / 1e6 / n
+    print(
+        "      images io     " + String(io_ms) + " ms   (HDF5 read — cannot"
+        " move to the GPU)"
+    )
+    print(
+        "      images norm   " + String(nm_ms) + " ms   (per-pixel convert —"
+        " the GPU candidate)"
+    )
+    print(
+        "      other         " + String(data_ms - io_ms - nm_ms)
+        + " ms   (qpos/actions/rng)"
+    )
     print(
         "    train_step      " + String(train_ms) + " ms  ("
         + String(Int(100.0 * train_ms / (step_ms + 1e-12))) + "%)"
