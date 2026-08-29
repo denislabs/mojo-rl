@@ -643,6 +643,21 @@ struct Conv2D[
     # removal of the last non-D2H CUDA-graph blocker in the model. Judge this
     # constant on capture first and throughput second.
     #
+    # ⚠ AND JUDGE IT ON CAPTURE ALONE, BECAUSE THE THROUGHPUT CASE DID NOT
+    # SURVIVE THE STEP. The per-call numbers above predicted +0.57 ms/step.
+    # Measured end to end on the ACT step: 39.968 -> 39.909 ms, i.e. **0.06 ms**,
+    # a tenth of the prediction. Isolated GEMM sweeps launch back-to-back with
+    # one sync and so measure throughput under saturation; the real step already
+    # runs the GPU ~88% busy, and removing GEMM time there does not compose 1:1.
+    # Treat `sweep_pad`-style per-call deltas as an UPPER BOUND on what a step
+    # will show, not an estimate of it.
+    #
+    # ⚠ `MOJO_RL_SPLITK=0` no longer gives the pre-change baseline. This
+    # constant is comptime, so the env var disables split-K while LEAVING THE
+    # PADDING ON -- which is exactly the arm that measured 0.21x. The OFF arm
+    # now reads ~50.5 ms against a true pre-change baseline of 44.0 ms. It is
+    # still the right A/B for "is split-K helping", but it is NOT "before".
+    #
     # ⚠ The dW win only exists WITH a tuned partition count. At MAX's own P=8
     # the padded GEMM is 0.21x -- a 5x REGRESSION versus the vendor path. The
     # pad and `splitk_gemm` are one change, not two.
