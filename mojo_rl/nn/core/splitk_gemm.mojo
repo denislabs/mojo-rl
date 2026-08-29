@@ -45,11 +45,41 @@ whether `_matmul_gpu` REACHES that path at all:
 include sm_120 — consumer Blackwell has no tcgen05, which is exactly why an
 RTX 5090 lands on the multistage path and why this work applies to it.
 
-So `splitk_path_applies()` excludes H100 and datacenter Blackwell. On those
-parts MAX has a better kernel than the one we would be substituting, and
-`splitk_or_matmul` falls back to `linalg.matmul` unchanged. This is
-deliberately conservative: we intervene only where we can show MAX would
-itself have chosen `multistage_gemm` with a partitioned K.
+So `splitk_path_applies()` excludes H100 and datacenter Blackwell, and we fall
+back to `linalg.matmul` unchanged there. This is deliberately conservative: we
+intervene only where we can show MAX would itself have chosen
+`multistage_gemm` with a partitioned K.
+
+⚠ THAT EXCLUSION IS NOT BECAUSE THOSE PATHS ARE IMMUNE. They are not — the
+allocate-per-call pattern is MAX-wide, and on H100 and B200 it is WORSE than
+on the multistage path, two buffers and a memset instead of one buffer:
+
+    sm_80/89/120   multistage_gemm                     `work_space_data`
+                   (matmul/gpu/__init__.mojo:1845)     freed at :1915
+
+    sm_90 (H100)   warp_specialize_gemm_with_          `workspace_data` +
+                   multicasting_splitk                 `locks_ptr`, plus an
+                   (sm90/matmul.mojo:689, :852, :867)  enqueue_memset; both
+                                                       freed with `_ = x^`
+
+    sm_100 (B200)  _blackwell_matmul_tma_umma_         `reduction_workspace` +
+                   warp_specialized_split_k            `locks_buffer`, plus an
+                   (sm100_structured/default/          enqueue_memset; both
+                    matmul.mojo:485, :670, :673)       freed with `_ = x^`
+
+So both consequences carry to every NVIDIA architecture: the per-call
+allocator tax, and — since a synchronous driver allocation is illegal inside a
+capture region on any part — the CUDA-graph block. An H100 or B200 training
+step containing a split-K GEMM is as uncapturable as ours was.
+
+We exclude them for a different reason: on those parts `_matmul_gpu` reaches a
+DIFFERENT and better kernel (warp-specialised, TMA/UMMA, its own scheduler),
+and substituting the generic multistage one would be a regression. Fixing them
+the same way is possible — `warp_specialize_gemm_with_multicasting_splitk` and
+`SplitKTileScheduler` are exported from the shipped package too, verified — but
+it is a much larger port (TMA descriptors, a locks buffer, the scheduler's
+state) and we have no H100 or B200 to validate it on. Documented rather than
+attempted.
 """
 
 from std.math import ceildiv, align_up
