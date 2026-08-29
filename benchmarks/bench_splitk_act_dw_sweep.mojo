@@ -564,6 +564,139 @@ def sweep_partitions[
     _ = c_ours^
 
 
+def sweep_pad[
+    M: Int, K: Int, N_REAL: Int, N_PAD: Int, COUNT: Int, LABEL: StaticString
+](ctx: DeviceContext, mut ws: SplitKWorkspace[DT]) raises:
+    """Is it worth PADDING N to reach the multistage path?
+
+    `Conv2D`'s dW is `[OC, BS] @ [BS, CPAD]`, and `CPAD` rounds the im2col
+    column count to a multiple of 32 — the FORWARD's contraction alignment.
+    For the dW GEMM that same number is N, and `multi_gemm_cond` wants
+    `n % 128 == 0`, so a ResNet18 stem (CPAD=160) and every 64-input 3x3
+    (CPAD=576) go to the VENDOR fallback instead. Those are the LONGEST-K
+    GEMMs in the model (BS = 307,200 and 76,800), so they are the ones split-K
+    would help most, and the ones it cannot currently touch.
+
+    Padding N to 128 would admit them — at the cost of computing columns
+    nobody reads: 160 -> 256 is 60% more FLOPs, 576 -> 640 is 11% more.
+
+    The two numbers we had CONFLICTED and could not settle it:
+    MODULAR_MATMUL_ALLOC_REPORT.md Measurement 1 has `[64 x 307200] @
+    [307200 x 160]` at 483 us WITH nsys attached; this file's earlier sweep has
+    the padded `[... x 256]` at 1706 us with NO profiler. Different conditions,
+    not a comparison. This measures all three arms in one unprofiled process.
+
+      A  max_matmul, N=N_REAL   the status quo (vendor fallback)
+      B  max_matmul, N=N_PAD    multistage at MAX's own partition count
+      C  splitk_gemm, N=N_PAD   ours, at the chooser's P
+
+    Correctness is free here: column j of C reads only column j of B, so the
+    padded arm's first N_REAL columns must equal the unpadded arm's exactly.
+    """
+    var a = ctx.enqueue_create_buffer[DT](M * K)
+    var bn = ctx.enqueue_create_buffer[DT](K * N_REAL)
+    var bp = ctx.enqueue_create_buffer[DT](K * N_PAD)
+    var cn = ctx.enqueue_create_buffer[DT](M * N_REAL)
+    var cp = ctx.enqueue_create_buffer[DT](M * N_PAD)
+    a.enqueue_fill(Float32(0.01))
+    bn.enqueue_fill(Float32(0.02))
+    bp.enqueue_fill(Float32(0.02))
+    ctx.synchronize()
+
+    var av = TileTensor(a, row_major[M, K]())
+    var bnv = TileTensor(bn, row_major[K, N_REAL]())
+    var bpv = TileTensor(bp, row_major[K, N_PAD]())
+    var cnv = TileTensor(cn, row_major[M, N_REAL]())
+    var cpv = TileTensor(cp, row_major[M, N_PAD]())
+
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    comptime cfg = kernels.ampere_128x128_4
+    comptime sm_count = ctx.default_device_info.sm_count
+    var picked = select_config[DT, DT, DT, False](M, N_PAD, K, ctx)
+    var want = choose_partitions(
+        M, N_PAD, K,
+        cfg.block_tile_shape[0], cfg.block_tile_shape[1],
+        cfg.block_tile_shape[2], sm_count,
+    )
+
+    comptime R = 20
+
+    for _ in range(3):
+        max_matmul[target="gpu"](cnv, av, bnv, ctx)
+    ctx.synchronize()
+    var t0 = perf_counter_ns()
+    for _ in range(R):
+        max_matmul[target="gpu"](cnv, av, bnv, ctx)
+    ctx.synchronize()
+    var t1 = perf_counter_ns()
+
+    for _ in range(3):
+        max_matmul[target="gpu"](cpv, av, bpv, ctx)
+    ctx.synchronize()
+    var t2 = perf_counter_ns()
+    for _ in range(R):
+        max_matmul[target="gpu"](cpv, av, bpv, ctx)
+    ctx.synchronize()
+    var t3 = perf_counter_ns()
+
+    var us_c = Float64(0)
+    var ok = picked == cfg and want > 1 and want * M * N_PAD <= ws.capacity
+    if ok:
+        for _ in range(3):
+            splitk_gemm[transpose_b=False, config=cfg](
+                cpv, av, bpv, want, ws, ctx
+            )
+        ctx.synchronize()
+        var t4 = perf_counter_ns()
+        for _ in range(R):
+            splitk_gemm[transpose_b=False, config=cfg](
+                cpv, av, bpv, want, ws, ctx
+            )
+        ctx.synchronize()
+        us_c = Float64(perf_counter_ns() - t4) / 1000.0 / Float64(R)
+
+    var us_a = Float64(t1 - t0) / 1000.0 / Float64(R)
+    var us_b = Float64(t3 - t2) / 1000.0 / Float64(R)
+
+    # Padded arm's first N_REAL columns must equal the unpadded arm's.
+    var worst = Float64(0)
+    with cn.map_to_host() as hn:
+        with cp.map_to_host() as hp:
+            for i in range(M):
+                for j in range(N_REAL):
+                    var d = abs(Float64(hn[i * N_REAL + j])
+                                - Float64(hp[i * N_PAD + j]))
+                    if d > worst:
+                        worst = d
+
+    print("  ", LABEL, "  [", M, " x ", K, "] @ [", K, " x N]   x", COUNT,
+          "/step", sep="")
+    print("      A  N=", N_REAL, " max_matmul (vendor)      ", us_a, "us", sep="")
+    print("      B  N=", N_PAD, " max_matmul (multistage P=",
+          picked.num_k_partitions, ")  ", us_b, "us   ", us_a / us_b, "x vs A",
+          sep="")
+    if ok:
+        print("      C  N=", N_PAD, " splitk_gemm P=", want, "          ",
+              us_c, "us   ", us_a / us_c, "x vs A", sep="")
+        print("         verdict: ",
+              "PAD WINS" if us_c < us_a else "PAD LOSES — keep the vendor path",
+              "   (padded cols cost ",
+              Float64(N_PAD - N_REAL) / Float64(N_REAL) * 100.0, "% more FLOPs)",
+              sep="")
+        print("         saving if padded: ",
+              (us_a - us_c) * Float64(COUNT) / 1000.0, " ms/step", sep="")
+    else:
+        print("      C  skipped (chooser P=", want, ", tile match=",
+              picked == cfg, ")", sep="")
+    print("      |A - B[:, :N_REAL]| = ", worst, sep="")
+
+    _ = a^
+    _ = bn^
+    _ = bp^
+    _ = cn^
+    _ = cp^
+
+
 def main() raises:
     comptime if not has_nvidia_gpu_accelerator():
         print("NVIDIA only -- build with `pixi run -e nvidia`.")
@@ -616,4 +749,12 @@ def main() raises:
             sweep_partitions[256, 2592, 256, "enc attn      "](ctx, ws)
             sweep_partitions[256, 2592, 1024, "enc ff1       "](ctx, ws)
             sweep_partitions[1024, 2592, 256, "enc ff2       "](ctx, ws)
+            print()
+            print("-- would padding N to 128 admit the conv dW? ------------")
+            print("   (stem and the 64-input 3x3s are the LONGEST K in ACT")
+            print("    and the only convs multi_gemm_cond excludes)")
+            # ResNet18 stem dW: COL=147 -> CPAD=160, BS=16*120*160.
+            sweep_pad[64, 307200, 160, 256, 2, "stem 7x7  "](ctx, ws)
+            # layer1 3x3 dW: COL=576 -> CPAD=576, BS=16*60*80.
+            sweep_pad[64, 76800, 576, 640, 4, "layer1 3x3"](ctx, ws)
             _ = ws^
