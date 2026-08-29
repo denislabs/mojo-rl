@@ -590,17 +590,48 @@ def sweep_pad[
       B  max_matmul, N=N_PAD    multistage at MAX's own partition count
       C  splitk_gemm, N=N_PAD   ours, at the chooser's P
 
-    Correctness is free here: column j of C reads only column j of B, so the
-    padded arm's first N_REAL columns must equal the unpadded arm's exactly.
+    ⚠ CORRECTNESS IS NOT "EXACTLY EQUAL", and an earlier version of this
+    docstring claimed it was. Column j of C reads only column j of B, so the
+    two arms compute the same MATHEMATICAL result — but through DIFFERENT
+    KERNELS (cuBLAS vs multistage split-K), hence different summation orders.
+    At K = 307,200 a single fp32 sequential sum carries up to `K * eps` = 3.7e-2
+    relative on its own, so a 1.5e-3 disagreement is ordering, not a defect.
+    Same mistake as [[_an_exact_equality_dedup_needs_bit_identical_construction]]:
+    the same maths through different arithmetic is not the same number.
+
+    So this reports RELATIVE error against a float64 host reference, and scores
+    BOTH arms against it — the question is not "do they agree" but "is the
+    padded arm at least as accurate", which the reference can answer and a
+    pairwise diff cannot.
+
+    ⚠ It also fills with VARIED data. A constant fill makes every product
+    identical, which removes the cancellation that exposes ordering defects and
+    makes any summation look well conditioned.
     """
     var a = ctx.enqueue_create_buffer[DT](M * K)
     var bn = ctx.enqueue_create_buffer[DT](K * N_REAL)
     var bp = ctx.enqueue_create_buffer[DT](K * N_PAD)
     var cn = ctx.enqueue_create_buffer[DT](M * N_REAL)
     var cp = ctx.enqueue_create_buffer[DT](M * N_PAD)
-    a.enqueue_fill(Float32(0.01))
-    bn.enqueue_fill(Float32(0.02))
-    bp.enqueue_fill(Float32(0.02))
+    # Varied, sign-changing data: a constant fill makes every product equal,
+    # which hides exactly the ordering effects this is meant to expose.
+    var ah = ctx.enqueue_create_host_buffer[DT](M * K)
+    var bh = ctx.enqueue_create_host_buffer[DT](K * N_PAD)
+    ctx.synchronize()
+    for i in range(M * K):
+        ah[i] = Scalar[DT](0.02) * Scalar[DT]((i % 61) - 30)
+    for i in range(K * N_PAD):
+        bh[i] = Scalar[DT](0.01) * Scalar[DT]((i % 47) - 23)
+    ctx.enqueue_copy(a, ah)
+    ctx.enqueue_copy(bp, bh)
+    # bn is bp's first N_REAL columns, row by row, so the two arms see the
+    # SAME operand values and only the kernel differs.
+    var bnh = ctx.enqueue_create_host_buffer[DT](K * N_REAL)
+    ctx.synchronize()
+    for i in range(K):
+        for j in range(N_REAL):
+            bnh[i * N_REAL + j] = bh[i * N_PAD + j]
+    ctx.enqueue_copy(bn, bnh)
     ctx.synchronize()
 
     var av = TileTensor(a, row_major[M, K]())
@@ -658,16 +689,28 @@ def sweep_pad[
     var us_a = Float64(t1 - t0) / 1000.0 / Float64(R)
     var us_b = Float64(t3 - t2) / 1000.0 / Float64(R)
 
-    # Padded arm's first N_REAL columns must equal the unpadded arm's.
-    var worst = Float64(0)
+    # Score BOTH arms against a float64 host reference. Checking one against
+    # the other only says they differ, which they must -- different kernels,
+    # different summation order. The reference says WHICH is closer to the
+    # truth, which is the question worth asking. Sampled columns: a full
+    # reference at K=307200 would dominate the run time.
+    comptime NCHK = 8
+    var ref_a = Float64(0)
+    var ref_c = Float64(0)
     with cn.map_to_host() as hn:
         with cp.map_to_host() as hp:
-            for i in range(M):
-                for j in range(N_REAL):
-                    var d = abs(Float64(hn[i * N_REAL + j])
-                                - Float64(hp[i * N_PAD + j]))
-                    if d > worst:
-                        worst = d
+            for jj in range(NCHK):
+                var j = (jj * N_REAL) // NCHK
+                var acc = Float64(0)
+                for k in range(K):
+                    acc += Float64(ah[k]) * Float64(bh[k * N_PAD + j])
+                var mag = abs(acc) + 1e-30
+                var da = abs(Float64(hn[j]) - acc) / mag
+                var dc = abs(Float64(hp[j]) - acc) / mag
+                if da > ref_a:
+                    ref_a = da
+                if dc > ref_c:
+                    ref_c = dc
 
     print("  ", LABEL, "  [", M, " x ", K, "] @ [", K, " x N]   x", COUNT,
           "/step", sep="")
@@ -688,13 +731,19 @@ def sweep_pad[
     else:
         print("      C  skipped (chooser P=", want, ", tile match=",
               picked == cfg, ")", sep="")
-    print("      |A - B[:, :N_REAL]| = ", worst, sep="")
+    print("      rel err vs float64 reference:  A(vendor) ", ref_a,
+          "   C(split-K, padded) ", ref_c,
+          "   -> padded arm is ",
+          "MORE accurate" if ref_c <= ref_a else "LESS accurate", sep="")
 
     _ = a^
     _ = bn^
     _ = bp^
     _ = cn^
     _ = cp^
+    _ = ah^
+    _ = bh^
+    _ = bnh^
 
 
 def main() raises:
