@@ -14,8 +14,23 @@ Usage:
     for i in range(1000):
         graph.replay()
 
-Requires: LD_PRELOAD with libcuda_intercept.so (set automatically
-by pixi nvidia environment activation).
+Requires: LD_PRELOAD with libcuda_intercept.so.
+
+⚠ THE PRELOAD IS A PROPERTY OF THE PROCESS, NOT THE BINARY. It is set by
+pixi's nvidia-environment activation (`pixi.toml [feature.nvidia.activation]`),
+so `pixi run -e nvidia mojo run ...` has it and a binary you built and then
+invoke DIRECTLY — `./act_profile` — does not. Without it capture disables
+itself, because the interceptor hooks by exporting its own `dlsym` (symbol
+interposition) and that only works if the library is loaded BEFORE MAX
+resolves its CUDA entry points. The `dlopen` this file performs is far too
+late to hook anything; it only reaches the entry points.
+
+    LD_PRELOAD=$PWD/mojo_rl/cuda/libcuda_intercept.so ./act_profile
+
+The banner tells you which you have. Preloaded, "[intercept] CUDA interceptor
+loaded" is the FIRST line of the run. If it appears in the middle — at the
+moment `CUDAGraph` is constructed — the library was only dlopened, its
+`g_mojo_stream` is NULL because it never saw a launch, and capture disables.
 """
 
 from std.sys import has_nvidia_gpu_accelerator
@@ -32,6 +47,79 @@ comptime _CUptr = Pointer[NoneType, MutUntrackedOrigin]
 def _uninit[T: AnyType](out value: T):
     """Returns uninitialized data."""
     __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(value))
+
+
+
+def _print_capture_disabled(launches: Int):
+    """Why capture is off, and which fix applies.
+
+    A NULL Mojo stream has TWO causes needing opposite fixes, and the launch
+    count separates them: the interceptor records the stream on EVERY
+    `cuLaunchKernelEx`, so having seen none means it is not hooked into this
+    process at all and the NULL says nothing about MAX's streams.
+
+    ⚠ Module level on purpose, not inlined into the NVIDIA-only `comptime if`
+    that calls it. `comptime if` PRUNES, so a message written inside that
+    branch is never compiled on a non-NVIDIA machine — which is where this
+    file is usually edited. A diagnostic that only typechecks on the hardware
+    it diagnoses is a diagnostic you find out is broken at the worst moment.
+
+    ⚠ The message this replaced asserted a single cause — "MAX destroys its
+    stream after a synchronize" — which `tests/cuda/probe_max_stream_lifetime`
+    had already REFUTED (MAX keeps one stream and tears it down when the
+    DeviceContext dies; see `CUDAGraph._ctx`). Stating a stale conclusion as
+    fact cost a real debugging session. Say what is observed, name both
+    branches, and point at the probe.
+    """
+    if launches == 0:
+        # NOT HOOKED. The interceptor works by exporting its own `dlsym`
+        # (symbol interposition), which only takes effect via LD_PRELOAD — a
+        # `dlopen` from `CUDAGraph.__init__` is far too late, MAX resolved its
+        # CUDA entry points at startup. So this branch means the process
+        # started without the preload, which is exactly what running a built
+        # binary DIRECTLY does: LD_PRELOAD comes from pixi's nvidia-environment
+        # activation, not from the binary.
+        print(
+            "[CUDAGraph] DISABLED: the CUDA interceptor is not hooked into"
+            " this process (0 kernel launches seen)."
+        )
+        print(
+            "    It hooks via LD_PRELOAD, which comes from pixi's nvidia"
+            " environment — a binary run directly does not get it. Either run"
+            " under `pixi run -e nvidia`, or export it yourself:"
+        )
+        print(
+            "      LD_PRELOAD=$PWD/mojo_rl/cuda/libcuda_intercept.so"
+            " ./your_binary"
+        )
+        print(
+            "    Confirm with the banner: preloaded, '[intercept] CUDA"
+            " interceptor loaded' is the FIRST line of the run. If it appears"
+            " late — at this point — the library was only dlopened and hooks"
+            " nothing."
+        )
+    else:
+        # HOOKED, and the stream it last saw is gone: the borrowed-stream
+        # problem proper.
+        print(
+            "[CUDAGraph] DISABLED: the interceptor is hooked ("
+            + String(launches) + " launches seen) but the stream it last"
+            " recorded has been destroyed, so there is nothing live to"
+            " capture."
+        )
+        print(
+            "    Next step is whose destroy that is: MOJO_RL_INTERCEPT_LOG=1"
+            " pixi run -e nvidia mojo run -I ."
+            " tests/cuda/probe_max_stream_lifetime.mojo"
+        )
+        print(
+            "    That probe constructs no CUDAGraph at all, so a destroy"
+            " there is MAX's own and a destroy only here is ours to fix."
+        )
+    print(
+        "    Either way the step runs DIRECTLY — correct results, just no"
+        " graph-replay speedup."
+    )
 
 
 struct CUDAGraph(Movable):
@@ -135,26 +223,27 @@ struct CUDAGraph(Movable):
             self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
-                # ⚠ THE COMMON CAUSE IS NOT "no kernel ran yet" ANY MORE.
-                # MAX 26.5.0rc2 DESTROYS its stream after `ctx.synchronize()`
-                # (measured 2026-08-09: `cuStreamDestroy` on exactly the
-                # handle the launch hook had just reported). The interceptor
-                # NULLs the handle when that happens, so a zero here means
-                # "the stream MAX was using is gone", and capture cannot
-                # proceed — there is no long-lived stream to borrow.
+                # A NULL stream has TWO causes and they need opposite fixes.
+                # This message used to assert one of them ("MAX destroys its
+                # stream after a synchronize") as though it were the only
+                # possibility — a diagnosis this repo's own
+                # `tests/cuda/probe_max_stream_lifetime.mojo` had already
+                # REFUTED (MAX keeps one stream and tears it down when the
+                # DeviceContext dies; see the `_ctx` field). Stating a stale
+                # conclusion as fact sent a real debugging session hunting in
+                # the wrong place, so the message now separates the cases
+                # instead of picking one.
                 #
-                # Reaching this branch is therefore the EXPECTED outcome on
-                # this MAX, not an anomaly, and it must not crash: calling
-                # into the driver with the freed handle is the use-after-free
-                # that produced every fault in this arc.
-                self._state = 3  # DISABLED
-                print(
-                    "[CUDAGraph] DISABLED: no live Mojo stream to capture."
-                    " MAX destroys its stream after a synchronize, so the"
-                    " borrowed-stream design has nothing stable to capture."
-                    " Falling back to running the step directly — correct,"
-                    " just without the graph-replay speedup."
+                # The launch count is what separates them: the interceptor
+                # records `g_mojo_stream` on EVERY `cuLaunchKernelEx`, so if
+                # it has seen no launches at all it is not hooked into this
+                # process and the NULL says nothing about MAX's streams.
+                var get_launches = self._lib.get_function[c_int](
+                    "intercept_get_launch_count"
                 )
+                var launches = Int(get_launches())
+                self._state = 3  # DISABLED
+                _print_capture_disabled(launches)
             else:
                 # Create replay stream
                 var stream_create = self._lib.get_function[c_int](
