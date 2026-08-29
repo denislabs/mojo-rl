@@ -38,6 +38,11 @@ from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    decide_partitions,
+    dispatch_splitk_gemm,
+)
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor
@@ -143,6 +148,27 @@ struct Conv2DTranspose[
     var ecol_t: Tensor  # [BS, COLT] im2col of grad_output (vjp)
     var gxp_t: Tensor  # [BS, IC]   packed grad_x (vjp)
     var dW_tmp: Tensor  # [IC, COLT] dW temp (accumulated into grad)
+    # Split-K reduction workspace for the dW GEMM, `[P, IC_, COLT]`, plus the
+    # cached partition count (-1 = undecided, 1 = do not split). Owned here so
+    # the GEMM does not hit `linalg.matmul`'s per-call cuMemAlloc/cuMemFree —
+    # which is also what makes a step containing it capturable. See
+    # `Linear.sk_ws` for the full rationale.
+    #
+    # Same regime as `Conv2D`'s dW and for the same reason: K is `B * SI`
+    # (batch times the SMALL spatial map), which for a DreamerV3 decoder is
+    # tens of thousands, while M is an in-channel count and N is `OC * K * K`.
+    # Tiny grid, enormous contraction.
+    #
+    # ⚠ There is no `CPAD` equivalent here — `COLT` is whatever `OC * K * K`
+    # comes out to. `multi_gemm_cond` wants `N % 128 == 0`, i.e. `OC * K² % 128
+    # == 0` (a 4x4 kernel needs `OC % 8`), and `decide_partitions` returns 1
+    # when it does not hold. That is not a missed optimisation to paper over:
+    # MAX routes those shapes to cuBLAS, and substituting the multistage
+    # kernel would be a wrong gradient. Padding N the way `Conv2D` does would
+    # widen the eligible set, but it changes the forward's operand too and
+    # needs its own measurement.
+    var sk_ws: Tensor
+    var _sk_p: Int
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -153,6 +179,8 @@ struct Conv2DTranspose[
         self.ecol_t = Tensor()
         self.gxp_t = Tensor()
         self.dW_tmp = Tensor()
+        self.sk_ws = Tensor()
+        self._sk_p = -1
 
     @staticmethod
     def make[
@@ -306,6 +334,17 @@ struct Conv2DTranspose[
                 block_dim=CONV_TPB,
             )
 
+    def _decide_sk_p(mut self, BS: Int, ctx: DeviceContext) raises:
+        """Decide the dW GEMM's partition count, once, and cache it.
+
+        The dW is `[IC_, BS] @ [BS, COLT]` with `BS = B * SI`. Decided on the
+        first backward — an EAGER step, before any capture — and never again:
+        P sets `grid_dim`, which is baked into a captured graph.
+        """
+        self._sk_p = decide_partitions(Self.IC_, Self.COLT, BS, ctx)
+        if self._sk_p > 1:
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.W_SIZE)
+
     def vjp[
         target: StaticString,
         B: Int,
@@ -453,7 +492,19 @@ struct Conv2DTranspose[
             var dW_tmp_tt = TileTensor(
                 self.dW_tmp.dev.value(), row_major[Self.IC_, Self.COLT]()
             )
-            max_matmul[target="gpu"](dW_tmp_tt, xT_tt, ecol2_tt, c)
+            comptime if splitk_path_applies[c.default_device_info]():
+                if self._sk_p < 0:
+                    self._decide_sk_p(BS, c)
+                if self._sk_p > 1:
+                    dispatch_splitk_gemm(
+                        dW_tmp_tt, xT_tt, ecol2_tt,
+                        Self.IC_, Self.COLT, BS,
+                        self._sk_p, self.sk_ws, c,
+                    )
+                else:
+                    max_matmul[target="gpu"](dW_tmp_tt, xT_tt, ecol2_tt, c)
+            else:
+                max_matmul[target="gpu"](dW_tmp_tt, xT_tt, ecol2_tt, c)
             comptime nb_acc = (Self.W_SIZE + CONV_TPB - 1) // CONV_TPB
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                 self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),

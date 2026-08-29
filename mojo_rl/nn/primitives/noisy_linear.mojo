@@ -22,6 +22,11 @@ from max.gpu.host import DeviceContext
 from max.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    decide_partitions,
+    dispatch_splitk_gemm,
+)
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.random.box_muller import (
@@ -204,6 +209,19 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
     var noise_offset: TensorImpl[DType.uint64]  # GPU Philox offset (1 elem)
     var cacheT: Tensor  # GPU grad_w: xᵀ [IN, BATCH] (lazy)
     var dW_tmp: Tensor  # GPU grad_w: dW [IN, OUT]
+    # Split-K reduction workspace for the dW GEMM, `[P, IN_, OUT_]`, plus the
+    # cached partition count (-1 = undecided, 1 = do not split). Owned here so
+    # the GEMM does not hit `linalg.matmul`'s per-call cuMemAlloc/cuMemFree —
+    # which is also what makes a step containing it capturable. See
+    # `Linear.sk_ws` for the full rationale.
+    #
+    # ⚠ Expect this to be inert in the DQN / C51 configs that use NoisyLinear:
+    # K is the minibatch and `select_config` needs K >= 2048 before it splits
+    # at all, so `decide_partitions` returns 1 at the usual 32-512. It is here
+    # so a large-batch run gets the same treatment as every other 2-D dW,
+    # rather than silently falling back onto the allocating path.
+    var sk_ws: Tensor
+    var _sk_p: Int
 
     def __init__(out self):
         self.mu_w = Param["mu_w", True, Self.W_SIZE]()
@@ -219,6 +237,8 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
         self.noise_offset = TensorImpl[DType.uint64]()
         self.cacheT = Tensor()
         self.dW_tmp = Tensor()
+        self.sk_ws = Tensor()
+        self._sk_p = -1
 
     @staticmethod
     def _init_sigma(mut self):
@@ -396,6 +416,17 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
 
+    def _decide_sk_p(mut self, B: Int, ctx: DeviceContext) raises:
+        """Decide the dW GEMM's partition count, once, and cache it.
+
+        `[IN_, B] @ [B, OUT_]`, so K is the row count. Decided on the first
+        backward — an EAGER step, before any capture — and never again: P sets
+        `grid_dim`, which is baked into a captured graph.
+        """
+        self._sk_p = decide_partitions(Self.IN_, Self.OUT_, B, ctx)
+        if self._sk_p > 1:
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.W_SIZE)
+
     def vjp[
         target: StaticString,
         B: Int,
@@ -482,7 +513,19 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             var dW_tt = TileTensor(
                 self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
-            max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
+            comptime if splitk_path_applies[c.default_device_info]():
+                if self._sk_p < 0:
+                    self._decide_sk_p(B, c)
+                if self._sk_p > 1:
+                    dispatch_splitk_gemm(
+                        dW_tt, cT_tt, go_tt,
+                        Self.IN_, Self.OUT_, B,
+                        self._sk_p, self.sk_ws, c,
+                    )
+                else:
+                    max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
+            else:
+                max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
             comptime nb_w = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                 self.mu_w.grd.lt["gpu", lw](),

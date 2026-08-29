@@ -23,6 +23,11 @@ from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    decide_partitions,
+    dispatch_splitk_gemm,
+)
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor, TensorImpl
@@ -71,6 +76,19 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
     # fp32 (the bf16 grad_w GEMM writes a fp32 output → fp32 master grad).
     var cache_inT: Tensor
     var gw_tmp: Tensor
+    # Split-K reduction workspace for the dW GEMM, `[P, VOCAB_, EMBED_DIM_]`,
+    # plus the cached partition count (-1 = undecided, 1 = do not split).
+    # Owned here rather than allocated per call by `linalg.matmul`; see
+    # `Linear.sk_ws` for why that is both a throughput and a CUDA-graph fix.
+    #
+    # This is the site with the LONGEST contraction in a GPT: `Tokenwise`
+    # flattens `(BATCH, SEQ_LEN, ...)` to a single `BATCH * SEQ_LEN` row count
+    # and hands it straight to the inner Module, so K here is the whole token
+    # count of the step — thousands, where a plain RL trunk sees hundreds. The
+    # M and N are small by comparison (a vocab and an embed dim), so the tile
+    # grid is a handful of blocks and the machine is idle without a split.
+    var sk_ws: Tensor
+    var _sk_p: Int
     # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
     # target == "gpu"). The master weight/grad stay fp32 (`Param`); only `w_bf`
     # is bf16 — the CACHED bf16 weight for the forward GEMM `out = input @ W`,
@@ -92,6 +110,8 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
         self.cache_in = Tensor()
         self.cache_inT = Tensor()
         self.gw_tmp = Tensor()
+        self.sk_ws = Tensor()
+        self._sk_p = -1
         self.w_bf = TensorImpl[Self.ADT]()
         self.cache_inT_bf = TensorImpl[Self.ADT]()
         self._w_cast_version = -1  # < any real version → first forward casts
@@ -234,6 +254,22 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 block_dim=(_T_TILE, _T_BR),
             )
 
+    def _decide_sk_p(mut self, B: Int, ctx: DeviceContext) raises:
+        """Decide the dW GEMM's partition count, once, and cache it.
+
+        The dW is `[VOCAB_, B] @ [B, EMBED_DIM_]`, so `multi_gemm_cond`'s
+        `N % 128 == 0` lands on EMBED_DIM_ — satisfied by 256/384/768, not by
+        192. `decide_partitions` returns 1 on the shapes it is not satisfied
+        for, which is correct: MAX routes those to cuBLAS and the multistage
+        kernel would return a wrong answer there.
+
+        Called on the first backward — an EAGER step, before any capture — and
+        never again: P sets `grid_dim`, which is baked into a captured graph.
+        """
+        self._sk_p = decide_partitions(Self.VOCAB_, Self.EMBED_DIM_, B, ctx)
+        if self._sk_p > 1:
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.W_SIZE)
+
     def vjp[
         target: StaticString,
         B: Int,
@@ -307,7 +343,19 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                     self.gw_tmp.dev.value(),
                     row_major[Self.VOCAB_, Self.EMBED_DIM_](),
                 )
-                max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+                comptime if splitk_path_applies[c.default_device_info]():
+                    if self._sk_p < 0:
+                        self._decide_sk_p(B, c)
+                    if self._sk_p > 1:
+                        dispatch_splitk_gemm(
+                            gwtmp_v, cinT_v, go_v,
+                            Self.VOCAB_, Self.EMBED_DIM_, B,
+                            self._sk_p, self.sk_ws, c,
+                        )
+                    else:
+                        max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+                else:
+                    max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
                 # weight.grad += gw_tmp  (accumulate, matches legacy semantics)
                 comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB
                 c.enqueue_function[_emb_accum_kernel[Self.W_SIZE]](
@@ -347,6 +395,11 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 self.gw_tmp.dev.value(),
                 row_major[Self.VOCAB_, Self.EMBED_DIM_](),
             )
+            # ⚠ NOT routed through split-K, deliberately: the bf16 flow is a
+            # different MAX instantiation (`MatmulKernels[bfloat16, bfloat16,
+            # float32]`) whose `_bk_base` differs, which changes both the tile
+            # config and `partitions_legal`'s alignment. Same reasoning as the
+            # bf16 site in `LinearAct.vjp`.
             max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
             # weight.grad (fp32 master) += gw_tmp (fp32)
             comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB

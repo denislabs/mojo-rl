@@ -41,6 +41,11 @@ from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    decide_partitions,
+    dispatch_splitk_gemm,
+)
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
@@ -189,6 +194,23 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     var w_pad: Tensor
     var x_pad: Tensor
     var _w_pad_version: Int
+    # Split-K reduction workspace for the dW GEMM, `[P, IN_, OUT_]`, and the
+    # cached partition count (-1 = not yet decided, 1 = do not split).
+    # `linalg.matmul` allocates this per call and frees it again
+    # (`matmul/gpu/__init__.mojo:1845`/`:1915`) — a cuMemAlloc/cuMemFree pair
+    # per GEMM, and, being a SYNCHRONOUS driver allocation, a hard block on
+    # capturing the step into a CUDA graph. Owning it on the Module removes
+    # both, and the Module outliving the trainer's graph is what keeps the raw
+    # pointer a captured replay holds valid. See `Linear.sk_ws`.
+    #
+    # ⚠ Unlike `Linear`, this dW is NOT padded: `PAD_TO` here covers only the
+    # forward's contraction dim, so the dW runs at the logical [IN_, OUT_] and
+    # its N is `OUT_` as written. `multi_gemm_cond` wants `N % 128 == 0`, so a
+    # trunk with OUT_ = 256/512 is admitted and a head with OUT_ = act_dim is
+    # not — `decide_partitions` returns 1 there and the GEMM stays on
+    # `max_matmul`, which is correct.
+    var sk_ws: Tensor
+    var _sk_p: Int
     # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
     # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
     # CUDA graph and reads the live fp32 master on every replay — the version
@@ -209,10 +231,29 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         self.w_pad = Tensor()
         self.x_pad = Tensor()
         self._w_pad_version = -1  # < any real version → first forward pads
+        self.sk_ws = Tensor()
+        self._sk_p = -1
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
             self._force_recast = value != Scalar[DT](0.0)
+
+    def _decide_sk_p(mut self, B: Int, ctx: DeviceContext) raises:
+        """Decide the dW GEMM's partition count, once, and cache it.
+
+        The dW is `[IN_, B] @ [B, OUT_]`, so K is the ROW COUNT — a minibatch
+        for an RL trunk, `batch * tokens` for a sequence model. That matters
+        for what to expect here: `select_config` needs `K // P >= 1024` for
+        even P=2, so a 256-row SAC/TD3/DQN update gets P=1 and this whole path
+        stays inert. It fires on the sequence-shaped users (and on a PPO
+        minibatch of 2048+), which is where MAX would have allocated.
+
+        Called on the first backward — an EAGER step, before any capture — and
+        never again: P sets `grid_dim`, which is baked into a captured graph.
+        """
+        self._sk_p = decide_partitions(Self.IN_, Self.OUT_, B, ctx)
+        if self._sk_p > 1:
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.W_SIZE)
 
     def _ensure_w_pad(mut self, c: DeviceContext) raises:
         """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
@@ -519,7 +560,19 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 var dW_v = TileTensor(
                     self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
                 )
-                max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                comptime if splitk_path_applies[c.default_device_info]():
+                    if self._sk_p < 0:
+                        self._decide_sk_p(B, c)
+                    if self._sk_p > 1:
+                        dispatch_splitk_gemm(
+                            dW_v, cT_v, go_v,
+                            Self.IN_, Self.OUT_, B,
+                            self._sk_p, self.sk_ws, c,
+                        )
+                    else:
+                        max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                else:
+                    max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
                 c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                     self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
                     self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
@@ -583,6 +636,12 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
             # grad_w = cacheT_bf @ go → fp32 dW (bf16-in, fp32-out).
+            # ⚠ NOT routed through split-K, deliberately. This is a different
+            # MAX instantiation — `MatmulKernels[bfloat16, bfloat16, float32]`
+            # — and `_bk_base` returns a different BK for bf16, which changes
+            # both the tile config and `partitions_legal`'s alignment. Routing
+            # it on the fp32 assumption would be a silent wrong gradient, not a
+            # slowdown. Needs a bf16 A/B gate before it moves.
             max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                 self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
