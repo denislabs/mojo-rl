@@ -44,6 +44,34 @@ lifecycle is exactly the one the training drivers use:
   C. B again, after a warm-up call outside capture — in case the allocation is
      a one-off that a settled stream avoids.
 
+## ANSWERED, RTX 5090, MAX 26.5.0: BLOCKED
+
+    A. control, plain multistage   cuStreamBeginCapture rc=0
+                                   cuStreamEndCapture   rc=0
+                                   captured 1 nodes, checksum ok   -> CAPTURES
+
+    B. split-K, cold               cuStreamBeginCapture rc=0, then
+      oom log request=512KB reason="graph capturing in progress, no driver fallback"
+      CAPTURE FAILED: Memory manager cannot satisfy allocation
+                      (memory manager is disabled): cuda[0] on graphFreeList
+
+**MAX's allocator refuses to serve an allocation while a graph is capturing**
+— "no driver fallback" — and the graph-specific pool it would serve it from,
+`graphFreeList`, is EMPTY. So the split-K reduction workspace cannot be
+allocated inside a capture region, and any step containing a split-K GEMM
+cannot be captured. ACT's backward has ~46 of them per step.
+
+Two things worth carrying to Modular beyond the allocation itself:
+
+  * The existence of `graphFreeList` says MAX already has the CONCEPT of a
+    capture-time pool; it is just never pre-reserved. If it could be warmed
+    before capture (or sized by a knob), this would be unblocked without any
+    change to split-K itself.
+  * The failure is not clean. After the allocation fails, the error path calls
+    `cuStreamSynchronize` ON THE CAPTURED STREAM — illegal in every capture
+    mode — and the process aborts instead of surfacing a catchable error. The
+    intercept shim prints it: `!! cuStreamSynchronize DURING CAPTURE`.
+
 ## Reading it
 
     A ok, B ok, C ok      -> NOT blocked. Capture allocates fine (or MAX pools
@@ -239,7 +267,14 @@ def _attempt[
         return False
     var s = p.checksum(8)
     var want = Float64(K_) * AVAL * BVAL * 8.0
-    var ok = abs(s - want) <= 1e-3 * want
+    # ⚠ RELATIVE, and loose enough for TF32. A 5090 runs fp32 matmul through
+    # TF32 tensor cores by default — ~10 mantissa bits — and arm A came back
+    # 0.40914977 against 0.4096, a relative error of 1.1e-3 that a 1e-3 gate
+    # called "the step did not run". The repo already learned this once
+    # (a1efd4f2, "CPU/GPU parity must be relative and TF32-aware"); the point
+    # of this check is to catch a step that computed NOTHING, which is off by
+    # 100%, not to police the last bits.
+    var ok = abs(s - want) <= 5e-3 * want
     print("    captured + replayed x" + String(REPLAYS)
           + "   checksum(first 8) = " + String(s)
           + "   expected " + String(want)
