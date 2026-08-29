@@ -61,6 +61,21 @@ optimizer, which is the one decomposition available without instrumenting the
 trainer. It is a HOST wall-clock difference over device-synchronous calls, so
 treat it as an attribution hint and let nsys settle the per-kernel truth.
 
+`GPU_DATA` (default ON) — draw and normalize the batch on the DEVICE
+    (`ACTDeviceDataset` + `train_step_device`) instead of on the host. This is
+    the A/B for tier 1 of `docs/ACT_GPU_DATA_PATH.md`; flip it to False for the
+    old path and compare the ITERATION TOTAL, because the split moves: under
+    GPU_DATA the draw happens inside `train_step`, so `sample_batch` reads ~0
+    and its cost lands in the train column.
+
+    ⚠ The two samplers cannot draw the same batches (Philox on the device, a
+    xorshift on the host), so the two settings are comparable in COST and not
+    in loss trajectory. `SKIP_RESAMPLE` is ignored when GPU_DATA is on.
+
+    ⚠ Startup pays a ~7.1 GB HDF5 read + H2D once, printed separately. On a
+    60-step run that is not amortised, which is exactly why it is printed and
+    not folded into the per-step mean.
+
 ⚠ **`docs/GPU_STEP_PERF.md` already carries a full profile of this
 script and the three workstreams it found** — allocation churn (3.45 s, equal
 to all kernel time), the launch storm (85% of launches are sub-20 us kernels
@@ -99,6 +114,7 @@ from mojo_rl.deep_agents.act.config import (
     SO101_QPOS,
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
+from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
 from mojo_rl.deep_agents.act.trainer import ACTTrainer
 
 
@@ -106,6 +122,25 @@ from mojo_rl.deep_agents.act.trainer import ACTTrainer
 comptime SKIP_RESAMPLE = False
 comptime STUB_BACKBONE = False
 comptime CLIP_NORM = 0.0
+
+# GPU_DATA — draw and normalize the batch ON THE DEVICE (`ACTDeviceDataset` +
+# `train_step_device`) instead of on the host. Flip to False for the old path;
+# both are kept because this is the A/B, not a replacement.
+#
+# On: the whole store is uploaded once as uint8 (7.12 GB for 50 episodes) and
+# `sample_batch` / `_seed_inputs` are replaced by three kernels. That removes
+# 16.1 ms of host time with the GPU idle, two 29.5 MB element-by-element fills
+# into pinned memory, the 29.5 MB H2D, and four device synchronizations.
+#
+# ⚠ It does NOT draw the same batches — Philox on the device against a xorshift
+# on the host — so `train_step_device` and `train_step` are comparable in COST
+# and not in loss trajectory. `SKIP_RESAMPLE` is ignored when this is on: the
+# device sampler is the thing being measured.
+#
+# ⚠ Startup pays the upload: ~7.1 GB of HDF5 read + H2D before step 0. That is
+# once, not per step, but it is not free and it is why `sample_batch` going to
+# zero is not the whole story on a short run.
+comptime GPU_DATA = True
 
 comptime WARMUP_STEPS = 5
 """Enough to get past first-launch kernel compilation and the initial H2D, and
@@ -180,6 +215,8 @@ comptime BACKBONE = Stub if STUB_BACKBONE else ResNet18Backbone[
     3, IMG_H, IMG_W
 ]
 
+comptime DDS = ACTDeviceDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W]
+
 comptime T = ACTTrainer[
     QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
     BATCH, 0.1, "gpu", FEAT_CH, OH, OW, BACKBONE,
@@ -250,6 +287,8 @@ def main() raises:
         "  images            "
         + ("resident" if ds.images_resident else "streamed from HDF5")
     )
+    print("  data path         " + ("GPU (device sampler)" if GPU_DATA
+                                    else "host (sample_batch + upload)"))
     print("")
 
     var tr = T.make(
@@ -268,8 +307,25 @@ def main() raises:
     # otherwise it still gives the warmup something to run on.
     ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
 
+    # The device copy. Timed and printed because ~7.1 GB of HDF5 + H2D at
+    # startup is a real cost that a per-step mean would hide entirely.
+    var dev_ds = DDS()
+    comptime if GPU_DATA:
+        var u0 = perf_counter_ns()
+        dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
+        var u1 = perf_counter_ns()
+        print(
+            "  device upload     " + String(Float64(u1 - u0) / 1e9) + " s  ("
+            + String(Float64(dev_ds.n_rows) * Float64(IMG_ELEMS) / 1e9)
+            + " GB uint8, once)"
+        )
+        print("")
+
     for _ in range(WARMUP_STEPS):
-        _ = tr.train_step(qpos, images, actions, valid)
+        comptime if GPU_DATA:
+            _ = tr.train_step_device(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
 
     var data_ns = 0
     var train_ns = 0
@@ -277,15 +333,30 @@ def main() raises:
 
     for _ in range(PROFILE_STEPS):
         var t0 = perf_counter_ns()
-        comptime if not SKIP_RESAMPLE:
+        comptime if not GPU_DATA and not SKIP_RESAMPLE:
             ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
         var t1 = perf_counter_ns()
-        _ = tr.train_step(qpos, images, actions, valid)
+        # ⚠ Under GPU_DATA the draw is INSIDE `train_step_device`, so
+        # `sample_batch` reads ~0 and the sampler's cost lands in `train_step`.
+        # The number to compare across the two runs is the iteration total,
+        # not the split.
+        comptime if GPU_DATA:
+            _ = tr.train_step_device(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
         var t2 = perf_counter_ns()
         # Forward-only on the SAME batch, so the difference from `train_step`
         # is backward + optimizer. Its own cost is counted separately and is
         # not part of the step total below.
-        _ = tr.eval_step(qpos, images, actions, valid)
+        #
+        # ⚠ Under GPU_DATA this must NOT re-seed: `eval_step` would upload the
+        # four host lists again and pay their syncs, measuring a forward plus a
+        # data path the device run does not otherwise have. The batch
+        # `train_step_device` just drew is still in the graph's input slots.
+        comptime if GPU_DATA:
+            _ = tr.eval_step_resident()
+        else:
+            _ = tr.eval_step(qpos, images, actions, valid)
         var t3 = perf_counter_ns()
 
         data_ns += t1 - t0

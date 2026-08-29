@@ -523,6 +523,24 @@ struct ACTTrainer[
         self.opt.step[Self.target](self.graph, self.ctx)
         return ACTStepResult(terms.loss, terms.l1, terms.kl, gn)
 
+    def eval_step_resident(mut self) raises -> ACTStepResult:
+        """Forward-only on the batch ALREADY in the graph's input slots.
+
+        `eval_step` re-seeds from host lists, which under the device data path
+        would reintroduce the four `upload_resident` uploads and their syncs
+        just to measure a forward. Nothing between `train_step_device` and here
+        touches the input slots — `forward` and `vjp` read them, the optimizer
+        does not — so the batch is still there and re-seeding is pure cost.
+
+        ⚠ Only valid straight after a `*_device` step. Called on its own it
+        measures a forward over whatever happened to be in the slots, which is
+        a stale batch, not an error you would notice."""
+        self.train_mode(False)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        var terms = self._read_terms()
+        self.train_mode(True)
+        return terms
+
     def _read_terms(mut self) raises -> ACTStepResult:
         """Batch means of (loss, l1, kl), read off the graph's own nodes."""
         var lo = Float64(0.0)
