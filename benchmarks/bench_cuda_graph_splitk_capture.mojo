@@ -69,19 +69,31 @@ there, and C differs only in having also allocated and freed the workspace
 three times first. C stays because "the allocation is a first-call artifact"
 and "the allocation is fine under capture" are different answers.
 
-⚠ The first version of this file was BROKEN, in the way this repo already has
-written down as `_mojo_destroys_at_last_use`. It allocated the output as a
-`Tensor` and built the GEMM view from `c.dev.value()` — a temporary Optional
-unwrap — so Mojo was free to drop the buffer at its last direct use, which was
-the `TileTensor` construction. On the 5090 every arm died with
-CUDA_ERROR_MISALIGNED_ADDRESS reported at `begin_capture()`; the error is
-deferred, so the actual fault was the warm-up `STEP()` just before it. On
-Apple the same bug read as arms A and B silently computing 0.0.
+⚠ TWO drafts of this file crashed on the 5090 before it ran, both from the same
+rule, and `mojo_rl/cuda/graph.mojo:54` states that rule in full: **Mojo
+destroys a value at its LAST USE, and MAX's `DeviceContext` destructor
+SYNCHRONIZES AND DESTROYS the stream.** `AsyncRT_DeviceContext_release` was
+frame #12 of both stack traces, exactly as that comment predicts.
 
-The fix is the rule that note states: own what you use. All three buffers are
-plain owning locals now, as in `bench_matmul_alloc_probe.mojo`, with `_ = `
-keep-alives past the closure. A harness whose CONTROL arm fails is not
-evidence about split-K — it is evidence about the harness.
+    draft 1  output allocated as a `Tensor`, view built from `c.dev.value()`
+             (a temporary unwrap) -> buffer dropped at the `TileTensor`
+             construction -> CUDA_ERROR_MISALIGNED_ADDRESS at begin_capture
+    draft 2  buffers fixed, but the closure still mentioned `ctx` directly, so
+             it took its own copy, that copy died, and the stream being
+             captured died with it -> CUDA_ERROR_ILLEGAL_ADDRESS
+
+Both faults surfaced at `begin_capture()` because CUDA errors are deferred; the
+actual fault was the warm-up `STEP()` immediately before. On Apple the first
+bug read instead as arms A and B silently computing 0.0, which I wrote off as
+an unexplained quirk of the no-op path. It was not.
+
+The fix is the shape SAC already uses: ONE struct owns the context and the
+buffers, and the closure mentions only that struct and calls a method on it
+(`trainer.train_device_kernels()`,
+`driver_offpolicy_discrete.mojo:867`). Copy it, do not improvise.
+
+⚠ A harness whose CONTROL arm fails is not evidence about split-K. It is
+evidence about the harness.
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -135,61 +147,97 @@ def _checksum(
     return s
 
 
+struct _Probe[M_: Int, K_: Int, N_: Int](Movable):
+    """Owns the context AND the buffers, and does the GEMM in a METHOD.
+
+    ⚠⚠ THIS SHAPE IS LOAD-BEARING, and two rounds of crashes came from not
+    using it. `mojo_rl/cuda/graph.mojo:54` spells out why: Mojo destroys a
+    value at its LAST USE, and MAX's `DeviceContext` destructor SYNCHRONIZES
+    AND DESTROYS the stream. A `capturing` closure that mentions `ctx`
+    directly takes its own copy, that copy dies, and the stream being captured
+    goes with it — `AsyncRT_DeviceContext_release` was frame #12 of both
+    faults, exactly as that comment predicts. Earlier drafts also let the
+    output DeviceBuffer die at the `TileTensor` construction.
+
+    So the closure must mention ONE thing that owns everything and call a
+    method on it, which is precisely what SAC does:
+    `trainer.train_device_kernels()` in
+    `driver_offpolicy_discrete.mojo:867`. Copy that, do not improvise."""
+
+    var ctx: DeviceContext
+    var a: DeviceBuffer[DT]
+    var b: DeviceBuffer[DT]
+    var c: DeviceBuffer[DT]
+
+    def __init__(out self, ctx: DeviceContext) raises:
+        self.ctx = ctx
+        self.a = ctx.enqueue_create_buffer[DT](Self.M_ * Self.K_)
+        self.b = ctx.enqueue_create_buffer[DT](Self.K_ * Self.N_)
+        self.c = ctx.enqueue_create_buffer[DT](Self.M_ * Self.N_)
+        self.a.enqueue_fill(Scalar[DT](AVAL))
+        self.b.enqueue_fill(Scalar[DT](BVAL))
+        self.c.enqueue_fill(Scalar[DT](0))
+        ctx.synchronize()
+
+    def __init__(out self, *, deinit move: Self):
+        self.ctx = move.ctx^
+        self.a = move.a^
+        self.b = move.b^
+        self.c = move.c^
+
+    def step(mut self) raises:
+        """The whole captured sequence: one GEMM, no host work."""
+        var av = TileTensor(self.a, row_major[Self.M_, Self.K_]())
+        var bv = TileTensor(self.b, row_major[Self.K_, Self.N_]())
+        var cv = TileTensor(self.c, row_major[Self.M_, Self.N_]())
+        max_matmul[target="gpu"](cv, av, bv, self.ctx)
+
+    def wipe(mut self) raises:
+        self.c.enqueue_fill(Scalar[DT](0))
+        self.ctx.synchronize()
+
+    def checksum(mut self, n: Int) raises -> Float64:
+        """Sum of the first `n` outputs. A capture that succeeds and then
+        replays against a workspace freed after capture is a silent wrong
+        answer, not a crash — so every arm checks its ANALYTIC value."""
+        var host = self.ctx.enqueue_create_host_buffer[DT](Self.M_ * Self.N_)
+        self.ctx.enqueue_copy(host, self.c)
+        self.ctx.synchronize()
+        var s = Float64(0.0)
+        for i in range(n):
+            s += Float64(host[i])
+        return s
+
+
 def _attempt[
     M_: Int, K_: Int, N_: Int
 ](ctx: DeviceContext, label: String, warm: Bool) raises -> Bool:
-    # ⚠ All three are PLAIN owning locals, matching the pattern in
-    # `bench_matmul_alloc_probe.mojo` that is known to run. The first draft
-    # allocated `c` as a `Tensor` and built the view from `c.dev.value()` — a
-    # temporary Optional unwrap — and every arm faulted with
-    # CUDA_ERROR_MISALIGNED_ADDRESS surfacing at `begin_capture()` (the error
-    # is deferred: the fault is in the warm-up `STEP()` before it). That is
-    # `_mojo_destroys_at_last_use`: Mojo may drop the buffer at its last
-    # direct use, which is the `TileTensor` construction, leaving the view
-    # dangling. The `_ = ` keep-alives below pin all three past the closure.
-    var a = ctx.enqueue_create_buffer[DT](M_ * K_)
-    var b = ctx.enqueue_create_buffer[DT](K_ * N_)
-    var c = ctx.enqueue_create_buffer[DT](M_ * N_)
-    a.enqueue_fill(Scalar[DT](AVAL))
-    b.enqueue_fill(Scalar[DT](BVAL))
-    c.enqueue_fill(Scalar[DT](0))
-    ctx.synchronize()
-
-    var av = TileTensor(a, row_major[M_, K_]())
-    var bv = TileTensor(b, row_major[K_, N_]())
-    var cv = TileTensor(c, row_major[M_, N_]())
+    var p = _Probe[M_, K_, N_](ctx)
 
     if warm:
         # Settle the stream and let any first-call allocation happen OUTSIDE
-        # the capture region.
+        # the capture region, then WIPE — so the warm-up's correct output
+        # cannot stand in for a capture path that computed nothing.
         for _ in range(3):
-            max_matmul[target="gpu"](cv, av, bv, ctx)
-        ctx.synchronize()
-        # ⚠ and then WIPE the result, so the warm-up's correct output cannot
-        # stand in for a capture path that computed nothing. This is exactly
-        # how the first draft's arm C produced a right-looking number from a
-        # closure that never ran.
-        c.enqueue_fill(Scalar[DT](0))
-        ctx.synchronize()
+            p.step()
+        p.ctx.synchronize()
+        p.wipe()
 
     var graph: Optional[CUDAGraph] = None
 
+    # ⚠ The closure mentions `p` and NOTHING else. See `_Probe`.
     def _step() capturing raises -> None:
-        max_matmul[target="gpu"](cv, av, bv, ctx)
+        p.step()
 
     print("  " + label + " ...")
     try:
         for _ in range(REPLAYS):
-            maybe_capture_replay[_step](graph, ctx)
-        ctx.synchronize()
+            maybe_capture_replay[_step](graph, p.ctx)
+        p.ctx.synchronize()
     except e:
         print("    CAPTURE FAILED: " + String(e))
         return False
-    var s = _checksum(c, ctx, M_ * N_, 8)
-    # Keep every buffer alive past the closure and the checksum.
-    _ = a
-    _ = b
-    _ = c
+    var s = p.checksum(8)
     var want = Float64(K_) * AVAL * BVAL * 8.0
     var ok = abs(s - want) <= 1e-3 * want
     print("    captured + replayed x" + String(REPLAYS)
