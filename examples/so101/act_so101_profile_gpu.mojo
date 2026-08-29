@@ -153,11 +153,20 @@ comptime GPU_DATA = True
 # USE_CUDA_GRAPH — capture the per-step device kernel sequence and replay it
 # (NVIDIA only; a compile-time no-op elsewhere, where the step simply runs).
 #
-# ⚠ DEFAULT OFF AND EXPECTED TO FAIL TODAY: MAX's split-K allocates its
-# reduction workspace per call with the synchronous driver allocator, which
-# aborts a capture ("graph capturing in progress, no driver fallback" —
-# `benchmarks/bench_cuda_graph_splitk_capture.mojo`). Flip it on once that is
-# fixed; this profile is the A/B for what capture is worth.
+# ⚠ DEFAULT OFF AND MEASURED TO FAIL TODAY on the 5090 — capture BEGINS
+# (`cuStreamBeginCapture rc=0`) and then dies on an 18.75 MB allocation:
+# "graph capturing in progress, no driver fallback".
+#
+# ⚠ That is NOT out of memory — MAX's `mm:root` holds 113 GB free. While
+# capturing, MAX serves only from `graphFreeList`, which is empty, and
+# correctly refuses the driver (`cuMemAlloc` under capture is illegal). So ANY
+# per-call device allocation is fatal, whatever its size.
+#
+# ⚠ And it is probably NOT split-K: 18.75 MB is exactly 16*64*60*80 fp32 —
+# batch 16 at ResNet18's post-maxpool resolution — where a split-K workspace
+# is `P*M*N` over the dW shapes. Fixing split-K may not be enough.
+# `MODULAR_DEBUG=stack-trace-on-error` names the site; see
+# `docs/ACT_GPU_DATA_PATH.md`.
 #
 # What to look at when you do: `cuLaunchKernelEx` count should collapse (one
 # graph launch replaces ~700 launches per step) and the per-step wall should

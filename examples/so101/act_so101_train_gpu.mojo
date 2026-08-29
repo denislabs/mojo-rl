@@ -258,13 +258,18 @@ comptime GPU_DATA = True
 # USE_CUDA_GRAPH — capture the per-step device kernel sequence into a CUDA
 # graph and replay it (NVIDIA only; a compile-time no-op elsewhere).
 #
-# ⚠ DEFAULT OFF, AND IT WILL NOT WORK YET. MAX's split-K allocates its
-# reduction workspace per call with the synchronous driver allocator, which is
-# illegal under capture — measured, capture aborts with
-# "graph capturing in progress, no driver fallback"
-# (`benchmarks/bench_cuda_graph_splitk_capture.mojo`). Our own split-K uses
-# persistent scratch; the shapes MAX still routes itself are the blocker. This
-# switch exists so that when that lands, testing it is a one-line change.
+# ⚠ DEFAULT OFF, AND IT DOES NOT WORK YET. Measured on the 5090: capture
+# BEGINS and then dies on an 18.75 MB allocation, "graph capturing in progress,
+# no driver fallback". Not out of memory — MAX has 113 GB free but serves only
+# from an empty `graphFreeList` while capturing, so ANY per-call device
+# allocation is fatal. Probably not split-K either: 18.75 MB is exactly
+# 16*64*60*80 fp32, i.e. the BACKBONE at post-maxpool resolution. See
+# `docs/ACT_GPU_DATA_PATH.md`. This switch exists so that when the allocation
+# is found and removed, testing it is a one-line change.
+#
+# ⚠ Turning this on ABORTS the run when capture fails. Deliberate: a silent
+# fallback would leave `ds.offset_host` advanced by a step the device threw
+# away, and a desynced RNG mirror is worse than a crash.
 #
 # Requires GPU_DATA: a captured step cannot contain the host sampler.
 comptime USE_CUDA_GRAPH = False
