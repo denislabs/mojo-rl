@@ -29,15 +29,11 @@ from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
-from linalg.utils_gpu import MatmulKernels, select_config
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
-    partitions_legal,
-    multistage_shape_ok,
-    choose_partitions,
-    splitk_gemm,
+    decide_partitions,
+    dispatch_splitk_gemm,
 )
-from std.os import getenv
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
@@ -281,39 +277,11 @@ def _accum_2d_kernel[
 
 # ── Linear ─────────────────────────────────────────────────────────────
 
-def _dw_splitk(
-    dWp_v: TileTensor[mut=True, DT, ...],
-    cTp_v: TileTensor[mut=False, DT, ...],
-    gop_v: TileTensor[mut=False, DT, ...],
-    M: Int,
-    N: Int,
-    B: Int,
-    p: Int,
-    mut ws: Tensor,
-    ctx: DeviceContext,
-) raises:
-    """`grad_w = cacheTᵀ @ go` through a caller-owned split-K workspace.
-
-    The comptime config must be the tile `select_config` chose — it sets the
-    grid and the shared-memory request, so a mismatch is wrong launch geometry
-    rather than a slowdown. MAX picks between three; on anything but an A100
-    `ampere_256x128_3` is excluded by its own shared-memory check, but all
-    three are handled so an A100 does not fall off the end.
-    """
-    comptime kernels = MatmulKernels[DT, DT, DT, False]()
-    var picked = select_config[DT, DT, DT, False](M, N, B, ctx)
-    if picked == kernels.ampere_256x64_4:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
-            dWp_v, cTp_v, gop_v, p, ws, ctx
-        )
-    elif picked == kernels.ampere_256x128_3:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
-            dWp_v, cTp_v, gop_v, p, ws, ctx
-        )
-    else:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
-            dWp_v, cTp_v, gop_v, p, ws, ctx
-        )
+# NOTE: the dW GEMM's tile-config dispatch and its partition-count decision
+# both live in `nn/core/splitk_gemm.mojo` (`dispatch_splitk_gemm` /
+# `decide_partitions`). They used to be written out here and were then copied
+# verbatim into `Conv2D`; a rule whose failure mode is a silent wrong gradient
+# gets exactly one home.
 
 
 struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
@@ -562,64 +530,24 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         captured graph. A P that drifted between replays would be a wrong
         launch, not a slow one.
 
-        `MOJO_RL_SPLITK=0` pins it to 1 (plain `max_matmul`), for bisecting a
-        suspected split-K problem against a known-good run without a rebuild —
-        same escape hatch as `MOJO_RL_CUDA_GRAPH`.
+        The dW GEMM's M and N are the dims of the branch that will run: the
+        PADDED site uses [K_PAD, N_PAD], the unpadded one [IN_, OUT_]. They
+        coincide unless padding is active, and `select_config` is sensitive to
+        both, so pick them the same way the launch will.
         """
-        if getenv("MOJO_RL_SPLITK", "1") == "0":
-            self._sk_p = 1
-            return
-
-        # Only intervene where MAX would itself have split K: same shape and
-        # the same `select_config` call, so a shape it would have run as a
-        # plain multistage GEMM stays exactly that.
-        # The dW GEMM's M and N are the dims of the branch that will run: the
-        # PADDED site uses [K_PAD, N_PAD], the unpadded one [IN_, OUT_]. They
-        # coincide unless padding is active, and `select_config` is sensitive
-        # to both, so pick them the same way the launch will.
         comptime M_DW = Self.K_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.IN_
         comptime N_DW = Self.N_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.OUT_
-        # ⚠ multi_gemm_cond FIRST. `select_config` is only reached after it
-        # in MAX's dispatch and will otherwise hand back a partition count for
-        # a shape the multistage kernel never sees — a wrong answer, not a
-        # slowdown. See multistage_shape_ok.
-        if not multistage_shape_ok(M_DW, N_DW, B):
-            self._sk_p = 1
-            return
-        var picked = select_config[DT, DT, DT, False](M_DW, N_DW, B, ctx)
-        if picked.num_k_partitions <= 1:
-            self._sk_p = 1
-            return
+        self._sk_p = decide_partitions(M_DW, N_DW, B, ctx)
+        if self._sk_p > 1:
+            # Size the workspace now, on an eager step. It can never grow
+            # inside a capture region, and P is fixed from here.
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * M_DW * N_DW)
 
-        comptime kernels = MatmulKernels[DT, DT, DT, False]()
-        comptime sm_count = ctx.default_device_info.sm_count
-        var bt = picked.block_tile_shape
-        # `choose_partitions` fills one wave, which measured exact on the
-        # 16-tile ACT shapes and ~7% slow on the 4-tile one. A per-shape
-        # autotune would close that; it needs a warmup harness the Module does
-        # not have, and 7% of the dW slice is ~0.02% of an ACT iteration.
-        var want = choose_partitions(
-            M_DW, N_DW, B, bt[0], bt[1], bt[2], sm_count
-        )
-        # Fall back to MAX's own P if the wave rule found nothing better; it is
-        # legal by construction here, but check anyway — undercoverage is
-        # silent, and a silent wrong gradient is the worst outcome available.
-        if want <= 1:
-            want = picked.num_k_partitions
-        if not partitions_legal(B, want, bt[2]):
-            self._sk_p = 1
-            return
-
-        # Size the workspace now, on an eager step. It can never grow inside a
-        # capture region, and P is fixed from here.
-        self.sk_ws.ensure_gpu(ctx, want * M_DW * N_DW)
-        self._sk_p = want
-
-    # NOTE: `_dw_splitk` is a FREE function, not a method. `dWp_v` is a view
-    # borrowed from `self.dW_pad`, so passing it alongside `mut self` aliases
-    # a mutable borrow of the whole struct with a reference embedded in one of
-    # its fields, and the borrow checker rejects it. Handing the workspace
-    # over explicitly keeps the two borrows on separate fields.
+    # NOTE: `dispatch_splitk_gemm` is a FREE function, not a method. `dWp_v`
+    # is a view borrowed from `self.dW_pad`, so passing it alongside `mut self`
+    # aliases a mutable borrow of the whole struct with a reference embedded in
+    # one of its fields, and the borrow checker rejects it. Handing the
+    # workspace over explicitly keeps the two borrows on separate fields.
 
     def _ensure_w_pad(mut self, c: DeviceContext) raises:
         """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
@@ -1068,7 +996,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         if self._sk_p < 0:
                             self._decide_sk_p(B, c)
                         if self._sk_p > 1:
-                            _dw_splitk(
+                            dispatch_splitk_gemm(
                                 dWp_v, cTp_v, gop_v,
                                 Self.K_PAD, Self.N_PAD, B,
                                 self._sk_p, self.sk_ws, c,
@@ -1151,7 +1079,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         if self._sk_p < 0:
                             self._decide_sk_p(B, c)
                         if self._sk_p > 1:
-                            _dw_splitk(
+                            dispatch_splitk_gemm(
                                 dW_v, cT_v, go_v,
                                 Self.IN_, Self.OUT_, B,
                                 self._sk_p, self.sk_ws, c,

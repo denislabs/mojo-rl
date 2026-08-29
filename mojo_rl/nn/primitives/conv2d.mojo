@@ -29,15 +29,11 @@ from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
-from linalg.utils_gpu import MatmulKernels, select_config
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
-    partitions_legal,
-    multistage_shape_ok,
-    choose_partitions,
-    splitk_gemm,
+    decide_partitions,
+    dispatch_splitk_gemm,
 )
-from std.os import getenv
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
@@ -526,41 +522,15 @@ def _backward_db_kernel[
 
 # ── Conv2D ────────────────────────────────────────────────────────────────
 
-def _conv_dw_splitk(
-    dW_tt: TileTensor[mut=True, DT, ...],
-    goT_tt: TileTensor[mut=False, DT, ...],
-    col_tt: TileTensor[mut=False, DT, ...],
-    OC: Int,
-    CPAD: Int,
-    BS: Int,
-    p: Int,
-    mut ws: Tensor,
-    ctx: DeviceContext,
-) raises:
-    """`dW = goᵀ @ col` through a caller-owned split-K workspace.
-
-    The conv dW is `[OC, BS] @ [BS, CPAD]`, so the contraction is
-    `batch * OH * OW` — far longer than the transformer dW's `batch * tokens`,
-    and the M and N are an out-channel count and an im2col column count, both
-    small. That makes the tile grid tiny (a ResNet18 stem at OC=64, CPAD=256 is
-    TWO tiles) while K runs into the hundreds of thousands, which is the
-    regime split-K exists for and the regime `select_config`'s partition cap
-    handles worst.
-    """
-    comptime kernels = MatmulKernels[DT, DT, DT, False]()
-    var picked = select_config[DT, DT, DT, False](OC, CPAD, BS, ctx)
-    if picked == kernels.ampere_256x64_4:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
-            dW_tt, goT_tt, col_tt, p, ws, ctx
-        )
-    elif picked == kernels.ampere_256x128_3:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
-            dW_tt, goT_tt, col_tt, p, ws, ctx
-        )
-    else:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
-            dW_tt, goT_tt, col_tt, p, ws, ctx
-        )
+# NOTE: the conv dW's tile-config dispatch lives in
+# `nn/core/splitk_gemm.mojo::dispatch_splitk_gemm`, shared with `Linear` and
+# the other dW sites. The conv dW is `[OC, BS] @ [BS, CPAD]`, so the
+# contraction is `batch * OH * OW` — far longer than the transformer dW's
+# `batch * tokens`, and the M and N are an out-channel count and an im2col
+# column count, both small. That makes the tile grid tiny (a ResNet18 stem at
+# OC=64, CPAD=256 is TWO tiles) while K runs into the hundreds of thousands,
+# which is the regime split-K exists for and the regime `select_config`'s
+# partition cap handles worst.
 
 
 struct Conv2D[
@@ -1126,49 +1096,15 @@ struct Conv2D[
     def _decide_sk_p(mut self, BS: Int, ctx: DeviceContext) raises:
         """Decide the conv dW GEMM's partition count, once, and cache it.
 
-        Called on the first backward — an eager step, before any capture — and
-        never again: P sets `grid_dim`, which is baked into a captured graph.
-
-        `MOJO_RL_SPLITK=0` pins it to 1, same escape hatch as `Linear`.
+        ⚠ The conv dW fails `multi_gemm_cond` often, which is why
+        `decide_partitions` checks it before anything else: `CPAD` rounds the
+        im2col column count to 32, not 128, so a ResNet18 stem's N=160 goes to
+        cuBLAS and substituting the multistage kernel would be a wrong answer.
+        `PAD_TO = 128` is what keeps the common shapes on the right side of it.
         """
-        if getenv("MOJO_RL_SPLITK", "1") == "0":
-            self._sk_p = 1
-            return
-
-        # Only intervene where MAX would itself have split K.
-        # ⚠ multi_gemm_cond FIRST. `select_config` is only reached after it in
-        # MAX's dispatch and will otherwise hand back a partition count for a
-        # shape the multistage kernel never sees. The conv dW fails it often:
-        # `CPAD` rounds the im2col column count to 32, not 128, so a ResNet18
-        # stem's N=160 goes to cuBLAS. See multistage_shape_ok.
-        if not multistage_shape_ok(Self.OC_, Self.CPAD, BS):
-            self._sk_p = 1
-            return
-        var picked = select_config[DT, DT, DT, False](
-            Self.OC_, Self.CPAD, BS, ctx
-        )
-        if picked.num_k_partitions <= 1:
-            self._sk_p = 1
-            return
-
-        comptime sm_count = ctx.default_device_info.sm_count
-        var bt = picked.block_tile_shape
-        var want = choose_partitions(
-            Self.OC_, Self.CPAD, BS, bt[0], bt[1], bt[2], sm_count
-        )
-        if want <= 1:
-            want = picked.num_k_partitions
-        # ⚠ Both legality rules, not just the loud one: an overrunning P
-        # crashes, an UNDERCOVERING one silently drops the tail of the
-        # contraction. K here is `batch * OH * OW`, i.e. hundreds of thousands,
-        # so the legal set is much sparser in relative terms than the
-        # transformer dW's — check, never assume.
-        if not partitions_legal(BS, want, bt[2]):
-            self._sk_p = 1
-            return
-
-        self.sk_ws.ensure_gpu(ctx, want * Self.OC_ * Self.CPAD)
-        self._sk_p = want
+        self._sk_p = decide_partitions(Self.OC_, Self.CPAD, BS, ctx)
+        if self._sk_p > 1:
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.OC_ * Self.CPAD)
 
     def vjp[
         target: StaticString,
@@ -1438,7 +1374,7 @@ struct Conv2D[
                 if self._sk_p < 0:
                     self._decide_sk_p(BS, c)
                 if self._sk_p > 1:
-                    _conv_dw_splitk(
+                    dispatch_splitk_gemm(
                         dW_tmp_tt, goT_tt, col_tt,
                         Self.OC_, Self.CPAD, BS,
                         self._sk_p, self.sk_ws, c,

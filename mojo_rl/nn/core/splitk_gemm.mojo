@@ -83,6 +83,7 @@ attempted.
 """
 
 from std.math import ceildiv, align_up
+from std.os import getenv
 from std.sys import has_nvidia_gpu_accelerator
 from std.sys.info import _has_blackwell_tcgen05
 
@@ -96,6 +97,7 @@ from linalg.matmul import matmul as max_matmul
 from linalg.utils_gpu import MatmulConfig, MatmulKernels, select_config
 from linalg.matmul.gpu import multistage_gemm_split_k_kernel, split_k_reduce
 
+from mojo_rl.nn.constants import DT
 from .tensor import Tensor, TensorImpl
 
 
@@ -325,3 +327,102 @@ def splitk_gemm[
         ws.dev.value(), row_major(Coord(num_partitions, M, N))
     )
     split_k_reduce(c, ws_tt, ctx)
+
+
+# ── shared dW routing ──────────────────────────────────────────────────────
+# Every Module that routes a weight-gradient GEMM through split-K needs the
+# same two decisions: WHICH tile config to instantiate, and HOW MANY
+# partitions to use. Both were written inline in `Linear` and then copied
+# verbatim into `Conv2D`, and the next four sites would have made six copies
+# of a rule whose failure mode is a SILENT WRONG GRADIENT. They live here
+# once instead; a Module supplies only its own shape.
+
+
+def dispatch_splitk_gemm(
+    c: TileTensor[mut=True, DT, ...],
+    a: TileTensor[mut=False, DT, ...],
+    b: TileTensor[mut=False, DT, ...],
+    M: Int,
+    N: Int,
+    K: Int,
+    num_partitions: Int,
+    mut ws: Tensor,
+    ctx: DeviceContext,
+) raises:
+    """`c = a @ b` (a dW GEMM) through the caller-owned workspace `ws`.
+
+    The comptime config must be the tile `select_config` chose — it sets the
+    grid and the shared-memory request, so a mismatch is wrong launch geometry
+    rather than a slowdown. MAX picks between three; on anything but an A100
+    `ampere_256x128_3` is excluded by its own shared-memory check, but all
+    three are handled so an A100 does not fall off the end.
+
+    fp32 only. A bf16-flow dW (`LinearAct`/`Embedding`'s AMP path) is a
+    DIFFERENT instantiation — `MatmulKernels[bfloat16, bfloat16, float32]`,
+    and `_bk_base` returns a different BK for it, which changes both the tile
+    config and `partitions_legal`'s alignment. Those sites stay on
+    `max_matmul` until there is a bf16 gate to validate them against.
+    """
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    var picked = select_config[DT, DT, DT, False](M, N, K, ctx)
+    if picked == kernels.ampere_256x64_4:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
+            c, a, b, num_partitions, ws, ctx
+        )
+    elif picked == kernels.ampere_256x128_3:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
+            c, a, b, num_partitions, ws, ctx
+        )
+    else:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
+            c, a, b, num_partitions, ws, ctx
+        )
+
+
+def decide_partitions(
+    M: Int, N: Int, K: Int, ctx: DeviceContext
+) raises -> Int:
+    """Partition count for a `[M, K] @ [K, N]` dW GEMM. 1 = do not split.
+
+    Call this ONCE, on an eager step, and cache the answer: `grid_dim` derives
+    from P and is baked into a captured graph, so a P that drifted between
+    replays would be a wrong launch, not a slow one. Size the workspace to
+    `P * M * N` in the same eager step — it can never grow inside a capture
+    region.
+
+    `MOJO_RL_SPLITK=0` pins it to 1 (plain `max_matmul`), for bisecting a
+    suspected split-K problem against a known-good run without a rebuild.
+
+    ⚠ Note what this does NOT mean when it returns 1. It is deliberately
+    conservative: we intervene only where MAX would ITSELF have partitioned K,
+    so a shape it would have run as a plain multistage GEMM stays exactly
+    that. `select_config` needs `K // P >= 1024` for P=2, i.e. **K >= 2048**,
+    on top of `multistage_shape_ok`. Most RL trunks run a dW whose K is the
+    minibatch (256-1024), so on those this returns 1 and the Module's split-K
+    plumbing is inert — correct, and worth nothing until the batch grows.
+    """
+    if getenv("MOJO_RL_SPLITK", "1") == "0":
+        return 1
+    # ⚠ multi_gemm_cond FIRST. `select_config` is only reached after it in
+    # MAX's dispatch and will otherwise hand back a partition count for a
+    # shape the multistage kernel never sees — a wrong answer, not a
+    # slowdown. See multistage_shape_ok.
+    if not multistage_shape_ok(M, N, K):
+        return 1
+    var picked = select_config[DT, DT, DT, False](M, N, K, ctx)
+    if picked.num_k_partitions <= 1:
+        return 1
+
+    comptime sm_count = ctx.default_device_info.sm_count
+    var bt = picked.block_tile_shape
+    # `choose_partitions` fills one wave, which measured exact on the 16-tile
+    # ACT shapes and ~7% slow on the 4-tile one.
+    var want = choose_partitions(M, N, K, bt[0], bt[1], bt[2], sm_count)
+    # Fall back to MAX's own P if the wave rule found nothing better; it is
+    # legal by construction here, but check anyway — undercoverage is silent,
+    # and a silent wrong gradient is the worst outcome available.
+    if want <= 1:
+        want = picked.num_k_partitions
+    if not partitions_legal(K, want, bt[2]):
+        return 1
+    return want
