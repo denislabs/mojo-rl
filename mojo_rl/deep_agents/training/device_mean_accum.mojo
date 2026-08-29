@@ -292,6 +292,34 @@ struct DeviceMeanAccum(Copyable, Movable, Deinitable):
         self._acc_sum += s / Scalar[DT](N)
         self._acc_n += 1
 
+    def read_into[
+        target: StaticString
+    ](mut self, mut mean: Scalar[DT], mut count: Int) raises:
+        """`read`, plus how many folds the window holds — ONE D2H for both.
+
+        The count matters under CUDA-graph replay: the accumulate kernel is
+        inside the captured region, so it advances on every replay, while any
+        host-side counter the caller keeps does NOT. A window whose `n` comes
+        from the host therefore under-reports the moment a graph is replaying,
+        and it under-reports SILENTLY — the mean stays right (the divisor is
+        the device count either way), only the reported step count is a lie.
+        Read both from the device and there is nothing to keep in sync."""
+        comptime if target == "cpu":
+            count = self._acc_n
+            mean = (
+                Scalar[DT](0.0) if self._acc_n == 0
+                else self._acc_sum / Scalar[DT](self._acc_n)
+            )
+        else:
+            var ctx = self.ctx.value()
+            var h = ctx.enqueue_create_host_buffer[DT](2)
+            ctx.enqueue_copy(h, self.acc_dev.value())
+            ctx.synchronize()
+            var s = h.unsafe_ptr()[unsafe_offset=0]
+            var n = h.unsafe_ptr()[unsafe_offset=1]
+            count = Int(n)
+            mean = Scalar[DT](0.0) if n == Scalar[DT](0.0) else s / n
+
     def read[target: StaticString](mut self) raises -> Scalar[DT]:
         """Mean of the accumulated per-batch means over the window
         (`sum / count`); 0 if no updates. GPU path D2Hs the `[2]` buffer once

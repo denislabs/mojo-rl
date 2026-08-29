@@ -254,6 +254,28 @@ require rebuilding it."""
 # `docs/ACT_GPU_DATA_PATH.md` for the windowed design that would.
 comptime GPU_DATA = True
 
+
+# USE_CUDA_GRAPH — capture the per-step device kernel sequence into a CUDA
+# graph and replay it (NVIDIA only; a compile-time no-op elsewhere).
+#
+# ⚠ DEFAULT OFF, AND IT WILL NOT WORK YET. MAX's split-K allocates its
+# reduction workspace per call with the synchronous driver allocator, which is
+# illegal under capture — measured, capture aborts with
+# "graph capturing in progress, no driver fallback"
+# (`benchmarks/bench_cuda_graph_splitk_capture.mojo`). Our own split-K uses
+# persistent scratch; the shapes MAX still routes itself are the blocker. This
+# switch exists so that when that lands, testing it is a one-line change.
+#
+# Requires GPU_DATA: a captured step cannot contain the host sampler.
+comptime USE_CUDA_GRAPH = False
+# (the GPU_DATA requirement is asserted at the top of `main`)
+
+# Eager steps before the first captured one. `maybe_capture_replay` warms the
+# stream with one run of its own, which is not the same as warming every LAZY
+# DEVICE ALLOCATION the graph performs: anything still allocating on step 2
+# would allocate INSIDE the capture region and abort it. Cheap insurance.
+comptime CAPTURE_WARMUP = 8
+
 comptime VAL_EVERY = 1000
 comptime VAL_BATCHES = 64
 """1024 validation samples per pass, from a pinned RNG — see the header.
@@ -328,6 +350,11 @@ def store_path() raises -> String:
 
 
 def main() raises:
+    comptime assert not USE_CUDA_GRAPH or GPU_DATA, (
+        "USE_CUDA_GRAPH requires GPU_DATA — a captured step cannot contain host"
+        " work, and the host sampler is host work."
+    )
+
     var path = store_path()
     var os = Python.import_module("os")
     if not Bool(os.path.exists(PythonObject(path))):
@@ -557,6 +584,21 @@ def main() raises:
     val_names.append(String("perf/s_gpu"))
     val_names.append(String("best/val_l1"))
 
+    # Capture prerequisites: adopt the arena eagerly and force the padded /
+    # bf16 weight caches to refresh every forward. WITHOUT the second, a replay
+    # never runs the host version-bump at the end of `Adam.step`, the caches
+    # decide they are still current, and the model trains against its
+    # capture-time weights while the optimizer updates memory nobody reads —
+    # a flat loss curve that reads as a bad learning rate.
+    if USE_CUDA_GRAPH:
+        tr.prepare_device_capture()
+        print(
+            "  cuda graph        ON (capture after " + String(CAPTURE_WARMUP)
+            + " eager steps; weight caches forced to refresh every forward)"
+        )
+        print("")
+    var announced_graph = False
+
     for s in range(steps):
         # Split, because "0.176 s/step" does not say WHICH half. `sample_batch`
         # is host-side, single-threaded and serial with the device: per sample
@@ -578,7 +620,16 @@ def main() raises:
         # the host accumulators below take over. `acc_n` is what says which
         # one is live — it stays 0 under GPU_DATA.
         comptime if GPU_DATA:
-            tr.train_step_device_accum(dev_ds)
+            # ⚠ A RUNTIME `if` on a COMPTIME flag, deliberately. `comptime if`
+            # PRUNES: with capture off the captured path would never be
+            # elaborated, and a type error in it would surface only on the day
+            # someone flips the flag — which is exactly the day this is
+            # supposed to be one flag away from working. A runtime branch on a
+            # constant costs a dead-code warning and nothing else.
+            if USE_CUDA_GRAPH and s >= CAPTURE_WARMUP:
+                tr.train_step_device_captured(dev_ds)
+            else:
+                tr.train_step_device_accum(dev_ds)
         else:
             var r = tr.train_step(qpos, images, actions, valid)
             last_l1 = r.l1
@@ -592,6 +643,20 @@ def main() raises:
         data_ns += t_data - step_t0
         train_ns += t_end - step_t0
         train_steps += 1
+
+        # ⚠ Printed once, and worth printing. A capture that recorded NOTHING
+        # — the closure enqueued on a stream other than the one being captured
+        # — is indistinguishable from a working one until the loss stops
+        # moving, and replaying an empty graph is a training loop running at
+        # full speed doing nothing.
+        if USE_CUDA_GRAPH:
+            if not announced_graph and tr.has_captured_graph():
+                announced_graph = True
+                print(
+                    "  [CUDA graph] captured "
+                    + String(tr.captured_graph_nodes())
+                    + " nodes at step " + String(s)
+                )
 
         var is_probe = False
         for i in range(len(probes)):
@@ -658,6 +723,13 @@ def main() raises:
             # would be the minimum of a noisy estimate over ~100 passes — which
             # selects the luckiest draw, not the best model — and successive
             # points on the curve would not be comparable to each other.
+            # ⚠ Validation is NOT captured, on purpose. It flips train/eval
+            # mode — host attribute writes — and runs a different number of
+            # forwards; capturing it would bake eval mode into a graph the
+            # training loop then replays. The captured TRAIN graph is
+            # unaffected: it replays the kernels recorded under training mode
+            # regardless of what the attributes say now, and this block always
+            # restores training mode on the way out.
             var saved_rng = ds.rng
             ds.rng = VAL_SEED
             # ⚠ The device sampler needs the SAME pinning, for the same

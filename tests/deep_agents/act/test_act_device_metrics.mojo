@@ -195,17 +195,24 @@ def main() raises:
     check(fails, "train window starts empty",
           tw0.n == 0 and tw0.grad_norm == 0.0, "n=" + String(tw0.n))
 
-    # `train_step` left the pre-clip norm in the device buffer and nothing has
-    # written it since, so folding it now must reproduce what it downloaded.
+    # `train_step` left the pre-clip norm in the device buffer and the loss
+    # nodes in the graph, and nothing has written either since — so folding a
+    # full step's worth now must reproduce what it downloaded. Both terms
+    # together, because that is the shape the real step folds; folding the
+    # grad norm alone would exercise a window no caller ever builds.
     for _ in range(REPEATS):
+        tr._accum_terms[False]()
         tr._accum_grad_norm()
-        tr._train_acc.n += 1
     var tw = tr.train_metrics()
+    check(fails, "train window counts the folds", tw.n == REPEATS,
+          "n=" + String(tw.n) + " expected " + String(REPEATS))
     check(fails, "window grad_norm == read_clip_norm",
           close(tw.grad_norm, rt.grad_norm),
           String(tw.grad_norm) + " vs " + String(rt.grad_norm))
     check(fails, "window grad_norm is nonzero", nonzero(tw.grad_norm),
           "gn=" + String(tw.grad_norm))
+    check(fails, "window loss == train_step loss", close(tw.loss, rt.loss),
+          String(tw.loss) + " vs " + String(rt.loss))
 
     # ── 5. the CPU leg ───────────────────────────────────────────────────
     # Same comparison, host accumulators. Not a parity check against the GPU

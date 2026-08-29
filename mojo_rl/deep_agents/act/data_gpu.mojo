@@ -452,6 +452,21 @@ struct ACTDeviceDataset[
         self.offset_host += UInt64(B * 2)
         self._gather[B, K](out_qpos, out_images, out_actions, out_valid, ctx)
 
+    def note_replayed_sample[B: Int](mut self):
+        """Advance the HOST mirror for a `sample` that ran as a graph REPLAY.
+
+        Under CUDA-graph capture the offset-advance kernel is inside the
+        captured region and runs on every replay; the `self.offset_host += 2*B`
+        line in `sample` is host code and does not. Left unsynced, the mirror
+        drifts behind the device by one draw per replay — and the damage
+        surfaces at the NEXT `set_offset` restore, which would rewind the
+        device stream to an offset training has already consumed, silently
+        re-drawing batches. Nothing about the loss curve would look wrong.
+
+        ⚠ Must be called exactly once per replayed step, and NOT for a step
+        that actually ran (`sample` already advanced it then)."""
+        self.offset_host += UInt64(B * 2)
+
     def set_offset(mut self, ctx: DeviceContext, v: UInt64) raises:
         """Pin the RNG stream. Set to a fixed value before a validation pass
         and restore afterwards, so every pass draws the SAME batches."""

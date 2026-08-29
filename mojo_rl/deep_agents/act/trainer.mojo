@@ -111,6 +111,7 @@ from mojo_rl.nn.core.checkpoint import (
 )
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 from ..training.device_mean_accum import DeviceMeanAccum
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 from .config import (
     ACT_CLIP_MAX_NORM,
@@ -260,8 +261,11 @@ struct ACTMetricAccum(Movable & Deinitable):
     var n: Int
     """Steps folded into this window, counted on the HOST.
 
-    Free — the host calls the step once per step either way — and it answers
-    "was this window empty" without a D2H, which the device count cannot."""
+    ⚠ The CPU path's only count. On GPU it is a fallback that `read` does NOT
+    use: under CUDA-graph replay the fold kernel runs inside the captured
+    region and this line does not, so the host counter freezes while the
+    device one keeps advancing. `read` takes both mean and count off the
+    device, which is right whether the step ran directly or was replayed."""
 
     def __init__(out self):
         self.loss = DeviceMeanAccum()
@@ -299,22 +303,35 @@ struct ACTMetricAccum(Movable & Deinitable):
 
     def read[target: StaticString](mut self) raises -> ACTWindowMetrics:
         """Window means. GPU: four `[2]`-buffer D2Hs behind their own syncs —
-        flush cadence only."""
-        if self.n == 0:
-            return ACTWindowMetrics(0.0, 0.0, 0.0, 0.0, 0)
+        flush cadence only.
+
+        The step COUNT comes off the device with the loss mean, not from the
+        host `n`: see the field's note. The `gn` accumulator can legitimately
+        hold fewer folds than the others (a forward-only window never touches
+        it), so the loss window is what defines `n`."""
         comptime if target == "cpu":
+            if self.n == 0:
+                return ACTWindowMetrics(0.0, 0.0, 0.0, 0.0, 0)
             var d = Float64(self.n)
             return ACTWindowMetrics(
                 self._h_loss / d, self._h_l1 / d, self._h_kl / d,
                 self._h_gn / d, self.n,
             )
         else:
+            # Each mean stands on its own (`DeviceMeanAccum.read` already
+            # returns 0 for an empty window); only `n` is taken from the loss
+            # accumulator. Deliberately NOT an early return on `n == 0` — that
+            # would make the grad-norm mean depend on whether the loss window
+            # happened to be fed, which is a coupling nothing else implies.
+            var m_loss = Scalar[DT](0.0)
+            var n_dev = 0
+            self.loss.read_into["gpu"](m_loss, n_dev)
             return ACTWindowMetrics(
-                Float64(self.loss.read["gpu"]()),
+                Float64(m_loss),
                 Float64(self.l1.read["gpu"]()),
                 Float64(self.kl.read["gpu"]()),
                 Float64(self.gn.read["gpu"]()),
-                self.n,
+                n_dev,
             )
 
     def reset[target: StaticString](mut self) raises:
@@ -409,6 +426,11 @@ struct ACTTrainer[
     """The same, for validation passes — a separate window because folding
     validation batches into the training means would quietly bias the training
     curve toward the eval-mode model."""
+    var _train_graph: Optional[CUDAGraph]
+    """Lazily-captured CUDA graph for the accumulating train step (GPU only).
+
+    None until `train_step_device_captured`'s first call, and a no-op shell on
+    non-NVIDIA where `CUDAGraph` compiles to nothing. See that method."""
     var deterministic_latent: Bool
     """Pin the CVAE draw to its mean in TRAINING mode too.
 
@@ -433,6 +455,7 @@ struct ACTTrainer[
         self._adopted = False
         self._train_acc = ACTMetricAccum()
         self._val_acc = ACTMetricAccum()
+        self._train_graph = None
         self.deterministic_latent = False
 
     def __init__(out self, *, deinit move: Self):
@@ -449,6 +472,7 @@ struct ACTTrainer[
         self._adopted = move._adopted
         self._train_acc = move._train_acc^
         self._val_acc = move._val_acc^
+        self._train_graph = move._train_graph^
         self.deterministic_latent = move.deterministic_latent
 
     @staticmethod
@@ -850,6 +874,142 @@ struct ACTTrainer[
         )
         self._accum_grad_norm()
         self.opt.step[Self.target](self.graph, self.ctx)
+
+    # ── CUDA-graph capture (optional; NVIDIA only) ───────────────────────
+    #
+    # ⚠ NOT USABLE YET, AND NOT BECAUSE OF THIS CODE. MAX's split-K allocates
+    # its reduction workspace per call with the SYNCHRONOUS driver allocator,
+    # which is illegal inside a capture region — measured, and it aborts the
+    # capture (`bench_cuda_graph_splitk_capture.mojo`, and the table in
+    # `docs/ACT_GPU_DATA_PATH.md`). Our OWN split-K uses persistent scratch and
+    # is fine; what remains is the shapes MAX still routes itself. This path is
+    # here so that when that lands the test is one comptime flag away.
+    #
+    # Everything else the capture needs is already true of
+    # `train_step_device_accum`: the batch is drawn on device, the optimizer is
+    # the grouped arena with an on-device β^t, the clip uses persistent scratch,
+    # and the metrics are folded rather than downloaded. What is left is the
+    # HOST work in that step, which does not run on a replay:
+    #
+    #   `_ensure_adopted`      -> `prepare_device_capture` does it eagerly
+    #   `opt.begin_step`       -> re-issued below on replay (host `t`)
+    #   `ParamVersionBump`     -> defeated by `capture_recast`, see below
+    #   `ds.offset_host += 2B` -> `note_replayed_sample`, below
+    #   `_train_acc.n += 1`    -> not needed; the window count is device-side
+
+    def prepare_device_capture(mut self) raises:
+        """Make the accumulating step safe to capture. Call ONCE, before the
+        loop, after any weight loading.
+
+        Two things, and the second is the one that bites:
+
+        * adopt the optimizer arena eagerly, so the allocation `adopt` performs
+          cannot land inside a capture region;
+        * set `capture_recast`, which makes every `Linear`/`Conv2D` re-pad and
+          re-cast its weight cache UNCONDITIONALLY instead of gating on
+          `param.version`.
+
+        ⚠ Without the second, ACT trains against FROZEN WEIGHTS under replay
+        and nothing says so. The version bump lives in a host walk at the end
+        of `Adam.step`; a replay never runs it, so the version never advances,
+        so `_ensure_w_pad` decides its cached padded weight is still current —
+        forever. The forward then reads the capture-time weights while the
+        optimizer diligently updates memory nobody reads. The loss curve goes
+        flat, which reads as a bad learning rate. This project has already been
+        bitten by exactly this cache, in the non-captured case (`w_pad` gated
+        on a version bumped in the wrong place).
+
+        The cost is a re-pad every forward rather than one per optimizer step.
+        That is the price of capture and it is why this is not the default."""
+        comptime assert Self.target != "cpu", (
+            "prepare_device_capture is GPU-only"
+        )
+        self._ensure_adopted()
+        self.graph.set_attr["capture_recast"](Scalar[DT](1.0))
+
+    def train_step_device_captured(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+    ) raises:
+        """`train_step_device_accum`, captured on first call and replayed after.
+
+        On non-NVIDIA `CUDAGraph` is a compile-time no-op and this runs the
+        step directly every call — bit-identical to calling
+        `train_step_device_accum`, which is what makes the path verifiable on
+        Metal even though only CUDA can actually capture.
+
+        ⚠ Call `prepare_device_capture` first. It is not done here because it
+        must happen after checkpoint loading, and a method that silently did it
+        on first use would be doing it at exactly the wrong moment for a
+        caller who loads weights lazily.
+
+        ⚠ THE FIRST CALL TAKES TWO OPTIMIZER STEPS. `maybe_capture_replay` runs
+        the closure once to settle the stream and once more under capture; both
+        are real steps that update weights and advance the samplers. Harmless
+        over a training run, and worth knowing before comparing step counts.
+
+        ⚠ Run a few eager `train_step_device_accum`s before the first captured
+        call. One warmup inside the helper settles the stream, not necessarily
+        every lazy device allocation the graph performs — anything still
+        allocating on step 2 would allocate inside the capture region and abort
+        it. `CAPTURE_WARMUP` in the examples is that.
+        """
+        comptime assert Self.target != "cpu", (
+            "train_step_device_captured is GPU-only"
+        )
+        # Was there a live captured graph BEFORE this call? If so, this call is
+        # a replay and none of the step's host work ran — see the block above.
+        # A disabled graph does not count: `maybe_capture_replay` runs the
+        # closure directly in that case, so the host work DID run.
+        var replayed = False
+        if self._train_graph:
+            replayed = not self._train_graph.value().is_disabled()
+
+        # Move the slot into a disjoint local so the closure can borrow `self`
+        # without overlapping the slot's mutable borrow (the same dance
+        # `nn/training/autoregressive_trainer.mojo` does).
+        var g = Optional[CUDAGraph](None)
+        if self._train_graph:
+            g = Optional[CUDAGraph](self._train_graph.take())
+
+        def _captured() capturing raises -> None:
+            self.train_step_device_accum(ds)
+
+        maybe_capture_replay[_captured](g, self.ctx.value())
+        self._train_graph = g^
+
+        if replayed:
+            # Host bookkeeping the replayed kernels have their device-side
+            # counterpart for, but which no host line advanced.
+            #
+            # `begin_step` refreshes the HOST `t` / bias corrections. The
+            # grouped kernel reads `_pow_dev`, which the capture advances on
+            # device, so training is already correct without this — what it
+            # buys is a checkpoint whose step count and bias correction match
+            # the weights it is saved beside.
+            self.opt.begin_step()
+            ds.note_replayed_sample[Self.BATCH]()
+
+    def has_captured_graph(self) -> Bool:
+        """Is a usable captured graph live? False on non-NVIDIA, and false when
+        the driver offered no stream to capture (`CUDAGraph.is_disabled`), in
+        which case the step is running directly and correctly."""
+        if self._train_graph:
+            return not self._train_graph.value().is_disabled()
+        return False
+
+    def captured_graph_nodes(self) -> Int:
+        """Kernel nodes in the captured graph; 0 if nothing is captured.
+
+        Worth printing once. A capture that silently recorded nothing — the
+        closure enqueued on a stream other than the one being captured — looks
+        exactly like a working one from the outside, and replaying an empty
+        graph is a training loop that does nothing at full speed."""
+        if self._train_graph:
+            return self._train_graph.value().num_nodes()
+        return 0
 
     def eval_step_device_accum(
         mut self,

@@ -149,6 +149,25 @@ comptime CLIP_NORM = 0.0
 # zero is not the whole story on a short run.
 comptime GPU_DATA = True
 
+
+# USE_CUDA_GRAPH — capture the per-step device kernel sequence and replay it
+# (NVIDIA only; a compile-time no-op elsewhere, where the step simply runs).
+#
+# ⚠ DEFAULT OFF AND EXPECTED TO FAIL TODAY: MAX's split-K allocates its
+# reduction workspace per call with the synchronous driver allocator, which
+# aborts a capture ("graph capturing in progress, no driver fallback" —
+# `benchmarks/bench_cuda_graph_splitk_capture.mojo`). Flip it on once that is
+# fixed; this profile is the A/B for what capture is worth.
+#
+# What to look at when you do: `cuLaunchKernelEx` count should collapse (one
+# graph launch replaces ~700 launches per step) and the per-step wall should
+# drop by roughly the launch-issue time — 7.7 ms/iteration in the baseline
+# trace. If the step time does NOT move, the launches were already overlapped
+# with compute and capture bought nothing; that is a real possible outcome at
+# 88% GPU busy and it is why this is measured rather than assumed.
+comptime USE_CUDA_GRAPH = False
+# (the GPU_DATA requirement is asserted at the top of `main`)
+
 comptime WARMUP_STEPS = 5
 """Enough to get past first-launch kernel compilation and the initial H2D, and
 few enough that the profile is dominated by steady state. The training example
@@ -247,6 +266,11 @@ def store_path() raises -> String:
 
 
 def main() raises:
+    comptime assert not USE_CUDA_GRAPH or GPU_DATA, (
+        "USE_CUDA_GRAPH requires GPU_DATA (a captured step cannot contain the"
+        " host sampler)"
+    )
+
     var path = store_path()
     var os = Python.import_module("os")
     if not Bool(os.path.exists(PythonObject(path))):
@@ -328,6 +352,13 @@ def main() raises:
         )
         print("")
 
+    # ⚠ The warmup must be EAGER even under capture: `maybe_capture_replay`
+    # settles the stream with one run of its own, which is not the same as
+    # settling every lazy device allocation the graph performs. An allocation
+    # that first happens on step 2 would land inside the capture region and
+    # abort it.
+    if USE_CUDA_GRAPH:
+        tr.prepare_device_capture()
     for _ in range(WARMUP_STEPS):
         comptime if GPU_DATA:
             tr.train_step_device_accum(dev_ds)
@@ -352,7 +383,13 @@ def main() raises:
         # The number to compare across the two runs is the iteration total,
         # not the split.
         comptime if GPU_DATA:
-            tr.train_step_device_accum(dev_ds)
+            # ⚠ RUNTIME `if` on a comptime flag: `comptime if` prunes, and a
+            # capture path that is never elaborated is not "one flag away", it
+            # is untested code. See the same note in the training example.
+            if USE_CUDA_GRAPH:
+                tr.train_step_device_captured(dev_ds)
+            else:
+                tr.train_step_device_accum(dev_ds)
         else:
             _ = tr.train_step(qpos, images, actions, valid)
         var t2 = perf_counter_ns()
@@ -380,6 +417,16 @@ def main() raises:
     var eval_ms = Float64(eval_ns) / 1e6 / n
     var step_ms = data_ms + train_ms
 
+    if USE_CUDA_GRAPH:
+        # ⚠ 0 nodes means capture silently recorded nothing, and a profile of
+        # an empty graph replaying is very fast and completely meaningless.
+        print(
+            "  cuda graph        "
+            + ("captured " + String(tr.captured_graph_nodes()) + " nodes"
+               if tr.has_captured_graph() else
+               "NOT captured (disabled, or no stream) — steps ran directly")
+        )
+        print("")
     print("  per step, mean over " + String(PROFILE_STEPS) + ":")
     print(
         "    sample_batch    " + String(data_ms) + " ms  ("
