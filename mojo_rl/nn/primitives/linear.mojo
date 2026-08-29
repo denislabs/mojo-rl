@@ -33,6 +33,7 @@ from linalg.utils_gpu import MatmulKernels, select_config
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
     partitions_legal,
+    multistage_shape_ok,
     choose_partitions,
     splitk_gemm,
 )
@@ -578,6 +579,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         # to both, so pick them the same way the launch will.
         comptime M_DW = Self.K_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.IN_
         comptime N_DW = Self.N_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.OUT_
+        # ⚠ multi_gemm_cond FIRST. `select_config` is only reached after it
+        # in MAX's dispatch and will otherwise hand back a partition count for
+        # a shape the multistage kernel never sees — a wrong answer, not a
+        # slowdown. See multistage_shape_ok.
+        if not multistage_shape_ok(M_DW, N_DW, B):
+            self._sk_p = 1
+            return
         var picked = select_config[DT, DT, DT, False](M_DW, N_DW, B, ctx)
         if picked.num_k_partitions <= 1:
             self._sk_p = 1

@@ -116,6 +116,35 @@ def splitk_path_applies[info: GPUInfo]() -> Bool:
 
 
 @always_inline
+def multistage_shape_ok(m: Int, n: Int, k: Int) -> Bool:
+    """Would MAX's own dispatch hand THIS shape to `multistage_gemm`?
+
+    This is `multi_gemm_cond` from `matmul/gpu/__init__.mojo:591`, reduced to
+    its generic-NVIDIA form (both `h100_matmul_cond` and `amdgpu_matmul_cond`
+    are False on the parts `splitk_path_applies` admits):
+
+        m > 1  and  n % 128 == 0  and  k % 32 == 0  and  k >= 128
+
+    ⚠ CHECKING THIS IS NOT OPTIONAL, and `select_config` is not a substitute.
+    `select_config` is a CONFIG CHOOSER that MAX only reaches AFTER
+    `multi_gemm_cond` passes; it will happily return `num_k_partitions > 1` for
+    a shape the multistage kernel is never given. A shape that fails the
+    condition goes to the VENDOR fallback (cuBLASLt), and substituting the
+    multistage split-K kernel for it produces a WRONG ANSWER, not a slow one.
+
+    Measured: `Conv2D`'s ResNet18 stem dW is `[64 x 307200] @ [307200 x 160]`.
+    `CPAD` pads the im2col column count to a multiple of 32 (the FORWARD's
+    contraction alignment), and 160 % 128 = 32 — so MAX takes cuBLAS. Routing
+    it through split-K anyway gave rel err 1.02e-3 against the plain GEMM,
+    which is what `tests/nn/test_conv2d_splitk_dw_gpu.mojo` caught.
+
+    `Linear` satisfies it by construction (`N_PAD_TO = 128`), which is the only
+    reason that integration was correct before this check existed.
+    """
+    return m > 1 and n % 128 == 0 and k % 32 == 0 and k >= 128
+
+
+@always_inline
 def partitions_legal(K: Int, P: Int, BK: Int) -> Bool:
     """Whether `P` is a usable partition count for this K.
 
@@ -244,6 +273,12 @@ def splitk_gemm[
     var K_dim = Int(tensor_a.dim[1]())
     comptime BK = config.block_tile_shape[2]
 
+    if not multistage_shape_ok(Int(M), Int(N), K_dim):
+        raise Error(
+            "this shape fails multi_gemm_cond, so MAX would route it to the"
+            " VENDOR fallback, not to multistage — the split-K kernel would"
+            " return a wrong answer here. See multistage_shape_ok"
+        )
     if not partitions_legal(K_dim, num_partitions, BK):
         raise Error(
             "illegal num_k_partitions for this K: it either overruns the"

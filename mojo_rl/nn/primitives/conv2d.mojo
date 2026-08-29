@@ -33,6 +33,7 @@ from linalg.utils_gpu import MatmulKernels, select_config
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
     partitions_legal,
+    multistage_shape_ok,
     choose_partitions,
     splitk_gemm,
 )
@@ -1092,6 +1093,14 @@ struct Conv2D[
             return
 
         # Only intervene where MAX would itself have split K.
+        # ⚠ multi_gemm_cond FIRST. `select_config` is only reached after it in
+        # MAX's dispatch and will otherwise hand back a partition count for a
+        # shape the multistage kernel never sees. The conv dW fails it often:
+        # `CPAD` rounds the im2col column count to 32, not 128, so a ResNet18
+        # stem's N=160 goes to cuBLAS. See multistage_shape_ok.
+        if not multistage_shape_ok(Self.OC_, Self.CPAD, BS):
+            self._sk_p = 1
+            return
         var picked = select_config[DT, DT, DT, False](
             Self.OC_, Self.CPAD, BS, ctx
         )

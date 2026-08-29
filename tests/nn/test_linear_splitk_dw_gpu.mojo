@@ -35,7 +35,7 @@ from mojo_rl.nn.core.splitk_gemm import splitk_path_applies
 from mojo_rl.nn.primitives.linear import Linear
 
 
-def check[IN: Int, OUT: Int, B: Int](
+def check[IN: Int, OUT: Int, B: Int, EXPECT_SPLIT: Bool](
     ctx: DeviceContext, mut n_split: Int
 ) raises:
     """One shape. `B` is `batch * tokens`, the contraction of the dW GEMM."""
@@ -106,6 +106,15 @@ def check[IN: Int, OUT: Int, B: Int](
     if la._sk_p > 1:
         n_split += 1
 
+    # Assert the ROUTING DECISION per shape, not just that something split.
+    # Counting alone is what let this integration ship with one of Linear's
+    # two dW sites unrouted: every shape took the other one and printed 0.0.
+    if (la._sk_p > 1) != EXPECT_SPLIT:
+        raise Error(
+            "routing decision does not match the shape's arithmetic: expected"
+            " split=" + String(EXPECT_SPLIT) + " got P=" + String(la._sk_p)
+        )
+
     print(
         "  IN=", IN, " OUT=", OUT, " B=", B,
         "   P=", la._sk_p,
@@ -136,9 +145,9 @@ def main() raises:
 
         print("== aligned shapes, UNPADDED dW branch (should split) ==")
         # ACT's transformer encoder: B = 16 * 162.
-        check[256, 256, 2592](ctx, n_split)
-        check[256, 1024, 2592](ctx, n_split)
-        check[1024, 256, 2592](ctx, n_split)
+        check[256, 256, 2592, True](ctx, n_split)
+        check[256, 1024, 2592, True](ctx, n_split)
+        check[1024, 256, 2592, True](ctx, n_split)
 
         print("== unaligned shapes, PADDED dW branch (should split) ==")
         # `Linear` has TWO GPU dW sites — one behind the K/N padding and one
@@ -146,13 +155,13 @@ def main() raises:
         # version of this change patched only the padded one, every shape above
         # is aligned, and the run came back `split shapes: 0`. Both branches
         # are covered from here on.
-        check[518, 101, 2592](ctx, n_split)   # K_PAD=544, N_PAD=128
-        check[24, 256, 2592](ctx, n_split)    # K_PAD=128, N_PAD=256
+        check[518, 101, 2592, True](ctx, n_split)   # K_PAD=544, N_PAD=128
+        check[24, 256, 2592, True](ctx, n_split)    # K_PAD=128, N_PAD=256
 
         print("== controls: below min_k_partition, must NOT split ==")
         # ACT's CVAE encoder (B = 16*62) and decoder self-attention (16*60).
-        check[256, 256, 992](ctx, n_split)
-        check[256, 256, 960](ctx, n_split)
+        check[256, 256, 992, False](ctx, n_split)
+        check[256, 256, 960, False](ctx, n_split)
 
         print()
         print("split shapes:", n_split, "of 7")

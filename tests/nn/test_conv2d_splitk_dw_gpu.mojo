@@ -33,7 +33,9 @@ from mojo_rl.nn.primitives.conv2d import Conv2D
 
 
 def check[
-    IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, B: Int
+    IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, B: Int,
+    EXPECT_SPLIT: Bool,
+    WHY: StaticString,
 ](ctx: DeviceContext, mut n_split: Int) raises:
     comptime C = Conv2D[IC, OC, K, S, P, H, W]
     comptime BS = B * C.OH * C.OW
@@ -100,11 +102,22 @@ def check[
 
     print(
         "  IC=", IC, " OC=", OC, " K=", K, " S=", S, " ", H, "x", W,
-        " B=", B, "   BS=", BS, " COL=", C.COL, " CPAD=", C.CPAD,
+        " B=", B, "   BS=", BS, " CPAD=", C.CPAD, " (n%128=", C.CPAD % 128, ")",
         "   P=", ca._sk_p,
-        "   max|dW_split - dW_plain|=", max_abs, "  rel=", rel,
+        "   rel=", rel,
+        "   [", WHY, "]",
         sep="",
     )
+
+    # Assert the ROUTING DECISION per shape, not just that something split.
+    # Counting alone let `Linear` ship with one of two dW sites unrouted.
+    var did_split = ca._sk_p > 1
+    if did_split != EXPECT_SPLIT:
+        raise Error(
+            "routing decision does not match the shape's own arithmetic:"
+            " expected split=" + String(EXPECT_SPLIT)
+            + " got P=" + String(ca._sk_p) + " — " + String(WHY)
+        )
 
     # P separate fp32 accumulations, so not bit-identical once P > 1 -- but it
     # must stay at rounding. A dropped K tail shows up here as a relative error
@@ -126,20 +139,30 @@ def main() raises:
         print("conv dW = goT @ col: M=OC, N=CPAD, K=BS = batch*OH*OW")
         var n_split = 0
 
-        print("== ResNet18-shaped layers at ACT's batch (should split) ==")
-        # stem: 7x7 s2, 3 -> 64, 240x320 -> 120x160. BS = 16*120*160 = 307200.
-        check[3, 64, 7, 2, 3, 240, 320, 16](ctx, n_split)
-        # layer1: 3x3 s1, 64 -> 64, 60x80. BS = 16*60*80 = 76800.
-        check[64, 64, 3, 1, 1, 60, 80, 16](ctx, n_split)
-        # layer3: 3x3 s1, 128 -> 256, 15x20. BS = 16*15*20 = 4800.
-        check[128, 256, 3, 1, 1, 15, 20, 16](ctx, n_split)
+        print("== conv dW that REACHES multistage (CPAD % 128 == 0) ==")
+        # layer2-shaped: COL = 128*3*3 = 1152, and 1152 % 128 == 0.
+        check[128, 256, 3, 1, 1, 30, 40, 16, True,
+              "CPAD=1152, BS=19200"](ctx, n_split)
+        check[128, 256, 3, 1, 1, 15, 20, 16, True,
+              "CPAD=1152, BS=4800"](ctx, n_split)
 
-        print("== control: BS below min_k_partition, must NOT split ==")
-        # layer4-ish at a small batch: BS = 2*8*10 = 160.
-        check[256, 512, 3, 1, 1, 8, 10, 2](ctx, n_split)
+        print("== conv dW that does NOT (multi_gemm_cond fails on n % 128) ==")
+        # ⚠ This is most of a ResNet18. `CPAD` rounds the im2col column count
+        # to a multiple of 32 — the FORWARD's contraction alignment — but for
+        # the dW GEMM that same number is N, which multistage needs at a
+        # multiple of 128. So MAX sends these to the vendor fallback, and so
+        # must we. Routing the stem through split-K anyway gave rel 1.02e-3.
+        check[3, 64, 7, 2, 3, 240, 320, 16, False,
+              "CPAD=160, MAX uses cuBLAS"](ctx, n_split)
+        check[64, 64, 3, 1, 1, 60, 80, 16, False,
+              "CPAD=576, MAX uses cuBLAS"](ctx, n_split)
+
+        print("== control: passes multi_gemm_cond, BS below min_k_partition ==")
+        check[256, 512, 3, 1, 1, 8, 10, 2, False,
+              "CPAD=2304 ok, but BS=160 < 1024"](ctx, n_split)
 
         print()
-        print("split shapes:", n_split, "of 4")
+        print("split shapes:", n_split, "of 5")
         if n_split == 0:
             raise Error(
                 "NO shape took the split-K path — this run tested nothing."
