@@ -572,9 +572,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         # Only intervene where MAX would itself have split K: same shape and
         # the same `select_config` call, so a shape it would have run as a
         # plain multistage GEMM stays exactly that.
-        var picked = select_config[DT, DT, DT, False](
-            Self.K_PAD, Self.N_PAD, B, ctx
-        )
+        # The dW GEMM's M and N are the dims of the branch that will run: the
+        # PADDED site uses [K_PAD, N_PAD], the unpadded one [IN_, OUT_]. They
+        # coincide unless padding is active, and `select_config` is sensitive
+        # to both, so pick them the same way the launch will.
+        comptime M_DW = Self.K_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.IN_
+        comptime N_DW = Self.N_PAD if Self.NEEDS_PAD or Self.NEEDS_N_PAD else Self.OUT_
+        var picked = select_config[DT, DT, DT, False](M_DW, N_DW, B, ctx)
         if picked.num_k_partitions <= 1:
             self._sk_p = 1
             return
@@ -587,7 +591,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         # autotune would close that; it needs a warmup harness the Module does
         # not have, and 7% of the dW slice is ~0.02% of an ACT iteration.
         var want = choose_partitions(
-            Self.K_PAD, Self.N_PAD, B, bt[0], bt[1], bt[2], sm_count
+            M_DW, N_DW, B, bt[0], bt[1], bt[2], sm_count
         )
         # Fall back to MAX's own P if the wave rule found nothing better; it is
         # legal by construction here, but check anyway — undercoverage is
@@ -600,7 +604,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
 
         # Size the workspace now, on an eager step. It can never grow inside a
         # capture region, and P is fixed from here.
-        self.sk_ws.ensure_gpu(ctx, want * Self.K_PAD * Self.N_PAD)
+        self.sk_ws.ensure_gpu(ctx, want * M_DW * N_DW)
         self._sk_p = want
 
     # NOTE: `_dw_splitk` is a FREE function, not a method. `dWp_v` is a view
@@ -1130,7 +1134,24 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     var go_v = TileTensor(
                         god.dev.value(), row_major[B, Self.OUT_]()
                     )
-                    max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                    # Same split-K routing as the padded branch above. This is
+                    # the branch an ALIGNED Linear takes (K_PAD == IN_ and
+                    # N_PAD == OUT_), which is most of them — the first version
+                    # of this change patched only the padded site and the gate
+                    # caught it as `split shapes: 0`.
+                    comptime if splitk_path_applies[c.default_device_info]():
+                        if self._sk_p < 0:
+                            self._decide_sk_p(B, c)
+                        if self._sk_p > 1:
+                            _dw_splitk(
+                                dW_v, cT_v, go_v,
+                                Self.IN_, Self.OUT_, B,
+                                self._sk_p, self.sk_ws, c,
+                            )
+                        else:
+                            max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                    else:
+                        max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
                     var w_v = TileTensor(
                         self.weight.val.dev.value(),
                         row_major[Self.IN_, Self.OUT_](),
@@ -1194,6 +1215,10 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
             # grad_w = cacheT_bfᵀ-form @ go → fp32 dW (bf16-in, fp32-out).
+            # ⚠ NOT routed through split-K, deliberately. bf16 operands with an
+            # fp32 output would work the same way, but nothing gates it yet —
+            # `tests/nn/test_linear_splitk_dw_gpu.mojo` builds fp32 Linears.
+            # Route it when that gate grows a bf16 arm, not before.
             max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
             # grad_x = go @ Wᵀ → bf16 gin (bf16-in, bf16-out — gin flows at bf16).
             max_matmul[transpose_b=True, target="gpu"](gi_v, gob_v, wb_v, c)

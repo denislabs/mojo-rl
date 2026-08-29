@@ -134,11 +134,20 @@ def main() raises:
         print("dW = cacheT^T @ go: M=IN, N=OUT, K=B (batch*tokens)")
         var n_split = 0
 
-        print("== shapes that SHOULD split (B >= 2048) ==")
+        print("== aligned shapes, UNPADDED dW branch (should split) ==")
         # ACT's transformer encoder: B = 16 * 162.
         check[256, 256, 2592](ctx, n_split)
         check[256, 1024, 2592](ctx, n_split)
         check[1024, 256, 2592](ctx, n_split)
+
+        print("== unaligned shapes, PADDED dW branch (should split) ==")
+        # `Linear` has TWO GPU dW sites — one behind the K/N padding and one
+        # for the aligned case — and they are far apart in the file. The first
+        # version of this change patched only the padded one, every shape above
+        # is aligned, and the run came back `split shapes: 0`. Both branches
+        # are covered from here on.
+        check[518, 101, 2592](ctx, n_split)   # K_PAD=544, N_PAD=128
+        check[24, 256, 2592](ctx, n_split)    # K_PAD=128, N_PAD=256
 
         print("== controls: below min_k_partition, must NOT split ==")
         # ACT's CVAE encoder (B = 16*62) and decoder self-attention (16*60).
@@ -146,11 +155,17 @@ def main() raises:
         check[256, 256, 960](ctx, n_split)
 
         print()
-        print("split shapes:", n_split, "of 5")
+        print("split shapes:", n_split, "of 7")
         if n_split == 0:
             raise Error(
                 "NO shape took the split-K path — this run tested nothing."
                 " Check select_config's min_k_partition and the device gate"
                 " before reading the zeros above as a pass."
+            )
+        if n_split < 5:
+            raise Error(
+                "fewer split shapes than expected: both the aligned and the"
+                " padded dW branch should split at B=2592, so a shortfall means"
+                " one of the two sites is not routed"
             )
         print("all good")
