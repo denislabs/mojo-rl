@@ -1,7 +1,10 @@
 # ACT / nn GPU manifest — `pixi run -e nvidia test-act-gpu` (or -e apple).
 #
 # GPU paths are gated against the CPU paths, which carry the comparison against
-# the reference. ZERO setup except one 16 KB untar for the first entry:
+# the reference. Setup is one 16 KB untar for the first entry, and the LAST
+# entry additionally needs a converted store (`$ACT_STORE`, or the newest one
+# in the cache) because it compares a device-resident sampler against the host
+# one — there is nothing to compare without data:
 #
 #   mkdir -p /tmp/act_ref && tar xzf tests/fixtures/act_ref_xattn.tgz -C /tmp/act_ref
 #
@@ -27,3 +30,6 @@ tests/deep_agents/act/test_act_gpu_vs_cpu.mojo
 # Needs `--only frozen_bn` from the reference dump. Not wired into ACT yet —
 # `set_attr["frozen"]` is what a backbone would be built with.
 tests/nn/test_batch_norm_2d_frozen_gpu.mojo
+# The device sampler: same rows in, same tensors out as the host path. Needs a
+# store; skip it (or set ACT_STORE) if you have not converted one.
+tests/deep_agents/act/test_act_dataset_gpu.mojo

@@ -99,6 +99,7 @@ from .config import (
     ACT_LR,
     ACT_WEIGHT_DECAY,
 )
+from .data_gpu import ACTDeviceDataset
 from .loss_graph import ACTLossGraph
 from .refload import LoadPrefixedParams, RefDump
 
@@ -454,6 +455,73 @@ struct ACTTrainer[
         self.graph.set_input["images", Self.BATCH](self.t_images, self.ctx)
         self.graph.set_input["actions", Self.BATCH](self.t_actions, self.ctx)
         self.graph.set_input["enc_valid", Self.BATCH](self.t_valid, self.ctx)
+
+    def seed_inputs_device(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+        val: Bool = False,
+    ) raises:
+        """Draw + gather a batch entirely on the device, then seed the graph.
+
+        The device replacement for `sample_batch` + `_seed_inputs`. Nothing
+        crosses the bus: the sampler writes the four staging tensors' DEVICE
+        buffers, and `ComputeGraph.set_input` is a device-to-device
+        `enqueue_copy` on GPU, so the whole path is kernels.
+
+        What it removes per call, measured on the host path it replaces:
+        16.1 ms of `sample_batch` with the GPU idle, two 29.5 MB
+        element-by-element fills into pinned memory, the 29.5 MB H2D, and the
+        four `upload_resident` device synchronizations.
+
+        ⚠ It does NOT reproduce `sample_batch`'s batches. The device draws with
+        Philox and the host with a xorshift, so the two samplers walk different
+        streams and no seed reconciles them; `tests/.../test_act_dataset_gpu`
+        gates the part that must agree (the gather, given the same rows).
+        Anything that needs a SPECIFIC batch — a reference comparison, a
+        reproducible eval — must keep using the host path.
+        """
+        comptime assert Self.target != "cpu", (
+            "seed_inputs_device is GPU-only"
+        )
+        var c = self.ctx.value()
+        ds.sample[Self.BATCH, Self.K](
+            val,
+            self.t_qpos,
+            self.t_images,
+            self.t_actions,
+            self.t_valid,
+            c,
+        )
+        self.graph.set_input["qpos", Self.BATCH](self.t_qpos, self.ctx)
+        self.graph.set_input["images", Self.BATCH](self.t_images, self.ctx)
+        self.graph.set_input["actions", Self.BATCH](self.t_actions, self.ctx)
+        self.graph.set_input["enc_valid", Self.BATCH](self.t_valid, self.ctx)
+
+    def train_step_device(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+    ) raises -> ACTStepResult:
+        """`train_step` with the data path on the device.
+
+        Identical to `train_step` from the forward onward — same graph, same
+        clip, same optimizer — so the only difference is where the batch came
+        from."""
+        self._ensure_adopted()
+        self.opt.zero_grad[Self.target](self.graph, self.ctx)
+        self.seed_inputs_device(ds, False)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        var terms = self._read_terms()
+        self.graph.vjp[Self.BATCH, Self.target](self.grad_seed, self.ctx)
+        self.opt.clip_grads_device[Self.target](
+            self.graph, self.max_grad_norm, self.ctx
+        )
+        var gn = Float64(self.opt.read_clip_norm(self.ctx.value()))
+        self.opt.step[Self.target](self.graph, self.ctx)
+        return ACTStepResult(terms.loss, terms.l1, terms.kl, gn)
 
     def _read_terms(mut self) raises -> ACTStepResult:
         """Batch means of (loss, l1, kl), read off the graph's own nodes."""
