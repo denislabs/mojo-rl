@@ -463,11 +463,22 @@ struct ACTTrainer[
         ref l1n = self.graph.node_output["l1"]()
         ref kln = self.graph.node_output["kl"]()
         comptime if Self.target != "cpu":
+            # ⚠ ONE sync for three reads. `Tensor.download` synchronizes on
+            # every call, so the obvious spelling (an explicit `synchronize`
+            # then three `download`s) costs FOUR full device drains per call
+            # and this runs twice per training iteration — 8 of the ~28
+            # synchronizations a step was paying. `download_enqueue` /
+            # `download_finalize` exist for exactly this; the enqueues are
+            # ordered behind the forward on the same stream, so the leading
+            # `synchronize()` was redundant too.
             var c = self.ctx.value()
+            self.loss_out.download_enqueue(c)
+            l1n.download_enqueue(c)
+            kln.download_enqueue(c)
             c.synchronize()
-            self.loss_out.download(c)
-            l1n.download(c)
-            kln.download(c)
+            self.loss_out.download_finalize()
+            l1n.download_finalize()
+            kln.download_finalize()
         for b in range(Self.BATCH):
             lo += Float64(self.loss_out.data[b])
             l1 += Float64(l1n.data[b])

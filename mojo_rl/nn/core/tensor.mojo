@@ -9,7 +9,12 @@ builds its typed view INTERNALLY — `TileTensor(self.data, …)` on CPU, or
 the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
-from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import (
+    DeviceContext,
+    DeviceBuffer,
+    DeviceEvent,
+    HostBuffer,
+)
 from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.constants import DT
@@ -31,6 +36,24 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
     # per optimizer step, not once per forward — the Phase-1 economics fix).
     # Inert on activation tensors (never bumped, never read there).
     var version: Int
+    var _no_events: Bool
+    """Device cannot create events (Metal: "eventCreate is not supported").
+
+    Probed ONCE, on the first `upload_resident`, because it is a device
+    capability and not something the target string tells us — `target="gpu"`
+    covers both CUDA and Metal here. When set, `upload_resident` falls back to
+    the device-wide `ctx.synchronize()` it used to do unconditionally."""
+    var _h2d_done: Optional[DeviceEvent]
+    """Completion of the LAST H2D copy out of `hbuf` (lazy, `upload_resident`).
+
+    ⚠ The dependency being expressed is "is my pinned staging buffer free to
+    overwrite", which is a per-BUFFER question. `upload_resident` used to
+    answer it with `ctx.synchronize()` — a full DEVICE drain, which also waits
+    for every kernel enqueued after that copy, i.e. the whole previous
+    training step. An event recorded right after the copy is already complete
+    by the time the next step reaches the fill, so the wait costs nothing and
+    the pipeline never drains. Measured on ACT: 8 of the ~28 device
+    synchronizations per iteration came from here."""
 
     def __init__(out self):
         self.data = List[Scalar[Self.dt]]()
@@ -39,6 +62,8 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         self.hbuf = None
         self.hcap = 0
         self.version = 0
+        self._no_events = False
+        self._h2d_done = None
 
     # ----- unified CPU/GPU allocator -------------------------------------
     @staticmethod
@@ -255,10 +280,23 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         self.ensure_gpu(ctx, self.n)
         self.ensure_host(ctx, self.n)
         var hb = self.hbuf.value()
-        ctx.synchronize()
+        # ⚠ Wait for OUR last copy out of `hbuf`, not for the device. See
+        # `_h2d_done`. First call: nothing is in flight, so nothing to wait on.
+        if self._h2d_done:
+            self._h2d_done.value().synchronize()
+        elif self._no_events:
+            ctx.synchronize()
         for i in range(self.n):
             hb[i] = self.data[i]
         ctx.enqueue_copy(self.dev.value(), hb)
+        if not self._h2d_done and not self._no_events:
+            try:
+                self._h2d_done = ctx.create_event()
+            except:
+                # Metal. Fall back to the device drain from here on.
+                self._no_events = True
+        if self._h2d_done:
+            ctx.stream().record_event(self._h2d_done.value())
 
     def download_enqueue(mut self, ctx: DeviceContext) raises:
         """Enqueue the D2H copy into the persistent host buffer WITHOUT
