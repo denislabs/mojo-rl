@@ -259,6 +259,96 @@ def sweep_one[
     _ = c_ours^
 
 
+def sweep_partitions[
+    M: Int, K: Int, N: Int, LABEL: StaticString
+](ctx: DeviceContext, mut ws: SplitKWorkspace[DT]) raises:
+    """Sweep `num_k_partitions` past what `select_config` would choose.
+
+    `select_config` caps P by `min_k_partition = 1024`: it will not cut K into
+    pieces smaller than 1024, so at K=2592 it stops at P=2. That is a heuristic
+    in a HOST-SIDE CHOOSER, not a constraint of the kernel -- the kernel takes
+    the partition count as a runtime argument and MAX's own guard is only
+    `K >= P * BK` (BK=16 here, so P=8 needs K>=128).
+
+    Now that we launch the kernel ourselves, the cap is ours to pick. It is
+    worth picking deliberately, because at these shapes the grid is tiny:
+    [256 x 2592] @ [2592 x 256] with BM=BN=128 is 2x2 tiles, so P=2 puts
+    EIGHT blocks on a 170-SM card. That is why the P=2 timings barely move
+    between N=256 and N=1024 -- 4x the work fits in the same latency because
+    the machine was idle either way. More partitions is more blocks.
+
+    ⚠ Higher P is not free and not exact. Each partition is a separate fp32
+    accumulation that the reduce then sums, so |A - B| stops being 0 as P
+    grows -- that is arithmetic, not a bug, but it is a reason to choose P
+    on evidence rather than maximising it.
+    """
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    comptime cfg = kernels.ampere_128x128_4
+    var picked = select_config[DT, DT, DT, False](M, N, K, ctx)
+    if not (picked == cfg):
+        print("  ", LABEL, ": select_config chose another tile; skipping", sep="")
+        return
+
+    var ab = ctx.enqueue_create_buffer[DT](M * K)
+    var bb = ctx.enqueue_create_buffer[DT](K * N)
+    var c_ref = ctx.enqueue_create_buffer[DT](M * N)
+    var c_ours = ctx.enqueue_create_buffer[DT](M * N)
+    ab.enqueue_fill(Float32(0.01))
+    bb.enqueue_fill(Float32(0.02))
+    ctx.synchronize()
+
+    var av = TileTensor(ab, row_major[M, K]())
+    var bv = TileTensor(bb, row_major[K, N]())
+    var cref = TileTensor(c_ref, row_major[M, N]())
+    var cours = TileTensor(c_ours, row_major[M, N]())
+
+    for _ in range(WARMUP):
+        max_matmul[target="gpu"](cref, av, bv, ctx)
+    ctx.synchronize()
+
+    var tiles = ceildiv(M, 128) * ceildiv(N, 128)
+    print(
+        "  ", LABEL, " [", M, "x", K, "] @ [", K, "x", N, "]  ",
+        tiles, " tiles, select_config P=", picked.num_k_partitions, sep="",
+    )
+
+    comptime PS = [2, 3, 4, 6, 8, 12, 16]
+    comptime for i in range(len(PS)):
+        comptime P = PS[i]
+        if K >= P * cfg.block_tile_shape[2] and P * M * N <= ws.capacity:
+            for _ in range(WARMUP):
+                splitk_gemm[transpose_b=False, config=cfg](
+                    cours, av, bv, P, ws, ctx
+                )
+            ctx.synchronize()
+            var ta = perf_counter_ns()
+            for _ in range(REPS):
+                splitk_gemm[transpose_b=False, config=cfg](
+                    cours, av, bv, P, ws, ctx
+                )
+            ctx.synchronize()
+            var tb = perf_counter_ns()
+
+            var worst = Float64(0.0)
+            with c_ref.map_to_host() as hr:
+                with c_ours.map_to_host() as ho:
+                    for j in range(M * N):
+                        var d = abs(Float64(hr[j]) - Float64(ho[j]))
+                        if d > worst:
+                            worst = d
+
+            print(
+                "      P=", P, "  blocks=", tiles * P,
+                "  ", Float64(tb - ta) / 1000.0 / Float64(REPS), "us",
+                "  |A-B| ", worst, sep="",
+            )
+
+    _ = ab^
+    _ = bb^
+    _ = c_ref^
+    _ = c_ours^
+
+
 def main() raises:
     comptime if not has_nvidia_gpu_accelerator():
         print("NVIDIA only -- build with `pixi run -e nvidia`.")
@@ -295,8 +385,8 @@ def main() raises:
             print()
             print("TOTAL saved per training step (listed shapes only):", total, "us")
             print(
-                "  = ", total / 1000.0, " ms/step; at 1000 steps, ",
-                total / 1e6, " s", sep="",
+                "  = ", total / 1000.0, " ms/step; over 1000 steps, ",
+                total / 1000.0, " s", sep="",
             )
             print()
             print(
@@ -304,4 +394,11 @@ def main() raises:
                 " the LOGGING_LEVEL=INFO command in this file's docstring"
                 " before quoting the total."
             )
+
+            print()
+            print("-- P sweep: select_config's cap is a heuristic, not a limit --")
+            print("   (grid is tiny at these shapes; more partitions = more SMs)")
+            sweep_partitions[256, 2592, 256, "enc attn      "](ctx, ws)
+            sweep_partitions[256, 2592, 1024, "enc ff1       "](ctx, ws)
+            sweep_partitions[1024, 2592, 256, "enc ff2       "](ctx, ws)
             _ = ws^
