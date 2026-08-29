@@ -29,6 +29,14 @@ from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from linalg.utils_gpu import MatmulKernels, select_config
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    partitions_legal,
+    choose_partitions,
+    splitk_gemm,
+)
+from std.os import getenv
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
@@ -271,6 +279,42 @@ def _accum_2d_kernel[
 
 
 # ── Linear ─────────────────────────────────────────────────────────────
+
+def _dw_splitk(
+    dWp_v: TileTensor[mut=True, DT, ...],
+    cTp_v: TileTensor[mut=False, DT, ...],
+    gop_v: TileTensor[mut=False, DT, ...],
+    M: Int,
+    N: Int,
+    B: Int,
+    p: Int,
+    mut ws: Tensor,
+    ctx: DeviceContext,
+) raises:
+    """`grad_w = cacheTᵀ @ go` through a caller-owned split-K workspace.
+
+    The comptime config must be the tile `select_config` chose — it sets the
+    grid and the shared-memory request, so a mismatch is wrong launch geometry
+    rather than a slowdown. MAX picks between three; on anything but an A100
+    `ampere_256x128_3` is excluded by its own shared-memory check, but all
+    three are handled so an A100 does not fall off the end.
+    """
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    var picked = select_config[DT, DT, DT, False](M, N, B, ctx)
+    if picked == kernels.ampere_256x64_4:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
+            dWp_v, cTp_v, gop_v, p, ws, ctx
+        )
+    elif picked == kernels.ampere_256x128_3:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
+            dWp_v, cTp_v, gop_v, p, ws, ctx
+        )
+    else:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
+            dWp_v, cTp_v, gop_v, p, ws, ctx
+        )
+
+
 struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
@@ -459,6 +503,23 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     STRIDED add (`_accum_2d_kernel`) because its row stride is N_PAD."""
     var gi_pad: Tensor
     """[B, K_PAD] padded grad_input, sliced back to [B, IN_]."""
+    var sk_ws: Tensor
+    """Split-K reduction workspace for the dW GEMM, `[P, K_PAD, N_PAD]`.
+
+    `linalg.matmul` allocates this per call and frees it again
+    (`matmul/gpu/__init__.mojo:1845`/`:1915`), which is a cuMemAlloc/cuMemFree
+    pair per GEMM and — being a SYNCHRONOUS driver allocation — makes any step
+    containing a split-K GEMM impossible to capture into a CUDA graph. Owning
+    it here removes both. It lives on the Module deliberately: a CUDA graph
+    holds RAW POINTERS to every operand, so the workspace has to outlive the
+    LAST REPLAY, and the Module outlives the trainer's graph. Sized by
+    `ensure_gpu` on an eager step; it must never grow inside a capture region."""
+    var _sk_p: Int
+    """Cached split-K partition count for the dW GEMM. -1 = not yet decided,
+    1 = do not split (also what `MOJO_RL_SPLITK=0` forces).
+
+    Decided ONCE and cached because it sets `grid_dim`, which is baked into a
+    captured graph — a P that drifted between replays would be a wrong launch."""
     var _w_pad_version: Int
     # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
     # weight recast in `_ensure_w_bf` is UNCONDITIONAL so the cast kernel is
@@ -483,12 +544,70 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         self.go_pad = Tensor()
         self.cT_pad = Tensor()
         self.dW_pad = Tensor()
+        self.sk_ws = Tensor()
+        self._sk_p = -1
         self.gi_pad = Tensor()
         self._w_pad_version = -1  # < any real version → first forward pads
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
             self._force_recast = value != Scalar[DT](0.0)
+
+    def _decide_sk_p(mut self, B: Int, ctx: DeviceContext) raises:
+        """Decide the dW GEMM's partition count, once, and cache it.
+
+        Called on the first backward — an EAGER step, before any capture — and
+        never again, because `grid_dim` derives from P and is baked into a
+        captured graph. A P that drifted between replays would be a wrong
+        launch, not a slow one.
+
+        `MOJO_RL_SPLITK=0` pins it to 1 (plain `max_matmul`), for bisecting a
+        suspected split-K problem against a known-good run without a rebuild —
+        same escape hatch as `MOJO_RL_CUDA_GRAPH`.
+        """
+        if getenv("MOJO_RL_SPLITK", "1") == "0":
+            self._sk_p = 1
+            return
+
+        # Only intervene where MAX would itself have split K: same shape and
+        # the same `select_config` call, so a shape it would have run as a
+        # plain multistage GEMM stays exactly that.
+        var picked = select_config[DT, DT, DT, False](
+            Self.K_PAD, Self.N_PAD, B, ctx
+        )
+        if picked.num_k_partitions <= 1:
+            self._sk_p = 1
+            return
+
+        comptime kernels = MatmulKernels[DT, DT, DT, False]()
+        comptime sm_count = ctx.default_device_info.sm_count
+        var bt = picked.block_tile_shape
+        # `choose_partitions` fills one wave, which measured exact on the
+        # 16-tile ACT shapes and ~7% slow on the 4-tile one. A per-shape
+        # autotune would close that; it needs a warmup harness the Module does
+        # not have, and 7% of the dW slice is ~0.02% of an ACT iteration.
+        var want = choose_partitions(
+            Self.K_PAD, Self.N_PAD, B, bt[0], bt[1], bt[2], sm_count
+        )
+        # Fall back to MAX's own P if the wave rule found nothing better; it is
+        # legal by construction here, but check anyway — undercoverage is
+        # silent, and a silent wrong gradient is the worst outcome available.
+        if want <= 1:
+            want = picked.num_k_partitions
+        if not partitions_legal(B, want, bt[2]):
+            self._sk_p = 1
+            return
+
+        # Size the workspace now, on an eager step. It can never grow inside a
+        # capture region, and P is fixed from here.
+        self.sk_ws.ensure_gpu(ctx, want * Self.K_PAD * Self.N_PAD)
+        self._sk_p = want
+
+    # NOTE: `_dw_splitk` is a FREE function, not a method. `dWp_v` is a view
+    # borrowed from `self.dW_pad`, so passing it alongside `mut self` aliases
+    # a mutable borrow of the whole struct with a reference embedded in one of
+    # its fields, and the borrow checker rejects it. Handing the workspace
+    # over explicitly keeps the two borrows on separate fields.
 
     def _ensure_w_pad(mut self, c: DeviceContext) raises:
         """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
@@ -919,7 +1038,33 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         self.dW_pad.dev.value(),
                         row_major[Self.K_PAD, Self.N_PAD](),
                     )
-                    max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                    # ── grad_w: split-K on OUR workspace, or plain matmul ──
+                    # This is the GEMM MODULAR_MATMUL_ALLOC_REPORT.md
+                    # Measurement 4 caught allocating per call: K is
+                    # `batch * tokens`, so it is long-K and skinny by
+                    # construction, which is exactly when `select_config`
+                    # partitions K. Routing it through our own workspace
+                    # removes the alloc/free pair AND unblocks CUDA-graph
+                    # capture of the whole step.
+                    #
+                    # Inert unless MAX's own dispatch would have reached
+                    # `multistage_gemm` with a partitioned K (see
+                    # `splitk_path_applies`: not H100, not sm_100 Blackwell,
+                    # not AMD/Apple). Otherwise this is byte-for-byte the
+                    # previous behaviour.
+                    comptime if splitk_path_applies[c.default_device_info]():
+                        if self._sk_p < 0:
+                            self._decide_sk_p(B, c)
+                        if self._sk_p > 1:
+                            _dw_splitk(
+                                dWp_v, cTp_v, gop_v,
+                                Self.K_PAD, Self.N_PAD, B,
+                                self._sk_p, self.sk_ws, c,
+                            )
+                        else:
+                            max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                    else:
+                        max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
                     # grad_input = go @ w_padᵀ  ->  [B, K_PAD]
                     # ⚠ The GEMM DESTINATION must be a mutable view, so this
                     # cannot use the `... if NEEDS_PAD else ...` form the
