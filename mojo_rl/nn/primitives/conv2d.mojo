@@ -29,6 +29,14 @@ from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from linalg.utils_gpu import MatmulKernels, select_config
+from mojo_rl.nn.core.splitk_gemm import (
+    splitk_path_applies,
+    partitions_legal,
+    choose_partitions,
+    splitk_gemm,
+)
+from std.os import getenv
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
@@ -516,6 +524,44 @@ def _backward_db_kernel[
 
 
 # ── Conv2D ────────────────────────────────────────────────────────────────
+
+def _conv_dw_splitk(
+    dW_tt: TileTensor[mut=True, DT, ...],
+    goT_tt: TileTensor[mut=False, DT, ...],
+    col_tt: TileTensor[mut=False, DT, ...],
+    OC: Int,
+    CPAD: Int,
+    BS: Int,
+    p: Int,
+    mut ws: Tensor,
+    ctx: DeviceContext,
+) raises:
+    """`dW = goᵀ @ col` through a caller-owned split-K workspace.
+
+    The conv dW is `[OC, BS] @ [BS, CPAD]`, so the contraction is
+    `batch * OH * OW` — far longer than the transformer dW's `batch * tokens`,
+    and the M and N are an out-channel count and an im2col column count, both
+    small. That makes the tile grid tiny (a ResNet18 stem at OC=64, CPAD=256 is
+    TWO tiles) while K runs into the hundreds of thousands, which is the
+    regime split-K exists for and the regime `select_config`'s partition cap
+    handles worst.
+    """
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    var picked = select_config[DT, DT, DT, False](OC, CPAD, BS, ctx)
+    if picked == kernels.ampere_256x64_4:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
+            dW_tt, goT_tt, col_tt, p, ws, ctx
+        )
+    elif picked == kernels.ampere_256x128_3:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
+            dW_tt, goT_tt, col_tt, p, ws, ctx
+        )
+    else:
+        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
+            dW_tt, goT_tt, col_tt, p, ws, ctx
+        )
+
+
 struct Conv2D[
     IC_: Int,
     OC_: Int,
@@ -636,6 +682,20 @@ struct Conv2D[
     var outp_t: Tensor  # [BS, OC]   (out_packed; fwd only)
     var goT_t: Tensor  # [OC, BS]   (goᵀ — for dW AND d_colᵀ, O2)
     var dW_tmp: Tensor  # [OC, COL]  (fp32 dW temp; bf16-in → fp32-out GEMM)
+    var sk_ws: Tensor
+    """Split-K reduction workspace for the dW GEMM, `[P, OC_, CPAD]`.
+
+    Same rationale as `Linear.sk_ws`: `linalg.matmul` allocates this per call
+    and frees it again, which costs a cuMemAlloc/cuMemFree pair per GEMM and —
+    being a SYNCHRONOUS driver allocation — makes the step uncapturable. It
+    lives on the Module because a CUDA graph holds RAW POINTERS to every
+    operand, so the workspace must outlive the LAST REPLAY. Sized by
+    `ensure_gpu` on an eager step; never grows inside a capture region."""
+    var _sk_p: Int
+    """Cached split-K partition count for the dW GEMM. -1 = undecided, 1 = do
+    not split (also what `MOJO_RL_SPLITK=0` forces).
+
+    Decided once: P sets `grid_dim`, which is baked into a captured graph."""
     var wT_t: Tensor  # [COL, OC]  (O2: fp32 Wᵀ for the d_colᵀ GEMM)
     # K-alignment scratch (lazy; fp32 GPU only, and only when `NEEDS_COL_PAD`).
     # `w_pad` is the zero-tailed [OC, CPAD] weight, re-padded only when the
@@ -681,6 +741,8 @@ struct Conv2D[
         self.outp_t = Tensor()
         self.goT_t = Tensor()
         self.dW_tmp = Tensor()
+        self.sk_ws = Tensor()
+        self._sk_p = -1
         self.wT_t = Tensor()
         self.w_pad = Tensor()
         self._w_pad_version = -1  # < any real version → first forward pads
@@ -1017,6 +1079,45 @@ struct Conv2D[
                     block_dim=CONV_TPB,
                 )
 
+    def _decide_sk_p(mut self, BS: Int, ctx: DeviceContext) raises:
+        """Decide the conv dW GEMM's partition count, once, and cache it.
+
+        Called on the first backward — an eager step, before any capture — and
+        never again: P sets `grid_dim`, which is baked into a captured graph.
+
+        `MOJO_RL_SPLITK=0` pins it to 1, same escape hatch as `Linear`.
+        """
+        if getenv("MOJO_RL_SPLITK", "1") == "0":
+            self._sk_p = 1
+            return
+
+        # Only intervene where MAX would itself have split K.
+        var picked = select_config[DT, DT, DT, False](
+            Self.OC_, Self.CPAD, BS, ctx
+        )
+        if picked.num_k_partitions <= 1:
+            self._sk_p = 1
+            return
+
+        comptime sm_count = ctx.default_device_info.sm_count
+        var bt = picked.block_tile_shape
+        var want = choose_partitions(
+            Self.OC_, Self.CPAD, BS, bt[0], bt[1], bt[2], sm_count
+        )
+        if want <= 1:
+            want = picked.num_k_partitions
+        # ⚠ Both legality rules, not just the loud one: an overrunning P
+        # crashes, an UNDERCOVERING one silently drops the tail of the
+        # contraction. K here is `batch * OH * OW`, i.e. hundreds of thousands,
+        # so the legal set is much sparser in relative terms than the
+        # transformer dW's — check, never assume.
+        if not partitions_legal(BS, want, bt[2]):
+            self._sk_p = 1
+            return
+
+        self.sk_ws.ensure_gpu(ctx, want * Self.OC_ * Self.CPAD)
+        self._sk_p = want
+
     def vjp[
         target: StaticString,
         B: Int,
@@ -1275,7 +1376,25 @@ struct Conv2D[
             var dW_tmp_tt = TileTensor(
                 self.dW_tmp.dev.value(), row_major[Self.OC_, Self.CPAD]()
             )
-            max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            # ── dW: split-K on OUR workspace, or plain matmul ──────────
+            # `[OC, BS] @ [BS, CPAD]`: K is `batch * OH * OW`, so this is the
+            # longest-K GEMM in the model and the one `select_config`
+            # under-partitions worst (a ResNet18 stem is TWO tiles, so MAX's
+            # P=8 puts 16 blocks on a 170-SM card). Inert unless MAX's own
+            # dispatch would have reached a partitioned `multistage_gemm`.
+            comptime if splitk_path_applies[c.default_device_info]():
+                if self._sk_p < 0:
+                    self._decide_sk_p(BS, c)
+                if self._sk_p > 1:
+                    _conv_dw_splitk(
+                        dW_tmp_tt, goT_tt, col_tt,
+                        Self.OC_, Self.CPAD, BS,
+                        self._sk_p, self.sk_ws, c,
+                    )
+                else:
+                    max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            else:
+                max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
             # ⚠ STRIDED accumulate: dW comes back `[OC, CPAD]` and the master
             # grad is `[OC, COL]`. A flat add folds each row's padding into the
             # next row's leading weights — see `_accum_w_2d_kernel`.
@@ -1432,6 +1551,11 @@ struct Conv2D[
             var dW_tmp_tt = TileTensor(
                 self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
             )
+            # ⚠ NOT routed through split-K, deliberately. This is the
+            # bf16-flow dW (bf16 operands, fp32 output). It would work the same
+            # way, but no gate builds bf16 Conv2Ds and a mistake here would be
+            # silent. Route it when there is a bf16 arm in the gate, not before
+            # — same call as `Linear`'s bf16 dW site.
             max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
             comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
