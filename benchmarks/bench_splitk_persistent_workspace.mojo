@@ -196,6 +196,15 @@ def main() raises:
 
             comptime kernels = MatmulKernels[DT, DT, DT, False]()
             comptime cfg = kernels.ampere_128x128_4
+            # `cfg` supplies the grid and the shared-memory request, so it has
+            # to be the tile `select_config` actually chose. `__eq__` compares
+            # block_tile_shape + num_pipeline_stages only, which is exactly the
+            # part that must agree (the partition count is a runtime arg).
+            if not (picked == cfg):
+                raise Error(
+                    "select_config picked a different tile than `cfg`; launch"
+                    " geometry would not match the kernel"
+                )
             var ws = SplitKWorkspace[cfg.split_k_reduction_type](
                 ctx, 8 * M * N
             )
@@ -236,20 +245,27 @@ def main() raises:
             )
 
             # ---- correctness: B must equal A ------------------------------
+            # Keep A's result on the host: arm C overwrites c_ours, and we
+            # want to check the REPLAYED value against the same reference.
+            var ref_host = List[Float64](capacity=M * N)
             var worst = Float64(0.0)
             with c_ref.map_to_host() as hr:
                 with c_ours.map_to_host() as ho:
                     for i in range(M * N):
+                        ref_host.append(Float64(hr[i]))
                         var d = abs(Float64(hr[i]) - Float64(ho[i]))
                         if d > worst:
                             worst = d
-            print("max |A - B| =", worst, " (expect ~1e-4 at fp32/K=2592)")
+            print("max |A - B| =", worst)
 
             # ---- arm C: the same GEMM inside a capture --------------------
-            # Measurement 5 aborted the PROCESS here (MAX's error path calls
-            # cuStreamSynchronize on a captured stream). If arm B is really
-            # allocation-free this now survives and reports a node count.
+            # Measurement 5 aborted the PROCESS here, because MAX's split-K
+            # allocated its workspace inside the capture region. With the
+            # workspace owned by the caller there is nothing left to allocate.
             print("--- capture attempt (arm C) ---")
+            c_ours.enqueue_fill(Float32(0.0))
+            ctx.synchronize()
+
             var g = CUDAGraph(ctx)
             if g.is_disabled():
                 print("CUDAGraph disabled — no usable stream; skipping arm C.")
@@ -260,6 +276,43 @@ def main() raises:
                 )
                 g.end_capture()
                 print("captured", g.num_nodes(), "nodes")
+
                 g.replay_on_mojo_stream()
                 ctx.synchronize()
-                print("replay ok")
+
+                var worst_replay = Float64(0.0)
+                with c_ours.map_to_host() as ho:
+                    for i in range(M * N):
+                        var d = abs(ref_host[i] - Float64(ho[i]))
+                        if d > worst_replay:
+                            worst_replay = d
+                print("replay ok — max |A - replayed| =", worst_replay)
+                _ = g^
+
+            # ⚠⚠ KEEP-ALIVE. LOAD-BEARING, NOT TIDINESS.
+            #
+            # Mojo destroys a value at its LAST USE, not at end of scope. The
+            # first version of this file ended at the `splitk_gemm` call inside
+            # the capture block, which was the last textual mention of `ws`,
+            # `ab`, `bb` and `c_ours`. All four DeviceBuffers were therefore
+            # freed BETWEEN `end_capture()` and `replay_on_mojo_stream()`, and
+            # the replay wrote into freed device memory:
+            #
+            #     captured 2 nodes
+            #     CUDA call failed: CUDA_ERROR_ILLEGAL_ADDRESS
+            #
+            # Capture had already succeeded; only the replay faulted, which is
+            # exactly the signature of operands dying after capture. This is
+            # the same rule that forces `mojo_rl/cuda/graph.mojo` to store its
+            # own `DeviceContext` in a field.
+            #
+            # A CUDA graph holds RAW POINTERS to every operand it was captured
+            # with. Anything a captured region touches must outlive the LAST
+            # REPLAY, so a real caller should own the workspace and the operand
+            # buffers in the same struct as the graph, not in a scope that ends
+            # earlier.
+            _ = ab^
+            _ = bb^
+            _ = c_ref^
+            _ = c_ours^
+            _ = ws^
