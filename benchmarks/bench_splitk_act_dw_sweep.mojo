@@ -604,6 +604,28 @@ def sweep_pad[
     padded arm at least as accurate", which the reference can answer and a
     pairwise diff cannot.
 
+    ⚠ AND THE ANSWER IS NO, FOR A REASON THAT IS NOT A DEFECT: **the two arms
+    run at different PRECISION.** The vendor path takes `use_tf32 = False` by
+    default and sets `CUBLAS_DEFAULT_MATH` (blas.mojo:391, 756-763) — full
+    fp32. The multistage path CANNOT turn TF32 off for fp32 inputs outside
+    SM100; `_matmul_gpu` asserts "use_tf32=False is only implemented for the
+    SM100 matmul dispatch" (matmul/gpu/__init__.mojo:494). TF32 carries a
+    10-bit mantissa, i.e. ~1e-3 relative — exactly the size of the gap
+    measured (A 2.3e-3 vs C 4.7e-3 on the stem; 1.1e-3 vs 5.8e-3 on layer1).
+
+    So padding does not merely reschedule these GEMMs, it moves them from fp32
+    to TF32. Worth knowing before adopting it — though note this makes them
+    CONSISTENT with the rest of the model rather than less accurate than it:
+    every GEMM already on the multistage path is TF32, and the stem and
+    64-input convs are only fp32 because they accidentally FAIL a shape gate.
+
+    ⚠ Normalise by `sum |a_k * b_k|`, not by `|result|`. The fill is
+    sign-changing, so the dot product cancels heavily and `|result|` can be
+    orders of magnitude below the terms that built it; dividing by it inflates
+    both arms' error and makes the numbers unquotable. The RATIO between the
+    arms survives either way (same data, same denominator) but the absolute
+    figures only mean something against the conditioned denominator.
+
     ⚠ It also fills with VARIED data. A constant fill makes every product
     identical, which removes the cancellation that exposes ordering defects and
     makes any summation look well conditioned.
@@ -702,9 +724,16 @@ def sweep_pad[
             for jj in range(NCHK):
                 var j = (jj * N_REAL) // NCHK
                 var acc = Float64(0)
+                var cond = Float64(0)
                 for k in range(K):
-                    acc += Float64(ah[k]) * Float64(bh[k * N_PAD + j])
-                var mag = abs(acc) + 1e-30
+                    var t = Float64(ah[k]) * Float64(bh[k * N_PAD + j])
+                    acc += t
+                    cond += abs(t)
+                # Condition-aware denominator: `sum |a_k b_k|`, not |acc|.
+                # With sign-changing data |acc| can sit far below the terms
+                # that produced it, and dividing by it reports the dot
+                # product's CONDITION NUMBER rather than the kernel's error.
+                var mag = cond + 1e-30
                 var da = abs(Float64(hn[j]) - acc) / mag
                 var dc = abs(Float64(hp[j]) - acc) / mag
                 if da > ref_a:
@@ -731,10 +760,12 @@ def sweep_pad[
     else:
         print("      C  skipped (chooser P=", want, ", tile match=",
               picked == cfg, ")", sep="")
-    print("      rel err vs float64 reference:  A(vendor) ", ref_a,
-          "   C(split-K, padded) ", ref_c,
-          "   -> padded arm is ",
-          "MORE accurate" if ref_c <= ref_a else "LESS accurate", sep="")
+    print("      err vs float64 (normalised by sum|a.b|):  A(vendor, fp32) ",
+          ref_a, "   C(split-K padded, TF32) ", ref_c, sep="")
+    print("         ratio C/A = ", ref_c / (ref_a + 1e-30),
+          "x — expected > 1: the vendor path runs FULL fp32"
+          " (CUBLAS_DEFAULT_MATH) and multistage CANNOT disable TF32 for fp32"
+          " outside SM100. This is a precision CHANGE, not a defect.", sep="")
 
     _ = a^
     _ = bn^
