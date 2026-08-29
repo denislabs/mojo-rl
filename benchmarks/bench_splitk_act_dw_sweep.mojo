@@ -65,6 +65,11 @@ comptime DT = DType.float32
 comptime WARMUP = 5
 comptime REPS = 30
 
+comptime PS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 23, 24, 33, 40, 41]
+"""Candidate partition counts. Deliberately includes illegal ones (16 and 20
+overrun at K=2592; 23 and 40 undercover) so the sweep prints WHICH rule each
+violates instead of quietly omitting it."""
+
 
 struct SplitKWorkspace[dtype: DType](Movable):
     """A device buffer reused across split-K GEMMs. See
@@ -340,6 +345,18 @@ def choose_partitions(
     the tail of the contraction. A loop that stopped at the first failure would
     return 15 and miss the best point by a wide margin.
 
+    ⚠ MEASURED ACCURACY: right for the 16-tile shapes (picks P=10, which is
+    the measured optimum at 19.1 us) and ~7% off for the 4-tile one (picks
+    P=41 / 11.87 us where P=33 / 11.06 us wins). It only models the GEMM side.
+    The reduce reads `P * M * N`, so its cost grows LINEARLY in P: on the
+    4-tile shape that is ~5.8 us of an 11.06 us total at P=33, and past there
+    another partition costs more reduce traffic than it saves GEMM time.
+
+    Modelling that second term from three shapes would be curve-fitting. Use
+    `autotune_partitions` where a measurement is possible -- the shapes are
+    comptime-fixed, so one sweep at init settles it -- and keep this as the
+    no-measurement fallback. It is never WRONG, only up to ~7% slow.
+
     Returns 1 when nothing better is available, which callers should read as
     "do not use split-K for this shape".
     """
@@ -356,6 +373,64 @@ def choose_partitions(
         if P > best:
             best = P
     return best
+
+
+def autotune_partitions[
+    M: Int, K: Int, N: Int
+](ctx: DeviceContext, mut ws: SplitKWorkspace[DT], reps: Int = 20) raises -> Int:
+    """Measure every legal P once and return the fastest.
+
+    This is what an integration should call at model init. The dW shapes are
+    comptime constants, the candidate set is small, and one sweep costs a few
+    milliseconds against a training run of hours -- so there is no reason to
+    infer the partition count from a formula when it can be observed.
+
+    Only legal P are tried: `(P-1)*part < K` (no overrun) and `P*part >= K`
+    (covers K), both evaluated at comptime, so an illegal candidate is never
+    instantiated. See `splitk_gemm` for why both rules exist.
+    """
+    comptime kernels = MatmulKernels[DT, DT, DT, False]()
+    comptime cfg = kernels.ampere_128x128_4
+    comptime BK = cfg.block_tile_shape[2]
+
+    var ab = ctx.enqueue_create_buffer[DT](M * K)
+    var bb = ctx.enqueue_create_buffer[DT](K * N)
+    var cb = ctx.enqueue_create_buffer[DT](M * N)
+    ab.enqueue_fill(Float32(0.01))
+    bb.enqueue_fill(Float32(0.02))
+    ctx.synchronize()
+    var av = TileTensor(ab, row_major[M, K]())
+    var bv = TileTensor(bb, row_major[K, N]())
+    var cv = TileTensor(cb, row_major[M, N]())
+
+    var best_p = 1
+    var best_us = Float64(1e30)
+
+    comptime for i in range(len(PS)):
+        comptime P = PS[i]
+        comptime PART = ((K // P) + BK - 1) // BK * BK
+        comptime if (P - 1) * PART < K and P * PART >= K:
+            if P * M * N <= ws.capacity:
+                for _ in range(3):
+                    splitk_gemm[transpose_b=False, config=cfg](
+                        cv, av, bv, P, ws, ctx
+                    )
+                ctx.synchronize()
+                var ta = perf_counter_ns()
+                for _ in range(reps):
+                    splitk_gemm[transpose_b=False, config=cfg](
+                        cv, av, bv, P, ws, ctx
+                    )
+                ctx.synchronize()
+                var us = Float64(perf_counter_ns() - ta) / 1000.0 / Float64(reps)
+                if us < best_us:
+                    best_us = us
+                    best_p = P
+
+    _ = ab^
+    _ = bb^
+    _ = cb^
+    return best_p
 
 
 def sweep_partitions[
@@ -413,17 +488,18 @@ def sweep_partitions[
         cfg.block_tile_shape[2],
         sm_count,
     )
+    var tuned = autotune_partitions[M, K, N](ctx, ws)
     print(
         "  ", LABEL, " [", M, "x", K, "] @ [", K, "x", N, "]  ",
         tiles, " tiles, ", sm_count, " SMs",
         "  select_config P=", picked.num_k_partitions,
-        "  chooser P=", want, " (", tiles * want, " blocks)", sep="",
+        "  chooser P=", want, " (", tiles * want, " blocks)",
+        "  autotuned P=", tuned, " (", tiles * tuned, " blocks)", sep="",
     )
 
     # Candidate partition counts. The overrun rule (see splitk_gemm) is
     # `(P-1) * align_up(K//P, BK) < K`; it is fully comptime here, so P values
     # that would fault are never instantiated rather than raised on.
-    comptime PS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 23, 24, 33, 40, 41]
     comptime BK = cfg.block_tile_shape[2]
     comptime for i in range(len(PS)):
         comptime P = PS[i]
