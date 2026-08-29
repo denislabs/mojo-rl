@@ -69,23 +69,28 @@ there, and C differs only in having also allocated and freed the workspace
 three times first. C stays because "the allocation is a first-call artifact"
 and "the allocation is fine under capture" are different answers.
 
-⚠ UNEXPLAINED, and only on the no-op path: on Apple, where
-`maybe_capture_replay` reduces to a bare `STEP()`, arms A and B compute
-nothing at all while C (which makes direct calls first) computes correctly.
-Since NVIDIA takes the other branch and warms up on its own, this does not
-affect the verdict — but it means an Apple run of this file cannot be used to
-sanity-check the harness, and the "HARNESS is wrong" line it prints there is
-that anomaly, not a defect in the arms.
+⚠ The first version of this file was BROKEN, in the way this repo already has
+written down as `_mojo_destroys_at_last_use`. It allocated the output as a
+`Tensor` and built the GEMM view from `c.dev.value()` — a temporary Optional
+unwrap — so Mojo was free to drop the buffer at its last direct use, which was
+the `TileTensor` construction. On the 5090 every arm died with
+CUDA_ERROR_MISALIGNED_ADDRESS reported at `begin_capture()`; the error is
+deferred, so the actual fault was the warm-up `STEP()` just before it. On
+Apple the same bug read as arms A and B silently computing 0.0.
+
+The fix is the rule that note states: own what you use. All three buffers are
+plain owning locals now, as in `bench_matmul_alloc_probe.mojo`, with `_ = `
+keep-alives past the closure. A harness whose CONTROL arm fails is not
+evidence about split-K — it is evidence about the harness.
 """
 
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
-from mojo_rl.nn.core.tensor import Tensor
 
 comptime DT = DType.float32
 
@@ -113,29 +118,46 @@ comptime AVAL = 0.01
 comptime BVAL = 0.02
 
 
-def _checksum(mut t: Tensor, ctx: DeviceContext, n: Int) raises -> Float64:
+def _checksum(
+    cbuf: DeviceBuffer[DT], ctx: DeviceContext, total: Int, n: Int
+) raises -> Float64:
     """Sum of the first `n` outputs — the guard against a capture that
-    SUCCEEDS and then replays against a workspace that no longer exists."""
-    t.download(ctx)
+    SUCCEEDS and then replays against a workspace that no longer exists.
+
+    Takes the DeviceBuffer directly rather than a `Tensor`, so the buffer the
+    GEMM wrote is provably the buffer being read; see `_attempt`."""
+    var host = ctx.enqueue_create_host_buffer[DT](total)
+    ctx.enqueue_copy(host, cbuf)
+    ctx.synchronize()
     var s = Float64(0.0)
     for i in range(n):
-        s += Float64(t.data[i])
+        s += Float64(host[i])
     return s
 
 
 def _attempt[
     M_: Int, K_: Int, N_: Int
 ](ctx: DeviceContext, label: String, warm: Bool) raises -> Bool:
+    # ⚠ All three are PLAIN owning locals, matching the pattern in
+    # `bench_matmul_alloc_probe.mojo` that is known to run. The first draft
+    # allocated `c` as a `Tensor` and built the view from `c.dev.value()` — a
+    # temporary Optional unwrap — and every arm faulted with
+    # CUDA_ERROR_MISALIGNED_ADDRESS surfacing at `begin_capture()` (the error
+    # is deferred: the fault is in the warm-up `STEP()` before it). That is
+    # `_mojo_destroys_at_last_use`: Mojo may drop the buffer at its last
+    # direct use, which is the `TileTensor` construction, leaving the view
+    # dangling. The `_ = ` keep-alives below pin all three past the closure.
     var a = ctx.enqueue_create_buffer[DT](M_ * K_)
     var b = ctx.enqueue_create_buffer[DT](K_ * N_)
+    var c = ctx.enqueue_create_buffer[DT](M_ * N_)
     a.enqueue_fill(Scalar[DT](AVAL))
     b.enqueue_fill(Scalar[DT](BVAL))
-    var c = Tensor.alloc_gpu(ctx, M_ * N_)
+    c.enqueue_fill(Scalar[DT](0))
     ctx.synchronize()
 
     var av = TileTensor(a, row_major[M_, K_]())
     var bv = TileTensor(b, row_major[K_, N_]())
-    var cv = TileTensor(c.dev.value(), row_major[M_, N_]())
+    var cv = TileTensor(c, row_major[M_, N_]())
 
     if warm:
         # Settle the stream and let any first-call allocation happen OUTSIDE
@@ -147,7 +169,7 @@ def _attempt[
         # stand in for a capture path that computed nothing. This is exactly
         # how the first draft's arm C produced a right-looking number from a
         # closure that never ran.
-        c.dev.value().enqueue_fill(Scalar[DT](0))
+        c.enqueue_fill(Scalar[DT](0))
         ctx.synchronize()
 
     var graph: Optional[CUDAGraph] = None
@@ -163,7 +185,11 @@ def _attempt[
     except e:
         print("    CAPTURE FAILED: " + String(e))
         return False
-    var s = _checksum(c, ctx, 8)
+    var s = _checksum(c, ctx, M_ * N_, 8)
+    # Keep every buffer alive past the closure and the checksum.
+    _ = a
+    _ = b
+    _ = c
     var want = Float64(K_) * AVAL * BVAL * 8.0
     var ok = abs(s - want) <= 1e-3 * want
     print("    captured + replayed x" + String(REPLAYS)
