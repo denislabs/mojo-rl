@@ -114,19 +114,43 @@ def splitk_gemm[
     # K=2592, BK=16: P<=12 is fine (11*224 = 2464 < 2592) and P=16 faults
     # (15*176 = 2640 > 2592, last size -48) with CUDA_ERROR_ILLEGAL_ADDRESS.
     #
-    # ⚠ MAX'S OWN GUARD DOES NOT COVER THIS. `select_config` breaks on
-    # `K < P * bk` (2592 < 256 is false at P=16, so it passes) and is saved
-    # only by the SEPARATE `min_k_partition = 1024` test, which caps P at 2
-    # here for unrelated reasons. Any caller that chooses P itself -- us, or
-    # MAX's own `TUNE_NUM_K_PARTITIONS` autotune define -- can reach it.
+    # There are TWO ways to get this wrong, and only one of them is loud:
+    #
+    #   OVERRUN       (P-1) * part >= K   the last block starts past the end of
+    #                                     A and B with a NEGATIVE size
+    #                                     -> CUDA_ERROR_ILLEGAL_ADDRESS
+    #   UNDERCOVERAGE  P * part < K       `part` is floor-then-align, so the P
+    #                                     partitions can fail to span K. The
+    #                                     tail is never accumulated and the
+    #                                     GEMM SILENTLY RETURNS A WRONG ANSWER
+    #
+    # Both measured on the 5090 at K=2592, BK=16. P=16 overruns
+    # (15*176 = 2640 > 2592). P=40 undercovers: part = align_up(64,16) = 64 and
+    # 40*64 = 2560, so 32 of 2592 contraction elements are dropped -- and the
+    # observed relative error was 0.012344, against 32/2592 = 0.012346. The
+    # error IS the fraction of K dropped, to five digits.
+    #
+    # ⚠ MAX'S OWN GUARD COVERS NEITHER. `select_config` breaks on `K < P * bk`
+    # (2592 < 256 is false at P=16, so it passes) and is saved only by the
+    # SEPARATE `min_k_partition = 1024` test capping P at 2 here for unrelated
+    # reasons. Any caller that chooses P itself -- us, or MAX's own
+    # `TUNE_NUM_K_PARTITIONS` autotune define -- can reach both.
     var K_dim = Int(tensor_a.dim[1]())
     comptime BK = config.block_tile_shape[2]
     var part = align_up(K_dim // num_partitions, BK) if num_partitions > 0 else 0
-    if num_partitions < 1 or (num_partitions - 1) * part >= K_dim:
+    if num_partitions < 1:
+        raise Error("num_k_partitions must be >= 1")
+    if (num_partitions - 1) * part >= K_dim:
         raise Error(
-            "num_k_partitions overruns K: the first P-1 partitions of"
+            "num_k_partitions OVERRUNS K: the first P-1 partitions of"
             " align_up(K//P, BK) already cover K, so the last block would read"
-            " past the operands"
+            " past the operands (this one crashes loudly)"
+        )
+    if num_partitions * part < K_dim:
+        raise Error(
+            "num_k_partitions UNDERCOVERS K: P*align_up(K//P, BK) < K, so the"
+            " tail of the contraction is never accumulated and the GEMM"
+            " silently returns a wrong answer"
         )
 
 
