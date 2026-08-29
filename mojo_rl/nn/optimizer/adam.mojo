@@ -567,6 +567,40 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self._clip_norm.download(ctx)
         return self._clip_norm.data[0]
 
+    def has_clip_norm_dev(self) -> Bool:
+        """Is there a device-resident pre-clip norm? (GPU + `adopt` only.)
+
+        The guard for `clip_norm_dev`: off the grouped-arena path
+        `clip_grads_device` falls back to `clip_grads`, which computes the norm
+        on the host and never writes the device buffer."""
+        if self._clip_norm.dev:
+            return True
+        return False
+
+    def clip_norm_dev(mut self) raises -> LayoutTensor[
+        DT, Layout.row_major(1), MutAnyOrigin
+    ]:
+        """Device view of the last pre-clip grad norm — for a caller that logs
+        the norm EVERY step and therefore must not download it.
+
+        `read_clip_norm` is the flush-cadence host read; this is its
+        capture-safe counterpart. A per-step `read_clip_norm` is a full device
+        synchronization plus a D2H for one float that the logger averages over
+        a window anyway — fold this into a device accumulator instead and drain
+        the accumulator at flush.
+
+        ⚠ Guard with `has_clip_norm_dev`. Raising rather than returning an
+        empty view is deliberate: a silently-zero grad norm reads as "clipping
+        never fired", which is a plausible-looking number, not an obvious
+        failure."""
+        if not self._clip_norm.dev:
+            raise Error(
+                "Adam.clip_norm_dev: no device clip-norm buffer. It is"
+                " allocated by `adopt` on the GPU grouped-arena path; off that"
+                " path `clip_grads_device` computes the norm on the host."
+            )
+        return self._clip_norm.lt["gpu", Layout.row_major(1)]()
+
     def visit[
         target: StaticString, N: Int
     ](

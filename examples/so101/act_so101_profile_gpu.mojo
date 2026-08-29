@@ -62,7 +62,9 @@ trainer. It is a HOST wall-clock difference over device-synchronous calls, so
 treat it as an attribution hint and let nsys settle the per-kernel truth.
 
 `GPU_DATA` (default ON) — draw and normalize the batch on the DEVICE
-    (`ACTDeviceDataset` + `train_step_device`) instead of on the host. This is
+    (`ACTDeviceDataset` + `train_step_device_accum`) instead of on the host,
+    and fold the logged scalars into device accumulators rather than
+    downloading them every step. This is
     the A/B for tier 1 of `docs/ACT_GPU_DATA_PATH.md`; flip it to False for the
     old path and compare the ITERATION TOTAL, because the split moves: under
     GPU_DATA the draw happens inside `train_step`, so `sample_batch` reads ~0
@@ -124,16 +126,21 @@ comptime STUB_BACKBONE = False
 comptime CLIP_NORM = 0.0
 
 # GPU_DATA — draw and normalize the batch ON THE DEVICE (`ACTDeviceDataset` +
-# `train_step_device`) instead of on the host. Flip to False for the old path;
-# both are kept because this is the A/B, not a replacement.
+# `train_step_device_accum`) instead of on the host. Flip to False for the old
+# path; both are kept because this is the A/B, not a replacement.
 #
 # On: the whole store is uploaded once as uint8 (7.12 GB for 50 episodes) and
 # `sample_batch` / `_seed_inputs` are replaced by three kernels. That removes
 # 16.1 ms of host time with the GPU idle, two 29.5 MB element-by-element fills
 # into pinned memory, the 29.5 MB H2D, and four device synchronizations.
 #
+# It also uses the ACCUMULATING step, so the timed loop contains no D2H at all:
+# loss/l1/kl/grad-norm are reduced on device and drained once at the end. That
+# is what removes the last two device drains per step — and it is the shape a
+# CUDA graph would capture, so this is the step worth profiling.
+#
 # ⚠ It does NOT draw the same batches — Philox on the device against a xorshift
-# on the host — so `train_step_device` and `train_step` are comparable in COST
+# on the host — so the two settings are comparable in COST
 # and not in loss trajectory. `SKIP_RESAMPLE` is ignored when this is on: the
 # device sampler is the thing being measured.
 #
@@ -323,9 +330,13 @@ def main() raises:
 
     for _ in range(WARMUP_STEPS):
         comptime if GPU_DATA:
-            _ = tr.train_step_device(dev_ds)
+            tr.train_step_device_accum(dev_ds)
         else:
             _ = tr.train_step(qpos, images, actions, valid)
+    # Discard the warmup window so the reported means cover the timed steps.
+    comptime if GPU_DATA:
+        _ = tr.train_metrics()
+        _ = tr.val_metrics()
 
     var data_ns = 0
     var train_ns = 0
@@ -341,7 +352,7 @@ def main() raises:
         # The number to compare across the two runs is the iteration total,
         # not the split.
         comptime if GPU_DATA:
-            _ = tr.train_step_device(dev_ds)
+            tr.train_step_device_accum(dev_ds)
         else:
             _ = tr.train_step(qpos, images, actions, valid)
         var t2 = perf_counter_ns()
@@ -354,7 +365,7 @@ def main() raises:
         # data path the device run does not otherwise have. The batch
         # `train_step_device` just drew is still in the graph's input slots.
         comptime if GPU_DATA:
-            _ = tr.eval_step_resident()
+            tr.eval_step_resident_accum()
         else:
             _ = tr.eval_step(qpos, images, actions, valid)
         var t3 = perf_counter_ns()
@@ -413,4 +424,24 @@ def main() raises:
     )
     print("                     hint, not a kernel measurement)")
     print("")
+    comptime if GPU_DATA:
+        # ONE drain for the whole run. Printed so a profile that got faster by
+        # not computing anything is visible — a step whose metrics are folded
+        # on device and never read is indistinguishable, from the wall clock,
+        # from a step that skipped the loss.
+        var tw = tr.train_metrics()
+        var vw = tr.val_metrics()
+        print(
+            "  device-accumulated over " + String(tw.n) + " train / "
+            + String(vw.n) + " forward steps (ONE D2H, at the end):"
+        )
+        print(
+            "    train  loss " + String(tw.loss) + "  l1 " + String(tw.l1)
+            + "  kl " + String(tw.kl) + "  |grad| " + String(tw.grad_norm)
+        )
+        print(
+            "    fwd    loss " + String(vw.loss) + "  l1 " + String(vw.l1)
+            + "  kl " + String(vw.kl)
+        )
+        print("")
     print("=== Done ===")

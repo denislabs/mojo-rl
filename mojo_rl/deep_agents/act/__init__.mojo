@@ -39,4 +39,9 @@ from .layers import (
     DETREncoderLayerMasked,
 )
 from .loss_graph import ACTLossGraph
-from .trainer import ACTStepResult, ACTTrainer
+from .trainer import (
+    ACTMetricAccum,
+    ACTStepResult,
+    ACTTrainer,
+    ACTWindowMetrics,
+)

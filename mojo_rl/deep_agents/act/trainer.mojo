@@ -37,6 +37,25 @@ longer reads. Loading before the first step is therefore always safe; the
 checkpoint and refload paths additionally use `upload_resident`, which reuses
 the existing buffer, so a load AFTER adoption is safe too.
 
+## Logging: per-step readback vs device accumulators
+
+There are two families of step method and they must not be mixed in one loop:
+
+  * `train_step` / `train_step_device` / `eval_step*` return an
+    `ACTStepResult`, which costs four D2Hs behind two device synchronizations
+    every step;
+  * `train_step_device_accum` / `eval_step_device_accum` /
+    `eval_step_resident_accum` return NOTHING and fold the same four scalars
+    into device accumulators, drained by `train_metrics` / `val_metrics` at
+    logging cadence.
+
+The second family exists because those four downloads were the last host
+traffic in an ACT step — see `docs/ACT_GPU_DATA_PATH.md`. Removing them makes
+the per-step sequence pure kernels, which is what a CUDA graph can capture.
+
+⚠ A loop that called both families and then read `train_metrics` would report a
+window covering only half its steps, and the number would look plausible.
+
 ## Train vs eval
 
 `train_mode(True/False)` sets three things together, because getting one of them
@@ -91,6 +110,7 @@ from mojo_rl.nn.core.checkpoint import (
     _write_file_bytes,
 )
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
+from ..training.device_mean_accum import DeviceMeanAccum
 
 from .config import (
     ACT_CLIP_MAX_NORM,
@@ -198,6 +218,119 @@ struct ACTStepResult(ImplicitlyCopyable):
     var grad_norm: Float64
 
 
+@fieldwise_init
+struct ACTWindowMetrics(ImplicitlyCopyable):
+    """The same four scalars, MEANED OVER A WINDOW of steps.
+
+    Deliberately not an `ACTStepResult`. The two carry the same field names and
+    mean different things, and the way that goes wrong is silent: a window mean
+    logged as a step value simply looks like a smoother curve. `n` is how many
+    steps the window held — 0 means nothing was accumulated and the means are
+    all 0, which is not the same as a loss of 0."""
+
+    var loss: Float64
+    var l1: Float64
+    var kl: Float64
+    var grad_norm: Float64
+    var n: Int
+
+
+struct ACTMetricAccum(Movable & Deinitable):
+    """(loss, l1, kl, grad_norm) over a logging window.
+
+    GPU: four `DeviceMeanAccum`s, each a `[2]` device buffer holding
+    `[sum_of_batch_means, count]`, folded by a one-block reduction kernel with
+    NO D2H — so a step that accumulates into these is capture-safe and the host
+    never waits on it. CPU: plain host scalars, because the numbers are already
+    on the host there and a device accumulator would buy nothing.
+
+    Drained by `ACTTrainer.train_metrics` / `val_metrics` at logging cadence:
+    ONE D2H per accumulator per flush instead of four per step.
+    """
+
+    var loss: DeviceMeanAccum
+    var l1: DeviceMeanAccum
+    var kl: DeviceMeanAccum
+    var gn: DeviceMeanAccum
+    # CPU mirror. Sums of per-batch means; divided by `n` on read.
+    var _h_loss: Float64
+    var _h_l1: Float64
+    var _h_kl: Float64
+    var _h_gn: Float64
+    var n: Int
+    """Steps folded into this window, counted on the HOST.
+
+    Free — the host calls the step once per step either way — and it answers
+    "was this window empty" without a D2H, which the device count cannot."""
+
+    def __init__(out self):
+        self.loss = DeviceMeanAccum()
+        self.l1 = DeviceMeanAccum()
+        self.kl = DeviceMeanAccum()
+        self.gn = DeviceMeanAccum()
+        self._h_loss = 0.0
+        self._h_l1 = 0.0
+        self._h_kl = 0.0
+        self._h_gn = 0.0
+        self.n = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.loss = move.loss^
+        self.l1 = move.l1^
+        self.kl = move.kl^
+        self.gn = move.gn^
+        self._h_loss = move._h_loss
+        self._h_l1 = move._h_l1
+        self._h_kl = move._h_kl
+        self._h_gn = move._h_gn
+        self.n = move.n
+
+    @staticmethod
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var a = Self()
+        comptime if target != "cpu":
+            a.loss = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            a.l1 = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            a.kl = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            a.gn = DeviceMeanAccum.make["gpu"](ctx=ctx)
+        return a^
+
+    def read[target: StaticString](mut self) raises -> ACTWindowMetrics:
+        """Window means. GPU: four `[2]`-buffer D2Hs behind their own syncs —
+        flush cadence only."""
+        if self.n == 0:
+            return ACTWindowMetrics(0.0, 0.0, 0.0, 0.0, 0)
+        comptime if target == "cpu":
+            var d = Float64(self.n)
+            return ACTWindowMetrics(
+                self._h_loss / d, self._h_l1 / d, self._h_kl / d,
+                self._h_gn / d, self.n,
+            )
+        else:
+            return ACTWindowMetrics(
+                Float64(self.loss.read["gpu"]()),
+                Float64(self.l1.read["gpu"]()),
+                Float64(self.kl.read["gpu"]()),
+                Float64(self.gn.read["gpu"]()),
+                self.n,
+            )
+
+    def reset[target: StaticString](mut self) raises:
+        comptime if target == "cpu":
+            self._h_loss = 0.0
+            self._h_l1 = 0.0
+            self._h_kl = 0.0
+            self._h_gn = 0.0
+        else:
+            self.loss.reset["gpu"]()
+            self.l1.reset["gpu"]()
+            self.kl.reset["gpu"]()
+            self.gn.reset["gpu"]()
+        self.n = 0
+
+
 struct ACTTrainer[
     QPOS: Int,
     ADIM: Int,
@@ -264,6 +397,18 @@ struct ACTTrainer[
     Lazy on purpose — see "The arena, and when it is engaged" in the header:
     adoption rebinds every parameter's device buffer, so it must happen after
     anything that loads or injects weights by recreating one."""
+    var _train_acc: ACTMetricAccum
+    """Device-resident logging window for the training steps.
+
+    Fed by `train_step_device_accum`, drained by `train_metrics`. Exists so the
+    per-step path contains no D2H: `_read_terms` downloads three `[BATCH]`
+    vectors behind a synchronization and `read_clip_norm` a fourth scalar
+    behind another, EVERY step, for four numbers the logger averages over
+    `LOG_EVERY` of them."""
+    var _val_acc: ACTMetricAccum
+    """The same, for validation passes — a separate window because folding
+    validation batches into the training means would quietly bias the training
+    curve toward the eval-mode model."""
     var deterministic_latent: Bool
     """Pin the CVAE draw to its mean in TRAINING mode too.
 
@@ -286,6 +431,8 @@ struct ACTTrainer[
         self.t_valid = Tensor()
         self.ctx = None
         self._adopted = False
+        self._train_acc = ACTMetricAccum()
+        self._val_acc = ACTMetricAccum()
         self.deterministic_latent = False
 
     def __init__(out self, *, deinit move: Self):
@@ -300,6 +447,8 @@ struct ACTTrainer[
         self.t_valid = move.t_valid^
         self.ctx = move.ctx^
         self._adopted = move._adopted
+        self._train_acc = move._train_acc^
+        self._val_acc = move._val_acc^
         self.deterministic_latent = move.deterministic_latent
 
     @staticmethod
@@ -350,6 +499,8 @@ struct ACTTrainer[
             t.t_images.ensure_gpu(c2, Self.BATCH * Self.IMG_ELEMS)
             t.t_actions.ensure_gpu(c2, Self.BATCH * Self.K * Self.ADIM)
             t.t_valid.ensure_gpu(c2, Self.BATCH * Self.ENC_SEQ)
+        t._train_acc = ACTMetricAccum.make[Self.target](ctx)
+        t._val_acc = ACTMetricAccum.make[Self.target](ctx)
         t.train_mode(True)
         return t^
 
@@ -595,6 +746,163 @@ struct ACTTrainer[
             kl += Float64(kln.data[b])
         var n = Float64(Self.BATCH)
         return ACTStepResult(lo / n, l1 / n, kl / n, 0.0)
+
+    # ── device-resident logging (no per-step D2H) ────────────────────────
+    #
+    # `_read_terms` + `read_clip_norm` are what stand between an ACT step and
+    # a CUDA-graph capture, and they are ours: four downloads behind two full
+    # device synchronizations, every step, for four scalars the logger averages
+    # over `LOG_EVERY` steps. The pattern below is SAC's
+    # (`sac/trainer.mojo::train_device_kernels`): reduce each `[BATCH]` vector
+    # on device into a `[2]` `[sum_of_means, count]` accumulator, and drain the
+    # accumulators at flush cadence.
+    #
+    # ⚠ The two families do NOT mix. `train_step`/`train_step_device` return a
+    # per-step `ACTStepResult` and touch no accumulator; `*_accum` folds and
+    # returns nothing. A loop that called both and then read `train_metrics`
+    # would report a window over only half its steps — so pick one per call
+    # site, which is what the examples do under their `GPU_DATA` switch.
+
+    def _accum_terms[VAL: Bool](mut self) raises:
+        """Fold this forward's (loss, l1, kl) batch means into a window.
+
+        GPU: three one-block reductions, no bus traffic, capture-safe. CPU: the
+        same means computed on the host, where they already live."""
+        comptime lb = Layout.row_major(Self.BATCH)
+        ref l1n = self.graph.node_output["l1"]()
+        ref kln = self.graph.node_output["kl"]()
+        comptime if Self.target == "cpu":
+            var lo = Float64(0.0)
+            var a1 = Float64(0.0)
+            var ak = Float64(0.0)
+            for b in range(Self.BATCH):
+                lo += Float64(self.loss_out.data[b])
+                a1 += Float64(l1n.data[b])
+                ak += Float64(kln.data[b])
+            var d = Float64(Self.BATCH)
+            comptime if VAL:
+                self._val_acc._h_loss += lo / d
+                self._val_acc._h_l1 += a1 / d
+                self._val_acc._h_kl += ak / d
+                self._val_acc.n += 1
+            else:
+                self._train_acc._h_loss += lo / d
+                self._train_acc._h_l1 += a1 / d
+                self._train_acc._h_kl += ak / d
+                self._train_acc.n += 1
+        else:
+            var v1 = l1n.lt["gpu", lb]()
+            var vk = kln.lt["gpu", lb]()
+            var vl = self.loss_out.lt["gpu", lb]()
+            comptime if VAL:
+                self._val_acc.loss.accumulate_gpu_lt[Self.BATCH](vl)
+                self._val_acc.l1.accumulate_gpu_lt[Self.BATCH](v1)
+                self._val_acc.kl.accumulate_gpu_lt[Self.BATCH](vk)
+                self._val_acc.n += 1
+            else:
+                self._train_acc.loss.accumulate_gpu_lt[Self.BATCH](vl)
+                self._train_acc.l1.accumulate_gpu_lt[Self.BATCH](v1)
+                self._train_acc.kl.accumulate_gpu_lt[Self.BATCH](vk)
+                self._train_acc.n += 1
+
+    def _accum_grad_norm(mut self) raises:
+        """Fold the pre-clip grad norm `clip_grads_device` just wrote into the
+        TRAINING window, off its device buffer.
+
+        ⚠ Silently a no-op when the optimizer has no device norm to offer,
+        which is exactly the case where `clip_grads_device` fell back to the
+        host path — there the norm was computed on the host and this window is
+        not the thing reporting it. `train_step_device_accum` requires the
+        arena, so on its path the buffer is always there."""
+        comptime if Self.target != "cpu":
+            if self.opt.has_clip_norm_dev():
+                var v = self.opt.clip_norm_dev()
+                self._train_acc.gn.accumulate_gpu_lt[1](v)
+
+    def train_step_device_accum(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+    ) raises:
+        """`train_step_device` with NO host readback.
+
+        Identical arithmetic — same draw, same graph, same clip, same optimizer
+        — but the four logged scalars are reduced into device accumulators
+        instead of downloaded, so the per-step sequence is pure kernels: no
+        D2H, no synchronization, no allocation. That is the shape a CUDA graph
+        can capture, and it is worth having even while capture is blocked
+        (`docs/ACT_GPU_DATA_PATH.md`), because the host stops draining the
+        pipeline twice per step.
+
+        ⚠ Returns nothing, deliberately. A per-step value is not available
+        without the synchronization this exists to remove, and returning a
+        zero or a stale one would read as a training regression rather than as
+        a missing number. Read the window with `train_metrics`."""
+        self._ensure_adopted()
+        self.opt.zero_grad[Self.target](self.graph, self.ctx)
+        self.seed_inputs_device(ds, False)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        self._accum_terms[False]()
+        self.graph.vjp[Self.BATCH, Self.target](self.grad_seed, self.ctx)
+        self.opt.clip_grads_device[Self.target](
+            self.graph, self.max_grad_norm, self.ctx
+        )
+        self._accum_grad_norm()
+        self.opt.step[Self.target](self.graph, self.ctx)
+
+    def eval_step_device_accum(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+        val: Bool = True,
+    ) raises:
+        """`eval_step_device` folding into the VALIDATION window instead of
+        downloading. Read it with `val_metrics` after the pass.
+
+        ⚠ Same pinning requirement as `eval_step_device`: pin `ds`'s RNG offset
+        around the whole pass (`set_offset`), or every validation scores
+        different batches and `best_val` selects the luckiest draw."""
+        self.train_mode(False)
+        self.seed_inputs_device(ds, val)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        self._accum_terms[True]()
+        self.train_mode(True)
+
+    def eval_step_resident_accum(mut self) raises:
+        """`eval_step_resident` folding into the validation window.
+
+        ⚠ Only valid straight after a `*_device*` step — see
+        `eval_step_resident`. Re-scores the batch already in the input slots."""
+        self.train_mode(False)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        self._accum_terms[True]()
+        self.train_mode(True)
+
+    def train_metrics(
+        mut self, reset: Bool = True
+    ) raises -> ACTWindowMetrics:
+        """Drain the training window: means since the last reset, and the step
+        count. FOUR D2Hs — call at logging cadence, never per step.
+
+        `reset=False` peeks without clearing, for a progress line that must not
+        disturb the logger's window."""
+        var w = self._train_acc.read[Self.target]()
+        if reset:
+            self._train_acc.reset[Self.target]()
+        return w
+
+    def val_metrics(mut self, reset: Bool = True) raises -> ACTWindowMetrics:
+        """Drain the validation window — the mean over the pass's batches.
+
+        ⚠ `grad_norm` is always 0 here: a forward-only pass computes no
+        gradients. It is reported rather than omitted so the two windows share
+        a type."""
+        var w = self._val_acc.read[Self.target]()
+        if reset:
+            self._val_acc.reset[Self.target]()
+        return w
 
     def _ensure_adopted(mut self) raises:
         """Pack the graph into the optimizer's grouped arena, once, on GPU.

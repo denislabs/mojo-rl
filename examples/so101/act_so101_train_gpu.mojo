@@ -204,7 +204,10 @@ from mojo_rl.deep_agents.act.config import (
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
 from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
-from mojo_rl.deep_agents.act.trainer import ACTTrainer, ACTStepResult
+from mojo_rl.deep_agents.act.trainer import (
+    ACTTrainer,
+    ACTWindowMetrics,
+)
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -526,6 +529,18 @@ def main() raises:
     var acc_loss = Float64(0.0)
     var acc_gn = Float64(0.0)
     var acc_n = 0
+    var last_l1 = Float64(0.0)
+    """Most recent training l1, for the progress lines only — never logged.
+
+    ⚠ It means different things on the two paths, which is the honest option
+    rather than a hidden one. On the host path it is the LAST STEP's l1, as
+    before. Under GPU_DATA there is no per-step l1 — that is the point — so it
+    is the last WINDOW MEAN, and the progress lines prefer a peek at the live
+    window when one has steps in it. Reads 0 only before anything has been
+    measured."""
+    var last_kl = Float64(0.0)
+    """Companion to `last_l1`, host path only — the device path's progress line
+    takes both from the peeked window."""
 
     var names = List[String]()
     names.append(String("train/l1"))
@@ -556,11 +571,23 @@ def main() raises:
         # ⚠ Under GPU_DATA the draw happens INSIDE the step, so `perf/s_data`
         # reads ~0 and the sampler's cost is inside `perf/s_per_step`. The
         # split is not comparable across the two settings; the total is.
-        var r: ACTStepResult
+        # ⚠ Two shapes, deliberately. Under GPU_DATA the step folds its four
+        # logged scalars into DEVICE accumulators and returns nothing: a
+        # per-step value would cost the two synchronizations and four D2Hs
+        # that path exists to delete. Off it, the host path returns them and
+        # the host accumulators below take over. `acc_n` is what says which
+        # one is live — it stays 0 under GPU_DATA.
         comptime if GPU_DATA:
-            r = tr.train_step_device(dev_ds)
+            tr.train_step_device_accum(dev_ds)
         else:
-            r = tr.train_step(qpos, images, actions, valid)
+            var r = tr.train_step(qpos, images, actions, valid)
+            last_l1 = r.l1
+            last_kl = r.kl
+            acc_l1 += r.l1
+            acc_kl += r.kl
+            acc_loss += r.loss
+            acc_gn += r.grad_norm
+            acc_n += 1
         var t_end = perf_counter_ns()
         data_ns += t_data - step_t0
         train_ns += t_end - step_t0
@@ -573,8 +600,15 @@ def main() raises:
         if is_probe:
             var rate = Float64(train_ns) / Float64(train_steps) / 1e9
             var rate_d = Float64(data_ns) / Float64(train_steps) / 1e9
+            # PEEKED, not flushed — a progress line must not empty the window
+            # the logger is filling.
+            var pl1 = last_l1
+            comptime if GPU_DATA:
+                var pw = tr.train_metrics(False)
+                if pw.n > 0:
+                    pl1 = pw.l1
             print(
-                "  step " + String(s) + "  train l1 " + String(r.l1)
+                "  step " + String(s) + "  train l1 " + String(pl1)
                 + "  |  " + String(rate) + " s/step (" + String(rate_d)
                 + " data), ~" + String(Int(rate * Float64(steps) / 60.0))
                 + " min for " + String(steps) + " steps"
@@ -583,24 +617,36 @@ def main() raises:
             data_ns = 0
             train_steps = 0
 
-        acc_l1 += r.l1
-        acc_kl += r.kl
-        acc_loss += r.loss
-        acc_gn += r.grad_norm
-        acc_n += 1
-        if acc_n == LOG_EVERY:
+        # The window means, from wherever they were accumulated. On the device
+        # path this is the ONLY D2H in `LOG_EVERY` steps — four `[2]`-buffer
+        # reads — against four downloads and two full device drains PER STEP
+        # before.
+        var window_full = False
+        comptime if GPU_DATA:
+            window_full = (s + 1) % LOG_EVERY == 0
+        else:
+            window_full = acc_n == LOG_EVERY
+        if window_full:
             var vals = List[Float64]()
-            vals.append(acc_l1 / Float64(acc_n))
-            vals.append(acc_kl / Float64(acc_n))
-            vals.append(acc_loss / Float64(acc_n))
-            vals.append(acc_gn / Float64(acc_n))
+            comptime if GPU_DATA:
+                var w = tr.train_metrics()
+                last_l1 = w.l1
+                vals.append(w.l1)
+                vals.append(w.kl)
+                vals.append(w.loss)
+                vals.append(w.grad_norm)
+            else:
+                vals.append(acc_l1 / Float64(acc_n))
+                vals.append(acc_kl / Float64(acc_n))
+                vals.append(acc_loss / Float64(acc_n))
+                vals.append(acc_gn / Float64(acc_n))
+                acc_l1 = 0.0
+                acc_kl = 0.0
+                acc_loss = 0.0
+                acc_gn = 0.0
+                acc_n = 0
             vals.append(Float64(s) / Float64(steps_per_epoch))
             logger.log_scalars(names, vals, s)
-            acc_l1 = 0.0
-            acc_kl = 0.0
-            acc_loss = 0.0
-            acc_gn = 0.0
-            acc_n = 0
 
         if s % VAL_EVERY == 0 or s == steps - 1:
             # Validation L1 is the reference's model-selection metric
@@ -622,22 +668,44 @@ def main() raises:
                 dev_ds.set_offset(ctx, VAL_SEED)
             var vl1 = Float64(0.0)
             var vkl = Float64(0.0)
-            for _ in range(VAL_BATCHES):
-                var v: ACTStepResult
-                comptime if GPU_DATA:
-                    v = tr.eval_step_device(dev_ds, True)
-                else:
+            comptime if GPU_DATA:
+                # Same trade as the training step: the pass folds into the
+                # device validation window and is drained ONCE, so 64 eval
+                # batches cost one D2H instead of 64 downloads behind 64
+                # synchronizations.
+                for _ in range(VAL_BATCHES):
+                    tr.eval_step_device_accum(dev_ds, True)
+                var w = tr.val_metrics()
+                vl1 = w.l1
+                vkl = w.kl
+            else:
+                for _ in range(VAL_BATCHES):
                     ds.sample_batch[K, BATCH](
                         True, qpos, images, actions, valid
                     )
-                    v = tr.eval_step(qpos, images, actions, valid)
-                vl1 += v.l1
-                vkl += v.kl
-            vl1 /= Float64(VAL_BATCHES)
-            vkl /= Float64(VAL_BATCHES)
+                    var v = tr.eval_step(qpos, images, actions, valid)
+                    vl1 += v.l1
+                    vkl += v.kl
+                vl1 /= Float64(VAL_BATCHES)
+                vkl /= Float64(VAL_BATCHES)
             ds.rng = saved_rng
             comptime if GPU_DATA:
                 dev_ds.set_offset(ctx, saved_off)
+
+            # The training numbers printed alongside. Under GPU_DATA there is
+            # no per-step value to quote, so this is the partial window since
+            # the last `LOG_EVERY` flush — PEEKED, so the logger's window is
+            # left intact.
+            var train_line = ACTWindowMetrics(0.0, 0.0, 0.0, 0.0, 0)
+            comptime if GPU_DATA:
+                train_line = tr.train_metrics(False)
+                if train_line.n == 0:
+                    train_line.l1 = last_l1
+            else:
+                # The host path still has a per-step value, so it prints the
+                # same thing it always did.
+                train_line.l1 = last_l1
+                train_line.kl = last_kl
 
             # The mean over the training steps since the last report — never
             # a wall-clock interval, which would include this validation pass
@@ -658,8 +726,8 @@ def main() raises:
             print(
                 "  step " + String(s)
                 + " (epoch " + String(s // steps_per_epoch) + ")"
-                + "  train l1 " + String(r.l1)
-                + "  kl " + String(r.kl)
+                + "  train l1 " + String(train_line.l1)
+                + "  kl " + String(train_line.kl)
                 + "  |  val l1 " + String(vl1)
                 + "  |  " + String(sps) + " s/step ("
                 + String(Int(100.0 * sps_data / (sps + 1e-12)))
