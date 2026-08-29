@@ -523,6 +523,30 @@ struct ACTTrainer[
         self.opt.step[Self.target](self.graph, self.ctx)
         return ACTStepResult(terms.loss, terms.l1, terms.kl, gn)
 
+    def eval_step_device(
+        mut self,
+        mut ds: ACTDeviceDataset[
+            Self.QPOS, Self.ADIM, Self.N_CAM, Self.IMG_H, Self.IMG_W
+        ],
+        val: Bool = True,
+    ) raises -> ACTStepResult:
+        """Forward-only on a FRESH batch drawn on the device.
+
+        The validation counterpart of `train_step_device`. Distinct from
+        `eval_step_resident`, which re-scores whatever is already in the input
+        slots: a validation pass needs its own batches, so this seeds.
+
+        ⚠ The caller must pin `ds`'s RNG offset around the pass
+        (`set_offset`), exactly as the host path pins `ds.rng`. Validation that
+        scores different batches every time makes `best_val` the minimum of a
+        noisy estimate — it selects the luckiest draw, not the best model."""
+        self.train_mode(False)
+        self.seed_inputs_device(ds, val)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        var terms = self._read_terms()
+        self.train_mode(True)
+        return terms
+
     def eval_step_resident(mut self) raises -> ACTStepResult:
         """Forward-only on the batch ALREADY in the graph's input slots.
 

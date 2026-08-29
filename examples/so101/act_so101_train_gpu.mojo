@@ -203,7 +203,8 @@ from mojo_rl.deep_agents.act.config import (
     SO101_QPOS,
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
+from mojo_rl.deep_agents.act.trainer import ACTTrainer, ACTStepResult
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 
@@ -234,6 +235,22 @@ comptime DEFAULT_STEPS = 100000
 """~100 epochs over 40 episodes at batch 16 (966 steps/epoch). Override with
 `ACT_STEPS`; the graph takes minutes to compile and extending a run must not
 require rebuilding it."""
+# GPU_DATA — draw and normalize batches ON THE DEVICE (`ACTDeviceDataset`)
+# instead of on the host. Measured on the profile script, RTX 5090: the
+# iteration went 144.8 -> 61.6 ms and GPU busy 38% -> 88%, because the host
+# path spent 16.1 ms per step converting 7.4M uint8 to float32 single-threaded
+# with the GPU idle, then pushed 29.5 MB across the bus.
+#
+# ⚠ It does NOT draw the same batches as the host sampler — Philox on the
+# device against a xorshift on the host — so a run with this on is not
+# step-for-step comparable with an older log. The LOSS CURVE should be
+# statistically the same; individual steps will not match.
+#
+# ⚠ Startup uploads the whole store as uint8 (7.1 GB for 50 episodes, ~13 s).
+# Set False on a machine where that does not fit; see
+# `docs/ACT_GPU_DATA_PATH.md` for the windowed design that would.
+comptime GPU_DATA = True
+
 comptime VAL_EVERY = 1000
 comptime VAL_BATCHES = 64
 """1024 validation samples per pass, from a pinned RNG — see the header.
@@ -274,6 +291,8 @@ value. At batch 16 a single step's L1 is noisy enough to hide the trend, and
 100,000 individual points is not a curve anyone reads — 2,000 windowed ones
 is. Validation goes at `VAL_EVERY`, unaveraged: it is already a mean over
 `VAL_BATCHES` fixed batches."""
+
+comptime DDS = ACTDeviceDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W]
 
 comptime T = ACTTrainer[
     QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
@@ -402,6 +421,21 @@ def main() raises:
         ctx=ctx,
     )
 
+    # The device copy of the dataset. Timed and printed: ~7.1 GB of HDF5 read
+    # plus H2D is a real one-time cost, and a run that hides it inside the
+    # first step's timing would be lying about both.
+    var dev_ds = DDS()
+    comptime if GPU_DATA:
+        var u0 = perf_counter_ns()
+        dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
+        var u1 = perf_counter_ns()
+        print(
+            "  device dataset    " + String(Float64(u1 - u0) / 1e9) + " s to"
+            " upload " + String(Float64(dev_ds.n_rows)
+                                * Float64(IMG_ELEMS) / 1e9)
+            + " GB uint8 (once)"
+        )
+
     # ── ImageNet-pretrained backbone, if one was dumped ──────────────────
     # `ACT_PRETRAINED=<dir>` from tools/act/dump_resnet18_imagenet.py. The
     # paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random at
@@ -516,9 +550,17 @@ def main() raises:
         # that is 7.4M elements before the GPU sees anything, and if it is the
         # larger half then no kernel work will fix the step time.
         var step_t0 = perf_counter_ns()
-        ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        comptime if not GPU_DATA:
+            ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
         var t_data = perf_counter_ns()
-        var r = tr.train_step(qpos, images, actions, valid)
+        # ⚠ Under GPU_DATA the draw happens INSIDE the step, so `perf/s_data`
+        # reads ~0 and the sampler's cost is inside `perf/s_per_step`. The
+        # split is not comparable across the two settings; the total is.
+        var r: ACTStepResult
+        comptime if GPU_DATA:
+            r = tr.train_step_device(dev_ds)
+        else:
+            r = tr.train_step(qpos, images, actions, valid)
         var t_end = perf_counter_ns()
         data_ns += t_data - step_t0
         train_ns += t_end - step_t0
@@ -572,16 +614,30 @@ def main() raises:
             # points on the curve would not be comparable to each other.
             var saved_rng = ds.rng
             ds.rng = VAL_SEED
+            # ⚠ The device sampler needs the SAME pinning, for the same
+            # reason. Its stream is a device-resident Philox offset, mirrored
+            # on the host so save/restore costs no D2H.
+            var saved_off = dev_ds.offset_host
+            comptime if GPU_DATA:
+                dev_ds.set_offset(ctx, VAL_SEED)
             var vl1 = Float64(0.0)
             var vkl = Float64(0.0)
             for _ in range(VAL_BATCHES):
-                ds.sample_batch[K, BATCH](True, qpos, images, actions, valid)
-                var v = tr.eval_step(qpos, images, actions, valid)
+                var v: ACTStepResult
+                comptime if GPU_DATA:
+                    v = tr.eval_step_device(dev_ds, True)
+                else:
+                    ds.sample_batch[K, BATCH](
+                        True, qpos, images, actions, valid
+                    )
+                    v = tr.eval_step(qpos, images, actions, valid)
                 vl1 += v.l1
                 vkl += v.kl
             vl1 /= Float64(VAL_BATCHES)
             vkl /= Float64(VAL_BATCHES)
             ds.rng = saved_rng
+            comptime if GPU_DATA:
+                dev_ds.set_offset(ctx, saved_off)
 
             # The mean over the training steps since the last report — never
             # a wall-clock interval, which would include this validation pass

@@ -282,6 +282,13 @@ struct ACTDeviceDataset[
     else reads through, and the seam a windowed tier-2 would replace."""
     var n_real: TensorImpl[I32]
     var rng_offset: TensorImpl[U64]
+    var offset_host: UInt64
+    """Host MIRROR of `rng_offset`, exact because the advance is deterministic
+    (`+= 2*B` per `sample`). It exists so a caller can save and restore the
+    stream WITHOUT a D2H — which validation needs: `act_so101_train_gpu`
+    pins the sampler around every validation pass so each one scores the same
+    batches, and without that `best_val` selects the luckiest draw rather than
+    the best model."""
     var seed: UInt64
 
     def __init__(out self):
@@ -302,6 +309,7 @@ struct ACTDeviceDataset[
         self.g = TensorImpl[I32]()
         self.n_real = TensorImpl[I32]()
         self.rng_offset = TensorImpl[U64]()
+        self.offset_host = 0
         self.seed = 0
 
     def __init__(out self, *, deinit move: Self):
@@ -322,6 +330,7 @@ struct ACTDeviceDataset[
         self.g = move.g^
         self.n_real = move.n_real^
         self.rng_offset = move.rng_offset^
+        self.offset_host = move.offset_host
         self.seed = move.seed
 
     @staticmethod
@@ -440,7 +449,14 @@ struct ACTDeviceDataset[
             grid_dim=1,
             block_dim=1,
         )
+        self.offset_host += UInt64(B * 2)
         self._gather[B, K](out_qpos, out_images, out_actions, out_valid, ctx)
+
+    def set_offset(mut self, ctx: DeviceContext, v: UInt64) raises:
+        """Pin the RNG stream. Set to a fixed value before a validation pass
+        and restore afterwards, so every pass draws the SAME batches."""
+        self.rng_offset.dev.value().enqueue_fill(v)
+        self.offset_host = v
 
     def gather_at[
         B: Int, K: Int
