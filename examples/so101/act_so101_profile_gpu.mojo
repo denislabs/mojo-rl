@@ -369,19 +369,27 @@ def main() raises:
         _ = tr.train_metrics()
         _ = tr.val_metrics()
 
-    var data_ns = 0
-    var train_ns = 0
-    var eval_ns = 0
-
+    # ── PASS A: pipelined. The number that is actually the step cost ─────
+    #
+    # ⚠ NO synchronization inside. That is the point and it is also why this
+    # pass cannot be broken down: with the device metrics folded rather than
+    # downloaded, `train_step_device_accum` and `eval_step_resident_accum`
+    # contain no sync at all, so a host timer around either one measures how
+    # long the ENQUEUE took, not how long the work took. The host runs ahead
+    # until the driver's queue fills and then blocks at whatever call happens
+    # to be next — which is why the old per-phase split produced a NEGATIVE
+    # "bwd + optimizer" once the syncs were removed. A forward is not slower
+    # than a forward-plus-backward; the split was attributing one phase's wait
+    # to the other.
+    #
+    # One drain before, one after, and divide. This is the steady-state cost
+    # of the whole iteration and it is the only number here that survived the
+    # sync removal unchanged.
+    ctx.synchronize()
+    var loop_t0 = perf_counter_ns()
     for _ in range(PROFILE_STEPS):
-        var t0 = perf_counter_ns()
         comptime if not GPU_DATA and not SKIP_RESAMPLE:
             ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
-        var t1 = perf_counter_ns()
-        # ⚠ Under GPU_DATA the draw is INSIDE `train_step_device`, so
-        # `sample_batch` reads ~0 and the sampler's cost lands in `train_step`.
-        # The number to compare across the two runs is the iteration total,
-        # not the split.
         comptime if GPU_DATA:
             # ⚠ RUNTIME `if` on a comptime flag: `comptime if` prunes, and a
             # capture path that is never elaborated is not "one flag away", it
@@ -392,19 +400,57 @@ def main() raises:
                 tr.train_step_device_accum(dev_ds)
         else:
             _ = tr.train_step(qpos, images, actions, valid)
-        var t2 = perf_counter_ns()
-        # Forward-only on the SAME batch, so the difference from `train_step`
-        # is backward + optimizer. Its own cost is counted separately and is
-        # not part of the step total below.
-        #
-        # ⚠ Under GPU_DATA this must NOT re-seed: `eval_step` would upload the
-        # four host lists again and pay their syncs, measuring a forward plus a
-        # data path the device run does not otherwise have. The batch
-        # `train_step_device` just drew is still in the graph's input slots.
         comptime if GPU_DATA:
             tr.eval_step_resident_accum()
         else:
             _ = tr.eval_step(qpos, images, actions, valid)
+    ctx.synchronize()
+    var loop_t1 = perf_counter_ns()
+    var iter_ms = Float64(loop_t1 - loop_t0) / 1e6 / Float64(PROFILE_STEPS)
+
+    # ── PASS B: synchronized. Attribution only ───────────────────────────
+    #
+    # A second run of the same work with a device drain at every phase
+    # boundary, so each host timer covers exactly its own phase.
+    #
+    # ⚠ THESE COLUMNS SUM TO MORE THAN PASS A, AND THAT IS NOT AN ERROR. Each
+    # drain empties a pipeline the real loop keeps full, so every phase pays
+    # its own latency instead of overlapping with its neighbours. Use pass A
+    # for "how fast is a step", pass B for "where does the work sit". Comparing
+    # a pass-B total against a pass-A total is comparing two different
+    # experiments.
+    var data_ns = 0
+    var train_ns = 0
+    var eval_ns = 0
+    ds.ns_img_io = 0
+    ds.ns_img_norm = 0
+    ctx.synchronize()
+    for _ in range(PROFILE_STEPS):
+        var t0 = perf_counter_ns()
+        comptime if not GPU_DATA and not SKIP_RESAMPLE:
+            ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        var t1 = perf_counter_ns()
+        comptime if GPU_DATA:
+            if USE_CUDA_GRAPH:
+                tr.train_step_device_captured(dev_ds)
+            else:
+                tr.train_step_device_accum(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
+        ctx.synchronize()
+        var t2 = perf_counter_ns()
+        # Forward-only on the SAME batch, so the difference from `train_step`
+        # is backward + optimizer.
+        #
+        # ⚠ Under GPU_DATA this must NOT re-seed: `eval_step` would upload the
+        # four host lists again and pay their syncs, measuring a forward plus a
+        # data path the device run does not otherwise have. The batch the train
+        # step just drew is still in the graph's input slots.
+        comptime if GPU_DATA:
+            tr.eval_step_resident_accum()
+        else:
+            _ = tr.eval_step(qpos, images, actions, valid)
+        ctx.synchronize()
         var t3 = perf_counter_ns()
 
         data_ns += t1 - t0
@@ -427,7 +473,27 @@ def main() raises:
                "NOT captured (disabled, or no stream) — steps ran directly")
         )
         print("")
-    print("  per step, mean over " + String(PROFILE_STEPS) + ":")
+    print(
+        "  PIPELINED, mean over " + String(PROFILE_STEPS) + " iterations"
+        " (one drain around the whole loop):"
+    )
+    print(
+        "    iteration       " + String(iter_ms)
+        + " ms   <- THE step cost. train + eval, no syncs inside."
+    )
+    print("")
+    print(
+        "  SYNCHRONIZED, mean over " + String(PROFILE_STEPS) + " (a drain at"
+        " every phase boundary):"
+    )
+    print(
+        "    ⚠ attribution only. Each drain empties a pipeline the real loop"
+        " keeps full,"
+    )
+    print(
+        "      so these sum to MORE than the iteration above. Different"
+        " experiment."
+    )
     print(
         "    sample_batch    " + String(data_ms) + " ms  ("
         + String(Int(100.0 * data_ms / (step_ms + 1e-12))) + "%)"
@@ -455,7 +521,7 @@ def main() raises:
         "    train_step      " + String(train_ms) + " ms  ("
         + String(Int(100.0 * train_ms / (step_ms + 1e-12))) + "%)"
     )
-    print("    ---- step       " + String(step_ms) + " ms")
+    print("    ---- step       " + String(step_ms) + " ms  (drained)")
     print("")
     print(
         "    eval_step       " + String(eval_ms)
@@ -463,13 +529,21 @@ def main() raises:
     )
     print(
         "    bwd + optimizer " + String(train_ms - eval_ms)
-        + " ms   (train_step - eval_step; a host-side"
+        + " ms   (train_step - eval_step, both drained)"
     )
     print(
-        "                     difference over device-synchronous calls — an"
-        " attribution"
+        "                     ⚠ A NEGATIVE value here means the drains are"
+        " not doing their job:"
     )
-    print("                     hint, not a kernel measurement)")
+    print(
+        "                     a forward cannot cost more than a forward plus"
+        " a backward, so"
+    )
+    print(
+        "                     the split is attributing one phase's wait to"
+        " the other. Do not"
+    )
+    print("                     read the columns until it is positive.")
     print("")
     comptime if GPU_DATA:
         # ONE drain for the whole run. Printed so a profile that got faster by
