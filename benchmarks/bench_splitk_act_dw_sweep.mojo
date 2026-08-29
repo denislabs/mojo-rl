@@ -288,6 +288,45 @@ def sweep_one[
     _ = c_ours^
 
 
+def choose_partitions(
+    M: Int, N: Int, K: Int, BM: Int, BN: Int, BK: Int, sm_count: Int,
+    max_p: Int = 48,
+) -> Int:
+    """Pick `num_k_partitions` to fill the machine once, and no more.
+
+    The sweep on a 5090 (170 SMs) puts the knee exactly at the wave boundary.
+    Blocks launched is `tiles * P` where `tiles = ceildiv(M,BM)*ceildiv(N,BN)`:
+
+        [256 x 2592] @ [2592 x  256]   4 tiles   P=24 ->  96 blocks   11.23 us
+        [256 x 2592] @ [2592 x 1024]  16 tiles   P= 8 -> 128 blocks   20.79 us
+                                                 P=12 -> 192 blocks   28.75 us
+
+    128 blocks fit in one wave on 170 SMs and 192 do not, and the 192-block
+    point is 38% SLOWER than the 128-block one despite doing the same work in
+    more parallel pieces. So: maximise P subject to `tiles * P <= sm_count`.
+
+    ⚠ LEGALITY IS NOT MONOTONE IN P, so this scans instead of breaking. The
+    overrun rule (see `splitk_gemm`) is `(P-1) * align_up(K//P, BK) < K`, and
+    at K=2592, BK=16 the legal set is 1..15, 17, 18, 21, 23, 24, 27, 33, 40 —
+    16 is illegal while 17 and 24 are fine. A loop that stopped at the first
+    overrun would return 15 and miss the best point.
+
+    Returns 1 when nothing better is available, which callers should read as
+    "do not use split-K for this shape".
+    """
+    var tiles = ceildiv(M, BM) * ceildiv(N, BN)
+    var best = 1
+    for P in range(2, max_p + 1):
+        if tiles * P > sm_count:
+            continue
+        var part = align_up(K // P, BK)
+        if (P - 1) * part >= K:
+            continue
+        if P > best:
+            best = P
+    return best
+
+
 def sweep_partitions[
     M: Int, K: Int, N: Int, LABEL: StaticString
 ](ctx: DeviceContext, mut ws: SplitKWorkspace[DT]) raises:
@@ -336,15 +375,24 @@ def sweep_partitions[
     ctx.synchronize()
 
     var tiles = ceildiv(M, 128) * ceildiv(N, 128)
+    comptime sm_count = ctx.default_device_info.sm_count
+    var want = choose_partitions(
+        M, N, K,
+        cfg.block_tile_shape[0], cfg.block_tile_shape[1],
+        cfg.block_tile_shape[2],
+        sm_count,
+    )
     print(
         "  ", LABEL, " [", M, "x", K, "] @ [", K, "x", N, "]  ",
-        tiles, " tiles, select_config P=", picked.num_k_partitions, sep="",
+        tiles, " tiles, ", sm_count, " SMs",
+        "  select_config P=", picked.num_k_partitions,
+        "  chooser P=", want, " (", tiles * want, " blocks)", sep="",
     )
 
     # Candidate partition counts. The overrun rule (see splitk_gemm) is
     # `(P-1) * align_up(K//P, BK) < K`; it is fully comptime here, so P values
     # that would fault are never instantiated rather than raised on.
-    comptime PS = [2, 3, 4, 6, 8, 12, 16, 24]
+    comptime PS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 40]
     comptime BK = cfg.block_tile_shape[2]
     comptime for i in range(len(PS)):
         comptime P = PS[i]
