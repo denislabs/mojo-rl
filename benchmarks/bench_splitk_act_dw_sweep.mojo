@@ -589,6 +589,16 @@ def sweep_pad[
       A  max_matmul, N=N_REAL   the status quo (vendor fallback)
       B  max_matmul, N=N_PAD    multistage at MAX's own partition count
       C  splitk_gemm, N=N_PAD   ours, at the chooser's P
+      F  the FORWARD at both widths — see below
+
+    ⚠ THE dW IS ONLY HALF THE COST, and the first version of this measured
+    only that half. `CPAD` is the im2col ROW STRIDE, so it is also the
+    FORWARD's contraction: `out[BS, OCPAD] = col[BS, CPAD] @ w[CPAD, OCPAD]`.
+    Widening it to admit the dW to multistage makes the FORWARD wider too, and
+    the forward is the larger GEMM. For a ResNet18 stem that is +60% forward
+    FLOPs against a dW win of 68 us/call — plausibly a NET LOSS. For layer1 it
+    is +11% against 166 us/call, which is not close. So the verdict has to be
+    computed on `forward_delta + dW_delta`, not on the dW alone.
 
     ⚠ CORRECTNESS IS NOT "EXACTLY EQUAL", and an earlier version of this
     docstring claimed it was. Column j of C reads only column j of B, so the
@@ -711,6 +721,45 @@ def sweep_pad[
     var us_a = Float64(t1 - t0) / 1000.0 / Float64(R)
     var us_b = Float64(t3 - t2) / 1000.0 / Float64(R)
 
+    # ---- the forward, at both im2col widths ---------------------------
+    # `out[BS, OCPAD] = col[BS, CPAD] @ w[CPAD, OCPAD]`. Padding CPAD widens
+    # this GEMM's K, and it is the bigger of the two.
+    comptime OCPAD = 128
+    var colN = ctx.enqueue_create_buffer[DT](K * N_REAL)
+    var colP = ctx.enqueue_create_buffer[DT](K * N_PAD)
+    var wN = ctx.enqueue_create_buffer[DT](N_REAL * OCPAD)
+    var wP = ctx.enqueue_create_buffer[DT](N_PAD * OCPAD)
+    var outf = ctx.enqueue_create_buffer[DT](K * OCPAD)
+    colN.enqueue_fill(Float32(0.01))
+    colP.enqueue_fill(Float32(0.01))
+    wN.enqueue_fill(Float32(0.02))
+    wP.enqueue_fill(Float32(0.02))
+    ctx.synchronize()
+    var colNv = TileTensor(colN, row_major[K, N_REAL]())
+    var colPv = TileTensor(colP, row_major[K, N_PAD]())
+    var wNv = TileTensor(wN, row_major[N_REAL, OCPAD]())
+    var wPv = TileTensor(wP, row_major[N_PAD, OCPAD]())
+    var outfv = TileTensor(outf, row_major[K, OCPAD]())
+
+    for _ in range(3):
+        max_matmul[target="gpu"](outfv, colNv, wNv, ctx)
+    ctx.synchronize()
+    var f0 = perf_counter_ns()
+    for _ in range(R):
+        max_matmul[target="gpu"](outfv, colNv, wNv, ctx)
+    ctx.synchronize()
+    var f1 = perf_counter_ns()
+    for _ in range(3):
+        max_matmul[target="gpu"](outfv, colPv, wPv, ctx)
+    ctx.synchronize()
+    var f2 = perf_counter_ns()
+    for _ in range(R):
+        max_matmul[target="gpu"](outfv, colPv, wPv, ctx)
+    ctx.synchronize()
+    var f3 = perf_counter_ns()
+    var fwd_n = Float64(f1 - f0) / 1000.0 / Float64(R)
+    var fwd_p = Float64(f3 - f2) / 1000.0 / Float64(R)
+
     # Score BOTH arms against a float64 host reference. Checking one against
     # the other only says they differ, which they must -- different kernels,
     # different summation order. The reference says WHICH is closer to the
@@ -750,13 +799,18 @@ def sweep_pad[
     if ok:
         print("      C  N=", N_PAD, " splitk_gemm P=", want, "          ",
               us_c, "us   ", us_a / us_c, "x vs A", sep="")
-        print("         verdict: ",
-              "PAD WINS" if us_c < us_a else "PAD LOSES — keep the vendor path",
-              "   (padded cols cost ",
-              Float64(N_PAD - N_REAL) / Float64(N_REAL) * 100.0, "% more FLOPs)",
+        var d_dw = us_a - us_c            # positive = padding helps
+        var d_fw = fwd_n - fwd_p          # negative = padding costs
+        var net = d_dw + d_fw
+        print("      F  forward [", K, " x N] @ [N x ", OCPAD, "]:  N=", N_REAL,
+              " ", fwd_n, "us   N=", N_PAD, " ", fwd_p, "us   delta ", -d_fw,
+              "us", sep="")
+        print("         NET per call: dW ", -d_dw, " + fwd ", -d_fw, " = ",
+              -net, "us   -> ",
+              "PAD WINS" if net > 0.0 else "PAD LOSES — keep the vendor path",
               sep="")
-        print("         saving if padded: ",
-              (us_a - us_c) * Float64(COUNT) / 1000.0, " ms/step", sep="")
+        print("         net per step at x", COUNT, ": ",
+              net * Float64(COUNT) / 1000.0, " ms", sep="")
     else:
         print("      C  skipped (chooser P=", want, ", tile match=",
               picked == cfg, ")", sep="")
@@ -775,6 +829,11 @@ def sweep_pad[
     _ = ah^
     _ = bh^
     _ = bnh^
+    _ = colN^
+    _ = colP^
+    _ = wN^
+    _ = wP^
+    _ = outf^
 
 
 def main() raises:
