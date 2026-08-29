@@ -47,7 +47,7 @@ Run (NVIDIA only):
     pixi run -e nvidia mojo run -I . benchmarks/bench_splitk_act_dw_sweep.mojo
 """
 
-from std.math import ceildiv
+from std.math import ceildiv, align_up
 from std.sys import has_nvidia_gpu_accelerator
 from std.time import perf_counter_ns
 
@@ -114,6 +114,35 @@ def splitk_gemm[
 
     if num_partitions * M * N > ws.capacity:
         raise Error("SplitKWorkspace too small for this GEMM")
+
+    # ⚠ PARTITION COUNT SAFETY. `multistage_gemm_split_k_kernel`'s NVIDIA path
+    # splits K with `LayoutTensor.split[axis, split_alignment=BK]`, which is
+    # (layout_tensor.mojo:3870):
+    #
+    #     part = align_up(K // P, BK)                     <- FLOOR div, then align
+    #     size_of_partition_i = min(part, K - i * part)
+    #     ptr_i               = base + i * part * stride
+    #
+    # so when `(P-1) * part >= K` the last block's pointer starts PAST the end
+    # of A and B and its size goes NEGATIVE. Measured on the 5090 at
+    # K=2592, BK=16: P<=12 is fine (11*224 = 2464 < 2592) and P=16 faults
+    # (15*176 = 2640 > 2592, last size -48) with CUDA_ERROR_ILLEGAL_ADDRESS.
+    #
+    # ⚠ MAX'S OWN GUARD DOES NOT COVER THIS. `select_config` breaks on
+    # `K < P * bk` (2592 < 256 is false at P=16, so it passes) and is saved
+    # only by the SEPARATE `min_k_partition = 1024` test, which caps P at 2
+    # here for unrelated reasons. Any caller that chooses P itself -- us, or
+    # MAX's own `TUNE_NUM_K_PARTITIONS` autotune define -- can reach it.
+    var K_dim = Int(tensor_a.dim[1]())
+    comptime BK = config.block_tile_shape[2]
+    var part = align_up(K_dim // num_partitions, BK) if num_partitions > 0 else 0
+    if num_partitions < 1 or (num_partitions - 1) * part >= K_dim:
+        raise Error(
+            "num_k_partitions overruns K: the first P-1 partitions of"
+            " align_up(K//P, BK) already cover K, so the last block would read"
+            " past the operands"
+        )
+
 
     comptime static_N = tensor_c.layout.shape[1].value()
     comptime ws_layout = Layout.row_major(UNKNOWN_VALUE, UNKNOWN_VALUE, static_N)
@@ -312,36 +341,58 @@ def sweep_partitions[
         tiles, " tiles, select_config P=", picked.num_k_partitions, sep="",
     )
 
-    comptime PS = [2, 3, 4, 6, 8, 12, 16]
+    # Candidate partition counts. The overrun rule (see splitk_gemm) is
+    # `(P-1) * align_up(K//P, BK) < K`; it is fully comptime here, so P values
+    # that would fault are never instantiated rather than raised on.
+    comptime PS = [2, 3, 4, 6, 8, 12, 16, 24]
+    comptime BK = cfg.block_tile_shape[2]
     comptime for i in range(len(PS)):
         comptime P = PS[i]
-        if K >= P * cfg.block_tile_shape[2] and P * M * N <= ws.capacity:
-            for _ in range(WARMUP):
-                splitk_gemm[transpose_b=False, config=cfg](
-                    cours, av, bv, P, ws, ctx
-                )
-            ctx.synchronize()
-            var ta = perf_counter_ns()
-            for _ in range(REPS):
-                splitk_gemm[transpose_b=False, config=cfg](
-                    cours, av, bv, P, ws, ctx
-                )
-            ctx.synchronize()
-            var tb = perf_counter_ns()
-
-            var worst = Float64(0.0)
-            with c_ref.map_to_host() as hr:
-                with c_ours.map_to_host() as ho:
-                    for j in range(M * N):
-                        var d = abs(Float64(hr[j]) - Float64(ho[j]))
-                        if d > worst:
-                            worst = d
-
+        comptime PART = ((K // P) + BK - 1) // BK * BK
+        comptime FITS = (P - 1) * PART < K
+        comptime if not FITS:
             print(
-                "      P=", P, "  blocks=", tiles * P,
-                "  ", Float64(tb - ta) / 1000.0 / Float64(REPS), "us",
-                "  |A-B| ", worst, sep="",
+                "      P=", P, "  SKIPPED: (P-1)*align_up(K//P,BK) = ",
+                (P - 1) * PART, " >= K=", K,
+                " -> the last block would read past the operands", sep="",
             )
+        comptime if FITS:
+            if P * M * N <= ws.capacity:
+                for _ in range(WARMUP):
+                    splitk_gemm[transpose_b=False, config=cfg](
+                        cours, av, bv, P, ws, ctx
+                    )
+                ctx.synchronize()
+                var ta = perf_counter_ns()
+                for _ in range(REPS):
+                    splitk_gemm[transpose_b=False, config=cfg](
+                        cours, av, bv, P, ws, ctx
+                    )
+                ctx.synchronize()
+                var tb = perf_counter_ns()
+
+                # Report RELATIVE error beside the absolute one. Each
+                # partition is its own fp32 accumulation, so the difference
+                # grows with P; 7e-7 means nothing until you know the entries
+                # are ~0.5, at which point it is ~12 ulps and fine.
+                var worst = Float64(0.0)
+                var mag = Float64(0.0)
+                with c_ref.map_to_host() as hr:
+                    with c_ours.map_to_host() as ho:
+                        for j in range(M * N):
+                            var r = abs(Float64(hr[j]))
+                            if r > mag:
+                                mag = r
+                            var d = abs(r - abs(Float64(ho[j])))
+                            if d > worst:
+                                worst = d
+
+                print(
+                    "      P=", P, "  blocks=", tiles * P,
+                    "  ", Float64(tb - ta) / 1000.0 / Float64(REPS), "us",
+                    "  |A-B| ", worst,
+                    "  rel ", (worst / mag) if mag > 0.0 else 0.0, sep="",
+                )
 
     _ = ab^
     _ = bb^
