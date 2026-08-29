@@ -146,23 +146,23 @@ def main() raises:
         check[128, 256, 3, 1, 1, 15, 20, 16, True,
               "CPAD=1152, BS=4800"](ctx, n_split)
 
-        print("== conv dW that does NOT (multi_gemm_cond fails on n % 128) ==")
-        # ⚠ This is most of a ResNet18. `CPAD` rounds the im2col column count
-        # to a multiple of 32 — the FORWARD's contraction alignment — but for
-        # the dW GEMM that same number is N, which multistage needs at a
-        # multiple of 128. So MAX sends these to the vendor fallback, and so
-        # must we. Routing the stem through split-K anyway gave rel 1.02e-3.
-        check[3, 64, 7, 2, 3, 240, 320, 16, False,
-              "CPAD=160, MAX uses cuBLAS"](ctx, n_split)
-        check[64, 64, 3, 1, 1, 60, 80, 16, False,
-              "CPAD=576, MAX uses cuBLAS"](ctx, n_split)
+        print("== previously EXCLUDED, now admitted by PAD_TO=128 ==")
+        # These two were the reason PAD_TO moved from 32 to 128. `CPAD` used to
+        # round the im2col column count to 32 -- the FORWARD's alignment -- and
+        # for the dW GEMM that same number is N, which multistage needs at a
+        # multiple of 128. They took the vendor fallback, which allocates and
+        # memsets 32 MB per call and cannot be captured.
+        check[3, 64, 7, 2, 3, 240, 320, 16, True,
+              "COL=147 -> CPAD=256"](ctx, n_split)
+        check[64, 64, 3, 1, 1, 60, 80, 16, True,
+              "COL=576 -> CPAD=640"](ctx, n_split)
 
         print("== control: passes multi_gemm_cond, BS below min_k_partition ==")
         check[256, 512, 3, 1, 1, 8, 10, 2, False,
               "CPAD=2304 ok, but BS=160 < 1024"](ctx, n_split)
 
         print()
-        print("split shapes:", n_split, "of 5")
+        print("split shapes:", n_split, "of 5  (4 split, 1 control)")
         if n_split == 0:
             raise Error(
                 "NO shape took the split-K path — this run tested nothing."

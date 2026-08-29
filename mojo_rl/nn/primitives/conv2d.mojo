@@ -618,7 +618,35 @@ struct Conv2D[
     # undone deliberately, not overlooked.
     #
     # ⚠ fp32 GPU only, matching `Linear`: the bf16-flow path keeps `COL`.
-    comptime PAD_TO = 32
+    # ⚠ 128, not 32, and the reason is the BACKWARD. `CPAD` is the im2col row
+    # stride, so it is the forward GEMM's K *and* the dW GEMM's N:
+    #
+    #     forward   out[BS, OCPAD] = col[BS, CPAD] @ w[CPAD, OCPAD]
+    #     backward  dW[OC, CPAD]   = goT[OC, BS]   @ col[BS, CPAD]
+    #
+    # The forward only needs `k % 32 == 0 and k >= 128`, which 32 satisfied
+    # minimally. The dW needs `n % 128 == 0` or `multi_gemm_cond` fails and the
+    # whole GEMM goes to the VENDOR fallback -- which allocates and memsets
+    # 32 MB PER CALL (vendor/blas.mojo:780) and is therefore uncapturable, as
+    # well as slow.
+    #
+    # Measured on a 5090 (benchmarks/bench_splitk_act_dw_sweep.mojo, `sweep_pad`),
+    # net of the extra forward FLOPs the wider stride costs:
+    #
+    #   layer1 3x3  COL 576 -> 640 (+11% fwd)   dW -157.6us  fwd +13.0us
+    #                                           NET -144.6us/call, x4 = +0.58 ms/step
+    #   stem 7x7    COL 147 -> 256 (+60% fwd)   dW  -64.8us  fwd +69.1us
+    #                                           NET   +4.3us/call, x2 = -0.009 ms/step
+    #
+    # So the stem is a wash on throughput and everything else is a win. It is
+    # padded anyway, because at -0.009 ms/step (0.02% of the step) it buys the
+    # removal of the last non-D2H CUDA-graph blocker in the model. Judge this
+    # constant on capture first and throughput second.
+    #
+    # ⚠ The dW win only exists WITH a tuned partition count. At MAX's own P=8
+    # the padded GEMM is 0.21x -- a 5x REGRESSION versus the vendor path. The
+    # pad and `splitk_gemm` are one change, not two.
+    comptime PAD_TO = 128
     comptime K_MIN = 128
     comptime CPAD = Self._round_up(Self.COL, Self.PAD_TO) if Self._round_up(
         Self.COL, Self.PAD_TO
