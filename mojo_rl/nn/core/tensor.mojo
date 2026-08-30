@@ -9,6 +9,8 @@ builds its typed view INTERNALLY — `TileTensor(self.data, …)` on CPU, or
 the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
+from std.os import getenv
+from std.sys import size_of
 from max.gpu.host import (
     DeviceContext,
     DeviceBuffer,
@@ -18,6 +20,31 @@ from max.gpu.host import (
 from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.constants import DT
+
+
+def _alloc_trace[dt: DType](site: StaticString, n: Int):
+    """Print every DEVICE allocation when `MOJO_RL_ALLOC_TRACE=1`.
+
+    A CUDA-graph capture aborts on the FIRST allocation inside the region, so
+    blockers surface one at a time and each fix reveals the next. This finds
+    them all at once, eagerly, with no capture involved: run a few steady-state
+    steps with the trace on and read what still allocates AFTER the first one.
+    Anything printed on step 2+ is a per-step allocation, and a per-step
+    allocation is a capture blocker.
+
+    Prints MB the same way MAX's allocator does, so a line here can be matched
+    against a `(size: 18.75MB)` in a capture failure by eye.
+
+    ⚠ Only covers allocations made through `TensorImpl`. If a steady-state step
+    prints NOTHING here and a capture still fails on an allocation, the caller
+    is inside MAX — use `MODULAR_DEBUG=stack-trace-on-error` for that one."""
+    if getenv("MOJO_RL_ALLOC_TRACE", "0") == "0":
+        return
+    var nbytes = n * size_of[Scalar[dt]]()
+    print(
+        "[alloc] ", site, "  n=", n, "  ", String(dt),
+        "  ", Float64(nbytes) / (1024.0 * 1024.0), "MB", sep="",
+    )
 
 
 struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
@@ -113,14 +140,21 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
     @staticmethod
     def alloc_gpu(ctx: DeviceContext, n: Int) raises -> Self:
         var t = Self()
+        _alloc_trace[Self.dt]("alloc_gpu", n)
         t.dev = ctx.enqueue_create_buffer[Self.dt](n)
         t.dev.value().enqueue_fill(Scalar[Self.dt](0))
         t.n = n
         return t^
 
     def ensure_gpu(mut self, ctx: DeviceContext, n: Int) raises:
-        """Lazy-(re)allocate the device buffer to >= n."""
+        """Lazy-(re)allocate the device buffer to >= n.
+
+        Allocates only on a GROW, so a buffer whose size the warmup already
+        reached is a no-op here and safe inside a capture region. One that is
+        still growing on a later step is a capture blocker — `_alloc_trace`
+        prints it."""
         if not self.dev or self.n < n:
+            _alloc_trace[Self.dt]("ensure_gpu", n)
             self.dev = ctx.enqueue_create_buffer[Self.dt](n)
             self.n = n
 
@@ -260,7 +294,13 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         """CPU `data` → device buffer (via the persistent host staging buffer).
         The device buffer is (re)allocated to `self.n` (original semantics —
         callers may grow `self.n` before calling); the pinned host buffer is
-        REUSED across calls instead of allocated fresh each time."""
+        REUSED across calls instead of allocated fresh each time.
+
+        ⚠ This reallocates on EVERY call — by design (it is the resize path) —
+        so it is a capture blocker AND a replay hazard (the device pointer
+        changes, and a captured graph holds the old one). Under capture use
+        `upload_resident`."""
+        _alloc_trace[Self.dt]("upload (REALLOCATES EVERY CALL)", self.n)
         self.dev = ctx.enqueue_create_buffer[Self.dt](self.n)
         self.ensure_host(ctx, self.n)
         var hb = self.hbuf.value()
