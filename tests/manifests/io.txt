@@ -1,0 +1,22 @@
+# I/O manifest — `pixi run test-io`
+#
+# The native readers that replaced the Python data-prep pipeline, each gated
+# against the library it replaced. NOT in `test-smoke`: every one of them reads
+# a reference dump, and the smoke tier is defined as self-contained.
+#
+# Prerequisites (all in the default pixi environment — no torch, no download):
+#
+#   pixi run python tools/io/dump_parquet_reference.py --out /tmp/pq_ref
+#   pixi run python tools/io/dump_resize_reference.py --out /tmp/resize_ref
+#   pixi run python tools/act/make_synthetic_lerobot_v3.py --out /tmp/lerobot_synth
+#
+# Each test defaults to those paths and takes an override as its one argument.
+
+# The Parquet reader vs pyarrow: 7 encoding/compression/page-version
+# combinations, every value compared.
+tests/io/test_parquet.mojo
+# The bilinear resize vs Pillow, byte for byte.
+tests/io/test_image_resize.mojo
+# The LeRobot v3 import vs tools/act/lerobot_v3_to_store.py, on a synthetic
+# dataset built to break the bookkeeping the unit gates cannot see.
+tests/data/test_lerobot_import.mojo

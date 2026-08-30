@@ -59,6 +59,33 @@ comptime EP_OFFSET_DATASET = "ep_offset"
 
 comptime DEFAULT_CHUNK_ROWS = 4096
 
+comptime LARGE_ROW_BYTES = 128 * 1024
+"""A row at or above this size is its own HDF5 chunk.
+
+⚠ `chunk_rows` IS A ROW COUNT, AND A ROW IS NOT A FIXED SIZE. An ACT image row
+is 2 cameras x 3 x 240 x 320 = 460,800 bytes, so the 4096-row default would ask
+libhdf5 for a **1.9 GB chunk** — against a 1 MB default chunk cache, which
+means every single-row read decompresses and buffers the whole thing. Fat rows
+therefore get a chunk of exactly one row, which is also what makes
+`read_range(g, g+1)` a single chunk read on the ACT streaming path."""
+
+comptime TARGET_CHUNK_BYTES = 512 * 1024
+"""Rows are packed to about this much per chunk when they are small. A 24-byte
+`qpos` row at 4096 rows is 98 KB, comfortably under; the cap only bites on
+columns between `TARGET` and `LARGE_ROW_BYTES`."""
+
+
+def chunk_rows_for(row_bytes: Int, requested: Int) -> Int:
+    """Rows per HDF5 chunk for a column whose row is `row_bytes`."""
+    if row_bytes >= LARGE_ROW_BYTES:
+        return 1
+    if row_bytes <= 0:
+        return requested
+    var packed = TARGET_CHUNK_BYTES // row_bytes
+    if packed < 1:
+        packed = 1
+    return packed if packed < requested else requested
+
 comptime DEFAULT_MAX_RESIDENT_BYTES = 8 * 1024 * 1024 * 1024
 """Guard on `load_column`. Whole-column residency is right for state data
 (walker 10 M transitions = 992 MiB) and wrong for a 44 GB pixel column; this
@@ -147,7 +174,7 @@ struct TrajectoryStoreWriter(Movable):
         self.source_commit = move.source_commit^
 
     def _create_for(
-        self, spec: ColumnSpec, chunk_rows: Int, deflate: Int
+        self, spec: ColumnSpec, chunk_rows_req: Int, deflate: Int
     ) raises -> H5DatasetWriter:
         """Dispatch the comptime dtype the writer needs from the runtime spec.
 
@@ -158,6 +185,7 @@ struct TrajectoryStoreWriter(Movable):
         """
         var rd = spec.row_dim()
         var nm = String(spec.name)
+        var chunk_rows = chunk_rows_for(rd * dtype_bytes(spec.dtype), chunk_rows_req)
         if spec.dtype == DType.float32:
             return self._file.create[DType.float32](nm^, rd, chunk_rows, deflate)
         if spec.dtype == DType.float64:
@@ -225,6 +253,30 @@ struct TrajectoryStoreWriter(Movable):
                     + " — every column must be appended in step"
                 )
         return n
+
+    def write_vector[
+        dtype: DType
+    ](
+        mut self,
+        var name: String,
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
+        n: Int,
+    ) raises:
+        """Write a fixed-length rank-1 dataset that is NOT a row column.
+
+        Normalisation statistics are the motivating case: `norm_qpos_mean` is
+        six floats whose length has nothing to do with the row count, so it
+        cannot be a `ColumnSpec` — the writer requires every column to advance
+        in step. It is written straight to the file and left out of the
+        manifest, which readers already tolerate (`TrajectoryStore` ignores
+        datasets the manifest does not declare).
+        """
+        if self._closed:
+            raise Error("TrajectoryStoreWriter.write_vector: already closed")
+        if n <= 0:
+            raise Error("TrajectoryStoreWriter.write_vector: empty vector")
+        var d = self._file.create[dtype](name^, 1, n, 0)
+        d.append[dtype](buf, n)
 
     def end_episode(mut self) raises:
         """Close the current episode at the current row count."""

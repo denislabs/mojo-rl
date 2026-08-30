@@ -1,0 +1,393 @@
+# +--------------------------------------------------------------------------+ #
+# | A small JSON reader
+# +--------------------------------------------------------------------------+ #
+"""Enough JSON to read a dataset's `meta/info.json` without Python.
+
+    var doc = parse_json(text)
+    var fps = doc.number(doc.field(doc.root(), "fps"))
+    var feats = doc.field(doc.root(), "features")
+    for i in range(doc.size(feats)):
+        var key = doc.key_at(feats, i)
+        ...
+
+## Shape
+
+The document is a FLAT node table, not a tree of boxed values: `kind[i]`,
+plus an index into `nums` / `strs` / a `(start, count)` slice of `children`.
+Mojo has no cheap recursive sum type, and a `Variant`-of-`List` tree costs a
+heap allocation per node and an explicit copy at every access. Node ids are
+plain `Int`s and `-1` means "absent", so a missing key is a value rather than
+an exception — which is what makes `field(...)` chainable.
+
+## Scope
+
+Full JSON *values*: objects, arrays, strings with `\\u` escapes, numbers,
+`true`/`false`/`null`. Numbers are all `Float64`; `info.json` carries integers
+well inside 2^53, and `integer(...)` raises rather than truncating anything
+that is not exactly integral, so a silent narrowing cannot happen.
+
+Not supported: streaming, comments, trailing commas, duplicate-key policy
+(the LAST duplicate wins, matching Python's `json`).
+"""
+
+
+comptime J_NULL = 0
+comptime J_BOOL = 1
+comptime J_NUMBER = 2
+comptime J_STRING = 3
+comptime J_ARRAY = 4
+comptime J_OBJECT = 5
+
+
+def kind_name(k: Int) -> String:
+    if k == J_NULL: return String("null")
+    if k == J_BOOL: return String("bool")
+    if k == J_NUMBER: return String("number")
+    if k == J_STRING: return String("string")
+    if k == J_ARRAY: return String("array")
+    if k == J_OBJECT: return String("object")
+    return String("<none>")
+
+
+struct JsonDoc(Movable):
+    var kind: List[Int]
+    var num: List[Float64]
+    """Indexed by node id; also holds 0/1 for booleans."""
+    var text: List[String]
+    """Indexed by node id; the decoded value of a string node."""
+    var child_start: List[Int]
+    var child_count: List[Int]
+    var children: List[Int]
+    var child_key: List[String]
+    """Parallel to `children`; empty for array elements."""
+
+    def __init__(out self):
+        self.kind = List[Int]()
+        self.num = List[Float64]()
+        self.text = List[String]()
+        self.child_start = List[Int]()
+        self.child_count = List[Int]()
+        self.children = List[Int]()
+        self.child_key = List[String]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.kind = move.kind^
+        self.num = move.num^
+        self.text = move.text^
+        self.child_start = move.child_start^
+        self.child_count = move.child_count^
+        self.children = move.children^
+        self.child_key = move.child_key^
+
+    def root(self) raises -> Int:
+        if len(self.kind) == 0:
+            raise Error("json: empty document")
+        return 0
+
+    def kind_of(self, node: Int) -> Int:
+        if node < 0 or node >= len(self.kind):
+            return -1
+        return self.kind[node]
+
+    def size(self, node: Int) -> Int:
+        """Element / member count; 0 for a scalar or an absent node."""
+        if node < 0 or node >= len(self.kind):
+            return 0
+        return self.child_count[node]
+
+    def at(self, node: Int, i: Int) -> Int:
+        if node < 0 or node >= len(self.kind):
+            return -1
+        if i < 0 or i >= self.child_count[node]:
+            return -1
+        return self.children[self.child_start[node] + i]
+
+    def key_at(self, node: Int, i: Int) raises -> String:
+        if node < 0 or node >= len(self.kind) or i < 0 or i >= self.child_count[node]:
+            raise Error("json: key_at out of range")
+        return String(self.child_key[self.child_start[node] + i])
+
+    def field(self, node: Int, name: String) -> Int:
+        """The value for `name`, or -1. The LAST duplicate wins."""
+        if node < 0 or node >= len(self.kind) or self.kind[node] != J_OBJECT:
+            return -1
+        var found = -1
+        for i in range(self.child_count[node]):
+            if self.child_key[self.child_start[node] + i] == name:
+                found = self.children[self.child_start[node] + i]
+        return found
+
+    def number(self, node: Int) raises -> Float64:
+        if self.kind_of(node) != J_NUMBER:
+            raise Error(
+                "json: expected a number, found "
+                + kind_name(self.kind_of(node))
+            )
+        return self.num[node]
+
+    def integer(self, node: Int) raises -> Int:
+        var v = self.number(node)
+        var i = Int(v)
+        if Float64(i) != v:
+            raise Error("json: " + String(v) + " is not an integer")
+        return i
+
+    def string(self, node: Int) raises -> String:
+        if self.kind_of(node) != J_STRING:
+            raise Error(
+                "json: expected a string, found "
+                + kind_name(self.kind_of(node))
+            )
+        return String(self.text[node])
+
+    def boolean(self, node: Int) raises -> Bool:
+        if self.kind_of(node) != J_BOOL:
+            raise Error(
+                "json: expected a bool, found " + kind_name(self.kind_of(node))
+            )
+        return self.num[node] != 0.0
+
+    def _new(mut self, k: Int) -> Int:
+        self.kind.append(k)
+        self.num.append(0.0)
+        self.text.append(String(""))
+        self.child_start.append(0)
+        self.child_count.append(0)
+        return len(self.kind) - 1
+
+
+struct _Scanner(Movable):
+    var b: List[UInt8]
+    var pos: Int
+
+    def __init__(out self, var b: List[UInt8]):
+        self.b = b^
+        self.pos = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.b = move.b^
+        self.pos = move.pos
+
+    def peek(self) -> Int:
+        if self.pos >= len(self.b):
+            return -1
+        return Int(self.b[self.pos])
+
+    def next(mut self) raises -> Int:
+        if self.pos >= len(self.b):
+            raise Error("json: unexpected end of input")
+        var c = Int(self.b[self.pos])
+        self.pos += 1
+        return c
+
+    def skip_ws(mut self):
+        while self.pos < len(self.b):
+            var c = Int(self.b[self.pos])
+            if c == 0x20 or c == 0x09 or c == 0x0A or c == 0x0D:
+                self.pos += 1
+            else:
+                return
+
+    def expect(mut self, c: Int) raises:
+        var got = self.next()
+        if got != c:
+            raise Error(
+                "json: expected '" + chr(c) + "' at byte " + String(self.pos - 1)
+                + ", found '" + chr(got) + "'"
+            )
+
+    def literal(mut self, word: String) raises:
+        for i in range(word.byte_length()):
+            if self.next() != Int(word.as_bytes()[i]):
+                raise Error(
+                    "json: malformed literal near byte " + String(self.pos)
+                )
+
+
+def _hex4(mut s: _Scanner) raises -> Int:
+    var v = 0
+    for _ in range(4):
+        var c = s.next()
+        var d: Int
+        if c >= 0x30 and c <= 0x39:
+            d = c - 0x30
+        elif c >= 0x61 and c <= 0x66:
+            d = c - 0x61 + 10
+        elif c >= 0x41 and c <= 0x46:
+            d = c - 0x41 + 10
+        else:
+            raise Error("json: bad \\u escape")
+        v = v * 16 + d
+    return v
+
+
+def _parse_string(mut s: _Scanner) raises -> String:
+    s.expect(0x22)  # "
+    var out = String("")
+    while True:
+        var c = s.next()
+        if c == 0x22:
+            return out^
+        if c != 0x5C:  # backslash
+            out += chr(c)
+            continue
+        var e = s.next()
+        if e == 0x22: out += chr(0x22)
+        elif e == 0x5C: out += chr(0x5C)
+        elif e == 0x2F: out += chr(0x2F)
+        elif e == 0x62: out += chr(0x08)
+        elif e == 0x66: out += chr(0x0C)
+        elif e == 0x6E: out += chr(0x0A)
+        elif e == 0x72: out += chr(0x0D)
+        elif e == 0x74: out += chr(0x09)
+        elif e == 0x75:
+            var cp = _hex4(s)
+            # Surrogate pair: a high surrogate must be followed by \uDC00-\uDFFF.
+            if cp >= 0xD800 and cp <= 0xDBFF:
+                if s.peek() == 0x5C:
+                    _ = s.next()
+                    s.expect(0x75)
+                    var lo = _hex4(s)
+                    if lo >= 0xDC00 and lo <= 0xDFFF:
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                    else:
+                        raise Error("json: unpaired surrogate escape")
+                else:
+                    raise Error("json: unpaired surrogate escape")
+            out += chr(cp)
+        else:
+            raise Error("json: unknown escape '\\" + chr(e) + "'")
+
+
+def _parse_number(mut s: _Scanner) raises -> Float64:
+    var start = s.pos
+    if s.peek() == 0x2D:
+        _ = s.next()
+    while True:
+        var c = s.peek()
+        if (
+            (c >= 0x30 and c <= 0x39)
+            or c == 0x2E  # .
+            or c == 0x65 or c == 0x45  # e E
+            or c == 0x2B or c == 0x2D  # + -
+        ):
+            _ = s.next()
+        else:
+            break
+    if s.pos == start:
+        raise Error("json: expected a number at byte " + String(start))
+    var lit = String("")
+    for i in range(start, s.pos):
+        lit += chr(Int(s.b[i]))
+    return atof(lit)
+
+
+def _parse_value(mut s: _Scanner, mut doc: JsonDoc, depth: Int) raises -> Int:
+    if depth > 256:
+        raise Error("json: nesting deeper than 256 levels")
+    s.skip_ws()
+    var c = s.peek()
+    if c < 0:
+        raise Error("json: unexpected end of input")
+
+    if c == 0x7B:  # {
+        _ = s.next()
+        var node = doc._new(J_OBJECT)
+        var kids = List[Int]()
+        var keys = List[String]()
+        s.skip_ws()
+        if s.peek() == 0x7D:
+            _ = s.next()
+        else:
+            while True:
+                s.skip_ws()
+                keys.append(_parse_string(s))
+                s.skip_ws()
+                s.expect(0x3A)  # :
+                kids.append(_parse_value(s, doc, depth + 1))
+                s.skip_ws()
+                var d = s.next()
+                if d == 0x7D:
+                    break
+                if d != 0x2C:  # ,
+                    raise Error(
+                        "json: expected ',' or '}' at byte " + String(s.pos - 1)
+                    )
+        doc.child_start[node] = len(doc.children)
+        doc.child_count[node] = len(kids)
+        for i in range(len(kids)):
+            doc.children.append(kids[i])
+            doc.child_key.append(String(keys[i]))
+        return node
+
+    if c == 0x5B:  # [
+        _ = s.next()
+        var node = doc._new(J_ARRAY)
+        var kids = List[Int]()
+        s.skip_ws()
+        if s.peek() == 0x5D:
+            _ = s.next()
+        else:
+            while True:
+                kids.append(_parse_value(s, doc, depth + 1))
+                s.skip_ws()
+                var d = s.next()
+                if d == 0x5D:
+                    break
+                if d != 0x2C:
+                    raise Error(
+                        "json: expected ',' or ']' at byte " + String(s.pos - 1)
+                    )
+        doc.child_start[node] = len(doc.children)
+        doc.child_count[node] = len(kids)
+        for i in range(len(kids)):
+            doc.children.append(kids[i])
+            doc.child_key.append(String(""))
+        return node
+
+    if c == 0x22:  # "
+        var v = _parse_string(s)
+        var node = doc._new(J_STRING)
+        doc.text[node] = v^
+        return node
+
+    if c == 0x74:  # true
+        s.literal(String("true"))
+        var node = doc._new(J_BOOL)
+        doc.num[node] = 1.0
+        return node
+
+    if c == 0x66:  # false
+        s.literal(String("false"))
+        var node = doc._new(J_BOOL)
+        doc.num[node] = 0.0
+        return node
+
+    if c == 0x6E:  # null
+        s.literal(String("null"))
+        return doc._new(J_NULL)
+
+    var v = _parse_number(s)
+    var node = doc._new(J_NUMBER)
+    doc.num[node] = v
+    return node
+
+
+def parse_json(var text: List[UInt8]) raises -> JsonDoc:
+    var doc = JsonDoc()
+    var s = _Scanner(text^)
+    _ = _parse_value(s, doc, 0)
+    s.skip_ws()
+    if s.pos != len(s.b):
+        raise Error(
+            "json: " + String(len(s.b) - s.pos) + " trailing bytes after the"
+            " top-level value"
+        )
+    return doc^
+
+
+def load_json(path: String) raises -> JsonDoc:
+    var f = open(path, "r")
+    var b = f.read_bytes()
+    f.close()
+    return parse_json(b^)

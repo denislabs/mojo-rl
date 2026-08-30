@@ -28,10 +28,18 @@ df -h .
 # ── 2. HuggingFace auth — ONLY if the dataset repo is private ─────────────
 pixi run -e nvidia hf auth login          # or: export HF_TOKEN=hf_...
 
-# ── 3. the dataset -> a TrajectoryStore (~81 s, 0.2 GB RAM) ───────────────
-pixi run -e nvidia python tools/act/lerobot_v3_to_store.py \\
+# ── 3. the dataset -> a TrajectoryStore (downloads + converts) ────────────
+# Pure Mojo: needs `curl` and `ffmpeg` on PATH and nothing else. It downloads
+# the repo if it is not already in ~/.cache/mojo_rl or the huggingface_hub
+# cache, then decodes and resizes every frame.
+pixi run -e nvidia mojo run -I . \\
+    examples/so101/act_so101_import_dataset.mojo \\
     --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
 export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_092736_240x320.h5
+# The Python converter it replaced is still there and produces a byte-identical
+# store, if you would rather use it:
+#   pixi run -e nvidia python tools/act/lerobot_v3_to_store.py \\
+#       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
 
 # ── 4. ImageNet ResNet18 weights (~6 s, 47 MB) ───────────────────────────
 # The ONLY step that needs PyTorch, and nothing under mojo_rl/ imports it.
@@ -364,7 +372,8 @@ def main() raises:
     var os = Python.import_module("os")
     if not Bool(os.path.exists(PythonObject(path))):
         print("MISSING STORE: " + path)
-        print("build it with tools/act/lerobot_v3_to_store.py — see the header")
+        print("build it with examples/so101/act_so101_import_dataset.mojo"
+      " — see the header")
         raise Error("store not found")
 
     var steps = Int(DEFAULT_STEPS)

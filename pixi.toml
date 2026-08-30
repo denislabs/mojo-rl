@@ -141,6 +141,7 @@ test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", desc
 # ACT gates. Needs the torch reference dump + the converted LeRobot store —
 # see tests/manifests/act.txt for the two prerequisite commands.
 test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", description = "ACT reference gates (needs -e act-ref dumps)" }
+test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
 test-act-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/act-gpu.txt", description = "ACT GPU-vs-CPU gates (use -e apple|nvidia)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a

@@ -359,6 +359,13 @@ def main():
         help="HF dataset repo id (optional with --refresh-stats + --out)",
     )
     ap.add_argument("--revision", default=None)
+    ap.add_argument(
+        "--root",
+        default=None,
+        help="a local v3.0 dataset directory, instead of downloading --repo."
+        " Used by tools/act/make_synthetic_lerobot_v3.py to produce the"
+        " reference store the Mojo importer is gated against",
+    )
     ap.add_argument("--height", type=int, default=240)
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument(
@@ -387,15 +394,19 @@ def main():
         raise SystemExit("need --repo (or --out with --refresh-stats)")
     if args.refresh_stats:
         return refresh_stats(out)
-    if not args.repo:
-        raise SystemExit("--repo is required to build a store")
+    if not args.repo and not args.root:
+        raise SystemExit("--repo or --root is required to build a store")
     if out.exists() and not args.force:
         print(f"already present: {out}  (pass --force to rebuild)")
         return
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] downloading {args.repo} ...")
-    root = snapshot(args.repo, args.revision)
+    if args.root:
+        print(f"[1/5] using local dataset {args.root} ...")
+        root = Path(args.root)
+    else:
+        print(f"[1/5] downloading {args.repo} ...")
+        root = snapshot(args.repo, args.revision)
     info = json.loads((root / "meta/info.json").read_text())
 
     version = info.get("codebase_version", "?")
@@ -455,7 +466,7 @@ def main():
         ("images", "uint8", (len(cams), 3, h, w)),
     ]
     manifest = encode_manifest(
-        env_id=f"lerobot/{args.repo}",
+        env_id=f"lerobot/{args.repo}" if args.repo else f"lerobot/{root}",
         n_rows=n_rows,
         n_episodes=n_ep,
         seed=0,
