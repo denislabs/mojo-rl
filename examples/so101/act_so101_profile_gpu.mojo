@@ -94,8 +94,9 @@ looking for in the timeline before hunting anything new:
   * **Conv kernel shape on NVIDIA.**
 """
 
+from std.os import getenv
+from std.os.path import exists
 from std.time import perf_counter_ns
-from std.python import Python, PythonObject
 
 from max.gpu.host import DeviceContext
 
@@ -259,13 +260,12 @@ comptime T = ACTTrainer[
 
 
 def store_path() raises -> String:
-    var os = Python.import_module("os")
-    var env = String(
-        os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
-    )
+    var env = getenv("ACT_STORE")
     if env.byte_length() > 0:
-        return env
-    var home = String(os.path.expanduser(PythonObject("~")))
+        return env^
+    var home = getenv("HOME")
+    if home == "":
+        raise Error("$HOME is unset; set ACT_STORE to the store path")
     return (
         home
         + "/.cache/mojo_rl/act_so101/"
@@ -281,8 +281,7 @@ def main() raises:
     )
 
     var path = store_path()
-    var os = Python.import_module("os")
-    if not Bool(os.path.exists(PythonObject(path))):
+    if not exists(path):
         print("MISSING STORE: " + path)
         raise Error("store not found")
 

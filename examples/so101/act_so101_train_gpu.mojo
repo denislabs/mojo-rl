@@ -190,6 +190,8 @@ The `best` checkpoint is what `act_so101_openloop_eval.mojo` should be pointed
 at; it reports a `hold` baseline so "it produces plausible actions" cannot be
 mistaken for "it learned something".
 """
+from std.os import getenv
+from std.os.path import exists
 from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
@@ -219,7 +221,6 @@ from mojo_rl.deep_agents.act.trainer import (
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 
-from std.python import Python, PythonObject
 
 
 # ── shape (must match the store; see the header) ─────────────────────────
@@ -347,13 +348,12 @@ def store_path() raises -> String:
     would report numbers nobody could attribute to a dataset. Point
     `ACT_STORE` at another store to train on it.
     """
-    var os = Python.import_module("os")
-    var env = String(
-        os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
-    )
+    var env = getenv("ACT_STORE")
     if env.byte_length() > 0:
-        return env
-    var home = String(os.path.expanduser(PythonObject("~")))
+        return env^
+    var home = getenv("HOME")
+    if home == "":
+        raise Error("$HOME is unset; set ACT_STORE to the store path")
     return (
         home
         + "/.cache/mojo_rl/act_so101/"
@@ -369,17 +369,14 @@ def main() raises:
     )
 
     var path = store_path()
-    var os = Python.import_module("os")
-    if not Bool(os.path.exists(PythonObject(path))):
+    if not exists(path):
         print("MISSING STORE: " + path)
         print("build it with examples/so101/act_so101_import_dataset.mojo"
       " — see the header")
         raise Error("store not found")
 
     var steps = Int(DEFAULT_STEPS)
-    var env_steps = String(
-        os.environ.get(PythonObject("ACT_STEPS"), PythonObject(""))
-    )
+    var env_steps = getenv("ACT_STEPS")
     if env_steps.byte_length() > 0:
         steps = Int(env_steps)
         if steps < 1:
@@ -415,9 +412,7 @@ def main() raises:
     # up in the dashboard next to a six-hour run, and blanking the shared
     # `.env` to achieve that is how a real run silently loses its metrics.
     var env_vars = load_dotenv()
-    var no_monitor = String(
-        os.environ.get(PythonObject("ACT_NO_MONITOR"), PythonObject(""))
-    )
+    var no_monitor = getenv("ACT_NO_MONITOR")
     var monitor_url = (
         String("") if no_monitor.byte_length() > 0
         else env_vars.get("RL_MONITOR_URL", "")
@@ -487,18 +482,14 @@ def main() raises:
     # first 50-episode run overfit doing. Absent the variable the run is
     # unchanged, and it says which happened rather than leaving it to be
     # inferred from the loss curve.
-    var pretrained = String(
-        os.environ.get(PythonObject("ACT_PRETRAINED"), PythonObject(""))
-    )
+    var pretrained = getenv("ACT_PRETRAINED")
     if pretrained.byte_length() > 0:
         # `ACT_NO_FREEZE_BN=1` loads the weights and leaves BatchNorm trainable
         # — the ablation, not a normal setting. Both references pass
         # `norm_layer=FrozenBatchNorm2d` at the same call that loads the
         # weights, and unfrozen BatchNorm EMAs the ImageNet statistics away in
         # a few hundred steps while never reading them.
-        var no_freeze = String(
-            os.environ.get(PythonObject("ACT_NO_FREEZE_BN"), PythonObject(""))
-        )
+        var no_freeze = getenv("ACT_NO_FREEZE_BN")
         var freeze = no_freeze.byte_length() == 0
         var n_loaded = tr.load_backbone(pretrained, freeze_norm=freeze)
         print(
