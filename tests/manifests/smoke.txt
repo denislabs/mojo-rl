@@ -76,3 +76,31 @@ tests/robot/test_so101_lerobot_units.mojo
 # leg. Self-contained — `ffmpeg` is a declared pixi dependency, no display, no
 # GPU, ~2 s.
 tests/render/test_video_recorder.mojo
+
+# safetensors, the format: the round trip, the f16/bf16 widenings, and a dozen
+# malformed headers that must each RAISE (a header length past the end of the
+# file, offsets that overlap or leave a gap, a span that does not match
+# shape x itemsize). Self-contained — every file is built by the test itself.
+tests/io/test_safetensors.mojo
+# safetensors, the walk: a model saved and reloaded by walked name, on CPU and
+# GPU, with BatchNorm statistics and with the destination proven DIFFERENT
+# before each load so a loader that matched nothing cannot pass. Also the
+# PyTorch-named walk (`SaveTorchNamed` / `LoadTorchNamed`) on a device model --
+# the ACT backbone path instantiates the loader for "gpu" but never the saver,
+# so this is the only place that branch is compiled. Its host mirror is poisoned
+# before the export, or a save that never downloaded would pass.
+tests/nn/test_safetensors_roundtrip.mojo
+# SHA-256 against 130 digests pinned from Python `hashlib`, covering every
+# length residue mod 64 (the padding boundary at 56 is where SHA-256
+# implementations actually break) plus the chunk-split invariance that
+# `sha256_file`'s 8 MiB streaming read depends on. Self-contained.
+tests/io/test_sha256.mojo
+# The JSON writer, byte-exact against output `json.loads` accepted, plus the
+# escapes, the \u fallback for control bytes, and the refusal of NaN /
+# Infinity. Self-contained; this is what replaced `json.dumps` in the logger.
+tests/io/test_json_write.mojo
+# The tar reader on three formats (ustar / pax / gnu — they disagree about
+# exactly the long-name case a naive reader gets wrong) plus the two archives
+# that must be REFUSED: a `../` member, and a type this reader does not
+# implement. Self-contained; fixtures come from Python's stdlib `tarfile`.
+tests/io/test_tar.mojo

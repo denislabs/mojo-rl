@@ -8,7 +8,7 @@ Run from repo root:
     pixi run mojo run -I . examples/procgen/coinrun_render_demo.mojo
 """
 
-from std.python import Python
+from mojo_rl.io.png import save_png
 from mojo_rl.envs.procgen.games import CoinrunGame, CoinrunAssets
 from mojo_rl.envs.procgen.games.coinrun import DIST_HARD
 
@@ -32,14 +32,8 @@ def main() raises:
         _ = game.step(_tape(s))
     var frame = game.render(assets, OUT_RES)
 
-    var pil = Python.import_module("PIL.Image")
-    var img = pil.new("RGB", Python.tuple(OUT_RES, OUT_RES))
-    var px = img.load()
-    for oy in range(OUT_RES):
-        for ox in range(OUT_RES):
-            var off = (oy * OUT_RES + ox) * 3
-            px[Python.tuple(ox, oy)] = Python.tuple(
-                Int(frame[off + 0]), Int(frame[off + 1]), Int(frame[off + 2])
-            )
-    img.save(OUT)
+    # ⚠ The old path built the image PIXEL BY PIXEL through the Python
+    # interpreter — OUT_RES x OUT_RES round trips per frame — because that was the
+    # only writer available. `io/png.save_png` takes the buffer whole.
+    save_png(String(OUT), frame, OUT_RES, OUT_RES, 3)
     print("wrote", OUT, "(", OUT_RES, "x", OUT_RES, ") for coinrun seed", SEED)

@@ -31,63 +31,31 @@ same param section when populated (`m.n >= N`), enabling exact training resume.
 download on save / upload on load.
 """
 
-from std.ffi import external_call
 from max.gpu.host import DeviceContext
 from std.memory import unsafe_memcpy
 from std.sys.info import size_of
 
+from mojo_rl.io.fileio import read_file_bytes, write_file_atomic
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 from .param import ParamVisitor
 from .param import ParamWalkable
 
-comptime _CKPT_CHUNK = 1 << 30  # 1 GiB — below every single-syscall I/O cap
-
-
 def _write_file_bytes(var path: String, content: List[UInt8]) raises:
-    """Chunked, ATOMIC file write. The payload lands in `path + ".tmp"` and is
-    renamed over `path` only once fully written, so a crash mid-save can never
-    destroy the previous good checkpoint (rename(2) is atomic on the same
-    filesystem). Chunking: a single write(2) silently stops at 0x7FFFF000
-    (~2 GiB) on Linux — the v2 corruption source — so never issue one call
-    for the whole payload."""
-    var tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        var off = 0
-        while off < len(content):
-            var take = len(content) - off
-            if take > _CKPT_CHUNK:
-                take = _CKPT_CHUNK
-            # Bounded slice rather than a raw pointer + separate length: the
-            # chunk bound is now checked against the buffer, not asserted.
-            f.write_bytes(Span(content)[off : off + take])
-            off += take
-    var rc = external_call["rename", Int32](
-        tmp.as_c_string_slice().unsafe_ptr(),
-        path.as_c_string_slice().unsafe_ptr(),
-    )
-    if rc != 0:
-        raise Error(
-            "checkpoint save: atomic rename failed: " + tmp + " -> " + path
-        )
+    """Chunked, ATOMIC file write — see `mojo_rl/io/fileio.mojo` for both
+    rules and why they are not optional (a single `write(2)` silently stops at
+    ~2 GiB, which is how v2 produced truncated checkpoints; `rename(2)` is what
+    keeps a crash mid-save from destroying the previous good one).
+
+    Kept as a forward rather than inlined again: `io/safetensors.mojo` needs
+    the same two rules, and a rule written inline twice is this repo's most
+    frequent defect shape."""
+    write_file_atomic(path^, content)
 
 
 def _read_file_bytes(path: String) raises -> List[UInt8]:
-    """Chunked file read (read(2) has the same single-call cap as write)."""
-    var out = List[UInt8]()
-    with open(path, "r") as f:
-        while True:
-            var chunk = f.read_bytes(_CKPT_CHUNK)
-            if len(chunk) == 0:
-                break
-            var old = len(out)
-            out.resize(old + len(chunk), 0)
-            unsafe_memcpy(
-                dest=out.unsafe_ptr().unsafe_offset(old),
-                src=chunk.unsafe_ptr(),
-                count=len(chunk),
-            )
-    return out^
+    """Chunked file read — `read(2)` has the same single-call cap as write."""
+    return read_file_bytes(path)
 
 
 def _bytes_append_str(mut buf: List[UInt8], s: String):

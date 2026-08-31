@@ -10,6 +10,17 @@
 Run ONCE. The result is ~45 MB of float32 blobs plus a manifest, read by
 `ACTTrainer.load_backbone` (`deep_agents/act/refload.mojo`).
 
+⚠ THIS IS NO LONGER THE ONLY WAY TO GET THESE WEIGHTS, and no longer the
+default one. `ACT_PRETRAINED=hub` fetches `timm/resnet18.tv_in1k` — the same
+torchvision `IMAGENET1K_V1` weights, republished as a `.safetensors` — and
+`ACTTrainer.load_backbone_safetensors` reads it with no `torch`, no
+`torchvision` and no `-e act-ref`.
+
+What this script is FOR now is being the oracle that makes that trustworthy:
+`tests/nn/test_safetensors_resnet18_torch.mojo` compares every value of the
+Hub file against this dump and requires BIT equality (11,190,912 of them). A
+repo name is a claim; that gate is the check. Keep this script.
+
 ## Why this exists
 
 The 50-episode run overfits: validation L1 bottoms out at epoch 15 and rises

@@ -1,0 +1,37 @@
+# Interop manifest — `pixi run test-interop`
+#
+# The gates that check our file formats against the OTHER implementation, not
+# against ourselves. NOT in `test-smoke`: each needs the `act-ref` environment
+# (the real `safetensors` library, `torch`, `torchvision`) and one of them
+# needs the network on its first run.
+#
+# Why the reference library and not a second Python transcription: a check
+# written by the same person from the same reading of the same spec shares the
+# same wrong assumptions and cannot see them. This repo has already shipped
+# exactly that failure once — two MJCF parsers, one wrong default, one gate
+# that passed.
+#
+# Prerequisites:
+#
+#   pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \
+#       --out /tmp/st_ref
+#   pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
+#       --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+#
+# ⚠ AND AFTERWARDS, or half of each gate is untested. Both Mojo files WRITE a
+# file they cannot judge — only the reference implementation reading our bytes
+# says we produced its format:
+#
+#   pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \
+#       --verify /tmp/st_ref
+#   pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \
+#       --verify-resnet18 /tmp/rn18_export.safetensors
+
+# Our reader vs files `safetensors` wrote (F32/F64/F16/BF16, rank 0, empty,
+# its key order rather than ours), and our writer's output for it to read back.
+tests/io/test_safetensors_reference.mojo
+# `timm/resnet18.tv_in1k` vs the torchvision dump it replaces: 11,190,912
+# values, bit-exact, plus the name map checked as a SET against the other
+# transcription of the same topology (`dump_act_reference.py:emit_resnet18`).
+# ⚠ Downloads 46.8 MB on its first run; cached afterwards.
+tests/nn/test_safetensors_resnet18_torch.mojo

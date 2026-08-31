@@ -1,9 +1,13 @@
-"""MNIST loader — Python urllib/gzip for download, Mojo for IDX parsing.
+"""MNIST loader — no Python anywhere.
 
-First run downloads the 4 MNIST IDX files via Python urllib (same pattern as
-core/logger.mojo), gzip-decompresses them via Python gzip, and caches the raw
-bytes to ~/.cache/mojo_rl/mnist/*.ubyte. Subsequent runs read the cached
-uncompressed files directly through Mojo's binary file I/O (no Python).
+First run downloads the 4 MNIST IDX files over `io/http.mojo` (libcurl),
+inflates them with the same shim's zlib entry point, and caches the raw bytes
+to ~/.cache/mojo_rl/mnist/*.ubyte. Subsequent runs read the cached
+uncompressed files directly through Mojo's binary file I/O.
+
+⚠ THE `.gz` IS NOT A `Content-Encoding`. libcurl decodes the header form on
+its own and cannot decode this one, where the compression is announced by the
+file extension — hence the explicit `gunzip`.
 
 IDX format: 4-byte magic, 4-byte big-endian num_items, then either
   - images: 4-byte rows, 4-byte cols, num*rows*cols uint8 pixels
@@ -12,7 +16,12 @@ IDX format: 4-byte magic, 4-byte big-endian num_items, then either
 Pixels are normalized to [0, 1] by dividing by 255.
 """
 
-from std.python import Python, PythonObject
+from std.os import makedirs
+from std.os.path import exists
+
+from mojo_rl.io.fileio import write_file_atomic
+from mojo_rl.io.hf import mojo_rl_cache
+from mojo_rl.io.http import gunzip, http_get_bytes
 
 
 comptime _MNIST_MIRROR = "https://storage.googleapis.com/cvdf-datasets/mnist/"
@@ -34,38 +43,29 @@ def _be_u32(bytes: List[UInt8], offset: Int) -> Int:
 
 def _cache_dir() raises -> String:
     """Resolve ~/.cache/mojo_rl/mnist and ensure it exists."""
-    var os = Python.import_module("os")
-    var home = String(os.path.expanduser(PythonObject("~")))
-    var path = home + "/.cache/mojo_rl/mnist"
-    _ = os.makedirs(PythonObject(path), exist_ok=True)
-    return path
+    var path = mojo_rl_cache() + "/mnist"
+    makedirs(path, exist_ok=True)
+    return path^
 
 
 def _ensure_downloaded(filename: String) raises -> String:
     """Ensure decompressed MNIST file is present in cache. Returns its path."""
-    var os = Python.import_module("os")
     var cache = _cache_dir()
     var dst_path = cache + "/" + filename
 
-    if Bool(os.path.exists(PythonObject(dst_path))):
-        return dst_path
+    if exists(dst_path):
+        return dst_path^
 
-    var url = _MNIST_MIRROR + filename + ".gz"
+    var url = String(_MNIST_MIRROR) + filename + ".gz"
     print("  [mnist] downloading " + url)
 
-    var urllib_request = Python.import_module("urllib.request")
-    var gzip = Python.import_module("gzip")
-    var builtins = Python.import_module("builtins")
-
-    var resp = urllib_request.urlopen(PythonObject(url), timeout=60)
-    var compressed = resp.read()
-    _ = resp.close()
-    var decompressed = gzip.decompress(compressed)
-    var f = builtins.open(PythonObject(dst_path), PythonObject("wb"))
-    _ = f.write(decompressed)
-    _ = f.close()
+    var compressed = http_get_bytes(url)
+    var raw = gunzip(compressed)
+    # Atomic: a crash mid-write must not leave a short .ubyte that the next
+    # run reads as a complete one.
+    write_file_atomic(dst_path, raw)
     print("  [mnist] cached -> " + dst_path)
-    return dst_path
+    return dst_path^
 
 
 struct MNIST(Movable):

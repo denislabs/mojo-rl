@@ -1,4 +1,4 @@
-"""CIFAR-10 loader — Python for download/prep, Mojo for binary parse.
+"""CIFAR-10 loader — no Python anywhere.
 
 First run materializes the 6 canonical binary batch files
 (data_batch_1..5.bin + test_batch.bin) under
@@ -7,13 +7,21 @@ via open(path, "r").read_bytes().
 
 Source (in priority order):
   1. Already-present .bin files → used as-is.
-  2. A binary tarball — if ~/.cache/.../cifar-10-binary.tar.gz already exists, or
-     env `CIFAR10_BIN_URL` is set (a mirror of cifar-10-binary.tar.gz). Extracted
-     with tarfile.
+  2. A binary tarball — if ~/.cache/.../cifar-10-binary.tar.gz already exists,
+     or env `CIFAR10_BIN_URL` is set (a mirror of cifar-10-binary.tar.gz).
+     Fetched resumably by `io/fetch.mojo`, inflated by `io/http.gunzip_file`
+     and unpacked by `io/tar.mojo`.
   3. DEFAULT: the HuggingFace parquet dataset `uoft-cs/cifar10` (reliable CDN;
-     the toronto.edu origin is slow/flaky). Downloaded via huggingface_hub, the
-     PNG-encoded images decoded with PIL, and written out as the 6 .bin files in
-     the exact binary layout below — so the Mojo parser is unchanged.
+     the toronto.edu origin is slow — measured ~60 KB/s, so the 162 MB tarball
+     is a 45-minute first run). Downloaded by `io/hf.mojo`, read by
+     `io/parquet`, its PNG-encoded images decoded by `io/png.mojo`, and written
+     out as the 6 .bin files in the exact binary layout below — so the Mojo
+     parser below is unchanged whichever path produced them.
+
+⚠ THIS LOADER USED FOUR PYTHON PACKAGES: `huggingface_hub`, `pyarrow`, `PIL`
+and `numpy`, the last three inside a SUBPROCESS because libarrow cannot safely
+load in Mojo's embedded interpreter. All four are gone. `pixi run build-http`
+is the one prerequisite (the shim carries libcurl and zlib).
 
 Binary format (per file, 10000 samples):
     sample_i = [1 byte label][1024 R][1024 G][1024 B]  = 3073 bytes
@@ -24,8 +32,16 @@ The on-disk channel-major layout (R-then-G-then-B) already matches the
 we copy pixels as-is after normalizing to Float32 / 255.
 """
 
-from std.python import Python, PythonObject
+from std.os import getenv, makedirs
+from std.os.path import exists
 
+from mojo_rl.io.fetch import fetch_to_cache
+from mojo_rl.io.fileio import remove_file
+from mojo_rl.io.hf import HF_DATASET, hf_download_file, mojo_rl_cache
+from mojo_rl.io.http import gunzip_file
+from mojo_rl.io.parquet import ParquetFile
+from mojo_rl.io.png import decode_png
+from mojo_rl.io.tar import untar
 from mojo_rl.nn.core.ptr import mptr
 
 
@@ -33,69 +49,11 @@ comptime _CIFAR_URL = (
     "https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz"
 )
 comptime _EXTRACTED_DIR = "cifar-10-batches-bin"
+comptime _HF_REPO = "uoft-cs/cifar10"
+comptime _HF_TRAIN = "plain_text/train-00000-of-00001.parquet"
+comptime _HF_TEST = "plain_text/test-00000-of-00001.parquet"
 comptime _TEST_FILE = "test_batch.bin"
 
-# Python prep: HuggingFace parquet (uoft-cs/cifar10) → the 6 canonical .bin files.
-# Run in a SUBPROCESS (via sys.executable -c) — pyarrow's libarrow crashes at
-# teardown inside Mojo's embedded interpreter, so it must load in a child process
-# only; the child reads `EXTRACTED_DIR` from the env, writes the .bin files, and
-# exits. Images are written channel-major [label][1024 R][1024 G][1024 B],
-# matching the Mojo binary parser.
-comptime _PY_PREP_HF = """
-import os, io
-from huggingface_hub import hf_hub_download
-import pyarrow.parquet as pq
-from PIL import Image
-import numpy as np
-
-EXTRACTED_DIR = os.environ['CIFAR10_EXTRACTED_DIR']
-os.makedirs(EXTRACTED_DIR, exist_ok=True)
-
-# Resolve an HF token from the env, else from a .env file in the CWD (the same
-# .env used for the logger, e.g. RL_MONITOR_API_KEY) — huggingface_hub reads
-# HF_TOKEN from os.environ. Optional (the dataset is public); a token only lifts
-# rate limits / speeds the CDN.
-if not os.environ.get('HF_TOKEN') and not os.environ.get('HUGGING_FACE_HUB_TOKEN'):
-    if os.path.exists('.env'):
-        for _line in open('.env'):
-            _line = _line.strip()
-            if _line.startswith('export '):
-                _line = _line[7:]
-            if not _line or _line.startswith('#') or '=' not in _line:
-                continue
-            _k, _v = _line.split('=', 1)
-            _v = _v.strip().strip('"').strip("'")
-            if _k.strip() in ('HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN') and _v:
-                os.environ['HF_TOKEN'] = _v
-                break
-
-def _write_split(parquet_name, out_files, per_file):
-    print('  [cifar10] fetching ' + parquet_name + ' from HuggingFace (uoft-cs/cifar10)')
-    path = hf_hub_download('uoft-cs/cifar10', parquet_name, repo_type='dataset')
-    tbl = pq.read_table(path, columns=['img', 'label'])
-    imgs = tbl.column('img').to_pylist()
-    labels = tbl.column('label').to_pylist()
-    idx = 0
-    for out in out_files:
-        buf = bytearray()
-        for _ in range(per_file):
-            arr = np.asarray(
-                Image.open(io.BytesIO(imgs[idx]['bytes'])).convert('RGB'),
-                dtype=np.uint8,
-            )                                   # (32, 32, 3) HWC
-            chw = np.transpose(arr, (2, 0, 1)).reshape(-1)   # R,G,B planes
-            buf.append(int(labels[idx]) & 0xFF)
-            buf.extend(chw.tobytes())
-            idx += 1
-        with open(os.path.join(EXTRACTED_DIR, out), 'wb') as f:
-            f.write(buf)
-        print('  [cifar10] wrote ' + out)
-
-_write_split('plain_text/train-00000-of-00001.parquet',
-             ['data_batch_1.bin', 'data_batch_2.bin', 'data_batch_3.bin',
-              'data_batch_4.bin', 'data_batch_5.bin'], 10000)
-_write_split('plain_text/test-00000-of-00001.parquet', ['test_batch.bin'], 10000)
-"""
 comptime _SAMPLES_PER_FILE = 10000
 comptime _BYTES_PER_SAMPLE = 1 + 3 * 32 * 32  # 1 label + 3072 pixels
 
@@ -116,11 +74,69 @@ def _train_filename(idx: Int) -> String:
 
 
 def _cache_dir() raises -> String:
-    var os = Python.import_module("os")
-    var home = String(os.path.expanduser(PythonObject("~")))
-    var path = home + "/.cache/mojo_rl/cifar10"
-    _ = os.makedirs(PythonObject(path), exist_ok=True)
-    return path
+    var path = mojo_rl_cache() + "/cifar10"
+    makedirs(path, exist_ok=True)
+    return path^
+
+
+def _write_bins_from_parquet(
+    parquet_path: String, out_dir: String, names: List[String]
+) raises -> Int:
+    """Decode a parquet of PNG images into the canonical `.bin` layout.
+
+    `names` receives `_SAMPLES_PER_FILE` samples each, in file order — five
+    names for the training parquet, one for the test parquet.
+
+    ⚠ THE LAYOUT IS CHANNEL-MAJOR AND THE PNG IS NOT. A decoded PNG is HWC
+    (`R G B R G B ...`); the `.bin` format is one label byte then 1024 R, 1024
+    G, 1024 B. Writing the HWC bytes straight out produces a file of exactly
+    the right size, full of colour noise, that every size check accepts.
+    """
+    var f = ParquetFile(parquet_path)
+    var pngs = List[UInt8]()
+    var offs = List[Int]()
+    var n = f.read_byte_arrays(String("img.bytes"), pngs, offs)
+    var labels = f.read_i64(String("label"))
+    if len(labels) != n:
+        raise Error(
+            "cifar10: " + parquet_path + " has " + String(n) + " images but "
+            + String(len(labels)) + " labels"
+        )
+    if n != len(names) * _SAMPLES_PER_FILE:
+        raise Error(
+            "cifar10: " + parquet_path + " holds " + String(n) + " images, the"
+            " canonical layout needs " + String(len(names) * _SAMPLES_PER_FILE)
+        )
+
+    comptime CHAN = 32 * 32
+    var written = 0
+    for b in range(len(names)):
+        var buf = List[UInt8]()
+        buf.resize(_SAMPLES_PER_FILE * _BYTES_PER_SAMPLE, 0)
+        for k in range(_SAMPLES_PER_FILE):
+            var idx = b * _SAMPLES_PER_FILE + k
+            var one = List[UInt8]()
+            for j in range(offs[idx], offs[idx + 1]):
+                one.append(pngs[j])
+            var img = decode_png(one)
+            if img.width != 32 or img.height != 32 or img.channels != 3:
+                raise Error(
+                    "cifar10: image " + String(idx) + " is " + String(img.width)
+                    + "x" + String(img.height) + "x" + String(img.channels)
+                    + ", expected 32x32x3"
+                )
+            var base = k * _BYTES_PER_SAMPLE
+            buf[base] = UInt8(Int(labels[idx]) & 0xFF)
+            for p in range(CHAN):
+                buf[base + 1 + p] = img.pixels[p * 3]
+                buf[base + 1 + CHAN + p] = img.pixels[p * 3 + 1]
+                buf[base + 1 + 2 * CHAN + p] = img.pixels[p * 3 + 2]
+        var out_path = out_dir + "/" + names[b]
+        with open(out_path, "w") as o:
+            o.write_bytes(Span(buf))
+        written += _SAMPLES_PER_FILE
+        print("  [cifar10] wrote " + names[b])
+    return written
 
 
 def _ensure_extracted() raises -> String:
@@ -130,57 +146,61 @@ def _ensure_extracted() raises -> String:
     already cached or `CIFAR10_BIN_URL` is set; (3) DEFAULT — the HuggingFace
     parquet dataset, decoded to the 6 .bin files.
     """
-    var os = Python.import_module("os")
-    var builtins = Python.import_module("builtins")
     var cache = _cache_dir()
-    var extracted_path = cache + "/" + _EXTRACTED_DIR
+    var extracted_path = cache + "/" + String(_EXTRACTED_DIR)
 
     # 1. already materialized?
-    var test_path = extracted_path + "/" + _TEST_FILE
-    if Bool(os.path.exists(PythonObject(test_path))):
-        return extracted_path
+    if exists(extracted_path + "/" + String(_TEST_FILE)):
+        return extracted_path^
 
-    # 2. binary tarball path — only if a tar is already cached or a mirror URL is
-    #    given via CIFAR10_BIN_URL (avoids the flaky toronto.edu default).
-    var tar_path = cache + "/cifar-10-binary.tar.gz"
-    var url_env = String(
-        os.environ.get(PythonObject("CIFAR10_BIN_URL"), PythonObject(""))
-    )
-    var have_tar = Bool(os.path.exists(PythonObject(tar_path)))
-    if have_tar or url_env.byte_length() > 0:
-        if not have_tar:
-            var url = url_env if url_env.byte_length() > 0 else String(_CIFAR_URL)
+    makedirs(extracted_path, exist_ok=True)
+
+    # 2. the binary tarball — only when one is already cached or a mirror URL
+    #    is given, because the canonical origin is slow (see the module note).
+    var tar_gz = cache + "/cifar-10-binary.tar.gz"
+    var url_env = getenv("CIFAR10_BIN_URL")
+    if exists(tar_gz) or url_env != "":
+        if not exists(tar_gz):
+            var url = url_env if url_env != "" else String(_CIFAR_URL)
             print("  [cifar10] downloading " + url + " (~162 MB)")
-            var urllib_request = Python.import_module("urllib.request")
-            var resp = urllib_request.urlopen(PythonObject(url), timeout=120)
-            var data = resp.read()
-            _ = resp.close()
-            var f = builtins.open(PythonObject(tar_path), PythonObject("wb"))
-            _ = f.write(data)
-            _ = f.close()
-            print("  [cifar10] download complete -> " + tar_path)
-        print("  [cifar10] extracting " + tar_path)
-        var tarfile_mod = Python.import_module("tarfile")
-        var tar = tarfile_mod.open(PythonObject(tar_path))
-        _ = tar.extractall(PythonObject(cache))
-        _ = tar.close()
+            _ = fetch_to_cache(url, tar_gz, String(""), 0, String("cifar10"))
+        print("  [cifar10] extracting " + tar_gz)
+        var tar_path = cache + "/cifar-10-binary.tar"
+        _ = gunzip_file(tar_gz, tar_path)
+        # The archive carries its own `cifar-10-batches-bin/` directory, so it
+        # unpacks into `cache`, not into `extracted_path`.
+        _ = untar(tar_path, cache)
+        remove_file(tar_path)
+        if not exists(extracted_path + "/" + String(_TEST_FILE)):
+            raise Error(
+                "cifar10: " + tar_gz + " did not contain "
+                + String(_EXTRACTED_DIR) + "/" + String(_TEST_FILE)
+            )
         print("  [cifar10] extracted -> " + extracted_path)
-        return extracted_path
+        return extracted_path^
 
-    # 3. default: HuggingFace parquet → write the 6 .bin files, in a SUBPROCESS
-    #    (pyarrow's libarrow can't safely load in Mojo's embedded interpreter).
-    print("  [cifar10] preparing from HuggingFace parquet (uoft-cs/cifar10)")
-    var sys = Python.import_module("sys")
-    var subprocess = Python.import_module("subprocess")
-    var child_env = os.environ.copy()
-    child_env["CIFAR10_EXTRACTED_DIR"] = PythonObject(extracted_path)
-    var argv = builtins.list()
-    _ = argv.append(sys.executable)
-    _ = argv.append(PythonObject("-c"))
-    _ = argv.append(PythonObject(_PY_PREP_HF))
-    _ = subprocess.run(argv, check=True, env=child_env)
+    # 3. default: the HuggingFace parquet, decoded to the 6 .bin files.
+    print("  [cifar10] preparing from HuggingFace parquet (" + String(_HF_REPO) + ")")
+    var train_pq = hf_download_file(
+        String(_HF_REPO), String(_HF_TRAIN), HF_DATASET,
+        cache + "/train.parquet",
+    )
+    var test_pq = hf_download_file(
+        String(_HF_REPO), String(_HF_TEST), HF_DATASET,
+        cache + "/test.parquet",
+    )
+
+    var train_names = List[String]()
+    for i in range(5):
+        train_names.append(_train_filename(i))
+    _ = _write_bins_from_parquet(train_pq, extracted_path, train_names)
+
+    var test_names = List[String]()
+    test_names.append(String(_TEST_FILE))
+    _ = _write_bins_from_parquet(test_pq, extracted_path, test_names)
+
     print("  [cifar10] ready -> " + extracted_path)
-    return extracted_path
+    return extracted_path^
 
 
 def _load_batch(

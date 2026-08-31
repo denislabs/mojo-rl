@@ -15,7 +15,9 @@ Block sprites occupy slots 0..36 so a `block_id` is its own sprite index
 """
 
 from std.memory import alloc, unsafe_memset, Pointer
-from std.python import Python, PythonObject
+from mojo_rl.io.image import resize_nearest_pil
+from mojo_rl.io.png import load_png_file, to_rgba
+from mojo_rl.nn.core.ptr import mptr
 
 
 # ============================================================================
@@ -101,14 +103,14 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 
 
 # ============================================================================
-# Loader helpers (PIL via std.python)
+# Loader helpers — native PNG decode (io/png.mojo)
 # ============================================================================
 
 
 def _blit_sprite_to_sheet(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
-    raw_bytes: PythonObject,
+    ref raw_bytes: List[UInt8],
     src_w: Int,
     src_h: Int,
 ) raises:
@@ -122,10 +124,10 @@ def _blit_sprite_to_sheet(
         for x in range(copy_w):
             var src_off = (y * src_w + x) * SPRITE_BPP
             var dst_off = (y * SHEET_WIDTH + (dst_x + x)) * SPRITE_BPP
-            sheet[unsafe_offset=dst_off + 0] = UInt8(Int(py=raw_bytes[src_off + 0]))
-            sheet[unsafe_offset=dst_off + 1] = UInt8(Int(py=raw_bytes[src_off + 1]))
-            sheet[unsafe_offset=dst_off + 2] = UInt8(Int(py=raw_bytes[src_off + 2]))
-            sheet[unsafe_offset=dst_off + 3] = UInt8(Int(py=raw_bytes[src_off + 3]))
+            sheet[unsafe_offset=dst_off + 0] = raw_bytes[src_off + 0]
+            sheet[unsafe_offset=dst_off + 1] = raw_bytes[src_off + 1]
+            sheet[unsafe_offset=dst_off + 2] = raw_bytes[src_off + 2]
+            sheet[unsafe_offset=dst_off + 3] = raw_bytes[src_off + 3]
 
 
 def _load_one(
@@ -133,21 +135,16 @@ def _load_one(
     slot_idx: Int,
     asset_dir: String,
     filename: String,
-    pil: PythonObject,
 ) raises:
     """Open `<asset_dir>/<filename>`, convert to RGBA, blit to sheet[slot_idx]."""
-    var path = asset_dir + "/" + filename
-    var img = pil.open(path).convert("RGBA")
-    var w = Int(py=img.width)
-    var h = Int(py=img.height)
-    var raw = img.tobytes()
-    _blit_sprite_to_sheet(sheet, slot_idx, raw, w, h)
+    var img = load_png_file(asset_dir + "/" + filename)
+    var raw = to_rgba(img)
+    _blit_sprite_to_sheet(sheet, slot_idx, raw, img.width, img.height)
 
 
 def _load_blocks(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     """Block sprites — slots 0..36, indexed by BLOCK_* enum.
 
@@ -160,7 +157,7 @@ def _load_blocks(
         "lava.png", "plant-young.png", "plant-ripe.png", "wall.png",
     ]
     for k in range(len(names)):
-        _load_one(sheet, 2 + k, asset_dir, names[k], pil)
+        _load_one(sheet, 2 + k, asset_dir, names[k])
     var more = [
         "wall_moss.png", "stalagmite.png", "sapphire.png", "ruby.png",
         "chest.png", "fountain.png", "fire_grass.png", "ice_grass.png",
@@ -170,40 +167,38 @@ def _load_blocks(
         "necromancer_vulnerable.png",
     ]
     for k in range(len(more)):
-        _load_one(sheet, 19 + k, asset_dir, more[k], pil)
+        _load_one(sheet, 19 + k, asset_dir, more[k])
 
 
 def _load_items_and_player(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     """Item overlays, directional arrows, and player poses."""
     # Items (slots 38..41); slot 37 stays transparent.
-    _load_one(sheet, SPR_ITEM_TORCH, asset_dir, "torch_on_path.png", pil)
-    _load_one(sheet, SPR_ITEM_LADDER_DOWN, asset_dir, "ladder_down.png", pil)
-    _load_one(sheet, SPR_ITEM_LADDER_UP, asset_dir, "ladder_up.png", pil)
+    _load_one(sheet, SPR_ITEM_TORCH, asset_dir, "torch_on_path.png")
+    _load_one(sheet, SPR_ITEM_LADDER_DOWN, asset_dir, "ladder_down.png")
+    _load_one(sheet, SPR_ITEM_LADDER_UP, asset_dir, "ladder_up.png")
     _load_one(
         sheet, SPR_ITEM_LADDER_DOWN_BLOCKED, asset_dir,
-        "ladder_down_blocked.png", pil,
+        "ladder_down_blocked.png",
     )
     # Directional arrow overlays.
-    _load_one(sheet, SPR_ARROW_LEFT, asset_dir, "arrow-left.png", pil)
-    _load_one(sheet, SPR_ARROW_RIGHT, asset_dir, "arrow-right.png", pil)
-    _load_one(sheet, SPR_ARROW_UP, asset_dir, "arrow-up.png", pil)
-    _load_one(sheet, SPR_ARROW_DOWN, asset_dir, "arrow-down.png", pil)
+    _load_one(sheet, SPR_ARROW_LEFT, asset_dir, "arrow-left.png")
+    _load_one(sheet, SPR_ARROW_RIGHT, asset_dir, "arrow-right.png")
+    _load_one(sheet, SPR_ARROW_UP, asset_dir, "arrow-up.png")
+    _load_one(sheet, SPR_ARROW_DOWN, asset_dir, "arrow-down.png")
     # Player poses.
-    _load_one(sheet, SPR_PLAYER_LEFT, asset_dir, "player-left.png", pil)
-    _load_one(sheet, SPR_PLAYER_RIGHT, asset_dir, "player-right.png", pil)
-    _load_one(sheet, SPR_PLAYER_UP, asset_dir, "player-up.png", pil)
-    _load_one(sheet, SPR_PLAYER_DOWN, asset_dir, "player-down.png", pil)
-    _load_one(sheet, SPR_PLAYER_SLEEP, asset_dir, "player-sleep.png", pil)
+    _load_one(sheet, SPR_PLAYER_LEFT, asset_dir, "player-left.png")
+    _load_one(sheet, SPR_PLAYER_RIGHT, asset_dir, "player-right.png")
+    _load_one(sheet, SPR_PLAYER_UP, asset_dir, "player-up.png")
+    _load_one(sheet, SPR_PLAYER_DOWN, asset_dir, "player-down.png")
+    _load_one(sheet, SPR_PLAYER_SLEEP, asset_dir, "player-sleep.png")
 
 
 def _load_mobs(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     """Mob + projectile sprites — 8 species per class × 4 classes."""
     # Passive (8): cow/bat/snail + 5 aliases to cow.
@@ -212,14 +207,14 @@ def _load_mobs(
         "cow.png", "cow.png", "cow.png", "cow.png", "cow.png",
     ]
     for k in range(8):
-        _load_one(sheet, SPR_PASSIVE_BASE + k, asset_dir, passive[k], pil)
+        _load_one(sheet, SPR_PASSIVE_BASE + k, asset_dir, passive[k])
     # Melee (8) — 8 distinct species.
     var melee = [
         "zombie.png", "gnome_warrior.png", "orc_soldier.png", "lizard.png",
         "knight.png", "troll.png", "pigman.png", "frost_troll.png",
     ]
     for k in range(8):
-        _load_one(sheet, SPR_MELEE_BASE + k, asset_dir, melee[k], pil)
+        _load_one(sheet, SPR_MELEE_BASE + k, asset_dir, melee[k])
     # Ranged (8).
     var ranged = [
         "skeleton.png", "gnome_archer.png", "orc_mage.png", "kobold.png",
@@ -227,20 +222,19 @@ def _load_mobs(
         "ice_elemental.png",
     ]
     for k in range(8):
-        _load_one(sheet, SPR_RANGED_BASE + k, asset_dir, ranged[k], pil)
+        _load_one(sheet, SPR_RANGED_BASE + k, asset_dir, ranged[k])
     # Projectile species (arrow/dagger/fireball/iceball + variants share png).
     var proj = [
         "arrow-up.png", "dagger.png", "fireball.png", "iceball.png",
         "arrow-up.png", "slimeball.png", "fireball.png", "iceball.png",
     ]
     for k in range(8):
-        _load_one(sheet, SPR_PROJ_BASE + k, asset_dir, proj[k], pil)
+        _load_one(sheet, SPR_PROJ_BASE + k, asset_dir, proj[k])
 
 
 def _load_inventory(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     """Tools, armour, materials, potions, spells."""
     var pickaxe_names = [
@@ -249,15 +243,15 @@ def _load_inventory(
     ]
     for k in range(4):
         _load_one(sheet, SPR_PICKAXE_BASE + 1 + k, asset_dir,
-                  pickaxe_names[k], pil)
+                  pickaxe_names[k])
     var sword_names = [
         "wood_sword.png", "stone_sword.png",
         "iron_sword.png", "diamond_sword.png",
     ]
     for k in range(4):
         _load_one(sheet, SPR_SWORD_BASE + 1 + k, asset_dir,
-                  sword_names[k], pil)
-    _load_one(sheet, SPR_BOW, asset_dir, "bow.png", pil)
+                  sword_names[k])
+    _load_one(sheet, SPR_BOW, asset_dir, "bow.png")
     # Armour: 4 pieces × 2 tiers (iron, diamond).
     var armour_names = [
         "iron_helmet.png", "diamond_helmet.png",
@@ -269,28 +263,27 @@ def _load_inventory(
         for tier in range(2):
             _load_one(
                 sheet, SPR_ARMOUR_BASE + piece * 3 + 1 + tier,
-                asset_dir, armour_names[piece * 2 + tier], pil,
+                asset_dir, armour_names[piece * 2 + tier],
             )
-    _load_one(sheet, SPR_INV_LOG, asset_dir, "log.png", pil)
-    _load_one(sheet, SPR_INV_SAPLING, asset_dir, "sapling.png", pil)
-    _load_one(sheet, SPR_INV_TORCH, asset_dir, "torch_in_inventory.png", pil)
-    _load_one(sheet, SPR_INV_BOOK, asset_dir, "book.png", pil)
+    _load_one(sheet, SPR_INV_LOG, asset_dir, "log.png")
+    _load_one(sheet, SPR_INV_SAPLING, asset_dir, "sapling.png")
+    _load_one(sheet, SPR_INV_TORCH, asset_dir, "torch_in_inventory.png")
+    _load_one(sheet, SPR_INV_BOOK, asset_dir, "book.png")
     # Potions.
     var potion_names = [
         "potion_red.png", "potion_green.png", "potion_blue.png",
         "potion_pink.png", "potion_cyan.png", "potion_yellow.png",
     ]
     for k in range(6):
-        _load_one(sheet, SPR_POTION_BASE + k, asset_dir, potion_names[k], pil)
+        _load_one(sheet, SPR_POTION_BASE + k, asset_dir, potion_names[k])
     # Spell icons (re-use projectile textures).
-    _load_one(sheet, SPR_SPELL_FIREBALL, asset_dir, "fireball.png", pil)
-    _load_one(sheet, SPR_SPELL_ICEBALL, asset_dir, "iceball.png", pil)
+    _load_one(sheet, SPR_SPELL_FIREBALL, asset_dir, "fireball.png")
+    _load_one(sheet, SPR_SPELL_ICEBALL, asset_dir, "iceball.png")
 
 
 def _load_intrinsic_icons(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     """Intrinsic bar icons (9 slots)."""
     var names = [
@@ -298,7 +291,7 @@ def _load_intrinsic_icons(
         "xp.png", "dexterity.png", "strength.png", "intelligence.png",
     ]
     for k in range(9):
-        _load_one(sheet, SPR_ICON_HEALTH + k, asset_dir, names[k], pil)
+        _load_one(sheet, SPR_ICON_HEALTH + k, asset_dir, names[k])
 
 
 def build_sprite_sheet(
@@ -325,12 +318,11 @@ def build_sprite_sheet(
             sheet[unsafe_offset=off + 2] = UInt8(25)
             sheet[unsafe_offset=off + 3] = UInt8(255)
 
-    var pil = Python.import_module("PIL.Image")
-    _load_blocks(sheet, asset_dir, pil)
-    _load_items_and_player(sheet, asset_dir, pil)
-    _load_mobs(sheet, asset_dir, pil)
-    _load_inventory(sheet, asset_dir, pil)
-    _load_intrinsic_icons(sheet, asset_dir, pil)
+    _load_blocks(sheet, asset_dir)
+    _load_items_and_player(sheet, asset_dir)
+    _load_mobs(sheet, asset_dir)
+    _load_inventory(sheet, asset_dir)
+    _load_intrinsic_icons(sheet, asset_dir)
     return sheet
 
 
@@ -354,7 +346,7 @@ def _blit_resized_to_atlas(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
-    raw_bytes: PythonObject,
+    ref raw_bytes: List[UInt8],
 ) raises:
     """Copy a `BPS×BPS×RGBA` region (already nearest-resized) into atlas slot."""
     var bps = block_pixel_size
@@ -363,10 +355,10 @@ def _blit_resized_to_atlas(
         for x in range(bps):
             var src_off = (y * bps + x) * 4
             var dst_off = slot_base + (y * bps + x) * 4
-            atlas[unsafe_offset=dst_off + 0] = Float32(Int(py=raw_bytes[src_off + 0])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 1] = Float32(Int(py=raw_bytes[src_off + 1])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 2] = Float32(Int(py=raw_bytes[src_off + 2])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 3] = Float32(Int(py=raw_bytes[src_off + 3])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 0] = Float32(Int(raw_bytes[src_off + 0])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 1] = Float32(Int(raw_bytes[src_off + 1])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 2] = Float32(Int(raw_bytes[src_off + 2])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 3] = Float32(Int(raw_bytes[src_off + 3])) / Float32(255.0)
 
 
 def _load_one_resized(
@@ -375,23 +367,35 @@ def _load_one_resized(
     block_pixel_size: Int,
     asset_dir: String,
     filename: String,
-    pil: PythonObject,
 ) raises:
     """Open `<asset_dir>/<filename>`, RGBA-convert, nearest-resize to
-    `BPS×BPS`, write float32 [0,1] into atlas[slot_idx]."""
-    var path = asset_dir + "/" + filename
-    var img = pil.open(path).convert("RGBA")
-    var size = Python.tuple(block_pixel_size, block_pixel_size)
-    img = img.resize(size, resample=pil.NEAREST)
-    var raw = img.tobytes()
-    _blit_resized_to_atlas(atlas, slot_idx, block_pixel_size, raw)
+    `BPS×BPS`, and write float32 [0,1] into atlas[slot_idx].
+
+    ⚠ `resize_nearest_pil` REPRODUCES PILLOW'S ARITHMETIC, not the textbook
+    formula — Pillow walks a floating-point accumulator, and the obvious
+    `floor((x + 0.5) * in / out)` picks a different source pixel on 93 of 600
+    random size pairs. A sprite atlas built with the wrong one looks almost
+    right, which is why `tests/io/test_resize_nearest.mojo` exists."""
+    var img = load_png_file(asset_dir + "/" + filename)
+    var rgba = to_rgba(img)
+    var small = List[UInt8]()
+    small.resize(block_pixel_size * block_pixel_size * 4, 0)
+    resize_nearest_pil(
+        mptr(rgba.unsafe_ptr()),
+        img.height,
+        img.width,
+        mptr(small.unsafe_ptr()),
+        block_pixel_size,
+        block_pixel_size,
+        4,
+    )
+    _blit_resized_to_atlas(atlas, slot_idx, block_pixel_size, small)
 
 
 def _atlas_load_blocks(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     var names_a = [
         "grass.png", "water.png", "stone.png", "tree.png",
@@ -400,7 +404,7 @@ def _atlas_load_blocks(
         "lava.png", "plant-young.png", "plant-ripe.png", "wall.png",
     ]
     for k in range(len(names_a)):
-        _load_one_resized(atlas, 2 + k, bps, asset_dir, names_a[k], pil)
+        _load_one_resized(atlas, 2 + k, bps, asset_dir, names_a[k])
     var names_b = [
         "wall_moss.png", "stalagmite.png", "sapphire.png", "ruby.png",
         "chest.png", "fountain.png", "fire_grass.png", "ice_grass.png",
@@ -410,71 +414,68 @@ def _atlas_load_blocks(
         "necromancer_vulnerable.png",
     ]
     for k in range(len(names_b)):
-        _load_one_resized(atlas, 19 + k, bps, asset_dir, names_b[k], pil)
+        _load_one_resized(atlas, 19 + k, bps, asset_dir, names_b[k])
 
 
 def _atlas_load_items_and_player(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
-    _load_one_resized(atlas, SPR_ITEM_TORCH, bps, asset_dir, "torch_on_path.png", pil)
-    _load_one_resized(atlas, SPR_ITEM_LADDER_DOWN, bps, asset_dir, "ladder_down.png", pil)
-    _load_one_resized(atlas, SPR_ITEM_LADDER_UP, bps, asset_dir, "ladder_up.png", pil)
+    _load_one_resized(atlas, SPR_ITEM_TORCH, bps, asset_dir, "torch_on_path.png")
+    _load_one_resized(atlas, SPR_ITEM_LADDER_DOWN, bps, asset_dir, "ladder_down.png")
+    _load_one_resized(atlas, SPR_ITEM_LADDER_UP, bps, asset_dir, "ladder_up.png")
     _load_one_resized(
         atlas, SPR_ITEM_LADDER_DOWN_BLOCKED, bps, asset_dir,
-        "ladder_down_blocked.png", pil,
+        "ladder_down_blocked.png",
     )
-    _load_one_resized(atlas, SPR_ARROW_LEFT, bps, asset_dir, "arrow-left.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_RIGHT, bps, asset_dir, "arrow-right.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_UP, bps, asset_dir, "arrow-up.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_DOWN, bps, asset_dir, "arrow-down.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_LEFT, bps, asset_dir, "player-left.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_RIGHT, bps, asset_dir, "player-right.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_UP, bps, asset_dir, "player-up.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_DOWN, bps, asset_dir, "player-down.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_SLEEP, bps, asset_dir, "player-sleep.png", pil)
+    _load_one_resized(atlas, SPR_ARROW_LEFT, bps, asset_dir, "arrow-left.png")
+    _load_one_resized(atlas, SPR_ARROW_RIGHT, bps, asset_dir, "arrow-right.png")
+    _load_one_resized(atlas, SPR_ARROW_UP, bps, asset_dir, "arrow-up.png")
+    _load_one_resized(atlas, SPR_ARROW_DOWN, bps, asset_dir, "arrow-down.png")
+    _load_one_resized(atlas, SPR_PLAYER_LEFT, bps, asset_dir, "player-left.png")
+    _load_one_resized(atlas, SPR_PLAYER_RIGHT, bps, asset_dir, "player-right.png")
+    _load_one_resized(atlas, SPR_PLAYER_UP, bps, asset_dir, "player-up.png")
+    _load_one_resized(atlas, SPR_PLAYER_DOWN, bps, asset_dir, "player-down.png")
+    _load_one_resized(atlas, SPR_PLAYER_SLEEP, bps, asset_dir, "player-sleep.png")
 
 
 def _atlas_load_mobs(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     var passive = [
         "cow.png", "bat.png", "snail.png",
         "cow.png", "cow.png", "cow.png", "cow.png", "cow.png",
     ]
     for k in range(8):
-        _load_one_resized(atlas, SPR_PASSIVE_BASE + k, bps, asset_dir, passive[k], pil)
+        _load_one_resized(atlas, SPR_PASSIVE_BASE + k, bps, asset_dir, passive[k])
     var melee = [
         "zombie.png", "gnome_warrior.png", "orc_soldier.png", "lizard.png",
         "knight.png", "troll.png", "pigman.png", "frost_troll.png",
     ]
     for k in range(8):
-        _load_one_resized(atlas, SPR_MELEE_BASE + k, bps, asset_dir, melee[k], pil)
+        _load_one_resized(atlas, SPR_MELEE_BASE + k, bps, asset_dir, melee[k])
     var ranged = [
         "skeleton.png", "gnome_archer.png", "orc_mage.png", "kobold.png",
         "knight_archer.png", "deep_thing.png", "fire_elemental.png",
         "ice_elemental.png",
     ]
     for k in range(8):
-        _load_one_resized(atlas, SPR_RANGED_BASE + k, bps, asset_dir, ranged[k], pil)
+        _load_one_resized(atlas, SPR_RANGED_BASE + k, bps, asset_dir, ranged[k])
     var proj = [
         "arrow-up.png", "dagger.png", "fireball.png", "iceball.png",
         "arrow-up.png", "slimeball.png", "fireball.png", "iceball.png",
     ]
     for k in range(8):
-        _load_one_resized(atlas, SPR_PROJ_BASE + k, bps, asset_dir, proj[k], pil)
+        _load_one_resized(atlas, SPR_PROJ_BASE + k, bps, asset_dir, proj[k])
 
 
 def _atlas_load_inventory(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     var pickaxe_names = [
         "wood_pickaxe.png", "stone_pickaxe.png",
@@ -482,15 +483,15 @@ def _atlas_load_inventory(
     ]
     for k in range(4):
         _load_one_resized(atlas, SPR_PICKAXE_BASE + 1 + k, bps, asset_dir,
-                          pickaxe_names[k], pil)
+                          pickaxe_names[k])
     var sword_names = [
         "wood_sword.png", "stone_sword.png",
         "iron_sword.png", "diamond_sword.png",
     ]
     for k in range(4):
         _load_one_resized(atlas, SPR_SWORD_BASE + 1 + k, bps, asset_dir,
-                          sword_names[k], pil)
-    _load_one_resized(atlas, SPR_BOW, bps, asset_dir, "bow.png", pil)
+                          sword_names[k])
+    _load_one_resized(atlas, SPR_BOW, bps, asset_dir, "bow.png")
     var armour_names = [
         "iron_helmet.png", "diamond_helmet.png",
         "iron_chestplate.png", "diamond_chestplate.png",
@@ -501,35 +502,34 @@ def _atlas_load_inventory(
         for tier in range(2):
             _load_one_resized(
                 atlas, SPR_ARMOUR_BASE + piece * 3 + 1 + tier, bps,
-                asset_dir, armour_names[piece * 2 + tier], pil,
+                asset_dir, armour_names[piece * 2 + tier],
             )
-    _load_one_resized(atlas, SPR_INV_LOG, bps, asset_dir, "log.png", pil)
-    _load_one_resized(atlas, SPR_INV_SAPLING, bps, asset_dir, "sapling.png", pil)
-    _load_one_resized(atlas, SPR_INV_TORCH, bps, asset_dir, "torch_in_inventory.png", pil)
-    _load_one_resized(atlas, SPR_INV_BOOK, bps, asset_dir, "book.png", pil)
+    _load_one_resized(atlas, SPR_INV_LOG, bps, asset_dir, "log.png")
+    _load_one_resized(atlas, SPR_INV_SAPLING, bps, asset_dir, "sapling.png")
+    _load_one_resized(atlas, SPR_INV_TORCH, bps, asset_dir, "torch_in_inventory.png")
+    _load_one_resized(atlas, SPR_INV_BOOK, bps, asset_dir, "book.png")
     var potion_names = [
         "potion_red.png", "potion_green.png", "potion_blue.png",
         "potion_pink.png", "potion_cyan.png", "potion_yellow.png",
     ]
     for k in range(6):
         _load_one_resized(atlas, SPR_POTION_BASE + k, bps, asset_dir,
-                          potion_names[k], pil)
-    _load_one_resized(atlas, SPR_SPELL_FIREBALL, bps, asset_dir, "fireball.png", pil)
-    _load_one_resized(atlas, SPR_SPELL_ICEBALL, bps, asset_dir, "iceball.png", pil)
+                          potion_names[k])
+    _load_one_resized(atlas, SPR_SPELL_FIREBALL, bps, asset_dir, "fireball.png")
+    _load_one_resized(atlas, SPR_SPELL_ICEBALL, bps, asset_dir, "iceball.png")
 
 
 def _atlas_load_intrinsic_icons(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
-    pil: PythonObject,
 ) raises:
     var names = [
         "health.png", "food.png", "drink.png", "energy.png", "mana.png",
         "xp.png", "dexterity.png", "strength.png", "intelligence.png",
     ]
     for k in range(9):
-        _load_one_resized(atlas, SPR_ICON_HEALTH + k, bps, asset_dir, names[k], pil)
+        _load_one_resized(atlas, SPR_ICON_HEALTH + k, bps, asset_dir, names[k])
 
 
 def build_agent_atlas(
@@ -556,10 +556,9 @@ def build_agent_atlas(
             atlas[unsafe_offset=off + 2] = Float32(25.0) / Float32(255.0)
             atlas[unsafe_offset=off + 3] = Float32(1.0)
 
-    var pil = Python.import_module("PIL.Image")
-    _atlas_load_blocks(atlas, bps, asset_dir, pil)
-    _atlas_load_items_and_player(atlas, bps, asset_dir, pil)
-    _atlas_load_mobs(atlas, bps, asset_dir, pil)
-    _atlas_load_inventory(atlas, bps, asset_dir, pil)
-    _atlas_load_intrinsic_icons(atlas, bps, asset_dir, pil)
+    _atlas_load_blocks(atlas, bps, asset_dir)
+    _atlas_load_items_and_player(atlas, bps, asset_dir)
+    _atlas_load_mobs(atlas, bps, asset_dir)
+    _atlas_load_inventory(atlas, bps, asset_dir)
+    _atlas_load_intrinsic_icons(atlas, bps, asset_dir)
     return atlas

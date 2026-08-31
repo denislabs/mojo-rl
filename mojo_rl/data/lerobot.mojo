@@ -48,16 +48,24 @@ non-decreasing `(file ordinal, first frame)` order. Assuming it and being wrong
 would silently pair every episode with another episode's video.
 """
 
-from std.ffi import external_call
 from std.math import sqrt
-from std.os import getenv, listdir, makedirs
+from std.os import listdir, makedirs
 from std.os.path import exists, isdir
 from std.pathlib import Path
 
+from mojo_rl.io.fileio import file_size, rename_over
+from mojo_rl.io.hf import (
+    HF_DATASET,
+    hf_client,
+    hf_hub_cache,
+    hf_tree,
+    mojo_rl_cache,
+    path_prefix,
+    repo_slug,
+)
 from mojo_rl.io.image import resize_bilinear_pil
 from mojo_rl.io.json import J_ARRAY, JsonDoc, load_json, parse_json
 from mojo_rl.io.parquet import ParquetFile
-from mojo_rl.io.proc import quote_arg, run_capture
 from mojo_rl.io.video import VideoDecoder
 
 from .column import ColumnSpec
@@ -842,69 +850,36 @@ def import_lerobot_v3(
     )
     w.close()
 
-    var rc = _rename(tmp, out_path)
-    if rc != 0:
-        raise Error(
-            "lerobot: could not rename " + tmp + " to " + out_path
-        )
+    # ⚠ ATOMIC. The store is built at `<out>.tmp` and renamed only once it is
+    # complete, so an interrupted import leaves the previous good store rather
+    # than a plausible-looking truncated one.
+    rename_over(String(tmp), String(out_path))
     if verbose:
         print("      wrote " + out_path)
-
-
-def _rename(var src: String, var dst: String) -> Int32:
-    return external_call["rename", Int32](
-        src.as_c_string_slice().unsafe_ptr(),
-        dst.as_c_string_slice().unsafe_ptr(),
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Getting the dataset onto the box, without huggingface_hub
 # ══════════════════════════════════════════════════════════════════════════
-# `huggingface_hub` is one `pip` dependency and one Python process; `curl`
+# `huggingface_hub` is one `pip` dependency and one Python process; libcurl
 # plus the Hub's public tree API is neither, and the JSON reader needed to walk
 # the response already exists for `meta/info.json`.
 #
 #     GET https://huggingface.co/api/datasets/<repo>/tree/<rev>?recursive=1
 #       -> [ {"type": "file"|"directory", "path": "...", "size": N, ...}, ... ]
 #     GET https://huggingface.co/datasets/<repo>/resolve/<rev>/<path>
-#       -> the bytes (302 to the CDN, hence `curl -L`)
+#       -> the bytes (302 to the CDN, so redirects must be followed)
+#
+# ⚠ ONE CLIENT FOR THE WHOLE REPO. This used to be one `curl` process per
+# file: a fork, an exec and a fresh TLS handshake for each of several hundred
+# chunk files. The connection, the TLS session and the DNS answer are now
+# reused across the entire download.
 #
 # ⚠ Files are downloaded to `<dest>/<path>.part` and renamed on success, and an
 # existing file whose size already matches the manifest is SKIPPED — so an
 # interrupted 700 MB download resumes at file granularity instead of starting
 # over. Size is a weak check next to a hash, but it is the one the tree listing
 # gives for free on every file, LFS or not.
-
-
-def _home() raises -> String:
-    var h = getenv("HOME")
-    if h == "":
-        raise Error("lerobot: $HOME is unset; pass an explicit path")
-    return h^
-
-
-def hf_hub_cache() raises -> String:
-    """The `huggingface_hub` cache directory, respecting its env vars."""
-    var v = getenv("HF_HUB_CACHE")
-    if v != "":
-        return v^
-    var home = getenv("HF_HOME")
-    if home != "":
-        return home + "/hub"
-    return _home() + "/.cache/huggingface/hub"
-
-
-def mojo_rl_cache() raises -> String:
-    var v = getenv("MOJO_RL_CACHE")
-    if v != "":
-        return v^
-    return _home() + "/.cache/mojo_rl"
-
-
-def repo_slug(repo: String) -> String:
-    """`Org/name` -> `Org__name`, the on-disk directory name."""
-    return repo.replace("/", "__")
 
 
 def hf_snapshot_path(repo: String, revision: String = String("main")) raises -> String:
@@ -941,23 +916,10 @@ def hf_download_dataset(
         dest = mojo_rl_cache() + "/lerobot/" + repo_slug(repo)
     makedirs(dest, exist_ok=True)
 
-    var auth = String("")
-    var token = getenv("HF_TOKEN")
-    if token != "":
-        # The header goes in the command line, so a token with a quote in it
-        # would break out of the quoting; `quote_arg` refuses that outright
-        # rather than building the command anyway.
-        auth = " -H " + quote_arg("Authorization: Bearer " + token)
-
-    var api = (
-        "https://huggingface.co/api/datasets/" + repo + "/tree/" + revision
-        + "?recursive=1"
-    )
+    var client = hf_client()
     if verbose:
         print("  listing " + repo + " @ " + revision + " ...")
-    var listing = run_capture(
-        "curl -fsSL" + auth + " " + quote_arg(api), 1 << 24
-    )
+    var listing = hf_tree(repo, HF_DATASET, revision)
     var lbytes = List[UInt8]()
     for i in range(listing.byte_length()):
         lbytes.append(listing.as_bytes()[i])
@@ -984,9 +946,9 @@ def hf_download_dataset(
         var out = dest + "/" + rel
         var slash = out.rfind("/")
         if slash > 0:
-            makedirs(_prefix(out, slash), exist_ok=True)
+            makedirs(path_prefix(out, slash), exist_ok=True)
 
-        if exists(out) and size >= 0 and _file_size(out) == size:
+        if exists(out) and size >= 0 and file_size(out) == size:
             n_skipped += 1
             continue
 
@@ -996,12 +958,28 @@ def hf_download_dataset(
         )
         if verbose:
             print("  " + rel + "  (" + String(size) + " bytes)")
-        _ = run_capture(
-            "curl -fL --progress-bar" + auth + " -o " + quote_arg(out + ".part")
-            + " " + quote_arg(url)
+        var r = client.download(
+            url, out + ".part", 0, rel if verbose else String("")
         )
-        if _rename(out + ".part", out) != 0:
-            raise Error("lerobot: could not finalise " + out)
+        if not r.ok():
+            raise Error(
+                "lerobot: GET " + url + " -> " + String(r.status) + ": "
+                + r.text()
+            )
+        # ⚠ A CUT CONNECTION ENDS A 200 EARLY and nothing in the status says
+        # so. The listing's size is the only check that separates a complete
+        # file from a truncated one, and this loop's whole resume story — skip
+        # what is already the right size — depends on never renaming a short
+        # file into place.
+        if size >= 0:
+            var got = file_size(out + ".part")
+            if got != size:
+                raise Error(
+                    "lerobot: '" + rel + "' downloaded " + String(got)
+                    + " bytes, the Hub listing says " + String(size)
+                    + " — the transfer was truncated"
+                )
+        rename_over(out + ".part", String(out))
         n_files += 1
 
     if verbose:
@@ -1010,23 +988,6 @@ def hf_download_dataset(
             + " already present -> " + dest
         )
     return dest^
-
-
-def _prefix(s: String, n: Int) -> String:
-    """The first `n` BYTES of `s`. Mojo has no string slicing, and these are
-    ASCII repo paths."""
-    var out = String("")
-    var b = s.as_bytes()
-    for i in range(n):
-        out += chr(Int(b[i]))
-    return out^
-
-
-def _file_size(path: String) raises -> Int:
-    var f = open(path, "r")
-    var n = f.seek(0, 2)
-    f.close()
-    return Int(n)
 
 
 def resolve_dataset_root(

@@ -3,13 +3,27 @@
 # +--------------------------------------------------------------------------+ #
 """Train ACT on the LeRobot v3 dataset, on CPU.
 
-    pixi run python tools/act/lerobot_v3_to_store.py \\
+    pixi run mojo run -I . examples/so101/act_so101_import_dataset.mojo \\
         --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
     pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_train \\
-        examples/so101/act_so101_train_cpu.mojo && /tmp/act_train
+        examples/so101/act_so101_train_cpu.mojo
+    ACT_PRETRAINED=hub /tmp/act_train
 
 Set `ACT_STORE=<path/to/store.h5>` to train on a different recording — the
 50-episode store, say. Nothing below is pinned to the row or episode count.
+
+`ACT_PRETRAINED` picks the backbone. `load_backbone_auto` reads the STRING, not
+what is at the path:
+
+| `hub` (or `1`) | fetch `timm/resnet18.tv_in1k` — no PyTorch, no `-e act-ref`, no dump step, cached after the first run |
+| `*.safetensors` | that file, under torchvision's names |
+| anything else | a `tools/act/dump_resnet18_imagenet.py` DIRECTORY |
+| unset | a RANDOM backbone |
+
+The dump is not deprecated: it is the oracle the Hub file is gated against
+(`tests/nn/test_safetensors_resnet18_torch.mojo`). The startup line says which
+of the four happened — worth reading, since a random backbone is legal, silent,
+and exactly what "4 training episodes will overfit" below is about.
 
 ⚠ `-Xlinker -ld_classic` is required: the fully-expanded graph type mangles to a
 symbol longer than Apple's new linker accepts. The source is healthy; `mojo run`
@@ -205,13 +219,19 @@ def main() raises:
 
     var tr = T.make(lr=Scalar[DT](LR), kl_weight=Scalar[DT](KL_WEIGHT))
 
-    # ── ImageNet-pretrained backbone, if one was dumped ──────────────────
-    # `ACT_PRETRAINED=<dir>` from tools/act/dump_resnet18_imagenet.py. The
-    # paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random at
-    # step 0 and has to learn vision from 12,411 frames, which is what the
+    # ── ImageNet-pretrained backbone ─────────────────────────────────────
+    # The paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random
+    # at step 0 and has to learn vision from 12,411 frames, which is what the
     # first 50-episode run overfit doing. Absent the variable the run is
     # unchanged, and it says which happened rather than leaving it to be
     # inferred from the loss curve.
+    #
+    #   ACT_PRETRAINED=hub    fetch timm/resnet18.tv_in1k -- NO PYTHON, no
+    #                         `-e act-ref`, no dump step. Cached after the
+    #                         first run.
+    #   ACT_PRETRAINED=<dir>  a tools/act/dump_resnet18_imagenet.py dump, the
+    #                         original path and the oracle the Hub file is
+    #                         gated against.
     var pretrained = String(
         os.environ.get(PythonObject("ACT_PRETRAINED"), PythonObject(""))
     )
@@ -225,7 +245,7 @@ def main() raises:
             os.environ.get(PythonObject("ACT_NO_FREEZE_BN"), PythonObject(""))
         )
         var freeze = no_freeze.byte_length() == 0
-        var n_loaded = tr.load_backbone(pretrained, freeze_norm=freeze)
+        var n_loaded = tr.load_backbone_auto(pretrained, freeze_norm=freeze)
         print(
             "  backbone  ImageNet weights, " + String(n_loaded)
             + " tensors, BatchNorm "
@@ -237,7 +257,7 @@ def main() raises:
         )
     else:
         print(
-            "  backbone  RANDOM (set ACT_PRETRAINED to use ImageNet weights)"
+            "  backbone  RANDOM (ACT_PRETRAINED=hub for ImageNet weights)"
         )
         logger.set_config("backbone_init", "random")
         logger.set_config("backbone_norm", "trainable")

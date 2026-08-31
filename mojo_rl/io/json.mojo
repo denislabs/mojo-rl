@@ -391,3 +391,196 @@ def load_json(path: String) raises -> JsonDoc:
     var b = f.read_bytes()
     f.close()
     return parse_json(b^)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Writing
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The reader above replaced `json.loads`; this replaces `json.dumps`, which is
+# the other half of what `core/logger.mojo` and `data/remote.mojo` needed
+# Python for. A builder rather than a value tree, for the same reason the
+# reader is a flat table: every payload here is written once, in order, and
+# never inspected — a tree would cost an allocation per node to serialise it
+# immediately.
+#
+#     var w = JsonWriter()
+#     w.begin_object()
+#     w.key("run_id"); w.string(run_id)
+#     w.key("metrics"); w.begin_array()
+#     ...
+#     w.end_array()
+#     w.end_object()
+#     var payload = w.done()
+
+
+struct JsonWriter(Movable):
+    """Append-only JSON serialiser.
+
+    ⚠ IT DOES NOT VALIDATE STRUCTURE. `end_object` after `begin_array` writes
+    `]`-where-`}`-belongs and produces invalid JSON. The call sites here write
+    fixed shapes a few lines long, so a validating writer would be paying for
+    a mistake that a test on the emitted text catches once and for all.
+
+    What it DOES enforce is the part that breaks silently: escaping, and the
+    refusal to write a non-finite number.
+    """
+
+    var _out: String
+    var _first: List[Bool]
+    """One flag per open container: whether the next item is its first."""
+    var _after_key: Bool
+    """⚠ THE COMMA BELONGS TO THE MEMBER, NOT THE VALUE. `key()` writes the
+    separator and then `"name":`; the value that follows must write none, or
+    every object comes out as `{"a":,1}`. One flag is the whole rule."""
+
+    def __init__(out self):
+        self._out = String("")
+        self._first = List[Bool]()
+        self._after_key = False
+
+    def __init__(out self, *, deinit move: Self):
+        self._out = move._out^
+        self._first = move._first^
+        self._after_key = move._after_key
+
+    def _sep(mut self):
+        if self._after_key:
+            self._after_key = False
+            return
+        if len(self._first) > 0:
+            if self._first[len(self._first) - 1]:
+                self._first[len(self._first) - 1] = False
+            else:
+                self._out += ","
+
+    def begin_object(mut self):
+        self._sep()
+        self._out += "{"
+        self._first.append(True)
+
+    def end_object(mut self):
+        self._out += "}"
+        _ = self._first.pop()
+
+    def begin_array(mut self):
+        self._sep()
+        self._out += "["
+        self._first.append(True)
+
+    def end_array(mut self):
+        self._out += "]"
+        _ = self._first.pop()
+
+    def key(mut self, name: String) raises:
+        self._sep()
+        self._out += json_quote(name)
+        self._out += ":"
+        self._after_key = True
+
+    def string(mut self, v: String) raises:
+        self._sep()
+        self._out += json_quote(v)
+
+    def integer(mut self, v: Int):
+        self._sep()
+        self._out += String(v)
+
+    def number(mut self, v: Float64) raises:
+        """⚠ JSON HAS NO NaN AND NO Infinity. Python's `json.dumps` emits
+        `NaN` / `Infinity` by default, which is not JSON and which a strict
+        server rejects; raising here is the honest translation."""
+        from std.math import isnan, isinf
+
+        if isnan(v) or isinf(v):
+            raise Error("json: " + String(v) + " has no JSON representation")
+        self._sep()
+        self._out += String(v)
+
+    def boolean(mut self, v: Bool):
+        self._sep()
+        self._out += "true" if v else "false"
+
+    def null(mut self):
+        self._sep()
+        self._out += "null"
+
+    def member(mut self, name: String, v: String) raises:
+        """`"name": "value"` — the shape most call sites actually write."""
+        self.key(name)
+        self.string(v)
+
+    def member(mut self, name: String, v: Int) raises:
+        self.key(name)
+        self.integer(v)
+
+    def member(mut self, name: String, v: Float64) raises:
+        self.key(name)
+        self.number(v)
+
+    def done(mut self) raises -> String:
+        if len(self._first) != 0:
+            raise Error(
+                "json: " + String(len(self._first)) + " container(s) still open"
+            )
+        return self._out.copy()
+
+
+def json_quote(s: String) raises -> String:
+    """`s` as a JSON string literal, quotes included.
+
+    ⚠ ESCAPING IS WHERE A HAND-ROLLED WRITER FAILS, and it fails on data
+    rather than on code: a run name with a quote in it, a Windows path with a
+    backslash, a metric name carrying a tab. Every byte below 0x20 must become
+    `\\uXXXX` — a raw one inside a string is invalid JSON, not merely ugly.
+
+    ⚠ IT BUILDS BYTES, NOT A STRING, and that is not a micro-optimisation.
+    An earlier version appended `s[byte = i : i + 1]` per byte, which ABORTS
+    the process on any multi-byte character — Mojo's byte slicing asserts a
+    codepoint boundary. A metric name with an accent in it would have taken
+    the training run down. Bytes have no such rule; the result is reassembled
+    once at the end.
+    """
+    var out = List[UInt8]()
+    out.append(UInt8(0x22))  # opening quote
+    var b = s.as_bytes()
+    for i in range(s.byte_length()):
+        var c = Int(b[i])
+        if c == 0x22:  # "
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x22))
+        elif c == 0x5C:  # backslash
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x5C))
+        elif c == 0x0A:
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x6E))  # "n"
+        elif c == 0x0D:
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x72))  # "r"
+        elif c == 0x09:
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x74))  # "t"
+        elif c == 0x08:
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x62))  # "b"
+        elif c == 0x0C:
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x66))  # "f"
+        elif c < 0x20:
+            var hexd = String("0123456789abcdef").as_bytes()
+            out.append(UInt8(0x5C))
+            out.append(UInt8(0x75))  # "u"
+            out.append(UInt8(0x30))  # "0"
+            out.append(UInt8(0x30))  # "0"
+            out.append(hexd[(c >> 4) & 0xF])
+            out.append(hexd[c & 0xF])
+        else:
+            # UTF-8 lead and continuation bytes pass through untouched: JSON
+            # is defined over Unicode text, and \u-escaping non-ASCII is
+            # optional. Copying the bytes keeps the encoding intact without
+            # this function having to decode anything.
+            out.append(b[i])
+    out.append(UInt8(0x22))  # closing quote
+    out.append(UInt8(0))
+    return String(unsafe_from_utf8_ptr=out.unsafe_ptr())

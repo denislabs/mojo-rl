@@ -1,4 +1,4 @@
-"""Sprite loading — PNG → RGBA byte buffer via PIL, bulk-copied through numpy.
+"""Sprite loading — PNG → RGBA byte buffer, natively.
 
 Procgen assets are variable-sized (e.g. sandCenter 128², cheese 27², backgrounds
 ~500²), so unlike craftax's fixed 16² sheet each sprite keeps its own dimensions
@@ -6,15 +6,16 @@ and the rasterizer scales it into the destination rect. Resource root defaults t
 the reference `data/assets/` dir; Phase 4 will vendor a per-game subset into the
 repo (pending the `ASSET_LICENSES.md` check — see `docs/PROCGEN_PORT.md`).
 
-Bulk loader: the naive `Int(py=raw[i])` per-byte path is ~fine for a few small
-sprites but prohibitive for backgrounds (9×~500²). Instead we take numpy's
-contiguous buffer address (`ctypes.data`), wrap it in an `Pointer` via
-`unsafe_from_address`, and `unsafe_memcpy` the whole image in one shot. The numpy array
-is kept alive until after the copy.
+⚠ NO LONGER PYTHON. This went through `PIL` + `numpy`, with a whole paragraph
+of buffer-address gymnastics — `arr.ctypes.data` into an `unsafe_from_address`
+pointer and one `unsafe_memcpy` — because the naive `Int(py=raw[i])` per-byte
+path was prohibitive for the 9 backgrounds at ~500² each. `io/png.mojo` hands
+back a `List[UInt8]` directly, so the gymnastics went with the interpreter.
+
+⚠ REQUIRES `pixi run build-http`: the decoder's zlib comes from that shim.
 """
 
-from std.python import Python, PythonObject
-from std.memory import unsafe_memcpy
+from mojo_rl.io.png import load_png_file, to_rgba
 
 
 struct Sprite(Copyable, Movable):
@@ -38,36 +39,33 @@ struct Sprite(Copyable, Movable):
         )
 
 
-def _load_rgba(pil: PythonObject, np: PythonObject, path: String) raises -> Sprite:
-    var img = pil.open(path).convert("RGBA")
-    var w = Int(py=img.width)
-    var h = Int(py=img.height)
-    # Contiguous uint8 RGBA buffer, flattened row-major (matches img.tobytes()).
-    var arr = np.ascontiguousarray(np.array(img).astype(np.uint8)).reshape(-1)
-    var n = w * h * 4
-    var addr = Int(py=arr.ctypes.data)
-    var src = Pointer[UInt8, MutAnyOrigin](unsafe_from_address=addr)
+def _load_rgba(path: String) raises -> Sprite:
+    """One sprite, RGBA, row-major.
+
+    ⚠ 241 OF PROCGEN'S 1,288 SPRITES ARE PALETTE PNGs and 7 of those pack
+    their indices below a byte (depths 1, 2 and 4). `io/png.mojo` expands both
+    to RGBA exactly as `PIL.convert("RGBA")` did — gated on every one of these
+    files in `tests/io/test_png_assets.mojo`, because a palette expanded wrong
+    renders a recognisable picture in the wrong colours, which no assert
+    catches.
+    """
+    var img = load_png_file(path)
+    var rgba = to_rgba(img)
     var s = Sprite()
-    s.w = w
-    s.h = h
-    s.rgba.resize(n, 0)
-    unsafe_memcpy(dest=s.rgba.unsafe_ptr(), src=src, count=n)
-    _ = arr  # keep the numpy buffer alive until after the copy
+    s.w = img.width
+    s.h = img.height
+    s.rgba = rgba^
     return s^
 
 
 def load_sprite(asset_root: String, relpath: String) raises -> Sprite:
-    var pil = Python.import_module("PIL.Image")
-    var np = Python.import_module("numpy")
-    return _load_rgba(pil, np, asset_root + relpath)
+    return _load_rgba(asset_root + relpath)
 
 
 def load_sprites(asset_root: String, relpaths: List[String]) raises -> List[Sprite]:
-    var pil = Python.import_module("PIL.Image")
-    var np = Python.import_module("numpy")
     var out = List[Sprite]()
     for i in range(len(relpaths)):
-        out.append(_load_rgba(pil, np, asset_root + relpaths[i]))
+        out.append(_load_rgba(asset_root + relpaths[i]))
     return out^
 
 

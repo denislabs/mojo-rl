@@ -26,3 +26,25 @@ regenerated rather than committed — they are large, and they must track
 sizes from the manifest and opens a `.bin` only when asked for it, so a subset
 manifest is consistent — a gate asking for anything outside it fails loudly with
 the missing name rather than reading garbage.
+
+## `parquet/golden_v3_shapes.parquet` (13 KB)
+
+26 rows in 4 unequal row groups, in every column shape a LeRobot v3 dataset
+uses, written by **Arrow** (`parquet-cpp-arrow`) rather than by this repo.
+
+    pixi run python tools/io/make_parquet_golden.py
+
+**Why it is committed.** `tests/io/test_parquet_write.mojo` has to answer "is
+what we wrote a real Parquet file". A round trip through our own reader cannot:
+the pair would share any misunderstanding and agree with itself while nothing
+else could open the result. Arrow is the independent party, and committing its
+output means the gate needs no `pyarrow` at test time — the same trade as
+`test_sha256.mojo` pinning digests that came out of `hashlib` once.
+
+**Two of its columns exist only to defeat a passing gate.** `tasks` has
+variable-length rows, because a constant width makes repetition levels
+predictable from the row index. `nested_2x3x2` is not a LeRobot shape at all:
+LeRobot's nested statistic is `[3,1,1]`, whose inner dimensions are both 1, so
+repetition levels 2 and 3 are NEVER EMITTED and the code that produces them is
+dead. A deliberate corruption of those levels survived every other check until
+this column existed.

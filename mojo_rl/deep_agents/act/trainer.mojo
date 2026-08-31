@@ -122,6 +122,15 @@ from .config import (
 )
 from .data_gpu import ACTDeviceDataset
 from .loss_graph import ACTLossGraph
+from mojo_rl.io.hf import HF_MODEL, hf_download_file
+from mojo_rl.io.safetensors import SafeTensors
+from mojo_rl.nn.core.torch_names import LoadTorchNamed, SaveTorchNamed
+from mojo_rl.nn.models.resnet18_torch import (
+    RESNET18_TV_FILE,
+    RESNET18_TV_REPO,
+    resnet18_torch_map,
+)
+
 from .refload import LoadPrefixedParams, RefDump
 
 
@@ -1254,6 +1263,110 @@ struct ACTTrainer[
         if freeze_norm:
             self.freeze_backbone_norm(True)
         return len(wl.loaded) + len(sl.loaded)
+
+    def load_backbone_safetensors(
+        mut self,
+        var path: String = String(""),
+        freeze_norm: Bool = True,
+        verbose: Bool = True,
+    ) raises -> Int:
+        """Fill the vision backbone from an ImageNet `.safetensors`, no Python.
+
+        The default `path` is empty, meaning "fetch `timm/resnet18.tv_in1k`
+        from the Hub and cache it" — that repo is torchvision's `IMAGENET1K_V1`
+        republished with a safetensors file, so this is the same 45 MB of
+        weights `load_backbone` reads from a `dump_resnet18_imagenet.py` dump,
+        without `torch`, `torchvision` or the `act-ref` environment.
+
+        ⚠ "tv_in1k" is a claim in a repo name, not a proof. It is checked:
+        `tests/nn/test_safetensors_resnet18_torch.mojo` compares every value of
+        this file against that dump and requires BIT equality (11,190,912
+        values). If timm ever re-uploads different weights under the same name,
+        that gate goes red before a training run silently changes.
+
+        Same contract as `load_backbone`: returns the number of tensors filled,
+        raises rather than half-loading, and freezes the BatchNorms unless told
+        not to.
+
+        ⚠ TWO WALKS, one visitor. Weights are parameters; BatchNorm running
+        statistics are STATE. Pretrained convolutions carrying this framework's
+        init statistics (mean 0, var 1) are not the pretrained network, they
+        are a different function that happens to share its weights. Reusing one
+        visitor across both walks means the coverage check sees the whole
+        backbone rather than half of it.
+        """
+        comptime GP = "feat.0."
+        if path == "":
+            path = hf_download_file(
+                String(RESNET18_TV_REPO),
+                String(RESNET18_TV_FILE),
+                HF_MODEL,
+                verbose=verbose,
+            )
+        var v = LoadTorchNamed[GP](
+            SafeTensors(path^), resnet18_torch_map(3)
+        )
+        self.graph.for_each_param[Self.target, LoadTorchNamed[GP]](v, self.ctx)
+        self.graph.for_each_state[Self.target, LoadTorchNamed[GP]](v, self.ctx)
+        v.report(String("load_backbone_safetensors"))
+        # ⚠ FREEZING IS PART OF LOADING — see `load_backbone` for why the two
+        # are one decision and not two.
+        if freeze_norm:
+            self.freeze_backbone_norm(True)
+        return len(v.loaded) + len(v.zeroed)
+
+    def load_backbone_auto(
+        mut self, spec: String, freeze_norm: Bool = True, verbose: Bool = True
+    ) raises -> Int:
+        """Dispatch `ACT_PRETRAINED` to the right backbone loader.
+
+            "hub" | "1"          fetch `timm/resnet18.tv_in1k` and use it
+            "*.safetensors"      that file, torchvision-named
+            anything else        a `dump_resnet18_imagenet.py` DIRECTORY
+
+        One rule, one place. Both `examples/so101/act_so101_train_cpu.mojo` and
+        `..._gpu.mojo` read the same variable, and a rule spelled out at two
+        call sites is this repo's most frequent defect shape.
+
+        The dump path stays first-class rather than deprecated: it is the
+        ORACLE the safetensors path is gated against
+        (`tests/nn/test_safetensors_resnet18_torch.mojo`), so a run that wants
+        to bypass the network — or to check the two agree — still can.
+        """
+        if spec == "hub" or spec == "1":
+            if verbose:
+                print(
+                    "  backbone  ImageNet from the Hub ("
+                    + String(RESNET18_TV_REPO) + ")"
+                )
+            return self.load_backbone_safetensors(
+                String(""), freeze_norm, verbose
+            )
+        if spec.endswith(".safetensors"):
+            return self.load_backbone_safetensors(
+                String(spec), freeze_norm, verbose
+            )
+        return self.load_backbone(spec, freeze_norm)
+
+    def save_backbone_safetensors(
+        mut self, var path: String
+    ) raises -> Int:
+        """Export the vision backbone under TORCHVISION's names and layout.
+
+        The file a `torchvision.models.resnet18()` can `load_state_dict` (with
+        `strict=False`: it has no `fc`, and `num_batches_tracked` is bookkeeping
+        we do not carry). The point is to get a fine-tuned backbone back out to
+        the ecosystem, so the names, the shapes and the layout are theirs, not
+        ours — that is what `torch_names.mojo` is for."""
+        comptime GP = "feat.0."
+        var v = SaveTorchNamed[GP](resnet18_torch_map(3))
+        self.graph.for_each_param[Self.target, SaveTorchNamed[GP]](v, self.ctx)
+        self.graph.for_each_state[Self.target, SaveTorchNamed[GP]](v, self.ctx)
+        v.report(String("save_backbone_safetensors"))
+        v.writer.add_metadata(String("producer"), String("mojo-rl"))
+        v.writer.add_metadata(String("format"), String("pt"))
+        v.writer.save(path^)
+        return len(v.written)
 
     def load(mut self, path: String) raises:
         var bytes = _read_file_bytes(path)

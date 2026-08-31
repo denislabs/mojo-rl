@@ -35,6 +35,7 @@ metadata and small tables — bulk sample data belongs in a `TrajectoryStore`.
 
 from .metadata import (
     CODEC_SNAPPY, CODEC_UNCOMPRESSED, ColumnChunkMeta, FileMetaData, LeafInfo,
+    PT_BYTE_ARRAY,
     PT_BOOLEAN,
     PT_DOUBLE, PT_FLOAT, PT_INT32, PT_INT64, codec_name, parse_file_metadata,
     physical_type_name,
@@ -178,8 +179,18 @@ def _plain_values(
     count: Int,
     mut out_f: List[Float64],
     mut out_i: List[Int64],
+    mut out_b: List[UInt8],
+    mut out_off: List[Int],
 ) raises:
-    """PLAIN: fixed-width little-endian values, back to back."""
+    """PLAIN: fixed-width little-endian values, back to back.
+
+    ⚠ BYTE_ARRAY IS THE EXCEPTION: each value is a 4-byte little-endian LENGTH
+    followed by that many bytes, so the values are not fixed-width and cannot
+    be indexed without walking them. They land concatenated in `out_b` with
+    `out_off` marking the boundaries — value `k` is
+    `out_b[out_off[k] : out_off[k + 1]]`, which is why `out_off` always holds
+    one more entry than there are values.
+    """
     if physical_type == PT_FLOAT:
         for _ in range(count):
             out_f.append(c.le_f32())
@@ -198,6 +209,16 @@ def _plain_values(
         rle_bits_plain(c, count, bits)
         for i in range(count):
             out_i.append(Int64(Int(bits[i])))
+    elif physical_type == PT_BYTE_ARRAY:
+        if len(out_off) == 0:
+            out_off.append(0)
+        for _ in range(count):
+            var n = Int(c.le_u32())
+            var start = c.pos
+            c.skip_bytes(n)
+            for k in range(n):
+                out_b.append(UInt8(c.at(start + k)))
+            out_off.append(len(out_b))
     else:
         raise Error(
             "parquet: PLAIN decoding of " + physical_type_name(physical_type)
@@ -291,7 +312,10 @@ struct ParquetFile(Movable):
             )
         var vf = List[Float64]()
         var vi = List[Int64]()
-        self._read_leaf(leaf, vf, vi)
+        var vb = List[UInt8]()
+        var vo = List[Int]()
+        var rep = List[Int32]()
+        self._read_leaf(leaf, vf, vi, vb, vo, False, rep)
         return vf^
 
     def read_i64(mut self, path: String) raises -> List[Int64]:
@@ -309,8 +333,94 @@ struct ParquetFile(Movable):
             )
         var vf = List[Float64]()
         var vi = List[Int64]()
-        self._read_leaf(leaf, vf, vi)
+        var vb = List[UInt8]()
+        var vo = List[Int]()
+        var rep = List[Int32]()
+        self._read_leaf(leaf, vf, vi, vb, vo, False, rep)
         return vi^
+
+    def read_byte_arrays(
+        mut self, path: String, mut values: List[UInt8], mut offsets: List[Int]
+    ) raises -> Int:
+        """Every value of a BYTE_ARRAY leaf, concatenated. Returns the count.
+
+        ⚠ NOT A `List[List[UInt8]]`. CIFAR-10's image column is 60,000
+        PNG blobs; a list of lists is 60,000 heap allocations to hand back
+        something the caller immediately walks once. `values` holds the bytes
+        end to end and `offsets` their boundaries — value `k` spans
+        `values[offsets[k] : offsets[k + 1]]`, so `offsets` has one entry more
+        than there are values.
+        """
+        var leaf = self.meta.leaves[self.meta.leaf_index(path)]
+        if leaf.physical_type != PT_BYTE_ARRAY:
+            raise Error(
+                "parquet: column '" + path + "' is "
+                + physical_type_name(leaf.physical_type)
+                + ", not BYTE_ARRAY"
+            )
+        var vf = List[Float64]()
+        var vi = List[Int64]()
+        var rep = List[Int32]()
+        self._read_leaf(leaf, vf, vi, values, offsets, False, rep)
+        if len(offsets) == 0:
+            offsets.append(0)
+        return len(offsets) - 1
+
+    def read_rep_levels(mut self, path: String) raises -> List[Int32]:
+        """The raw repetition levels of a LIST leaf, in file order.
+
+        ⚠ THIS IS THE ONLY WAY TO SEE HOW VALUES ARE GROUPED INTO ROWS. The
+        value readers above return a flat sequence that is IDENTICAL whether a
+        column was grouped `1,2,1,3,...` or `38,0,0,...` — so a writer that
+        emits the wrong repetition levels puts every value in the right order
+        and the wrong row, and no amount of value comparison detects it.
+        `tests/io/test_parquet_write.mojo` compares this stream against a
+        file Arrow wrote, which is what makes that gate bite.
+
+        Level `0` starts a new ROW; a higher level starts a new list at that
+        depth. Reading it is off the hot path — nothing in the LeRobot import
+        calls this.
+        """
+        var leaf = self.meta.leaves[self.meta.leaf_index(path)]
+        if leaf.max_rep == 0:
+            raise Error(
+                "parquet: column '" + path + "' is not inside a list, so it"
+                " has no repetition levels"
+            )
+        var vf = List[Float64]()
+        var vi = List[Int64]()
+        var vb = List[UInt8]()
+        var vo = List[Int]()
+        var rep = List[Int32]()
+        self._read_leaf(leaf, vf, vi, vb, vo, True, rep)
+        return rep^
+
+    def read_list_counts(mut self, path: String) raises -> List[Int]:
+        """Values per ROW for a LIST leaf, derived from its levels.
+
+        For `list<T>` that is the row's element count. For a nested column it
+        is the total leaf count in that row — `3` for a `[3,1,1]` statistic.
+
+        ⚠ EXACT ONLY BECAUSE NULLS AND EMPTY LISTS CANNOT BE READ. An empty
+        list occupies a level entry with no value, which would make entries
+        and values disagree; `_decode_data_page` already refuses any page
+        whose definition levels report one, so within this reader the two
+        counts coincide.
+        """
+        var rep = self.read_rep_levels(path)
+        var counts = List[Int]()
+        for i in range(len(rep)):
+            if rep[i] == 0:
+                counts.append(1)
+            else:
+                if len(counts) == 0:
+                    raise Error(
+                        "parquet: column '" + path + "' starts with"
+                        " repetition level " + String(Int(rep[i]))
+                        + "; the first value of a column must start a row"
+                    )
+                counts[len(counts) - 1] += 1
+        return counts^
 
     # ── decoding ──────────────────────────────────────────────────────
 
@@ -319,6 +429,10 @@ struct ParquetFile(Movable):
         leaf: LeafInfo,
         mut out_f: List[Float64],
         mut out_i: List[Int64],
+        mut out_b: List[UInt8],
+        mut out_off: List[Int],
+        want_rep: Bool,
+        mut out_rep: List[Int32],
     ) raises:
         var p = byte_ptr(self.bytes)
         var n = len(self.bytes)
@@ -331,7 +445,10 @@ struct ParquetFile(Movable):
                 if ch.path != leaf.path:
                     continue
                 found = True
-                self._read_chunk(p, n, ch, leaf, scratch, out_f, out_i)
+                self._read_chunk(
+                    p, n, ch, leaf, scratch, out_f, out_i, out_b, out_off,
+                    want_rep, out_rep,
+                )
             if not found:
                 raise Error(
                     "parquet: row group " + String(g) + " has no chunk for '"
@@ -347,6 +464,10 @@ struct ParquetFile(Movable):
         mut scratch: List[UInt8],
         mut out_f: List[Float64],
         mut out_i: List[Int64],
+        mut out_b: List[UInt8],
+        mut out_off: List[Int],
+        want_rep: Bool,
+        mut out_rep: List[Int32],
     ) raises:
         # The dictionary page, when present, precedes the data pages; the
         # chunk's byte span starts at whichever comes first.
@@ -362,6 +483,8 @@ struct ParquetFile(Movable):
 
         var dict_f = List[Float64]()
         var dict_i = List[Int64]()
+        var dict_b = List[UInt8]()
+        var dict_off = List[Int]()
         var have_dict = False
         var seen = 0
         var pos = start
@@ -417,12 +540,15 @@ struct ParquetFile(Movable):
                         + encoding_name(hdr.encoding) + ", expected PLAIN"
                     )
                 _plain_values(
-                    pc, leaf.physical_type, hdr.num_values, dict_f, dict_i
+                    pc, leaf.physical_type, hdr.num_values, dict_f, dict_i,
+                    dict_b, dict_off,
                 )
                 have_dict = True
             elif hdr.page_type == PAGE_DATA or hdr.page_type == PAGE_DATA_V2:
                 self._decode_data_page(
-                    pc, hdr, leaf, dict_f, dict_i, have_dict, out_f, out_i
+                    pc, hdr, leaf, dict_f, dict_i, dict_b, dict_off,
+                    have_dict, out_f, out_i, out_b, out_off, want_rep,
+                    out_rep,
                 )
                 seen += hdr.num_values
             elif hdr.page_type != PAGE_INDEX:
@@ -445,9 +571,15 @@ struct ParquetFile(Movable):
         leaf: LeafInfo,
         dict_f: List[Float64],
         dict_i: List[Int64],
+        dict_b: List[UInt8],
+        dict_off: List[Int],
         have_dict: Bool,
         mut out_f: List[Float64],
         mut out_i: List[Int64],
+        mut out_b: List[UInt8],
+        mut out_off: List[Int],
+        want_rep: Bool,
+        mut out_rep: List[Int32],
     ) raises:
         var is_v2 = hdr.page_type == PAGE_DATA_V2
 
@@ -465,15 +597,38 @@ struct ParquetFile(Movable):
                     " supported (the deprecated BIT_PACKED packs MSB-first)"
                 )
 
-        # ── repetition levels: read and discard ───────────────────────
+        # ── repetition levels ─────────────────────────────────────────
         # A flat read of every value does not need them; the caller reshapes
         # by the list width it already knows. They still have to be CONSUMED,
         # because the definition levels sit immediately after them.
+        #
+        # ⚠ `want_rep` EXISTS BECAUSE DISCARDING THEM MAKES ONE CLASS OF BUG
+        # INVISIBLE. The levels are the only record of where one row's list
+        # ends and the next begins, so a writer that emits the wrong ones
+        # produces a file whose values are all correct and whose ROWS are
+        # wrong — and a reader that skips them cannot tell. It is off by
+        # default: `read_list_counts` is a gate's tool, and collecting a level
+        # per value would cost a LeRobot import millions of appends it has no
+        # use for.
         if leaf.max_rep > 0:
             if is_v2:
+                if want_rep:
+                    var rstart = pc.pos
+                    var rc = ByteCursor(pc.p, rstart + hdr.rep_bytes, rstart)
+                    rle_decode(
+                        rc, bit_width_for(leaf.max_rep), hdr.num_values,
+                        out_rep,
+                    )
                 pc.skip_bytes(hdr.rep_bytes)
             else:
                 var rlen = pc.le_u32()
+                if want_rep:
+                    var rstart = pc.pos
+                    var rc = ByteCursor(pc.p, rstart + rlen, rstart)
+                    rle_decode(
+                        rc, bit_width_for(leaf.max_rep), hdr.num_values,
+                        out_rep,
+                    )
                 pc.skip_bytes(rlen)
 
         # ── definition levels: how many values are actually present ───
@@ -515,7 +670,9 @@ struct ParquetFile(Movable):
 
         # ── values ────────────────────────────────────────────────────
         if hdr.encoding == ENC_PLAIN:
-            _plain_values(pc, leaf.physical_type, present, out_f, out_i)
+            _plain_values(
+                pc, leaf.physical_type, present, out_f, out_i, out_b, out_off
+            )
         elif hdr.encoding == ENC_RLE:
             # BOOLEAN values, and only BOOLEAN values, may be RLE-encoded —
             # parquet-cpp writes them this way on a v2 page. The stream is the
@@ -547,7 +704,16 @@ struct ParquetFile(Movable):
             var width = pc.u8()
             var idx = List[Int32]()
             rle_decode(pc, width, present, idx)
-            var nd = len(dict_f) if len(dict_f) > 0 else len(dict_i)
+            var is_ba = leaf.physical_type == PT_BYTE_ARRAY
+            var nd: Int
+            if is_ba:
+                nd = len(dict_off) - 1 if len(dict_off) > 0 else 0
+            elif len(dict_f) > 0:
+                nd = len(dict_f)
+            else:
+                nd = len(dict_i)
+            if is_ba and len(out_off) == 0:
+                out_off.append(0)
             for i in range(present):
                 var k = Int(idx[i])
                 if k < 0 or k >= nd:
@@ -555,7 +721,15 @@ struct ParquetFile(Movable):
                         "parquet: dictionary index " + String(k) + " outside a "
                         + String(nd) + "-entry dictionary"
                     )
-                if len(dict_f) > 0:
+                if is_ba:
+                    # ⚠ Keyed on the LEAF TYPE, not on which dictionary list is
+                    # non-empty: an image column whose first entries happen to
+                    # be zero-length would otherwise look like an empty
+                    # dictionary and fall through to the numeric branch.
+                    for j in range(dict_off[k], dict_off[k + 1]):
+                        out_b.append(dict_b[j])
+                    out_off.append(len(out_b))
+                elif len(dict_f) > 0:
                     out_f.append(dict_f[k])
                 else:
                     out_i.append(dict_i[k])

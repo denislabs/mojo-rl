@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | A native Parquet reader for Mojo
 # +--------------------------------------------------------------------------+ #
-"""Read `.parquet` metadata and small tables without Python.
+"""Read AND write `.parquet` metadata and small tables without Python.
 
     from mojo_rl.io.parquet import ParquetFile
 
@@ -18,7 +18,8 @@ compact reader, Snappy, the RLE/bit-packed hybrid, and PLAIN. That is what
 these four files are, and they replace `pyarrow` in the LeRobot import path.
 
 See `reader.mojo` for the exact supported subset and the encodings it rejects
-by name.
+by name, and `writer.mojo` for the three column shapes a LeRobot v3 dataset is
+made of — which is what the write side exists for.
 """
 
 from .thrift import ByteCursor, BPtr, byte_ptr
@@ -30,3 +31,8 @@ from .metadata import (
 from .reader import ParquetFile, encoding_name
 from .rle import bit_width_for, rle_decode
 from .snappy import snappy_decompress, snappy_uncompressed_length
+from .thrift_write import ThriftWriter
+from .writer import (
+    ParquetWriter, PqColumn, PqValues, PQ_F32, PQ_F64, PQ_I64, PQ_STR,
+    pq_list, pq_list3, pq_scalar,
+)

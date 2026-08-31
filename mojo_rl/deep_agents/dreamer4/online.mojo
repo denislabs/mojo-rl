@@ -26,6 +26,7 @@ This is the driver the online CarRacing lighthouse calls; a stub-env smoke gate
 lives in `tests/nn/test_dreamer4_train_online.mojo`.
 """
 
+from std.os.path import exists
 from std.math import sqrt, log, cos
 from max.gpu.host import DeviceContext
 
@@ -50,7 +51,6 @@ from .imag_rl_loss import continue_bce_backward
 from .shortcut_loss import _mao, _ilog2
 from ..dreamerv3.twohot import symexp_twohot_bins
 from ...nn.models.cifar_feature_net import CifarBackbone
-from std.python import Python, PythonObject
 
 
 struct OnlineRng(Copyable, Movable):
@@ -444,8 +444,7 @@ def run_online_dreamer4[
     # file (or point save_ckpt elsewhere) to force a fresh pretrain.
     var reused = False
     if save_ckpt != String(""):
-        var pyos = Python.import_module("os")
-        if Bool(pyos.path.exists(PythonObject(save_ckpt + ".ckpt"))):
+        if exists(save_ckpt + ".ckpt"):
             print("[dreamer4-online] reusing checkpoint (skip tokenizer",
                   "pretrain):", save_ckpt + ".ckpt")
             agent.load(tok, save_ckpt, dctx)

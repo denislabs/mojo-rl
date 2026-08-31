@@ -12,11 +12,11 @@ Run:
     pixi run mojo run -I . examples/data/dataset_remote_smoke.mojo
 """
 
-from std.python import Python
 from std.pathlib import Path
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.data import ColumnSpec, TrajectoryStore, TrajectoryStoreWriter
+from mojo_rl.io.fileio import remove_file
 from mojo_rl.data.remote import RemoteCatalog
 
 
@@ -76,7 +76,7 @@ def main() raises:
     print("\n[2] GET /datasets (auth + routing check) ...")
     try:
         var rows = cat.list_datasets()
-        print("      OK —", len(rows), "dataset(s) registered")
+        print("      OK —", rows.size(rows.root()), "entries in the listing")
     except e:
         print("      FAILED:", String(e))
         print("      Read the error body above:")
@@ -102,13 +102,12 @@ def main() raises:
 
     print("\n[4] describe ...")
     var meta = cat.describe(id)
-    print("      status =", meta["status"], " sizeBytes =", meta["sizeBytes"])
-    print("      sha256 =", meta["sha256"])
+    print("      status =", meta.status, " sizeBytes =", meta.size_bytes)
+    print("      sha256 =", meta.sha256)
 
     print("\n[5] pull to a fresh path ...")
-    var os = Python.import_module("os")
     try:
-        _ = os.remove(PULLED)
+        remove_file(String(PULLED))
     except:
         pass
     _ = cat.pull(id, String(PULLED))

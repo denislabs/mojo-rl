@@ -17,7 +17,12 @@ The text is pure ASCII so byte-level tokenization is identical to char-level.
 Vocab size is typically ~65 (printable ASCII + newline).
 """
 
-from std.python import Python, PythonObject
+from std.os import makedirs
+from std.os.path import exists
+
+from mojo_rl.io.fileio import write_file_atomic
+from mojo_rl.io.hf import mojo_rl_cache
+from mojo_rl.io.http import http_get_bytes
 from std.random import random_si64
 from mojo_rl.nn.constants import DT
 
@@ -30,33 +35,24 @@ comptime _CACHE_FILE = "input.txt"
 
 
 def _cache_dir() raises -> String:
-    var os = Python.import_module("os")
-    var home = String(os.path.expanduser(PythonObject("~")))
-    var path = home + "/.cache/mojo_rl/tinyshakespeare"
-    _ = os.makedirs(PythonObject(path), exist_ok=True)
-    return path
+    var path = mojo_rl_cache() + "/tinyshakespeare"
+    makedirs(path, exist_ok=True)
+    return path^
 
 
 def _ensure_downloaded() raises -> String:
     """Returns the path to the cached input.txt, downloading it if missing."""
-    var os = Python.import_module("os")
     var cache = _cache_dir()
-    var txt_path = cache + "/" + _CACHE_FILE
+    var txt_path = cache + "/" + String(_CACHE_FILE)
 
-    if Bool(os.path.exists(PythonObject(txt_path))):
-        return txt_path
+    if exists(txt_path):
+        return txt_path^
 
-    print("  [tinyshakespeare] downloading " + _SHAKESPEARE_URL + " (~1 MB)")
-    var urllib_request = Python.import_module("urllib.request")
-    var builtins = Python.import_module("builtins")
-    var resp = urllib_request.urlopen(PythonObject(_SHAKESPEARE_URL), timeout=60)
-    var data = resp.read()
-    _ = resp.close()
-    var f = builtins.open(PythonObject(txt_path), PythonObject("wb"))
-    _ = f.write(data)
-    _ = f.close()
+    print("  [tinyshakespeare] downloading " + String(_SHAKESPEARE_URL) + " (~1 MB)")
+    var data = http_get_bytes(String(_SHAKESPEARE_URL))
+    write_file_atomic(txt_path, data)
     print("  [tinyshakespeare] download complete -> " + txt_path)
-    return txt_path
+    return txt_path^
 
 
 def load_text() raises -> String:

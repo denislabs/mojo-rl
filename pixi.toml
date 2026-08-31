@@ -51,6 +51,13 @@ scripts = ["scripts/build_cuda_intercept.sh"]
 pytorch = ">=2.5,<3"
 torchvision = ">=0.20,<1"
 numpy = ">=1.26"
+# The REFERENCE safetensors implementation, for gating OURS
+# (`mojo_rl/io/safetensors.mojo`). Our writer's files must be readable by the
+# library everyone else uses, and our reader must agree with it value-for-value
+# on a file that library wrote. A hand-rolled Python check would only re-state
+# the same understanding the Mojo code encodes -- two parsers sharing one wrong
+# assumption is a gate that cannot see the assumption.
+safetensors = ">=0.4,<1"
 
 [feature.cpu.dependencies]
 # CPU-only environment for CI and headless test runs: base deps WITHOUT the
@@ -92,11 +99,25 @@ ffmpeg = ">=7,<9"
 # slim containers; declared so the import path does not depend on the base
 # image.
 curl = ">=8,<9"
+# ⚠ AND `libcurl`, which is the part that matters now. `mojo_rl/io/http.mojo`
+# links the library, not the binary: every HTTP call in the tree — the metrics
+# logger, the dataset catalog, the HF downloader, the MNIST loader — is a
+# libcurl handle rather than Python `urllib` or a `curl` subprocess. The CLI
+# is still worth having on PATH for debugging the same requests by hand.
+# `zlib` comes with it and the shim links that too (MNIST's `.gz`).
 shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
 hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
 hdf5plugin = ">=7.0.0,<8"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
 h5py = ">=3.16.0,<4"             # used by inspection script + parity test (not by the Mojo loader)
-huggingface_hub = ">=1.24.0,<2"  # first-run dataset download
+# ⚠ GATE-ONLY AS OF THE NATIVE-NET WORK. Nothing under `mojo_rl/` imports
+# these three any more: `nn/datasets/cifar10.mojo` reads the HF parquet with
+# `io/parquet` + `io/png`, and `nn/datasets/lewm_pusht.mojo` streams its
+# `.h5.zst` through libcurl + libzstd in `io/native/mrl_http.c`. They stay
+# DECLARED because they are the ORACLES those replacements are gated against
+# (`tools/io/dump_cifar_reference.py`, `tools/io/make_zstd_fixture.py`) — the
+# same rule as `safetensors` above. Removing them would delete the gates, not
+# just the dependency.
+huggingface_hub = ">=1.24.0,<2"  # reference for the native Hub client
 pyarrow = ">=24.0.0,<25"            # read HF parquet datasets (e.g. CIFAR-10 loader)
 zstandard = ">=0.25.0,<0.26"        # first-run decompression of .h5.zst envelope
 
@@ -155,6 +176,11 @@ test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", desc
 # see tests/manifests/act.txt for the two prerequisite commands.
 test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", description = "ACT reference gates (needs -e act-ref dumps)" }
 test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
+# Format interop: our safetensors reader/writer against the REFERENCE library,
+# and the Hub's ImageNet ResNet18 against torchvision's. Needs `-e act-ref`
+# dumps AND the two `--verify` passes listed in the manifest header — half of
+# each gate is a file we write and cannot judge ourselves.
+test-interop = { cmd = "bash scripts/run_tests.sh tests/manifests/interop.txt", description = "safetensors / torch-name interop gates (needs the dumps in tests/manifests/interop.txt)" }
 test-act-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/act-gpu.txt", description = "ACT GPU-vs-CPU gates (use -e apple|nvidia)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
@@ -174,6 +200,14 @@ build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the De
 # arm64 variadic args go on the stack while `external_call` puts them in
 # registers -> silent EFAULT. Prerequisite of anything under `mojo_rl/robot/`.
 build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the serial shim (mojo_rl/io/serial/)" }
+# HTTP shim for `mojo_rl/io/http.mojo` — libcurl behind a fixed-arity C API.
+# Same reason as the serial shim, one level up: `curl_easy_setopt` is
+# C-variadic. It also carries zlib's `inflate`, because MNIST ships `.gz`
+# URLs, which is a content encoding libcurl will not decode (it is not a
+# `Content-Encoding` header). Prerequisite of `RemoteLogger`, the dataset
+# catalog, the HF downloader and the MNIST / TinyShakespeare loaders — i.e.
+# of every remaining network call in the tree, none of which touch Python.
+build-http = { cmd = "bash scripts/build_http.sh", description = "Build the HTTP shim (mojo_rl/io/http.mojo)" }
 # qhull shim for `mojo_rl/physics3d/collision/`. MuJoCo does not implement a
 # convex hull — `MakeGraph` CALLS qhull and walks `FORALLfacets`, and that
 # order decides every polygon normal. Prerequisite of any MESH model.

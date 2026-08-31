@@ -281,6 +281,11 @@ mojo_rl/io/serial/*.so
 mojo_rl/io/serial/*.o
 fb_walker_d128.ckpt
 
+# The HTTP shim built from mojo_rl/io/native/mrl_http.c. The .c IS tracked;
+# the binary is per-platform (it links the pixi env's libcurl by rpath) and is
+# rebuilt by `pixi run build-http`.
+mojo_rl/io/libmrl_http.so
+
 # qhull shim (built by `pixi run build-qhull`, not tracked)
 mojo_rl/physics3d/collision/libmrl_qhull.dylib
 mojo_rl/physics3d/collision/libmrl_qhull.so

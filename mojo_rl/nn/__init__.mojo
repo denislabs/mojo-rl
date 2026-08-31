@@ -30,6 +30,23 @@ from .core.initializer import (
     Deterministic,
 )
 from .core.checkpoint import save_params, load_params
+# safetensors: the INTEROP format. `save_params`/`load_params` above stay the
+# resume format — they carry Adam's moments, which safetensors has nowhere to
+# put that another framework would understand.
+from .core.safetensors_io import (
+    SafeTensorsLoader,
+    SafeTensorsSaver,
+    load_safetensors,
+    save_safetensors,
+)
+from .core.torch_names import (
+    LoadTorchNamed,
+    SaveTorchNamed,
+    TorchNameMap,
+    TN_PLAIN,
+    TN_TRANSPOSE,
+    TN_ZEROS,
+)
 from .primitives.linear import Linear
 from .primitives.linear_relu import LinearReLU
 from .primitives.linear_act import LinearAct

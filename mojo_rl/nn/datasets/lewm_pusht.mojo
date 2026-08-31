@@ -1,10 +1,14 @@
 """LeWM PushT expert-trajectory dataset loader.
 
 Loads ``quentinll/lewm-pusht`` from HuggingFace as used by the LeWorldModel
-paper (arXiv:2603.19312). First-run downloads ``pusht_expert_train.h5.zst``
-(~13 GB) via ``huggingface_hub`` and decompresses it to
-``~/.cache/mojo_rl/lewm_pusht/pusht_expert_train.h5`` (~20–40 GB). All
-subsequent loads are pure-Mojo via the libhdf5 FFI in ``mojo_rl/io/hdf5``.
+paper (arXiv:2603.19312). First-run streams ``pusht_expert_train.h5.zst``
+(~13 GB) over ``mojo_rl/io/http.mojo``, decompressing zstd ON THE WAY to
+``~/.cache/mojo_rl/lewm_pusht/pusht_expert_train.h5`` (~47 GB). All subsequent
+loads read that file through the libhdf5 FFI in ``mojo_rl/io/hdf5``.
+
+⚠ NO PYTHON, and no ``huggingface_hub`` / ``zstandard``. Both the transfer and
+the decompression happen inside ``native/mrl_http.c`` (libcurl + libzstd),
+which is also what keeps the compressed file off the disk entirely.
 
 Schema (from ``stable_worldmodel.data.formats.hdf5``):
 
@@ -56,7 +60,9 @@ Typical usage::
 """
 
 from std.memory import alloc, unsafe_memcpy
-from std.python import Python, PythonObject
+from std.os import makedirs
+from std.os.path import exists
+from std.time import sleep
 
 from mojo_rl.io.hdf5 import (
     H5File,
@@ -67,6 +73,8 @@ from mojo_rl.io.hdf5 import (
     H5T_SGN_2,
     hsize_t,
 )
+from mojo_rl.io.fileio import file_size, remove_file, rename_over
+from mojo_rl.io.hf import HF_DATASET, hf_client, hf_file_size, mojo_rl_cache
 from mojo_rl.nn.core.ptr import mptr, untracked
 
 
@@ -74,130 +82,108 @@ comptime _HF_REPO = "quentinll/lewm-pusht"
 comptime _HF_FILE = "pusht_expert_train.h5.zst"
 comptime _CACHE_SUBDIR = ".cache/mojo_rl/lewm_pusht"
 
-# The streaming download loop runs ENTIRELY inside Python (one exec + one
-# call from Mojo). Driving it chunk-by-chunk from Mojo leaked every large
-# per-iteration PythonObject (read chunks + decompress outputs) until the
-# function returned: RSS stayed flat (macOS swapped the cold pages), but
-# the process's physical footprint grew ~1:1 with the DECOMPRESSED volume
-# — 23 GB footprint / 20.7 GB of swapped-out MALLOC_LARGE at 34% of the
-# download, filling swap. In-Python, each chunk is freed per iteration.
-# Features: in-place progress bar (compressed bytes, avg MB/s, ETA),
-# reconnect-and-seek resume into the SAME decompressor (30 retries),
-# F_NOCACHE (macOS) / periodic fsync+fadvise DONTNEED (Linux) so the
-# multi-GB write also stays out of the OS page cache.
-comptime _DL_HELPER_PY: StaticString = """
-def stream_download(uri, tmp_path):
-    import gc, os, time
-    import zstandard
-    from huggingface_hub import HfFileSystem
-
-    fs = HfFileSystem()
-    total = fs.info(uri)['size']
-    f_out = open(tmp_path, 'wb')
-    try:
-        import fcntl
-        fcntl.fcntl(f_out.fileno(), fcntl.F_NOCACHE, 1)
-    except Exception:
-        pass  # non-macOS: fsync+fadvise below covers it
-    dobj = zstandard.ZstdDecompressor().decompressobj()
-    CHUNK = 16 * 1024 * 1024
-    MAX_RETRIES = 30
-    f_in = fs.open(uri, 'rb')
-    offset = 0
-    retries = 0
-    n_chunks = 0
-    t0 = time.monotonic()
-    while offset < total:
-        try:
-            chunk = f_in.read(CHUNK)
-        except Exception as e:
-            retries += 1
-            if retries > MAX_RETRIES:
-                raise RuntimeError(
-                    '  [lewm_pusht] download failed after %d reconnects'
-                    ' (last: %s); rerun to retry' % (MAX_RETRIES, e))
-            print()
-            print('  [lewm_pusht] read error at %d/%d bytes - reconnecting'
-                  ' (retry %d/%d): %s' % (offset, total, retries,
-                                          MAX_RETRIES, e))
-            time.sleep(2.0)
-            try:
-                f_in.close()
-            except Exception:
-                pass
-            f_in = fs.open(uri, 'rb')
-            f_in.seek(offset)
-            continue
-        if not chunk:
-            break
-        offset += len(chunk)
-        f_out.write(dobj.decompress(chunk))
-        chunk = None
-        n_chunks += 1
-        if n_chunks % 32 == 0:  # every ~512 MB compressed
-            f_out.flush()
-            os.fsync(f_out.fileno())
-            if hasattr(os, 'posix_fadvise'):
-                os.posix_fadvise(f_out.fileno(), 0, 0,
-                                 os.POSIX_FADV_DONTNEED)
-            gc.collect()
-        el = time.monotonic() - t0
-        mbs = offset / 1e6 / el if el > 0 else 0.0
-        eta = int((total - offset) / 1e6 / mbs) if mbs > 0 else 0
-        pct = offset * 100 // total
-        filled = offset * 30 // total
-        bar = '#' * filled + '-' * (30 - filled)
-        print('\\r  [lewm_pusht] [%s] %d%% | %.1f/%.1f GB | %.1f MB/s |'
-              ' ETA %dm%02ds   ' % (bar, pct, offset / 1e9, total / 1e9,
-                                    mbs, eta // 60, eta % 60),
-              end='', flush=True)
-    print()
-    f_in.close()
-    f_out.close()
-"""
+comptime _MAX_RETRIES = 30
 
 
 def _ensure_dataset_cached() raises -> String:
     """Resolve the cached ``.h5`` path, downloading + decompressing if needed.
 
     Streams the HF blob through zstd directly to disk — the compressed
-    ``.zst`` never lands locally, so peak disk usage equals the final
-    ``.h5`` size (~47 GB) rather than ~60 GB. Writes to a ``.tmp``
-    file and renames on success, so a mid-stream failure does not leave
-    a partial file masquerading as a valid cache hit.
+    ``.zst`` never lands locally, so peak disk usage equals the final ``.h5``
+    size (~47 GB) rather than ~60 GB. Writes to a ``.tmp`` file and renames on
+    success, so a mid-stream failure does not leave a partial file
+    masquerading as a valid cache hit.
+
+    ⚠ A DROPPED CONNECTION RESUMES AT THE COMPRESSED OFFSET, with the SAME
+    decompressor. That is what ``HttpClient.zstd_to_file`` exists for: the
+    alternative is restarting 13 GB of transfer because 200 MB of it went
+    missing. ``zstd_read()`` reports bytes FULLY fed to the decompressor, so
+    the resume point can never fall inside a half-consumed frame.
+
+    ⚠ A ``.tmp`` LEFT BY A PREVIOUS PROCESS CANNOT BE RESUMED and is deleted.
+    The decompressor state lives in memory and died with that process; the
+    bytes on disk are the tail of a zstd stream nothing can continue. The
+    Python version this replaces had exactly the same property.
 
     Returns the absolute path to ``pusht_expert_train.h5`` on disk.
     """
-    var os = Python.import_module("os")
-    var home = String(os.path.expanduser(PythonObject("~")))
-    var cache = home + "/" + _CACHE_SUBDIR
-    _ = os.makedirs(PythonObject(cache), exist_ok=True)
+    var cache = mojo_rl_cache() + "/lewm_pusht"
+    makedirs(cache, exist_ok=True)
 
     var h5_path = cache + "/pusht_expert_train.h5"
-    if Bool(os.path.exists(PythonObject(h5_path))):
-        return h5_path
+    if exists(h5_path):
+        return h5_path^
 
     var tmp_path = h5_path + ".tmp"
-    if Bool(os.path.exists(PythonObject(tmp_path))):
-        _ = os.remove(PythonObject(tmp_path))
+    if exists(tmp_path):
+        remove_file(tmp_path)
+
+    var compressed = hf_file_size(String(_HF_REPO), String(_HF_FILE), HF_DATASET)
+    if compressed < 0:
+        raise Error(
+            "lewm_pusht: " + String(_HF_REPO) + " has no " + String(_HF_FILE)
+        )
 
     print("  [lewm_pusht] no cache hit; streaming", _HF_FILE)
-    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~47 GB on disk)")
-
-    # One exec + one call: the chunk loop lives in Python (see the
-    # _DL_HELPER_PY note — Mojo-driven per-chunk PythonObjects leaked the
-    # whole decompressed volume into swap until the function returned).
-    var builtins = Python.import_module("builtins")
-    var hf_uri = String("datasets/") + _HF_REPO + "/" + _HF_FILE
-    var ns = builtins.dict()
-    _ = builtins.exec(PythonObject(_DL_HELPER_PY), ns)
-    _ = ns[PythonObject("stream_download")](
-        PythonObject(hf_uri), PythonObject(tmp_path)
+    print(
+        "  [lewm_pusht] (" + String(compressed // 1000000000)
+        + " GB over HTTP, decompressing to ~47 GB on disk)"
     )
 
-    _ = os.rename(PythonObject(tmp_path), PythonObject(h5_path))
-    print("  [lewm_pusht] cached → ", h5_path)
-    return h5_path
+    var url = (
+        "https://huggingface.co/datasets/" + String(_HF_REPO) + "/resolve/main/"
+        + String(_HF_FILE)
+    )
+    var c = hf_client()
+    c.zstd_to_file()
+
+    var retries = 0
+    while True:
+        var off = c.zstd_read()
+        if off >= compressed:
+            break
+        var failed: String
+        try:
+            var r = c.download(url, tmp_path, off, String("lewm_pusht"))
+            if r.ok():
+                break
+            raise Error(
+                "GET " + url + " -> " + String(r.status) + ": " + r.text()
+            )
+        except e:
+            failed = String(e)
+
+        retries += 1
+        if retries > _MAX_RETRIES:
+            raise Error(
+                "  [lewm_pusht] download failed after " + String(_MAX_RETRIES)
+                + " reconnects (last: " + failed + "); rerun to retry"
+            )
+        print()
+        print(
+            "  [lewm_pusht] read error at " + String(off) + "/"
+            + String(compressed) + " compressed bytes - reconnecting (retry "
+            + String(retries) + "/" + String(_MAX_RETRIES) + "): " + failed
+        )
+        sleep(2.0)
+
+    # ⚠ The listed size is the only end-to-end check there is: a zstd stream
+    # that stopped early decompresses cleanly up to that point and says
+    # nothing about the bytes that never arrived.
+    var got = c.zstd_read()
+    if got != compressed:
+        raise Error(
+            "lewm_pusht: consumed " + String(got) + " of " + String(compressed)
+            + " compressed bytes — the transfer was truncated (the partial"
+            " file is kept at " + tmp_path + ")"
+        )
+
+    rename_over(tmp_path, String(h5_path))
+    print(
+        "  [lewm_pusht] cached -> " + h5_path + " ("
+        + String(file_size(h5_path) // 1000000000) + " GB)"
+    )
+    return h5_path^
 
 
 struct LewmPushTWindow(Movable):

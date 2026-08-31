@@ -216,3 +216,67 @@ def resize_bilinear_pil(
                         * vc.kk[kbase + j]
                     )
                 dst[unsafe_offset = drow + x * channels + c] = UInt8(_clip8(acc))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NEAREST
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def resize_nearest_pil(
+    src: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+    in_h: Int,
+    in_w: Int,
+    dst: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+    out_h: Int,
+    out_w: Int,
+    channels: Int = 4,
+) raises:
+    """Resize `src` (HWC) into `dst`, matching `PIL.Image.NEAREST` exactly.
+
+    Both Craftax sprite loaders resize their atlases this way, so a one-pixel
+    disagreement is a different sprite sheet — visible, but not as an error.
+
+    ⚠ **THE ARITHMETIC IS THE SPECIFICATION, NOT THE MATH.** The obvious
+    `floor((x + 0.5) * in / out)` DISAGREES WITH PILLOW on 93 of 600 random
+    size pairs, and `floor(x * s + 0.5 * s)` on 104 — every disagreement is a
+    case where the exact product lands on an integer and double rounding
+    decides which side of it. Pillow's scaling path keeps a RUNNING
+    ACCUMULATOR: it starts at `0.5 * scale` and adds `scale` per output pixel,
+    so the accumulated floating-point error is part of the answer. Reproducing
+    the formula is not enough; the ORDER OF OPERATIONS has to match. This
+    version agrees on all 600 pairs, and `tests/io/test_resize_nearest.mojo`
+    holds that sweep.
+
+    ⚠ Do not "simplify" the loop below into a multiplication.
+    """
+    if channels <= 0:
+        raise Error("resize: channels must be positive")
+    if in_h <= 0 or in_w <= 0 or out_h <= 0 or out_w <= 0:
+        raise Error("resize: a zero dimension")
+
+    var sx = Float64(in_w) / Float64(out_w)
+    var sy = Float64(in_h) / Float64(out_h)
+
+    # The column map is the same for every row, so it is computed once.
+    var xmap = List[Int]()
+    xmap.resize(out_w, 0)
+    var xx = 0.5 * sx
+    for x in range(out_w):
+        var i = Int(xx)
+        xmap[x] = i if i < in_w else in_w - 1
+        xx += sx
+
+    var yy = 0.5 * sy
+    for y in range(out_h):
+        var iy = Int(yy)
+        if iy >= in_h:
+            iy = in_h - 1
+        yy += sy
+        var src_row = iy * in_w * channels
+        var dst_row = y * out_w * channels
+        for x in range(out_w):
+            var so = src_row + xmap[x] * channels
+            var do = dst_row + x * channels
+            for c in range(channels):
+                dst[unsafe_offset = do + c] = src[unsafe_offset = so + c]

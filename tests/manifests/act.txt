@@ -26,6 +26,11 @@
 tests/nn/test_cross_attention_vs_torch.mojo
 # M2 — DETR encoder / masked encoder / decoder layers (vs the reference's own)
 tests/deep_agents/act/test_act_layers_vs_reference.mojo
+# The ImageNet weights the Hub serves vs the ones torchvision does — see
+# `tests/manifests/interop.txt`, which is where this and the safetensors format
+# gates live. Listed here too because `load_backbone_safetensors` is an ACT
+# training path and this is what says it loads the same weights as the dump.
+tests/nn/test_safetensors_resnet18_torch.mojo
 # M3 — ResNet18 + both position tables (vs torchvision / PositionEmbeddingSine)
 tests/deep_agents/act/test_act_backbone_vs_reference.mojo
 # M4 — reparameterize / KL / masked L1 (vs policy.py)

@@ -14,7 +14,9 @@ block_id can be used directly as a sprite index without a translation table.
 """
 
 from std.memory import alloc, unsafe_memset, Pointer
-from std.python import Python, PythonObject
+from mojo_rl.io.image import resize_nearest_pil
+from mojo_rl.io.png import load_png_file, to_rgba
+from mojo_rl.nn.core.ptr import mptr
 
 
 # ============================================================================
@@ -83,7 +85,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 
 
 # ============================================================================
-# Loader — uses PIL via std.python (same path as render.png_loader)
+# Loader — native PNG decode (io/png.mojo), no interpreter
 # ============================================================================
 #
 # We can't use `load_png` directly because it returns a TextureData with a
@@ -95,7 +97,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 def _blit_sprite_to_sheet(
     sheet: Pointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
-    raw_bytes: PythonObject,
+    ref raw_bytes: List[UInt8],
     src_w: Int,
     src_h: Int,
 ) raises:
@@ -110,10 +112,10 @@ def _blit_sprite_to_sheet(
         for x in range(copy_w):
             var src_off = (y * src_w + x) * SPRITE_BPP
             var dst_off = (y * SHEET_WIDTH + (dst_x + x)) * SPRITE_BPP
-            sheet[unsafe_offset=dst_off + 0] = UInt8(Int(py=raw_bytes[src_off + 0]))
-            sheet[unsafe_offset=dst_off + 1] = UInt8(Int(py=raw_bytes[src_off + 1]))
-            sheet[unsafe_offset=dst_off + 2] = UInt8(Int(py=raw_bytes[src_off + 2]))
-            sheet[unsafe_offset=dst_off + 3] = UInt8(Int(py=raw_bytes[src_off + 3]))
+            sheet[unsafe_offset=dst_off + 0] = raw_bytes[src_off + 0]
+            sheet[unsafe_offset=dst_off + 1] = raw_bytes[src_off + 1]
+            sheet[unsafe_offset=dst_off + 2] = raw_bytes[src_off + 2]
+            sheet[unsafe_offset=dst_off + 3] = raw_bytes[src_off + 3]
 
 
 def _load_one(
@@ -121,15 +123,11 @@ def _load_one(
     slot_idx: Int,
     asset_dir: String,
     filename: String,
-    pil: PythonObject,
 ) raises:
     """Open `<asset_dir>/<filename>`, convert to RGBA, blit to sheet[slot_idx]."""
-    var path = asset_dir + "/" + filename
-    var img = pil.open(path).convert("RGBA")
-    var w = Int(py=img.width)
-    var h = Int(py=img.height)
-    var raw = img.tobytes()
-    _blit_sprite_to_sheet(sheet, slot_idx, raw, w, h)
+    var img = load_png_file(asset_dir + "/" + filename)
+    var raw = to_rgba(img)
+    _blit_sprite_to_sheet(sheet, slot_idx, raw, img.width, img.height)
 
 
 def build_sprite_sheet(
@@ -155,56 +153,54 @@ def build_sprite_sheet(
             sheet[unsafe_offset=off + 2] = UInt8(25)
             sheet[unsafe_offset=off + 3] = UInt8(255)
 
-    var pil = Python.import_module("PIL.Image")
-
     # Block sprites (indices match BLOCK_*).
-    _load_one(sheet, SPR_GRASS, asset_dir, "grass.png", pil)
-    _load_one(sheet, SPR_WATER, asset_dir, "water.png", pil)
-    _load_one(sheet, SPR_STONE, asset_dir, "stone.png", pil)
-    _load_one(sheet, SPR_TREE, asset_dir, "tree.png", pil)
-    _load_one(sheet, SPR_WOOD, asset_dir, "wood.png", pil)
-    _load_one(sheet, SPR_PATH, asset_dir, "path.png", pil)
-    _load_one(sheet, SPR_COAL, asset_dir, "coal.png", pil)
-    _load_one(sheet, SPR_IRON, asset_dir, "iron.png", pil)
-    _load_one(sheet, SPR_DIAMOND, asset_dir, "diamond.png", pil)
-    _load_one(sheet, SPR_TABLE, asset_dir, "table.png", pil)
-    _load_one(sheet, SPR_FURNACE, asset_dir, "furnace.png", pil)
-    _load_one(sheet, SPR_SAND, asset_dir, "sand.png", pil)
-    _load_one(sheet, SPR_LAVA, asset_dir, "lava.png", pil)
-    _load_one(sheet, SPR_PLANT_YOUNG, asset_dir, "plant-young.png", pil)
-    _load_one(sheet, SPR_PLANT_RIPE, asset_dir, "plant-ripe.png", pil)
+    _load_one(sheet, SPR_GRASS, asset_dir, "grass.png")
+    _load_one(sheet, SPR_WATER, asset_dir, "water.png")
+    _load_one(sheet, SPR_STONE, asset_dir, "stone.png")
+    _load_one(sheet, SPR_TREE, asset_dir, "tree.png")
+    _load_one(sheet, SPR_WOOD, asset_dir, "wood.png")
+    _load_one(sheet, SPR_PATH, asset_dir, "path.png")
+    _load_one(sheet, SPR_COAL, asset_dir, "coal.png")
+    _load_one(sheet, SPR_IRON, asset_dir, "iron.png")
+    _load_one(sheet, SPR_DIAMOND, asset_dir, "diamond.png")
+    _load_one(sheet, SPR_TABLE, asset_dir, "table.png")
+    _load_one(sheet, SPR_FURNACE, asset_dir, "furnace.png")
+    _load_one(sheet, SPR_SAND, asset_dir, "sand.png")
+    _load_one(sheet, SPR_LAVA, asset_dir, "lava.png")
+    _load_one(sheet, SPR_PLANT_YOUNG, asset_dir, "plant-young.png")
+    _load_one(sheet, SPR_PLANT_RIPE, asset_dir, "plant-ripe.png")
 
     # Mobs.
-    _load_one(sheet, SPR_ZOMBIE, asset_dir, "zombie.png", pil)
-    _load_one(sheet, SPR_COW, asset_dir, "cow.png", pil)
-    _load_one(sheet, SPR_SKELETON, asset_dir, "skeleton.png", pil)
-    _load_one(sheet, SPR_ARROW_UP, asset_dir, "arrow-up.png", pil)
-    _load_one(sheet, SPR_ARROW_DOWN, asset_dir, "arrow-down.png", pil)
-    _load_one(sheet, SPR_ARROW_LEFT, asset_dir, "arrow-left.png", pil)
-    _load_one(sheet, SPR_ARROW_RIGHT, asset_dir, "arrow-right.png", pil)
+    _load_one(sheet, SPR_ZOMBIE, asset_dir, "zombie.png")
+    _load_one(sheet, SPR_COW, asset_dir, "cow.png")
+    _load_one(sheet, SPR_SKELETON, asset_dir, "skeleton.png")
+    _load_one(sheet, SPR_ARROW_UP, asset_dir, "arrow-up.png")
+    _load_one(sheet, SPR_ARROW_DOWN, asset_dir, "arrow-down.png")
+    _load_one(sheet, SPR_ARROW_LEFT, asset_dir, "arrow-left.png")
+    _load_one(sheet, SPR_ARROW_RIGHT, asset_dir, "arrow-right.png")
 
     # Player.
-    _load_one(sheet, SPR_PLAYER_UP, asset_dir, "player-up.png", pil)
-    _load_one(sheet, SPR_PLAYER_DOWN, asset_dir, "player-down.png", pil)
-    _load_one(sheet, SPR_PLAYER_LEFT, asset_dir, "player-left.png", pil)
-    _load_one(sheet, SPR_PLAYER_RIGHT, asset_dir, "player-right.png", pil)
-    _load_one(sheet, SPR_PLAYER_SLEEP, asset_dir, "player-sleep.png", pil)
+    _load_one(sheet, SPR_PLAYER_UP, asset_dir, "player-up.png")
+    _load_one(sheet, SPR_PLAYER_DOWN, asset_dir, "player-down.png")
+    _load_one(sheet, SPR_PLAYER_LEFT, asset_dir, "player-left.png")
+    _load_one(sheet, SPR_PLAYER_RIGHT, asset_dir, "player-right.png")
+    _load_one(sheet, SPR_PLAYER_SLEEP, asset_dir, "player-sleep.png")
 
     # Inventory icons.
-    _load_one(sheet, SPR_INV_WOOD, asset_dir, "log.png", pil)
-    _load_one(sheet, SPR_INV_SAPLING, asset_dir, "sapling.png", pil)
-    _load_one(sheet, SPR_INV_WOOD_PICKAXE, asset_dir, "wood_pickaxe.png", pil)
-    _load_one(sheet, SPR_INV_STONE_PICKAXE, asset_dir, "stone_pickaxe.png", pil)
-    _load_one(sheet, SPR_INV_IRON_PICKAXE, asset_dir, "iron_pickaxe.png", pil)
-    _load_one(sheet, SPR_INV_WOOD_SWORD, asset_dir, "wood_sword.png", pil)
-    _load_one(sheet, SPR_INV_STONE_SWORD, asset_dir, "stone_sword.png", pil)
-    _load_one(sheet, SPR_INV_IRON_SWORD, asset_dir, "iron_sword.png", pil)
+    _load_one(sheet, SPR_INV_WOOD, asset_dir, "log.png")
+    _load_one(sheet, SPR_INV_SAPLING, asset_dir, "sapling.png")
+    _load_one(sheet, SPR_INV_WOOD_PICKAXE, asset_dir, "wood_pickaxe.png")
+    _load_one(sheet, SPR_INV_STONE_PICKAXE, asset_dir, "stone_pickaxe.png")
+    _load_one(sheet, SPR_INV_IRON_PICKAXE, asset_dir, "iron_pickaxe.png")
+    _load_one(sheet, SPR_INV_WOOD_SWORD, asset_dir, "wood_sword.png")
+    _load_one(sheet, SPR_INV_STONE_SWORD, asset_dir, "stone_sword.png")
+    _load_one(sheet, SPR_INV_IRON_SWORD, asset_dir, "iron_sword.png")
 
     # Intrinsic icons.
-    _load_one(sheet, SPR_ICON_HEALTH, asset_dir, "health.png", pil)
-    _load_one(sheet, SPR_ICON_FOOD, asset_dir, "food.png", pil)
-    _load_one(sheet, SPR_ICON_DRINK, asset_dir, "drink.png", pil)
-    _load_one(sheet, SPR_ICON_ENERGY, asset_dir, "energy.png", pil)
+    _load_one(sheet, SPR_ICON_HEALTH, asset_dir, "health.png")
+    _load_one(sheet, SPR_ICON_FOOD, asset_dir, "food.png")
+    _load_one(sheet, SPR_ICON_DRINK, asset_dir, "drink.png")
+    _load_one(sheet, SPR_ICON_ENERGY, asset_dir, "energy.png")
 
     return sheet
 
@@ -234,7 +230,7 @@ def _blit_resized_to_atlas(
     atlas: Pointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
-    raw_bytes: PythonObject,
+    ref raw_bytes: List[UInt8],
 ) raises:
     """Copy a `BPS×BPS×RGBA` region (already resized) into atlas slot."""
     var bps = block_pixel_size
@@ -243,10 +239,10 @@ def _blit_resized_to_atlas(
         for x in range(bps):
             var src_off = (y * bps + x) * 4
             var dst_off = slot_base + (y * bps + x) * 4
-            atlas[unsafe_offset=dst_off + 0] = Float32(Int(py=raw_bytes[src_off + 0])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 1] = Float32(Int(py=raw_bytes[src_off + 1])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 2] = Float32(Int(py=raw_bytes[src_off + 2])) / Float32(255.0)
-            atlas[unsafe_offset=dst_off + 3] = Float32(Int(py=raw_bytes[src_off + 3])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 0] = Float32(Int(raw_bytes[src_off + 0])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 1] = Float32(Int(raw_bytes[src_off + 1])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 2] = Float32(Int(raw_bytes[src_off + 2])) / Float32(255.0)
+            atlas[unsafe_offset=dst_off + 3] = Float32(Int(raw_bytes[src_off + 3])) / Float32(255.0)
 
 
 def _load_one_resized(
@@ -255,16 +251,29 @@ def _load_one_resized(
     block_pixel_size: Int,
     asset_dir: String,
     filename: String,
-    pil: PythonObject,
 ) raises:
     """Open `<asset_dir>/<filename>`, RGBA-convert, nearest-resize to
-    `BPS×BPS`, and write float32 [0,1] into atlas[slot_idx]."""
-    var path = asset_dir + "/" + filename
-    var img = pil.open(path).convert("RGBA")
-    var size = Python.tuple(block_pixel_size, block_pixel_size)
-    img = img.resize(size, resample=pil.NEAREST)
-    var raw = img.tobytes()
-    _blit_resized_to_atlas(atlas, slot_idx, block_pixel_size, raw)
+    `BPS×BPS`, and write float32 [0,1] into atlas[slot_idx].
+
+    ⚠ `resize_nearest_pil` REPRODUCES PILLOW'S ARITHMETIC, not the textbook
+    formula — Pillow walks a floating-point accumulator, and the obvious
+    `floor((x + 0.5) * in / out)` picks a different source pixel on 93 of 600
+    random size pairs. A sprite atlas built with the wrong one looks almost
+    right, which is why `tests/io/test_resize_nearest.mojo` exists."""
+    var img = load_png_file(asset_dir + "/" + filename)
+    var rgba = to_rgba(img)
+    var small = List[UInt8]()
+    small.resize(block_pixel_size * block_pixel_size * 4, 0)
+    resize_nearest_pil(
+        mptr(rgba.unsafe_ptr()),
+        img.height,
+        img.width,
+        mptr(small.unsafe_ptr()),
+        block_pixel_size,
+        block_pixel_size,
+        4,
+    )
+    _blit_resized_to_atlas(atlas, slot_idx, block_pixel_size, small)
 
 
 def build_agent_atlas(
@@ -292,55 +301,53 @@ def build_agent_atlas(
             atlas[unsafe_offset=off + 2] = Float32(25.0) / Float32(255.0)
             atlas[unsafe_offset=off + 3] = Float32(1.0)
 
-    var pil = Python.import_module("PIL.Image")
-
     # Blocks (indices match BLOCK_*).
-    _load_one_resized(atlas, SPR_GRASS, bps, asset_dir, "grass.png", pil)
-    _load_one_resized(atlas, SPR_WATER, bps, asset_dir, "water.png", pil)
-    _load_one_resized(atlas, SPR_STONE, bps, asset_dir, "stone.png", pil)
-    _load_one_resized(atlas, SPR_TREE, bps, asset_dir, "tree.png", pil)
-    _load_one_resized(atlas, SPR_WOOD, bps, asset_dir, "wood.png", pil)
-    _load_one_resized(atlas, SPR_PATH, bps, asset_dir, "path.png", pil)
-    _load_one_resized(atlas, SPR_COAL, bps, asset_dir, "coal.png", pil)
-    _load_one_resized(atlas, SPR_IRON, bps, asset_dir, "iron.png", pil)
-    _load_one_resized(atlas, SPR_DIAMOND, bps, asset_dir, "diamond.png", pil)
-    _load_one_resized(atlas, SPR_TABLE, bps, asset_dir, "table.png", pil)
-    _load_one_resized(atlas, SPR_FURNACE, bps, asset_dir, "furnace.png", pil)
-    _load_one_resized(atlas, SPR_SAND, bps, asset_dir, "sand.png", pil)
-    _load_one_resized(atlas, SPR_LAVA, bps, asset_dir, "lava.png", pil)
-    _load_one_resized(atlas, SPR_PLANT_YOUNG, bps, asset_dir, "plant-young.png", pil)
-    _load_one_resized(atlas, SPR_PLANT_RIPE, bps, asset_dir, "plant-ripe.png", pil)
+    _load_one_resized(atlas, SPR_GRASS, bps, asset_dir, "grass.png")
+    _load_one_resized(atlas, SPR_WATER, bps, asset_dir, "water.png")
+    _load_one_resized(atlas, SPR_STONE, bps, asset_dir, "stone.png")
+    _load_one_resized(atlas, SPR_TREE, bps, asset_dir, "tree.png")
+    _load_one_resized(atlas, SPR_WOOD, bps, asset_dir, "wood.png")
+    _load_one_resized(atlas, SPR_PATH, bps, asset_dir, "path.png")
+    _load_one_resized(atlas, SPR_COAL, bps, asset_dir, "coal.png")
+    _load_one_resized(atlas, SPR_IRON, bps, asset_dir, "iron.png")
+    _load_one_resized(atlas, SPR_DIAMOND, bps, asset_dir, "diamond.png")
+    _load_one_resized(atlas, SPR_TABLE, bps, asset_dir, "table.png")
+    _load_one_resized(atlas, SPR_FURNACE, bps, asset_dir, "furnace.png")
+    _load_one_resized(atlas, SPR_SAND, bps, asset_dir, "sand.png")
+    _load_one_resized(atlas, SPR_LAVA, bps, asset_dir, "lava.png")
+    _load_one_resized(atlas, SPR_PLANT_YOUNG, bps, asset_dir, "plant-young.png")
+    _load_one_resized(atlas, SPR_PLANT_RIPE, bps, asset_dir, "plant-ripe.png")
 
     # Mobs.
-    _load_one_resized(atlas, SPR_ZOMBIE, bps, asset_dir, "zombie.png", pil)
-    _load_one_resized(atlas, SPR_COW, bps, asset_dir, "cow.png", pil)
-    _load_one_resized(atlas, SPR_SKELETON, bps, asset_dir, "skeleton.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_UP, bps, asset_dir, "arrow-up.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_DOWN, bps, asset_dir, "arrow-down.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_LEFT, bps, asset_dir, "arrow-left.png", pil)
-    _load_one_resized(atlas, SPR_ARROW_RIGHT, bps, asset_dir, "arrow-right.png", pil)
+    _load_one_resized(atlas, SPR_ZOMBIE, bps, asset_dir, "zombie.png")
+    _load_one_resized(atlas, SPR_COW, bps, asset_dir, "cow.png")
+    _load_one_resized(atlas, SPR_SKELETON, bps, asset_dir, "skeleton.png")
+    _load_one_resized(atlas, SPR_ARROW_UP, bps, asset_dir, "arrow-up.png")
+    _load_one_resized(atlas, SPR_ARROW_DOWN, bps, asset_dir, "arrow-down.png")
+    _load_one_resized(atlas, SPR_ARROW_LEFT, bps, asset_dir, "arrow-left.png")
+    _load_one_resized(atlas, SPR_ARROW_RIGHT, bps, asset_dir, "arrow-right.png")
 
     # Player.
-    _load_one_resized(atlas, SPR_PLAYER_UP, bps, asset_dir, "player-up.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_DOWN, bps, asset_dir, "player-down.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_LEFT, bps, asset_dir, "player-left.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_RIGHT, bps, asset_dir, "player-right.png", pil)
-    _load_one_resized(atlas, SPR_PLAYER_SLEEP, bps, asset_dir, "player-sleep.png", pil)
+    _load_one_resized(atlas, SPR_PLAYER_UP, bps, asset_dir, "player-up.png")
+    _load_one_resized(atlas, SPR_PLAYER_DOWN, bps, asset_dir, "player-down.png")
+    _load_one_resized(atlas, SPR_PLAYER_LEFT, bps, asset_dir, "player-left.png")
+    _load_one_resized(atlas, SPR_PLAYER_RIGHT, bps, asset_dir, "player-right.png")
+    _load_one_resized(atlas, SPR_PLAYER_SLEEP, bps, asset_dir, "player-sleep.png")
 
     # Inventory icons.
-    _load_one_resized(atlas, SPR_INV_WOOD, bps, asset_dir, "log.png", pil)
-    _load_one_resized(atlas, SPR_INV_SAPLING, bps, asset_dir, "sapling.png", pil)
-    _load_one_resized(atlas, SPR_INV_WOOD_PICKAXE, bps, asset_dir, "wood_pickaxe.png", pil)
-    _load_one_resized(atlas, SPR_INV_STONE_PICKAXE, bps, asset_dir, "stone_pickaxe.png", pil)
-    _load_one_resized(atlas, SPR_INV_IRON_PICKAXE, bps, asset_dir, "iron_pickaxe.png", pil)
-    _load_one_resized(atlas, SPR_INV_WOOD_SWORD, bps, asset_dir, "wood_sword.png", pil)
-    _load_one_resized(atlas, SPR_INV_STONE_SWORD, bps, asset_dir, "stone_sword.png", pil)
-    _load_one_resized(atlas, SPR_INV_IRON_SWORD, bps, asset_dir, "iron_sword.png", pil)
+    _load_one_resized(atlas, SPR_INV_WOOD, bps, asset_dir, "log.png")
+    _load_one_resized(atlas, SPR_INV_SAPLING, bps, asset_dir, "sapling.png")
+    _load_one_resized(atlas, SPR_INV_WOOD_PICKAXE, bps, asset_dir, "wood_pickaxe.png")
+    _load_one_resized(atlas, SPR_INV_STONE_PICKAXE, bps, asset_dir, "stone_pickaxe.png")
+    _load_one_resized(atlas, SPR_INV_IRON_PICKAXE, bps, asset_dir, "iron_pickaxe.png")
+    _load_one_resized(atlas, SPR_INV_WOOD_SWORD, bps, asset_dir, "wood_sword.png")
+    _load_one_resized(atlas, SPR_INV_STONE_SWORD, bps, asset_dir, "stone_sword.png")
+    _load_one_resized(atlas, SPR_INV_IRON_SWORD, bps, asset_dir, "iron_sword.png")
 
     # Intrinsic icons.
-    _load_one_resized(atlas, SPR_ICON_HEALTH, bps, asset_dir, "health.png", pil)
-    _load_one_resized(atlas, SPR_ICON_FOOD, bps, asset_dir, "food.png", pil)
-    _load_one_resized(atlas, SPR_ICON_DRINK, bps, asset_dir, "drink.png", pil)
-    _load_one_resized(atlas, SPR_ICON_ENERGY, bps, asset_dir, "energy.png", pil)
+    _load_one_resized(atlas, SPR_ICON_HEALTH, bps, asset_dir, "health.png")
+    _load_one_resized(atlas, SPR_ICON_FOOD, bps, asset_dir, "food.png")
+    _load_one_resized(atlas, SPR_ICON_DRINK, bps, asset_dir, "drink.png")
+    _load_one_resized(atlas, SPR_ICON_ENERGY, bps, asset_dir, "energy.png")
 
     return atlas

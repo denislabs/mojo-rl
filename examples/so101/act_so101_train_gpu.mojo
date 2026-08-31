@@ -13,13 +13,14 @@ steps 3 and 4 write them.
 # ── 0. the repo and its environments ──────────────────────────────────────
 git clone <this repo> mojo-rl && cd mojo-rl
 pixi install -e nvidia      # CUDA toolkit, cuDNN, nsight — tens of GB
-pixi install -e act-ref     # PyTorch, ~3 GB. Needed ONLY for step 4.
+pixi install -e act-ref     # PyTorch, ~3 GB. ONLY for step 4b — skip it
+                            # entirely if you take 4a, which is the default.
 
 # ── 1. disk ───────────────────────────────────────────────────────────────
-#   pixi envs   ~20 GB (nvidia) + ~3 GB (act-ref)
+#   pixi envs   ~20 GB (nvidia) + ~3 GB (act-ref, only on the 4b route)
 #   HF cache     0.7 GB   dataset snapshot
 #   store        7.2 GB   the converted .h5
-#   resnet dump   47 MB
+#   resnet18      47 MB   ImageNet weights, either route
 #   checkpoints  0.3 GB   best + last, ~130 MB each
 # Budget 35 GB and do not cut it fine: a pixi fetch that runs out of space
 # fails mid-solve and leaves the environment unusable.
@@ -41,14 +42,27 @@ export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_0927
 #   pixi run -e nvidia python tools/act/lerobot_v3_to_store.py \\
 #       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
 
-# ── 4. ImageNet ResNet18 weights (~6 s, 47 MB) ───────────────────────────
-# The ONLY step that needs PyTorch, and nothing under mojo_rl/ imports it.
-pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
-    --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
-export ACT_PRETRAINED=~/.cache/mojo_rl/act_so101/resnet18_imagenet
+# ── 4. ImageNet ResNet18 weights (47 MB) ─────────────────────────────────
+# Two routes to the same weights; only the variable below changes.
+# `load_backbone_auto` dispatches on the STRING: `hub` (or `1`) fetches, a
+# `*.safetensors` value is read as that file, anything else is a dump DIRECTORY.
+#
+#   4a. the Hub file — NO PyTorch, no `-e act-ref`, no dump step. Downloaded
+#       on the first run that asks for it, cached afterwards.
+export ACT_PRETRAINED=hub
+#
+#   4b. the torchvision dump — the original path, and the oracle 4a is gated
+#       against (`tests/nn/test_safetensors_resnet18_torch.mojo` compares all
+#       11,190,912 values). The ONLY step in this list that needs PyTorch.
+# pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
+#     --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+# export ACT_PRETRAINED=~/.cache/mojo_rl/act_so101/resnet18_imagenet
 
 # ── 5. check both before spending GPU hours on them ──────────────────────
 pixi run -e nvidia mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
+# ⚠ Both backbone gates read the 4b dump. On the 4a route there is nothing to
+# check here — the Hub file is verified against that dump, so verifying it
+# needs the dump too. Run them on a box that has one, not on the rented GPU.
 pixi run -e nvidia mojo run -I . \\
     tests/deep_agents/act/test_act_pretrained_backbone.mojo
 
@@ -81,7 +95,7 @@ binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 | | |
 |---|---|
 | `ACT_STORE` | the `.h5` to train on; default is the 5-episode recording |
-| `ACT_PRETRAINED` | ImageNet backbone dump; default is a RANDOM backbone |
+| `ACT_PRETRAINED` | `hub` for the ImageNet backbone with no PyTorch, or a `dump_resnet18_imagenet.py` directory for the torchvision dump; default is a RANDOM backbone |
 | `ACT_STEPS` | step count, **without a rebuild** — the graph takes ~6 min to compile, so "run it longer" must not mean "build it again" |
 | `ACT_NO_MONITOR` | force the logger inert with the keys present; what a smoke run should use so it does not land in the dashboard beside a real one |
 | `ACT_CKPT` | read by `act_so101_openloop_eval.mojo`, not by this file |
@@ -115,10 +129,34 @@ chunks 100 steps — 2.0 seconds. This data is 30 fps, so the same two seconds i
 60 frames. Copying the number 100 would have copied the wrong quantity.
 
 `enc_layers` matches the paper. `hidden_dim` and `dim_feedforward` do not, and
-that is the honest gap: the graph type expands with every one of these and
-COMPILE time, not step time, is what bounds this file — the ACT GPU gate exists
-in its stub-backbone form because a full-backbone build never finished on CUDA.
-Raise them if a build you have measured says you can.
+that gap is a STEP-TIME choice, not a build-time one.
+
+⚠ This paragraph used to say the graph type expands with each of these and that
+COMPILE time bounds the file. **Measured 2026-08-31, that is wrong for both**
+(`target="gpu"`, `N_ENC=4`, `BATCH=16`, cold builds, `-Xlinker -ld_classic`):
+
+| `hidden_dim` | `dim_feedforward` | build |
+|---|---|---|
+| 128 | 1024 | 150 s |
+| 256 | 1024 | 155 s |
+| 256 | 3200 (the paper's) | 153 s |
+
+A 3% spread against ~15% run-to-run noise. Doubling the width and tripling the
+feedforward cost NOTHING to build. Neither does `enc_layers`/`dec_layers` —
+`RepeatConditional[N, Layer]` instantiates ONE layer type and repeats it at
+runtime, so depth is free too (measured flat from N=4 to N=32 on the combinator
+in isolation). What compile time DOES scale with is the number of distinct
+module POSITIONS, which is why the backbone dominates: swapping ResNet18 for the
+5-conv `Stub` was 136 s -> 77 s. That, not the transformer dims, is why the ACT
+GPU gate exists in its stub-backbone form — the original reason recorded here,
+that a full-backbone build never finished on CUDA, is consistent with it and
+still stands (it is a backbone cost, not a `hidden_dim` one).
+
+⚠⚠ Measured on APPLE/Metal. CUDA is a third codegen path and is NOT covered by
+these numbers — re-measure before quoting them on the 5090.
+
+So raise them if STEP time allows. The build will not object; a 5090 running out
+of memory or wall-clock still might.
 
 `batch = 16` rather than the paper's 8: 15,447 frames at 2 cameras is 32 images
 per step, which is still small for a 5090, and halving the step count per epoch
@@ -475,13 +513,19 @@ def main() raises:
             + " GB uint8 (once)"
         )
 
-    # ── ImageNet-pretrained backbone, if one was dumped ──────────────────
-    # `ACT_PRETRAINED=<dir>` from tools/act/dump_resnet18_imagenet.py. The
-    # paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random at
-    # step 0 and has to learn vision from 12,411 frames, which is what the
+    # ── ImageNet-pretrained backbone ─────────────────────────────────────
+    # The paper's backbone is `resnet18(weights=IMAGENET1K_V1)`; ours is random
+    # at step 0 and has to learn vision from 12,411 frames, which is what the
     # first 50-episode run overfit doing. Absent the variable the run is
     # unchanged, and it says which happened rather than leaving it to be
     # inferred from the loss curve.
+    #
+    #   ACT_PRETRAINED=hub    fetch timm/resnet18.tv_in1k -- NO PYTHON, no
+    #                         `-e act-ref`, no dump step. Cached after the
+    #                         first run.
+    #   ACT_PRETRAINED=<dir>  a tools/act/dump_resnet18_imagenet.py dump, the
+    #                         original path and the oracle the Hub file is
+    #                         gated against.
     var pretrained = getenv("ACT_PRETRAINED")
     if pretrained.byte_length() > 0:
         # `ACT_NO_FREEZE_BN=1` loads the weights and leaves BatchNorm trainable
@@ -491,7 +535,7 @@ def main() raises:
         # a few hundred steps while never reading them.
         var no_freeze = getenv("ACT_NO_FREEZE_BN")
         var freeze = no_freeze.byte_length() == 0
-        var n_loaded = tr.load_backbone(pretrained, freeze_norm=freeze)
+        var n_loaded = tr.load_backbone_auto(pretrained, freeze_norm=freeze)
         print(
             "  backbone  ImageNet weights, " + String(n_loaded)
             + " tensors, BatchNorm "
@@ -503,7 +547,7 @@ def main() raises:
         )
     else:
         print(
-            "  backbone  RANDOM (set ACT_PRETRAINED to use ImageNet weights)"
+            "  backbone  RANDOM (ACT_PRETRAINED=hub for ImageNet weights)"
         )
         logger.set_config("backbone_init", "random")
         logger.set_config("backbone_norm", "trainable")

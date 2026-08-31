@@ -1,10 +1,18 @@
-"""PNG texture loader using Python PIL.
+"""PNG texture loader.
 
 Loads PNG files into RGBA byte arrays for GPU texture upload.
-Uses Python PIL/Pillow via Mojo's Python FFI (proven pattern from VideoRecorder).
+
+⚠ NO LONGER PYTHON. This used `PIL` + `numpy` through Mojo's Python interop,
+which meant the 3D renderer — a binary whose whole point is that it does not
+need an interpreter — pulled CPython in the moment it loaded a texture.
+`mojo_rl/io/png.mojo` decodes natively and is gated byte-for-byte against
+Pillow on all 1,443 asset PNGs in this repo
+(`tests/io/test_png_assets.mojo`).
+
+⚠ REQUIRES `pixi run build-http`: the decoder's zlib comes from that shim.
 """
 
-from std.python import Python, PythonObject
+from mojo_rl.io.png import load_png_file, to_rgba
 
 
 struct TextureData(Movable):
@@ -36,34 +44,12 @@ struct TextureData(Movable):
 def load_png(path: String) raises -> TextureData:
     """Load a PNG file and return RGBA8 pixel data.
 
-    Uses Python PIL to load and convert the image to RGBA format.
-
     Args:
         path: Path to the PNG file.
 
     Returns:
         TextureData with RGBA8 pixels, width, and height.
     """
-    var pil = Python.import_module("PIL.Image")
-    var np = Python.import_module("numpy")
-
-    # Load and convert to RGBA
-    var img = pil.open(path)
-    img = img.convert("RGBA")
-
-    var width = Int(py=img.width)
-    var height = Int(py=img.height)
-
-    # Convert to numpy array and flatten
-    var arr = np.array(img).astype(np.uint8)
-    var flat = arr.flatten()
-
-    # Copy to Mojo List
-    var num_bytes = width * height * 4
-    var pixels = List[UInt8](capacity=num_bytes)
-    # Use tobytes() for fast bulk copy instead of per-pixel Python calls
-    var raw_bytes = arr.tobytes()
-    for i in range(num_bytes):
-        pixels.append(UInt8(Int(py=raw_bytes[i])))
-
-    return TextureData(width, height, pixels^)
+    var img = load_png_file(path)
+    var rgba = to_rgba(img)
+    return TextureData(img.width, img.height, rgba^)
