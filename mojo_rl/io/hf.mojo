@@ -37,7 +37,7 @@ LFS or not.
 from std.os import getenv, makedirs
 from std.os.path import exists
 
-from .fileio import file_size, rename_over
+from .fileio import file_size, read_file_bytes, rename_over
 from .http import HttpClient
 from .json import J_ARRAY, parse_json
 
@@ -76,8 +76,42 @@ def repo_slug(repo: String) -> String:
     return repo.replace("/", "__")
 
 
-def hf_client() raises -> HttpClient:
-    """A client carrying `HF_TOKEN` when there is one.
+def hf_token() raises -> String:
+    """`HF_TOKEN` from the environment, or the `hf` CLI's token file.
+
+    ⚠ THE TOKEN NEVER TOUCHES A SHELL — same rule as `io/hf.mojo`'s reader.
+    It becomes a header on a libcurl handle, so no quoting question arises and
+    a token with an odd byte in it does not have to be refused.
+    """
+    var t = getenv("HF_TOKEN")
+    if t != "":
+        return t^
+    var home = getenv("HOME")
+    if home != "":
+        var path = home + "/.cache/huggingface/token"
+        try:
+            var b = read_file_bytes(path)
+            # The CLI writes the token with no trailing newline, but do not
+            # rely on that — a stray \n in a header is a protocol error.
+            var out = String("")
+            for i in range(len(b)):
+                var c = Int(b[i])
+                if c == 0x0A or c == 0x0D or c == 0x20:
+                    continue
+                out += chr(c)
+            if out != "":
+                return out^
+        except:
+            pass
+    raise Error(
+        "hf_push: no token. Set HF_TOKEN (a `.env` in the project root is"
+        " loaded by `load_dotenv`) or log in with `hf auth login`."
+    )
+
+
+
+def hf_client(var token: String = String("")) raises -> HttpClient:
+    """A client carrying a Hub token when there is one.
 
     ⚠ THE TOKEN NO LONGER TOUCHES A SHELL. It used to be interpolated into a
     `curl` command line that `popen` handed to `/bin/sh`, which made
@@ -87,9 +121,15 @@ def hf_client() raises -> HttpClient:
     """
     var c = HttpClient(0, 30000)
     c.stall_guard(1024, 60)
-    var token = getenv("HF_TOKEN")
+    if token == "":
+        # Optional: public repos need none, so a missing token is not an
+        # error here — it becomes a 401 only on a private repo.
+        try:
+            token = hf_token()
+        except:
+            token = String("")
     if token != "":
-        c.bearer(token)
+        c.bearer(token^)
     return c^
 
 
@@ -106,13 +146,14 @@ def path_prefix(s: String, n: Int) -> String:
 def hf_tree(
     repo: String, kind: StaticString = HF_MODEL,
     revision: String = String("main"),
+    var token: String = String(""),
 ) raises -> String:
     """The raw tree listing JSON for a repo."""
     var api = (
         "https://huggingface.co/api/" + String(kind) + "/" + repo + "/tree/"
         + revision + "?recursive=1"
     )
-    var c = hf_client()
+    var c = hf_client(token^)
     c.max_body(1 << 26)  # a big repo's recursive listing
     var r = c.get(api)
     if not r.ok():

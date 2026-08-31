@@ -32,7 +32,9 @@ from std.sys import argv
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.io.base64 import b64_encode_n
 from mojo_rl.io.fileio import file_size, read_file_bytes, write_file_atomic
-from mojo_rl.io.hf_push import HF_ENDPOINT, HubPush, HubUpload, LFS_JSON, hf_token
+from mojo_rl.io.hf_push import (
+    HF_ENDPOINT, HubPush, HubUpload, LFS_JSON, hf_token, hf_whoami,
+)
 from mojo_rl.io.http import HttpClient
 from mojo_rl.io.json import JsonWriter, parse_json
 
@@ -58,23 +60,6 @@ def _head(s: String, n: Int) -> String:
     return String(s[byte=0:n]) + "..."
 
 
-def _whoami(mut c: HttpClient) raises -> String:
-    var r = c.get(String(HF_ENDPOINT) + "/api/whoami-v2")
-    if not r.ok():
-        raise Error(
-            "probe: whoami -> " + String(r.status) + ": " + r.text()
-            + "\n  The token is missing or lacks `write` scope."
-        )
-    # ⚠ PARSE IT. A hand-rolled `find('"name"')` picked up a nested field and
-    # produced the namespace `,` — which then built a plausible-looking repo
-    # id that would have created a repo in the wrong place.
-    var doc = parse_json(r^.take_body())
-    var n = doc.field(doc.root(), String("name"))
-    if n < 0:
-        raise Error("probe: whoami returned no `name`")
-    return doc.string(n)
-
-
 def main() raises:
     print("=" * 72)
     print("HuggingFace push probe — docs/SO101_RECORDING_PLAN.md phase 0")
@@ -82,12 +67,18 @@ def main() raises:
 
     var repo = String("")
     var keep = False
+    # `--big N` also pushes an N MB SYNTHETIC file. The batch endpoint saying
+    # `basic` for a large object is not the same as a large PUT succeeding,
+    # and a dataset's mp4s are exactly the objects that matter.
+    var big_mb = 0
     var args = argv()
     for i in range(len(args)):
         if String(args[i]) == "--repo" and i + 1 < len(args):
             repo = String(args[i + 1])
         elif String(args[i]) == "--keep":
             keep = True
+        elif String(args[i]) == "--big" and i + 1 < len(args):
+            big_mb = Int(String(args[i + 1]))
 
     # `.env` carries HF_TOKEN here, exactly as it carries RL_MONITOR_API_KEY
     # for `RemoteCatalog.from_env`. Read it directly rather than pushing it
@@ -108,7 +99,7 @@ def main() raises:
 
     var probe_client = HttpClient(0, 30000)
     probe_client.bearer(token.copy())
-    var who = _whoami(probe_client)
+    var who = hf_whoami(token.copy())
     print("whoami: " + who)
     if repo == "":
         repo = who + "/mojo-rl-push-probe"
@@ -153,6 +144,21 @@ def main() raises:
         print("no cached dataset found; using a synthetic .parquet")
     print("")
 
+    var big_path = String(SCRATCH) + "/videos/big.bin"
+    if big_mb > 0:
+        makedirs(String(SCRATCH) + "/videos", exist_ok=True)
+        # Built in one buffer and written atomically: `io/fileio` is the
+        # repo's whole-file path and already handles the ~2 GiB syscall cap.
+        var blob = List[UInt8](unsafe_uninit_length = big_mb * 1000000)
+        for i in range(len(blob)):
+            blob[i] = UInt8((i * 31 + 7) & 255)
+        write_file_atomic(big_path, blob)
+        print(
+            "synthetic large object: " + String(file_size(big_path))
+            + " bytes  (NOT a real recording — no dataset bytes leave this box)"
+        )
+        print("")
+
     # ── 1. create ─────────────────────────────────────────────────────
     print("── 1. create_repo ──────────────────────────────────────────")
     var p = HubPush(repo.copy(), token=token.copy())
@@ -166,6 +172,10 @@ def main() raises:
     files.append(
         HubUpload(String("data/chunk-000/file-000.parquet"), pq_path.copy())
     )
+    if big_mb > 0:
+        files.append(
+            HubUpload(String("videos/big.bin"), big_path.copy())
+        )
     p.preupload(files)
     for i in range(len(files)):
         print(
@@ -243,18 +253,7 @@ def main() raises:
     if keep:
         print("--keep: leaving " + repo + " in place")
     else:
-        var dw = JsonWriter()
-        dw.begin_object()
-        dw.member(String("name"), repo)
-        dw.member(String("type"), String("dataset"))
-        dw.end_object()
-        var dr = probe_client.request(
-            String("DELETE"),
-            String(HF_ENDPOINT) + "/api/repos/delete",
-            _bytes(dw.done()),
-            String("application/json"),
-        )
-        print("deleted scratch repo: HTTP " + String(dr.status))
+        _ = p.delete_repo()
 
     print("[PROBE DONE]")
 

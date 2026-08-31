@@ -910,16 +910,24 @@ def hf_download_dataset(
     var dest: String = String(""),
     revision: String = String("main"),
     verbose: Bool = True,
+    var token: String = String(""),
 ) raises -> String:
-    """Download every file of a Hub dataset repo into a plain directory."""
+    """Download every file of a Hub dataset repo into a plain directory.
+
+    ⚠ `token` IS EXPLICIT BECAUSE `.env` IS NOT THE ENVIRONMENT. This repo
+    keeps secrets in a `.env` file that `load_dotenv` reads into a Dict — it
+    never exports them — so a caller holding a token that way has to hand it
+    over. Without it a PRIVATE repo answers 401 on the tree listing, which
+    reads as a bad repo name rather than as missing auth.
+    """
     if dest == "":
         dest = mojo_rl_cache() + "/lerobot/" + repo_slug(repo)
     makedirs(dest, exist_ok=True)
 
-    var client = hf_client()
+    var client = hf_client(token.copy())
     if verbose:
         print("  listing " + repo + " @ " + revision + " ...")
-    var listing = hf_tree(repo, HF_DATASET, revision)
+    var listing = hf_tree(repo, HF_DATASET, revision, token.copy())
     var lbytes = List[UInt8]()
     for i in range(listing.byte_length()):
         lbytes.append(listing.as_bytes()[i])

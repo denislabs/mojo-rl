@@ -91,6 +91,7 @@ struct mrl_http {
     /* progress */
     int progress;
     int progress_done;
+    int last_decile;   /* non-TTY throttling; see xfer_cb */
     char label[64];
     double t0;
     double t_last;
@@ -218,6 +219,7 @@ void mrl_http_reset(mrl_http *h) {
     h->write_failed = 0;
     h->too_big = 0;
     h->progress = 0;
+    h->last_decile = -1;
     h->accept_encoding = 1;
     h->label[0] = 0;
     h->err[0] = 0;
@@ -398,6 +400,7 @@ static size_t hdr_cb(char *b, size_t sz, size_t n, void *ud) {
          * sent a byte. Every status line restarts the progress state, and the
          * bar is suppressed for a 3xx entirely. */
         h->progress_done = 0;
+        h->last_decile = -1;
         h->t_last = 0.0;
         if (!h->fp) h->buf_len = 0;
         char *sp = (char *)memchr(b, ' ', len);
@@ -511,6 +514,19 @@ static size_t wr_cb(char *ptr, size_t sz, size_t n, void *ud) {
     return len;
 }
 
+/* Is stderr a terminal? Cached: isatty() is a syscall and this is called on
+ * every progress tick.
+ *
+ * A `\r`-redrawn bar is right on a terminal and wrong everywhere else: piped
+ * into a file or a CI log there is no cursor to move, so every tick appends
+ * and a 200 MB upload becomes one enormous unreadable line. Off a terminal we
+ * emit a plain line every 10% instead. */
+static int stderr_is_tty(void) {
+    static int cached = -1;
+    if (cached < 0) cached = isatty(fileno(stderr)) ? 1 : 0;
+    return cached;
+}
+
 static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow,
                    curl_off_t ultotal, curl_off_t ulnow) {
     mrl_http *h = (mrl_http *)ud;
@@ -532,7 +548,18 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow,
      * is what made the first probe print thirteen empty bars. */
     int final = (total > 0 && now == total);
     if (final && h->progress_done) return 0; /* libcurl ticks several times at the end */
-    if (t - h->t_last < 0.2 && !final) return 0;
+    int tty = stderr_is_tty();
+    if (!tty) {
+        /* Every 10% of the transfer, not every 0.2 s. `progress_done` also
+         * gates here: libcurl ticks several times at the end, and without
+         * this the 100% line prints twice. */
+        if (h->progress_done) return 0;
+        int pct10 = full > 0 ? (int)(done * 10 / full) : -1;
+        if (!final && (pct10 < 0 || pct10 == h->last_decile)) return 0;
+        h->last_decile = pct10;
+    } else if (t - h->t_last < 0.2 && !final) {
+        return 0;
+    }
     if (final) h->progress_done = 1;
     h->t_last = t;
     double el = t - h->t0;
@@ -545,10 +572,18 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow,
         for (int i = 0; i < 30; i++) bar[i] = i < filled ? '#' : '.';
         bar[30] = 0;
         int eta = mbs > 0 ? (int)((double)(full - done) / 1e6 / mbs) : 0;
-        fprintf(stderr, "\r  [%s] [%s] %d%% %.0f MB/s ETA %ds   ", h->label,
-                bar, pct, mbs, eta);
-    } else {
+        if (tty) {
+            fprintf(stderr, "\r  [%s] [%s] %d%% %.0f MB/s ETA %ds   ", h->label,
+                    bar, pct, mbs, eta);
+        } else {
+            fprintf(stderr, "  [%s] %d%% of %lld MB, %.0f MB/s\n", h->label,
+                    pct, full / 1000000, mbs);
+        }
+    } else if (tty) {
         fprintf(stderr, "\r  [%s] %lld MB %.0f MB/s   ", h->label,
+                done / 1000000, mbs);
+    } else {
+        fprintf(stderr, "  [%s] %lld MB, %.0f MB/s\n", h->label,
                 done / 1000000, mbs);
     }
     fflush(stderr);
@@ -643,7 +678,7 @@ int mrl_http_perform(mrl_http *h, const char *method, const char *url) {
         h->up_fp = NULL;
         h->up_size = 0;
     }
-    if (h->progress) fprintf(stderr, "\n");
+    if (h->progress && stderr_is_tty()) fprintf(stderr, "\n");
 
     if (h->status == 0) {
         long code = 0;

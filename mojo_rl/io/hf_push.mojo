@@ -43,23 +43,40 @@ Steps 3 and 5 must use the same digest; a file rewritten between them commits
 a pointer to bytes nobody uploaded, and the repo then has a file that 404s on
 download. `HubUpload` hashes ONCE, at construction, and both steps read that.
 
-## What this deliberately does not do
+## Multipart: negotiated, not triggered by size
 
-⚠ **MULTIPART IS NOT IMPLEMENTED, AND IS DETECTED RATHER THAN IGNORED.** When
-the batch response carries a `chunk_size`, the Hub wants the object uploaded
-in parts with their ETags collected — a different protocol, not a bigger PUT.
-`_transfer` raises and names the fix, because the fix is usually a config
-change rather than code: LeRobot's `video_files_size_in_mb` in `meta/info.json`
-decides how large the mp4s get, so rolling them smaller keeps every object
-single-part. Silently PUTting the whole file at a multipart href would upload
-bytes the Hub then rejects at commit time, which is a much worse failure than
-this one.
+⚠ **THE HUB PICKS THE TRANSFER FROM WHAT YOU ADVERTISE, NOT FROM THE FILE
+SIZE.** Measured against the live Hub on 2026-08-31:
+
+    transfers: ["basic", "multipart"]  ->  multipart for EVERY size,
+                                           1 MB included, chunk_size 16 MB
+    transfers: ["basic"]               ->  a single presigned PUT for every
+                                           size, up to 5 GB
+
+So this advertises **`basic` only** and multipart never arises. The mitigation
+this file used to describe — roll the videos smaller to stay under a
+"multipart threshold" — was based on a wrong model: there is no size
+threshold, and a 1 MB parquet would have gone multipart just as readily as a
+200 MB mp4.
+
+⚠ **5 GB IS A REAL WALL, AND THE HUB SAYS SO CLEARLY.** Past it the batch is
+rejected with *"You need to configure your repository to enable upload of
+files > 5GB. Run `hf lfs-enable-largefiles`"*. That is the same S3 single-PUT
+limit `io/fetch.mojo:168` already refuses to exceed for R2. `_transfer` checks
+the size up front so the failure names the file rather than arriving as a
+batch-level 400 with no filename in it.
+
+⚠ A `chunk_size` in the response is therefore a CONTRACT VIOLATION, not an
+expected branch — it means the Hub chose a transfer nobody advertised — so
+`upload_lfs` still raises on it rather than PUTting the whole file at a
+multipart href.
 """
 
 from std.os import getenv
 
 from .base64 import b64_encode_n
 from .fileio import file_size, read_file_bytes, read_file_range
+from .hf import hf_client, hf_token
 from .http import HttpClient, HttpResponse
 from .json import J_ARRAY, JsonDoc, JsonWriter, json_quote, parse_json
 from .sha256 import sha256_file
@@ -73,38 +90,36 @@ exactly this many bytes, and the server uses them to sniff the file type."""
 
 comptime LFS_JSON = "application/vnd.git-lfs+json"
 
+comptime LFS_SINGLE_PUT_LIMIT = 5_000_000_000
+"""Measured: at 5,100 MB the batch endpoint answers 400 and names
+`hf lfs-enable-largefiles`. Same wall as R2's, which `io/fetch.mojo` already
+refuses to cross."""
 
-def hf_token() raises -> String:
-    """`HF_TOKEN` from the environment, or the `hf` CLI's token file.
 
-    ⚠ THE TOKEN NEVER TOUCHES A SHELL — same rule as `io/hf.mojo`'s reader.
-    It becomes a header on a libcurl handle, so no quoting question arises and
-    a token with an odd byte in it does not have to be refused.
+def hf_whoami(var token: String = String("")) raises -> String:
+    """The namespace the token belongs to — its user or org `name`.
+
+    ⚠ PARSE THE JSON. Two callers hand-rolled `find('"name"')` on the response
+    and BOTH picked up a nested field, yielding the namespace `,` and then a
+    403 against a repo id that looked almost right (`,/mojo-rl-roundtrip`).
+    The second one was written after the first had been fixed, which is what
+    `_a_rule_written_inline_twice_drifts` predicts. One implementation, here.
     """
-    var t = getenv("HF_TOKEN")
-    if t != "":
-        return t^
-    var home = getenv("HOME")
-    if home != "":
-        var path = home + "/.cache/huggingface/token"
-        try:
-            var b = read_file_bytes(path)
-            # The CLI writes the token with no trailing newline, but do not
-            # rely on that — a stray \n in a header is a protocol error.
-            var out = String("")
-            for i in range(len(b)):
-                var c = Int(b[i])
-                if c == 0x0A or c == 0x0D or c == 0x20:
-                    continue
-                out += chr(c)
-            if out != "":
-                return out^
-        except:
-            pass
-    raise Error(
-        "hf_push: no token. Set HF_TOKEN (a `.env` in the project root is"
-        " loaded by `load_dotenv`) or log in with `hf auth login`."
-    )
+    if token == "":
+        token = hf_token()
+    var c = HttpClient(0, 30000)
+    c.bearer(token^)
+    var r = c.get(String(HF_ENDPOINT) + "/api/whoami-v2")
+    if not r.ok():
+        raise Error(
+            "hf: whoami -> " + String(r.status) + ": " + r.text()
+            + "  (is HF_TOKEN set, and does it have `write` scope?)"
+        )
+    var doc = _doc(r^)
+    var n = doc.field(doc.root(), String("name"))
+    if n < 0:
+        raise Error("hf: whoami returned no `name`")
+    return doc.string(n)
 
 
 def _doc(var r: HttpResponse) raises -> JsonDoc:
@@ -224,6 +239,28 @@ struct HubPush(Movable & Deinitable):
     def _api(self, tail: String) -> String:
         return self.endpoint + "/api/" + self.kind + "/" + self.repo + tail
 
+    def _namespace(self) raises -> Tuple[String, String]:
+        """`Org/name` -> (`Org`, `name`), or (``, `name`).
+
+        ⚠ ONE PLACE, DELIBERATELY. Both `/api/repos/create` and
+        `/api/repos/delete` take the namespace SPLIT OUT — `{"name": ...,
+        "organization": ...}` — not the `Org/name` id the rest of the API
+        uses. Sending the joined id to delete answers **404**, which reads as
+        "no such repo" rather than "wrong shape", so the repo silently
+        survives. Writing the split twice is how the two drift.
+        """
+        var slash = self.repo.find("/")
+        if slash <= 0:
+            return (String(""), self.repo.copy())
+        return (
+            String(self.repo[byte=0:slash]),
+            String(self.repo[byte = slash + 1 : self.repo.byte_length()]),
+        )
+
+    def _singular(self) raises -> String:
+        """`datasets` -> `dataset`. The repo endpoints want the singular."""
+        return String(self.kind[byte=0 : self.kind.byte_length() - 1])
+
     def _log(self, msg: String):
         if self.verbose:
             print("  [hub] " + msg)
@@ -238,16 +275,10 @@ struct HubPush(Movable & Deinitable):
         second recording session fail. `private` is IGNORED by the Hub on an
         existing repo — it does not retroactively hide a public one.
         """
-        var org = String("")
-        var name = self.repo.copy()
-        var slash = self.repo.find("/")
-        if slash > 0:
-            org = String(self.repo[byte=0:slash])
-            name = String(
-                self.repo[byte = slash + 1 : self.repo.byte_length()]
-            )
-
-        var singular = String(self.kind[byte=0 : self.kind.byte_length() - 1])
+        var ns = self._namespace()
+        var org = ns[0].copy()
+        var name = ns[1].copy()
+        var singular = self._singular()
         var w = JsonWriter()
         w.begin_object()
         w.member(String("name"), name)
@@ -273,6 +304,43 @@ struct HubPush(Movable & Deinitable):
             "created " + self.kind + "/" + self.repo
             + (" (private)" if private else " (PUBLIC)")
         )
+        return True
+
+    def delete_repo(mut self) raises -> Bool:
+        """Delete the repo. Returns False if it was not there.
+
+        ⚠ IRREVERSIBLE, AND IT TAKES THE WHOLE REPO. Nothing in the recording
+        path calls this; it exists for the scratch repos `tools/hf/probe_push`
+        creates, which would otherwise pile up on the account.
+        """
+        var ns = self._namespace()
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("name"), ns[1])
+        if ns[0] != "":
+            w.member(String("organization"), ns[0])
+        w.member(String("type"), self._singular())
+        w.end_object()
+
+        var body = List[UInt8]()
+        var text = w.done()
+        for i in range(text.byte_length()):
+            body.append(text.as_bytes()[i])
+        var r = self.client.request(
+            String("DELETE"),
+            self.endpoint + "/api/repos/delete",
+            body^,
+            String("application/json"),
+        )
+        if r.status == 404:
+            self._log("nothing to delete: " + self.repo)
+            return False
+        if not r.ok():
+            raise Error(
+                "hf_push: deleting " + self.repo + " -> " + String(r.status)
+                + ": " + r.text()
+            )
+        self._log("deleted " + self.kind + "/" + self.repo)
         return True
 
     # ── 2. preupload: lfs or regular? ─────────────────────────────────
@@ -351,10 +419,14 @@ struct HubPush(Movable & Deinitable):
         var w = JsonWriter()
         w.begin_object()
         w.member(String("operation"), String("upload"))
+        # ⚠ `basic` ALONE, AND THAT IS THE WHOLE MULTIPART STORY. See the
+        # module docstring: advertising `multipart` makes the Hub choose it
+        # for EVERY object, 1 MB included. Advertising only `basic` gets a
+        # single presigned PUT at every size up to 5 GB. Adding "multipart"
+        # back here does not add a capability, it removes one.
         w.key(String("transfers"))
         w.begin_array()
         w.string(String("basic"))
-        w.string(String("multipart"))
         w.end_array()
         w.member(String("hash_algo"), String("sha256"))
         w.key(String("ref"))
@@ -432,14 +504,11 @@ struct HubPush(Movable & Deinitable):
             var hdr = doc.field(up, String("header"))
             if hdr >= 0 and doc.field(hdr, String("chunk_size")) >= 0:
                 raise Error(
-                    "hf_push: the Hub wants "
-                    + files[idx].repo_path
-                    + " ("
-                    + String(files[idx].size // 1000000)
-                    + " MB) uploaded MULTIPART, which is not implemented."
-                    " Keep individual files smaller — for a LeRobot dataset"
-                    " that is `video_files_size_in_mb` in meta/info.json,"
-                    " which decides where the mp4s roll over."
+                    "hf_push: the Hub answered MULTIPART for "
+                    + files[idx].repo_path + " even though only `basic` was"
+                    " advertised. That is a protocol change, not a size"
+                    " problem — re-run tools/hf/probe_push.mojo and read what"
+                    " the batch endpoint now negotiates."
                 )
 
             var href = doc.string(doc.field(up, String("href")))
@@ -453,6 +522,15 @@ struct HubPush(Movable & Deinitable):
         signature is the authorization, and S3 rejects a request that also
         carries `Authorization: Bearer`.
         """
+        if f.size > LFS_SINGLE_PUT_LIMIT:
+            raise Error(
+                "hf_push: " + f.repo_path + " is "
+                + String(f.size // 1000000) + " MB. The Hub refuses a single"
+                " object past 5 GB unless the repo has large-file support"
+                " enabled (`hf lfs-enable-largefiles`), and this client only"
+                " speaks the single-PUT transfer. For a LeRobot dataset the"
+                " lever is `video_files_size_in_mb` in meta/info.json."
+            )
         var c = HttpClient(0, 30000)
         c.stall_guard(1024, 60)
         var label = f.repo_path.copy() if self.verbose else String("")
