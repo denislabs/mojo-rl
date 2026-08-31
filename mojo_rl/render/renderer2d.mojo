@@ -725,7 +725,8 @@ struct Renderer2D(Movable):
         """Start video recording to a file.
 
         Captures every rendered frame via SDL_RenderReadPixels and encodes
-        it via Python imageio.  Requires ``imageio`` (and ``imageio-ffmpeg``
+        it by piping ``ffmpeg`` (see ``render/video_recorder.mojo``). Requires
+        ``ffmpeg``
         for MP4) to be installed.
 
         Args:

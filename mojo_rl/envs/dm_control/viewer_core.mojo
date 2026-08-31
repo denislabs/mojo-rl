@@ -887,16 +887,16 @@ def run_view[
         if vc.want_toggle_pause:
             env.renderer_toggle_pause()
         if vc.want_toggle_record:
-            # ⚠ CATCH: video encoding goes through Python `imageio`, and a
-            # missing import raised straight out of the frame loop and killed
-            # the viewer. Screenshots already degrade to a printed message;
-            # recording must not be the one button that can end the session.
+            # ⚠ CATCH: video encoding spawns `ffmpeg`, and a failure to do so
+            # raised straight out of the frame loop and killed the viewer.
+            # Screenshots already degrade to a printed message; recording must
+            # not be the one button that can end the session.
             try:
                 env.renderer_toggle_recording()
             except e:
                 print("recording unavailable:", e)
                 print(
-                    "  imageio lives in the pixi env — launch through"
+                    "  `ffmpeg` lives in the pixi env — launch through"
                     " `pixi run`, not the bare binary"
                 )
 

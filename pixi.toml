@@ -79,6 +79,19 @@ box2d-py = ">=2.3.8,<3"  # for gymnasium Box2D envs (LunarLander, BipedalWalker,
 mujoco = ">=3.10.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
 imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
+# ⚠ DECLARED, NOT TRANSITIVE — the same rule as qhull above. `ffmpeg` reached
+# this environment only as a dependency of `imageio-ffmpeg`, and TWO pure-Mojo
+# paths now shell out to it: the LeRobot dataset import
+# (`mojo_rl/io/video`, `mojo_rl/data/lerobot.mojo`) and screen recording
+# (`mojo_rl/render/video_recorder.mojo`). Removing `imageio-ffmpeg` — the
+# natural cleanup now that neither imports it — would take `ffmpeg` with it and
+# break both, at runtime, on a machine where it used to work.
+ffmpeg = ">=7,<9"
+# Used by `mojo_rl/data/lerobot.mojo` to fetch a dataset from the HuggingFace
+# Hub. Present as /usr/bin/curl on macOS and most Linux images, absent from
+# slim containers; declared so the import path does not depend on the base
+# image.
+curl = ">=8,<9"
 shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
 hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
 hdf5plugin = ">=7.0.0,<8"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH

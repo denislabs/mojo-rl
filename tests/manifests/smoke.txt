@@ -70,3 +70,9 @@ tests/robot/test_so101_sim_map.mojo
 # the reach policy uses, and swapping them feeds a network numbers it has never
 # seen while raising nothing. Self-contained: the fixture is committed.
 tests/robot/test_so101_lerobot_units.mojo
+
+# Screen recording and screenshots: the recorder's own output decoded back
+# through `mojo_rl/io/video` and compared pixel-exactly on the lossless (PNG)
+# leg. Self-contained — `ffmpeg` is a declared pixi dependency, no display, no
+# GPU, ~2 s.
+tests/render/test_video_recorder.mojo

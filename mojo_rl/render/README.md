@@ -22,7 +22,7 @@ render/
 ├── font_atlas.mojo         # 8x8 bitmap font atlas for GPU text rendering
 ├── renderer2d.mojo         # Renderer2D: SDL3 2D renderer (fill_rect, draw_line, draw_circle, draw_text)
 ├── renderer3d.mojo         # Renderer3D: GPU-accelerated 3D renderer (Blinn-Phong, shadows, skybox)
-├── video_recorder.mojo     # VideoRecorder: MP4/GIF encoding via Python imageio
+├── video_recorder.mojo     # VideoRecorder: MP4/GIF + stills, by piping ffmpeg
 ├── shaders/                # Cross-platform GLSL shaders + compiled SPIR-V
 │   ├── *.vert.glsl         # GLSL 450 vertex shaders (6 files)
 │   ├── *.frag.glsl         # GLSL 450 fragment shaders (7 files)

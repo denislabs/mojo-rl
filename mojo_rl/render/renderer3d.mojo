@@ -4948,7 +4948,7 @@ struct Renderer3D(Movable):
         # Always submit the command buffer (screenshot download included if set up).
         submit_gpu_command_buffer(cmd_buf)
 
-        # If a download was queued, wait for the GPU to finish, then save via imageio.
+        # If a download was queued, wait for the GPU to finish, then encode it.
         if screenshot_tb:
             try:
                 wait_for_gpu_idle(self.device.value())
@@ -4968,7 +4968,7 @@ struct Renderer3D(Movable):
                 print("Screenshot readback failed: " + String(e))
             release_gpu_transfer_buffer(self.device.value(), screenshot_tb.value())
 
-        # Video recording: download this frame and stream to imageio
+        # Video recording: download this frame and stream it to the encoder
         if self.recorder.is_recording:
             var needed = self.width * self.height * 4
             # Reallocate the persistent transfer buffer if size changed
@@ -5038,8 +5038,8 @@ struct Renderer3D(Movable):
     ) raises:
         """Start video recording to a file.
 
-        Captures every rendered frame and encodes it via Python imageio.
-        Requires ``imageio`` (and ``imageio-ffmpeg`` for MP4) to be installed.
+        Captures every rendered frame and encodes it by piping ``ffmpeg``
+        (see ``render/video_recorder.mojo``). Requires ``ffmpeg`` on PATH.
 
         Args:
             filename: Output path, e.g. ``recording_0.mp4`` or ``recording_0.gif``.

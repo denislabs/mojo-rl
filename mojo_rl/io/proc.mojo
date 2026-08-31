@@ -14,6 +14,10 @@ returns. `popen` is three libc calls with a stable ABI.
         ...
     p.close()          # raises on a non-zero child exit status
 
+    var w = WritePipe(...)          # the other direction: we feed its stdin
+    w.write_all(frame_ptr, n)
+    w.close()                       # WAITS, so the container trailer lands
+
 ⚠ **`popen` RUNS THE STRING THROUGH `/bin/sh`.** Every interpolated path must
 go through `quote_arg`, which single-quotes it and REJECTS an embedded single
 quote or newline outright. Inside POSIX single quotes every byte is literal
@@ -174,3 +178,122 @@ def run_capture(var command: String, max_bytes: Int = 1 << 16) raises -> String:
             "proc: output exceeded " + String(max_bytes) + " bytes: " + command
         )
     return out^
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Writing INTO a child process
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _ignore_sigpipe():
+    """Make a write to a dead pipe return an error instead of killing us.
+
+    ⚠ THIS IS NOT OPTIONAL, AND ITS ABSENCE IS INVISIBLE UNTIL IT ISN'T.
+    Writing to a pipe whose reader has exited raises `SIGPIPE`, whose DEFAULT
+    disposition is to terminate the process — so an `ffmpeg` that dies on its
+    first frame (a bad codec argument, a full disk, an odd frame width) would
+    take the whole training or viewer process down with it, with no message
+    and no stack.
+
+    Python installs `SIG_IGN` for `SIGPIPE` at startup, which is why
+    `imageio`'s writer never had to think about this and why the failure only
+    appears once the Python layer is removed. With the handler ignored,
+    `fwrite` returns short and sets `EPIPE`, and `write_all` below turns that
+    into an error naming the command.
+
+    `SIG_IGN` is the constant `(void (*)(int)) 1`. Calling this repeatedly is
+    harmless.
+    """
+    _ = external_call["signal", Int](Int(SIGPIPE), Int(1))
+
+
+struct WritePipe(Movable):
+    """A child process this side is FEEDING through its stdin.
+
+    The mirror of `Pipe`. Its stdout and stderr are inherited, so an `ffmpeg`
+    that complains is visible rather than swallowed.
+    """
+
+    var _fp: Int
+    var command: String
+    var closed: Bool
+    var written: Int
+
+    def __init__(out self, var command: String) raises:
+        _ignore_sigpipe()
+        var mode = String("w")
+        var fp = external_call["popen", Int](
+            command.as_c_string_slice().unsafe_ptr(),
+            mode.as_c_string_slice().unsafe_ptr(),
+        )
+        if fp == 0:
+            raise Error("proc: popen(w) failed for: " + command)
+        self._fp = fp
+        self.command = command^
+        self.closed = False
+        self.written = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self._fp = move._fp
+        self.command = move.command^
+        self.closed = move.closed
+        self.written = move.written
+
+    def __deinit__(deinit self):
+        if not self.closed and self._fp != 0:
+            _ = external_call["pclose", Int32](self._fp)
+
+    def write_all(
+        mut self, src: Pointer[Scalar[DType.uint8], MutAnyOrigin], count: Int
+    ) raises:
+        """Write exactly `count` bytes, or raise.
+
+        A short write means the child is gone — with `SIGPIPE` ignored that is
+        reported here instead of terminating the process.
+        """
+        if self.closed:
+            raise Error("proc: write to a closed pipe: " + self.command)
+        if count <= 0:
+            return
+        var done = 0
+        while done < count:
+            var n = external_call["fwrite", Int](
+                src.unsafe_offset(done), Int(1), count - done, self._fp
+            )
+            if n <= 0:
+                raise Error(
+                    "proc: the child stopped reading after "
+                    + String(self.written + done) + " bytes — it exited early."
+                    " Its own message is above, if it printed one. Command: "
+                    + self.command
+                )
+            done += n
+        self.written += count
+
+    def close(mut self) raises -> Int:
+        """Close stdin and WAIT for the child to finish.
+
+        ⚠ WAITING IS THE POINT, not a courtesy. An encoder writes its
+        container trailer (an MP4's `moov` atom, a GIF's terminator) only when
+        its input ends, so returning before the child exits hands the caller a
+        truncated, unplayable file that looks finished.
+        """
+        if self.closed:
+            return 0
+        var status = Int(external_call["pclose", Int32](self._fp))
+        self.closed = True
+        self._fp = 0
+        if status < 0:
+            raise Error("proc: pclose failed for: " + self.command)
+        var sig = status & 0x7F
+        if sig != 0:
+            raise Error(
+                "proc: child killed by signal " + String(sig) + ": "
+                + self.command
+            )
+        var code = (status >> 8) & 0xFF
+        if code != 0:
+            raise Error(
+                "proc: child exited " + String(code) + ": " + self.command
+            )
+        return code
