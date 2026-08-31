@@ -7,3 +7,4 @@ RGB24 is the pixel format in both directions.
 
 from .decoder import VideoDecoder, VideoInfo, probe_video
 from .encoder import LEROBOT_CRF, LEROBOT_GOP, VideoEncoder
+from .encoder_thread import VideoEncoderThread
