@@ -267,6 +267,48 @@ def main() raises:
         "a rawvideo pipe has one fixed frame size",
     )
 
+    # ── the encoder is behind: nothing may be lost ────────────────────
+    # The threaded path's whole risk. Frames go into a ring and the writes
+    # happen elsewhere, so a full ring MUST wait — a dropped frame does not
+    # leave a gap in a rawvideo recording, it makes the video shorter and
+    # plays everything after it early, and the file cannot show that.
+    # Fed flat out at a size where x264 is slower than a memcpy.
+    comptime BW = 640
+    comptime BH = 480
+    comptime BN = 120
+    var bbuf = List[UInt8](unsafe_uninit_length = BW * BH * 4)
+    for i in range(BW * BH * 4):
+        bbuf[i] = UInt8((i * 31) % 256)
+    var bmp4 = String("/tmp/mojo_rec_gate_burst.mp4")
+    rec.start(bmp4, fps=30)
+    var max_depth = 0
+    for k in range(BN):
+        # Touch a few bytes so consecutive frames are not identical.
+        bbuf[k * 97 % (BW * BH * 4)] = UInt8(k)
+        rec.add_frame_bgra(Int(mptr(bbuf)), BW, BH)
+        var d = rec.queue_depth()
+        if d > max_depth:
+            max_depth = d
+    var queued = rec.frame_count
+    rec.stop()
+    var bgot = List[UInt8]()
+    var bn = read_rgb(bmp4, bgot)
+    check(
+        fails,
+        "burst: every queued frame reaches the file",
+        bn == BN and queued == BN,
+        String(bn) + " frames decoded, " + String(queued) + " queued of "
+        + String(BN) + " submitted",
+    )
+    check(
+        fails,
+        "burst: the recorder's own tally agrees with the file",
+        rec.frames_written() == BN and rec.frames_dropped() == 0,
+        String(rec.frames_written()) + " written, "
+        + String(rec.frames_dropped()) + " dropped; queue reached "
+        + String(max_depth) + " frames deep",
+    )
+
     print("")
     if fails == 0:
         print("ALL PASS")

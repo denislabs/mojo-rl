@@ -80,3 +80,9 @@ tests/io/test_resize_nearest.mojo
 # hold the process open. Delivery against a live dashboard is validated by
 # running a real job — see docs/CONCURRENCY_BACKBONE.md step 2.
 tests/io/test_http_sink.mojo
+
+# ── the ffmpeg pipe behind VideoRecorder, on a worker thread ───────────
+# No ffmpeg here on purpose: the consumer is `cat`/`sh`, so back-pressure
+# and the drop tally are asserted against BYTES ON DISK. Includes the
+# SIGPIPE leg — a child that exits must not take the process with it.
+tests/io/test_frame_pipe_thread.mojo

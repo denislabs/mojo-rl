@@ -77,6 +77,11 @@ tests/robot/test_so101_lerobot_units.mojo
 # GPU, ~2 s.
 tests/render/test_video_recorder.mojo
 
+# The same pipe's worker thread, with `cat` standing in for ffmpeg so the
+# back-pressure and drop tallies can be asserted against bytes on disk. Also
+# the SIGPIPE leg: a child that exits must not take the process with it.
+tests/io/test_frame_pipe_thread.mojo
+
 # safetensors, the format: the round trip, the f16/bf16 widenings, and a dozen
 # malformed headers that must each RAISE (a header length past the end of the
 # file, offsets that overlap or leave a gap, a span that does not match
