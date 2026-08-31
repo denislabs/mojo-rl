@@ -231,6 +231,13 @@ soarm-diag = { cmd = "mojo run -I . tools/soarm/so101_mojo_diag.mojo", depends-o
 # running its cleanup (a kill, a crash). A follower left holding a pose
 # resists being moved and heats up.
 soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", depends-on = ["build-serial"], description = "Release torque on both SO-101 arms" }
+# Record teleoperation into a LeRobot v3 dataset. ⚠ SAFE BY DEFAULT: without
+# `--arm` the follower is never energised. Pass `-- --arm --out DIR --task "..."`.
+soarm-record = { cmd = "mojo run -I . examples/so101/record.mojo", depends-on = ["build-serial", "build-opencv"], description = "Record SO-101 teleop (terminal). Add --arm to move the follower" }
+# The same, with live camera views and buttons — what LeRobot uses Rerun for.
+soarm-record-ui = { cmd = "mojo run -I . examples/so101/record_ui.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Record SO-101 teleop with a live UI. Add --arm to move the follower" }
+# ⚠⚠ WRITES SERVO EEPROM. Safe by default (no --write); ALWAYS --backup first.
+soarm-calibrate = { cmd = "mojo run -I . tools/soarm/so101_calibrate.mojo", depends-on = ["build-serial"], description = "Calibrate an SO-101 arm (needs --port; --write to apply)" }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
 
