@@ -143,3 +143,76 @@ def file_size(path: String) raises -> Int:
     var n = f.seek(0, 2)
     f.close()
     return Int(n)
+
+
+struct StdinReader(Movable):
+    """Line-at-a-time stdin for an interactive tool.
+
+    ⚠ **THIS EXISTS BECAUSE `input()` CANNOT BE LINKED ALONGSIDE
+    `core/concurrent`, AND NEITHER CAN `read`.** Two separate symbol
+    collisions, both reported against a stdlib file with none of your code in
+    the message, so they look like toolchain bugs rather than collisions:
+
+        # input()  ->  std/sys/_libc.mojo declares `free` with allockind /
+        #              alloc-family; core/concurrent/ring.mojo declares the
+        #              same symbol WITHOUT them.
+        error: existing function with conflicting attributes ... func = "free"
+
+        # external_call["read", Int](...)  ->  std/ffi already declares `read`
+        error: existing function with conflicting signature
+
+    `fdopen` + `fgetc` are declared by nothing else, so they link cleanly.
+    Any interactive tool that also uses a background thread hits this, which
+    is why the workaround lives here rather than in one example.
+
+    ⚠ THE `FILE*` IS NEVER `fclose`d. It wraps fd 0; closing it would close
+    the process's standard input. Opening it once per prompt instead would
+    leak a stdio buffer each time, which is why this is a struct the caller
+    holds rather than a free function.
+    """
+
+    var _fp: Int
+
+    def __init__(out self) raises:
+        var mode = String("r")
+        var fp = external_call["fdopen", Int](
+            Int32(0), mode.as_c_string_slice().unsafe_ptr()
+        )
+        if fp == 0:
+            raise Error("fileio: cannot open stdin")
+        self._fp = fp
+
+    def __init__(out self, *, deinit move: Self):
+        self._fp = move._fp
+
+    def discard_pending(self):
+        """Throw away anything already typed but not yet read.
+
+        ⚠ WITHOUT THIS, A KEYSTROKE DURING A LONG OPERATION SILENTLY ANSWERS
+        THE NEXT PROMPT. In a real recording session the operator pressed `q`
+        while an episode was still running; the tty buffered it, and the
+        "keep this episode?" prompt read it as the answer and ended the run
+        three episodes into five. Nothing was lost, but the run stopped for a
+        reason that was invisible.
+
+        `tcflush(0, TCIFLUSH)` is the discard, and it is a no-op on a pipe —
+        which is right: a scripted `printf '...' | tool` MUST keep its input.
+        """
+        _ = external_call["tcflush", Int32](Int32(0), Int32(1))  # TCIFLUSH
+
+    def line(mut self, max_bytes: Int = 1024) raises -> String:
+        """One line, without its newline. Empty at EOF."""
+        var buf = List[UInt8]()
+        while len(buf) < max_bytes:
+            var c = Int(external_call["fgetc", Int32](self._fp))
+            if c < 0:
+                break  # EOF
+            if c == 0x0A:
+                break
+            if c == 0x0D:
+                continue  # a CRLF terminal
+            buf.append(UInt8(c))
+        if len(buf) == 0:
+            return String("")
+        buf.append(0)
+        return String(unsafe_from_utf8_ptr=buf.unsafe_ptr())

@@ -56,10 +56,10 @@ memory, and it makes `q01`..`q99` exact rather than sampled.
 reports `min 0.0`, `max 1.0`, `mean 0.47`. Writing raw 0..255 there would be
 read as a wildly different scale by anything that normalises with them.
 
-⚠ `count` DIFFERS FROM LeRobot'S BY DESIGN. LeRobot subsamples pixels 4x4 and
-reports `length * H * W / 16`; this counts every pixel it actually looked at.
-It is a sample count, not a structural field, and being exact is the less
-surprising of the two.
+⚠ `count` IS A SAMPLE COUNT: the histogram samples every 4th pixel in each
+axis, so it reports `length * H * W / 16` — the same rate LeRobot uses. That
+is not cosmetic agreement; walking every pixel cost **45.8 ms of a 33.3 ms
+tick** in the record loop.
 
 ## What is not implemented
 
@@ -81,7 +81,7 @@ from mojo_rl.io.parquet.writer import (
     ParquetWriter, PQ_F32, PQ_F64, PQ_I64, PQ_STR, PqColumn, pq_list,
     pq_list3, pq_scalar,
 )
-from mojo_rl.io.video import VideoEncoder
+from mojo_rl.io.video import VideoEncoderThread
 
 
 comptime CODEBASE_VERSION = "v3.0"
@@ -89,6 +89,11 @@ comptime CHUNKS_SIZE = 1000
 comptime DEFAULT_VIDEO_MB = 100
 comptime DEFAULT_DATA_MB = 100
 comptime MAX_DATA_BYTES = 2_000_000_000
+
+comptime STATS_STRIDE = 4
+"""Sample every 4th pixel in each axis for the per-episode image histogram —
+1/16 of the pixels, the same rate LeRobot uses. See `_ImgStats.add_frame`:
+every pixel cost 45.8 ms of a 33.3 ms tick."""
 
 comptime N_STATS = 10
 """min, max, mean, std, count, q01, q10, q50, q90, q99 — in that order, which
@@ -223,14 +228,33 @@ struct _ImgStats(Movable):
             self.hist[i] = 0
         self.samples = 0
 
-    def add_frame(mut self, ref frame: List[UInt8], n_pixels: Int):
-        """Accumulate one RGB24 frame."""
-        for p in range(n_pixels):
-            var b = p * 3
-            self.hist[Int(frame[b])] += 1
-            self.hist[256 + Int(frame[b + 1])] += 1
-            self.hist[512 + Int(frame[b + 2])] += 1
-        self.samples += n_pixels
+    def add_frame(
+        mut self, ref frame: List[UInt8], width: Int, height: Int
+    ):
+        """Accumulate one RGB24 frame, sampling every `STATS_STRIDE`th pixel.
+
+        ⚠ **EVERY PIXEL IS TOO EXPENSIVE TO DO IN THE RECORD LOOP.** At
+        640x480x2 cameras that is 614,400 histogram increments per tick, and
+        it took the recorder's worst per-tick WORK to 45.8 ms against a
+        33.3 ms budget — on a loop the budget tool had measured at 5.43 ms
+        before this function existed. Sampling 4x4 is 1/16 the work.
+
+        This also makes `count` match LeRobot's, which samples the same way:
+        `length * H * W / 16`. The statistic is a summary of a camera's
+        exposure over an episode; a sixteenth of a 480p frame is 19,200
+        samples per frame, which is not the limiting factor in its accuracy.
+        """
+        var stride = STATS_STRIDE
+        var n = 0
+        for y in range(0, height, stride):
+            var row = y * width
+            for x in range(0, width, stride):
+                var b = (row + x) * 3
+                self.hist[Int(frame[b])] += 1
+                self.hist[256 + Int(frame[b + 1])] += 1
+                self.hist[512 + Int(frame[b + 2])] += 1
+                n += 1
+        self.samples += n
 
     def stat(self, which: Int, c: Int) -> Float64:
         """One statistic of channel `c`, normalised to [0, 1]."""
@@ -312,11 +336,15 @@ struct LeRobotWriter(Movable):
     var _img: List[_ImgStats]
 
     # ── video encoders, one per camera ────────────────────────────────
-    var _enc: List[VideoEncoder]
+    var _enc: List[VideoEncoderThread]
     var _enc_file: List[Int]
     var _enc_frames: List[Int]
     var _enc_pending: List[Bool]
     """The camera's encoder is CLOSED and the next one is not open yet."""
+    var _submitted: List[Int]
+    """Frames handed to each camera's encoders, across rolls."""
+    var _accepted: List[Int]
+    """Frames ffmpeg accepted, accumulated as encoders are closed."""
     var closed: Bool
 
     def __init__(
@@ -366,10 +394,12 @@ struct LeRobotWriter(Movable):
         self._cur_state = _NumStats(len(self.state_names))
         self._cur_action = _NumStats(len(self.action_names))
         self._img = List[_ImgStats]()
-        self._enc = List[VideoEncoder]()
+        self._enc = List[VideoEncoderThread]()
         self._enc_file = List[Int]()
         self._enc_frames = List[Int]()
         self._enc_pending = List[Bool]()
+        self._submitted = List[Int]()
+        self._accepted = List[Int]()
         self.closed = False
 
         makedirs(self.root + "/meta/episodes/chunk-000", exist_ok=True)
@@ -383,11 +413,13 @@ struct LeRobotWriter(Movable):
             self._enc_file.append(0)
             self._enc_frames.append(0)
             self._enc_pending.append(False)
-            self._enc.append(
-                VideoEncoder(
-                    self._video_path(c, 0), self.width, self.height, self.fps
-                )
+            var e = VideoEncoderThread(
+                self._video_path(c, 0), self.width, self.height, self.fps
             )
+            e.start()
+            self._enc.append(e^)
+            self._submitted.append(0)
+            self._accepted.append(0)
 
     def __init__(out self, *, deinit move: Self):
         self.root = move.root^
@@ -420,6 +452,8 @@ struct LeRobotWriter(Movable):
         self._enc_file = move._enc_file^
         self._enc_frames = move._enc_frames^
         self._enc_pending = move._enc_pending^
+        self._submitted = move._submitted^
+        self._accepted = move._accepted^
         self.closed = move.closed
 
     def _video_path(self, cam: Int, file_index: Int) -> String:
@@ -469,12 +503,14 @@ struct LeRobotWriter(Movable):
         # `begin_episode` means a file exists only once it has a frame.
         for c in range(len(self.cameras)):
             if self._enc_pending[c]:
-                self._enc[c] = VideoEncoder(
+                var e = VideoEncoderThread(
                     self._video_path(c, self._enc_file[c]),
                     self.width,
                     self.height,
                     self.fps,
                 )
+                e.start()
+                self._enc[c] = e^
                 self._enc_pending[c] = False
 
         # Where this episode starts inside each camera's CURRENT file.
@@ -529,9 +565,18 @@ struct LeRobotWriter(Movable):
             self._cur_action.vals.append(action[i])
 
         for c in range(len(self.cameras)):
-            self._enc[c].add_frame_list(frames[c])
+            # ⚠ BLOCKING, NOT DROPPING. A dropped frame leaves the mp4 with
+            # fewer frames than the parquet has rows, which offsets every
+            # episode after it in that file. See `submit_blocking`.
+            if not self._enc[c].submit_blocking(frames[c]):
+                raise Error(
+                    "lerobot_write: the encoder for '" + self.cameras[c]
+                    + "' did not accept a frame within its timeout — ffmpeg"
+                    " is wedged and this recording cannot be completed"
+                )
+            self._submitted[c] += 1
             self._enc_frames[c] += 1
-            self._img[c].add_frame(frames[c], self.width * self.height)
+            self._img[c].add_frame(frames[c], self.width, self.height)
 
         self._cur_len += 1
 
@@ -618,7 +663,7 @@ struct LeRobotWriter(Movable):
                 so_far = 0
             if so_far < limit:
                 continue
-            _ = self._enc[c].close()
+            self._accepted[c] += self._enc[c].stop()
             self._enc_file[c] += 1
             self._enc_frames[c] = 0
             self._enc_pending[c] = True
@@ -639,9 +684,29 @@ struct LeRobotWriter(Movable):
             )
 
         for c in range(len(self.cameras)):
-            # A pending camera's encoder was already closed by the roll.
+            # A pending camera's encoder was already stopped by the roll.
             if not self._enc_pending[c]:
-                _ = self._enc[c].close()
+                self._accepted[c] += self._enc[c].stop()
+
+        # ⚠ THE VIDEO MUST HOLD EXACTLY THE ROWS THE PARQUET CLAIMS. A frame
+        # lost between here and ffmpeg is not a degraded recording, it is a
+        # MISALIGNED one: every episode after the gap reads another episode's
+        # frames, and nothing downstream can detect it. Checked once, here,
+        # where the counts are finally settled.
+        for c in range(len(self.cameras)):
+            if self._submitted[c] != self._accepted[c]:
+                raise Error(
+                    "lerobot_write: camera '" + self.cameras[c] + "' was sent "
+                    + String(self._submitted[c]) + " frames but ffmpeg"
+                    " accepted " + String(self._accepted[c])
+                    + " — the video and the data would not line up"
+                )
+            if self._submitted[c] != self.n_rows():
+                raise Error(
+                    "lerobot_write: camera '" + self.cameras[c] + "' has "
+                    + String(self._submitted[c]) + " frames for "
+                    + String(self.n_rows()) + " rows"
+                )
 
         self._write_data()
         self._write_tasks()

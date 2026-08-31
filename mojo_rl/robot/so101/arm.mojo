@@ -82,6 +82,28 @@ def joint_name(i: Int) -> String:
     return String("gripper")
 
 
+def joint_short(i: Int) -> String:
+    """A 4-character label that is UNIQUE per joint.
+
+    ⚠ TRUNCATING `joint_name` TO 4 CHARS DOES NOT WORK: `shoulder_pan` and
+    `shoulder_lift` both become `shou`, and `wrist_flex` and `wrist_roll` both
+    become `wris`. A live telemetry line then shows two identical labels with
+    different numbers, which is worse than no label — it invites reading the
+    wrong joint. Seen in a real recording session on 2026-08-31.
+    """
+    if i == 0:
+        return String("pan ")
+    if i == 1:
+        return String("lift")
+    if i == 2:
+        return String("elbo")
+    if i == 3:
+        return String("wfle")
+    if i == 4:
+        return String("wrol")
+    return String("grip")
+
+
 @fieldwise_init
 struct SO101Calibration(Copyable, Movable):
     """What `lerobot-calibrate` left in the servos' EEPROM."""

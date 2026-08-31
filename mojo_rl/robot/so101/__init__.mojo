@@ -17,5 +17,5 @@ from mojo_rl.robot.so101.arm import (
     SO101Calibration,
     SO101_N,
     GRIPPER,
-    joint_name,
+    joint_name, joint_short,
 )
