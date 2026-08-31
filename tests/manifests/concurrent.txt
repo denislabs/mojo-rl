@@ -1,0 +1,21 @@
+# Concurrency manifest — `pixi run test-concurrent`
+#
+# The backbone under `mojo_rl/core/concurrent/`: one pthread, a bounded SPSC
+# byte ring, atomic control cells. See `docs/CONCURRENCY_BACKBONE.md`.
+#
+# These are also in `smoke.txt`. They belong there despite being threaded,
+# because two of them gate SILENT miscompiles rather than features:
+#
+#   * test_control_block  — a Mojo-owned slab lets the optimizer fold a
+#     post-join read back to the initializer. Symptom: lost updates.
+#   * test_ring           — the owner is freed at its last mention, so a
+#     worker reads freed memory. Symptom: a crash in malloc at exit, far
+#     from the cause.
+#
+# Both failures are invisible in review and neither shows up in any other
+# tier. Timings are stable (checked 3x); the slowest assertion is a 200 ms
+# drain budget.
+
+tests/concurrent/test_control_block.mojo
+tests/concurrent/test_ring.mojo
+tests/concurrent/test_worker.mojo

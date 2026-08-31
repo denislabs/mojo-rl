@@ -94,7 +94,16 @@ tests/nn/test_safetensors_roundtrip.mojo
 # length residue mod 64 (the padding boundary at 56 is where SHA-256
 # implementations actually break) plus the chunk-split invariance that
 # `sha256_file`'s 8 MiB streaming read depends on. Self-contained.
+# ── concurrency backbone: two SILENT-miscompile gates + the lifecycle ──
+# Threaded, but deterministic and fast. test_control_block catches a slab the
+# optimizer folds back to its initializer; test_ring catches an owner freed at
+# its last mention. Neither failure is visible in review.
+tests/concurrent/test_control_block.mojo
+tests/concurrent/test_ring.mojo
+tests/concurrent/test_worker.mojo
+
 tests/io/test_sha256.mojo
+tests/io/test_http_sink.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.

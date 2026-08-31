@@ -6,8 +6,30 @@ Logger trait defines the interface. Concrete implementations:
   - RemoteLogger: POSTs JSON batches to an HTTP server
   - CompositeLogger[A, B]: fans out to two loggers
 
-Collection is pure Mojo with near-zero overhead. The remote backend
-uses Python `urllib` via Mojo's Python interop (only during flush).
+Collection is pure Mojo with near-zero overhead, and so is the remote
+backend: it serialises with `mojo_rl/io/json.mojo` and hands the POST to
+`mojo_rl/io/http_sink.mojo`, which queues it for a background thread.
+
+⚠ THE NETWORK IS NO LONGER ON THE TRAINING THREAD. `flush` used to POST
+synchronously; against a dashboard answering in 100 ms that cost **629.7 ms**
+for eleven batches, versus **0.003 ms** to queue the same eleven. A run whose
+dashboard is DOWN now pays 4.6 ms for 2000 `log_scalar` calls and closes in
+under 2 ms, where before it paid a connection attempt per flush.
+
+⚠ THIS CALL IS WHY A TRAINING BINARY USED TO NEED A CPython AT ALL. `flush`
+went through Python `urllib`, so every run — GPU training included — had to
+find `libpython3.13`, which is what `pixi.toml`'s activation block pins and
+why it names `RemoteLogger.flush` when it explains the pin. Nothing in the
+training path imports Python now.
+
+⚠ REQUIRES THE HTTP SHIM: `pixi run build-http`. A missing one is reported
+once and metrics are dropped from there on — a dashboard that cannot be
+reached must never take the training run with it.
+
+⚠ METRICS ARE DROPPABLE, AND DROPS ARE COUNTED. The queue is bounded; if the
+dashboard falls behind the run, batches are refused rather than stalling
+training. `close()` prints the tally (`sink_report()`), and a caller that
+suppresses that output is running a silently lossy logger.
 
 Usage:
     # CSV only
@@ -31,8 +53,11 @@ Usage:
 """
 
 from std.time import perf_counter_ns
-from std.python import Python, PythonObject
 from std.math import isnan, isinf
+
+
+from mojo_rl.io.http_sink import HttpPostSink
+from mojo_rl.io.json import JsonWriter
 
 # =============================================================================
 # MetricEntry — single buffered data point
@@ -261,7 +286,20 @@ struct RemoteLogger(Logger):
     """Buffered HTTP logger that POSTs JSON to a dashboard server.
 
     Sends metrics as JSON batches to `server_url/ingest` and registers
-    the run at `server_url/runs` on first flush.  Uses Python urllib.
+    the run at `server_url/runs` on first flush.
+
+    ⚠ THE POST HAPPENS ON ANOTHER THREAD. `flush` serialises the batch and
+    queues it; `mojo_rl/io/http_sink.mojo` owns the client and the connection.
+    One client for the run either way — a client per flush would pay a full
+    TLS handshake every `buffer_size` metrics — but now none of it, handshake
+    included, is on the training thread.
+
+    ⚠ ORDER IS PRESERVED, WHICH THE `/runs` REGISTRATION DEPENDS ON. One ring
+    and one worker means the registration queued by the first `flush` is sent
+    before the `/ingest` batch behind it.
+
+    ⚠ `close()` IS NOT OPTIONAL. It drains the queue and joins the worker;
+    without it, whatever is still queued at process exit is lost.
     """
 
     var run_id: String
@@ -275,6 +313,18 @@ struct RemoteLogger(Logger):
     var _config_vals: List[String]
     var _run_registered: Bool
     var _total_logged: Int
+    var _sink: Optional[HttpPostSink]
+    """The POST queue and its background thread. Built lazily ON THE FIRST
+    PAYLOAD: constructing it spawns a thread, and a `RemoteLogger` with no
+    `server_url` — which is the default in several drivers — must stay inert.
+
+    ⚠ COPIES SHARE ONE SINK, hence one thread, one queue and one connection.
+    That is the right meaning (two copies of a logger are one run) and it is
+    also forced: `Logger` is `Copyable`, `CompositeLogger` copies its halves,
+    and a libcurl easy handle may not be shared across threads."""
+    var _reported: Bool
+    """Whether a transport problem has been printed. Once per run, not once
+    per flush."""
 
     def __init__(
         out self,
@@ -298,6 +348,8 @@ struct RemoteLogger(Logger):
         self._config_vals = List[String]()
         self._run_registered = False
         self._total_logged = 0
+        self._sink = None
+        self._reported = False
 
     def __init__(out self, *, deinit move: Self):
         self.run_id = move.run_id^
@@ -311,6 +363,8 @@ struct RemoteLogger(Logger):
         self._config_vals = move._config_vals^
         self._run_registered = move._run_registered
         self._total_logged = move._total_logged
+        self._sink = move._sink^
+        self._reported = move._reported
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         if self.server_url.byte_length() == 0:
@@ -345,35 +399,47 @@ struct RemoteLogger(Logger):
     def flush(mut self) raises:
         if self.server_url.byte_length() == 0 or len(self.entries) == 0:
             return
-        from std.python import Python
-
-        var json_mod = Python.import_module("json")
-        var urllib_request = Python.import_module("urllib.request")
 
         if not self._run_registered:
-            self._register_run(json_mod, urllib_request)
+            self._register_run()
             self._run_registered = True
 
-        var metrics_list = Python.evaluate("[]")
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("run_id"), self.run_id)
+        w.key(String("metrics"))
+        w.begin_array()
         for i in range(len(self.entries)):
             var e = self.entries[i].copy()
-            var entry = Python.evaluate("{}")
-            entry["step"] = e.step
-            entry["wall_time_ms"] = e.wall_time_ms
-            entry["name"] = PythonObject(e.name)
-            entry["value"] = e.value
-            metrics_list.append(entry)
+            w.begin_object()
+            w.member(String("step"), e.step)
+            w.member(String("wall_time_ms"), e.wall_time_ms)
+            w.member(String("name"), e.name)
+            w.member(String("value"), e.value)
+            w.end_object()
+        w.end_array()
+        w.end_object()
 
-        var payload = Python.evaluate("{}")
-        payload["run_id"] = PythonObject(self.run_id)
-        payload["metrics"] = metrics_list
-
-        var url = self.server_url.removesuffix("/") + "/ingest"
-        _http_post(urllib_request, json_mod, url, payload, self.api_key)
+        self._post(self.server_url.removesuffix("/") + "/ingest", w.done())
         self.entries.clear()
 
     def close(mut self) raises:
+        """Flush, then drain the sink and join its thread.
+
+        ⚠ THE DRAIN IS BOUNDED. `drain_ms` is a budget, not a promise — see
+        `HttpPostSink`. A hung dashboard is bounded by the worker's `dead`
+        latch instead, at one client timeout rather than one per payload.
+        """
         self.flush()
+        if self._sink:
+            self._report_transport_once()
+            var line = self.sink_report()
+            self._sink.value().close(drain_ms=3000)
+            var final = self.sink_report()
+            if final.byte_length() > 0:
+                print(final)
+            elif line.byte_length() > 0:
+                print(line)
 
     def set_config(mut self, key: String, value: String):
         for i in range(len(self._config_keys)):
@@ -386,22 +452,92 @@ struct RemoteLogger(Logger):
     def is_active(self) -> Bool:
         return self.server_url.byte_length() > 0
 
-    def _register_run(
-        mut self,
-        json_mod: PythonObject,
-        urllib_request: PythonObject,
-    ) raises:
-        var config = Python.evaluate("{}")
+    def _register_run(mut self) raises:
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("run_id"), self.run_id)
+        w.member(String("run_name"), self.run_name)
+        w.key(String("config"))
+        w.begin_object()
         for i in range(len(self._config_keys)):
-            config[PythonObject(self._config_keys[i])] = PythonObject(
-                self._config_vals[i]
+            w.member(self._config_keys[i], self._config_vals[i])
+        w.end_object()
+        w.end_object()
+        self._post(self.server_url.removesuffix("/") + "/runs", w.done())
+
+    def _post(mut self, url: String, payload: String):
+        """Queue a JSON POST. Returns immediately; the network happens on the
+        sink's thread.
+
+        ⚠ EVERY FAILURE IS SWALLOWED. A dead or slow dashboard must not be able
+        to kill a training run or flood its stdout, so this reports at most
+        once and returns. That is a deliberate asymmetry with the rest of
+        `io/`, where a failed transfer raises.
+
+        Measured: twenty flushes against a dashboard answering in 100ms cost
+        **2090 ms** of training time synchronously and **0.7 ms** through the
+        sink, arriving byte-identical and in order
+        (`docs/design_spikes/spike_async_post_spsc_ring.mojo`).
+        """
+        try:
+            if not self._sink:
+                self._sink = Optional(
+                    HttpPostSink(api_key=self.api_key, timeout_ms=5000)
+                )
+            _ = self._sink.value().post(url, payload)
+        except e:
+            if not self._reported:
+                self._reported = True
+                print("  [logger] could not start the POST sink: " + String(e))
+        self._report_transport_once()
+
+    def _report_transport_once(mut self):
+        """Print the first transport problem the worker recorded, once.
+
+        The worker never prints: it runs on another thread and would interleave
+        with training output. It records into atomic cells and the owning
+        thread reports here.
+        """
+        if self._reported or not self._sink:
+            return
+        var s = self._sink.value()
+        if s.shim_missing():
+            self._reported = True
+            print(
+                "  [logger] the HTTP shim is missing — build it with"
+                " `pixi run build-http`. Metrics will be dropped."
             )
-        var payload = Python.evaluate("{}")
-        payload["run_id"] = PythonObject(self.run_id)
-        payload["run_name"] = PythonObject(self.run_name)
-        payload["config"] = config
-        var url = self.server_url.removesuffix("/") + "/runs"
-        _http_post(urllib_request, json_mod, url, payload, self.api_key)
+        elif s.dead():
+            self._reported = True
+            print(
+                "  [logger] the dashboard transport failed (last status "
+                + String(s.last_status())
+                + "); metrics will be dropped for the rest of this run."
+            )
+
+    def sink_report(self) -> String:
+        """One line of delivery accounting, or empty if nothing was sent.
+
+        ⚠ THE DROP COUNT IS THE COST OF THE DROP POLICY AND MUST BE VISIBLE. A
+        Sink that never reports it is silently lossy; `close()` prints this.
+        """
+        if not self._sink:
+            return String("")
+        var s = self._sink.value()
+        var total = s.sent() + s.failed() + s.dropped() + s.abandoned()
+        if total == 0:
+            return String("")
+        return (
+            "  [logger] "
+            + String(s.sent())
+            + " batches delivered, "
+            + String(s.failed())
+            + " failed, "
+            + String(s.dropped())
+            + " dropped (queue full), "
+            + String(s.abandoned())
+            + " abandoned at close"
+        )
 
     def total_logged(self) -> Int:
         return self._total_logged
@@ -470,44 +606,3 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
         _ = self.b^
 
 
-# =============================================================================
-# HTTP Helper
-# =============================================================================
-
-
-def _http_post(
-    urllib_request: PythonObject,
-    json_mod: PythonObject,
-    url: String,
-    payload: PythonObject,
-    api_key: String = "",
-) raises:
-    """POST a JSON payload to `url`. Synchronous — see the comment
-    below on why the daemon-thread variant didn't ship.
-
-    Errors are silently swallowed so a dead/slow server can't kill
-    training or pollute stdout.
-
-    Note on async: a `threading.Thread(daemon=True)` variant was tried
-    but Mojo's current Python embedding holds the GIL continuously
-    between Python calls, starving the worker thread — POSTs never
-    actually fired and the dashboard received nothing. A true non-
-    blocking path needs either (a) a long-lived subprocess that
-    consumes payloads via a Unix socket / stdin (bypasses the GIL
-    entirely), or (b) Mojo growing native async/await primitives.
-    Until then, the practical knob is `buffer_size` — larger buffers
-    amortize the synchronous POST cost across more log_scalar calls.
-    """
-    try:
-        var data = json_mod.dumps(payload).encode("utf-8")
-        var req = urllib_request.Request(
-            PythonObject(url),
-            data=data,
-        )
-        req.add_header("Content-Type", "application/json")
-        req.add_header("User-Agent", "mojo-rl/1.0")
-        if api_key.byte_length() > 0:
-            req.add_header("Authorization", "Bearer " + api_key)
-        _ = urllib_request.urlopen(req, timeout=5)
-    except e:
-        print("  [logger] POST", url, "failed:", String(e))

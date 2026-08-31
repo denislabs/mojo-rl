@@ -176,6 +176,7 @@ test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", desc
 # see tests/manifests/act.txt for the two prerequisite commands.
 test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", description = "ACT reference gates (needs -e act-ref dumps)" }
 test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
+test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.txt", description = "Concurrency backbone (mojo_rl/core/concurrent): pthread, SPSC ring, atomic cells" }
 # Format interop: our safetensors reader/writer against the REFERENCE library,
 # and the Hub's ImageNet ResNet18 against torchvision's. Needs `-e act-ref`
 # dumps AND the two `--verify` passes listed in the manifest header — half of

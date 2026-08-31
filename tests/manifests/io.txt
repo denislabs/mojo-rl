@@ -73,3 +73,10 @@ tests/io/test_png_assets.mojo
 # 93 of 600 pairs — Pillow walks an accumulator and its drift is the answer.
 #   pixi run python tools/io/dump_resize_nearest_reference.py --out /tmp/nearest_ref
 tests/io/test_resize_nearest.mojo
+
+# ── the async POST sink behind RemoteLogger ───────────────────────────
+# Offline by design: framing, drop accounting, and the property that a
+# dashboard which is DOWN costs the training thread nothing and does not
+# hold the process open. Delivery against a live dashboard is validated by
+# running a real job — see docs/CONCURRENCY_BACKBONE.md step 2.
+tests/io/test_http_sink.mojo
