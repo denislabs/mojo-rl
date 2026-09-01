@@ -118,3 +118,10 @@ tests/io/test_json_write.mojo
 # that must be REFUSED: a `../` member, and a type this reader does not
 # implement. Self-contained; fixtures come from Python's stdlib `tarfile`.
 tests/io/test_tar.mojo
+
+# The SO-101 calibration span guard, on numbers from a real session where a
+# joint lost 61 degrees of travel and the absolute "did it move" check let it
+# through. Pure function of two calibrations — no serial port, no arm. The
+# gate IMPORTS the rule from `robot/so101/calibration.mojo` rather than
+# restating it, so the two cannot drift apart.
+tests/soarm/test_span_guard.mojo

@@ -68,7 +68,11 @@ from std.os import makedirs
 from mojo_rl.robot.feetech.control_table import (
     SIZE_2, STS_HOMING_OFFSET, STS_MAX_POSITION_LIMIT, STS_MIN_POSITION_LIMIT,
 )
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
+from mojo_rl.robot.so101 import (
+    NARROWER_FRACTION, SO101Arm, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
+    CalibrationRecord, joint_name, joint_short, load_calibration_json,
+    save_calibration_json, span_regressions,
+)
 from mojo_rl.utils.fmt import fixed
 
 
@@ -79,35 +83,11 @@ this, matching `lerobot-calibrate`."""
 comptime MAX_OFFSET_MAG = 2047
 """The direction bit sits at 11, so the magnitude field is 11 bits."""
 
-comptime UNLIMITED_MIN = 0
-comptime UNLIMITED_MAX = 4095
-
 comptime SWEEP_POLL_MS = 20
 
 
-struct Cal(Copyable, Movable):
-    var homing: InlineArray[Int32, SO101_N]
-    var rmin: InlineArray[Int32, SO101_N]
-    var rmax: InlineArray[Int32, SO101_N]
-
-    def __init__(out self):
-        self.homing = InlineArray[Int32, SO101_N](fill=0)
-        self.rmin = InlineArray[Int32, SO101_N](fill=0)
-        self.rmax = InlineArray[Int32, SO101_N](fill=0)
-
-    def __init__(out self, *, copy: Self):
-        self.homing = copy.homing.copy()
-        self.rmin = copy.rmin.copy()
-        self.rmax = copy.rmax.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.homing = move.homing^
-        self.rmin = move.rmin^
-        self.rmax = move.rmax^
-
-
-def _read_cal(mut arm: SO101Arm) raises -> Cal:
-    var c = Cal()
+def _read_cal(mut arm: SO101Arm) raises -> CalibrationRecord:
+    var c = CalibrationRecord()
     for i in range(SO101_N):
         c.homing[i] = arm.cal.homing_offset[i]
         c.rmin[i] = arm.cal.range_min[i]
@@ -206,7 +186,7 @@ def _rj_str(s: String, w: Int) -> String:
     return out^
 
 
-def _print_cal(label: String, ref c: Cal) raises:
+def _print_cal(label: String, ref c: CalibrationRecord) raises:
     """Aligned, full joint names — the same shape as the live sweep table.
 
     ⚠ The first version used `joint_short` and space padding by hand, and a
@@ -253,46 +233,7 @@ def _auto_backup_path(port: String) raises -> String:
     )
 
 
-def _save(path: String, ref c: Cal) raises:
-    """Write `lerobot-calibrate`'s own JSON shape, so it restores either way."""
-    var w = JsonWriter()
-    w.begin_object()
-    for i in range(SO101_N):
-        w.key(joint_name(i))
-        w.begin_object()
-        w.member(String("id"), i + 1)
-        w.member(String("drive_mode"), 0)
-        w.member(String("homing_offset"), Int(c.homing[i]))
-        w.member(String("range_min"), Int(c.rmin[i]))
-        w.member(String("range_max"), Int(c.rmax[i]))
-        w.end_object()
-    w.end_object()
-    var text = w.done()
-    var b = List[UInt8]()
-    for i in range(text.byte_length()):
-        b.append(text.as_bytes()[i])
-    write_file_atomic(path, b)
-
-
-def _load(path: String) raises -> Cal:
-    var doc = parse_json(read_file_bytes(path))
-    var r = doc.root()
-    var c = Cal()
-    for i in range(SO101_N):
-        var node = doc.field(r, joint_name(i))
-        if node < 0:
-            raise Error(
-                "calibrate: " + path + " has no entry for " + joint_name(i)
-            )
-        c.homing[i] = Int32(
-            doc.integer(doc.field(node, String("homing_offset")))
-        )
-        c.rmin[i] = Int32(doc.integer(doc.field(node, String("range_min"))))
-        c.rmax[i] = Int32(doc.integer(doc.field(node, String("range_max"))))
-    return c^
-
-
-def _apply(mut arm: SO101Arm, ref c: Cal, write: Bool) raises:
+def _apply(mut arm: SO101Arm, ref c: CalibrationRecord, write: Bool) raises:
     """Write a calibration into EEPROM and read it back to prove it landed."""
     if not write:
         print("  (dry run — nothing written)")
@@ -347,6 +288,7 @@ def main() raises:
     var restore = String("")
     var write = False
     var plain = False
+    var allow_narrower = False
     # A CAP on the sweep, not its length — ENTER ends it. Ten minutes is long
     # enough that an unhurried calibration never reaches it.
     var sweep_s = 600
@@ -365,6 +307,10 @@ def main() raises:
             sweep_s = Int(String(args[i + 1]))
         elif a == "--write":
             write = True
+        elif a == "--allow-narrower":
+            # Deliberately shrinking a joint's range is legitimate — a new
+            # physical limit, a changed gripper. It just must not be silent.
+            allow_narrower = True
         elif a == "--plain":
             # Escape hatch: no cursor tricks, one table per redraw interval.
             plain = True
@@ -401,16 +347,16 @@ def main() raises:
     # exists only in a file. Making that file conditional on remembering
     # `--backup` is the same mistake `--dry-run` was in `record.mojo`.
     var auto_backup = _auto_backup_path(port)
-    _save(auto_backup, current)
+    save_calibration_json(auto_backup, current)
     print("  backed up to " + auto_backup)
     if backup != "":
-        _save(backup, current)
+        save_calibration_json(backup, current)
         print("  backed up to " + backup)
     print("")
 
     # ── restore mode: put a saved calibration back and stop ───────────
     if restore != "":
-        var saved = _load(restore)
+        var saved = load_calibration_json(restore)
         _print_cal(String("restoring from " + restore + ":"), saved)
         if write and backup == "":
             raise Error(
@@ -435,7 +381,8 @@ def main() raises:
     # by hand from the backup path printed above.
     try:
         committed = _calibrate(
-            arm, stdin, continuous, sweep_s, write, auto_backup, plain
+            arm, stdin, continuous, sweep_s, write, auto_backup, plain,
+            current, allow_narrower,
         )
     finally:
         if write and not committed:
@@ -462,6 +409,8 @@ def _calibrate(
     write: Bool,
     auto_backup: String,
     plain: Bool,
+    ref previous: CalibrationRecord,
+    allow_narrower: Bool,
 ) raises -> Bool:
     """Returns True only when a new calibration was actually applied.
 
@@ -482,7 +431,7 @@ def _calibrate(
     stdin.discard_pending()
     _ = stdin.line()
 
-    var zero = Cal()
+    var zero = CalibrationRecord()
     for i in range(SO101_N):
         zero.homing[i] = 0
         zero.rmin[i] = Int32(UNLIMITED_MIN)
@@ -495,7 +444,7 @@ def _calibrate(
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("calibrate: could not read all six positions")
 
-    var next_cal = Cal()
+    var next_cal = CalibrationRecord()
     for i in range(SO101_N):
         var off = Int(raw[i]) - CENTRE
         if off > MAX_OFFSET_MAG or off < -MAX_OFFSET_MAG:
@@ -632,6 +581,34 @@ def _calibrate(
     print("")
     _print_cal(String("proposed calibration:"), next_cal)
     print("")
+
+    # ⚠ A JOINT THAT LOST TRAVEL IS THE FAILURE THIS TOOL CANNOT SEE ITSELF.
+    # An under-swept joint produces a perfectly well-formed calibration whose
+    # only symptom is an arm that quietly stops reaching.
+    var regressed = span_regressions(previous, next_cal, continuous)
+    for k in range(len(regressed)):
+        var i = regressed[k]
+        var was = Int(previous.rmax[i]) - Int(previous.rmin[i])
+        var now_span = Int(next_cal.rmax[i]) - Int(next_cal.rmin[i])
+        print(
+            "  ⚠ " + joint_name(i) + " swept " + String(was - now_span)
+            + " ticks LESS than its previous calibration ("
+            + fixed(Float64(was - now_span) * 360.0 / 4095.0, 1)
+            + " deg of travel): " + String(was) + " -> " + String(now_span)
+        )
+    if len(regressed) > 0:
+        print(
+            "    `write_goals` clamps to this range, so the follower would"
+            " stop reaching poses it can reach today."
+        )
+        if write and not allow_narrower:
+            raise Error(
+                "calibrate: " + String(len(regressed)) + " joint(s) lost more"
+                " than " + fixed((1.0 - NARROWER_FRACTION) * 100.0, 0)
+                + "% of their travel. Sweep them to BOTH end stops and run"
+                " again — or pass --allow-narrower if the range really did"
+                " shrink."
+            )
 
     if narrow > 0 and write:
         raise Error(
