@@ -175,7 +175,7 @@ comptime GPU_DATA = True
 # trace. If the step time does NOT move, the launches were already overlapped
 # with compute and capture bought nothing; that is a real possible outcome at
 # 88% GPU busy and it is why this is measured rather than assumed.
-comptime USE_CUDA_GRAPH = False
+comptime USE_CUDA_GRAPH = True
 # (the GPU_DATA requirement is asserted at the top of `main`)
 
 comptime WARMUP_STEPS = 5
@@ -230,32 +230,41 @@ comptime _C5[H: Int] = _C[_C4[H]]
 
 comptime Stub = Sequential[
     Conv2DBatchNormReLU[3, STUB_CH, 3, 2, 1, IMG_H, IMG_W],
-    Conv2DBatchNormReLU[
-        STUB_CH, STUB_CH, 3, 2, 1, _C[IMG_H], _C[IMG_W]
-    ],
-    Conv2DBatchNormReLU[
-        STUB_CH, STUB_CH, 3, 2, 1, _C2[IMG_H], _C2[IMG_W]
-    ],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C[IMG_H], _C[IMG_W]],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C2[IMG_H], _C2[IMG_W]],
     Conv2DBatchNormReLU[
         STUB_CH, STUB_CH, 3, 2, 1, _C[_C2[IMG_H]], _C[_C2[IMG_W]]
     ],
-    Conv2DBatchNormReLU[
-        STUB_CH, STUB_CH, 3, 2, 1, _C4[IMG_H], _C4[IMG_W]
-    ],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C4[IMG_H], _C4[IMG_W]],
 ]
 
 comptime FEAT_CH = STUB_CH if STUB_BACKBONE else RESNET18_OUT_CH
 comptime OH = _C5[IMG_H] if STUB_BACKBONE else ResNet18OutH[IMG_H]
 comptime OW = _C5[IMG_W] if STUB_BACKBONE else ResNet18OutW[IMG_W]
-comptime BACKBONE = Stub if STUB_BACKBONE else ResNet18Backbone[
-    3, IMG_H, IMG_W
-]
+comptime BACKBONE = Stub if STUB_BACKBONE else ResNet18Backbone[3, IMG_H, IMG_W]
 
 comptime DDS = ACTDeviceDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W]
 
 comptime T = ACTTrainer[
-    QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
-    BATCH, 0.1, "gpu", FEAT_CH, OH, OW, BACKBONE,
+    QPOS,
+    ADIM,
+    N_CAM,
+    IMG_H,
+    IMG_W,
+    K,
+    DIM,
+    HEADS,
+    FF,
+    LATENT,
+    N_ENC,
+    N_DEC,
+    BATCH,
+    0.1,
+    "gpu",
+    FEAT_CH,
+    OH,
+    OW,
+    BACKBONE,
 ]
 
 
@@ -270,7 +279,10 @@ def store_path() raises -> String:
         home
         + "/.cache/mojo_rl/act_so101/"
         + "DenisLabs__record-test_20260828_092736_"
-        + String(IMG_H) + "x" + String(IMG_W) + ".h5"
+        + String(IMG_H)
+        + "x"
+        + String(IMG_W)
+        + ".h5"
     )
 
 
@@ -290,13 +302,15 @@ def main() raises:
     # still fires in the first millisecond, which is what matters for a knob
     # whose failure mode is a 47 GB allocation.
     comptime if STUB_BACKBONE:
-        if (
-            OH != ResNet18OutH[IMG_H] or OW != ResNet18OutW[IMG_W]
-        ):
+        if OH != ResNet18OutH[IMG_H] or OW != ResNet18OutW[IMG_W]:
             raise Error(
                 "STUB_BACKBONE produces "
-                + String(OH) + "x" + String(OW) + " but ResNet18 produces "
-                + String(ResNet18OutH[IMG_H]) + "x"
+                + String(OH)
+                + "x"
+                + String(OW)
+                + " but ResNet18 produces "
+                + String(ResNet18OutH[IMG_H])
+                + "x"
                 + String(ResNet18OutW[IMG_W])
                 + " — the knob would change the transformer's O(N^2) memory"
                 " instead of isolating the backbone. See the comment at `Stub`."
@@ -306,19 +320,33 @@ def main() raises:
     print("=== ACT SO-ARM101 nsys profile ===")
     print("  device            " + String(ctx.name()))
     print(
-        "  model             K=" + String(K) + " dim=" + String(DIM)
-        + " ff=" + String(FF) + " enc=" + String(N_ENC)
-        + " dec=" + String(N_DEC) + " batch=" + String(BATCH)
+        "  model             K="
+        + String(K)
+        + " dim="
+        + String(DIM)
+        + " ff="
+        + String(FF)
+        + " enc="
+        + String(N_ENC)
+        + " dec="
+        + String(N_DEC)
+        + " batch="
+        + String(BATCH)
     )
     comptime if STUB_BACKBONE:
-        print("  backbone          STUB (5 strided convs, ResNet18 token count)")
+        print(
+            "  backbone          STUB (5 strided convs, ResNet18 token count)"
+        )
     else:
         print("  backbone          ResNet18")
     print("  SKIP_RESAMPLE     " + String(SKIP_RESAMPLE))
     print("  CLIP_NORM         " + String(CLIP_NORM))
     print(
-        "  steps             " + String(PROFILE_STEPS) + " after "
-        + String(WARMUP_STEPS) + " warmup"
+        "  steps             "
+        + String(PROFILE_STEPS)
+        + " after "
+        + String(WARMUP_STEPS)
+        + " warmup"
     )
 
     var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](String(path), seed=7)
@@ -326,8 +354,12 @@ def main() raises:
         "  images            "
         + ("resident" if ds.images_resident else "streamed from HDF5")
     )
-    print("  data path         " + ("GPU (device sampler)" if GPU_DATA
-                                    else "host (sample_batch + upload)"))
+    print(
+        "  data path         "
+        + (
+            "GPU (device sampler)" if GPU_DATA else "host (sample_batch + upload)"
+        )
+    )
     print("")
 
     var tr = T.make(
@@ -354,7 +386,9 @@ def main() raises:
         dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
         var u1 = perf_counter_ns()
         print(
-            "  device upload     " + String(Float64(u1 - u0) / 1e9) + " s  ("
+            "  device upload     "
+            + String(Float64(u1 - u0) / 1e9)
+            + " s  ("
             + String(Float64(dev_ds.n_rows) * Float64(IMG_ELEMS) / 1e9)
             + " GB uint8, once)"
         )
@@ -476,23 +510,28 @@ def main() raises:
         # an empty graph replaying is very fast and completely meaningless.
         print(
             "  cuda graph        "
-            + ("captured " + String(tr.captured_graph_nodes()) + " nodes"
-               if tr.has_captured_graph() else
-               "NOT captured (disabled, or no stream) — steps ran directly")
+            + (
+                "captured "
+                + String(tr.captured_graph_nodes())
+                + " nodes" if tr.has_captured_graph() else "NOT captured (disabled, or no stream) — steps ran directly"
+            )
         )
         print("")
     print(
-        "  PIPELINED, mean over " + String(PROFILE_STEPS) + " iterations"
-        " (one drain around the whole loop):"
+        "  PIPELINED, mean over "
+        + String(PROFILE_STEPS)
+        + " iterations (one drain around the whole loop):"
     )
     print(
-        "    iteration       " + String(iter_ms)
+        "    iteration       "
+        + String(iter_ms)
         + " ms   <- THE step cost. train + eval, no syncs inside."
     )
     print("")
     print(
-        "  SYNCHRONIZED, mean over " + String(PROFILE_STEPS) + " (a drain at"
-        " every phase boundary):"
+        "  SYNCHRONIZED, mean over "
+        + String(PROFILE_STEPS)
+        + " (a drain at every phase boundary):"
     )
     print(
         "    ⚠ attribution only. Each drain empties a pipeline the real loop"
@@ -503,8 +542,11 @@ def main() raises:
         " experiment."
     )
     print(
-        "    sample_batch    " + String(data_ms) + " ms  ("
-        + String(Int(100.0 * data_ms / (step_ms + 1e-12))) + "%)"
+        "    sample_batch    "
+        + String(data_ms)
+        + " ms  ("
+        + String(Int(100.0 * data_ms / (step_ms + 1e-12)))
+        + "%)"
     )
     # ⚠ The split that decides whether the image path is worth moving to the
     # GPU. `io` is the HDF5 row read and CANNOT move; `normalize` is 7.37M
@@ -514,29 +556,37 @@ def main() raises:
     var io_ms = Float64(ds.ns_img_io) / 1e6 / n
     var nm_ms = Float64(ds.ns_img_norm) / 1e6 / n
     print(
-        "      images io     " + String(io_ms) + " ms   (HDF5 read — cannot"
-        " move to the GPU)"
+        "      images io     "
+        + String(io_ms)
+        + " ms   (HDF5 read — cannot move to the GPU)"
     )
     print(
-        "      images norm   " + String(nm_ms) + " ms   (per-pixel convert —"
-        " the GPU candidate)"
+        "      images norm   "
+        + String(nm_ms)
+        + " ms   (per-pixel convert — the GPU candidate)"
     )
     print(
-        "      other         " + String(data_ms - io_ms - nm_ms)
+        "      other         "
+        + String(data_ms - io_ms - nm_ms)
         + " ms   (qpos/actions/rng)"
     )
     print(
-        "    train_step      " + String(train_ms) + " ms  ("
-        + String(Int(100.0 * train_ms / (step_ms + 1e-12))) + "%)"
+        "    train_step      "
+        + String(train_ms)
+        + " ms  ("
+        + String(Int(100.0 * train_ms / (step_ms + 1e-12)))
+        + "%)"
     )
     print("    ---- step       " + String(step_ms) + " ms  (drained)")
     print("")
     print(
-        "    eval_step       " + String(eval_ms)
+        "    eval_step       "
+        + String(eval_ms)
         + " ms   (forward only, same batch)"
     )
     print(
-        "    bwd + optimizer " + String(train_ms - eval_ms)
+        "    bwd + optimizer "
+        + String(train_ms - eval_ms)
         + " ms   (train_step - eval_step, both drained)"
     )
     print(
@@ -561,16 +611,29 @@ def main() raises:
         var tw = tr.train_metrics()
         var vw = tr.val_metrics()
         print(
-            "  device-accumulated over " + String(tw.n) + " train / "
-            + String(vw.n) + " forward steps (ONE D2H, at the end):"
+            "  device-accumulated over "
+            + String(tw.n)
+            + " train / "
+            + String(vw.n)
+            + " forward steps (ONE D2H, at the end):"
         )
         print(
-            "    train  loss " + String(tw.loss) + "  l1 " + String(tw.l1)
-            + "  kl " + String(tw.kl) + "  |grad| " + String(tw.grad_norm)
+            "    train  loss "
+            + String(tw.loss)
+            + "  l1 "
+            + String(tw.l1)
+            + "  kl "
+            + String(tw.kl)
+            + "  |grad| "
+            + String(tw.grad_norm)
         )
         print(
-            "    fwd    loss " + String(vw.loss) + "  l1 " + String(vw.l1)
-            + "  kl " + String(vw.kl)
+            "    fwd    loss "
+            + String(vw.loss)
+            + "  l1 "
+            + String(vw.l1)
+            + "  kl "
+            + String(vw.kl)
         )
         print("")
     print("=== Done ===")
