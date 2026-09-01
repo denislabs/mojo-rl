@@ -59,8 +59,12 @@ writable at all (`arm.mojo:311`).
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.io.fileio import StdinReader, read_file_bytes, write_file_atomic
+from mojo_rl.io.fileio import (
+    StdinReader, read_file_bytes, stdout_is_tty, write_file_atomic,
+)
+from mojo_rl.io.hf import mojo_rl_cache
 from mojo_rl.io.json import JsonWriter, parse_json
+from std.os import makedirs
 from mojo_rl.robot.feetech.control_table import (
     SIZE_2, STS_HOMING_OFFSET, STS_MAX_POSITION_LIMIT, STS_MIN_POSITION_LIMIT,
 )
@@ -111,6 +115,85 @@ def _read_cal(mut arm: SO101Arm) raises -> Cal:
     return c^
 
 
+def _rj(v: Int, w: Int) -> String:
+    var s = String(v)
+    while s.byte_length() < w:
+        s = " " + s
+    return s^
+
+
+def _lj(s: String, w: Int) -> String:
+    var out = s.copy()
+    while out.byte_length() < w:
+        out += " "
+    return out^
+
+
+def _sweep_table(
+    ref lo: InlineArray[Int32, SO101_N],
+    ref pos: InlineArray[Int32, SO101_N],
+    ref hi: InlineArray[Int32, SO101_N],
+    ref skip: List[Int],
+    redraw_lines: Int,
+) raises -> Int:
+    """One frame of the live sweep table. Returns the line count it printed.
+
+    ⚠ **REDRAWN IN PLACE, NOT APPENDED.** The first version printed a row of
+    numbers every 50 samples, which scrolls the terminal while the operator is
+    trying to watch a joint approach its stop — the exact thing lerobot's
+    fixed table gets right. `\x1b[<n>A` walks the cursor back up and each line
+    ends with `\x1b[K` so a shorter number cannot leave a digit behind.
+
+    ⚠ Only on a TTY. Piped, there is no cursor to move and every redraw would
+    append — worse than the scrolling it replaces. See `stdout_is_tty`.
+    """
+    var tty = stdout_is_tty()
+    var block = String("")
+    if tty and redraw_lines > 0:
+        block += "\x1b[" + String(redraw_lines) + "A"
+
+    var lines = List[String]()
+    lines.append(_lj(String("NAME"), 16) + "|" + _rj_head())
+    for i in range(SO101_N):
+        var skipped = False
+        for k in range(len(skip)):
+            if skip[k] == i:
+                skipped = True
+        if skipped:
+            lines.append(
+                _lj(joint_name(i), 16) + "|" + _rj(Int(pos[i]), 8)
+                + "   continuous — leave it alone"
+            )
+        else:
+            lines.append(
+                _lj(joint_name(i), 16) + "|" + _rj(Int(lo[i]), 7) + " |"
+                + _rj(Int(pos[i]), 7) + " |" + _rj(Int(hi[i]), 7)
+                + " |" + _rj(Int(hi[i]) - Int(lo[i]), 8)
+            )
+    for i in range(len(lines)):
+        block += lines[i]
+        if tty:
+            block += "\x1b[K"
+        if i + 1 < len(lines):
+            block += "\n"
+    print(block)
+    return len(lines)
+
+
+def _rj_head() -> String:
+    return (
+        _rj_str(String("MIN"), 7) + " |" + _rj_str(String("POS"), 7) + " |"
+        + _rj_str(String("MAX"), 7) + " |" + _rj_str(String("SPAN"), 8)
+    )
+
+
+def _rj_str(s: String, w: Int) -> String:
+    var out = s.copy()
+    while out.byte_length() < w:
+        out = " " + out
+    return out^
+
+
 def _print_cal(label: String, ref c: Cal) raises:
     print("  " + label)
     print("    joint    homing   range_min   range_max   span")
@@ -124,6 +207,28 @@ def _print_cal(label: String, ref c: Cal) raises:
             + "        " + String(Int(c.rmin[i])) + "        "
             + String(Int(c.rmax[i])) + "     " + String(span) + note
         )
+
+
+def _auto_backup_path(port: String) raises -> String:
+    """Where the automatic pre-write backup goes.
+
+    Under the mojo-rl cache with the port and a timestamp, so a second
+    calibration attempt cannot overwrite the copy that would restore the
+    first.
+    """
+    var slug = String("")
+    for i in range(port.byte_length()):
+        var c = chr(Int(port.as_bytes()[i]))
+        if c == "/" or c == "." or c == " ":
+            slug += "_"
+        else:
+            slug += c
+    var dir = mojo_rl_cache() + "/so101_calibration"
+    makedirs(dir, exist_ok=True)
+    return (
+        dir + "/" + slug + "-" + String(perf_counter_ns() // 1_000_000_000)
+        + ".json"
+    )
 
 
 def _save(path: String, ref c: Cal) raises:
@@ -219,7 +324,9 @@ def main() raises:
     var backup = String("")
     var restore = String("")
     var write = False
-    var sweep_s = 30
+    # A CAP on the sweep, not its length — ENTER ends it. Ten minutes is long
+    # enough that an unhurried calibration never reaches it.
+    var sweep_s = 600
     var continuous = List[Int]()
 
     var args = argv()
@@ -262,10 +369,18 @@ def main() raises:
     _print_cal(String("current calibration, as stored:"), current)
     print("")
 
+    # ⚠ **THE BACKUP IS AUTOMATIC, NOT OPT-IN.** Step 1 ZEROES the arm's
+    # calibration so positions read absolute — which means the moment the
+    # operator says "go", the previous calibration is gone from the servos and
+    # exists only in a file. Making that file conditional on remembering
+    # `--backup` is the same mistake `--dry-run` was in `record.mojo`.
+    var auto_backup = _auto_backup_path(port)
+    _save(auto_backup, current)
+    print("  backed up to " + auto_backup)
     if backup != "":
         _save(backup, current)
         print("  backed up to " + backup)
-        print("")
+    print("")
 
     # ── restore mode: put a saved calibration back and stop ───────────
     if restore != "":
@@ -280,6 +395,56 @@ def main() raises:
         return
 
     var stdin = StdinReader()
+    var committed = False
+
+    # ⚠ **AN ABORTED CALIBRATION MUST NOT LEAVE THE ARM UNCALIBRATED.** Step 1
+    # zeroes the offsets before the operator has committed to replacing them,
+    # so every exit that is not a completed calibration — an exception, a
+    # refused confirmation, a sweep that found nothing — has to put the old
+    # values back. This happened for real on 2026-09-01: the operator ran out
+    # of time mid-sweep and the follower was left with homing 0 and ranges
+    # 0..4095 on all six joints.
+    #
+    # ⚠ A `finally` DOES NOT COVER Ctrl-C OR A KILL. If that happens, restore
+    # by hand from the backup path printed above.
+    try:
+        committed = _calibrate(
+            arm, stdin, continuous, sweep_s, write, auto_backup
+        )
+    finally:
+        if write and not committed:
+            print(
+                "\n  calibration did not complete — putting the previous"
+                " values back ..."
+            )
+            try:
+                _apply(arm, current, True)
+                print("  restored.")
+            except:
+                print(
+                    "  ⚠ COULD NOT RESTORE. The arm is UNCALIBRATED. Run:\n"
+                    "    pixi run soarm-calibrate -- --port " + port
+                    + " --restore " + auto_backup + " --write"
+                )
+
+
+def _calibrate(
+    mut arm: SO101Arm,
+    mut stdin: StdinReader,
+    ref continuous: List[Int],
+    sweep_s: Int,
+    write: Bool,
+    auto_backup: String,
+) raises -> Bool:
+    """Returns True only when a new calibration was actually applied.
+
+    ⚠ EVERY OTHER EXIT MUST RESTORE. A dry run never wrote, so there is
+    nothing to undo; a declined confirmation and a raised error both leave the
+    arm with step 1's zeroed offsets, and the caller's `finally` puts the old
+    values back. Returning True on a decline is how the arm gets left
+    uncalibrated by a tool that reported success.
+    """
+    var raw = InlineArray[Int32, SO101_N](fill=0)
 
     # ── step 1: zero the offsets so positions read absolute ──────────
     print("── 1. middle pose ─────────────────────────────────────────")
@@ -300,7 +465,6 @@ def main() raises:
     # to the OLD offsets and are printed as an estimate, not a result.
     _apply(arm, zero, write)
 
-    var raw = InlineArray[Int32, SO101_N](fill=0)
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("calibrate: could not read all six positions")
 
@@ -320,20 +484,41 @@ def main() raises:
 
     # ── step 2: sweep ────────────────────────────────────────────────
     print("── 2. sweep ───────────────────────────────────────────────")
+    var skip_names = String("")
+    for k in range(len(continuous)):
+        if k > 0:
+            skip_names += ", "
+        skip_names += joint_name(continuous[k])
     print(
-        "  Move EVERY joint slowly to BOTH end stops, by hand. "
-        + String(sweep_s) + " s. Press Enter to start."
+        "  Move all joints EXCEPT " + skip_names + " through their FULL range"
+        " of motion, one at a time, by hand."
     )
+    print("  Recording positions. Press ENTER to stop.")
     stdin.discard_pending()
-    _ = stdin.line()
+    print("")
 
     var lo = InlineArray[Int32, SO101_N](fill=0)
     var hi = InlineArray[Int32, SO101_N](fill=0)
     var seeded = False
+    # ⚠ A CAP, NOT A SCHEDULE. The operator decides when the sweep is done —
+    # the first version ran for a fixed `--seconds` and simply stopped
+    # mid-calibration, which is not enough time to reach six pairs of end
+    # stops. This only exists so a piped or unattended run terminates.
     var t_end = perf_counter_ns() + sweep_s * 1_000_000_000
     var samples = 0
     var partial = 0
-    while perf_counter_ns() < t_end:
+    var drawn = 0
+    var last_draw = perf_counter_ns()
+
+    while True:
+        if stdin.has_input():
+            _ = stdin.line()
+            break
+        if perf_counter_ns() > t_end:
+            print(
+                "\n  reached the " + String(sweep_s) + " s cap (--seconds)"
+            )
+            break
         if arm.read_positions(Span(raw)) != SO101_N:
             partial += 1
             continue
@@ -349,13 +534,15 @@ def main() raises:
                 if raw[i] > hi[i]:
                     hi[i] = raw[i]
         samples += 1
-        if samples % 50 == 0:
-            var line = String("    ")
-            for i in range(SO101_N):
-                line += (
-                    joint_short(i) + " " + String(Int(hi[i]) - Int(lo[i])) + "  "
-                )
-            print(line)
+        # ~10 Hz: fast enough to follow a joint, slow enough not to flicker.
+        var now = perf_counter_ns()
+        # ⚠ Only redraw on a TTY. Piped, each "redraw" would append another
+        # full table — 10 a second of them.
+        if stdout_is_tty() and now - last_draw > 100_000_000:
+            drawn = _sweep_table(lo, raw, hi, continuous, drawn)
+            last_draw = now
+
+    _ = _sweep_table(lo, raw, hi, continuous, drawn)
 
     if not seeded or samples < 10:
         raise Error(
@@ -363,7 +550,7 @@ def main() raises:
             " sweep — check the bus before trusting anything here"
         )
     print(
-        "  " + String(samples) + " samples, " + String(partial)
+        "\n  " + String(samples) + " samples, " + String(partial)
         + " partial reads"
     )
     print("")
@@ -384,6 +571,12 @@ def main() raises:
 
     var narrow = 0
     for i in range(SO101_N):
+        var skipped = False
+        for k in range(len(continuous)):
+            if continuous[k] == i:
+                skipped = True
+        if skipped:
+            continue
         var span = Int(next_cal.rmax[i]) - Int(next_cal.rmin[i])
         if span < 200:
             print(
@@ -405,17 +598,17 @@ def main() raises:
 
     if not write:
         print(
-            "  dry run — nothing was written. Re-run with --write --backup"
-            " <file> to apply."
+            "  dry run — nothing was written. Re-run with --write to apply."
         )
-        return
+        # Nothing was written, so there is nothing for the caller to undo.
+        return True
 
     print("  apply this to the arm? [yes/N] ")
     stdin.discard_pending()
     var confirm = stdin.line()
     if confirm != "yes":
-        print("  not applied. The arm still has the offsets zeroed by step 1 —")
-        print("  restore with:  --restore " + backup + " --write")
-        return
+        print("  not applied.")
+        return False
     _apply(arm, next_cal, write)
     print("\ndone. Verify with:  pixi run soarm-diag")
+    return True

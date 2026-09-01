@@ -145,6 +145,16 @@ def file_size(path: String) raises -> Int:
     return Int(n)
 
 
+def stdout_is_tty() -> Bool:
+    """Whether stdout is a terminal.
+
+    A redrawn, in-place table is right on a terminal and wrong everywhere
+    else: piped to a file there is no cursor to move and every redraw appends,
+    which is worse than the scrolling it replaced.
+    """
+    return external_call["isatty", Int32](Int32(1)) == 1
+
+
 struct StdinReader(Movable):
     """Line-at-a-time stdin for an interactive tool.
 
@@ -184,6 +194,27 @@ struct StdinReader(Movable):
 
     def __init__(out self, *, deinit move: Self):
         self._fp = move._fp
+
+    def has_input(self) -> Bool:
+        """True when a line is waiting, without blocking to find out.
+
+        ⚠ `poll(2)`, NOT `fcntl`. Making stdin non-blocking would be the
+        obvious route and `fcntl(fd, cmd, ...)` is C-VARIADIC — on Apple
+        arm64 variadic arguments go on the stack while `external_call` emits
+        a fixed prototype, so the flags argument arrives as garbage. `poll`
+        has a fixed signature and needs no shim.
+
+        `struct pollfd` is `{int fd; short events; short revents}` — eight
+        bytes, laid out here as two `Int32`s with `events` in the low half of
+        the second.
+        """
+        var pfd = InlineArray[Int32, 2](fill=0)
+        pfd[0] = Int32(0)  # fd 0
+        pfd[1] = Int32(0x0001)  # events = POLLIN
+        var rc = external_call["poll", Int32](
+            Pointer(to=pfd[0]), UInt64(1), Int32(0)
+        )
+        return rc > 0
 
     def discard_pending(self):
         """Throw away anything already typed but not yet read.
