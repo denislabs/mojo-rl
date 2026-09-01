@@ -22,7 +22,7 @@ from layout import Layout, LayoutTensor, RuntimeLayout
 from mojo_rl.nn.constants import DT
 
 
-def _alloc_trace[dt: DType](site: StaticString, n: Int):
+def _alloc_trace[dt: DType](site: StaticString, n: Int, id: Int):
     """Print every DEVICE allocation when `MOJO_RL_ALLOC_TRACE=1`.
 
     A CUDA-graph capture aborts on the FIRST allocation inside the region, so
@@ -35,6 +35,14 @@ def _alloc_trace[dt: DType](site: StaticString, n: Int):
     Prints MB the same way MAX's allocator does, so a line here can be matched
     against a `(size: 18.75MB)` in a capture failure by eye.
 
+    ⚠ `id` IS THE POINT — group by it, never by size. A model has many distinct
+    buffers of the SAME size (ACT's encoder has ~40 `[2592, 256]` activations),
+    so a size appearing 227 times is 227 buffers allocated ONCE just as easily
+    as one buffer allocated 227 times, and those are opposite diagnoses. `id`
+    is the address of the `TensorImpl` cell, which is stable for a Module
+    field, so a REPEATED id is a buffer being reallocated — the thing that
+    blocks capture. A repeated SIZE is nothing.
+
     ⚠ Only covers allocations made through `TensorImpl`. If a steady-state step
     prints NOTHING here and a capture still fails on an allocation, the caller
     is inside MAX — use `MODULAR_DEBUG=stack-trace-on-error` for that one."""
@@ -42,7 +50,7 @@ def _alloc_trace[dt: DType](site: StaticString, n: Int):
         return
     var nbytes = n * size_of[Scalar[dt]]()
     print(
-        "[alloc] ", site, "  n=", n, "  ", String(dt),
+        "[alloc] id=", id, "  ", site, "  n=", n, "  ", String(dt),
         "  ", Float64(nbytes) / (1024.0 * 1024.0), "MB", sep="",
     )
 
@@ -140,7 +148,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
     @staticmethod
     def alloc_gpu(ctx: DeviceContext, n: Int) raises -> Self:
         var t = Self()
-        _alloc_trace[Self.dt]("alloc_gpu", n)
+        _alloc_trace[Self.dt]("alloc_gpu", n, 0)  # no cell yet: fresh by definition
         t.dev = ctx.enqueue_create_buffer[Self.dt](n)
         t.dev.value().enqueue_fill(Scalar[Self.dt](0))
         t.n = n
@@ -154,7 +162,9 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         still growing on a later step is a capture blocker — `_alloc_trace`
         prints it."""
         if not self.dev or self.n < n:
-            _alloc_trace[Self.dt]("ensure_gpu", n)
+            _alloc_trace[Self.dt](
+                "ensure_gpu", n, Int(UnsafePointer(to=self))
+            )
             self.dev = ctx.enqueue_create_buffer[Self.dt](n)
             self.n = n
 
@@ -300,7 +310,10 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         so it is a capture blocker AND a replay hazard (the device pointer
         changes, and a captured graph holds the old one). Under capture use
         `upload_resident`."""
-        _alloc_trace[Self.dt]("upload (REALLOCATES EVERY CALL)", self.n)
+        _alloc_trace[Self.dt](
+            "upload (REALLOCATES EVERY CALL)", self.n,
+            Int(UnsafePointer(to=self)),
+        )
         self.dev = ctx.enqueue_create_buffer[Self.dt](self.n)
         self.ensure_host(ctx, self.n)
         var hb = self.hbuf.value()
