@@ -9,6 +9,11 @@ One training step:
 For Phase 1 we do plain SGD on weights to minimize surface area. Adam is a
 one-line drop-in once the smoke test passes.
 
+Optional: a per-level, per-step precision schedule (Qi et al. 2025,
+arXiv:2506.23800 "spiking" schedule) — see `_apply_precision_spike`. It is
+OFF by default (`spike_sigma=1`), and when off the arithmetic is bitwise
+identical to the unweighted path.
+
 The trainer is a thin static struct: all buffers are caller-owned so they
 can be allocated once and reused across many batches.
 
@@ -85,6 +90,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         T_infer: Int,
         lr_x: Scalar[Self.dtype],
         lr_w: Scalar[Self.dtype],
+        spike_sigma: Scalar[Self.dtype] = 1,
     ) -> PCTrainResult:
         """One Bogacz-canonical training step.
 
@@ -102,7 +108,8 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         var energy_initial = Self._total_energy[BATCH](mu_eps_buf)
 
         # === 2. T_infer iterations of x updates ============================
-        for _ in range(T_infer):
+        var inv_sigma = Scalar[Self.dtype](1) / spike_sigma
+        for t in range(T_infer):
             Self._inference_step[BATCH](
                 x_in,
                 y_target,
@@ -113,6 +120,8 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 z_below_buf,
                 dx_buf,
                 lr_x,
+                Self.NET.N - 1 - t,
+                inv_sigma,
             )
 
         # After inference loop, mu_eps_buf holds ε (not μ).
@@ -198,6 +207,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ],
         T_infer: Int,
         lr_x: Scalar[Self.dtype],
+        spike_sigma: Scalar[Self.dtype] = 1,
     ) -> PCTrainResult:
         """Run forward sweep + T_infer inference iterations + grad compute.
         Writes per-block (W, b) gradients into `grads`. Does NOT touch `params`.
@@ -209,7 +219,8 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         )
         var energy_initial = Self._total_energy[BATCH](mu_eps_buf)
 
-        for _ in range(T_infer):
+        var inv_sigma = Scalar[Self.dtype](1) / spike_sigma
+        for t in range(T_infer):
             Self._inference_step[BATCH](
                 x_in,
                 y_target,
@@ -220,31 +231,119 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 z_below_buf,
                 dx_buf,
                 lr_x,
+                Self.NET.N - 1 - t,
+                inv_sigma,
             )
 
         var energy_final = Self._total_energy[BATCH](mu_eps_buf)
         var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
 
-        comptime for i in range(Self.NET.N):
-            var li_g = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
-                MutAnyOrigin,
-            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
-            var li_eps = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
-                MutAnyOrigin,
-            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
-            var li_a_below = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
-                MutAnyOrigin,
-            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+        Self._weight_grads[BATCH](mu_eps_buf, a_below_buf, grads)
 
-            Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
-                li_eps, li_a_below, li_g
+        return PCTrainResult(
+            energy_initial=energy_initial,
+            energy_final=energy_final,
+            output_loss_final=output_loss,
+        )
+
+    @staticmethod
+    def compute_grads_only_fwd[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut latents_0: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_infer: Int,
+        lr_x: Scalar[Self.dtype],
+        spike_sigma: Scalar[Self.dtype] = 1,
+    ) -> PCTrainResult:
+        """`compute_grads_only` + the paper's FORWARD UPDATE (Fix 2).
+
+        Identical to `compute_grads_only` except that each interior level's ε
+        is rewritten to ε̃ = x_T − μ_0 before the weight-gradient pass, where
+        μ_0 is the initial feedforward prediction. `latents_0` is a
+        caller-owned scratch buffer of the same shape as `latents`; its
+        contents on entry are irrelevant (it is overwritten by the snapshot).
+
+        Qi et al. 2025 (arXiv:2506.23800) report that their spiking schedule
+        alone suffices for iPC, but that plain PC needs spiking AND forward
+        updates (S+F) to match BP. Pass `spike_sigma < 1` here for S+F;
+        `spike_sigma = 1` gives F alone.
+
+        The returned energies/loss are read BEFORE the ε rewrite, so they stay
+        comparable with `compute_grads_only`.
+        """
+        Self.NET.init_latents[BATCH, Self.dtype](x_in, params, latents)
+
+        # μ_0 snapshot: init_latents just set x_l ← μ_l, so this IS μ_0.
+        for i in range(BATCH * Self.NET.LATENT_DIM):
+            latents_0.ptr[unsafe_offset=i] = latents.ptr[unsafe_offset=i]
+
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+        var energy_initial = Self._total_energy[BATCH](mu_eps_buf)
+
+        var inv_sigma = Scalar[Self.dtype](1) / spike_sigma
+        for t in range(T_infer):
+            Self._inference_step[BATCH](
+                x_in,
+                y_target,
+                params,
+                latents,
+                mu_eps_buf,
+                a_below_buf,
+                z_below_buf,
+                dx_buf,
+                lr_x,
+                Self.NET.N - 1 - t,
+                inv_sigma,
             )
+
+        var energy_final = Self._total_energy[BATCH](mu_eps_buf)
+        var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
+
+        # ε̃_l = x_T^l − μ_0^l for the interior levels (readout untouched)
+        Self._apply_forward_update[BATCH](mu_eps_buf, latents, latents_0)
+
+        Self._weight_grads[BATCH](mu_eps_buf, a_below_buf, grads)
 
         return PCTrainResult(
             energy_initial=energy_initial,
@@ -597,13 +696,22 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             MutAnyOrigin,
         ],
         lr_x: Scalar[Self.dtype],
+        spike_idx: Int = -1,
+        inv_sigma: Scalar[Self.dtype] = 1,
     ):
-        """One Jacobi iteration of the local-rule x update."""
+        """One Jacobi iteration of the local-rule x update.
+
+        `spike_idx` / `inv_sigma` default to the disabled precision schedule
+        (Σ = 1 at every level); see `_apply_precision_spike`.
+        """
 
         # ===== Phase A+B: forward predict + ε compute =======================
         Self._forward_eps[BATCH](
             x_in, y_target, params, latents, mu_eps_buf, a_below_buf
         )
+
+        # ===== Phase B': ε_l ← ε_l / Σ_l for the one spiking level ==========
+        Self._apply_precision_spike[BATCH](mu_eps_buf, spike_idx, inv_sigma)
 
         # ===== Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1}) ===========
         comptime for l_idx in range(Self.NET.N_LATENTS):
@@ -861,8 +969,216 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         return 0.5 * total
 
     # =========================================================================
+    # Shared weight-gradient pass (one site, called by every CPU driver that
+    # ends a step — cf. `_a_rule_written_inline_twice_drifts`)
+    # =========================================================================
+
+    @staticmethod
+    def _weight_grads[BATCH: Int](
+        mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """dE/dW_i, dE/db_i per block from whatever ε currently sits in
+        `mu_eps_buf`. `weight_grad` WRITES (does not accumulate)."""
+        comptime for i in range(Self.NET.N):
+            var li_g = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
+            var li_eps = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
+            var li_a_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+
+            Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
+                li_eps, li_a_below, li_g
+            )
+
+    # =========================================================================
+    # Forward updates (Qi et al. 2025, arXiv:2506.23800 — their "Fix 2")
+    # =========================================================================
+
+    @staticmethod
+    def _apply_forward_update[BATCH: Int](
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        latents_0: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+    ):
+        """Rewrite each INTERIOR level's ε to the paper's forward-update form
+        ε̃_T^l = x_T^l − μ_0^l, in place, just before the weight-gradient pass.
+
+        μ_0^l is the INITIAL feedforward prediction. `init_latents`
+        (`pc_sequential.mojo:286`) sets x_0^l ← μ_0^l, so a snapshot of the
+        latents taken immediately after the forward sweep IS μ_0 — no extra
+        prediction pass, one buffer copy.
+
+        The READOUT level (index N-1) is deliberately untouched: it has no
+        latent above it, its ε is driven by the output loss, and that is the
+        actual training signal. The paper's ε̃ is defined for levels carrying
+        activities.
+
+        Interior level i's ε slab and latent slab have matching OUT_DIM — the
+        same pairing `_inference_step` relies on for `li_eps_self` / `li_dx`.
+        """
+        comptime for l_idx in range(Self.NET.N_LATENTS):
+            comptime DIM = Self.NET.block_types[l_idx].OUT_DIM
+            var li_eps = LayoutTensor[
+                Self.dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
+            var li_x = LayoutTensor[
+                Self.dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
+            var li_x0 = LayoutTensor[
+                Self.dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+            ](latents_0.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
+            for b in range(BATCH):
+                for k in range(DIM):
+                    li_eps[b, k] = (
+                        rebind[Scalar[Self.dtype]](li_x[b, k])
+                        - rebind[Scalar[Self.dtype]](li_x0[b, k])
+                    )
+
+    # =========================================================================
+    # Precision weighting (Qi et al. 2025, arXiv:2506.23800)
+    # =========================================================================
+
+    @staticmethod
+    def _apply_precision_spike[BATCH: Int](
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        spike_idx: Int,
+        inv_sigma: Scalar[Self.dtype],
+    ):
+        """Precision-weight ONE level's ε in place: ε_l ← ε_l / Σ_l.
+
+        The "spiking" schedule of Qi et al. 2025 (arXiv:2506.23800): at
+        inference step t exactly one level carries Σ = α and every other
+        level has Σ = 1, so the error is boosted at the level the energy
+        front is reaching. The caller passes `spike_idx = N-1-t` (top level
+        first, sweeping down) and `inv_sigma = 1/α`. α < 1 boosts.
+
+        Scaling ε at the point of PRODUCTION — right after `_forward_eps` —
+        makes all three consumers agree with no further plumbing:
+
+          * the self term        ε_l          in dx_l = ε_l − ...
+          * the pull-back term   ε_{l+1}      scaled by ITS OWN level's
+            precision, which is what dE/dx_l demands for the weighted energy
+            E = Σ_l ‖x_l − μ_l‖² / 2Σ_l
+          * `weight_grad`, which reads the same slab (paper's ΔW ∝ ε̃/Σ)
+
+        NOTE the paper as rendered writes both terms of Δx_t^l over Σ_t^l.
+        We implement the energy-consistent reading (each ε over its own
+        level's Σ); the two differ whenever adjacent levels have different
+        Σ, i.e. exactly at the spike. Re-derive against the PDF before
+        trusting a result. See docs/PCN_LITERATURE_2026_09.md §1.
+
+        `spike_idx` outside [0, N) or `inv_sigma == 1` is a no-op — that is
+        the disabled default, and it leaves the arithmetic bitwise unchanged.
+        With T_infer ≥ N the last steps have spike_idx < 0, so the ε that
+        `weight_grad` finally consumes is unscaled.
+        """
+        if inv_sigma == Scalar[Self.dtype](1) or spike_idx < 0:
+            return
+        if spike_idx >= Self.NET.N:
+            return
+
+        comptime for i in range(Self.NET.N):
+            if i == spike_idx:
+                var li_eps = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
+                for b in range(BATCH):
+                    for k in range(Self.NET.block_types[i].OUT_DIM):
+                        li_eps[b, k] = inv_sigma * rebind[Scalar[Self.dtype]](
+                            li_eps[b, k]
+                        )
+
+    # =========================================================================
     # GPU paths
     # =========================================================================
+
+    @staticmethod
+    def _precision_scale_kernel[
+        BATCH: Int, DIM: Int, KDT: DType,
+    ](
+        eps: LayoutTensor[KDT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        inv_sigma: Scalar[KDT],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var k = idx % DIM
+        eps[b, k] = inv_sigma * rebind[Scalar[KDT]](eps[b, k])
+
+    @staticmethod
+    def _apply_precision_spike_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        spike_idx: Int,
+        inv_sigma: Scalar[Self.dtype],
+    ) raises:
+        """GPU mirror of `_apply_precision_spike` — same contract."""
+        if inv_sigma == Scalar[Self.dtype](1) or spike_idx < 0:
+            return
+        if spike_idx >= Self.NET.N:
+            return
+
+        comptime for i in range(Self.NET.N):
+            if i == spike_idx:
+                var li_eps = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
+                comptime scale_k = Self._precision_scale_kernel[
+                    BATCH, Self.NET.block_types[i].OUT_DIM, Self.dtype
+                ]
+                var n_threads = BATCH * Self.NET.block_types[i].OUT_DIM
+                var n_blocks = (n_threads + TPB - 1) // TPB
+                ctx.enqueue_function[scale_k](
+                    li_eps, inv_sigma,
+                    grid_dim=(n_blocks,), block_dim=(TPB,),
+                )
 
     @staticmethod
     def _dx_subtract_kernel[
@@ -1053,9 +1369,15 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             MutAnyOrigin,
         ],
         lr_x: Scalar[Self.dtype],
+        spike_idx: Int = -1,
+        inv_sigma: Scalar[Self.dtype] = 1,
     ) raises:
         Self._forward_eps_gpu[BATCH](
             ctx, x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+
+        Self._apply_precision_spike_gpu[BATCH](
+            ctx, mu_eps_buf, spike_idx, inv_sigma
         )
 
         # Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1} · ε_{l+1})
@@ -1179,6 +1501,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ],
         T_infer: Int,
         lr_x: Scalar[Self.dtype],
+        spike_sigma: Scalar[Self.dtype] = 1,
     ) raises:
         """GPU equivalent of compute_grads_only. No diagnostic energies returned
         (would require host syncs). Caller owns all buffers; this method does
@@ -1190,7 +1513,8 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         )
 
         # 2. T_infer iterations
-        for _ in range(T_infer):
+        var inv_sigma = Scalar[Self.dtype](1) / spike_sigma
+        for t in range(T_infer):
             Self._inference_step_gpu[BATCH](
                 ctx,
                 x_in,
@@ -1202,6 +1526,8 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 z_below_buf,
                 dx_buf,
                 lr_x,
+                Self.NET.N - 1 - t,
+                inv_sigma,
             )
 
         # 3. Compute weight grads per block

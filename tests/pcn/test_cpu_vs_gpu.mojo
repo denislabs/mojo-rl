@@ -48,6 +48,7 @@ comptime TRAINER = PCTrainer[
 ]
 
 comptime TOL: Float64 = 1.0e-4
+comptime SPIKE_SIGMA: Float64 = 0.25   # Σ at the spiking level (α < 1 boosts)
 
 
 def main() raises:
@@ -248,6 +249,12 @@ def main() raises:
             max_lat_diff = d
             idx_max_lat = i
 
+    # Snapshot the unspiked CPU gradients so the spiked arm below can prove
+    # it actually changed something.
+    var grads_unspiked_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    for i in range(NET.PARAM_SIZE):
+        grads_unspiked_buf[i] = grads_cpu_buf[i]
+
     print("\n  Parity:")
     print("    max |grads_cpu - grads_gpu|   :", max_grad_diff, " at idx", idx_max_grad)
     print("    max |latents_cpu - latents_gpu|:", max_lat_diff, " at idx", idx_max_lat)
@@ -258,5 +265,86 @@ def main() raises:
     else:
         print("\n  [FAIL] CPU vs GPU disagreement exceeds tolerance")
         raise Error("parity test failed")
+
+    # =================================================================
+    # Second arm: the SAME comparison with the precision spike ACTIVE.
+    #
+    # The first arm runs spike_sigma=1, which returns from
+    # `_apply_precision_spike_gpu` before enqueueing anything — so it does
+    # NOT exercise `_precision_scale_kernel` at all. This arm does.
+    # (cf. `_the_package_build_cannot_instantiate_a_generic_kernel`: a green
+    # build is not evidence that a GPU kernel runs.)
+    # =================================================================
+    print("\n  Spiked arm (spike_sigma =", SPIKE_SIGMA, "):")
+
+    var cpu_spiked = TRAINER.compute_grads_only[BATCH](
+        params,
+        grads_cpu,
+        lat_cpu,
+        mu_eps_cpu,
+        a_below_cpu,
+        z_below_cpu,
+        dx_cpu,
+        x_in,
+        y_target,
+        T_infer=T_INFER,
+        lr_x=Scalar[dtype](LR_X),
+        spike_sigma=Scalar[dtype](SPIKE_SIGMA),
+    )
+    print("    CPU energy:", cpu_spiked.energy_initial, "→",
+          cpu_spiked.energy_final)
+
+    TRAINER.compute_grads_only_gpu[BATCH](
+        ctx,
+        params_t_gpu,
+        grads_t_gpu,
+        lat_t_gpu,
+        mu_eps_t_gpu,
+        a_below_t_gpu,
+        z_below_t_gpu,
+        dx_t_gpu,
+        x_in_t_gpu,
+        y_target_t_gpu,
+        T_infer=T_INFER,
+        lr_x=Scalar[dtype](LR_X),
+        spike_sigma=Scalar[dtype](SPIKE_SIGMA),
+    )
+    ctx.synchronize()
+    ctx.enqueue_copy(grads_gpu_host, grads_dbuf)
+    ctx.enqueue_copy(lat_gpu_host, lat_dbuf)
+    ctx.synchronize()
+
+    var sp_grad_diff: Float64 = 0.0
+    var sp_moved: Int = 0
+    for i in range(NET.PARAM_SIZE):
+        var g_cpu = Float64(grads_cpu_buf[i])
+        var g_gpu = Float64(grads_gpu_host.unsafe_ptr()[i])
+        var d = mabs(g_cpu - g_gpu)
+        if d > sp_grad_diff:
+            sp_grad_diff = d
+        # Did the spike actually change this gradient vs the unspiked arm?
+        if Float64(grads_unspiked_buf[i]) != g_cpu:
+            sp_moved += 1
+
+    var sp_lat_diff: Float64 = 0.0
+    for i in range(BATCH * NET.LATENT_DIM):
+        var d = mabs(
+            Float64(lat_cpu_buf[i]) - Float64(lat_gpu_host.unsafe_ptr()[i])
+        )
+        if d > sp_lat_diff:
+            sp_lat_diff = d
+
+    print("    max |grads_cpu - grads_gpu|   :", sp_grad_diff)
+    print("    max |latents_cpu - latents_gpu|:", sp_lat_diff)
+    print("    spike moved", sp_moved, "of", NET.PARAM_SIZE, "gradients vs the unspiked arm")
+
+    if sp_moved == 0:
+        print("\n  [FAIL] spike changed nothing — this arm is vacuous")
+        raise Error("spiked parity arm is vacuous")
+    if sp_grad_diff <= TOL and sp_lat_diff <= TOL:
+        print("\n  [PASS] CPU and GPU agree with the spike active")
+    else:
+        print("\n  [FAIL] spiked CPU vs GPU disagreement exceeds tolerance")
+        raise Error("spiked parity test failed")
 
     print("=== Done ===")
