@@ -153,7 +153,15 @@ def maybe_record_replay[
     `MOJO_RL_DEVICE_GRAPH=0` disables recording without a rebuild, for
     bisecting a suspected graph problem against a known-good run.
     """
+    # ⚠ `flush=True` on every diagnostic in this file. Mojo's stdout is BLOCK
+    # buffered, so a step that hangs shows you nothing it printed and the last
+    # line you saw is not where it stopped. That cost a debugging round.
+    comptime TRACE_VAR = "MOJO_RL_DEVICE_GRAPH_TRACE"
+    var trace = getenv(TRACE_VAR, "0") == "1"
+
     if slot.disabled:
+        if trace:
+            print("[DeviceGraph] latched-disabled -> STEP directly", flush=True)
         STEP(ctx)
         return
 
@@ -161,22 +169,31 @@ def maybe_record_replay[
         # ⚠ `replay()` SUBMITS; it does not wait. Ordering against work the
         # caller enqueues before or after is the context's, same as any other
         # enqueue — do not add a synchronize here, the caller's loop owns that.
+        if trace:
+            print("[DeviceGraph] replay ...", flush=True)
         slot.graph.value().replay()
+        if trace:
+            print("[DeviceGraph] replay submitted", flush=True)
         return
 
     if getenv("MOJO_RL_DEVICE_GRAPH", "1") == "0":
         slot.disabled = True
         print(
             "[DeviceGraph] disabled by MOJO_RL_DEVICE_GRAPH=0 — running steps"
-            " directly (correct, no replay speedup)."
+            " directly (correct, no replay speedup).",
+            flush=True,
         )
         STEP(ctx)
         return
 
     # Warm-up OUTSIDE the recording: first-call autotuning, module loads and
     # one-off allocations happen here rather than becoming recorded nodes.
+    if trace:
+        print("[DeviceGraph] warm-up STEP ...", flush=True)
     STEP(ctx)
     ctx.synchronize()
+    if trace:
+        print("[DeviceGraph] warm-up done; recording ...", flush=True)
 
     # ⚠ `build` RECORDS, it does not execute. Nothing in here runs until
     # `replay()`, which is why the warm-up above is the first call's update.
@@ -186,6 +203,8 @@ def maybe_record_replay[
 
     try:
         slot.graph = DeviceGraph.create(ctx, build)
+        if trace:
+            print("[DeviceGraph] recorded", flush=True)
     except e:
         # LATCHED. See the module docstring: DeviceGraph links on every
         # platform and raises on the unsupported ones, so this is the ordinary
@@ -194,5 +213,6 @@ def maybe_record_replay[
         slot.disabled = True
         print(
             "[DeviceGraph] recording unavailable here — running steps directly"
-            " (correct results, no replay speedup). Reason: " + String(e)
+            " (correct results, no replay speedup). Reason: " + String(e),
+            flush=True,
         )

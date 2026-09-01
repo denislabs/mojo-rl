@@ -116,12 +116,15 @@ def test_n_calls_make_n_increments() raises:
         + " context, not the recording one). 1 means replay ran nothing.",
     )
 
-    # `buf` and `lt` must outlive the last replay — a graph holds raw device
-    # pointers and Mojo destroys a value at its LAST USE. Reading the counter
-    # above is what keeps them alive here; a timing arm of the DeviceGraph
-    # spike crashed on exactly this omission.
-    _ = buf^
+    # ⚠ ORDER MATTERS: SLOT FIRST, BUFFER SECOND. The graph holds RAW POINTERS
+    # into `buf`, so releasing the buffer while a live graph still references
+    # it is a use-after-free waiting for the next replay. Mojo destroys a value
+    # at its LAST USE, so these two lines ARE the ordering — reversing them is
+    # a real bug, not a style choice. (Reading the counter above is also what
+    # keeps `buf` alive that far; a timing arm of the DeviceGraph spike
+    # crashed on exactly that omission.)
     _ = slot^
+    _ = buf^
 
 
 def test_platform_contract() raises:
@@ -166,8 +169,8 @@ def test_platform_contract() raises:
             " latch disabled. Recording here would mean MAX grew a backend"
             " and this contract needs updating.",
         )
-    _ = buf^
     _ = slot^
+    _ = buf^
 
 
 def main() raises:
