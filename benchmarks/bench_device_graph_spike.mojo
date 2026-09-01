@@ -114,18 +114,40 @@ shape ABORTS the process ([[_split_k_cannot_be_cuda_graph_captured]]). So
 capture cannot hold at all**, which is precisely what blocked CUDA graphs for
 the ACT step and its ~46 split-K GEMMs.
 
-⚠ **AND THE CHURN WAS PROVEN ABLE TO BITE:** `pool reissues a freed 512KB
-block: YES`. That was the first of two vacuity holes, and it is closed — this
-is not a pass obtained by never landing on the workspace. **The second is still
-open:** `select_config` is a CHOOSER, not the dispatch gate
-([[_select_config_is_not_the_dispatch_gate]]), and both branches produce the
-same number, so only the kernel log distinguishes them:
+**Both of the vacuity holes D started with are now CLOSED:**
 
-    pixi run -e nvidia mojo run -I . -D LOGGING_LEVEL=INFO \\
-        benchmarks/bench_device_graph_spike.mojo 2>&1 \\
-      | grep -i 'split_k\\|K partitions'
+  1. the churn can bite — `pool reissues a freed 512KB block: YES`;
+  2. the RECORDED call really did split K. `select_config` is a CHOOSER, not
+     the dispatch gate ([[_select_config_is_not_the_dispatch_gate]]) and both
+     branches print the same number, so this needed the kernel log:
 
-**Until that prints the split-K kernel, D is PLAUSIBLE, not CONFIRMED.**
+         $ ... -D LOGGING_LEVEL=INFO ... | grep -i 'split_k\\|K partitions'
+         INFO::: K partitions: 1     <- arm C warm-up
+         INFO::: K partitions: 1     <- arm C RECORDED
+         INFO::: K partitions: 2     <- arm D warm-up
+         INFO::: K partitions: 2     <- arm D RECORDED
+
+     Exactly four lines for exactly four `matmul` calls in the program, in
+     order, and the replays add none (a replay re-runs recorded NODES, not the
+     host dispatch). So the recorded arm-D call took the split-K branch at P=2.
+
+⚠⚠ **AND THAT EXPOSED A THIRD HOLE, WHICH STAGES 1-2 CANNOT SEE AND WHICH IS
+NOT IN ANY RUN ABOVE.** `_churn` FREES its buffers before replaying. At replay
+time nothing owns that memory, and the split-K kernel WRITES the workspace
+before `split_k_reduce` READS it — both inside one graph, in recorded order. So
+a dangling-but-mapped pointer still yields the RIGHT ANSWER: the kernel
+overwrites the poison itself. Stage 2 can only catch the block being UNMAPPED,
+which MAX's pool never does. **It was close to vacuous and the passes above
+inherit that.**
+
+The failure that matters is the workspace aliasing memory the allocator has
+since handed to someone else WHO STILL HOLDS IT. Stage 3 tests exactly that:
+poison buffers kept ALIVE across the replay, then checked for writes. `live
+buffers written through: 0/16` is the real result; anything above 0 means the
+graph is scribbling on a neighbour and the GEMM is right only by luck.
+
+**D is CONFIRMED for dispatch and for the freed-block case; stage 3 has not
+been run yet.**
 
 ⚠ **E is a launch-overhead CEILING, not a step.** 32 trivial kernels: 3.31 ->
 0.90 us per launch, and the replay figure also carries one synchronize for the
@@ -549,6 +571,30 @@ def _pool_recycles(ctx: DeviceContext) raises -> Bool:
     return p1 == p2 and p1 != 0
 
 
+comptime POISON = -12345.0
+comptime PROBE_BUFS = 16
+comptime PROBE_STRIDE = 64
+
+
+def _poison_survived(ctx: DeviceContext, live: List[DeviceBuffer[DT]]) raises -> Int:
+    """How many of `live` were WRITTEN THROUGH while the graph replayed.
+
+    Stride-64 scan, not every element: a split-K workspace write is DENSE
+    (`P * M * N` contiguous partial sums), so a scan that samples every 64th
+    float cannot miss it, and 2048 samples per buffer keeps the check cheap.
+    """
+    var host = ctx.enqueue_create_host_buffer[DT](POISON_ELEMS)
+    var touched = 0
+    for i in range(len(live)):
+        ctx.enqueue_copy(host, live[i])
+        ctx.synchronize()
+        for j in range(0, POISON_ELEMS, PROBE_STRIDE):
+            if host[j] != Scalar[DT](POISON):
+                touched += 1
+                break
+    return touched
+
+
 def _churn(ctx: DeviceContext) raises:
     """Make the allocator hand out — and dirty — whatever a freed split-K
     workspace left behind.
@@ -564,7 +610,7 @@ def _churn(ctx: DeviceContext) raises:
         var junk = List[DeviceBuffer[DT]]()
         for _ in range(16):
             var b = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
-            b.enqueue_fill(Scalar[DT](-12345.0))
+            b.enqueue_fill(Scalar[DT](POISON))
             junk.append(b^)
         ctx.synchronize()
         _ = junk^
@@ -598,16 +644,48 @@ def _gemm_arm[
     var r1 = g.checksum(8)
 
     var r2 = Float64(0.0)
+    var r3 = Float64(0.0)
+    var touched = 0
     if churn:
+        # Stage 2 — the freed block, poisoned and handed back.
         g.wipe()
         _churn(ctx)
         graph.replay()
         ctx.synchronize()
         r2 = g.checksum(8)
 
+        # ⚠⚠ STAGE 3 IS THE ONE THAT ACTUALLY BITES, AND STAGE 2 ALONE IS
+        # NEARLY VACUOUS WITHOUT IT.
+        #
+        # `_churn` FREES its buffers before the replay. So at replay time
+        # nothing owns that memory, and the split-K kernel WRITES the workspace
+        # before `split_k_reduce` READS it — both inside one graph, in recorded
+        # order. A dangling-but-still-mapped pointer therefore produces the
+        # RIGHT ANSWER: the kernel simply overwrites the poison itself. Stage 2
+        # can only catch the block being unmapped, which MAX's pool never does.
+        #
+        # The failure that matters is the workspace pointer aliasing memory the
+        # allocator has since given to someone ELSE and who still holds it. So:
+        # allocate poison buffers, KEEP THEM ALIVE across the replay, and check
+        # afterwards that nothing wrote through them. A touched buffer means
+        # the recorded graph is scribbling on a live allocation and is only
+        # "correct" by luck — while corrupting a neighbour.
+        g.wipe()
+        var live = List[DeviceBuffer[DT]]()
+        for _ in range(PROBE_BUFS):
+            var b = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
+            b.enqueue_fill(Scalar[DT](POISON))
+            live.append(b^)
+        ctx.synchronize()
+        graph.replay()
+        ctx.synchronize()
+        r3 = g.checksum(8)
+        touched = _poison_survived(ctx, live)
+        _ = live^
+
     var ok = _close(after_build, 0.0) and _close(r1, want)
     if churn:
-        ok = ok and _close(r2, want)
+        ok = ok and _close(r2, want) and _close(r3, want) and touched == 0
 
     var detail = (
         "build->"
@@ -618,13 +696,27 @@ def _gemm_arm[
         + String(want)
     )
     if churn:
-        detail += "  replay2(after churn)->" + String(r2)
+        detail += (
+            "  replay2(freed churn)->"
+            + String(r2)
+            + "  replay3(LIVE poison)->"
+            + String(r3)
+            + "  live buffers written through: "
+            + String(touched)
+            + "/"
+            + String(PROBE_BUFS)
+        )
     _verdict(label, ok, detail)
 
-    if churn and _close(r1, want) and not _close(r2, want):
-        print("      ^ RIGHT then WRONG across an allocator churn. That is the")
-        print("        dangling split-K workspace, exactly as predicted: the")
-        print("        recorded node holds a pointer MAX already freed.")
+    if churn and touched > 0:
+        print("      ^ THE REPLAY WROTE THROUGH A LIVE ALLOCATION. The recorded")
+        print("        workspace pointer aliases memory MAX handed to someone")
+        print("        else — the GEMM answer is right only by luck, and it is")
+        print("        corrupting its neighbour. This is the real dangling")
+        print("        workspace, and stage 2 alone cannot see it.")
+    elif churn and _close(r1, want) and not _close(r2, want):
+        print("      ^ RIGHT then WRONG across an allocator churn: the recorded")
+        print("        node holds a pointer MAX already freed AND reused.")
     return ok
 
 
@@ -885,10 +977,16 @@ def main() raises:
             print("  recording, which stream capture cannot even attempt —")
             print("  it aborts the process on this exact shape.")
             print("")
-            print("  ONE GATE LEFT before treating that as settled: prove the")
-            print("  RECORDED call took the split-K branch, not just that")
-            print("  select_config would have chosen it. Both paths print the")
-            print("  same number, so only the kernel log can tell them apart:")
+            print("  and `live buffers written through: 0/16` says the")
+            print("  recorded workspace does not alias a live allocation —")
+            print("  which is the only stage that can actually catch a")
+            print("  dangling workspace, since stages 1-2 free their poison")
+            print("  before replaying and the kernel just overwrites it.")
+            print("")
+            print("  Still worth confirming ONCE that the RECORDED call splits")
+            print("  K at all — select_config is a chooser, not the dispatch")
+            print("  gate, and both branches print the same number:")
             print("    pixi run -e nvidia mojo run -I . -D LOGGING_LEVEL=INFO \\")
             print("        benchmarks/bench_device_graph_spike.mojo 2>&1 \\")
             print("      | grep -i 'split_k\\|K partitions'")
+            print("  Expect 1,1,2,2 — arm C warm+recorded, arm D warm+recorded.")
