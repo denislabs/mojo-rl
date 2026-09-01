@@ -127,3 +127,42 @@ the demonstrations would otherwise divide by ~0 and produce inf features."""
 
 comptime TRAIN_SPLIT_RATIO: Float64 = 0.8
 """`utils.py:112`. With 5 episodes: 4 train, 1 validation."""
+
+
+# ── the pretrained backbone, resolved in ONE place ───────────────────────
+
+comptime ACT_PRETRAINED_DEFAULT = "hub"
+"""What `ACT_PRETRAINED` means when it is not set.
+
+⚠ **THE DEFAULT IS THE PRETRAINED BACKBONE, NOT A RANDOM ONE.** It used to be
+random, and the failure mode was silent: a run launched without the variable
+trained a from-scratch ResNet18 on ~12,000 frames and produced a curve that
+looked like a bad hyperparameter rather than a missing download. The paper's
+backbone is `resnet18(weights=IMAGENET1K_V1)`; that should be what you get by
+default, and opting OUT should be the deliberate act.
+
+The fetch costs 47 MB once and is cached, so the default is not expensive —
+it is just no longer forgettable."""
+
+
+def act_pretrained_spec() raises -> String:
+    """`ACT_PRETRAINED`, resolved. Empty means "use a random backbone".
+
+    ⚠ ONE RULE, ONE PLACE. `act_so101_train_cpu.mojo` and `..._gpu.mojo` both
+    read this variable and both print what they got; a default spelled out at
+    two call sites is this repo's most frequent defect shape, and the two
+    disagreeing would mean the CPU and GPU runs silently trained different
+    models.
+
+        unset                   -> "hub"  (ImageNet, no PyTorch)
+        "random" | "none" | "0" -> ""     (random backbone, deliberately)
+        anything else           -> itself, for `load_backbone_auto`
+    """
+    from std.os import getenv
+
+    var v = getenv("ACT_PRETRAINED")
+    if v.byte_length() == 0:
+        return String(ACT_PRETRAINED_DEFAULT)
+    if v == "random" or v == "none" or v == "0":
+        return String("")
+    return v^

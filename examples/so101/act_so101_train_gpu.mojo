@@ -47,9 +47,10 @@ export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_0927
 # `load_backbone_auto` dispatches on the STRING: `hub` (or `1`) fetches, a
 # `*.safetensors` value is read as that file, anything else is a dump DIRECTORY.
 #
-#   4a. the Hub file — NO PyTorch, no `-e act-ref`, no dump step. Downloaded
-#       on the first run that asks for it, cached afterwards.
-export ACT_PRETRAINED=hub
+#   4a. the Hub file — NO PyTorch, no `-e act-ref`, no dump step. THIS IS THE
+#       DEFAULT: with ACT_PRETRAINED unset you get it, downloaded on the first
+#       run and cached afterwards. Nothing to export.
+#       `ACT_PRETRAINED=random` opts out and trains a from-scratch backbone.
 #
 #   4b. the torchvision dump — the original path, and the oracle 4a is gated
 #       against (`tests/nn/test_safetensors_resnet18_torch.mojo` compares all
@@ -65,6 +66,10 @@ pixi run -e nvidia mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
 # needs the dump too. Run them on a box that has one, not on the rented GPU.
 pixi run -e nvidia mojo run -I . \\
     tests/deep_agents/act/test_act_pretrained_backbone.mojo
+# The Hub file itself IS checkable without PyTorch — pinned hash and every
+# tensor the backbone loads. Run this one on the GPU box; it is the only
+# backbone gate that can run there.
+pixi run -e nvidia mojo run -I . tests/nn/test_resnet18_hub_weights.mojo
 
 # ── 6. metrics (optional) ────────────────────────────────────────────────
 # `.env` in the project root, read by mojo_rl/core/dotenv.mojo:
@@ -95,7 +100,7 @@ binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 | | |
 |---|---|
 | `ACT_STORE` | the `.h5` to train on; default is the 5-episode recording |
-| `ACT_PRETRAINED` | `hub` for the ImageNet backbone with no PyTorch, or a `dump_resnet18_imagenet.py` directory for the torchvision dump; default is a RANDOM backbone |
+| `ACT_PRETRAINED` | **defaults to `hub`** — the ImageNet backbone, fetched with no PyTorch and cached. A `dump_resnet18_imagenet.py` directory uses the torchvision dump; `random` trains a from-scratch backbone |
 | `ACT_STEPS` | step count, **without a rebuild** — the graph takes ~6 min to compile, so "run it longer" must not mean "build it again" |
 | `ACT_NO_MONITOR` | force the logger inert with the keys present; what a smoke run should use so it does not land in the dashboard beside a real one |
 | `ACT_CKPT` | read by `act_so101_openloop_eval.mojo`, not by this file |
@@ -236,6 +241,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.act.config import (
+    act_pretrained_spec,
     RUN_DEC_LAYERS,
     RUN_DIM,
     RUN_ENC_LAYERS,
@@ -526,7 +532,9 @@ def main() raises:
     #   ACT_PRETRAINED=<dir>  a tools/act/dump_resnet18_imagenet.py dump, the
     #                         original path and the oracle the Hub file is
     #                         gated against.
-    var pretrained = getenv("ACT_PRETRAINED")
+    # ⚠ Resolved by `act_pretrained_spec`, not read here — see its docstring.
+    # The default is `hub`; `ACT_PRETRAINED=random` opts out.
+    var pretrained = act_pretrained_spec()
     if pretrained.byte_length() > 0:
         # `ACT_NO_FREEZE_BN=1` loads the weights and leaves BatchNorm trainable
         # — the ablation, not a normal setting. Both references pass
@@ -547,7 +555,7 @@ def main() raises:
         )
     else:
         print(
-            "  backbone  RANDOM (ACT_PRETRAINED=hub for ImageNet weights)"
+            "  backbone  RANDOM (ACT_PRETRAINED=random was set explicitly)"
         )
         logger.set_config("backbone_init", "random")
         logger.set_config("backbone_norm", "trainable")

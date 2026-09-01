@@ -7,7 +7,7 @@
         --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
     pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_train \\
         examples/so101/act_so101_train_cpu.mojo
-    ACT_PRETRAINED=hub /tmp/act_train
+    /tmp/act_train                       # ImageNet backbone by default
 
 Set `ACT_STORE=<path/to/store.h5>` to train on a different recording — the
 50-episode store, say. Nothing below is pinned to the row or episode count.
@@ -18,7 +18,8 @@ what is at the path:
 | `hub` (or `1`) | fetch `timm/resnet18.tv_in1k` — no PyTorch, no `-e act-ref`, no dump step, cached after the first run |
 | `*.safetensors` | that file, under torchvision's names |
 | anything else | a `tools/act/dump_resnet18_imagenet.py` DIRECTORY |
-| unset | a RANDOM backbone |
+| `random` / `none` / `0` | a RANDOM backbone, deliberately |
+| unset | **`hub`** — the ImageNet weights, fetched once and cached |
 
 The dump is not deprecated: it is the oracle the Hub file is gated against
 (`tests/nn/test_safetensors_resnet18_torch.mojo`). The startup line says which
@@ -52,6 +53,7 @@ from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.act.config import (
+    act_pretrained_spec,
     SO101_ADIM,
     SO101_IMG_H,
     SO101_IMG_W,
@@ -232,9 +234,10 @@ def main() raises:
     #   ACT_PRETRAINED=<dir>  a tools/act/dump_resnet18_imagenet.py dump, the
     #                         original path and the oracle the Hub file is
     #                         gated against.
-    var pretrained = String(
-        os.environ.get(PythonObject("ACT_PRETRAINED"), PythonObject(""))
-    )
+    # ⚠ Resolved by `act_pretrained_spec`, not read here: the DEFAULT is
+    # `hub`, and a default spelled out at two call sites is how the CPU and
+    # GPU runs come to train different models.
+    var pretrained = act_pretrained_spec()
     if pretrained.byte_length() > 0:
         # `ACT_NO_FREEZE_BN=1` loads the weights and leaves BatchNorm trainable
         # — the ablation, not a normal setting. Both references pass
@@ -257,7 +260,7 @@ def main() raises:
         )
     else:
         print(
-            "  backbone  RANDOM (ACT_PRETRAINED=hub for ImageNet weights)"
+            "  backbone  RANDOM (ACT_PRETRAINED=random was set explicitly)"
         )
         logger.set_config("backbone_init", "random")
         logger.set_config("backbone_norm", "trainable")

@@ -48,3 +48,10 @@ tests/deep_agents/act/test_act_pretrained_backbone.mojo
 tests/deep_agents/act/test_act_freeze_backbone_norm.mojo
 # M0 — the dataset path (needs the converted store)
 tests/deep_agents/act/test_act_dataset.mojo
+
+# The Hub backbone file itself — a pinned SHA-256 plus every tensor
+# `resnet18_torch_map` asks for, at the right shape. ⚠ Needs the NETWORK on
+# its first run (then cached) and needs NO PyTorch: it is the only backbone
+# check that can run on the box the `hub` route exists for. A red gate here
+# means UPSTREAM RE-UPLOADED — read its header before touching the hash.
+tests/nn/test_resnet18_hub_weights.mojo
