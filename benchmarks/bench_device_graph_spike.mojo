@@ -88,6 +88,60 @@ wave estimate, so another part can decide otherwise and the arm would be
 measuring nothing. It prints `num_k_partitions` and says so when it is 1.
 ([[_a_capture_abort_names_only_the_first_blocker]]: a size is not an identity.)
 
+## ANSWERED, RTX 5090, MAX 26.5.0 — A, B, C, D ALL PASS
+
+    A. add_function        build->0.0   replay1->7.0    replay2(after wipe)->7.0
+    B. recording_context   build->0.0   replay1->12.0   replay2(from 99)->12.0
+    C. max_matmul          build->0.0   replay1->0.40914977   want 0.4096
+    D. SPLIT-K             num_k_partitions = 2, block_tile (128,128,16)
+                           build->0.0   replay1->4.14263630
+                           replay2(after churn)->4.14263630   want 4.14720
+
+**A and B settle the migration.** DeviceGraph records both MAX's own kernel
+style and OURS, with no interceptor, and `build` executes nothing — so a
+`STEP()` closure ports by taking a `DeviceContext` ARGUMENT instead of
+capturing one. That is the entire change `mojo_rl/cuda/graph.mojo` needs to
+become deletable.
+
+**D IS THE SURPRISE AND IT OVERTURNS THE PREDICTION ABOVE.** The split-K GEMM
+recorded, replayed, and replayed AGAIN across an allocator churn, both times
+correct to TF32 (rel 1.1e-3, the same 1.1e-3 arm C shows — that is tensor
+cores, not a stale pointer). Under STREAM capture the identical shape aborts
+the process outright ([[_split_k_cannot_be_cuda_graph_captured]]). So
+`DeviceGraph` is not merely a tidier shim: it contains a workload stream
+capture cannot hold at all, which is the exact thing that blocked CUDA graphs
+for the ACT step and its ~46 split-K GEMMs.
+
+⚠⚠ **TWO THINGS MUST HOLD BEFORE BELIEVING D, AND BOTH ARE NOW CHECKED IN THE
+ARM ITSELF** — a right answer here is cheap to get for the wrong reasons:
+
+  1. **the churn must be able to bite.** If the allocator never reissues a
+     freed 512KB block, the poison never lands on the workspace and D passes by
+     testing NOTHING. `_pool_recycles` allocates, frees, reallocates and
+     compares the device pointer; D reports it and refuses to pass without it.
+  2. **the recorded call must actually have split K.** `select_config` is a
+     CHOOSER, not the dispatch gate
+     ([[_select_config_is_not_the_dispatch_gate]]), and both paths produce the
+     same number. Re-run with `-D LOGGING_LEVEL=INFO` and grep for the split-K
+     kernel; the arm prints the command.
+
+Neither was in the run above, so **D is PLAUSIBLE, not CONFIRMED.**
+
+⚠ **Arm E CRASHED in that run, and it was this file's bug, not DeviceGraph's.**
+`CUDA_ERROR_ILLEGAL_ADDRESS` surfacing at `AsyncRT_DeviceContext_release`:
+`buf`'s last mention was the `LayoutTensor` construction, so Mojo freed the
+DeviceBuffer there and every launch in the arm — eager AND replayed — wrote
+through a dangling view. Arms A and B were saved only by happening to read
+`buf` back at the end. The rule is stated twice in this very file and the
+timing arm did not apply it. Fixed by a closing read-back that also asserts the
+launch arithmetic, so the arm can no longer time work that did nothing.
+
+⚠ **That run does NOT prove the "no LD_PRELOAD" claim.** `[intercept] Mojo
+stream: 0x...` appears in its output: `pixi run -e nvidia` applies the nvidia
+activation, which preloads `libcuda_intercept.so` whether or not anything uses
+it ([[_the_preload_is_a_property_of_the_process_not_the_binary]]). This file
+never calls it, but the way to SHOW that is the built-binary line at the top.
+
 ## Reading the result
 
     0,A,B pass                 DeviceGraph is live here. The shim is replaceable
@@ -151,6 +205,7 @@ comptime AVAL = 0.01
 comptime BVAL = 0.02
 
 comptime CHAIN = 32  # launches per iteration in the timing arm
+comptime WARM = 10
 comptime TIMED_ITERS = 200
 
 
@@ -446,24 +501,56 @@ struct _Gemm[M_: Int, K_: Int, N_: Int](Movable):
         return Float64(Self.K_) * AVAL * BVAL * Float64(n)
 
 
+comptime POISON_ELEMS = 512 * 1024 // 4
+"""512KB of float32 — the exact `request=512KB` MAX's capture abort named, and
+`P * M * N * 4` for arm D's shape at P=2."""
+
+
+def _pool_recycles(ctx: DeviceContext) raises -> Bool:
+    """Does MAX's allocator hand the SAME 512KB block back after a free?
+
+    ⚠⚠ THIS IS ARM D's VACUITY GUARD AND IT IS NOT OPTIONAL. Arm D claims a
+    dangling split-K workspace would be caught by allocating over it. That claim
+    is worth NOTHING if the pool never reissues the freed block — the churn
+    would just grow the heap, the recorded pointer would stay pristine, and arm
+    D would PASS by testing nothing. "0 mismatches" == "nothing tested" is the
+    default failure mode in this repo, so the churn has to prove it can bite
+    before a PASS downstream of it means anything.
+
+    Allocate, record the device pointer, free, allocate the same size again. A
+    matching pointer means the pool recycles same-size blocks, which is exactly
+    what would land on top of a freed workspace.
+    """
+    var b1 = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
+    ctx.synchronize()
+    var p1 = Int(b1.unsafe_ptr())
+    _ = b1^
+    var b2 = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
+    ctx.synchronize()
+    var p2 = Int(b2.unsafe_ptr())
+    _ = b2^
+    return p1 == p2 and p1 != 0
+
+
 def _churn(ctx: DeviceContext) raises:
     """Make the allocator hand out — and dirty — whatever a freed split-K
     workspace left behind.
 
     ⚠ THIS IS THE WHOLE POINT OF ARM D. A dangling pointer into a pool block
-    nobody has touched yet still reads the right bytes; the first replay can
-    pass on a graph that is already wrong. `P * M * N * 4` for the arm's shape
-    is 512KB at P=2 — the exact `request=512KB` in the capture abort — so this
-    allocates several multiples of that and writes a poison value through them.
+    nobody has touched yet still reads the right bytes, so the first replay can
+    pass on a graph that is already wrong. Several ROUNDS of allocate-poison-
+    free at exactly the workspace size, so a block that is only reissued after
+    a few requests still gets poisoned. `_pool_recycles` is what says this can
+    bite at all.
     """
-    comptime POISON_ELEMS = 512 * 1024 // 4
-    var junk = List[DeviceBuffer[DT]]()
-    for _ in range(8):
-        var b = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
-        b.enqueue_fill(Scalar[DT](-12345.0))
-        junk.append(b^)
-    ctx.synchronize()
-    _ = junk^
+    for _ in range(4):
+        var junk = List[DeviceBuffer[DT]]()
+        for _ in range(16):
+            var b = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
+            b.enqueue_fill(Scalar[DT](-12345.0))
+            junk.append(b^)
+        ctx.synchronize()
+        _ = junk^
 
 
 def _gemm_arm[
@@ -550,9 +637,34 @@ def arm_d(ctx: DeviceContext) raises -> Bool:
         print("       Find a shape where this prints > 1 before believing a")
         print("       PASS here. SKIPPED.")
         return True
-    return _gemm_arm[SK_M, SK_K, SK_N](
+    var recycles = _pool_recycles(ctx)
+    print(
+        "     pool reissues a freed "
+        + String(POISON_ELEMS * 4 // 1024)
+        + "KB block: "
+        + ("YES — the churn can bite" if recycles else "NO")
+    )
+    if not recycles:
+        # ⚠ Without this the arm is a vacuity trap: the churn grows the heap,
+        # never lands on the freed workspace, and a dangling pointer sails
+        # through both replays. A PASS below would then mean NOTHING.
+        print("     ⚠ THE CHURN CANNOT REACH A FREED WORKSPACE, so a PASS")
+        print("       below is VACUOUS — it would not detect the dangling")
+        print("       pointer it exists to detect. Treat D as NO RESULT.")
+    var ok = _gemm_arm[SK_M, SK_K, SK_N](
         ctx, "library GEMM, split-K", churn=True
     )
+    if ok:
+        # A right answer does not prove the recorded call took the split-K
+        # branch — `select_config` is a CHOOSER, not the dispatch gate, and the
+        # value is identical either way.
+        print("     ⚠ CONFIRM THE RECORDED CALL ACTUALLY SPLIT K before")
+        print("       believing this. `select_config` is a chooser, not the")
+        print("       dispatch gate, and both paths give the same number:")
+        print("         pixi run -e nvidia mojo run -I . -D LOGGING_LEVEL=INFO \\")
+        print("             benchmarks/bench_device_graph_spike.mojo 2>&1 \\")
+        print("           | grep -i 'split_k\\|K partitions'")
+    return ok and recycles
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,7 +699,7 @@ def arm_e(ctx: DeviceContext) raises:
     ctx.synchronize()
 
     # Warm both paths before either is timed.
-    for _ in range(10):
+    for _ in range(WARM):
         for _ in range(CHAIN):
             ctx.enqueue_function(
                 bump, lt, Int32(1), grid_dim=GRID, block_dim=BLOCK
@@ -622,6 +734,30 @@ def arm_e(ctx: DeviceContext) raises:
     )
     print("     (trivial kernels — a CEILING on launch overhead, not a step)")
 
+    # ⚠⚠ THIS READ-BACK IS LOAD-BEARING TWICE OVER, AND ITS ABSENCE CRASHED THE
+    # FIRST 5090 RUN with CUDA_ERROR_ILLEGAL_ADDRESS surfacing at
+    # `AsyncRT_DeviceContext_release`.
+    #
+    # (a) LIFETIME. Mojo destroys a value at its LAST USE. Without a mention of
+    #     `buf` down here, its last use is the `LayoutTensor` construction
+    #     above — so the DeviceBuffer is freed there and every launch in this
+    #     arm, eager and replayed alike, writes through a dangling `lt`. Arms A
+    #     and B never hit it only because they happen to read `buf` back at the
+    #     end. `mojo_rl/cuda/graph.mojo:54` and this file's own `_Gemm` docstring
+    #     both state the rule; the timing arm was written without applying it.
+    #
+    # (b) VACUITY. A timing arm that never checks a value is happy to report a
+    #     beautiful speedup for launches that did nothing. WARM eager + WARM
+    #     replayed + TIMED eager + TIMED replayed passes of CHAIN increments is
+    #     an exact integer, so it either lands on it or something did not run.
+    comptime want = Float64(2 * (WARM + TIMED_ITERS) * CHAIN)
+    var got = _read_first(ctx, buf)
+    _verdict(
+        "launches actually ran",
+        _close(got, want),
+        "counter->" + String(got) + "  want " + String(want),
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -652,7 +788,11 @@ def main() raises:
     print(
         "  0. import + link:  max.gpu.host.DeviceGraph resolved, context live."
     )
-    print("     NO libcuda_intercept.so, NO LD_PRELOAD, NO stream borrowing.")
+    print("     This file calls NO interceptor and borrows NO stream.")
+    print("     ⚠ Under `pixi run -e nvidia` the activation preloads")
+    print("       libcuda_intercept.so anyway — a '[intercept] ...' line below")
+    print("       is THAT, not this file. Build and run the binary directly")
+    print("       (see the header) to actually demonstrate independence.")
     comptime if not has_nvidia_gpu_accelerator():
         print("")
         print("  ⚠ NOT AN NVIDIA DEVICE. Metal supports neither stream capture")
