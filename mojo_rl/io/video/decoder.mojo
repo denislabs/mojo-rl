@@ -120,8 +120,26 @@ struct VideoDecoder(Movable):
         self.eof = False
         # `-v error` keeps the banner and per-frame chatter out of stderr while
         # leaving real failures visible; stderr is inherited, not captured.
+        #
+        # ⚠ `-nostdin` IS WHAT KEEPS THE CALLER'S TERMINAL USABLE. `popen`
+        # redirects only stdout, so ffmpeg inherits our stdin — the tty. With
+        # a tty on stdin it enables its interactive key handler (`q` to quit),
+        # which snapshots the termios, clears `ICANON` and `ECHO`, and puts
+        # the snapshot back on exit. One decoder at a time survives that. TWO
+        # DO NOT, and the importer opens one decoder PER CAMERA:
+        #
+        #   A starts -> saves {echo on},  clears echo
+        #   B starts -> saves {echo OFF}, clears echo
+        #   A exits  -> restores echo on
+        #   B exits  -> restores ITS snapshot: echo OFF, forever
+        #
+        # A lost update, so the pane survives the run with echo off — output
+        # still prints, keystrokes are invisible, and only `stty sane` brings
+        # it back. Measured on a pty: without the flag `after-B-exits` is
+        # echo=False; with it, True. `-nostdin` disables the key handler, so
+        # neither process ever touches the terminal.
         var cmd = (
-            String(FFMPEG) + " -v error -i " + quote_arg(path)
+            String(FFMPEG) + " -nostdin -v error -i " + quote_arg(path)
             + " -fps_mode passthrough -f rawvideo -pix_fmt rgb24 -"
         )
         self.pipe = Pipe(cmd^)
@@ -176,7 +194,11 @@ struct VideoDecoder(Movable):
 
         Closing before end of stream is legitimate and common — LeRobot packs
         several episodes per file and the importer moves on once it has the
-        ones it wants — so `SIGPIPE` is excused in that case and only that
-        case. Once EOF has been seen, a clean exit is required.
+        ones it wants — so a broken output pipe is excused in that case and
+        only that case. Once EOF has been seen, a clean exit is required.
+
+        ⚠ FOR FFMPEG THAT SHOWS UP AS **EXIT 224**, NOT SIGNAL 13: it ignores
+        `SIGPIPE`, so it returns `AVERROR(EPIPE)` from `main` instead of dying
+        of the signal. `Pipe.close` excuses both — see its module docstring.
         """
         _ = self.pipe.close(not self.eof)

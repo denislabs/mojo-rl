@@ -30,20 +30,35 @@ yields 256. Ignoring it is how a truncated decode reads as a short file rather
 than an error, so `close()` decodes the status and raises with the command in
 the message.
 
-⚠ **CLOSING EARLY KILLS THE CHILD WITH SIGPIPE, AND THAT IS NOT A FAILURE.**
-`pclose` closes the read end; the child's next write gets `SIGPIPE`, whose
-default action is to terminate, and the wait status then reports signal 13.
-A caller that deliberately stops reading — the video decoder abandoning a file
-once it has the frames it needs — passes `allow_sigpipe=True`. Treating that
-as an error would make every mid-file rollover raise; treating EVERY signal as
-fine would hide an `ffmpeg` that actually crashed, so it is exactly signal 13
-that is excused, and only when asked.
+⚠ **CLOSING EARLY BREAKS THE CHILD'S OUTPUT PIPE, AND THAT IS NOT A FAILURE.**
+`pclose` closes the read end, so the child's next write fails. A caller that
+deliberately stops reading — the video decoder abandoning a file once it has
+the frames it needs — passes `allow_broken_pipe=True`. Treating that as an
+error would make every mid-file rollover raise; treating EVERY failure as fine
+would hide an `ffmpeg` that actually crashed, so exactly two outcomes are
+excused, and only when asked:
+
+  - **signal 13**, `SIGPIPE`'s default action, for a child that leaves the
+    signal alone; and
+  - **exit 224**, for one that does not. `ffmpeg` calls
+    `signal(SIGPIPE, SIG_IGN)` in `term_init()` UNCONDITIONALLY, so it never
+    dies of the signal — it gets `EPIPE`, returns `AVERROR(EPIPE)` = `-32`
+    from `main`, and `exit` truncates that to `224`.
+
+⚠ **THE SIGNAL ARM ALONE WAS DEAD CODE FOR OUR ONLY CALLER.** It was written
+first and looked right for two months; every abandoned decode was really
+raising `child exited 224`, and the importer only got away with it because
+each decoder happened to reach EOF before its rollover. `-32 & 0xFF` is not a
+number you predict from the signal story — measure the child you actually
+spawn before believing which arm fires.
 """
 
 from std.ffi import external_call
 
 
 comptime SIGPIPE = 13
+comptime EPIPE_EXIT = 224
+"""`AVERROR(EPIPE)` (-32) returned from `main` and truncated by `exit`."""
 
 
 def quote_arg(s: String) raises -> String:
@@ -116,11 +131,14 @@ struct Pipe(Movable):
             return 0
         return external_call["fread", Int](dst, Int(1), count, self._fp)
 
-    def close(mut self, allow_sigpipe: Bool = False) raises -> Int:
+    def close(mut self, allow_broken_pipe: Bool = False) raises -> Int:
         """Wait for the child and return its exit code. Raises if it failed.
 
-        `allow_sigpipe` excuses signal 13 — see the module docstring. Pass it
-        only when this side stopped reading on purpose.
+        `allow_broken_pipe` excuses BOTH ways a child reacts to the read end
+        going away — signal 13 and exit 224 — because which one it is depends
+        on whether the child ignores `SIGPIPE`, which is not ours to know. See
+        the module docstring. Pass it only when this side stopped reading on
+        purpose.
         """
         if self.closed:
             return 0
@@ -131,7 +149,7 @@ struct Pipe(Movable):
             raise Error("proc: pclose failed for: " + self.command)
         # POSIX wait status: low 7 bits are the signal, next 8 the exit code.
         var sig = status & 0x7F
-        if sig != 0 and not (allow_sigpipe and sig == SIGPIPE):
+        if sig != 0 and not (allow_broken_pipe and sig == SIGPIPE):
             raise Error(
                 "proc: child killed by signal " + String(sig) + ": "
                 + self.command
@@ -139,10 +157,12 @@ struct Pipe(Movable):
         if sig != 0:
             return 0
         var code = (status >> 8) & 0xFF
-        if code != 0:
+        if code != 0 and not (allow_broken_pipe and code == EPIPE_EXIT):
             raise Error(
                 "proc: child exited " + String(code) + ": " + self.command
             )
+        if code != 0:
+            return 0
         return code
 
 

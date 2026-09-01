@@ -81,6 +81,14 @@ tests/io/test_resize_nearest.mojo
 # running a real job — see docs/CONCURRENCY_BACKBONE.md step 2.
 tests/io/test_http_sink.mojo
 
+# ── abandoning an ffmpeg decode mid-file ──────────────────────────────
+# The importer rolls over to the next episode without draining the mp4, so a
+# broken output pipe must not read as a failure. Needs `ffmpeg`; writes its
+# own fixture. The excuse was written for signal 13 and was DEAD — ffmpeg
+# SIG_IGNs SIGPIPE and exits 224 — so two of the four legs exist purely to
+# stop the widened excuse from becoming a blanket one.
+tests/io/test_video_abandon.mojo
+
 # ── the ffmpeg pipe behind VideoRecorder, on a worker thread ───────────
 # No ffmpeg here on purpose: the consumer is `cat`/`sh`, so back-pressure
 # and the drop tally are asserted against BYTES ON DISK. Includes the
