@@ -875,6 +875,28 @@ def arm_f(ctx: DeviceContext) raises -> Bool:
       absent, and `live buffers written through` > 0
                                     -> allocation succeeded and dangles. Faster
                                       than stream capture, and silently wrong.
+
+    ## MEASURED, RTX 5090: NEITHER — it faults outright
+
+        RAISED F: bench_device_graph_spike.mojo:696  CUDA_ERROR_ILLEGAL_ADDRESS
+
+    Line 696 is the `ctx.synchronize()` after the **FIRST** `graph.replay()` —
+    before any churn, before a single poison buffer exists. So the recorded
+    node dereferences the 32MB scratch and it is already gone. Not the silent
+    aliasing of arm D (512KB, which stays mapped in MAX's pool and merely gets
+    reissued) and not stream capture's naive fallback: a hard fault on replay 1.
+
+    The fault is STICKY. Everything after it on the same context reports the
+    same ILLEGAL_ADDRESS and the allocator starts refusing 4KB requests, which
+    is why arm E now runs BEFORE this one.
+
+    ⚠ TO ATTRIBUTE IT, RUN F WITHOUT D:
+
+        MOJO_RL_SPIKE_SPLITK=0 pixi run -e nvidia mojo run -I . \\
+            benchmarks/bench_device_graph_spike.mojo
+
+    D completes and reports before F starts, so D is probably not the author —
+    but "probably" is not attribution, and one env var settles it.
     """
     print("  F. VENDOR path (fails multi_gemm_cond, k=64) — 32MB per call")
     return _gemm_arm[VD_M, VD_K, VD_N](
@@ -1030,21 +1052,30 @@ def main() raises:
     var b = _run[arm_b]("B", ctx)
     var c = _run[arm_c]("C", ctx)
 
-    var d = 2  # 2 = not attempted
-    if getenv("MOJO_RL_SPIKE_SPLITK", "1") == "0":
-        print("  D. SKIPPED by MOJO_RL_SPIKE_SPLITK=0")
-    else:
-        print("  (arm D may fault or abort the process — everything above has")
-        print("   already printed. MOJO_RL_SPIKE_SPLITK=0 skips it.)")
-        d = _run[arm_d]("D", ctx)
-
-    var f = _run[arm_f]("F", ctx)
-
+    # ⚠ E RUNS BEFORE D AND F ON PURPOSE. A CUDA error is STICKY: once D or F
+    # faults, every later call on this context reports the same
+    # ILLEGAL_ADDRESS, the allocator starts refusing 4KB requests, and E's
+    # "failure" is collateral rather than a result. It cost a whole arm once.
     print("")
     try:
         arm_e(ctx)
     except e:
         print("  E. RAISED: " + String(e))
+    print("")
+
+    var d = 2  # 2 = not attempted
+    if getenv("MOJO_RL_SPIKE_SPLITK", "1") == "0":
+        print("  D. SKIPPED by MOJO_RL_SPIKE_SPLITK=0")
+    else:
+        print("  (D and F may fault or abort — everything above has printed.")
+        print("   MOJO_RL_SPIKE_SPLITK=0 / MOJO_RL_SPIKE_VENDOR=0 skip them.)")
+        d = _run[arm_d]("D", ctx)
+
+    var f = 2
+    if getenv("MOJO_RL_SPIKE_VENDOR", "1") == "0":
+        print("  F. SKIPPED by MOJO_RL_SPIKE_VENDOR=0")
+    else:
+        f = _run[arm_f]("F", ctx)
 
     print("")
     print("=" * 76)
@@ -1069,6 +1100,18 @@ def main() raises:
         print("  library calls, with no interceptor. `mojo_rl/cuda/graph.mojo`")
         print("  is replaceable; the migration is giving `maybe_capture_replay`")
         print("  a STEP(ctx) signature instead of a captured context.")
+        if f == -1:
+            print("")
+            print("  F RAISED -> the vendor path's 32MB scratch is GONE by")
+            print("  replay time: an illegal access on the FIRST replay, before")
+            print("  any churn. Not arm D's silent aliasing and not stream")
+            print("  capture's naive fallback — a hard fault. And that is the")
+            print("  shape ACT's conv GEMMs land on (k = OC = 64 fails")
+            print("  multi_gemm_cond), so padding K past 128 to dodge the")
+            print("  vendor path is the prerequisite, the same way owning the")
+            print("  workspace is for split-K.")
+            print("  Confirm it is F's own and not D's residue:")
+            print("    MOJO_RL_SPIKE_SPLITK=0 <same command>")
         if f == 0:
             print("")
             print("  F FAILED -> the VENDOR path's 32MB scratch dangles too,")
