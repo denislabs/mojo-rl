@@ -357,12 +357,18 @@ def main() raises:
     # ── restore mode: put a saved calibration back and stop ───────────
     if restore != "":
         var saved = load_calibration_json(restore)
-        _print_cal(String("restoring from " + restore + ":"), saved)
-        if write and backup == "":
-            raise Error(
-                "calibrate: --restore --write without --backup. Write down"
-                " what is on the arm now before replacing it."
-            )
+        # ⚠ The path on its own line. Inlined into the table's label it made
+        # a ~120-character heading that WRAPS in a normal terminal, and a
+        # wrapped heading directly above a fixed-width table is both hard to
+        # read and hard to copy out intact.
+        print("  restoring from:")
+        print("    " + restore)
+        _print_cal(String("values to write:"), saved)
+        # ⚠ NO `--backup` REQUIREMENT HERE ANY MORE. This guard predates the
+        # automatic backup and kept firing AFTER one had already been written
+        # two lines above — refusing the restore and leaving the operator with
+        # the calibration they were trying to replace. A precondition that the
+        # code itself now always satisfies is not a guard, it is a bug.
         _apply(arm, saved, write)
         return
 
