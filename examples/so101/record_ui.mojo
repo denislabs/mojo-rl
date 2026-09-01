@@ -47,8 +47,8 @@ from std.time import perf_counter_ns
 
 from mojo_rl.data.lerobot_write import LeRobotWriter
 from mojo_rl.render.imgui import (
-    IgTexture, ig_begin_panel, ig_begin_window, ig_button, ig_end,
-    ig_framerate,
+    IgTexture, ig_begin_child, ig_begin_panel, ig_begin_window, ig_button,
+    ig_end, ig_end_child, ig_framerate, ig_last_item_rect, ig_overlay_line,
     ig_progress_bar, ig_same_line, ig_separator, ig_separator_text, ig_text,
     ig_text_colored, ig_text_disabled, imgui_shim_available,
 )
@@ -73,6 +73,97 @@ comptime UI_EVERY = 3
 camera, and the draw has to fit in what is left of it."""
 
 comptime CAMERA_NAMES = "observation.images.front,observation.images.side"
+
+comptime TRACE_CAP = 300
+"""Samples kept per signal — 10 s at 30 Hz. Long enough to see the shape of a
+motion, short enough that the plot is not a smear."""
+
+comptime PLOT_H = 118.0
+
+
+def joint_colour(i: Int) -> UInt32:
+    """One colour per servo, for the scope traces.
+
+    ⚠ **ImGui PACKS COLOURS ABGR, NOT RGBA** — `ig_overlay_line`'s own header
+    says `0xFF00FF00` is opaque GREEN. So the literals below read
+    `0xAABBGGRR`, and a value copied from a web colour picker comes out with
+    red and blue swapped: a plausible-looking plot in the wrong colours, which
+    is worse than an obviously broken one because nobody checks a legend.
+    """
+    if i == 0:
+        return 0xFF3C3CE6  # red
+    if i == 1:
+        return 0xFF2896F0  # orange
+    if i == 2:
+        return 0xFF3CDCE6  # yellow
+    if i == 3:
+        return 0xFF6ED250  # green
+    if i == 4:
+        return 0xFFFA965A  # blue
+    return 0xFFE66EDC  # magenta
+
+
+def joint_colour_f(i: Int) -> Tuple[Float32, Float32, Float32]:
+    """The same colour as 0..1 floats — `ig_text_colored` takes those, not
+    the packed word. Two representations of one table is a drift risk, so
+    this DERIVES from `joint_colour` rather than repeating the numbers."""
+    var c = joint_colour(i)
+    var r = Float32(Int(c & 0xFF)) / 255.0
+    var g = Float32(Int((c >> 8) & 0xFF)) / 255.0
+    var b = Float32(Int((c >> 16) & 0xFF)) / 255.0
+    return (r, g, b)
+
+
+def draw_traces(
+    var title: String,
+    ref hist: List[Float32],
+    write_at: Int,
+    filled: Int,
+    lo: Float32,
+    hi: Float32,
+    w: Float32,
+) raises:
+    """Six coloured polylines over one plot area.
+
+    ⚠ NOT `ig_plot_lines`. That draws ONE series per call with no colour
+    control, so six of them would be six stacked monochrome sparklines — the
+    thing this replaces. A bordered child reserves the rect, `ig_last_item_rect`
+    says where it landed, and the lines go on the window's draw list.
+
+    ⚠ THE BUFFER IS A RING, so it is walked from the OLDEST sample, not from
+    index 0. Plotting it unrotated makes the trace jump at the write cursor,
+    which reads as a real discontinuity in the robot's motion.
+    """
+    ig_text(title)
+    _ = ig_begin_child(title + "##plot", w, PLOT_H, True)
+    ig_end_child()
+    var rect = ig_last_item_rect()
+    var x0 = rect[0]
+    var y0 = rect[1]
+    var pw = rect[2]
+    var ph = rect[3]
+    if filled < 2 or hi <= lo:
+        return
+
+    var span = hi - lo
+    var start = write_at - filled
+    if start < 0:
+        start += TRACE_CAP
+    var dx = pw / Float32(filled - 1)
+    for j in range(SO101_N):
+        var col = joint_colour(j)
+        for k in range(filled - 1):
+            var a = (start + k) % TRACE_CAP
+            var b = (start + k + 1) % TRACE_CAP
+            var va = hist[a * SO101_N + j]
+            var vb = hist[b * SO101_N + j]
+            var ya = y0 + ph - (va - lo) / span * ph
+            var yb = y0 + ph - (vb - lo) / span * ph
+            ig_overlay_line(
+                x0 + Float32(k) * dx, ya,
+                x0 + Float32(k + 1) * dx, yb,
+                col, 1.6,
+            )
 
 
 def _split(s: String, sep: String) -> List[String]:
@@ -192,6 +283,19 @@ def main() raises:
     var lead_raw = InlineArray[Int32, SO101_N](fill=0)
     var goals = InlineArray[Int32, SO101_N](fill=0)
 
+    # ⚠ FILLED EVERY TICK, not only on drawn ones. A trace sampled at the UI
+    # rate would be a different signal from the one being recorded — and the
+    # point of watching it is to judge the data.
+    var trace_lead = List[Float32](unsafe_uninit_length = TRACE_CAP * SO101_N)
+    var trace_foll = List[Float32](unsafe_uninit_length = TRACE_CAP * SO101_N)
+    for i in range(len(trace_lead)):
+        trace_lead[i] = 0.0
+        trace_foll[i] = 0.0
+    var trace_at = 0
+    var trace_filled = 0
+    var trace_lo = Float32(0.0)
+    var trace_hi = Float32(0.0)
+
     var recording = False
     var ep_frames = 0
     var kept = 0
@@ -253,6 +357,27 @@ def main() raises:
                         + String(ep_frames) + " frames)"
                     )
                     ep_frames = 0
+
+            # ── the scope ───────────────────────────────────────────
+            for j in range(SO101_N):
+                var l = Float32(leader.cal.degrees(j, lead_raw[j]))
+                var f = Float32(follower.cal.degrees(j, present[j]))
+                trace_lead[trace_at * SO101_N + j] = l
+                trace_foll[trace_at * SO101_N + j] = f
+                if trace_filled == 0 and j == 0:
+                    trace_lo = l
+                    trace_hi = l
+                if l < trace_lo:
+                    trace_lo = l
+                if l > trace_hi:
+                    trace_hi = l
+                if f < trace_lo:
+                    trace_lo = f
+                if f > trace_hi:
+                    trace_hi = f
+            trace_at = (trace_at + 1) % TRACE_CAP
+            if trace_filled < TRACE_CAP:
+                trace_filled += 1
 
             var work = Float64(perf_counter_ns() - t0) / 1e6
             if work > worst_work:
@@ -329,12 +454,16 @@ def main() raises:
                 if ig_button(String("finish"), 120.0, 30.0):
                     finish = True
 
-            ig_separator_text(String("joints (leader -> follower)"))
+            ig_separator_text(String("joints (deg)"))
             for i in range(SO101_N):
-                ig_text(
-                    joint_short(i) + "  "
-                    + fixed(leader.cal.degrees(i, lead_raw[i]), 1) + "  ->  "
-                    + fixed(follower.cal.degrees(i, present[i]), 1)
+                var c = joint_colour_f(i)
+                ig_text_colored(
+                    joint_short(i) + " " + fixed(
+                        leader.cal.degrees(i, lead_raw[i]), 1
+                    ) + " -> " + fixed(
+                        follower.cal.degrees(i, present[i]), 1
+                    ),
+                    c[0], c[1], c[2],
                 )
 
             ig_separator_text(String("health"))
@@ -355,6 +484,24 @@ def main() raises:
                 )
                 texes[i].image(384.0, 288.0)
                 ig_end()
+
+            _ = ig_begin_window(
+                String("servos"), 350.0, 360.0, 810.0, 330.0
+            )
+            # ⚠ ONE SHARED SCALE for both plots. Auto-scaling each separately
+            # makes the leader and the follower look aligned while they are
+            # degrees apart — which is exactly the thing an operator is
+            # watching these traces to catch.
+            var pad = (trace_hi - trace_lo) * 0.05 + 1.0
+            draw_traces(
+                String("leader (commanded)"), trace_lead, trace_at,
+                trace_filled, trace_lo - pad, trace_hi + pad, 780.0,
+            )
+            draw_traces(
+                String("follower (measured)"), trace_foll, trace_at,
+                trace_filled, trace_lo - pad, trace_hi + pad, 780.0,
+            )
+            ig_end()
 
             r.begin_frame()
             r.end_frame()
