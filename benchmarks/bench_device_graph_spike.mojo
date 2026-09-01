@@ -236,6 +236,15 @@ comptime SK_M = 256  # multistage_gemm_split_k on a 5090
 comptime SK_K = 2592
 comptime SK_N = 256
 
+# Fails `multi_gemm_cond` (`m>1 and n%128==0 and k%32==0 and k>=128`,
+# matmul/gpu/__init__.mojo:591) on the K test — k=64 < 128 — so it routes to the
+# VENDOR BLAS path, which allocates 32MB per call at blas.mojo:780. That is the
+# shape the ACT conv GEMMs land on (k = OC = 64).
+comptime VD_M = 256
+comptime VD_K = 64
+comptime VD_N = 256
+comptime VD_PROBE_ELEMS = 32 * 1024 * 1024 // 4  # match the 32MB vendor alloc
+
 comptime AVAL = 0.01
 comptime BVAL = 0.02
 
@@ -582,7 +591,10 @@ comptime PROBE_STRIDE = 64
 
 
 def _poison_survived(
-    ctx: DeviceContext, live: List[DeviceBuffer[DT]], expect_partial: Float64
+    ctx: DeviceContext,
+    live: List[DeviceBuffer[DT]],
+    elems: Int,
+    expect_partial: Float64,
 ) raises -> Int:
     """How many of `live` were WRITTEN THROUGH while the graph replayed.
 
@@ -598,13 +610,13 @@ def _poison_survived(
     finished product (0.5184). Matching it identifies the writer as the
     reduction workspace rather than leaving it inferred.
     """
-    var host = ctx.enqueue_create_host_buffer[DT](POISON_ELEMS)
+    var host = ctx.enqueue_create_host_buffer[DT](elems)
     var touched = 0
     var reported = False
     for i in range(len(live)):
         ctx.enqueue_copy(host, live[i])
         ctx.synchronize()
-        for j in range(0, POISON_ELEMS, PROBE_STRIDE):
+        for j in range(0, elems, PROBE_STRIDE):
             if host[j] != Scalar[DT](POISON):
                 touched += 1
                 if not reported:
@@ -616,8 +628,12 @@ def _poison_survived(
                         + String(j)
                         + " = "
                         + String(Float64(host[j]))
-                        + "   a split-K partial sum would be "
-                        + String(expect_partial)
+                        + "   expected partial-sum signature "
+                        + (
+                            String(expect_partial)
+                            if expect_partial != 0.0
+                            else String("n/a (vendor scratch, contents opaque)")
+                        )
                         + "   (poison was "
                         + String(POISON)
                         + ")"
@@ -649,7 +665,13 @@ def _churn(ctx: DeviceContext) raises:
 
 def _gemm_arm[
     M_: Int, K_: Int, N_: Int
-](ctx: DeviceContext, label: String, churn: Bool, parts: Int = 1) raises -> Bool:
+](
+    ctx: DeviceContext,
+    label: String,
+    churn: Bool,
+    parts: Int = 1,
+    probe_elems: Int = POISON_ELEMS,
+) raises -> Bool:
     var g = _Gemm[M_, K_, N_](ctx)
 
     # Warm the library OUTSIDE the graph: first-call autotuning, module load
@@ -704,7 +726,7 @@ def _gemm_arm[
         g.wipe()
         var live = List[DeviceBuffer[DT]]()
         for _ in range(PROBE_BUFS):
-            var b = ctx.enqueue_create_buffer[DT](POISON_ELEMS)
+            var b = ctx.enqueue_create_buffer[DT](probe_elems)
             b.enqueue_fill(Scalar[DT](POISON))
             live.append(b^)
         ctx.synchronize()
@@ -713,9 +735,9 @@ def _gemm_arm[
         r3 = g.checksum(8)
         # Each of the P partitions sums K/P terms of a*b.
         var expect_partial = (
-            Float64(K_) / Float64(parts) * AVAL * BVAL if parts > 0 else 0.0
+            Float64(K_) / Float64(parts) * AVAL * BVAL if parts > 1 else 0.0
         )
-        touched = _poison_survived(ctx, live, expect_partial)
+        touched = _poison_survived(ctx, live, probe_elems, expect_partial)
         _ = live^
 
     var ok = _close(after_build, 0.0) and _close(r1, want)
@@ -814,6 +836,54 @@ def arm_d(ctx: DeviceContext) raises -> Bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # Arm E — what it buys
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def arm_f(ctx: DeviceContext) raises -> Bool:
+    """The VENDOR path — the shape ACT's conv GEMMs actually land on.
+
+    ⚠ THIS ARM EXISTS BECAUSE ARMS C AND D CANNOT ANSWER THE QUESTION. Both use
+    shapes that PASS `multi_gemm_cond` (`m>1 and n%128==0 and k%32==0 and
+    k>=128`, matmul/gpu/__init__.mojo:591), so neither ever reaches the vendor
+    branch. `[256 x 64] @ [64 x 256]` fails on `k >= 128` — k=64, exactly ACT's
+    `k = OC = 64` — and routes to `matmul_vendor`, which allocates **32MB per
+    call** at `blas.mojo:780`.
+
+    Under STREAM capture that allocation raises (empty `graphFreeList`, no
+    driver fallback), MAX CATCHES it in a try/except at
+    matmul/gpu/__init__.mojo:1373, logs "Vendor BLAS failed", and falls through
+    to `matmul_kernel_naive` at BLOCK_DIM=16. Correct results, much slower —
+    which is why a stream-captured ACT step comes out SLOWER than eager.
+
+    ⚠ **THE PREDICTION HERE IS THE OPPOSITE, AND IT IS NOT A GUESS ABOUT THE
+    POOL.** `recording_context()` does not seed `graphFreeList`; its docstring
+    says buffer allocation FORWARDS TO THE BACKING CONTEXT. So the 32MB
+    allocation should SUCCEED — as a plain eager allocation, not a graph-scoped
+    one — meaning no raise, no "Vendor BLAS failed", and NO naive fallback. The
+    32MB is then freed when the call returns while the recorded node keeps its
+    pointer, i.e. the same silent aliasing arm D caught, 64x larger.
+
+    So "does DeviceGraph make the allocation problem dissolve?" has a third
+    answer besides yes and no: **the allocation stops failing and starts
+    corrupting.** The probe therefore runs at 32MB — same-size bucket reuse is
+    what `_pool_recycles` demonstrated, so a poison buffer must MATCH the
+    allocation to be a plausible recipient of its block.
+
+    Read it with `-D LOGGING_LEVEL=INFO`:
+      "Vendor BLAS failed" present  -> the allocation DID fail here too; expect
+                                      `matmul_kernel_naive` in the profile and
+                                      DeviceGraph inherits the slowdown.
+      absent, and `live buffers written through` > 0
+                                    -> allocation succeeded and dangles. Faster
+                                      than stream capture, and silently wrong.
+    """
+    print("  F. VENDOR path (fails multi_gemm_cond, k=64) — 32MB per call")
+    return _gemm_arm[VD_M, VD_K, VD_N](
+        ctx,
+        "vendor GEMM, 32MB scratch",
+        churn=True,
+        parts=1,
+        probe_elems=VD_PROBE_ELEMS,
+    )
 
 
 def arm_e(ctx: DeviceContext) raises:
@@ -968,6 +1038,8 @@ def main() raises:
         print("   already printed. MOJO_RL_SPIKE_SPLITK=0 skips it.)")
         d = _run[arm_d]("D", ctx)
 
+    var f = _run[arm_f]("F", ctx)
+
     print("")
     try:
         arm_e(ctx)
@@ -997,6 +1069,21 @@ def main() raises:
         print("  library calls, with no interceptor. `mojo_rl/cuda/graph.mojo`")
         print("  is replaceable; the migration is giving `maybe_capture_replay`")
         print("  a STEP(ctx) signature instead of a captured context.")
+        if f == 0:
+            print("")
+            print("  F FAILED -> the VENDOR path's 32MB scratch dangles too,")
+            print("  and that is the shape ACT's conv GEMMs actually land on")
+            print("  (k = OC = 64 fails multi_gemm_cond). Note this is NOT the")
+            print("  stream-capture failure: there the allocation RAISES, MAX")
+            print("  catches it and drops to matmul_kernel_naive — correct but")
+            print("  slow. Here it SUCCEEDS eagerly and dangles. Check the")
+            print("  INFO log for 'Vendor BLAS failed' to tell them apart.")
+        elif f == 1:
+            print("")
+            print("  F PASSED -> the vendor path records cleanly. Check the")
+            print("  INFO log for 'Vendor BLAS failed' anyway: a PASS with that")
+            print("  line present means MAX fell back to the naive kernel and")
+            print("  the arm is measuring the SLOW path being correct.")
         if d == 0:
             print("")
             print("  D FAILED -> split-K is STILL not recordable, and here it")
