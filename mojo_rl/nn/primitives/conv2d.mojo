@@ -696,6 +696,23 @@ struct Conv2D[
     var outp_t: Tensor  # [BS, OC]   (out_packed; fwd only)
     var goT_t: Tensor  # [OC, BS]   (goᵀ — for dW AND d_colᵀ, O2)
     var dW_tmp: Tensor  # [OC, COL]  (fp32 dW temp; bf16-in → fp32-out GEMM)
+    var sk_ws_fwd: Tensor
+    """Split-K reduction workspace for the FORWARD GEMM, `[P, BS, OCPAD]`.
+
+    ⚠ The forward splits for the SAME reason the dW does, and we missed it the
+    first time round. Forward is `out[BS, OCPAD] = col[BS, CPAD] @ wᵀ`, so its
+    contraction is `CPAD = IC * K * K` — 2304 for a 3x3 at IC=256, 4608 at
+    IC=512. `select_config` partitions any K >= 2048, so ResNet18's layer3 and
+    layer4 forwards all take MAX's split-K path and allocate `P * BS * OCPAD *
+    4` bytes per call. That is what aborted the ACT CUDA-graph capture at
+    18.75MB = 2 * 9600 * 256 * 4, on `MxNxK: 9600x256x2304`.
+
+    Sized on the first eager forward, per `_decide_sk_p_fwd`. It is bigger than
+    the dW workspace — M is BS, not OC — so it is only allocated when the
+    forward actually splits."""
+    var _sk_p_fwd: Int
+    """Cached partition count for the FORWARD GEMM. -1 = undecided, 1 = do not
+    split."""
     var sk_ws: Tensor
     """Split-K reduction workspace for the dW GEMM, `[P, OC_, CPAD]`.
 
@@ -755,6 +772,8 @@ struct Conv2D[
         self.outp_t = Tensor()
         self.goT_t = Tensor()
         self.dW_tmp = Tensor()
+        self.sk_ws_fwd = Tensor()
+        self._sk_p_fwd = -1
         self.sk_ws = Tensor()
         self._sk_p = -1
         self.wT_t = Tensor()
@@ -970,9 +989,27 @@ struct Conv2D[
                     var outp_tt = TileTensor(
                         self.outp_t.dev.value(), row_major[BS, Self.OCPAD]()
                     )
-                    max_matmul[transpose_b=True, target="gpu"](
-                        outp_tt, col_tt, w_tt, c
-                    )
+                    # Same treatment as the dW, and for the same reason:
+                    # once `CPAD >= 2048` MAX partitions K here too and
+                    # allocates its reduction workspace per call, which is a
+                    # capture blocker. See `sk_ws_fwd`.
+                    comptime if splitk_path_applies[c.default_device_info]():
+                        if self._sk_p_fwd < 0:
+                            self._decide_sk_p_fwd(BS, c)
+                        if self._sk_p_fwd > 1:
+                            dispatch_splitk_gemm[transpose_b=True](
+                                outp_tt, col_tt, w_tt,
+                                BS, Self.OCPAD, Self.CPAD,
+                                self._sk_p_fwd, self.sk_ws_fwd, c,
+                            )
+                        else:
+                            max_matmul[transpose_b=True, target="gpu"](
+                                outp_tt, col_tt, w_tt, c
+                            )
+                    else:
+                        max_matmul[transpose_b=True, target="gpu"](
+                            outp_tt, col_tt, w_tt, c
+                        )
                     # (3) scatter → output[B, OC·SO] + bias
                     comptime nb_sc = (
                         B * Self.OUT_FLAT + CONV_TPB - 1
@@ -1092,6 +1129,23 @@ struct Conv2D[
                     grid_dim=nb_sc,
                     block_dim=CONV_TPB,
                 )
+
+    def _decide_sk_p_fwd(mut self, BS: Int, ctx: DeviceContext) raises:
+        """Decide the FORWARD GEMM's partition count, once, and cache it.
+
+        `out[BS, OCPAD] = col[BS, CPAD] @ wᵀ[OCPAD, CPAD]`, so M=BS, N=OCPAD,
+        K=CPAD and `transpose_b=True`. N is the PADDED out-channel count, so
+        `multi_gemm_cond`'s `n % 128` holds by construction; what decides is
+        whether `CPAD >= 2048`, i.e. a 3x3 conv at IC >= 228.
+
+        Decided on the first forward — an EAGER step, before any capture — and
+        never again: P sets `grid_dim`, which is baked into a captured graph.
+        """
+        self._sk_p_fwd = decide_partitions[transpose_b=True](
+            BS, Self.OCPAD, Self.CPAD, ctx
+        )
+        if self._sk_p_fwd > 1:
+            self.sk_ws_fwd.ensure_gpu(ctx, self._sk_p_fwd * BS * Self.OCPAD)
 
     def _decide_sk_p(mut self, BS: Int, ctx: DeviceContext) raises:
         """Decide the conv dW GEMM's partition count, once, and cache it.

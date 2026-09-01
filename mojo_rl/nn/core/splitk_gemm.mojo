@@ -329,7 +329,7 @@ def splitk_gemm[
     split_k_reduce(c, ws_tt, ctx)
 
 
-# ── shared dW routing ──────────────────────────────────────────────────────
+# ── shared split-K routing ─────────────────────────────────────────────────
 # Every Module that routes a weight-gradient GEMM through split-K needs the
 # same two decisions: WHICH tile config to instantiate, and HOW MANY
 # partitions to use. Both were written inline in `Linear` and then copied
@@ -338,7 +338,7 @@ def splitk_gemm[
 # once instead; a Module supplies only its own shape.
 
 
-def dispatch_splitk_gemm(
+def dispatch_splitk_gemm[transpose_b: Bool = False](
     c: TileTensor[mut=True, DT, ...],
     a: TileTensor[mut=False, DT, ...],
     b: TileTensor[mut=False, DT, ...],
@@ -349,7 +349,14 @@ def dispatch_splitk_gemm(
     mut ws: Tensor,
     ctx: DeviceContext,
 ) raises:
-    """`c = a @ b` (a dW GEMM) through the caller-owned workspace `ws`.
+    """`c = a @ b` (or `a @ bᵀ`) through the caller-owned workspace `ws`.
+
+    ⚠ NOT ONLY FOR dW. The first version of this was, and that assumption cost
+    a CUDA-graph capture: `Conv2D`'s FORWARD is `col[BS, CPAD] @ wᵀ[OC, CPAD]`,
+    whose contraction is `CPAD = IC * K * K` — 2304 for a 3x3 at IC=256 — and
+    once that clears `select_config`'s `K >= 2048` floor MAX partitions it and
+    allocates, exactly like a dW. Any `max_matmul` inside a captured region can
+    do this; the shape is what decides, not which gradient it belongs to.
 
     The comptime config must be the tile `select_config` chose — it sets the
     grid and the shared-memory request, so a mismatch is wrong launch geometry
@@ -363,23 +370,23 @@ def dispatch_splitk_gemm(
     config and `partitions_legal`'s alignment. Those sites stay on
     `max_matmul` until there is a bf16 gate to validate them against.
     """
-    comptime kernels = MatmulKernels[DT, DT, DT, False]()
-    var picked = select_config[DT, DT, DT, False](M, N, K, ctx)
+    comptime kernels = MatmulKernels[DT, DT, DT, transpose_b]()
+    var picked = select_config[DT, DT, DT, transpose_b](M, N, K, ctx)
     if picked == kernels.ampere_256x64_4:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x64_4](
+        splitk_gemm[transpose_b=transpose_b, config = kernels.ampere_256x64_4](
             c, a, b, num_partitions, ws, ctx
         )
     elif picked == kernels.ampere_256x128_3:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_256x128_3](
-            c, a, b, num_partitions, ws, ctx
-        )
+        splitk_gemm[
+            transpose_b=transpose_b, config = kernels.ampere_256x128_3
+        ](c, a, b, num_partitions, ws, ctx)
     else:
-        splitk_gemm[transpose_b=False, config = kernels.ampere_128x128_4](
-            c, a, b, num_partitions, ws, ctx
-        )
+        splitk_gemm[
+            transpose_b=transpose_b, config = kernels.ampere_128x128_4
+        ](c, a, b, num_partitions, ws, ctx)
 
 
-def decide_partitions(
+def decide_partitions[transpose_b: Bool = False](
     M: Int, N: Int, K: Int, ctx: DeviceContext
 ) raises -> Int:
     """Partition count for a `[M, K] @ [K, N]` dW GEMM. 1 = do not split.
@@ -409,7 +416,10 @@ def decide_partitions(
     # slowdown. See multistage_shape_ok.
     if not multistage_shape_ok(M, N, K):
         return 1
-    var picked = select_config[DT, DT, DT, False](M, N, K, ctx)
+    # `multi_gemm_cond` does not depend on `transpose_b` (source: it tests
+    # only m/n/k), and neither does `select_config`'s loop — but the CONFIG it
+    # returns is typed on it, so thread it rather than rebind.
+    var picked = select_config[DT, DT, DT, transpose_b](M, N, K, ctx)
     if picked.num_k_partitions <= 1:
         return 1
 
