@@ -6,6 +6,14 @@ be unhooked, no `LD_PRELOAD` to be missing, no borrowed stream to be destroyed
 under us, and no silent zero-node capture. `DeviceGraph` is a supported API
 that either records or raises.
 
+⚠ **ONE TEST ON ONE `DeviceContext`, DELIBERATELY.** The two-test version of
+this file HUNG on a 5090 while `probe_device_graph_steps.mojo` — the same
+calls, a plain `main`, no harness — ran clean end to end (`recorded = True`,
+counter 1 -> 2 -> 3). The only differences were `TestSuite` and a SECOND
+`DeviceContext` constructed after the first had been destroyed. If this file
+ever hangs again, run that probe FIRST: it separates "the graph API is broken"
+from "the harness is", and last time the answer was the harness.
+
 ## The arithmetic is the assertion, and it holds on BOTH platforms
 
 N calls to `maybe_record_replay` must produce EXACTLY N increments, whichever
@@ -31,6 +39,12 @@ Run with:
     pixi run -e nvidia mojo run -I . tests/cuda/test_device_graph_minimal.mojo
     pixi run -e apple  mojo run -I . tests/cuda/test_device_graph_minimal.mojo
 
+    # if it hangs, this is the bisector — 11 numbered, FLUSHED stages, no
+    # TestSuite. Mojo's stdout is BLOCK buffered, so a hung run shows you
+    # nothing it printed and the last line you saw is not where it stopped.
+    pixi run -e nvidia mojo build -I . -o /tmp/probe_dg \
+        tests/cuda/probe_device_graph_steps.mojo && /tmp/probe_dg
+
     # bisect a suspected graph problem against a known-good run:
     MOJO_RL_DEVICE_GRAPH=0 pixi run -e nvidia mojo run -I . \
         tests/cuda/test_device_graph_minimal.mojo
@@ -55,8 +69,23 @@ def _read(ctx: DeviceContext, buf: DeviceBuffer[DT]) raises -> Float64:
     return Float64(h[0])
 
 
-def test_n_calls_make_n_increments() raises:
-    """Recorded or not, `CALLS` calls advance the counter by exactly `CALLS`."""
+def test_record_replay_contract() raises:
+    """Both halves of the contract, on ONE `DeviceContext`.
+
+    ⚠ DELIBERATELY ONE TEST, NOT TWO. The two-test version hung on a 5090
+    while `probe_device_graph_steps.mojo` — the same calls, a plain `main`,
+    no harness — ran clean end to end. The only differences were `TestSuite`
+    and a SECOND `DeviceContext` built after the first had been destroyed.
+    Merging removes both, and costs nothing: the two assertions were always
+    about the same run.
+
+    ⚠ AND THEY BELONG TOGETHER ANYWAY. The arithmetic alone is satisfied
+    trivially by the disabled path — `STEP` called N times increments N times
+    whether or not anything was ever recorded — so a NVIDIA regression that
+    silently stopped recording would still pass it. The platform assertion is
+    what makes the count mean something, so asserting them on the same slot
+    is stronger than asserting them on two.
+    """
     # ⚠ NESTED, not module-level. `TestSuite.discover_tests` instantiates every
     # top-level def for the HOST, and a GPU kernel fails there with "target
     # does not support operation: _get_intrinsic_name".
@@ -71,6 +100,7 @@ def test_n_calls_make_n_increments() raises:
     var buf = ctx.enqueue_create_buffer[DT](1)
     buf.enqueue_fill(Scalar[DT](0))
     ctx.synchronize()
+
     # ⚠⚠ THE VIEW IS BUILT INSIDE THE STEP, NOT CAPTURED FROM A LOCAL, AND THE
     # FIRST DRAFT OF THIS TEST GOT IT WRONG.
     #
@@ -87,9 +117,6 @@ def test_n_calls_make_n_increments() raises:
     # whose next line hands `lt` to a kernel that warning reads like a false
     # positive. It is not — it is the whole bug.
     #
-    # The production shape is the same rule one level up: one struct owns the
-    # context and the buffers, and the closure mentions only that struct.
-    #
     # ⚠ AND THE ARGUMENT IS THE POINT. A step that reaches for an outer `ctx`
     # instead of using `gctx` enqueues EAGERLY during the recording pass: the
     # work is still correct, the graph is still built, and it records NOTHING.
@@ -103,6 +130,9 @@ def test_n_calls_make_n_increments() raises:
         maybe_record_replay[_step](slot, ctx)
     ctx.synchronize()
 
+    # N calls, N increments — whichever path ran:
+    #   NVIDIA  1 warm-up + (N-1) replays
+    #   Apple   N direct runs on a latched-disabled slot
     var got = _read(ctx, buf)
     assert_true(
         got == Float64(CALLS),
@@ -116,45 +146,7 @@ def test_n_calls_make_n_increments() raises:
         + " context, not the recording one). 1 means replay ran nothing.",
     )
 
-    # ⚠ ORDER MATTERS: SLOT FIRST, BUFFER SECOND. The graph holds RAW POINTERS
-    # into `buf`, so releasing the buffer while a live graph still references
-    # it is a use-after-free waiting for the next replay. Mojo destroys a value
-    # at its LAST USE, so these two lines ARE the ordering — reversing them is
-    # a real bug, not a style choice. (Reading the counter above is also what
-    # keeps `buf` alive that far; a timing arm of the DeviceGraph spike
-    # crashed on exactly that omission.)
-    _ = slot^
-    _ = buf^
-
-
-def test_platform_contract() raises:
-    """NVIDIA records; every other device latches disabled.
-
-    ⚠ THIS IS WHAT KEEPS THE ARITHMETIC TEST HONEST. "N calls, N increments"
-    is satisfied by the disabled path trivially, so without pinning which path
-    ran, an NVIDIA regression that silently stopped recording would still pass.
-    """
-    @parameter
-    @always_inline
-    def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
-        if Int(thread_idx.x) != 0:
-            return
-        buf[0] = buf[0] + Scalar[DT](1.0)
-
-    var ctx = DeviceContext()
-    var buf = ctx.enqueue_create_buffer[DT](1)
-    buf.enqueue_fill(Scalar[DT](0))
-    ctx.synchronize()
-    # View built inside the step — see `test_n_calls_make_n_increments`.
-    def _step(gctx: DeviceContext) capturing raises -> None:
-        var v = LayoutTensor[DT, Layout.row_major(1)](buf)
-        gctx.enqueue_function[_bump](v, grid_dim=1, block_dim=1)
-
-    var slot = GraphSlot()
-    maybe_record_replay[_step](slot, ctx)
-    maybe_record_replay[_step](slot, ctx)
-    ctx.synchronize()
-
+    # Which path ran. Without this the count above is vacuous.
     comptime if has_nvidia_gpu_accelerator():
         assert_true(
             slot.is_recorded() and not slot.is_disabled(),
@@ -169,6 +161,11 @@ def test_platform_contract() raises:
             " latch disabled. Recording here would mean MAX grew a backend"
             " and this contract needs updating.",
         )
+
+    # ⚠ ORDER MATTERS: SLOT FIRST, BUFFER SECOND. The graph holds RAW POINTERS
+    # into `buf`, so releasing the buffer while a live graph still references
+    # it is a use-after-free waiting for the next replay. Mojo destroys a value
+    # at its LAST USE, so these two lines ARE the ordering.
     _ = slot^
     _ = buf^
 
