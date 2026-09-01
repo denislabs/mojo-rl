@@ -88,89 +88,94 @@ wave estimate, so another part can decide otherwise and the arm would be
 measuring nothing. It prints `num_k_partitions` and says so when it is 1.
 ([[_a_capture_abort_names_only_the_first_blocker]]: a size is not an identity.)
 
-## ANSWERED, RTX 5090, MAX 26.5.0 — ALL FIVE ARMS PASS
+## ANSWERED, RTX 5090, MAX 26.5.0 — A, B, C, E PASS; **D FAILS**
 
     A. add_function        build->0.0   replay1->7.0    replay2(after wipe)->7.0
     B. recording_context   build->0.0   replay1->12.0   replay2(from 99)->12.0
     C. max_matmul          build->0.0   replay1->0.40914977        want 0.4096
     D. SPLIT-K (P=2)       pool reissues a freed 512KB block: YES
-                           replay1->4.14263630  replay2(churn)->4.14263630
-                                                          want 4.14720
-    E. 32 launches         eager 105.95 us/iter   replay 28.69 us/iter   3.69x
+                           replay1->4.14263630  replay2(freed churn)->4.14263630
+                           replay3(LIVE poison)->4.14263630   want 4.14720
+                           **live buffers written through: 1/16**   <-- FAIL
+    E. 32 launches         eager 100.62 -> replay 28.57 us/iter = 3.52x
+                           (3.14 -> 0.89 us/launch)
                            counter->13440.0 = 13440.0, so they really ran
 
 **A and B settle the migration.** DeviceGraph records both MAX's kernel style
 and OURS, with no interceptor, and `build` executes nothing — so a `STEP()`
 closure ports by taking a `DeviceContext` ARGUMENT instead of capturing one.
-That is the entire change `mojo_rl/cuda/graph.mojo` needs to become deletable.
+That is the entire change `mojo_rl/cuda/graph.mojo` needs to become deletable,
+and it is independent of everything below.
 
-**D OVERTURNS THE PREDICTION THIS FILE WAS WRITTEN TO CONFIRM.** I expected the
-split-K workspace to be allocated eagerly, freed at `_ = work_space_data^`, and
-replayed through a dangling pointer — a silent wrong answer. It was RIGHT both
-times, across an allocator churn, to TF32 (rel 1.1e-3, the same figure arm C
-shows: tensor cores, not a stale read). Under STREAM capture the identical
-shape ABORTS the process ([[_split_k_cannot_be_cuda_graph_captured]]). So
-`DeviceGraph` is not merely a tidier shim — **it holds a workload stream
-capture cannot hold at all**, which is precisely what blocked CUDA graphs for
-the ACT step and its ~46 split-K GEMMs.
+## D: the prediction was right, and the failure is WORSE than an abort
 
-**Both of the vacuity holes D started with are now CLOSED:**
+The dispatch question is settled — `-D LOGGING_LEVEL=INFO` prints
+`K partitions:` **1, 1, 2, 2**: exactly four lines for the program's four
+`matmul` calls (arm C warm + recorded, arm D warm + recorded), in order, and
+the replays add none, because a replay re-runs recorded NODES rather than the
+host dispatch. The recorded arm-D call took the split-K branch at P=2.
 
-  1. the churn can bite — `pool reissues a freed 512KB block: YES`;
-  2. the RECORDED call really did split K. `select_config` is a CHOOSER, not
-     the dispatch gate ([[_select_config_is_not_the_dispatch_gate]]) and both
-     branches print the same number, so this needed the kernel log:
+And with a live-aliasing probe in place it FAILS: **`live buffers written
+through: 1/16`.** One 512KB buffer, allocated after the graph was built and
+still held by us, was written through while the graph replayed. Exactly one —
+one workspace-sized block, one claimant.
 
-         $ ... -D LOGGING_LEVEL=INFO ... | grep -i 'split_k\\|K partitions'
-         INFO::: K partitions: 1     <- arm C warm-up
-         INFO::: K partitions: 1     <- arm C RECORDED
-         INFO::: K partitions: 2     <- arm D warm-up
-         INFO::: K partitions: 2     <- arm D RECORDED
+So `multistage_gemm` does what its source says: allocates the reduction
+workspace with `ctx.enqueue_create_buffer`, which `recording_context` FORWARDS
+to the backing context, and frees it at `_ = work_space_data^` while the
+recorded node keeps the raw pointer. **The GEMM's own answer stays right
+(4.14263630 on all three replays) because the kernel writes that workspace
+before `split_k_reduce` reads it, inside one graph, in order. What it destroys
+is whatever the allocator handed the block to next.**
 
-     Exactly four lines for exactly four `matmul` calls in the program, in
-     order, and the replays add none (a replay re-runs recorded NODES, not the
-     host dispatch). So the recorded arm-D call took the split-K branch at P=2.
+That is strictly worse than stream capture, which aborts the process on this
+shape ([[_split_k_cannot_be_cuda_graph_captured]]). Here nothing raises,
+nothing crashes, the checksum is correct, and an unrelated tensor is silently
+overwritten. **ACT issues ~46 split-K GEMMs per step; recording one would put
+46 stray writers into live memory and the loss would just be wrong.**
 
-⚠⚠ **AND THAT EXPOSED A THIRD HOLE, WHICH STAGES 1-2 CANNOT SEE AND WHICH IS
-NOT IN ANY RUN ABOVE.** `_churn` FREES its buffers before replaying. At replay
-time nothing owns that memory, and the split-K kernel WRITES the workspace
-before `split_k_reduce` READS it — both inside one graph, in recorded order. So
-a dangling-but-mapped pointer still yields the RIGHT ANSWER: the kernel
-overwrites the poison itself. Stage 2 can only catch the block being UNMAPPED,
-which MAX's pool never does. **It was close to vacuous and the passes above
-inherit that.**
+## The three vacuity holes this arm went through, because they are the lesson
 
-The failure that matters is the workspace aliasing memory the allocator has
-since handed to someone else WHO STILL HOLDS IT. Stage 3 tests exactly that:
-poison buffers kept ALIVE across the replay, then checked for writes. `live
-buffers written through: 0/16` is the real result; anything above 0 means the
-graph is scribbling on a neighbour and the GEMM is right only by luck.
+I predicted this failure in the first draft, then MEASURED A PASS TWICE, and
+both passes were my own test being blind. Each fix found the next hole:
 
-**D is CONFIRMED for dispatch and for the freed-block case; stage 3 has not
-been run yet.**
+  1. **the churn could not reach the block** — until `_pool_recycles` proved
+     the allocator reissues a freed 512KB block (`YES`);
+  2. **the recorded call might never have split K** — `select_config` is a
+     CHOOSER, not the dispatch gate
+     ([[_select_config_is_not_the_dispatch_gate]]), and both branches print
+     the same number. Only the kernel log separated them;
+  3. **the poison was FREED before the replay** — so nothing owned that memory,
+     and the split-K kernel simply overwrote it. A dangling-but-mapped pointer
+     yields the RIGHT ANSWER. Stage 2 could only ever catch an UNMAP, which
+     MAX's pool never does.
 
-⚠ **E is a launch-overhead CEILING, not a step.** 32 trivial kernels: 3.31 ->
-0.90 us per launch, and the replay figure also carries one synchronize for the
-whole chain. A real step's kernels do work that overlaps the launch, so quote
-~2.4us saved per launch as an upper bound and expect far less
+⚠ **GENERAL SHAPE, worth more than this arm:** a scratch buffer that is
+written-then-read INSIDE one graph cannot be caught by poisoning it beforehand.
+Poison something that OUTLIVES the replay and check it afterwards. And the
+probe prints the VALUE it found beside the expected partial sum, because a
+count is not an identity — "something wrote here" has several authors,
+`K/P * a * b` has one.
+
+⚠ **E is a launch-overhead CEILING, not a step.** 32 trivial kernels: 3.14 ->
+0.89 us per launch, and the replay figure carries one synchronize for the whole
+chain. A real step's kernels do work that overlaps the launch
 ([[_a_per_call_sweep_is_an_upper_bound_on_a_step]]: a per-call sweep predicted
-+0.57ms and the step moved +0.06ms — 10x over).
++0.57ms and the step moved +0.06ms, 10x over).
 
-⚠ **Arm E CRASHED on the first 5090 run, and it was this file's bug, not
-DeviceGraph's.** `CUDA_ERROR_ILLEGAL_ADDRESS` surfacing at
-`AsyncRT_DeviceContext_release`: `buf`'s last mention was the `LayoutTensor`
-construction, so Mojo freed the DeviceBuffer there and every launch — eager AND
-replayed — wrote through a dangling view. Arms A and B were saved only by
-happening to read `buf` back at the end, which is what makes this worth
-pinning: **the bug is invisible in an arm that checks its value.** The rule is
-stated twice in this very file and the timing arm did not apply it. The closing
-read-back fixes it and asserts the launch arithmetic besides.
+⚠ **Arm E CRASHED on the first 5090 run, and it was this file's bug.**
+`CUDA_ERROR_ILLEGAL_ADDRESS` at `AsyncRT_DeviceContext_release`: `buf`'s last
+mention was the `LayoutTensor` construction, so Mojo freed the DeviceBuffer
+there and every launch wrote through a dangling view. Arms A and B were saved
+only by happening to read `buf` back at the end — **the bug is invisible in an
+arm that checks its value.** Fixed by a closing read-back that also asserts the
+launch arithmetic.
 
-⚠ **The runs so far do NOT prove the "no LD_PRELOAD" claim.** `[intercept] Mojo
+⚠ **The runs do NOT prove the "no LD_PRELOAD" claim.** `[intercept] Mojo
 stream: 0x...` appears in their output: `pixi run -e nvidia` applies the nvidia
 activation, which preloads `libcuda_intercept.so` whether or not anything uses
 it ([[_the_preload_is_a_property_of_the_process_not_the_binary]]). This file
-never calls it, but the way to SHOW that is the built-binary line at the top.
+never calls it; the built-binary line at the top is what SHOWS that.
 
 ## Reading the result
 
@@ -576,21 +581,47 @@ comptime PROBE_BUFS = 16
 comptime PROBE_STRIDE = 64
 
 
-def _poison_survived(ctx: DeviceContext, live: List[DeviceBuffer[DT]]) raises -> Int:
+def _poison_survived(
+    ctx: DeviceContext, live: List[DeviceBuffer[DT]], expect_partial: Float64
+) raises -> Int:
     """How many of `live` were WRITTEN THROUGH while the graph replayed.
 
     Stride-64 scan, not every element: a split-K workspace write is DENSE
     (`P * M * N` contiguous partial sums), so a scan that samples every 64th
     float cannot miss it, and 2048 samples per buffer keeps the check cheap.
+
+    ⚠ AND IT PRINTS THE VALUE IT FOUND, because a count is not an identity.
+    "something wrote here" has several possible authors; "this block now holds
+    K/P * a * b" has exactly one. `expect_partial` is what a split-K PARTIAL
+    SUM must equal — each partition sums K/P terms, so at the arm's constants
+    that is 1296 * 0.01 * 0.02 = 0.2592, distinct from both the poison and the
+    finished product (0.5184). Matching it identifies the writer as the
+    reduction workspace rather than leaving it inferred.
     """
     var host = ctx.enqueue_create_host_buffer[DT](POISON_ELEMS)
     var touched = 0
+    var reported = False
     for i in range(len(live)):
         ctx.enqueue_copy(host, live[i])
         ctx.synchronize()
         for j in range(0, POISON_ELEMS, PROBE_STRIDE):
             if host[j] != Scalar[DT](POISON):
                 touched += 1
+                if not reported:
+                    reported = True
+                    print(
+                        "      first write: live["
+                        + String(i)
+                        + "] elem "
+                        + String(j)
+                        + " = "
+                        + String(Float64(host[j]))
+                        + "   a split-K partial sum would be "
+                        + String(expect_partial)
+                        + "   (poison was "
+                        + String(POISON)
+                        + ")"
+                    )
                 break
     return touched
 
@@ -618,7 +649,7 @@ def _churn(ctx: DeviceContext) raises:
 
 def _gemm_arm[
     M_: Int, K_: Int, N_: Int
-](ctx: DeviceContext, label: String, churn: Bool) raises -> Bool:
+](ctx: DeviceContext, label: String, churn: Bool, parts: Int = 1) raises -> Bool:
     var g = _Gemm[M_, K_, N_](ctx)
 
     # Warm the library OUTSIDE the graph: first-call autotuning, module load
@@ -680,7 +711,11 @@ def _gemm_arm[
         graph.replay()
         ctx.synchronize()
         r3 = g.checksum(8)
-        touched = _poison_survived(ctx, live)
+        # Each of the P partitions sums K/P terms of a*b.
+        var expect_partial = (
+            Float64(K_) / Float64(parts) * AVAL * BVAL if parts > 0 else 0.0
+        )
+        touched = _poison_survived(ctx, live, expect_partial)
         _ = live^
 
     var ok = _close(after_build, 0.0) and _close(r1, want)
@@ -761,7 +796,7 @@ def arm_d(ctx: DeviceContext) raises -> Bool:
         print("       below is VACUOUS — it would not detect the dangling")
         print("       pointer it exists to detect. Treat D as NO RESULT.")
     var ok = _gemm_arm[SK_M, SK_K, SK_N](
-        ctx, "library GEMM, split-K", churn=True
+        ctx, "library GEMM, split-K", churn=True, parts=parts
     )
     if ok:
         # A right answer does not prove the recorded call took the split-K
@@ -964,11 +999,17 @@ def main() raises:
         print("  a STEP(ctx) signature instead of a captured context.")
         if d == 0:
             print("")
-            print("  D FAILED as predicted -> split-K is STILL not capturable.")
-            print("  DeviceGraph does not rescue it, it just fails silently")
-            print("  instead of aborting. Own the workspace (that work is")
-            print("  already landed for Linear/Conv2D dW) before recording a")
-            print("  step that contains one.")
+            print("  D FAILED -> split-K is STILL not recordable, and here it")
+            print("  fails WORSE than under stream capture. Stream capture")
+            print("  ABORTS on this shape; DeviceGraph returns the RIGHT")
+            print("  ANSWER and silently writes over whatever the allocator")
+            print("  handed the freed workspace to next. Nothing raises.")
+            print("")
+            print("  ACT issues ~46 split-K GEMMs per step, so recording one")
+            print("  would plant 46 stray writers in live memory and the loss")
+            print("  would simply be wrong. Own the workspace first — that")
+            print("  work is already landed for Linear/Conv2D dW — and only")
+            print("  then record a step that contains one.")
         elif d == 1:
             print("")
             print("  D PASSED, and passed with the churn PROVEN able to bite")
