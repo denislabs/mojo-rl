@@ -29,6 +29,7 @@ from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from std.os import getenv
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
     decide_partitions,
@@ -1141,6 +1142,17 @@ struct Conv2D[
         Decided on the first forward — an EAGER step, before any capture — and
         never again: P sets `grid_dim`, which is baked into a captured graph.
         """
+        # `MOJO_RL_SPLITK_FWD=0` pins the FORWARD to plain `max_matmul` while
+        # leaving the dW routing alone. Deliberately separate from
+        # `MOJO_RL_SPLITK`: that one also disables the dW split-K and, because
+        # `PAD_TO` is comptime, leaves the padding on — which is the arm
+        # measured at 0.21x, so it is not a usable "before" for anything. This
+        # switch isolates exactly one change in one binary, which is the only
+        # honest way to A/B it against a baseline recorded from a build that
+        # has since moved.
+        if getenv("MOJO_RL_SPLITK_FWD", "1") == "0":
+            self._sk_p_fwd = 1
+            return
         self._sk_p_fwd = decide_partitions[transpose_b=True](
             BS, Self.OCPAD, Self.CPAD, ctx
         )
