@@ -129,62 +129,74 @@ def _lj(s: String, w: Int) -> String:
     return out^
 
 
+def _rows(
+    ref lo: InlineArray[Int32, SO101_N],
+    ref pos: InlineArray[Int32, SO101_N],
+    ref hi: InlineArray[Int32, SO101_N],
+    ref skip: List[Int],
+    live: Bool,
+) raises -> List[String]:
+    """The table's lines. `live` shows POS; a final table does not need it."""
+    var lines = List[String]()
+    lines.append(_lj(String("NAME"), 16) + "|" + _rj_head(live))
+    for i in range(SO101_N):
+        var skipped = False
+        for k in range(len(skip)):
+            if skip[k] == i:
+                skipped = True
+        var row = _lj(joint_name(i), 16) + "|" + _rj(Int(lo[i]), 7) + " |"
+        if live:
+            row += _rj(Int(pos[i]), 7) + " |"
+        row += _rj(Int(hi[i]), 7) + " |" + _rj(Int(hi[i]) - Int(lo[i]), 8)
+        if skipped:
+            row += "   continuous, leave it alone"
+        lines.append(row^)
+    return lines^
+
+
 def _sweep_table(
     ref lo: InlineArray[Int32, SO101_N],
     ref pos: InlineArray[Int32, SO101_N],
     ref hi: InlineArray[Int32, SO101_N],
     ref skip: List[Int],
     redraw_lines: Int,
+    plain: Bool,
 ) raises -> Int:
     """One frame of the live sweep table. Returns the line count it printed.
 
-    ⚠ **REDRAWN IN PLACE, NOT APPENDED.** The first version printed a row of
-    numbers every 50 samples, which scrolls the terminal while the operator is
-    trying to watch a joint approach its stop — the exact thing lerobot's
-    fixed table gets right. `\x1b[<n>A` walks the cursor back up and each line
-    ends with `\x1b[K` so a shorter number cannot leave a digit behind.
+    ⚠ **REDRAWN IN PLACE, NOT APPENDED.** A row of numbers every 50 samples
+    scrolls the terminal while the operator is watching a joint approach its
+    stop — the thing lerobot's fixed table gets right.
 
-    ⚠ Only on a TTY. Piped, there is no cursor to move and every redraw would
-    append — worse than the scrolling it replaces. See `stdout_is_tty`.
+    ⚠ **`\x1b[nF` THEN `\x1b[0J`, NOT `\x1b[nA` ALONE.** The first version
+    moved up with `A`, which preserves the COLUMN and erases nothing; on a
+    real terminal it left a duplicated header and, worse, put the cursor above
+    where the tool believed it was — so the "proposed calibration" printed
+    afterwards OVERWROTE earlier lines and came out missing two joints. `F`
+    moves up *and* to column 0, and `0J` erases everything from there to the
+    end of the screen, so residue is impossible whatever the line count did.
+
+    ⚠ Only on a TTY, and `--plain` opts out entirely. Piped, there is no
+    cursor to move and every redraw would append.
     """
-    var tty = stdout_is_tty()
+    var live = stdout_is_tty() and not plain
+    var lines = _rows(lo, pos, hi, skip, True)
     var block = String("")
-    if tty and redraw_lines > 0:
-        block += "\x1b[" + String(redraw_lines) + "A"
-
-    var lines = List[String]()
-    lines.append(_lj(String("NAME"), 16) + "|" + _rj_head())
-    for i in range(SO101_N):
-        var skipped = False
-        for k in range(len(skip)):
-            if skip[k] == i:
-                skipped = True
-        if skipped:
-            lines.append(
-                _lj(joint_name(i), 16) + "|" + _rj(Int(pos[i]), 8)
-                + "   continuous — leave it alone"
-            )
-        else:
-            lines.append(
-                _lj(joint_name(i), 16) + "|" + _rj(Int(lo[i]), 7) + " |"
-                + _rj(Int(pos[i]), 7) + " |" + _rj(Int(hi[i]), 7)
-                + " |" + _rj(Int(hi[i]) - Int(lo[i]), 8)
-            )
+    if live and redraw_lines > 0:
+        block += "\x1b[" + String(redraw_lines) + "F" + "\x1b[0J"
     for i in range(len(lines)):
         block += lines[i]
-        if tty:
-            block += "\x1b[K"
         if i + 1 < len(lines):
             block += "\n"
     print(block)
     return len(lines)
 
 
-def _rj_head() -> String:
-    return (
-        _rj_str(String("MIN"), 7) + " |" + _rj_str(String("POS"), 7) + " |"
-        + _rj_str(String("MAX"), 7) + " |" + _rj_str(String("SPAN"), 8)
-    )
+def _rj_head(live: Bool) -> String:
+    var h = _rj_str(String("MIN"), 7) + " |"
+    if live:
+        h += _rj_str(String("POS"), 7) + " |"
+    return h + _rj_str(String("MAX"), 7) + " |" + _rj_str(String("SPAN"), 8)
 
 
 def _rj_str(s: String, w: Int) -> String:
@@ -195,17 +207,27 @@ def _rj_str(s: String, w: Int) -> String:
 
 
 def _print_cal(label: String, ref c: Cal) raises:
+    """Aligned, full joint names — the same shape as the live sweep table.
+
+    ⚠ The first version used `joint_short` and space padding by hand, and a
+    single overwritten line came out with no label at all. Columns that line
+    up make a corrupted row obvious instead of merely wrong.
+    """
     print("  " + label)
-    print("    joint    homing   range_min   range_max   span")
+    print(
+        "    " + _lj(String("NAME"), 16) + "|" + _rj_str(String("HOMING"), 8)
+        + " |" + _rj_str(String("MIN"), 7) + " |" + _rj_str(String("MAX"), 7)
+        + " |" + _rj_str(String("SPAN"), 8)
+    )
     for i in range(SO101_N):
         var span = Int(c.rmax[i]) - Int(c.rmin[i])
         var note = String("")
         if Int(c.rmin[i]) == UNLIMITED_MIN and Int(c.rmax[i]) == UNLIMITED_MAX:
-            note = "   (continuous)"
+            note = "   continuous"
         print(
-            "    " + joint_short(i) + "   " + String(Int(c.homing[i]))
-            + "        " + String(Int(c.rmin[i])) + "        "
-            + String(Int(c.rmax[i])) + "     " + String(span) + note
+            "    " + _lj(joint_name(i), 16) + "|" + _rj(Int(c.homing[i]), 8)
+            + " |" + _rj(Int(c.rmin[i]), 7) + " |" + _rj(Int(c.rmax[i]), 7)
+            + " |" + _rj(span, 8) + note
         )
 
 
@@ -324,6 +346,7 @@ def main() raises:
     var backup = String("")
     var restore = String("")
     var write = False
+    var plain = False
     # A CAP on the sweep, not its length — ENTER ends it. Ten minutes is long
     # enough that an unhurried calibration never reaches it.
     var sweep_s = 600
@@ -342,6 +365,9 @@ def main() raises:
             sweep_s = Int(String(args[i + 1]))
         elif a == "--write":
             write = True
+        elif a == "--plain":
+            # Escape hatch: no cursor tricks, one table per redraw interval.
+            plain = True
     # `wrist_roll` turns without end stops on this arm; see the header.
     continuous.append(4)
 
@@ -409,7 +435,7 @@ def main() raises:
     # by hand from the backup path printed above.
     try:
         committed = _calibrate(
-            arm, stdin, continuous, sweep_s, write, auto_backup
+            arm, stdin, continuous, sweep_s, write, auto_backup, plain
         )
     finally:
         if write and not committed:
@@ -435,6 +461,7 @@ def _calibrate(
     sweep_s: Int,
     write: Bool,
     auto_backup: String,
+    plain: Bool,
 ) raises -> Bool:
     """Returns True only when a new calibration was actually applied.
 
@@ -499,7 +526,15 @@ def _calibrate(
 
     var lo = InlineArray[Int32, SO101_N](fill=0)
     var hi = InlineArray[Int32, SO101_N](fill=0)
+    # ⚠ SEED BEFORE THE LOOP. Left at zero, a sweep that ends immediately
+    # renders MIN and MAX as 0 beside a real POS — a table that looks like the
+    # arm is at one end of a range it never had.
     var seeded = False
+    if arm.read_positions(Span(raw)) == SO101_N:
+        for i in range(SO101_N):
+            lo[i] = raw[i]
+            hi[i] = raw[i]
+        seeded = True
     # ⚠ A CAP, NOT A SCHEDULE. The operator decides when the sweep is done —
     # the first version ran for a fixed `--seconds` and simply stopped
     # mid-calibration, which is not enough time to reach six pairs of end
@@ -538,11 +573,20 @@ def _calibrate(
         var now = perf_counter_ns()
         # ⚠ Only redraw on a TTY. Piped, each "redraw" would append another
         # full table — 10 a second of them.
-        if stdout_is_tty() and now - last_draw > 100_000_000:
-            drawn = _sweep_table(lo, raw, hi, continuous, drawn)
-            last_draw = now
+        if now - last_draw > 100_000_000:
+            if stdout_is_tty() and not plain:
+                drawn = _sweep_table(lo, raw, hi, continuous, drawn, plain)
+                last_draw = now
+            elif plain:
+                drawn = _sweep_table(lo, raw, hi, continuous, 0, plain)
+                last_draw = now
 
-    _ = _sweep_table(lo, raw, hi, continuous, drawn)
+    _ = _sweep_table(lo, raw, hi, continuous, drawn, plain)
+    # ⚠ LEAVE THE CURSOR ON A FRESH LINE. Everything printed after this is a
+    # normal `print`; if the redraw left the cursor inside the table, those
+    # lines overwrite it — which is exactly how the proposed calibration came
+    # out missing two joints.
+    print("")
 
     if not seeded or samples < 10:
         raise Error(
