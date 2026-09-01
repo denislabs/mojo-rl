@@ -220,6 +220,28 @@ struct DeviceMeanAccum(Copyable, Movable, Deinitable):
             block_dim=TPB_REDUCE,
         )
 
+    def set_ctx(mut self, ctx: DeviceContext):
+        """Point this accumulator at `ctx` for subsequent `accumulate_gpu_*`.
+
+        ⚠⚠ THIS EXISTS FOR DEVICE-GRAPH RECORDING AND ITS ABSENCE IS SILENT.
+        `accumulate_gpu_lt` and friends take no context — they reach for
+        `self.ctx`, the one stored at `make` time. Under
+        `maybe_record_replay`'s recording pass that enqueues EAGERLY on the
+        real stream instead of recording, and the damage is two-sided:
+
+          * the build pass, which is supposed to execute NOTHING, folds one
+            spurious batch in;
+          * every REPLAY skips the fold entirely, so the diagnostics quietly
+            stop advancing while training stays correct.
+
+        Nothing raises either way. So a trainer that records its step must
+        point EVERY accumulator it owns at the recording context first — see
+        `sac/trainer.mojo::train_device_kernels_on` — and the fix is only
+        correct if it is COMPLETE, which is what makes this a method worth
+        grepping for rather than a bare field assignment.
+        """
+        self.ctx = ctx
+
     def accumulate_gpu_lt[N: Int](
         mut self,
         data: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],

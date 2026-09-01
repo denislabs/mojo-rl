@@ -488,14 +488,53 @@ struct SACTrainer[
     # target_y → twin_critic[ACCUMULATE] → actor_loss → α step_device → polyak →
     # device diagnostics).
     def train_device_kernels(mut self) raises:
+        """Stream-capture entry point: the step on the trainer's own context.
+
+        ⚠ The context is COPIED into a local first. `self.ctx.value()` borrows
+        from `self`, and `self` is passed mutably here, so handing the borrow
+        straight through is an aliasing error ("passed mutably to 'self' and
+        immutably to 'gctx'"). `DeviceContext` is a refcounted handle, so the
+        copy is a retain, not a device operation.
+        """
+        var c = self.ctx.value()
+        self.train_device_kernels_on(c)
+
+    def train_device_kernels_on(mut self, gctx: DeviceContext) raises:
+        """The same step, enqueued on `gctx` so it can be RECORDED.
+
+        ⚠⚠ EVERY CACHED CONTEXT IN THE BODY IS REDIRECTED BELOW, AND MISSING
+        ONE IS SILENT. Helpers that take no `ctx` argument reach for a context
+        they stored at `make` time; under a recording pass those enqueue
+        EAGERLY instead of recording, so the build pass folds one spurious
+        batch in and every replay skips them. Training stays correct while the
+        diagnostics quietly stop advancing — nothing raises on either side.
+        `DeviceMeanAccum.set_ctx` spells the trap out.
+
+        So the redirect must be COMPLETE. The six accumulators below are every
+        `DeviceMeanAccum` this trainer owns (fields at :155-160); `state.ctx`
+        carries the context to `sample_blk` / `target_y_blk` / `twin_critic_blk`
+        / `polyak_blk`; `actor_loss_blk` and `alpha_opt` take one directly.
+        Adding a seventh accumulator, or a block that caches its own context,
+        means adding it here — grep both, do not assume.
+        """
         comptime assert Self.train_target == "gpu", (
-            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+            "train_device_kernels_on is GPU-only (device-graph record path)"
         )
+        var octx = Optional[DeviceContext](gctx)
+
+        # ── redirect every cached context onto `gctx` (see the docstring) ──
+        self._mean_q_dev.set_ctx(gctx)
+        self._mean_target_dev.set_ctx(gctx)
+        self._mean_reward_dev.set_ctx(gctx)
+        self._mean_next_q_dev.set_ctx(gctx)
+        self._mean_done_dev.set_ctx(gctx)
+        self._mean_abs_action_dev.set_ctx(gctx)
+
         # Pin step_idx past warmup so the sample block's gate passes; the driver
         # only enters capture once the buffer is warm.
         self.state.step_idx = self.learning_starts
         self.state.did_step = True
-        self.state.ctx = self.ctx
+        self.state.ctx = octx
         self.sample_blk.step(self.state)
 
         self.target_y_blk.step["gpu"](
@@ -515,10 +554,10 @@ struct SACTrainer[
             self.pair2.online,
             self.state.mb_s,
             self.state.alpha,
-            self.ctx,
+            octx,
         )
         self.alpha_opt.step_device(
-            self.ctx.value(),
+            gctx,
             self.actor_loss_blk.lp_mean_dev(),
             self.alpha_blk.target_entropy,
         )

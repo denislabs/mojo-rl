@@ -271,6 +271,27 @@ trait OffPolicyDiscreteAgentGpu(OffPolicyDiscreteAgent):
             " this agent (USE_TRAIN_CUDA_GRAPH must stay False)"
         )
 
+    def train_device_kernels_on(mut self, gctx: DeviceContext) raises:
+        """`train_device_kernels`, but enqueueing on `gctx` — the body RECORDED
+        into a `DeviceGraph` by `mojo_rl.cuda.maybe_record_replay`.
+
+        ⚠ THE ARGUMENT IS NOT DECORATION. Recording happens because operations
+        are enqueued through the *recording* context, so an override that
+        reaches for its own `self.ctx` records NOTHING and runs eagerly —
+        silently, since the work is still correct. That includes every helper
+        the body calls that CACHES a context of its own (`DeviceMeanAccum`,
+        `TrainState`, optimizer scratch): each must be pointed at `gctx` first,
+        or its kernels run during the build pass and are skipped on every
+        replay. `DeviceMeanAccum.set_ctx` documents that trap in full.
+
+        Default raises, deliberately: an agent that has not been migrated must
+        fail LOUDLY when the DeviceGraph backend is selected, never silently
+        record a partial step."""
+        raise Error(
+            "train_device_kernels_on: DeviceGraph recording not supported by"
+            " this agent (use MOJO_RL_GRAPH_BACKEND=stream, or migrate it)"
+        )
+
     def note_train_update(mut self):
         """Advance one logical update's host bookkeeping (counters / metric
         accumulators). Default no-op."""

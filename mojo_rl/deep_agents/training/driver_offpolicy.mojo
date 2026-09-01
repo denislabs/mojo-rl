@@ -49,7 +49,14 @@ from layout import Layout, LayoutTensor
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.utils.progress import IntervalProgress
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from std.os import getenv
+
+from mojo_rl.cuda import (
+    CUDAGraph,
+    GraphSlot,
+    maybe_capture_replay,
+    maybe_record_replay,
+)
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from .batched_env import BatchedEnv
@@ -394,6 +401,27 @@ trait OffPolicyAgentGpu(OffPolicyAgent):
         raise Error(
             "train_device_kernels: CUDA-graph capture not supported by"
             " this agent (USE_TRAIN_CUDA_GRAPH must stay False)"
+        )
+
+    def train_device_kernels_on(mut self, gctx: DeviceContext) raises:
+        """`train_device_kernels`, but enqueueing on `gctx` — the body RECORDED
+        into a `DeviceGraph` by `mojo_rl.cuda.maybe_record_replay`.
+
+        ⚠ THE ARGUMENT IS NOT DECORATION. Recording happens because operations
+        are enqueued through the *recording* context, so an override that
+        reaches for its own `self.ctx` records NOTHING and runs eagerly —
+        silently, since the work is still correct. That includes every helper
+        the body calls that CACHES a context of its own (`DeviceMeanAccum`,
+        `TrainState`, optimizer scratch): each must be pointed at `gctx` first,
+        or its kernels run during the build pass and are skipped on every
+        replay. `DeviceMeanAccum.set_ctx` documents that trap in full.
+
+        Default raises, deliberately: an agent that has not been migrated must
+        fail LOUDLY when the DeviceGraph backend is selected, never silently
+        record a partial step."""
+        raise Error(
+            "train_device_kernels_on: DeviceGraph recording not supported by"
+            " this agent (use MOJO_RL_GRAPH_BACKEND=stream, or migrate it)"
         )
 
     def note_train_update(mut self):
@@ -970,6 +998,23 @@ def run_offpolicy_train_batched[
     # loop's capture branch). Unused when USE_TRAIN_CUDA_GRAPH is False, and
     # a no-op on non-NVIDIA where `CUDAGraph` itself is a no-op.
     var train_graph: Optional[CUDAGraph] = None
+    # The DeviceGraph slot, used instead of `train_graph` when
+    # MOJO_RL_GRAPH_BACKEND=device. Both are declared unconditionally because
+    # `comptime if` does not bleed bindings to sibling blocks; the unused one
+    # costs a null pointer and a Bool.
+    var train_slot = GraphSlot()
+    # ⚠ READ ONCE, OUTSIDE THE LOOP. `getenv` per iteration would be a syscall
+    # on the hot path, and a backend that could change mid-run would leave two
+    # half-populated graphs behind.
+    #
+    # Defaults to "stream" — the LD_PRELOAD shim — so this commit changes NO
+    # behaviour. Flip it to "device" to record on MAX's own `DeviceGraph`
+    # (no interceptor, no preload); see `mojo_rl/cuda/device_graph.mojo`.
+    #
+    # ⚠ "device" REQUIRES the agent to override `train_device_kernels_on`, and
+    # the trait default RAISES rather than silently recording a partial step.
+    # SAC is migrated; others are not yet.
+    var use_device_graph = getenv("MOJO_RL_GRAPH_BACKEND", "stream") == "device"
     # Env-step graph (env capture). None until first capture; the deterministic
     # physics `step_batch` is captured once and replayed per iteration when
     # `USE_ENV_CUDA_GRAPH` — collapsing the env's per-step eager kernel launches
@@ -1313,7 +1358,21 @@ def run_offpolicy_train_batched[
                     for _ in range(updates_per_step):
                         trainer.train_device_kernels()
 
-                maybe_capture_replay[_captured_updates](train_graph, c)
+                # Same sequence, enqueued on the context the recorder hands us
+                # rather than the trainer's own. That argument is the whole
+                # difference between the two backends — see
+                # `sac/trainer.mojo::train_device_kernels_on` for why a step
+                # that reaches for `self.ctx` records nothing, silently.
+                def _recorded_updates(
+                    gctx: DeviceContext
+                ) capturing raises -> None:
+                    for _ in range(updates_per_step):
+                        trainer.train_device_kernels_on(gctx)
+
+                if use_device_graph:
+                    maybe_record_replay[_recorded_updates](train_slot, c)
+                else:
+                    maybe_capture_replay[_captured_updates](train_graph, c)
                 # Host bookkeeping advances once per logical update (the graph
                 # replays the device work; counters stay on the host).
                 for _ in range(updates_per_step):
