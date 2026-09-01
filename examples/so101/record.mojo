@@ -124,7 +124,16 @@ def main() raises:
         if a == "--out" and i + 1 < len(args):
             out_root = String(args[i + 1])
         elif a == "--task" and i + 1 < len(args):
+            # ⚠ CONSUME EVERY WORD UP TO THE NEXT FLAG. `pixi run <task> --
+            # --task "Grab the green cube"` re-splits the quoted string, so
+            # taking only args[i+1] silently records the task as "Grab". The
+            # task string is written into meta/tasks.parquet and is what a
+            # policy is conditioned on — truncating it is not cosmetic.
             task = String(args[i + 1])
+            var j = i + 2
+            while j < len(args) and not String(args[j]).startswith("--"):
+                task += " " + String(args[j])
+                j += 1
         elif a == "--episodes" and i + 1 < len(args):
             n_episodes = Int(String(args[i + 1]))
         elif a == "--seconds" and i + 1 < len(args):
