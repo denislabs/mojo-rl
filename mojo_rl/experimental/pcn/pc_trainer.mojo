@@ -968,6 +968,355 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 total += v * v
         return 0.5 * total
 
+    @staticmethod
+    def compute_grads_only_epc[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut errors: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_infer: Int,
+        lr_e: Scalar[Self.dtype],
+    ) -> PCTrainResult:
+        """ePC counterpart of `compute_grads_only`.
+
+        ε starts at ZERO, which by `x_i = μ_i + ε_i` is exactly the forward
+        sweep `init_latents` performs — the two initializations agree, and
+        `test_epc_parity.mojo` gates that bitwise.
+
+        The weight-gradient pass is UNCHANGED: after the loop we rebuild the
+        states, run `_forward_eps` (which recovers ε_i = x_i − μ_i ≡ errors_i
+        and refreshes `a_below`), and call the same `_weight_grads`. Only the
+        inference loop differs from sPC — matching `pc_e.py`, where `E_local`
+        keeps the weight update local and only the error updates use AD.
+        """
+        for i in range(BATCH * Self.NET.LATENT_DIM):
+            errors.ptr[unsafe_offset=i] = 0
+
+        Self._epc_reconstruct[BATCH](
+            x_in, y_target, params, errors, latents, mu_eps_buf, a_below_buf
+        )
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+        var energy_initial = Self._total_energy[BATCH](mu_eps_buf)
+
+        for _ in range(T_infer):
+            Self._epc_inference_step[BATCH](
+                x_in, y_target, params, errors, latents, mu_eps_buf,
+                a_below_buf, z_below_buf, dx_buf, lr_e,
+            )
+
+        # States consistent with the FINAL errors, then the local energy graph.
+        Self._epc_reconstruct[BATCH](
+            x_in, y_target, params, errors, latents, mu_eps_buf, a_below_buf
+        )
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+        var energy_final = Self._total_energy[BATCH](mu_eps_buf)
+        var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
+
+        Self._weight_grads[BATCH](mu_eps_buf, a_below_buf, grads)
+
+        return PCTrainResult(
+            energy_initial=energy_initial,
+            energy_final=energy_final,
+            output_loss_final=output_loss,
+        )
+
+    # =========================================================================
+    # ePC — error-based predictive coding (Goemaere, Oliviers, Bogacz,
+    # Demeester 2026, arXiv:2505.20137). Reference: references/
+    # error_based_PC-cifar/pc_e.py. Derivation: docs/PCN_EPC_DERIVATION.md.
+    # =========================================================================
+
+    @staticmethod
+    def _epc_reconstruct[BATCH: Int](
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        errors: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+    ):
+        """ePC sweep (a): rebuild x_i = predict_i(x_{i-1}) + ε_i bottom-up, then
+        write the readout ε. One site, called by the inference step AND by the
+        driver before the weight pass — the two must not drift apart."""
+        comptime for i in range(Self.NET.N):
+            var li_p = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[i]()))
+            var li_a = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+            var li_mu = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
+
+            comptime if i == 0:
+                var li_x_below = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ](x_in.ptr)
+                Self.NET.block_types[i].predict[BATCH, Self.dtype](
+                    li_x_below, li_p, li_mu, li_a
+                )
+            else:
+                var li_x_below = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
+                Self.NET.block_types[i].predict[BATCH, Self.dtype](
+                    li_x_below, li_p, li_mu, li_a
+                )
+
+            # x_i = mu_i + eps_i for the interior levels (readout has no error)
+            comptime if i < Self.NET.N - 1:
+                var li_x = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i]()))
+                var li_e = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](errors.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i]()))
+                for b in range(BATCH):
+                    for k in range(Self.NET.block_types[i].OUT_DIM):
+                        li_x[b, k] = (
+                            rebind[Scalar[Self.dtype]](li_mu[b, k])
+                            + rebind[Scalar[Self.dtype]](li_e[b, k])
+                        )
+
+        # readout eps = y_target - y_pred (in place, as in _forward_eps)
+        comptime RO = Self.NET.N - 1
+        var li_mu_ro = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[RO].OUT_DIM),
+            MutAnyOrigin,
+        ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[RO]()))
+        var li_eps_ro = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[RO].OUT_DIM),
+            MutAnyOrigin,
+        ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[RO]()))
+        var li_y = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[RO].OUT_DIM),
+            MutAnyOrigin,
+        ](y_target.ptr)
+        Self.NET.block_types[RO].eps_compute[BATCH, Self.dtype](
+            li_y, li_mu_ro, li_eps_ro
+        )
+
+
+
+    @staticmethod
+    def _epc_inference_step[BATCH: Int](
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut errors: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        lr_e: Scalar[Self.dtype],
+    ):
+        """One ePC iteration: the ERRORS are the free variables, not the states.
+
+        Two sweeps, using only the kernels the sPC step already uses:
+
+          (a) bottom-up  x_i = predict_i(x_{i-1}) + ε_i,  then the readout ε
+          (b) top-down   g ← J_iᵀ g, accumulating from the readout all the way
+                         down, and dε_{i-1} = ε_{i-1} − g
+
+        Contrast `_inference_step`, which pulls back the NEIGHBOUR's ε one rung
+        per iteration in parallel (Jacobi). There the error front advances one
+        level per iteration; here every level is reached every iteration, which
+        is why the reference runs ePC at iters=5 regardless of depth while sPC
+        needs iters ≈ depth (8/10/12 for VGG5/7/9).
+
+        Sign: our `eps_compute` gives ε = x_above − μ, so the readout ε is
+        `y − y_pred` = −∂L/∂y_pred. Seeding g with it and using
+        `dε = ε − g` absorbs that sign (docs/PCN_EPC_DERIVATION.md §3).
+        """
+
+        Self._epc_reconstruct[BATCH](
+            x_in, y_target, params, errors, latents, mu_eps_buf, a_below_buf
+        )
+
+        # ===== (b) top-down: one accumulating backprop sweep =================
+        comptime for k in range(Self.NET.N - 1):
+            comptime i = Self.NET.N - 1 - k       # i = N-1 .. 1
+
+            # g_i: the readout eps on the first rung, else what rung i+1 wrote
+            comptime if i == Self.NET.N - 1:
+                var li_g_in = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
+                var li_p_i = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr.unsafe_offset(Self.NET._param_offset[i]()))
+                var li_z = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+                Self.NET.block_types[i].pull_back[BATCH, Self.dtype](
+                    li_g_in, li_p_i, li_z
+                )
+            else:
+                var li_g_in = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i + 1]()))
+                var li_p_i = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr.unsafe_offset(Self.NET._param_offset[i]()))
+                var li_z = LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+                Self.NET.block_types[i].pull_back[BATCH, Self.dtype](
+                    li_g_in, li_p_i, li_z
+                )
+
+            # g <- act'(x_{i-1}) (*) g, then de_{i-1} = eps_{i-1} - g
+            var li_z2 = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
+            var li_x_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
+            Self.NET.block_types[i].act_derivative_mul[BATCH, Self.dtype](
+                li_x_below, li_z2, li_z2
+            )
+
+            var li_e_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](errors.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
+            var li_de = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
+            for b in range(BATCH):
+                for kk in range(Self.NET.block_types[i].IN_DIM):
+                    li_de[b, kk] = (
+                        rebind[Scalar[Self.dtype]](li_e_below[b, kk])
+                        - rebind[Scalar[Self.dtype]](li_z2[b, kk])
+                    )
+
+        # ===== (c) errors -= lr_e * dE/deps ==================================
+        for b in range(BATCH):
+            for k in range(Self.NET.LATENT_DIM):
+                errors[b, k] = (
+                    rebind[Scalar[Self.dtype]](errors[b, k])
+                    - lr_e * rebind[Scalar[Self.dtype]](dx_buf[b, k])
+                )
+
     # =========================================================================
     # Shared weight-gradient pass (one site, called by every CPU driver that
     # ends a step — cf. `_a_rule_written_inline_twice_drifts`)
