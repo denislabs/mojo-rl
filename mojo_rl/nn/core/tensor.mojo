@@ -163,7 +163,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         prints it."""
         if not self.dev or self.n < n:
             _alloc_trace[Self.dt](
-                "ensure_gpu", n, Int(UnsafePointer(to=self))
+                "ensure_gpu", n, Int(Pointer(to=self))
             )
             self.dev = ctx.enqueue_create_buffer[Self.dt](n)
             self.n = n
@@ -312,7 +312,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         `upload_resident`."""
         _alloc_trace[Self.dt](
             "upload (REALLOCATES EVERY CALL)", self.n,
-            Int(UnsafePointer(to=self)),
+            Int(Pointer(to=self)),
         )
         self.dev = ctx.enqueue_create_buffer[Self.dt](self.n)
         self.ensure_host(ctx, self.n)
