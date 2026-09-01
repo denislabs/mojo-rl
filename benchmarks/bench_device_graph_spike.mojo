@@ -88,56 +88,64 @@ wave estimate, so another part can decide otherwise and the arm would be
 measuring nothing. It prints `num_k_partitions` and says so when it is 1.
 ([[_a_capture_abort_names_only_the_first_blocker]]: a size is not an identity.)
 
-## ANSWERED, RTX 5090, MAX 26.5.0 — A, B, C, D ALL PASS
+## ANSWERED, RTX 5090, MAX 26.5.0 — ALL FIVE ARMS PASS
 
     A. add_function        build->0.0   replay1->7.0    replay2(after wipe)->7.0
     B. recording_context   build->0.0   replay1->12.0   replay2(from 99)->12.0
-    C. max_matmul          build->0.0   replay1->0.40914977   want 0.4096
-    D. SPLIT-K             num_k_partitions = 2, block_tile (128,128,16)
-                           build->0.0   replay1->4.14263630
-                           replay2(after churn)->4.14263630   want 4.14720
+    C. max_matmul          build->0.0   replay1->0.40914977        want 0.4096
+    D. SPLIT-K (P=2)       pool reissues a freed 512KB block: YES
+                           replay1->4.14263630  replay2(churn)->4.14263630
+                                                          want 4.14720
+    E. 32 launches         eager 105.95 us/iter   replay 28.69 us/iter   3.69x
+                           counter->13440.0 = 13440.0, so they really ran
 
-**A and B settle the migration.** DeviceGraph records both MAX's own kernel
-style and OURS, with no interceptor, and `build` executes nothing — so a
-`STEP()` closure ports by taking a `DeviceContext` ARGUMENT instead of
-capturing one. That is the entire change `mojo_rl/cuda/graph.mojo` needs to
-become deletable.
+**A and B settle the migration.** DeviceGraph records both MAX's kernel style
+and OURS, with no interceptor, and `build` executes nothing — so a `STEP()`
+closure ports by taking a `DeviceContext` ARGUMENT instead of capturing one.
+That is the entire change `mojo_rl/cuda/graph.mojo` needs to become deletable.
 
-**D IS THE SURPRISE AND IT OVERTURNS THE PREDICTION ABOVE.** The split-K GEMM
-recorded, replayed, and replayed AGAIN across an allocator churn, both times
-correct to TF32 (rel 1.1e-3, the same 1.1e-3 arm C shows — that is tensor
-cores, not a stale pointer). Under STREAM capture the identical shape aborts
-the process outright ([[_split_k_cannot_be_cuda_graph_captured]]). So
-`DeviceGraph` is not merely a tidier shim: it contains a workload stream
-capture cannot hold at all, which is the exact thing that blocked CUDA graphs
-for the ACT step and its ~46 split-K GEMMs.
+**D OVERTURNS THE PREDICTION THIS FILE WAS WRITTEN TO CONFIRM.** I expected the
+split-K workspace to be allocated eagerly, freed at `_ = work_space_data^`, and
+replayed through a dangling pointer — a silent wrong answer. It was RIGHT both
+times, across an allocator churn, to TF32 (rel 1.1e-3, the same figure arm C
+shows: tensor cores, not a stale read). Under STREAM capture the identical
+shape ABORTS the process ([[_split_k_cannot_be_cuda_graph_captured]]). So
+`DeviceGraph` is not merely a tidier shim — **it holds a workload stream
+capture cannot hold at all**, which is precisely what blocked CUDA graphs for
+the ACT step and its ~46 split-K GEMMs.
 
-⚠⚠ **TWO THINGS MUST HOLD BEFORE BELIEVING D, AND BOTH ARE NOW CHECKED IN THE
-ARM ITSELF** — a right answer here is cheap to get for the wrong reasons:
+⚠ **AND THE CHURN WAS PROVEN ABLE TO BITE:** `pool reissues a freed 512KB
+block: YES`. That was the first of two vacuity holes, and it is closed — this
+is not a pass obtained by never landing on the workspace. **The second is still
+open:** `select_config` is a CHOOSER, not the dispatch gate
+([[_select_config_is_not_the_dispatch_gate]]), and both branches produce the
+same number, so only the kernel log distinguishes them:
 
-  1. **the churn must be able to bite.** If the allocator never reissues a
-     freed 512KB block, the poison never lands on the workspace and D passes by
-     testing NOTHING. `_pool_recycles` allocates, frees, reallocates and
-     compares the device pointer; D reports it and refuses to pass without it.
-  2. **the recorded call must actually have split K.** `select_config` is a
-     CHOOSER, not the dispatch gate
-     ([[_select_config_is_not_the_dispatch_gate]]), and both paths produce the
-     same number. Re-run with `-D LOGGING_LEVEL=INFO` and grep for the split-K
-     kernel; the arm prints the command.
+    pixi run -e nvidia mojo run -I . -D LOGGING_LEVEL=INFO \\
+        benchmarks/bench_device_graph_spike.mojo 2>&1 \\
+      | grep -i 'split_k\\|K partitions'
 
-Neither was in the run above, so **D is PLAUSIBLE, not CONFIRMED.**
+**Until that prints the split-K kernel, D is PLAUSIBLE, not CONFIRMED.**
 
-⚠ **Arm E CRASHED in that run, and it was this file's bug, not DeviceGraph's.**
-`CUDA_ERROR_ILLEGAL_ADDRESS` surfacing at `AsyncRT_DeviceContext_release`:
-`buf`'s last mention was the `LayoutTensor` construction, so Mojo freed the
-DeviceBuffer there and every launch in the arm — eager AND replayed — wrote
-through a dangling view. Arms A and B were saved only by happening to read
-`buf` back at the end. The rule is stated twice in this very file and the
-timing arm did not apply it. Fixed by a closing read-back that also asserts the
-launch arithmetic, so the arm can no longer time work that did nothing.
+⚠ **E is a launch-overhead CEILING, not a step.** 32 trivial kernels: 3.31 ->
+0.90 us per launch, and the replay figure also carries one synchronize for the
+whole chain. A real step's kernels do work that overlaps the launch, so quote
+~2.4us saved per launch as an upper bound and expect far less
+([[_a_per_call_sweep_is_an_upper_bound_on_a_step]]: a per-call sweep predicted
++0.57ms and the step moved +0.06ms — 10x over).
 
-⚠ **That run does NOT prove the "no LD_PRELOAD" claim.** `[intercept] Mojo
-stream: 0x...` appears in its output: `pixi run -e nvidia` applies the nvidia
+⚠ **Arm E CRASHED on the first 5090 run, and it was this file's bug, not
+DeviceGraph's.** `CUDA_ERROR_ILLEGAL_ADDRESS` surfacing at
+`AsyncRT_DeviceContext_release`: `buf`'s last mention was the `LayoutTensor`
+construction, so Mojo freed the DeviceBuffer there and every launch — eager AND
+replayed — wrote through a dangling view. Arms A and B were saved only by
+happening to read `buf` back at the end, which is what makes this worth
+pinning: **the bug is invisible in an arm that checks its value.** The rule is
+stated twice in this very file and the timing arm did not apply it. The closing
+read-back fixes it and asserts the launch arithmetic besides.
+
+⚠ **The runs so far do NOT prove the "no LD_PRELOAD" claim.** `[intercept] Mojo
+stream: 0x...` appears in their output: `pixi run -e nvidia` applies the nvidia
 activation, which preloads `libcuda_intercept.so` whether or not anything uses
 it ([[_the_preload_is_a_property_of_the_process_not_the_binary]]). This file
 never calls it, but the way to SHOW that is the built-binary line at the top.
@@ -291,6 +299,15 @@ def _close(got: Float64, want: Float64) -> Bool:
     if want == 0.0:
         return abs(got) <= 1e-9
     return abs(got - want) <= 5e-3 * abs(want)
+
+
+def _fixed2(x: Float64) -> String:
+    """Two decimals. `String(Float64)` prints a 16-digit tail that has no
+    business in a timing line and, on the 5090, overran the next print."""
+    var scaled = Int(x * 100.0 + 0.5)
+    var frac = scaled % 100
+    var fs = String(frac) if frac >= 10 else "0" + String(frac)
+    return String(scaled // 100) + "." + fs
 
 
 def _verdict(label: String, ok: Bool, detail: String):
@@ -723,16 +740,27 @@ def arm_e(ctx: DeviceContext) raises:
 
     var eager_us = Float64(t1 - t0) / 1000.0 / Float64(TIMED_ITERS)
     var replay_us = Float64(t2 - t1) / 1000.0 / Float64(TIMED_ITERS)
+    # ⚠ ROUNDED ON PURPOSE. `String(Float64)` prints ~16 significant digits, and
+    # on the 5090 the ratio's tail ran over the following line in the captured
+    # output ("3.6926628022169els — a CEILING..."). Two decimals is more than
+    # this measurement supports anyway.
     print(
         "     eager  "
-        + String(eager_us)
-        + " us/iter      replay "
-        + String(replay_us)
-        + " us/iter      "
-        + String(eager_us / replay_us)
+        + _fixed2(eager_us)
+        + " us/iter    replay "
+        + _fixed2(replay_us)
+        + " us/iter    "
+        + _fixed2(eager_us / replay_us)
         + "x"
     )
-    print("     (trivial kernels — a CEILING on launch overhead, not a step)")
+    print(
+        "     per launch: "
+        + _fixed2(eager_us / Float64(CHAIN))
+        + " -> "
+        + _fixed2(replay_us / Float64(CHAIN))
+        + " us  (replay also carries ONE sync for the whole chain)"
+    )
+    print("     ⚠ trivial kernels: a CEILING on launch overhead, not a step.")
 
     # ⚠⚠ THIS READ-BACK IS LOAD-BEARING TWICE OVER, AND ITS ABSENCE CRASHED THE
     # FIRST 5090 RUN with CUDA_ERROR_ILLEGAL_ADDRESS surfacing at
@@ -851,6 +879,16 @@ def main() raises:
             print("  step that contains one.")
         elif d == 1:
             print("")
-            print("  D PASSED -> then the split-K workspace survives recording,")
-            print("  which contradicts _split_k_cannot_be_cuda_graph_captured.")
-            print("  Re-run it; a pass here needs the churn arm to be real.")
+            print("  D PASSED, and passed with the churn PROVEN able to bite")
+            print("  (`pool reissues a freed 512KB block: YES` above), so this")
+            print("  is not the vacuous pass. The split-K workspace survives")
+            print("  recording, which stream capture cannot even attempt —")
+            print("  it aborts the process on this exact shape.")
+            print("")
+            print("  ONE GATE LEFT before treating that as settled: prove the")
+            print("  RECORDED call took the split-K branch, not just that")
+            print("  select_config would have chosen it. Both paths print the")
+            print("  same number, so only the kernel log can tell them apart:")
+            print("    pixi run -e nvidia mojo run -I . -D LOGGING_LEVEL=INFO \\")
+            print("        benchmarks/bench_device_graph_spike.mojo 2>&1 \\")
+            print("      | grep -i 'split_k\\|K partitions'")
