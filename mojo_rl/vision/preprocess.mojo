@@ -33,6 +33,14 @@ WHAT "PIL'S ALGORITHM" MEANS, PRECISELY (libImaging/Resample.c):
 """
 
 from std.math import ceil
+from max.algorithm import parallelize
+
+comptime _RESIZE_PAR_MIN_TAPS: Int = 250_000
+"""Below this many multiply-accumulates the resize stays on one core.
+
+`parallelize`'s fixed cost is ~200 us (measured in `nn/primitives/conv2d.mojo`,
+where a blanket call made five ResNet18 shapes slower and one 20x slower), and
+this function is called on thumbnails as well as camera frames."""
 
 comptime _PRECISION_BITS: Int = 22
 """`32 - 8 - 2`, as PIL defines it."""
@@ -149,28 +157,52 @@ def pil_bilinear_u8(
 
     var round = Int64(1) << Int64(_PRECISION_BITS - 1)
 
+    # ⚠⚠ RAW POINTERS AND TWO ROW-PARALLEL PASSES. This was 8.7 ms of a 69 ms
+    # ACT deployment query — the largest item outside the network, and the only
+    # one nothing had ever looked at. It is ~2.8M scalar fixed-point
+    # multiply-accumulates per camera: 480x320x3x4 horizontally, 240x320x3x4
+    # vertically. Every output ROW is independent within a pass, so each `yy`
+    # owns a disjoint span and there is nothing to synchronise.
+    #
+    # ⚠ THE TWO PASSES CANNOT BE FUSED INTO ONE `parallelize`. The vertical
+    # pass reads rows of `tmp` that the horizontal pass writes — up to `ksize`
+    # of them per output row — so the barrier between them is the algorithm,
+    # not a missed optimisation. Two launches, and their cost is why the gate
+    # below exists.
+    var sp = src.unsafe_ptr()
+    var tp = tmp.unsafe_ptr()
+    var dp = dst.unsafe_ptr()
+    var hb = hc.bounds.unsafe_ptr()
+    var hk = hc.kk.unsafe_ptr()
+    var vb = vc.bounds.unsafe_ptr()
+    var vk = vc.kk.unsafe_ptr()
+    var hks = hc.ksize
+    var vks = vc.ksize
+
     # horizontal: (src_h, src_w) -> (src_h, dst_w)
-    for yy in range(src_h):
+    @parameter
+    def _hrow(yy: Int):
         var srow = yy * src_w * channels
         var trow = yy * dst_w * channels
         for xx in range(dst_w):
-            var xmin = hc.bounds[xx * 2]
-            var xmax = hc.bounds[xx * 2 + 1]
-            var kbase = xx * hc.ksize
+            var xmin = hb[unsafe_offset = xx * 2]
+            var xmax = hb[unsafe_offset = xx * 2 + 1]
+            var kbase = xx * hks
             for c in range(channels):
                 var acc = round
                 for x in range(xmax):
                     acc += (
-                        Int64(src[srow + (xmin + x) * channels + c])
-                        * hc.kk[kbase + x]
+                        Int64(sp[unsafe_offset = srow + (xmin + x) * channels + c])
+                        * hk[unsafe_offset = kbase + x]
                     )
-                tmp[trow + xx * channels + c] = _clip8(acc)
+                tp[unsafe_offset = trow + xx * channels + c] = _clip8(acc)
 
     # vertical: (src_h, dst_w) -> (dst_h, dst_w)
-    for yy in range(dst_h):
-        var ymin = vc.bounds[yy * 2]
-        var ymax = vc.bounds[yy * 2 + 1]
-        var kbase = yy * vc.ksize
+    @parameter
+    def _vrow(yy: Int):
+        var ymin = vb[unsafe_offset = yy * 2]
+        var ymax = vb[unsafe_offset = yy * 2 + 1]
+        var kbase = yy * vks
         var drow = yy * dst_w * channels
         for xx in range(dst_w):
             for c in range(channels):
@@ -178,15 +210,31 @@ def pil_bilinear_u8(
                 for y in range(ymax):
                     acc += (
                         Int64(
-                            tmp[
-                                (ymin + y) * dst_w * channels
+                            tp[
+                                unsafe_offset = (ymin + y) * dst_w * channels
                                 + xx * channels
                                 + c
                             ]
                         )
-                        * vc.kk[kbase + y]
+                        * vk[unsafe_offset = kbase + y]
                     )
-                dst[drow + xx * channels + c] = _clip8(acc)
+                dp[unsafe_offset = drow + xx * channels + c] = _clip8(acc)
+
+    # ⚠ A FLOOR, NOT A TUNED CROSSOVER — same shape of rule as the conv
+    # kernels, and for the same measured reason: `parallelize` costs a fixed
+    # ~200 us here, so a small thumbnail resize must not touch the thread pool.
+    # The taps are counted, not the pixels, because the tap count is what the
+    # inner loop actually executes. A 640x480 -> 320x240 camera frame is 2.3M
+    # taps, clearing this by 10x; a 64x64 icon is 50k and stays serial.
+    var taps = src_h * dst_w * channels * hks + dst_h * dst_w * channels * vks
+    if taps >= _RESIZE_PAR_MIN_TAPS:
+        parallelize[_hrow](src_h)
+        parallelize[_vrow](dst_h)
+    else:
+        for yy in range(src_h):
+            _hrow(yy)
+        for yy in range(dst_h):
+            _vrow(yy)
 
 
 def camera_frame_to_chw_rgb(
