@@ -87,13 +87,13 @@ comptime SO101_PARK_K6_DIMS = ParsedModel(
 )
 
 
-# mojo_rl/envs/robots/assets/so101_park_k12.xml
-comptime SO101_PARK_K12_DIMS = ParsedModel(
-    nbody=21,
-    njoint=18,
-    nq=90,
-    nv=78,
-    ngeom=44,
+# mojo_rl/envs/robots/assets/so101_park_k9.xml
+comptime SO101_PARK_K9_DIMS = ParsedModel(
+    nbody=18,
+    njoint=15,
+    nq=69,
+    nv=60,
+    ngeom=41,
     nact=6,
     ntex=1,
     nmat=14,

@@ -15,7 +15,18 @@ a budget of 6 before P0 reports.
     k=0    nq  6   nv  6   ngeom 32   nbody  9    the control — the arm as it ships
     k=3    nq 27   nv 24   ngeom 35   nbody 12
     k=6    nq 48   nv 42   ngeom 38   nbody 15
-    k=12   nq 90   nv 78   ngeom 44   nbody 21
+    k=9    nq 69   nv 60   ngeom 41   nbody 18   <- the CEILING, see below
+
+## ⚠⚠ NINE IS A HARDWARE CEILING, NOT A SWEEP CHOICE
+
+The GPU Newton solver keeps three NV*NV matrices plus `Je` in threadgroup
+memory. On an RTX 5090 (101,376 B/block) k=9 needs 86,676 B and fits; k=10
+needs 101,940 B and does not; k=12 needs 136,212 B and ptxas said so by name.
+`tools/tasks/gen_park_scenes.py` carries the table and the reason the existing
+spill gate does not catch it. **A family on this hardware cannot declare more
+than 9 free-jointed slots**, which is a budget answer P0 did not have to
+measure — and it is DEVICE-DEPENDENT (an H100's 227 KB would allow more), which
+is an uncomfortable property for a budget the design calls FIXED.
 
 (measured with MuJoCo 3.10.0, 2026-09-02; the generator asserts them.)
 
@@ -43,7 +54,7 @@ from mojo_rl.envs.robots.so101_park_dims import (
     SO101_PARK_K0_DIMS,
     SO101_PARK_K3_DIMS,
     SO101_PARK_K6_DIMS,
-    SO101_PARK_K12_DIMS,
+    SO101_PARK_K9_DIMS,
 )
 from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 
@@ -72,7 +83,7 @@ comptime PARK_NMESH_VERTS: Int = SO_ARM101_NMESH_VERTS
 comptime _k0 = SO101_PARK_K0_DIMS
 comptime _k3 = SO101_PARK_K3_DIMS
 comptime _k6 = SO101_PARK_K6_DIMS
-comptime _k12 = SO101_PARK_K12_DIMS
+comptime _k9 = SO101_PARK_K9_DIMS
 
 
 comptime SoArm101ParkK0Model = ModelDefFromXML[
@@ -108,12 +119,12 @@ comptime SoArm101ParkK6Model = ModelDefFromXML[
     action_dim_override=6,
 ]
 
-comptime SoArm101ParkK12Model = ModelDefFromXML[
-    xml_path="mojo_rl/envs/robots/assets/so101_park_k12.xml",
-    nbody=_k12.NBODY, njoint=_k12.NJOINT, nq=_k12.NQ, nv=_k12.NV,
-    ngeom=_k12.NGEOM, nact=_k12.NACT, ntex=_k12.NTEX, nmat=_k12.NMAT,
-    nlight=_k12.NLIGHT, ncam=_k12.NCAM, nsite=_k12.NSITE, neq=_k12.NEQ,
-    nexclude=_k12.NEXCLUDE, npair=_k12.NPAIR, timestep=_k12.TIMESTEP,
+comptime SoArm101ParkK9Model = ModelDefFromXML[
+    xml_path="mojo_rl/envs/robots/assets/so101_park_k9.xml",
+    nbody=_k9.NBODY, njoint=_k9.NJOINT, nq=_k9.NQ, nv=_k9.NV,
+    ngeom=_k9.NGEOM, nact=_k9.NACT, ntex=_k9.NTEX, nmat=_k9.NMAT,
+    nlight=_k9.NLIGHT, ncam=_k9.NCAM, nsite=_k9.NSITE, neq=_k9.NEQ,
+    nexclude=_k9.NEXCLUDE, npair=_k9.NPAIR, timestep=_k9.TIMESTEP,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=PARK_MAX_CONTACTS,
     action_dim_override=6,

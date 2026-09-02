@@ -90,7 +90,7 @@ MODELS = [
     # having the first user of it be something that already needs it.
     ("mojo_rl/envs/robots/so101_park_xml.mojo",
      ["SO101_PARK_K0_XML", "SO101_PARK_K3_XML",
-      "SO101_PARK_K6_XML", "SO101_PARK_K12_XML"]),
+      "SO101_PARK_K6_XML", "SO101_PARK_K9_XML"]),
     ("mojo_rl/envs/dm_control/acrobot/acrobot_xml.mojo", ["dm_acrobot_xml"]),
     ("mojo_rl/envs/dm_control/ball_in_cup/ball_in_cup_xml.mojo",
      ["dm_ball_in_cup_xml"]),

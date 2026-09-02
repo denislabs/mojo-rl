@@ -67,7 +67,39 @@ BASE = "mojo_rl/envs/robots/assets/so_arm101.xml"
 OUT_DIR = "mojo_rl/envs/robots/assets"
 
 # The budgets P0 sweeps. 0 is the control and must stay first.
-SLOT_COUNTS = [0, 3, 6, 12]
+#
+# ⚠⚠ 9 IS THE CEILING, AND IT IS A HARDWARE LIMIT, NOT A CHOICE. The GPU
+# Newton solver holds three NV*NV matrices (M, H, L) plus `Je` (ME*NV) in
+# THREADGROUP memory. Measured on an RTX 5090 (sm_120, 101,376 B/block),
+# fp32, MAX_CONTACTS=16:
+#
+#     k    nv   Je       total      vs limit
+#     0     6     1,968      5,460  fits
+#     3    24    10,176     21,300  fits
+#     6    42    21,840     48,372  fits
+#     9    60    36,960     86,676  fits
+#    10    66    42,768    101,940  OVER by 564 B
+#    12    78    55,536    136,212  OVER   <- ptxas said exactly this
+#
+# k=12 was in this list until 2026-09-02 and did not compile:
+#     ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+#                   too much shared data (0x21414 bytes, 0x18c00 max)
+# 0x21414 == 136,212, which the formula above reproduces to the byte.
+#
+# ⚠ AND THE SPILL GATE DOES NOT CATCH IT. `solver/je_budget.je_spills`
+# compares **Je alone** against a 64 KB constant; at k=12 Je is 54 KB, so it
+# declines to spill while the three NV*NV matrices (73 KB) push the block over.
+# The gate budgets ONE ARRAY, not the TOTAL. It was tuned on humanoid_CMU and
+# dog, which are high-nv AND high-contact; a fixed scene budget produces the
+# shape it was never tuned for — HIGH nv, LOW contact count. See
+# `docs/TASK_LAYER_IMPLEMENTATION.md`.
+#
+# ⚠ DO NOT "FIX" THIS BY RAISING k AND LETTING Je SPILL. If Je spills at k=12
+# and not at k<=9, the widest point runs a DIFFERENT SOLVER PATH (Je in global
+# memory, read across up to 200 Newton iterations) from the control, and leg 1
+# would be comparing two code paths while calling the difference a budget cost.
+# One path across the whole sweep is what makes the curve mean anything.
+SLOT_COUNTS = [0, 3, 6, 9]
 
 # ── the park pose, measured (see the module docstring) ─────────────────────
 PARK_X = 10.0        # metres, well outside any workspace

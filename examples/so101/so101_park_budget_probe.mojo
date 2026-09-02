@@ -30,6 +30,38 @@ it far away. §3.3 marks the cost of that UNPRICED and says, in as many words,
    So on Apple this file is good for exactly one thing — checking that the
    harness compiles, steps, formats and refuses correctly.
 
+## ⚠⚠ THE SWEEP STOPS AT k=9 BECAUSE THE SOLVER DOES
+
+k=12 was in this sweep and DOES NOT COMPILE on an RTX 5090:
+
+    ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+                  too much shared data (0x21414 bytes, 0x18c00 max)
+
+The GPU Newton solver holds three NV*NV matrices (M, H, L) plus `Je` (ME*NV) in
+threadgroup memory. Measured, fp32, MAX_CONTACTS=16, and the formula reproduces
+ptxas's number TO THE BYTE:
+
+    k=6   nv 42   48,372 B   fits
+    k=9   nv 60   86,676 B   fits      <- the ceiling
+    k=10  nv 66  101,940 B   over by 564 B
+    k=12  nv 78  136,212 B   over      == 0x21414, exactly what ptxas said
+
+**So a family on this hardware cannot declare more than 9 free-jointed slots**,
+and that is a budget answer P0 never had to measure — it falls out of the
+solver, not out of a throughput curve. ⚠ It is also DEVICE-DEPENDENT: an H100's
+227 KB would allow more. A budget the design calls FIXED is in fact fixed *per
+GPU*, which §3 does not currently account for.
+
+⚠ `solver/je_budget.je_spills` DOES NOT CATCH THIS. It compares **Je alone**
+against a 64 KB constant; at k=12 Je is 54 KB so it declines to spill, while
+the three NV*NV matrices (73 KB) put the block over. The gate budgets one array
+rather than the total, and it was tuned on humanoid_CMU and dog — high-nv AND
+high-contact models. A fixed scene budget produces the shape it was never tuned
+for: HIGH nv, LOW contact count. Fixing it would let k=12 compile with Je
+spilled — but then the widest point would run a DIFFERENT SOLVER PATH from the
+control, and leg 1 would be comparing two code paths while calling the
+difference a budget cost. One path across the sweep is what makes it a curve.
+
 ## THE THREE LEGS, AND WHY ONE IS NOT ENOUGH
 
 A parked free body adds `nq`/`nv` (the CRBA + factorisation cost the plan
@@ -41,12 +73,12 @@ to `nv` and the budget number would be wrong in an unknown direction — the
 shape recorded as `feedback_the_gates_name_named_the_wrong_axis`, whose fix is
 to ADD THE FIXED-AXIS LEG, not to reinterpret the mixed one.
 
-  LEG 1  slot count k in {0, 3, 6, 12}, `max_contacts` PINNED at 16 for every
+  LEG 1  slot count k in {0, 3, 6, 9}, `max_contacts` PINNED at 16 for every
          k (`so101_park_xml.PARK_MAX_CONTACTS`), and every scene verified to
          have ZERO contacts at rest by the scene generator. The curve.
   LEG 2  `max_contacts` alone, at k=0. How much of leg 1 is the solver rather
          than `nv`. Without this, leg 1 is undecidable.
-  LEG 3  the repark hook on/off at k=12. What keeping a parked slot ACTUALLY
+  LEG 3  the repark hook on/off at k=9. What keeping a parked slot ACTUALLY
          parked costs — see `so101_park_config.mojo`, and note it is a lower
          bound because the hook cannot zero velocity yet.
 
@@ -91,7 +123,7 @@ from mojo_rl.envs.robots.so101_park_xml import (
     SoArm101ParkK0Model,
     SoArm101ParkK3Model,
     SoArm101ParkK6Model,
-    SoArm101ParkK12Model,
+    SoArm101ParkK9Model,
     PARK_MAX_CONTACTS,
 )
 from mojo_rl.core.fmt import fit
@@ -111,8 +143,8 @@ comptime REPEATS = 3          # never 1; see the module docstring
 comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]
 comptime ParkCfg3 = So101ParkProbeConfig[27, 24, 3]
 comptime ParkCfg6 = So101ParkProbeConfig[48, 42, 6]
-comptime ParkCfg12 = So101ParkProbeConfig[90, 78, 12]
-comptime ParkCfg12R = So101ParkProbeConfig[90, 78, 12, REPARK=True]
+comptime ParkCfg9 = So101ParkProbeConfig[69, 60, 9]
+comptime ParkCfg9R = So101ParkProbeConfig[69, 60, 9, REPARK=True]
 
 
 def f2(x: Float64) -> String:
@@ -222,8 +254,8 @@ def main() raises:
         var r0 = Row("leg1  k=0  (control)", 6, 6)
         var r3 = Row("leg1  k=3", 27, 24)
         var r6 = Row("leg1  k=6", 48, 42)
-        var r12 = Row("leg1  k=12", 90, 78)
-        var r12r = Row("leg3  k=12 REPARK", 90, 78)
+        var r9 = Row("leg1  k=9  (ceiling)", 69, 60)
+        var r9r = Row("leg3  k=9  REPARK", 69, 60)
 
         # ⚠ INTERLEAVED, NOT GROUPED. Running all of k=0 then all of k=12
         # compares a cold machine against a hot one and calls the difference
@@ -233,14 +265,14 @@ def main() raises:
             r0.add(time_once[SoArm101ParkK0Model, ParkCfg0](ctx))
             r3.add(time_once[SoArm101ParkK3Model, ParkCfg3](ctx))
             r6.add(time_once[SoArm101ParkK6Model, ParkCfg6](ctx))
-            r12.add(time_once[SoArm101ParkK12Model, ParkCfg12](ctx))
-            r12r.add(time_once[SoArm101ParkK12Model, ParkCfg12R](ctx))
+            r9.add(time_once[SoArm101ParkK9Model, ParkCfg9](ctx))
+            r9r.add(time_once[SoArm101ParkK9Model, ParkCfg9R](ctx))
 
         # ⚠ BEFORE ANY ARITHMETIC. A leg that did not run has `best` at its
         # sentinel, and every derived number below — ms/step, the ratio to the
         # control, the spread — would be a rendering of that sentinel rather
         # than a measurement.
-        var rows_chk = [r0, r3, r6, r12, r12r]
+        var rows_chk = [r0, r3, r6, r9, r9r]
         for i in range(len(rows_chk)):
             if rows_chk[i].n != REPEATS:
                 raise Error(
@@ -256,7 +288,7 @@ def main() raises:
               "   vs k=0   spread")
         print("  " + "-" * 74)
         var base = r0.ms_per_step()
-        var rows = [r0, r3, r6, r12, r12r]
+        var rows = [r0, r3, r6, r9, r9r]
         for i in range(len(rows)):
             var r = rows[i]
             var rel = (r.ms_per_step() / base - 1.0) * 100.0
@@ -278,9 +310,9 @@ def main() raises:
         for i in range(len(rows)):
             if rows[i].spread_pct() > worst_spread:
                 worst_spread = rows[i].spread_pct()
-        var effect = (r12.ms_per_step() / base - 1.0) * 100.0
+        var effect = (r9.ms_per_step() / base - 1.0) * 100.0
         print("  worst run-to-run spread:", f2(worst_spread), "%")
-        print("  k=12 effect over control:", f2(effect), "%")
+        print("  k=9 effect over control:", f2(effect), "%")
         if worst_spread >= effect:
             print("  ⚠⚠ SPREAD >= EFFECT — THIS RUN IS UNDECIDABLE.")
             print("     Raise REPEATS/TIMED_STEPS, or quiet the machine.")

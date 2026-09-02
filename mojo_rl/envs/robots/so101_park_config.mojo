@@ -167,7 +167,7 @@ struct So101ParkProbeConfig[
             # measurement would then show repark saving almost nothing and the
             # conclusion would be wrong.
             #
-            # ⚠⚠ `@parameter for`, NOT a runtime loop — AND THAT IS A METAL
+            # ⚠⚠ `comptime for`, NOT a runtime loop — AND THAT IS A METAL
             # HARD ERROR, NOT A STYLE POINT. The park pose is Float64, so a
             # runtime `s` makes `PARK_X + Float64(s) * PARK_SPACING` an f64
             # multiply-add INSIDE the kernel. Metal has no double:
@@ -179,8 +179,7 @@ struct So101ParkProbeConfig[
             # only the `Scalar[DTYPE]` store survives. Measured 2026-09-02:
             # this exact change is the difference between the probe failing to
             # build on Apple and building clean.
-            @parameter
-            for s in range(Self.N_SLOTS):
+            comptime for s in range(Self.N_SLOTS):
                 comptime a = ARM_NQ + s * SLOT_NQ
                 comptime px = PARK_X + Float64(s) * PARK_SPACING
                 qpos[env, a + 0] = Scalar[DTYPE](px)
