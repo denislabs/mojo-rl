@@ -77,14 +77,26 @@ comptime N_DEC = RUN_DEC_LAYERS
 comptime BATCH = 1  # one step at a time, as a deployment would
 
 comptime T = ACTTrainer[
-    QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
+    QPOS,
+    ADIM,
+    N_CAM,
+    IMG_H,
+    IMG_W,
+    K,
+    DIM,
+    HEADS,
+    FF,
+    LATENT,
+    N_ENC,
+    N_DEC,
     BATCH,
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
-comptime DEFAULT_CKPT = "/tmp/act_so101_best_gpu.ckpt"
+comptime DEFAULT_CKPT = "act_so101_best_gpu.ckpt"
 """The GPU run's best checkpoint. `ACT_CKPT` overrides — point it at
 `/tmp/act_so101_best.ckpt` for a CPU run, or at a `_last_` checkpoint to
 evaluate a run that was killed."""
+
 
 # Joint names, in the dataset's own order (meta/info.json `action.names`).
 def joint_names() -> List[String]:
@@ -117,7 +129,10 @@ def store_path() raises -> String:
         home
         + "/.cache/mojo_rl/act_so101/"
         + "DenisLabs__record-test_20260825_094319_"
-        + String(IMG_H) + "x" + String(IMG_W) + ".h5"
+        + String(IMG_H)
+        + "x"
+        + String(IMG_W)
+        + ".h5"
     )
 
 
@@ -153,8 +168,13 @@ def main() raises:
     print("ACT / SO-ARM101 — open-loop evaluation")
     print("  checkpoint " + ckpt)
     print(
-        "  episode " + String(ep) + " (held out), " + String(ep_len)
-        + " steps, chunk " + String(K) + ", m = "
+        "  episode "
+        + String(ep)
+        + " (held out), "
+        + String(ep_len)
+        + " steps, chunk "
+        + String(K)
+        + ", m = "
         + String(ACT_TEMPORAL_ENSEMBLE_M)
     )
     print("")
@@ -195,7 +215,9 @@ def main() raises:
 
         if t % 50 == 0:
             print(
-                "    t=" + String(t) + "  contributors "
+                "    t="
+                + String(t)
+                + "  contributors "
                 + String(te.n_contributors(t))
             )
 
@@ -217,13 +239,22 @@ def main() raises:
         while nm.byte_length() < 14:
             nm += " "
         print(
-            "    " + nm + "  " + String(a) + "   " + String(h) + "   "
+            "    "
+            + nm
+            + "  "
+            + String(a)
+            + "   "
+            + String(h)
+            + "   "
             + String(m)
         )
     print("")
     print(
-        "    ALL             " + String(tot_act / Float64(ADIM)) + "   "
-        + String(tot_hold / Float64(ADIM)) + "   "
+        "    ALL             "
+        + String(tot_act / Float64(ADIM))
+        + "   "
+        + String(tot_hold / Float64(ADIM))
+        + "   "
         + String(tot_mean / Float64(ADIM))
     )
     print("")
