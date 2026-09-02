@@ -161,52 +161,86 @@ def read_probe(k):
     return out
 
 
-def read_kern(k):
+def read_kern(k, diagnose=False):
     """cuda_gpu_kern_sum -> [(total_ns, instances, avg_ns, name)].
 
-    ⚠ THE NAME IS THE REST OF THE LINE, NOT THE LAST FIELD. Vendor kernels
-    carry spaces (`void cutlass::Kernel2<...>(T1::Params)`), and splitting on
-    whitespace would file each fragment as its own kernel.
+    ⚠⚠ KEYED ON THE `Instances` COLUMN HEADER, NOT ON THE `**` BANNER. The
+    banner text and the surrounding chatter move between nsys versions, and a
+    reader anchored on them returns ZERO ROWS on a perfectly good report while
+    saying only "unparsable". The column header is the stable thing, and it is
+    also what distinguishes this table from `cuda_api_sum` — which has the same
+    shape but counts `Num Calls`, not `Instances`. Host API time is not kernel
+    time, and an unscoped read puts `cuMemFree_v2` on top at 30% of "GPU time".
 
-    ⚠⚠ SCOPED TO THE `cuda_gpu_kern_sum` SECTION, AND THAT IS NOT PEDANTRY. An
-    nsys dump can carry several report tables and `cuda_api_sum` has the SAME
-    column shape — so an unscoped parse silently folds `cuMemFree_v2`,
-    `cuLaunchKernelEx` and `cuStreamSynchronize` in among the kernels, where
-    they land at the TOP of the table and dominate every share. That is what a
-    replay of this tree's own captured profile did on the first try: 30% of
-    "GPU time" was `cuMemFree_v2`. Host API time is not kernel time.
+    ⚠ THE NAME IS THE REST OF THE LINE, NOT THE LAST FIELD. Vendor kernels
+    carry spaces (`void cutlass::Kernel2<...>(T1::Params)`) and splitting on
+    whitespace files each fragment as its own kernel.
     """
     p = f"{OUT}/k{k}.kern.txt"
     if not os.path.exists(p):
+        if diagnose:
+            print(f"    (no such file: {p})")
         return []
-    rows, inside = [], False
-    for line in open(p, errors="replace"):
-        # ⚠ THE BANNER, NOT ANY MENTION. nsys prints
-        # `Processing [...] with [.../cuda_gpu_kern_sum.py]...` BEFORE the
-        # table, so keying on the bare substring opens the section on that
-        # line and the real `**` banner two lines later closes it again —
-        # zero rows, silently, on perfectly good output. Only a `** ... ( ):`
-        # banner starts a section.
+    raw = open(p, errors="replace").read().replace("\r", "\n")
+    lines = raw.split("\n")
+
+    # Find the header row: the kernel summary's own columns.
+    hdr = None
+    for i, line in enumerate(lines):
+        # ⚠ `Instances` OR `Count` — nsys versions differ. NOT `Calls`:
+        # `cuda_api_sum` spells its column `Num Calls` and would be admitted.
+        if (("Instances" in line or "Count" in line)
+                and ("Total Time" in line or "Time (%)" in line)):
+            hdr = i
+            break
+    if hdr is None:
+        if diagnose:
+            print(f"    !! no 'Instances' header in {p}. First lines seen:")
+            for line in [x for x in lines if x.strip()][:14]:
+                print(f"       | {line[:120]}")
+        return []
+
+    # Column order can move; find the fields by NAME rather than by position.
+    cols = re.split(r"\s{2,}", lines[hdr].strip())
+    def idx(*want):
+        for j, c in enumerate(cols):
+            if any(w in c for w in want):
+                return j
+        return None
+    i_tot = idx("Total Time")
+    i_inst = idx("Instances", "Count")
+    i_avg = idx("Avg")
+    if None in (i_tot, i_inst, i_avg):
+        if diagnose:
+            print(f"    !! header found but columns not: {cols}")
+        return []
+    ncol = len(cols)
+
+    rows = []
+    for line in lines[hdr + 1:]:
+        if not line.strip():
+            continue
         if re.match(r"\s*\*\*\s", line):
-            inside = "cuda_gpu_kern_sum" in line
-            continue
-        if not inside:
-            continue
-        f = line.split(None, 8)
-        if len(f) < 9:
+            break                       # next report section
+        f = line.split(None, ncol - 1)
+        if len(f) < ncol:
             continue
         try:
-            total = float(f[1].replace(",", ""))
-            inst = int(f[2].replace(",", ""))
-            avg = float(f[3].replace(",", ""))
-        except ValueError:
-            continue          # header / separator rows
-        name = f[8].strip()
-        # Belt and braces: a CUDA driver entry point is not a kernel, whatever
-        # section it turned up in.
+            total = float(f[i_tot].replace(",", ""))
+            inst = int(f[i_inst].replace(",", ""))
+            avg = float(f[i_avg].replace(",", ""))
+        except (ValueError, IndexError):
+            continue                    # separator / continuation rows
+        name = f[ncol - 1].strip()
+        # Belt and braces: a CUDA driver entry point is not a kernel.
         if re.match(r"cu[A-Z]\w*(_v\d)?$", name):
             continue
         rows.append((total, inst, avg, name))
+    if not rows and diagnose:
+        print(f"    !! header at line {hdr} but no data rows parsed. "
+              f"cols={cols}")
+        for line in lines[hdr:hdr + 6]:
+            print(f"       | {line[:120]}")
     return rows
 
 
@@ -281,9 +315,15 @@ def main():
     for k in KS:
         pr, kr = read_probe(k), read_kern(k)
         if pr is None or not kr:
-            print(f"!! k={k}: missing or unparsable "
-                  f"({'probe' if pr is None else ''}"
-                  f"{' kern' if not kr else ''}). Run scripts/p0_attrib.sh.")
+            # ⚠ SAY WHAT WAS SEEN. "unparsable" with no evidence is a dead end;
+            # re-read with diagnostics so the next move is obvious.
+            print(f"!! k={k}: missing or unparsable"
+                  f"{' [probe]' if pr is None else ''}"
+                  f"{' [kern]' if not kr else ''}")
+            if pr is None and os.path.exists(f"{OUT}/k{k}.probe.txt"):
+                print(f"    !! {OUT}/k{k}.probe.txt has no "
+                      f"'nv/total_steps/timed_steps/ms_per_step' header lines")
+            read_kern(k, diagnose=True)
         else:
             probes[k], kerns[k] = pr, kr
     if not probes:
