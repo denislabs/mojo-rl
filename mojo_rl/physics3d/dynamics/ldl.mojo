@@ -3,7 +3,22 @@ single-source). Per-field ports of `ldl_factor_gpu` and
 `ldl_solve_workspace_gpu` (dynamics/mass_matrix.mojo) — arithmetic verbatim.
 Pure scratch math: factor reads `scratch.M`, writes `scratch.L`/`scratch.D`
 (3 operands); solve reads `scratch.L`/`scratch.D`/`scratch.fnet`, writes
-`scratch.qacc_ws` (4 operands)."""
+`scratch.qacc_ws` (4 operands).
+
+⚠⚠ `trees` IS THREADED THROUGH AND NOT YET READ. It is `Model.trees` —
+`(dof_adr, dof_num, kind)` per kinematic tree, i.e. M's DIAGONAL BLOCKS. The
+factorisations below are dense in `nv` and the blocks are what makes them
+`sum(size^3)` instead of `nv^3`
+(`docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md`, P2). This commit lands
+the OPERAND ONLY — a wide, mechanical signature change across seven engine
+sites and five tests — so that the arithmetic change lands on a tree where
+nothing else is moving. See
+`feedback_a_concurrent_commit_swept_my_in_flight_edits`.
+
+⚠ THE TABLE TERMINATES ITSELF: rows past `ntree` are `(0, 0, 0)`, so
+`dof_num == 0` ends the walk and a `Model` built without the parser — which
+leaves the whole table zeroed — reads as NO BLOCKS. That case must fall back
+to a single whole-`nv` block, not to zero work."""
 
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
@@ -12,6 +27,7 @@ from layout import Layout, LayoutTensor
 
 from ..fields import (
     DynamicsScratch,
+    Model,
     Dims,
     DimsLike,
     AsStatic,
@@ -20,6 +36,7 @@ from ..fields import (
     DYN2,
     rl2,
 )
+from ..gpu.constants import MODEL_TREE_SIZE
 
 comptime LDL_TPB: Int = 64
 
@@ -30,12 +47,14 @@ def _ldl_factor_env[
     DIMS: DimsLike,
     LM: Layout,
     LNV: Layout,
+    LTREE: Layout,
 ](
     env: Int,
     dims: DIMS,
     M: LayoutTensor[DTYPE, LM, MutAnyOrigin],
     L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
     D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, LTREE, MutAnyOrigin],
 ):
     """LDL factorization for one env (verbatim from ldl_factor_gpu).
 
@@ -126,11 +145,12 @@ def _ldl_factor_fields_kernel[
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _ldl_factor_env(env, Dims[nv=NV](), M, L, D)
+    _ldl_factor_env(env, Dims[nv=NV](), M, L, D, trees)
 
 
 # ── Cooperative (_mt) kernel — schedule from the legacy `ldl_factor_gpu_mt`
@@ -150,6 +170,7 @@ def _ldl_factor_fields_mt_kernel[
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
@@ -207,6 +228,11 @@ def ldl_factor[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
+    # ⚠ `mut`, MATCHING `compute_cdof` / `compute_mass_matrix`. Not because
+    # anything here writes the model — nothing does — but because `TensorImpl.lt`
+    # and `.lt_dyn` are mutating methods, so an immutable borrow cannot bind a
+    # record as a kernel operand at all.
+    mut m: Model[DTYPE, D],
     mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -215,16 +241,19 @@ def ldl_factor[
     ignores PARALLEL."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_TREE = Layout.row_major(D.NV, MODEL_TREE_SIZE)
 
     comptime if target == "cpu":
         var dm = scratch.dims
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
         var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+        var T_v = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
         for e in range(BATCH):
-            _ldl_factor_env(e, dm, M_v, L_v, D_v)
+            _ldl_factor_env(e, dm, M_v, L_v, D_v, T_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV
@@ -234,6 +263,7 @@ def ldl_factor[
             scratch.M.lt["gpu", L_M](),
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
+            m.trees.lt["gpu", L_TREE](),
             grid_dim=(BATCH,),
             block_dim=(MT_T,),
         )
@@ -244,6 +274,7 @@ def ldl_factor[
             scratch.M.lt["gpu", L_M](),
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
+            m.trees.lt["gpu", L_TREE](),
             grid_dim=(BLOCKS,),
             block_dim=(LDL_TPB,),
         )
@@ -287,6 +318,7 @@ def _m_inv_col_env[
     DIMS: DimsLike,
     LM: Layout,
     LNV: Layout,
+    LTREE: Layout,
 ](
     env: Int,
     j: Int,
@@ -294,6 +326,7 @@ def _m_inv_col_env[
     L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
     D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, LTREE, MutAnyOrigin],
 ):
     """One column j of M^-1 (triangular solve on e_j). Extracted verbatim
     from the `_m_inv_env` column loop so serial and _mt schedules
@@ -338,18 +371,20 @@ def _m_inv_env[
     DIMS: DimsLike,
     LM: Layout,
     LNV: Layout,
+    LTREE: Layout,
 ](
     env: Int,
     dims: DIMS,
     L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
     D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, LTREE, MutAnyOrigin],
 ):
     """Full dense M^-1 via per-column LDL solves (arithmetic verbatim;
     column body now lives in the shared `_m_inv_col_env` helper —
     pure refactor)."""
     for j in range(dims.get_nv()):
-        _m_inv_col_env(env, j, dims, L, D, m_inv)
+        _m_inv_col_env(env, j, dims, L, D, m_inv, trees)
 
 
 def _m_inv_fields_kernel[
@@ -360,11 +395,12 @@ def _m_inv_fields_kernel[
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _m_inv_env(env, Dims[nv=NV](), L, D, m_inv)
+    _m_inv_env(env, Dims[nv=NV](), L, D, m_inv, trees)
 
 
 # ── Cooperative (_mt) kernel — schedule from the legacy
@@ -382,11 +418,12 @@ def _m_inv_fields_mt_kernel[
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
     for j in range(tid, NV, N_THREADS):
-        _m_inv_col_env(env, j, Dims[nv=NV](), L, D, m_inv)
+        _m_inv_col_env(env, j, Dims[nv=NV](), L, D, m_inv, trees)
 
 
 def compute_m_inv[
@@ -396,6 +433,11 @@ def compute_m_inv[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
+    # ⚠ `mut`, MATCHING `compute_cdof` / `compute_mass_matrix`. Not because
+    # anything here writes the model — nothing does — but because `TensorImpl.lt`
+    # and `.lt_dyn` are mutating methods, so an immutable borrow cannot bind a
+    # record as a kernel operand at all.
+    mut m: Model[DTYPE, D],
     mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -404,16 +446,19 @@ def compute_m_inv[
     ignores PARALLEL."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_TREE = Layout.row_major(D.NV, MODEL_TREE_SIZE)
 
     comptime if target == "cpu":
         var dm = scratch.dims
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
         var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var T_v = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
         for e in range(BATCH):
-            _m_inv_env(e, dm, L_v, D_v, mi_v)
+            _m_inv_env(e, dm, L_v, D_v, mi_v, T_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV
@@ -421,6 +466,7 @@ def compute_m_inv[
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.m_inv.lt["gpu", L_M](),
+            m.trees.lt["gpu", L_TREE](),
             grid_dim=(BATCH,),
             block_dim=(MT_T,),
         )
@@ -431,6 +477,7 @@ def compute_m_inv[
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.m_inv.lt["gpu", L_M](),
+            m.trees.lt["gpu", L_TREE](),
             grid_dim=(BLOCKS,),
             block_dim=(LDL_TPB,),
         )

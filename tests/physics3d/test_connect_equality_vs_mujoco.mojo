@@ -565,8 +565,8 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[M.MAX_EQUALITY]()
     comptime WJ = 6 * cap[M.MAX_EQUALITY]() * cap[M.NV]()

@@ -231,7 +231,7 @@ def run_chain[
     compute_subtree_com["cpu", DT, BATCH=BATCH](d, m, None)
     compute_cdof["cpu", DT, BATCH=BATCH](d, m, sc, None)
     compute_mass_matrix["cpu", DT, BATCH=BATCH](d, m, sc, None)
-    ldl_factor["cpu", DT, A, BATCH](sc, None)
+    ldl_factor["cpu", DT, A, BATCH](m, sc, None)
     compute_bias_forces_rne["cpu", DT, BATCH=BATCH](d, m, sc, None)
 
 

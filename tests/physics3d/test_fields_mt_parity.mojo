@@ -191,8 +191,8 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d CRBA M", ss.M, sp.M, BATCH * NV * NV)
 
     # 6. LDL factor
-    ldl_factor["gpu", DTYPE, BATCH=BATCH](ss, ctx)
-    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](sp, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
     ss.L.download(ctx)
     ss.D.download(ctx)
     sp.L.download(ctx)
@@ -201,8 +201,8 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d LDL D", ss.D, sp.D, BATCH * NV)
 
     # 7. M^-1 from LDL
-    compute_m_inv["gpu", DTYPE, BATCH=BATCH](ss, ctx)
-    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, 
         sp, ctx
     )
     ss.m_inv.download(ctx)

@@ -399,8 +399,8 @@ def _prep(
     _armature_env[DTYPE](
         0, AsStatic[MD](), joints_v, sc.M.lt["cpu", L_M]()
     )
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
     compute_bias_forces_rne["cpu"](d, mf, sc, None)
     _fnet_passive_env[DTYPE](
         0,
@@ -660,8 +660,8 @@ def test_weld_orientation_rows_match_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[MTQ1.MAX_EQUALITY]()
     comptime WJ = 6 * cap[MTQ1.MAX_EQUALITY]() * cap[MTQ1.NV]()
@@ -805,8 +805,8 @@ def test_weld_torquescale_matches_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[MTQ5.MAX_EQUALITY]()
     comptime WJ = 6 * cap[MTQ5.MAX_EQUALITY]() * cap[MTQ5.NV]()

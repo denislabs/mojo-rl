@@ -273,8 +273,8 @@ def _prep[
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
             _armature_env[DTYPE](e, AsStatic[MD_2](), joints_v, M_v)
-        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
@@ -301,8 +301,8 @@ def _prep[
             scratch.M.lt["gpu", L_M](),
             grid_dim=(BATCH,), block_dim=(1,),
         )
-        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]

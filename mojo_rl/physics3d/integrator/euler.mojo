@@ -68,6 +68,7 @@ from ..fields import (
 from ..gpu.constants import (
     MJ_MAXVAL,
     MODEL_JOINT_SIZE,
+    MODEL_TREE_SIZE,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_EULERDAMP_DISABLED,
     MODEL_META_IDX_DENSITY,
@@ -337,7 +338,8 @@ def _finalize_env[
     L_QPOS: Layout,
     L_QVEL: Layout,
     L_JOINTS: Layout,
-    L_M: Layout](
+    L_M: Layout,
+    L_TREE: Layout](
     env: Int,
     dt: Scalar[DTYPE],
     dims: DIMS,
@@ -355,6 +357,12 @@ def _finalize_env[
     qacc_constrained: LayoutTensor[
         DTYPE, L_QVEL, MutAnyOrigin
     ],
+    # ⚠ M's DIAGONAL BLOCKS, for the `M_hat` re-factorisation below. Threaded
+    # and not yet read — see `dynamics/ldl.mojo`'s header. ⚠⚠ NOTE THIS IS A
+    # SECOND DENSE LDL PER STEP, distinct from the `ldl_factor` in `step`:
+    # `M_hat = M + dt*diag(damping)` adds to the DIAGONAL only, so it has the
+    # same block structure and the same O(nv^3) cost.
+    trees: LayoutTensor[DTYPE, L_TREE, MutAnyOrigin],
     # ⚠⚠ `<option><flag eulerdamp="disable"/></option>` — mjDSBL_EULERDAMP.
     # `mj_EulerSkip` puts its ENTIRE damping scan behind this flag and, when
     # it is set, integrates velocity explicitly: `qvel += h * qacc`, with the
@@ -400,7 +408,7 @@ def _finalize_env[
                 M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env(env, dims, M, L, D)
+    _ldl_factor_env(env, dims, M, L, D, trees)
     _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
 
     _finalize_integrate_env(
@@ -478,6 +486,9 @@ def _finalize_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin
+    ],
     # ⚠ A SCALAR, NOT A `Bool`, so the launch does not need a second
     # argument kind — every other model constant reaching a kernel here
     # arrives the same way.
@@ -488,7 +499,7 @@ def _finalize_kernel[
         return
     _finalize_env[DTYPE](
         env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
-        qacc_constrained, eulerdamp_off != Scalar[DTYPE](0),
+        qacc_constrained, trees, eulerdamp_off != Scalar[DTYPE](0),
     )
 
 
@@ -579,6 +590,7 @@ struct EulerIntegrator[
 
         comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
         comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
+        comptime L_TREE = Layout.row_major(Self.D.NV, MODEL_TREE_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)
         comptime L_QPOS = Layout.row_major(Self.BATCH, Self.D.NQ)
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
@@ -602,8 +614,8 @@ struct EulerIntegrator[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
-        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
+        ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":
@@ -790,11 +802,14 @@ struct EulerIntegrator[
             var fnet_v3 = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             var qacc_ws_v3 = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
             var qacc_c_v3 = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+            var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
+            var trees_v3 = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
             for e in range(Self.BATCH):
                 _finalize_env[
                     Self.DTYPE](
                     e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
-                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, eulerdamp_off,
+                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, trees_v3,
+                    eulerdamp_off,
                 )
         else:
             ctx.value().enqueue_function[
@@ -813,6 +828,7 @@ struct EulerIntegrator[
                 self.scratch.fnet.lt["gpu", L_NV](),
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
                 self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                m.trees.lt["gpu", L_TREE](),
                 Scalar[Self.DTYPE](1) if eulerdamp_off
                 else Scalar[Self.DTYPE](0),
                 grid_dim=(BLOCKS,),

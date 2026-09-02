@@ -233,7 +233,7 @@ def compute_invweight0[
         _mi_sum / Float64(nv) if nv > 0 else Float64(0)
     )
 
-    ldl_factor["cpu", DTYPE, BATCH=1](sc)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc)
 
     # ── dof->body map (matches legacy :461-476) ──────────────────────────────
     var dof_body = List[Int](length=nv, fill=0)

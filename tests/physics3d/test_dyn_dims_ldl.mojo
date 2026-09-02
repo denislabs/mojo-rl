@@ -40,6 +40,7 @@ from mojo_rl.physics3d.fields import Dims, DynDims
 from mojo_rl.physics3d.fields.dims import DIM_POISON
 from mojo_rl.physics3d.fields.scratch import Scratch
 from mojo_rl.physics3d.dynamics.ldl import _ldl_factor_env, _ldl_solve_env
+from mojo_rl.physics3d.gpu.constants import MODEL_TREE_SIZE
 
 comptime DT = DType.float64
 comptime DYN2 = Layout.row_major[2]()
@@ -97,6 +98,7 @@ def solve_static[NV: Int]() raises -> List[Float64]:
     """The arm that ships today: comptime dims, comptime layout."""
     comptime LM = Layout.row_major(BATCH, NV * NV)
     comptime LNV = Layout.row_major(BATCH, NV)
+    comptime LTREE = Layout.row_major(NV, MODEL_TREE_SIZE)
     var M = TensorImpl[DT].alloc(BATCH * NV * NV)
     var L = TensorImpl[DT].alloc(BATCH * NV * NV)
     var D = TensorImpl[DT].alloc(BATCH * NV)
@@ -109,9 +111,19 @@ def solve_static[NV: Int]() raises -> List[Float64]:
     var D_v = D.lt["cpu", LNV]()
     var b_v = b.lt["cpu", LNV]()
     var x_v = x.lt["cpu", LNV]()
+    # ⚠ THE ZEROED BLOCK TABLE, DELIBERATELY. This file hand-builds its
+    # tensors and has no `Model`, so it exercises the fallback a parser-free
+    # model takes: rows past `ntree` are `(0, 0, 0)`, `dof_num == 0` ends the
+    # walk, and an all-zero table therefore means NO BLOCKS — which the
+    # factorisation must read as ONE block spanning the whole `nv`, not as no
+    # work. See `dynamics/ldl.mojo`'s header.
+    var T = TensorImpl[DT].alloc(NV * MODEL_TREE_SIZE)
+    for i in range(NV * MODEL_TREE_SIZE):
+        T.data[i] = Scalar[DT](0)
+    var T_v = T.lt["cpu", LTREE]()
     var dims = Dims[nv=NV]()
     for e in range(BATCH):
-        _ldl_factor_env(e, dims, M_v, L_v, D_v)
+        _ldl_factor_env(e, dims, M_v, L_v, D_v, T_v)
         _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v)
 
     var out = List[Float64]()
@@ -144,9 +156,22 @@ def solve_dynamic(nv: Int) raises -> List[Float64]:
     var D_v = D.lt_dyn["cpu", DYN2](rl_v)
     var b_v = b.lt_dyn["cpu", DYN2](rl_v)
     var x_v = x.lt_dyn["cpu", DYN2](rl_v)
+    # ⚠ THE ZEROED BLOCK TABLE, DELIBERATELY. This file hand-builds its
+    # tensors and has no `Model`, so it exercises the fallback a parser-free
+    # model takes: rows past `ntree` are `(0, 0, 0)`, `dof_num == 0` ends the
+    # walk, and an all-zero table therefore means NO BLOCKS — which the
+    # factorisation must read as ONE block spanning the whole `nv`, not as no
+    # work. See `dynamics/ldl.mojo`'s header.
+    var T = TensorImpl[DT].alloc(nv * MODEL_TREE_SIZE)
+    for i in range(nv * MODEL_TREE_SIZE):
+        T.data[i] = Scalar[DT](0)
+    var rl_t = RuntimeLayout[DYN2].row_major(
+        IndexList[2](nv, MODEL_TREE_SIZE)
+    )
+    var T_v = T.lt_dyn["cpu", DYN2](rl_t)
     var dims = DynDims(nv=nv)
     for e in range(BATCH):
-        _ldl_factor_env(e, dims, M_v, L_v, D_v)
+        _ldl_factor_env(e, dims, M_v, L_v, D_v, T_v)
         _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v)
 
     var out = List[Float64]()

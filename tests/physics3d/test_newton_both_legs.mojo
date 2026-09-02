@@ -200,8 +200,8 @@ def prep[
     var M_v = sc.M.lt["cpu", L_M]()
     for e in range(BATCH):
         _armature_env[DT](e, AsStatic[MD](), joints_v, M_v)
-    ldl_factor["cpu", DT, BATCH=BATCH](sc, ctx)
-    compute_m_inv["cpu", DT, BATCH=BATCH](sc, ctx)
+    ldl_factor["cpu", DT, BATCH=BATCH](mf, sc, ctx)
+    compute_m_inv["cpu", DT, BATCH=BATCH](mf, sc, ctx)
     compute_bias_forces_rne["cpu", DT, BATCH=BATCH](d, mf, sc, ctx)
 
     var qpos_v = d.qpos.lt["cpu", L_QPOS]()
