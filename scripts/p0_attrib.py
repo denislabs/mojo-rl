@@ -172,9 +172,21 @@ def read_kern(k, diagnose=False):
     shape but counts `Num Calls`, not `Instances`. Host API time is not kernel
     time, and an unscoped read puts `cuMemFree_v2` on top at 30% of "GPU time".
 
-    ⚠ THE NAME IS THE REST OF THE LINE, NOT THE LAST FIELD. Vendor kernels
-    carry spaces (`void cutlass::Kernel2<...>(T1::Params)`) and splitting on
-    whitespace files each fragment as its own kernel.
+    ⚠⚠ TWO TABLE DIALECTS, AND THE PIPED ONE IS WHAT AN RTX 5090 BOX EMITTED.
+    `nsys stats --format table` renders either whitespace-aligned columns or a
+    boxed, PIPE-DELIMITED table depending on version:
+
+        |     69.0 |     11321122872 |      2800 | 4043258.2 | ... | mojo_... |
+
+    A whitespace split on that yields `['|', '69.0', '|', ...]` — every field
+    off by one and every row rejected. The delimiter is detected from the
+    header rather than assumed, and CSV is accepted too so the driver can move
+    to `--format csv` without this needing to change again.
+
+    ⚠ THE NAME IS THE LAST FIELD, and in the whitespace dialect it is the REST
+    of the line: vendor kernels carry spaces
+    (`void cutlass::Kernel2<...>(T1::Params)`) and splitting on whitespace
+    files each fragment as its own kernel.
     """
     p = f"{OUT}/k{k}.kern.txt"
     if not os.path.exists(p):
@@ -200,8 +212,32 @@ def read_kern(k, diagnose=False):
                 print(f"       | {line[:120]}")
         return []
 
-    # Column order can move; find the fields by NAME rather than by position.
-    cols = re.split(r"\s{2,}", lines[hdr].strip())
+    # Dialect first, then columns. `split_row` is used for the header and for
+    # every data row, so the two can never disagree about where a field ends.
+    head = lines[hdr]
+    if head.count("|") >= 3:
+        def split_head(line):
+            return [c.strip() for c in line.strip().strip("|").split("|")]
+        def split_row(line, _n):
+            return [c.strip() for c in line.strip().strip("|").split("|")]
+    elif head.count(",") >= 3 and '"' not in head:
+        def split_head(line):
+            return [c.strip() for c in line.strip().split(",")]
+        def split_row(line, _n):
+            return [c.strip() for c in line.strip().split(",")]
+    else:
+        # ⚠ THE HEADER AND THE DATA SPLIT DIFFERENTLY IN THIS DIALECT, and
+        # conflating them is a real trap: column TITLES contain single spaces
+        # (`Total Time (ns)`), so the header must split on RUNS of whitespace,
+        # while a data row splits on any whitespace with the NAME taking the
+        # remainder. Using one rule for both turns `Time (%)` into two columns
+        # and every field index is then wrong.
+        def split_head(line):
+            return re.split(r"\s{2,}", line.strip())
+        def split_row(line, n):
+            return [c.strip() for c in line.split(None, n - 1)]
+
+    cols = split_head(head)
     def idx(*want):
         for j, c in enumerate(cols):
             if any(w in c for w in want):
@@ -222,7 +258,10 @@ def read_kern(k, diagnose=False):
             continue
         if re.match(r"\s*\*\*\s", line):
             break                       # next report section
-        f = line.split(None, ncol - 1)
+        # Box rules (`+----+----+`) and dashed separators carry no data.
+        if set(line.strip()) <= set("+-| "):
+            continue
+        f = split_row(line, ncol)
         if len(f) < ncol:
             continue
         try:
