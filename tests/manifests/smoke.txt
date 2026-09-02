@@ -42,6 +42,13 @@ tests/physics3d/test_fk_fields.mojo
 # those strings in phase 1b.5 — there is no second copy left to drift.
 tests/physics3d/test_model_dims_vs_mujoco.mojo
 
+# ⚠ THE P1a GATE. `ModelDefFromXML.xml_text()` now runs `expand_mjcf`, so the
+# comptime leg and `runtime_load` agree on what a model IS. Its safety rests
+# on expansion being the IDENTITY on a flat model — this asserts that over
+# every shipped `.xml`, and asserts the converse on a composing fixture so the
+# identity half cannot pass vacuously. Pure CPU, no references/, no GPU.
+tests/physics3d/test_expand_identity.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

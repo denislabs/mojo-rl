@@ -34,6 +34,17 @@ lifetimes together for no benefit.
 * **The GPU path.** Kernels stay comptime by decision 3, and a runtime
   provider captured by one reads 0 — the output is silently zeroed. A
   runtime-loaded model is CPU-only until its kernels are rebuilt.
+
+  ⚠ **THAT IS A PROPERTY OF `DynDims`, NOT OF THE FILE.** It is easy to read
+  this bullet as "a model chosen from data is CPU-only", and that was
+  accidentally true until P1a: `expand_mjcf` below had exactly ONE caller —
+  this file — so a COMPOSED scene (`<attach>`/`<frame>`) could only be loaded
+  here, and therefore only on the CPU. `ModelDefFromXML.xml_text()` now
+  expands too, so a composed scene whose dimensions are known ahead of time
+  goes through the comptime path like any other model and is GPU-batchable.
+  That is what lets `mojo_rl/tasks/` declare a fixed scene budget and still
+  monomorphise — see `docs/TASK_LAYER_IMPLEMENTATION.md` Gap A, gated by
+  `tests/physics3d/test_expand_identity.mojo`.
 * ~~Whole constraint families~~ — DONE. Nineteen gates read `D.CAP_NTENDON >
   0` etc. as "does this model have tendons", when `CAP_*` answers "can I
   stack-allocate for them" and is 0 on EVERY dynamic provider. Tendon rows,

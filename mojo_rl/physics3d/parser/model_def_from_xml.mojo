@@ -114,6 +114,7 @@ from .flat_model import (
     TEX_BUILTIN_CHECKER,
 )
 from .full_parser import parse_xml_full
+from .expander import expand_mjcf
 from .render_fields import (
     RenderFields,
     body_geom_visible,
@@ -2192,20 +2193,29 @@ struct ModelDefFromXML[
             base += n
 
     @staticmethod
-    def xml_text() raises -> String:
-        """The model's MJCF source — from `xml_path`, else the inline `xml`.
+    def raw_xml_text() raises -> String:
+        """The model's MJCF **as authored** — from `xml_path`, else `xml`.
+
+        ⚠⚠ NOT WHAT THE PARSER SEES, AND ALMOST CERTAINLY NOT WHAT YOU WANT.
+        `full_parser` knows neither `<include>` nor `<attach>` nor `<frame>`
+        and ASSUMES they are already gone (`full_parser.mojo`'s meshdir note
+        says so outright: "`expand_mjcf` has already rebased every `file=` it
+        spliced in"). `xml_text()` below is the composed document, and is the
+        only thing that should ever reach a parser or a renderer.
+
+        It exists so that the composition rule is written ONCE — `xml_text()`
+        is literally `expand_mjcf(raw_xml_text(), asset_base_dir())`, rather
+        than the expansion being repeated in each branch of the `comptime if`
+        below. Its one caller is the P1a gate
+        (`tests/physics3d/test_expand_identity.mojo`), which compares these two
+        methods against each other: unchanged for a model that composes
+        nothing, changed for one that does.
 
         ⚠ BOTH CARRY DEFAULTS ONLY BECAUSE THEY MUST STAY LAST in the
         parameter list — inserting mid-list silently shifts every positional
         instantiation, the trap `NPAIR` already documents. Supplying NEITHER
         is an error, and raises rather than letting `open("")` produce a
         mystery.
-
-        ⚠ READS THE FILE ON EVERY CALL, deliberately not cached. Every caller
-        immediately hands the result to `parse_xml_full`, which is orders of
-        magnitude more work than the read, and a cache would need invalidating
-        the moment the point of this phase — editing a model without a
-        rebuild — is exercised.
         """
         comptime if Self.xml_path != "":
             with open(Self.xml_path, "r") as f:
@@ -2218,6 +2228,53 @@ struct ModelDefFromXML[
                 " `xml`. A shipped model wants `xml_path` (the MJCF is a file"
                 " on disk since phase 1b); an inline test fixture wants `xml`."
             )
+
+    @staticmethod
+    def xml_text() raises -> String:
+        """The model's MJCF, **composed** — `<include>`, `<attach>`, `<frame>`
+        expanded. What every parser and renderer on this path is handed.
+
+        ## ⚠⚠ WHY THE EXPANSION IS HERE — P1a, 2026-09-02
+
+        `expand_mjcf` had exactly ONE caller, `runtime_load.read_model_source`,
+        so the two ways into this parser disagreed about what a model IS:
+
+            parse_model_runtime(path)      → expanded   (CPU only)
+            ModelDefFromXML[xml_path=path] → raw        (the only leg with a GPU)
+
+        A composed scene therefore loaded CPU-only, which is not a property of
+        the GPU decision (kernels stay comptime, and the dims here are
+        hand-supplied comptime parameters — a composed model can perfectly well
+        be one). It was an accident of where the expander got called. That is
+        what blocked `mojo_rl/tasks/` from ever putting a composed family scene
+        on the batched path; see `docs/TASK_LAYER_IMPLEMENTATION.md` Gap A.
+
+        ⚠ THE FAILURE MODE THIS PREVENTS IS SILENT AND ENORMOUS, and the tree
+        has already paid for it once, one layer over. `runtime_load.mojo`'s own
+        header records what "`resolve_includes` alone, no `<attach>`" measured
+        as: `humanoid100` 5 bodies where MuJoCo says 117, `100_humanoids` ZERO
+        where MuJoCo says 1601. A model missing most of itself, with nothing
+        said about it.
+
+        ⚠ EXPANSION IS THE IDENTITY ON A FLAT MODEL, and that is asserted, not
+        assumed — `tests/physics3d/test_expand_identity.mojo` gates every
+        shipped model byte-for-byte. Verified 2026-09-02: NO shipped `.xml` and
+        NO inline fixture in this tree contains a real `<frame>`, `<attach>` or
+        `<include>` (a boundary-aware search; the 14 assets that look like they
+        do are `<framepos>`/`<framequat>` SENSORS, which `_find_tag` correctly
+        declines to match). So this commit changes no shipped model — it
+        changes what the NEXT one is allowed to be.
+
+        ⚠ COSTS THREE EARLY-RETURN SCANS on a flat model: `resolve_includes`
+        returns the input unchanged when it finds no `<include`, `expand_attach`
+        likewise, and `expand_frames` likewise. Against `parse_xml_full`'s
+        measured 0.42 ms (cartpole) / 8.96 ms (dog) this is noise.
+
+        ⚠ READS THE FILE ON EVERY CALL, deliberately not cached — unchanged
+        from before, and for the reason phase 1b gave: a cache would need
+        invalidating the moment "edit a model without a rebuild" is exercised.
+        """
+        return expand_mjcf(Self.raw_xml_text(), Self.asset_base_dir())
 
     @staticmethod
     def asset_base_dir() -> String:
