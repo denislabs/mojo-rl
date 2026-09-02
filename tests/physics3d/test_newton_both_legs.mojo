@@ -94,6 +94,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_BODY_SIZE,
     MODEL_META_SIZE,
+    MODEL_TREE_SIZE,
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
@@ -241,6 +242,7 @@ def solve_static[
     comptime L_JOINT = Layout.row_major(MD.NJOINT, MODEL_JOINT_SIZE)
     comptime L_BODY = Layout.row_major(MD.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_TREES = Layout.row_major(MD.NV * MODEL_TREE_SIZE)
     comptime L_EQ = Layout.row_major(MD.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(MD.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(MD.NSITE, MODEL_SITE_SIZE)
@@ -275,6 +277,7 @@ def solve_static[
             mf.joints.lt["cpu", L_JOINT](),
             mf.bodies.lt["cpu", L_BODY](),
             mf.meta.lt["cpu", L_MMETA](),
+            mf.trees.lt["cpu", L_TREES](),
             mf.equality.lt["cpu", L_EQ](),
             mf.tendons.lt["cpu", L_TEN](),
             mf.sites.lt["cpu", L_SITE](),
@@ -338,6 +341,9 @@ def solve_dynamic[
         IndexList[2](nbody, MODEL_BODY_SIZE)
     )
     var rl_mmeta = RuntimeLayout[DYN1].row_major(IndexList[1](MODEL_META_SIZE))
+    var rl_trees = RuntimeLayout[DYN1].row_major(
+        IndexList[1](nv * MODEL_TREE_SIZE)
+    )
     var rl_eq = RuntimeLayout[DYN2].row_major(
         IndexList[2](nequality, MODEL_EQ_SIZE)
     )
@@ -381,6 +387,7 @@ def solve_dynamic[
             mf.joints.lt_dyn["cpu", DYN2](rl_joint),
             mf.bodies.lt_dyn["cpu", DYN2](rl_body),
             mf.meta.lt_dyn["cpu", DYN1](rl_mmeta),
+            mf.trees.lt_dyn["cpu", DYN1](rl_trees),
             mf.equality.lt_dyn["cpu", DYN2](rl_eq),
             mf.tendons.lt_dyn["cpu", DYN2](rl_ten),
             mf.sites.lt_dyn["cpu", DYN2](rl_site),

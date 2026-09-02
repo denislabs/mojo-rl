@@ -79,7 +79,10 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
-from .cholesky import chol_factor_inline, chol_solve_inline
+from .cholesky import (
+    chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
+)
+from .newton_blocks import build_dof_segments
 
 # MuJoCo's `mjMINVAL`; see `cholesky.mojo` on why `1e-10` was not the
 # reference's number for this guard.
@@ -190,6 +193,8 @@ from ..gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
+    MODEL_TREE_SIZE,
+    MODEL_META_IDX_NTREE,
     METADATA_SIZE,
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
@@ -537,6 +542,7 @@ def _newton_solve_env[
     L_JOINTS: Layout,
     L_BODIES: Layout,
     L_MMETA: Layout,
+    L_TREES: Layout,
     L_EQUALITY: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
@@ -578,6 +584,13 @@ def _newton_solve_env[
     ],
     mmeta: LayoutTensor[
         DTYPE, L_MMETA, MutAnyOrigin
+    ],
+    # ⚠ `Model.trees`, FLAT — `[t*MODEL_TREE_SIZE + col]`, matching
+    # `newton_blocks.build_dof_segments`. `H`'s diagonal blocks are the
+    # kinematic trees merged by whatever a constraint row couples; see that
+    # module. The live row count is `mmeta[MODEL_META_IDX_NTREE]`, not `NV`.
+    trees: LayoutTensor[
+        DTYPE, L_TREES, MutAnyOrigin
     ],
     equality: LayoutTensor[
         DTYPE, L_EQUALITY, MutAnyOrigin
@@ -2878,6 +2891,9 @@ def _newton_solve_fields_kernel[
     mmeta: LayoutTensor[
         DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
     ],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
     equality: LayoutTensor[
         DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
     ],
@@ -2918,7 +2934,7 @@ def _newton_solve_fields_kernel[
         BATCH,
         SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
-        bodies, mmeta, equality, tendons, sites, geoms_w, body_invweight0,
+        bodies, mmeta, trees, equality, tendons, sites, geoms_w, body_invweight0,
         dof_invweight0, cdof, M, m_inv, qacc_constrained, qacc_warmstart,
         solver,
     )
@@ -2968,6 +2984,8 @@ def solve_newton[
     comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    # ⚠ FLAT, matching `build_dof_segments`. `Model.L_TREE` is the 2-D view.
+    comptime L_TREES = Layout.row_major(D.NV * MODEL_TREE_SIZE)
     comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
@@ -3017,6 +3035,8 @@ def solve_newton[
         var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
         var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
         var mmeta_v = m.meta.lt_dyn["cpu", DYN1](rl_MMETA)
+        var rl_TREES = rl1(dm.get_nv() * MODEL_TREE_SIZE)
+        var trees_v = m.trees.lt_dyn["cpu", DYN1](rl_TREES)
         var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
         var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
@@ -3036,7 +3056,7 @@ def solve_newton[
                 BATCH,
                 SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
-                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
+                joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
             )
     else:
@@ -3084,6 +3104,7 @@ def solve_newton[
                 m.joints.lt["gpu", L_JOINT](),
                 m.bodies.lt["gpu", L_BODY](),
                 m.meta.lt["gpu", L_MMETA](),
+                m.trees.lt["gpu", L_TREES](),
                 m.equality.lt["gpu", L_EQ](),
                 m.tendons.lt["gpu", L_TEN](),
                 m.sites.lt["gpu", L_SITE](),
@@ -3163,6 +3184,9 @@ def _newton_blocked_fields_kernel[
     ],
     mmeta: LayoutTensor[
         DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
     ],
     equality: LayoutTensor[
         DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
@@ -4776,6 +4800,8 @@ def solve_newton_blocked[
     comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    # ⚠ FLAT, matching `build_dof_segments`. `Model.L_TREE` is the 2-D view.
+    comptime L_TREES = Layout.row_major(D.NV * MODEL_TREE_SIZE)
     comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
@@ -4829,6 +4855,8 @@ def solve_newton_blocked[
         var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
         var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
         var mmeta_v = m.meta.lt_dyn["cpu", DYN1](rl_MMETA)
+        var rl_TREES = rl1(dm.get_nv() * MODEL_TREE_SIZE)
+        var trees_v = m.trees.lt_dyn["cpu", DYN1](rl_TREES)
         var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
         var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
         var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
@@ -4845,7 +4873,7 @@ def solve_newton_blocked[
             _newton_solve_env[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
-                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
+                joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
             )
     else:
@@ -4869,6 +4897,7 @@ def solve_newton_blocked[
             m.joints.lt["gpu", L_JOINT](),
             m.bodies.lt["gpu", L_BODY](),
             m.meta.lt["gpu", L_MMETA](),
+            m.trees.lt["gpu", L_TREES](),
             m.equality.lt["gpu", L_EQ](),
             m.tendons.lt["gpu", L_TEN](),
             m.sites.lt["gpu", L_SITE](),
