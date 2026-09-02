@@ -131,6 +131,13 @@ from mojo_rl.physics3d.gpu.constants import (
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
     BODY_IDX_ROOTID,
+    MODEL_TREE_SIZE,
+    TREE_IDX_DOF_ADR,
+    TREE_IDX_DOF_NUM,
+    TREE_IDX_KIND,
+    TREE_KIND_DENSE,
+    TREE_KIND_COMPACT,
+    MODEL_META_IDX_NTREE,
     BODY_IDX_WELDID,
     BODY_IDX_MOCAP,
     BODY_IDX_GRAVCOMP,
@@ -2848,6 +2855,168 @@ def build_model_fields_from_flat[
         mf.bodies.data[o + BODY_IDX_IQUAT_Y] = body_iquat[b * 4 + 1]
         mf.bodies.data[o + BODY_IDX_IQUAT_Z] = body_iquat[b * 4 + 2]
         mf.bodies.data[o + BODY_IDX_IQUAT_W] = body_iquat[b * 4 + 3]
+
+    # ── kinematic TREES — M's diagonal blocks ────────────────────────────
+    #
+    # ⚠⚠ THIS IS THE MASS MATRIX'S SPARSITY, WRITTEN DOWN. M couples a dof
+    # only with its tree ANCESTORS, so its diagonal blocks are exactly the
+    # trees and every entry outside one is STRUCTURALLY zero. See
+    # `MODEL_TREE_SIZE` for the argument and the two CRBA sites that
+    # guarantee it.
+    #
+    # ⚠⚠ LAST IN THIS FUNCTION, AND THE POSITION IS LOAD-BEARING. It reads
+    # `body_rootid`, the joint records, AND `BODY_IDX_IPOS_*`/`IQUAT_*` — and
+    # those last two are written by the loop DIRECTLY ABOVE, at the very end of
+    # the build, because they are only final after `inertiafromgeom` and
+    # `settotalmass`. Built beside `body_rootid` instead (1,300 lines earlier)
+    # it reads them as ZEROS, every body fails `iquat == identity`, and every
+    # block is classified DENSE — correct output, silently no faster, and the
+    # partition arm of the gate still passes. That is how it was written the
+    # first time; `test_tree_blocks_vs_mujoco`'s conservative-block COUNT is
+    # what caught it, which is why that count is printed rather than tallied.
+    #
+    # It must also come BEFORE `compute_invweight0`, which calls `ldl_factor`
+    # during model build — that is a later step of `build_model_runtime`, so
+    # the end of this function satisfies both.
+    #
+    # Two dofs share a tree iff their bodies share `BODY_IDX_ROOTID`. Dof
+    # ranges are contiguous per body and bodies are in tree order, so a tree
+    # is one `(adr, num)` interval and this is a single pass over the dofs.
+    var _nv_t = mf.dims.get_nv()
+    # dof -> owning body. Same construction as `build_actuator_damping`'s
+    # (`fields_build.mojo:1029`); built from the joint records rather than
+    # stored, because only these two passes want it.
+    var dof_body_t = List[Int](length=_nv_t if _nv_t > 0 else 1, fill=0)
+    for j in range(len(fmd.joints)):
+        var jo = j * MODEL_JOINT_SIZE
+        var jb = Int(mf.joints.data[jo + JOINT_IDX_BODY_ID])
+        var jda = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
+        var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
+        var jnd = 1
+        if jt == JNT_FREE:
+            jnd = 6
+        elif jt == JNT_BALL:
+            jnd = 3
+        for k in range(jnd):
+            if jda + k >= 0 and jda + k < _nv_t:
+                dof_body_t[jda + k] = jb
+
+    var ntree = 0
+    var d0 = 0
+    while d0 < _nv_t:
+        var root0 = Int(
+            mf.bodies.data[dof_body_t[d0] * MODEL_BODY_SIZE + BODY_IDX_ROOTID]
+        )
+        var d1 = d0 + 1
+        while d1 < _nv_t:
+            var r1 = Int(
+                mf.bodies.data[
+                    dof_body_t[d1] * MODEL_BODY_SIZE + BODY_IDX_ROOTID
+                ]
+            )
+            if r1 != root0:
+                break
+            d1 += 1
+        var num = d1 - d0
+
+        # ── kind ──
+        #
+        # ⚠⚠ CONSERVATIVE ON PURPOSE, AND THE ASYMMETRY IS THE POINT. Calling
+        # a block COMPACT when M is not diagonal is a SILENT WRONG ANSWER;
+        # calling it DENSE when M is diagonal is only slower. So this demands
+        # a condition strong enough to be airtight rather than one that
+        # matches MuJoCo's `body_simple` row for row.
+        #
+        # ⚠ THE STRENGTHENING IS "EXACTLY ONE BODY". MuJoCo also admits a body
+        # whose parent is a FIXED CHILD OF WORLD (`user_model.cc:2814`), but
+        # then `body_rootid` is that parent and the free joint's rotational
+        # cdofs are anchored at `subtree_com[root]` — the COMBINED com of both
+        # bodies — which is not the child's own com unless the parent is
+        # massless. That leaves a translation/rotation coupling MuJoCo's rule
+        # tolerates and this one will not guess at. With one body,
+        # `subtree_com[root] == xipos == xpos` (ipos is zero, below) and the
+        # offset is identically zero.
+        #
+        # The remaining conditions are MuJoCo's, and each one is load-bearing:
+        #   ipos == 0, iquat == identity  the inertia is diagonal IN THE BODY
+        #                                 AXES the rotational cdofs use;
+        #   jnt_pos == 0                  the hinge anchor is the com, so the
+        #                                 cdof has no linear part;
+        #   axis-aligned slide/hinge      two mis-aligned axes have a nonzero
+        #                                 dot product;
+        #   at most one rotational joint  a second one couples to the first.
+        var kind = TREE_KIND_COMPACT
+        var b0 = dof_body_t[d0]
+        for k in range(d0 + 1, d1):
+            if dof_body_t[k] != b0:
+                kind = TREE_KIND_DENSE
+        var bo = b0 * MODEL_BODY_SIZE
+        # ⚠ A 1x1 BLOCK IS DIAGONAL BY DEFINITION — it has no off-diagonal
+        # entry to discard, so none of the conditions below can make it wrong.
+        # Checking them anyway is not conservative, it is a MISS: `finger`'s
+        # lone hinge has `iquat` at 90 degrees and a `-6.5e-19` `ipos`, both
+        # irrelevant to a single dof, and demanding an identity inertial frame
+        # cost the one block this classifier used to get wrong against MuJoCo.
+        # ⚠ A 1x1 BLOCK IS DIAGONAL BY DEFINITION — it has no off-diagonal
+        # entry to discard, so nothing below can make it wrong, and testing it
+        # anyway is not conservatism but a MISS: `finger`'s lone hinge has its
+        # inertial frame at 90 degrees and an `ipos` of -6.5e-19, both
+        # irrelevant to a single dof, and demanding an identity inertial frame
+        # was the one block this classifier got wrong against MuJoCo.
+        if num > 1:
+            if (
+                mf.bodies.data[bo + BODY_IDX_IPOS_X] != 0
+                or mf.bodies.data[bo + BODY_IDX_IPOS_Y] != 0
+                or mf.bodies.data[bo + BODY_IDX_IPOS_Z] != 0
+                or mf.bodies.data[bo + BODY_IDX_IQUAT_X] != 0
+                or mf.bodies.data[bo + BODY_IDX_IQUAT_Y] != 0
+                or mf.bodies.data[bo + BODY_IDX_IQUAT_Z] != 0
+                or mf.bodies.data[bo + BODY_IDX_IQUAT_W] != 1
+            ):
+                kind = TREE_KIND_DENSE
+            var rotfound = False
+            for j in range(len(fmd.joints)):
+                var jo = j * MODEL_JOINT_SIZE
+                if Int(mf.joints.data[jo + JOINT_IDX_BODY_ID]) != b0:
+                    continue
+                var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
+                # A joint FOLLOWING a rotational one is demoted whatever it is
+                # — MuJoCo's `rotfound` test, `user_model.cc:2851`.
+                if rotfound:
+                    kind = TREE_KIND_DENSE
+                if (
+                    mf.joints.data[jo + JOINT_IDX_POS_X] != 0
+                    or mf.joints.data[jo + JOINT_IDX_POS_Y] != 0
+                    or mf.joints.data[jo + JOINT_IDX_POS_Z] != 0
+                ):
+                    kind = TREE_KIND_DENSE
+                if jt == JNT_HINGE or jt == JNT_SLIDE:
+                    var na = 0
+                    if abs(mf.joints.data[jo + JOINT_IDX_AXIS_X]) > 1e-14:
+                        na += 1
+                    if abs(mf.joints.data[jo + JOINT_IDX_AXIS_Y]) > 1e-14:
+                        na += 1
+                    if abs(mf.joints.data[jo + JOINT_IDX_AXIS_Z]) > 1e-14:
+                        na += 1
+                    if na != 1:
+                        kind = TREE_KIND_DENSE
+                # ⚠ `JNT_FREE` IS IN THIS LIST AND IS NOT IN MUJOCO'S
+                # (`user_model.cc:2859` marks BALL and HINGE only). MJCF
+                # forbids a free joint alongside any other, so the two rules
+                # cannot disagree on a loadable model; ours demotes the
+                # impossible case instead of calling six free dofs plus a
+                # hinge diagonal.
+                if jt == JNT_BALL or jt == JNT_HINGE or jt == JNT_FREE:
+                    rotfound = True
+
+        var to = ntree * MODEL_TREE_SIZE
+        mf.trees.data[to + TREE_IDX_DOF_ADR] = Scalar[DTYPE](d0)
+        mf.trees.data[to + TREE_IDX_DOF_NUM] = Scalar[DTYPE](num)
+        mf.trees.data[to + TREE_IDX_KIND] = Scalar[DTYPE](kind)
+        ntree += 1
+        d0 = d1
+    mf.meta.data[MODEL_META_IDX_NTREE] = Scalar[DTYPE](ntree)
+
 
 
 # =============================================================================

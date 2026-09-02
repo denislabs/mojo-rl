@@ -354,7 +354,7 @@ comptime MJ_MAXVAL: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 46
+comptime MODEL_META_SIZE: Int = 47
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -589,10 +589,55 @@ comptime MODEL_META_IDX_LS_TOLERANCE: Int = 44
 # factor of 245. The board row was mostly this.
 comptime MODEL_META_IDX_WARMSTART_DISABLED: Int = 45
 
+# ⚠ THE NUMBER OF KINEMATIC TREES — the row count of the `trees` record below.
+# `trees` is sized `[NV, 3]` because a model cannot have more trees than dofs
+# (see `Model.L_TREE`), so the ALLOCATION is an exact comptime bound and this
+# is the only thing that says how many of those rows are real. A consumer that
+# walks `NV` rows instead of this one reads zeroed padding as a tree at dof 0
+# of length 0 — legal-looking and wrong.
+comptime MODEL_META_IDX_NTREE: Int = 46
+
 comptime MJ_SOLVER_ITERATIONS: Int = 100
 comptime MJ_SOLVER_TOLERANCE: Float64 = 1e-8
 comptime MJ_LS_ITERATIONS: Int = 50
 comptime MJ_LS_TOLERANCE: Float64 = 0.01
+
+
+# =============================================================================
+# Model Buffer Layout - Kinematic TREES (M's diagonal blocks)
+# =============================================================================
+#
+# ⚠⚠ A TREE IS A BLOCK OF THE MASS MATRIX, AND THAT IS WHY IT IS A RECORD.
+# M couples a dof only with its tree ANCESTORS (mujoco_warp `io.py:165`), so
+# M's diagonal blocks are exactly the trees, and every entry outside a block is
+# STRUCTURALLY zero — both CRBA paths guarantee it (`mass_matrix.mojo:592-600`
+# walks only ancestor dofs after zeroing M; the dense path at `:219-223` needs
+# a body in BOTH subtrees, which no cross-tree pair has). Restricting a
+# factorisation to these ranges is therefore not an approximation: subtracting
+# exact zeros leaves a sequential accumulation bit-identical.
+#
+# Dof ranges are contiguous per body and bodies are in tree order, so a tree is
+# a single `(dof_adr, dof_num)` interval.
+#
+# ⚠ `KIND` IS NOT `jnt_type`. A free body is USUALLY a diagonal (COMPACT)
+# block and NOT ALWAYS: MuJoCo demands `body_ipos == 0` AND
+# `body_iquat == identity` (`body_simple`, `user_model.cc:2814`), because the
+# free joint's rotational dofs are about the BODY frame axes
+# (`cdof.mojo:330-378`, matching `engine_core_smooth.c:318-337`) and only then
+# does the inertia come out diagonal in them. Deciding "free joint => compact"
+# is a silent wrong answer on a prop whose COM is offset from its frame.
+comptime MODEL_TREE_SIZE: Int = 3
+
+comptime TREE_IDX_DOF_ADR: Int = 0  # First dof of the tree
+comptime TREE_IDX_DOF_NUM: Int = 1  # Dof count (the block is [adr, adr+num))
+comptime TREE_IDX_KIND: Int = 2  # TREE_KIND_* below
+
+# M restricted to this block has off-diagonal STRUCTURE — factor it.
+comptime TREE_KIND_DENSE: Int = 0
+# M restricted to this block is DIAGONAL — reciprocals, no factorisation.
+#
+# ⚠ CLASSIFIED, NEVER ASSUMED FROM THE JOINT TYPE. See the KIND note above.
+comptime TREE_KIND_COMPACT: Int = 1
 
 
 # =============================================================================

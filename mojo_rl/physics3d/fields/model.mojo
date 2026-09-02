@@ -34,6 +34,8 @@ from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
+    MODEL_TREE_SIZE,
+    MODEL_META_IDX_NTREE,
     MODEL_CURRICULUM_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_EQ_SIZE,
@@ -118,6 +120,12 @@ struct Model[
     comptime L_SITE = Layout.row_major(Self.NSITE, MODEL_SITE_SIZE)
     comptime L_BODY_INVW = Layout.row_major(Self.NBODY, 2)
     comptime L_DOF_INVW = Layout.row_major(Self.NV)
+    # ⚠ `[NV, 3]` IS EXACT, NOT A CAP. A model cannot have more trees than
+    # dofs, so this is a comptime bound that needs no `CAP_*` parameter — which
+    # matters because `fields/dims.mojo` treats caps as load-bearing (a cap
+    # answers "can I stack-allocate", not "does this exist"). The live row
+    # count is `meta[MODEL_META_IDX_NTREE]`.
+    comptime L_TREE = Layout.row_major(Self.NV, MODEL_TREE_SIZE)
     comptime L_EXCLUDE = Layout.row_major(Self.NEXCLUDE, 2)
     comptime L_PAIR = Layout.row_major(Self.NPAIR, MODEL_PAIR_SIZE)
     comptime L_MESH_META = Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE)
@@ -167,6 +175,24 @@ struct Model[
 
     Filled by `compute_invweight0`, which already forms M at qpos0 and must
     read the diagonal BEFORE `ldl_factor` overwrites it in place."""
+    var trees: TensorImpl[Self.DTYPE]  # [NV, MODEL_TREE_SIZE]
+    """The kinematic trees as `(dof_adr, dof_num, kind)` — M's diagonal blocks.
+
+    ⚠ THE ROW COUNT IS `meta[MODEL_META_IDX_NTREE]`, NOT `NV`. The allocation
+    is `[NV, 3]` because a model cannot have more trees than dofs; the rows past
+    `ntree` are zero, and a zero row reads as "a tree at dof 0 of length 0" —
+    legal-looking and wrong. See `MODEL_TREE_SIZE` for why a tree is a block of
+    the mass matrix and why `kind` is CLASSIFIED rather than read off the joint
+    type.
+
+    Filled by `build_model_fields_from_flat` from `BODY_IDX_ROOTID`, which it
+    has just written. It is model-time topology: nothing here depends on
+    `qpos`.
+
+    ⚠ BUILT BEFORE `compute_invweight0`, which calls `ldl_factor` during model
+    build (`dynamics/invweight.mojo:236`) and will read this table once the
+    factorisation is block-aware."""
+
     var dof_actdamp: TensorImpl[Self.DTYPE]  # [NV]
     """Per-dof actuator damping, `sum over actuators of kv * trn^2`.
 
@@ -383,6 +409,17 @@ struct Model[
         self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nbody() * 2)
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.dof_M0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
+        # `_at_least_one`: an nv=0 model still needs a bindable operand.
+        self.trees = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nv()) * MODEL_TREE_SIZE
+        )
+        # ⚠ ZEROED, AND THE ZERO IS THE SAFE VALUE. `alloc` does not promise
+        # zeroed memory, and an unbuilt table read as garbage `(adr, num)` is
+        # an out-of-range block, not an empty one. A hand-built `Model` that
+        # skips the parser gets `ntree = 0` and the whole-nv fallback that
+        # `MODEL_META_IDX_NTREE`'s default implies.
+        for i in range(_at_least_one(dims.get_nv()) * MODEL_TREE_SIZE):
+            self.trees.data[i] = Scalar[Self.DTYPE](0)
         self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.actdamp_trn = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(dims.get_nact() * ACTDAMP_TRN_SIZE)
@@ -468,6 +505,7 @@ struct Model[
         self.body_invweight0.upload(ctx)
         self.dof_invweight0.upload(ctx)
         self.dof_M0.upload(ctx)
+        self.trees.upload(ctx)
         self.dof_actdamp.upload(ctx)
         self.actdamp_trn.upload(ctx)
         self.excludes.upload(ctx)
