@@ -208,6 +208,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         T_infer: Int,
         lr_x: Scalar[Self.dtype],
         spike_sigma: Scalar[Self.dtype] = 1,
+        beta: Scalar[Self.dtype] = 1,
     ) -> PCTrainResult:
         """Run forward sweep + T_infer inference iterations + grad compute.
         Writes per-block (W, b) gradients into `grads`. Does NOT touch `params`.
@@ -233,6 +234,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 lr_x,
                 Self.NET.N - 1 - t,
                 inv_sigma,
+                beta,
             )
 
         var energy_final = Self._total_energy[BATCH](mu_eps_buf)
@@ -698,11 +700,26 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         lr_x: Scalar[Self.dtype],
         spike_idx: Int = -1,
         inv_sigma: Scalar[Self.dtype] = 1,
+        beta: Scalar[Self.dtype] = 1,
     ):
         """One Jacobi iteration of the local-rule x update.
 
         `spike_idx` / `inv_sigma` default to the disabled precision schedule
         (Σ = 1 at every level); see `_apply_precision_spike`.
+
+        `beta` scales the READOUT ε — the nudging of equilibrium propagation.
+        The target is clamped at the readout, so relaxation drives label
+        information down into the latents; P20 measured that this is where the
+        energy reduction goes and that NONE of it reaches the feedforward
+        function we deploy (sup_loss 6.2× better, train accuracy −0.0005).
+        β < 1 weakens that drive. Some leakage is NECESSARY — it is how PC
+        assigns credit at all — so β is a knob to tune, not a term to remove.
+
+        β = 1 is a no-op (the `_apply_precision_spike` guard returns early), so
+        the default path stays bitwise identical to every prior measurement.
+        Note β also scales the readout block's own weight gradient, since the
+        same slab is what `weight_grad` reads; Adam largely absorbs a per-block
+        gradient scale, but it is a real second-order confound.
         """
 
         # ===== Phase A+B: forward predict + ε compute =======================
@@ -712,6 +729,9 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
 
         # ===== Phase B': ε_l ← ε_l / Σ_l for the one spiking level ==========
         Self._apply_precision_spike[BATCH](mu_eps_buf, spike_idx, inv_sigma)
+
+        # ===== Phase B'': readout nudge  ε_readout ← β · ε_readout ==========
+        Self._apply_precision_spike[BATCH](mu_eps_buf, Self.NET.N - 1, beta)
 
         # ===== Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1}) ===========
         comptime for l_idx in range(Self.NET.N_LATENTS):
