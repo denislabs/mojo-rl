@@ -1484,6 +1484,26 @@ def _newton_solve_env[
 
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
+            # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
+            # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
+            #     if (!nefc) { mju_copy(d->qacc, d->qacc_smooth, nv); return; }
+            # — and this loop had no such guard. With no rows the warmstart block
+            # above is already skipped (its own `num_edges > 0` test), so `qacc` still
+            # holds `qacc_smooth` and the gradient is IDENTICALLY ZERO. Every
+            # iteration then factors `H = M` and solves for a search direction of
+            # zero: the answer cannot move, so breaking here writes back exactly
+            # what a full pass would have — this is a no-op, not an approximation.
+            #
+            # ⚠ IT IS NOT A MICRO-OPTIMISATION. P0 measured it at 32.3 of 46.9 ms
+            # per step on the k=9 park scene — 69% of GPU time, 78% of the whole
+            # parked-slot cost — spent re-factorising a matrix `ldl_factor` factored
+            # two kernels earlier, for a problem with no constraints in it. The
+            # cooperative Cholesky's `d_j` reduction is `if tid == 0: for k in
+            # range(j)`, O(NV^2) on ONE thread, so it is also the fastest-growing
+            # term in the sweep.
+            # See docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md §0.0.1.
+            if num_edges == 0:
+                break
             # ⚠ THE MODEL'S BUDGET, checked before any work — the comptime
             # bound above is only the ceiling a `range()` needs.
             if iter_n >= niter_rt:
@@ -2276,6 +2296,26 @@ def _newton_solve_env[
 
     # === Step 5: Newton iteration loop ===
     for _iter in range(NEWTON_ITER_GPU):
+        # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
+        # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
+        #     if (!nefc) { mju_copy(d->qacc, d->qacc_smooth, nv); return; }
+        # — and this loop had no such guard. With no rows the warmstart block
+        # above is already skipped (its own `nc > 0 or ns > 0 or neq_rows > 0` test), so `qacc` still
+        # holds `qacc_smooth` and the gradient is IDENTICALLY ZERO. Every
+        # iteration then factors `H = M` and solves for a search direction of
+        # zero: the answer cannot move, so breaking here writes back exactly
+        # what a full pass would have — this is a no-op, not an approximation.
+        #
+        # ⚠ IT IS NOT A MICRO-OPTIMISATION. P0 measured it at 32.3 of 46.9 ms
+        # per step on the k=9 park scene — 69% of GPU time, 78% of the whole
+        # parked-slot cost — spent re-factorising a matrix `ldl_factor` factored
+        # two kernels earlier, for a problem with no constraints in it. The
+        # cooperative Cholesky's `d_j` reduction is `if tid == 0: for k in
+        # range(j)`, O(NV^2) on ONE thread, so it is also the fastest-growing
+        # term in the sweep.
+        # See docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md §0.0.1.
+        if nc == 0 and ns == 0 and neq_rows == 0:
+            break
         if _iter >= niter_rt:
             break
         # Gradient = Ma - qfrc_sm - qfrc_c (pure InlineArray reads — no workspace access)
@@ -4154,6 +4194,31 @@ def _newton_blocked_fields_kernel[
 
     # === Newton iterations — ALL threads execute the loop ===
     for iter_n in range(NEWTON_ITER_GPU):
+        # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
+        # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
+        #     if (!nefc) { mju_copy(d->qacc, d->qacc_smooth, nv); return; }
+        # — and this loop had no such guard. With no rows the warmstart block
+        # above is already skipped (its own `num_edges > 0` test), so `qacc` still
+        # holds `qacc_smooth` and the gradient is IDENTICALLY ZERO. Every
+        # iteration then factors `H = M` and solves for a search direction of
+        # zero: the answer cannot move, so breaking here writes back exactly
+        # what a full pass would have — this is a no-op, not an approximation.
+        #
+        # ⚠ IT IS NOT A MICRO-OPTIMISATION. P0 measured it at 32.3 of 46.9 ms
+        # per step on the k=9 park scene — 69% of GPU time, 78% of the whole
+        # parked-slot cost — spent re-factorising a matrix `ldl_factor` factored
+        # two kernels earlier, for a problem with no constraints in it. The
+        # cooperative Cholesky's `d_j` reduction is `if tid == 0: for k in
+        # range(j)`, O(NV^2) on ONE thread, so it is also the fastest-growing
+        # term in the sweep.
+        # See docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md §0.0.1.
+        #
+        # ⚠ UNIFORM ACROSS THE THREADGROUP, so it cannot desynchronise the
+        # `barrier()` calls in the loop body: `num_edges_b` is read from
+        # `ctrl_sh[0]` AFTER a barrier, so every thread sees the same value and
+        # every thread breaks on the same iteration.
+        if num_edges_b == 0:
+            break
         if iter_n >= niter_rt:
             break
         # --- Thread 0: gradient + convergence check ---
