@@ -42,7 +42,7 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
+from mojo_rl.nn.constants import CPU_SIMD_W, DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -1148,14 +1148,44 @@ struct Conv2D[
                     # scatter + bias broadcast into out.data[b*OUT_FLAT:] (out_b
                     # is the [OC,SO] GEMM result; the output offset follows LAYOUT)
                     var base = b * Self.OUT_FLAT
-                    for oc in range(Self.OC_):
-                        var bv = self.bias.val.data[oc]
-                        for s in range(Self.SO):
-                            outd.data[
-                                base + _out_off[Self.LAYOUT, Self.OC_, Self.SO](
-                                    oc, s
+                    # ⚠ VECTORISED FOR NCHW, where `_out_off` is `oc*SO + s`:
+                    # source and destination are BOTH contiguous in `s` and the
+                    # bias is a per-CHANNEL constant, so this is a broadcast
+                    # add over a contiguous run. It was the scatter half of
+                    # `Conv2D::forward`'s 14.3% main-thread self time, scalar,
+                    # 3.5 ms per forward. NHWC is `s*OC + oc` — strided, and a
+                    # vector store would scatter across channels.
+                    comptime if Self.LAYOUT == LAYOUT_NCHW:
+                        var _obp = out_b.unsafe_ptr()
+                        var _dst = outd.data.unsafe_ptr()
+                        for oc in range(Self.OC_):
+                            var bv = self.bias.val.data[oc]
+                            var bvv = SIMD[DT, CPU_SIMD_W](bv)
+                            var src0 = oc * Self.SO
+                            var dst0 = base + oc * Self.SO
+                            var k = 0
+                            while k + CPU_SIMD_W <= Self.SO:
+                                _dst.unsafe_store(
+                                    dst0 + k,
+                                    _obp.unsafe_load[width=CPU_SIMD_W](src0 + k)
+                                    + bvv,
                                 )
-                            ] = (out_b[oc * Self.SO + s] + bv)
+                                k += CPU_SIMD_W
+                            while k < Self.SO:
+                                _dst[unsafe_offset = dst0 + k] = (
+                                    _obp[unsafe_offset = src0 + k] + bv
+                                )
+                                k += 1
+                    else:
+                        for oc in range(Self.OC_):
+                            var bv = self.bias.val.data[oc]
+                            for s in range(Self.SO):
+                                outd.data[
+                                    base
+                                    + _out_off[
+                                        Self.LAYOUT, Self.OC_, Self.SO
+                                    ](oc, s)
+                                ] = (out_b[oc * Self.SO + s] + bv)
             else:
                 var c = ctx.value()
                 comptime BS = B * Self.SO
