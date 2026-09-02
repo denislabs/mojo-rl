@@ -30,6 +30,48 @@ it far away. §3.3 marks the cost of that UNPRICED and says, in as many words,
    So on Apple this file is good for exactly one thing — checking that the
    harness compiles, steps, formats and refuses correctly.
 
+## ⚠⚠ IT HAS RUN. THE ANSWER IS: A PARKED SLOT IS EXPENSIVE, QUADRATICALLY.
+
+RTX 5090, 1024 lanes, 300 timed steps, 3 interleaved repeats, minimum reported.
+Run 2026-09-02. Run-to-run spread 0.04–2.02 % against a 687 % effect, so this
+is decidable by a wide margin.
+
+    leg                  nq   nv   ms/step   env-steps/s   x k=0   spread
+    k=0  (control)        6    6      7.94      128,908    1.00    0.04%
+    k=3                  27   24     13.55       75,573    1.71    0.52%
+    k=6                  48   42     29.07       35,224    3.66    0.71%
+    k=9  (ceiling)       69   60     62.55       16,371    7.88    2.02%
+    k=9  REPARK          69   60     62.62       16,353    7.89    1.66%
+
+⚠ THE EXCESS IS QUADRATIC IN THE ADDED DOFS, not linear:
+
+    k=3   d_nv 18   +5.61 ms   d/d_nv^2 = 0.0173
+    k=6   d_nv 36  +21.13 ms   d/d_nv^2 = 0.0163
+    k=9   d_nv 54  +54.61 ms   d/d_nv^2 = 0.0187
+
+constant to +-7 %. That is the mass-matrix factorisation and the cooperative
+Cholesky, both ~NV^2 per thread — exactly the term `docs/TASK_LAYER_PLAN.md`
+§3.3 suspected and could not price.
+
+⚠⚠ WHAT THIS MEANS FOR THE PLAN. §3.3 said "this is not obviously free" and
+"do not commit to a budget of 6 before P0 reports". P0 has reported: **a budget
+of 6 costs 3.66x the physics step.** The fixed scene budget, as specified —
+free-jointed slots for every object a family might use — does not survive at
+the sizes the design assumes. §3.6's answer to LIBERO-Object ("declare the
+union, park the unused", ten free bodies with nine parked) is past both the
+compile ceiling and any usable throughput.
+
+⚠ AND REPARK IS FREE — 62.62 vs 62.55 ms, 0.11 %, inside the 2 % spread. That
+is not just a happy result for Gap D, it LOCATES THE COST: pinning the pose
+removes the broadphase churn and the falling bodies and changes nothing, so the
+cost is in the DYNAMICS, not in collision. **You cannot park your way out of
+it.** The dofs are expensive because they exist, not because they move.
+
+⚠ THIS MEASURES THE PHYSICS STEP ALONE, deliberately — no agent. Whether 3.66x
+on the step is 3.66x on a training run depends on the env:agent ratio at 1024
+lanes, which is not measured here and should be before anyone quotes this as a
+training slowdown.
+
 ## ⚠⚠ THE SWEEP STOPS AT k=9 BECAUSE THE SOLVER DOES
 
 k=12 was in this sweep and DOES NOT COMPILE on an RTX 5090:
