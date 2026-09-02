@@ -132,3 +132,11 @@ tests/io/test_tar.mojo
 # gate IMPORTS the rule from `robot/so101/calibration.mojo` rather than
 # restating it, so the two cannot drift apart.
 tests/soarm/test_span_guard.mojo
+
+# `_im2col_cpu` against an independent reference, at ResNet18's real shapes
+# plus seven chosen to break a bounds computation — including one DERIVED to
+# make the rewrite's zero-fill write past the end of its buffer, which a value
+# comparison cannot see and a canary can. Self-contained: no dataset, no
+# fixture, no GPU. It is 60% of ACT's CPU forward, so it is worth a gate that
+# runs on every tier.
+tests/nn/test_im2col_cpu.mojo

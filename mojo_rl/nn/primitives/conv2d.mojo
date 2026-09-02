@@ -142,23 +142,117 @@ def _im2col_cpu[
     LAYOUT: Int = LAYOUT_NCHW,
 ](ref in_list: List[Scalar[DT]], in_off: Int, mut col_list: List[Scalar[DT]]):
     """x[IC·H·W] slab at `in_off` → col_list[OH·OW, COL] row-major. COL axis and
-    input slab follow LAYOUT (NCHW default)."""
+    input slab follow LAYOUT (NCHW default).
+
+    ⚠⚠ **THIS IS 60% OF ACT's CPU FORWARD AND IT COMPUTES NOTHING.** Measured on
+    an M1 Pro, ResNet18 at 240x320, BATCH=1, summed over all 20 convolutions of
+    both cameras: 59 ms of a 98 ms forward. It exists only to hand `max_matmul`
+    a contiguous matrix — and that GEMM is already near the single-core ceiling
+    (~150 GMAC/s implies AMX, well past NEON's ~51 GFLOP/s), so the arithmetic
+    is not what is slow here. The data movement around it is.
+
+    ⚠ THE COST WAS NEVER A BOUNDS CHECK, which is the intuitive suspicion after
+    the stateful-tensor migration replaced pointers with `List`. The NCHW path
+    below performs **exactly the same `List` indexing** as the loop it replaced
+    — same storage, same origins, no pointers — and is 1.44x faster purely by
+    (a) hoisting the `iw` bounds test out of the inner loop and (b) strength-
+    reducing the per-element address arithmetic to running offsets. If the
+    `List` access itself carried a runtime check, restructuring the loop could
+    not have bought that. Measured across all 11 distinct ResNet18 shapes:
+    59.1 -> 41.0 ms for two cameras, bit-identical output.
+
+    ⚠ NHWC KEEPS THE ORIGINAL LOOP. Its COL axis is `(kh*K + kw)*IC + ic`, so
+    the innermost `kw` run is strided by IC rather than contiguous and the same
+    rewrite does not apply. It is also on no path measured here.
+    """
     comptime CK = IC * K * K
+    comptime if LAYOUT != LAYOUT_NCHW:
+        for oh in range(OH):
+            for ow in range(OW):
+                var row_off = (oh * OW + ow) * CK
+                for ic in range(IC):
+                    for kh in range(K):
+                        var ih = oh * S + kh - P
+                        for kw in range(K):
+                            var iw = ow * S + kw - P
+                            var c_idx = row_off + _col_off[LAYOUT, IC, K](
+                                ic, kh, kw
+                            )
+                            if ih < 0 or ih >= H or iw < 0 or iw >= W:
+                                col_list[c_idx] = Scalar[DT](0)
+                            else:
+                                col_list[c_idx] = in_list[
+                                    in_off
+                                    + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
+                                ]
+        return
+
+    comptime HW = H * W
+    comptime if K == 1:
+        # ⚠ A SEPARATE PATH BECAUSE THE GENERAL ONE IS SLOWER HERE. With K == 1
+        # there is no `kw` window to hoist anything out of, and computing its
+        # bounds costs more than the branch it removes — measured 0.69-0.80x,
+        # i.e. a REGRESSION, on the three 1x1 downsample convolutions. They are
+        # only 0.13 ms of the forward, but a rewrite that makes a shape slower
+        # should handle it rather than average it away.
+        for oh in range(OH):
+            var ih = oh * S - P
+            var row0 = oh * OW * IC
+            var inside_h = ih >= 0 and ih < H
+            for ow in range(OW):
+                var iw = ow * S - P
+                var row_off = row0 + ow * IC
+                if not inside_h or iw < 0 or iw >= W:
+                    for ic in range(IC):
+                        col_list[row_off + ic] = Scalar[DT](0)
+                    continue
+                var x_at = in_off + ih * W + iw
+                for ic in range(IC):
+                    col_list[row_off + ic] = in_list[x_at + ic * HW]
+        return
+
     for oh in range(OH):
+        var row0 = oh * OW * CK
         for ow in range(OW):
-            var row_off = (oh * OW + ow) * CK
+            var row_off = row0 + ow * CK
+            var iw0 = ow * S - P
+            # The `kw` values for which `iw0 + kw` lands inside [0, W).
+            # ⚠ BOTH ENDS CLAMPED INTO [0, K]. A window falling ENTIRELY
+            # outside the input — possible whenever P >= K, e.g. K=1 P=2 —
+            # gives `kw_lo > K`, and an unclamped `range(kw_lo)` zero-fill
+            # would run off the end of this row into the next one. The
+            # prototype of this rewrite passed all 11 ResNet18 shapes WITHOUT
+            # this clamp: the shapes a real model uses are not an adversarial
+            # test of a bounds computation, which is why the gate carries
+            # shapes no ResNet has.
+            var kw_lo = 0 if iw0 >= 0 else -iw0
+            if kw_lo > K:
+                kw_lo = K
+            var kw_hi = K if iw0 + K <= W else W - iw0
+            if kw_hi > K:
+                kw_hi = K
+            if kw_hi < kw_lo:
+                kw_hi = kw_lo
             for ic in range(IC):
+                var c_ic = row_off + ic * K * K
+                var x_ic = in_off + ic * HW
                 for kh in range(K):
                     var ih = oh * S + kh - P
-                    for kw in range(K):
-                        var iw = ow * S + kw - P
-                        var c_idx = row_off + _col_off[LAYOUT, IC, K](ic, kh, kw)
-                        if ih < 0 or ih >= H or iw < 0 or iw >= W:
-                            col_list[c_idx] = Scalar[DT](0)
-                        else:
-                            col_list[c_idx] = in_list[
-                                in_off + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
-                            ]
+                    var c_base = c_ic + kh * K
+                    if ih < 0 or ih >= H:
+                        for kw in range(K):
+                            col_list[c_base + kw] = Scalar[DT](0)
+                        continue
+                    # `x_row + kw` over [kw_lo, kw_hi) is a CONTIGUOUS run of
+                    # the input row written to a contiguous run of the col row:
+                    # no per-element index arithmetic and no branch.
+                    var x_row = x_ic + ih * W + iw0
+                    for kw in range(kw_lo):
+                        col_list[c_base + kw] = Scalar[DT](0)
+                    for kw in range(kw_lo, kw_hi):
+                        col_list[c_base + kw] = in_list[x_row + kw]
+                    for kw in range(kw_hi, K):
+                        col_list[c_base + kw] = Scalar[DT](0)
 
 
 def _col2im_cpu[
@@ -882,8 +976,20 @@ struct Conv2D[
             ref outd = rebind[Tensor](out)
             comptime if target == "cpu":
                 outd.ensure(B * Self.OUT_FLAT)
+                # ⚠ UNINITIALISED ON PURPOSE. `_im2col_cpu` writes EVERY
+                # element of this buffer — the gathered value inside the input,
+                # an explicit 0 outside it — and `COL` is exactly `IC*K*K`, the
+                # row width it fills (the padded `CPAD` stride belongs to the
+                # GPU path, not this one). So the zero-fill was a memset of a
+                # buffer about to be entirely overwritten. Measured 2.2 ms per
+                # forward across both cameras — less than it looks, because the
+                # allocator hands back zeroed pages cheaply, which is why this
+                # is a one-line change and not a buffer-reuse rewrite.
+                # ⚠ `out_b` KEEPS ITS ZERO-FILL. That one is `max_matmul`'s
+                # destination, and whether a GEMM writes or accumulates is the
+                # library's business, not ours to assume.
                 var col = List[Scalar[DT]](
-                    length=Self.SO * Self.COL, fill=Scalar[DT](0)
+                    unsafe_uninit_length=Self.SO * Self.COL
                 )
                 var out_b = List[Scalar[DT]](
                     length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
