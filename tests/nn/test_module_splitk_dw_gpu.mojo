@@ -346,12 +346,23 @@ def main() raises:
         # `select_config` needs K // P >= 1024 for even P=2, i.e. K >= 2048.
         check_linear_act[256, 256, 2592, True](ctx, n_split)
         check_linear_act[256, 512, 4096, True](ctx, n_split)
-        # N = OUT is NOT padded here (unlike `Linear`, whose N_PAD_TO is 128),
-        # so 100 % 128 != 0 fails multi_gemm_cond → cuBLAS → must not split.
-        check_linear_act[256, 100, 2592, False](ctx, n_split)
+        # ⚠ THIS SHAPE FLIPPED IN a769999b AND THE ASSERTION IS WHAT CAUGHT IT.
+        # It was written as a no-split control because `LinearAct` did not pad
+        # N, so its dW ran at N = OUT_ = 100 and failed `n % 128`. LinearAct
+        # now pads N to 128 (it was on the cuBLAS vendor path twice over), so
+        # the dW is [K_PAD=256, N_PAD=128] @ K=2592, which is eligible — P>1 is
+        # the CORRECT answer here now, not a regression. The routing assert
+        # turned an invisible behaviour change into a loud one; a test that
+        # only compared gradients would have stayed green and said nothing.
+        check_linear_act[256, 100, 2592, True](ctx, n_split)
         # Below min_k_partition: an ordinary RL minibatch. This is what every
         # SAC / TD3 / DQN trunk actually sees, and it must stay on max_matmul.
         check_linear_act[256, 256, 256, False](ctx, n_split)
+        # A `multi_gemm_cond` failure that padding CANNOT fix, replacing the
+        # control the line above lost: M and N are now always 128-multiples by
+        # construction, so B is the only axis left that can fail the gate.
+        # 2590 % 32 = 30, so `k % 32 == 0` fails and this must not split.
+        check_linear_act[256, 256, 2590, False](ctx, n_split)
 
         print("== NoisyLinear: dW = [IN, B] @ [B, OUT] ==")
         check_noisy[256, 256, 2592, True](ctx, n_split)
@@ -370,14 +381,14 @@ def main() raises:
         check_conv_t[64, 30, 4, 2, 1, 8, 8, 64, False](ctx, n_split)
 
         print()
-        print("split shapes:", n_split, "of 10")
+        print("split shapes:", n_split, "of 11")
         if n_split == 0:
             raise Error(
                 "NO shape took the split-K path — this run tested nothing."
                 " Check select_config's min_k_partition and the device gate"
                 " before reading the zeros above as a pass."
             )
-        if n_split < 5:
+        if n_split < 6:
             raise Error(
                 "fewer split shapes than expected: all four Modules should"
                 " split at their long-K shape, so a shortfall means one of the"
