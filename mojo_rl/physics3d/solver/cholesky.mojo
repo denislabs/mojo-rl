@@ -143,16 +143,53 @@ def chol_factor_inline[
     """In-place Cholesky factorization: L*L^T = H (lower triangular), GPU-compatible.
 
     Returns True if successful, False if rank-deficient.
+
+    ⚠ THE WHOLE MATRIX IS ONE SEGMENT — this is `chol_factor_seg` over
+    `[0, nv)` and nothing else, so the two cannot drift. See that function for
+    why a segment exists at all.
+    """
+    for i in range(nv * nv):
+        L[i] = Scalar[DTYPE](0)
+    return chol_factor_seg[DTYPE, M_CAP](H, L, nv, 0, nv)
+
+
+@always_inline
+def chol_factor_seg[
+    DTYPE: DType,
+    M_CAP: Int,
+](
+    H: Scratch[Scalar[DTYPE], M_CAP],
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    nv: Int,
+    s0: Int,
+    s1: Int,
+) -> Bool:
+    """Factor the DIAGONAL SUB-BLOCK `[s0, s1)` of an `nv x nv` `H` into `L`.
+
+    ⚠⚠ IT DOES NOT ZERO `L`. Segments are factored one after another into the
+    same buffer, so a per-call zeroing would wipe the block before it. The
+    caller zeroes once — `chol_factor_inline` above does exactly that.
+
+    WHY. `H = M + sum D*J^T J` is block-diagonal over the kinematic trees,
+    merged by whichever trees a constraint row couples
+    (`solver/newton_blocks.build_dof_segments`). P0 measured the dense
+    factorisation at 70% of GPU time on `so101_park_k9`, where nine of ten
+    trees carry no constraint row at all: one 6^3 plus nine diagonals is 270
+    operations against 216,000.
+
+    ⚠ RESTRICTING THE LOOPS IS BIT-EXACT, NOT AN APPROXIMATION. Every entry
+    this skips is `L[i*nv+k] * L[j*nv+k]` with `k` outside the block, and `L`
+    there is exactly `0` — zeroed by the caller and never written, because no
+    segment owns those columns. A sequential accumulation that drops exact
+    zeros returns the identical bit pattern, which is why
+    `chol_factor_inline` can delegate here and stay byte-for-byte what it was.
     """
     var rank_ok = True
 
-    for i in range(nv * nv):
-        L[i] = Scalar[DTYPE](0)
-
-    for i in range(nv):
-        for j in range(i + 1):
+    for i in range(s0, s1):
+        for j in range(s0, i + 1):
             var s: Scalar[DTYPE] = 0
-            for k in range(j):
+            for k in range(s0, j):
                 s += L[i * nv + k] * L[j * nv + k]
             if i == j:
                 var diag = H[i * nv + i] - s
@@ -213,20 +250,48 @@ def chol_solve_inline[
     used inside @always_inline GPU kernels without heap allocation.
     L is nv×nv in an M_CAP array, b/x are nv in V_CAP arrays.
     Two-phase: forward substitution L*y = b, then back substitution L^T*x = y.
+
+    ⚠ THE WHOLE VECTOR IS ONE SEGMENT — `chol_solve_seg` over `[0, nv)`.
+    """
+    chol_solve_seg[DTYPE, M_CAP, V_CAP](L, b, x, nv, 0, nv)
+
+
+@always_inline
+def chol_solve_seg[
+    DTYPE: DType,
+    M_CAP: Int,
+    V_CAP: Int,
+](
+    L: Scratch[Scalar[DTYPE], M_CAP],
+    b: Scratch[Scalar[DTYPE], V_CAP],
+    mut x: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
+    s0: Int,
+    s1: Int,
+):
+    """Solve the `[s0, s1)` sub-system of `H*x = b` given `L` from
+    `chol_factor_seg`.
+
+    ⚠ THE SEGMENTS ARE INDEPENDENT SYSTEMS, which is the whole point: `L` has
+    no entry linking two of them, so solving each in turn over its own range
+    gives the same `x` as one solve over `[0, nv)` — bit for bit, by the same
+    exact-zero argument as the factorisation. Entries of `x` outside every
+    segment are never written, and with a partition that tiles `[0, nv)` there
+    are none.
     """
     # Forward substitution: L*y = b
     var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
-    for i in range(nv):
+    for i in range(s0, s1):
         var s: Scalar[DTYPE] = 0
-        for j in range(i):
+        for j in range(s0, i):
             s += L[i * nv + j] * y[j]
         y[i] = (b[i] - s) / L[i * nv + i]
 
     # Back substitution: L^T*x = y
-    for i_rev in range(nv):
-        var i = nv - 1 - i_rev
+    for i_rev in range(s1 - s0):
+        var i = s1 - 1 - i_rev
         var s: Scalar[DTYPE] = 0
-        for j in range(i + 1, nv):
+        for j in range(i + 1, s1):
             s += L[j * nv + i] * x[j]
         x[i] = (y[i] - s) / L[i * nv + i]
 
