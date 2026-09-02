@@ -65,8 +65,11 @@ from .linear import (
     _lin_gb_kernel,
     _transpose_tiled_kernel,
     _accum_kernel,
+    _accum_2d_kernel,
     _cast_f2b_kernel,
     _pad_cols_kernel,
+    _pad_2d_kernel,
+    _slice_cols_kernel,
     _T_TILE,
     _T_BR,
 )
@@ -107,6 +110,45 @@ def _bias_act_cache_kernel[
                 cache[b, j] = y_f.cast[ADT]()
             else:
                 cache[b, j] = z  # z already ADT
+
+
+def _bias_act_cache_slice_kernel[
+    B: Int, OUT: Int, N_PAD: Int, OP: ElementOp, ADT: DType = DT
+](
+    ypad: LayoutTensor[ADT, Layout.row_major(B * N_PAD), MutAnyOrigin],
+    bias: LayoutTensor[ADT, Layout.row_major(OUT), MutAnyOrigin],
+    o: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
+    cache: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
+):
+    """`_bias_act_cache_kernel` reading a row stride of `N_PAD` instead of OUT.
+
+    Once N is padded the GEMM writes `[B, N_PAD]` and the module's output slot
+    is still `[B, OUT]`, so the epilogue has to slice. Fusing the slice into
+    the bias+activation kernel means N padding costs NO extra launch — this
+    REPLACES `_bias_act_cache_kernel`, it does not follow it. Columns
+    `[OUT, N_PAD)` are never read.
+    """
+    var idx = Int(global_idx.x)
+    if idx < B * OUT:
+        var b = idx // OUT
+        var j = idx % OUT
+        var z = rebind[Scalar[ADT]](ypad[b * N_PAD + j]) + rebind[
+            Scalar[ADT]
+        ](bias[j])
+        comptime if ADT == DT:
+            var y = OP.forward_scalar(rebind[Scalar[DT]](z))
+            o[b, j] = rebind[Scalar[ADT]](y)
+            comptime if OP.owns_cache:
+                cache[b, j] = rebind[Scalar[ADT]](y)
+            else:
+                cache[b, j] = rebind[Scalar[ADT]](z)
+        else:
+            var y = OP.forward_scalar(z.cast[DT]())
+            o[b, j] = y.cast[ADT]()
+            comptime if OP.owns_cache:
+                cache[b, j] = y.cast[ADT]()
+            else:
+                cache[b, j] = z
 
 
 def _act_gate_kernel[
@@ -155,12 +197,46 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     # REDQ-OFE, MBPO, AlphaZero, MuZero and EZv2. Their first layer is almost
     # always an `obs | act` concatenation — 23, 30, 46, ... — none of which is a
     # multiple of 32.
-    comptime PAD_TO = 32
-    comptime NEEDS_PAD = Self.IN_ % Self.PAD_TO != 0
-    comptime K_PAD = (
-        (Self.IN_ + Self.PAD_TO - 1) // Self.PAD_TO
-    ) * Self.PAD_TO
-    comptime WPAD_SIZE = Self.K_PAD * Self.OUT_
+    # ⚠ THE PAD CONSTANT REACHES THREE GEMMS AND THEY DO NOT SHARE A TEST.
+    # `multi_gemm_cond` is `m > 1 and n % 128 == 0 and k % 32 == 0 and
+    # k >= 128`, so K is a FLOOR and N is a MODULUS, and `K_PAD` / `OUT_` each
+    # land on both axes across the layer:
+    #
+    #     forward      y_pad[B, N_PAD]  = x_pad[B, K_PAD] @ w_pad
+    #                  K = K_PAD   N = N_PAD
+    #     grad_input   gi_pad[B, K_PAD] = go_pad[B, N_PAD] @ w_padᵀ
+    #                  K = N_PAD   N = K_PAD
+    #     grad_weight  dW_pad[K_PAD, N_PAD] = cT_pad @ go_pad
+    #                  K = B       N = N_PAD
+    #
+    # This struct previously padded K to a multiple of 32 with no floor and did
+    # not pad N at all, so `LinearReLU[6, 256]` — the first layer of every SAC
+    # / TD3 / DDPG / PPO / DQN trunk in this repo — ran its forward at K=32
+    # (fails `k >= 128`) and its grad_input at N=6 (fails `n % 128`). BOTH went
+    # to the cuBLAS vendor path, which allocates and memsets 32MB per call
+    # (`matmul/vendor/blas.mojo:780`). Padding both dims to 128 satisfies every
+    # test above at once.
+    #
+    # `Linear` learned this in two steps and it is worth not repeating: first a
+    # `K_MIN = 128` floor for the forward, then `PAD_TO = 128` when the same
+    # constant turned out to be grad_input's N (measured 3.3-7.0x there,
+    # `benchmarks/bench_linear_kpad_modulus.mojo`). One constant, several
+    # GEMMs, different tests — grep every site before trusting a pad.
+    #
+    # ⚠ The padding is INTERNAL. `IN_`, `OUT_` and the checkpointed `weight`
+    # keep their logical sizes, so no on-disk format changes.
+    comptime PAD_TO = 128
+    comptime K_PAD = Self._round_up(Self.IN_, Self.PAD_TO)
+    comptime NEEDS_PAD = Self.K_PAD != Self.IN_
+    comptime N_PAD_TO = 128
+    comptime N_PAD = Self._round_up(Self.OUT_, Self.N_PAD_TO)
+    comptime NEEDS_N_PAD = Self.N_PAD != Self.OUT_
+    comptime PADDED = Self.NEEDS_PAD or Self.NEEDS_N_PAD
+    comptime WPAD_SIZE = Self.K_PAD * Self.N_PAD
+
+    @staticmethod
+    def _round_up(v: Int, to: Int) -> Int:
+        return ((v + to - 1) // to) * to
     # Activation-flow dtype. `LinearAct[IN, OUT, OP]` = fp32 (ACT_DT == DT, the
     # legacy path); `LinearAct[IN, OUT, OP, bfloat16]` flows activations at bf16.
     comptime ACT_DT = Self.ADT
@@ -193,6 +269,17 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     # every forward since the input is a fresh upstream tensor each time.
     var w_pad: Tensor
     var x_pad: Tensor
+    var y_pad: Tensor
+    """[B, N_PAD] padded forward output; the epilogue slices it to [B, OUT_]."""
+    var go_pad: Tensor
+    """[B, N_PAD] zero-padded grad_output — feeds BOTH backward GEMMs."""
+    var cT_pad: Tensor
+    """[K_PAD, B] zero-row-padded transpose of the forward input."""
+    var dW_pad: Tensor
+    """[K_PAD, N_PAD] padded grad_w, accumulated into the master grad with a
+    STRIDED add (`_accum_2d_kernel`) because its row stride is N_PAD."""
+    var gi_pad: Tensor
+    """[B, K_PAD] padded grad_input, sliced back to [B, IN_]."""
     var _w_pad_version: Int
     # Split-K reduction workspace for the dW GEMM, `[P, IN_, OUT_]`, and the
     # cached partition count (-1 = not yet decided, 1 = do not split).
@@ -230,6 +317,11 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         self._force_recast = False
         self.w_pad = Tensor()
         self.x_pad = Tensor()
+        self.y_pad = Tensor()
+        self.go_pad = Tensor()
+        self.cT_pad = Tensor()
+        self.dW_pad = Tensor()
+        self.gi_pad = Tensor()
         self._w_pad_version = -1  # < any real version → first forward pads
         self.sk_ws = Tensor()
         self._sk_p = -1
@@ -251,9 +343,14 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         Called on the first backward — an EAGER step, before any capture — and
         never again: P sets `grid_dim`, which is baked into a captured graph.
         """
-        self._sk_p = decide_partitions(Self.IN_, Self.OUT_, B, ctx)
+        # The dW GEMM's M and N are the dims of the branch that will run:
+        # padded [K_PAD, N_PAD], otherwise [IN_, OUT_]. `select_config` is
+        # sensitive to both, so pick them the same way the launch will.
+        comptime M_DW = Self.K_PAD if Self.PADDED else Self.IN_
+        comptime N_DW = Self.N_PAD if Self.PADDED else Self.OUT_
+        self._sk_p = decide_partitions(M_DW, N_DW, B, ctx)
         if self._sk_p > 1:
-            self.sk_ws.ensure_gpu(ctx, self._sk_p * Self.W_SIZE)
+            self.sk_ws.ensure_gpu(ctx, self._sk_p * M_DW * N_DW)
 
     def _ensure_w_pad(mut self, c: DeviceContext) raises:
         """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
@@ -262,10 +359,11 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         CUDA-graph replay cannot serve a stale weight."""
         self.w_pad.ensure_gpu(c, Self.WPAD_SIZE)
         if self._force_recast or self.weight.val.version != self._w_pad_version:
-            # weight is [IN_, OUT_] row-major, so padding the contraction dim
-            # appends whole rows — a flat copy with a zero tail (ROWS=1).
+            # [IN_, OUT_] -> [K_PAD, N_PAD]. This must be the 2-D pad, not a
+            # flat tail copy: once N is padded the row STRIDE changes from
+            # `OUT_` to `N_PAD`, so every row moves, not just the appended ones.
             c.enqueue_function[
-                _pad_cols_kernel[1, Self.W_SIZE, Self.WPAD_SIZE]
+                _pad_2d_kernel[Self.IN_, Self.OUT_, Self.K_PAD, Self.N_PAD]
             ](
                 self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
                 self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
@@ -357,29 +455,54 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 outd.ensure_gpu(c, B * Self.OUT_)
                 cached.ensure_gpu(c, B * Self.OUT_)
                 var out_v = TileTensor(outd.dev.value(), row_major[B, Self.OUT_]())
-                comptime if Self.NEEDS_PAD:
-                    # Zero-pad the contraction dim to `K_PAD` — see `PAD_TO` on
-                    # the struct. The appended columns are exactly 0, so the dot
-                    # products are unchanged; only the GEMM's tiling (and hence
+                comptime if Self.PADDED:
+                    # Zero-pad BOTH dims to 128 — see the block on `PAD_TO`.
+                    # The appended rows/columns are exactly 0, so every dot
+                    # product is unchanged; only the GEMM's tiling (and hence
                     # its fp32 reduction ORDER) moves.
                     self._ensure_w_pad(c)
-                    self.x_pad.ensure_gpu(c, B * Self.K_PAD)
-                    c.enqueue_function[
-                        _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
-                    ](
-                        in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
-                        self.x_pad.lt["gpu", Layout.row_major(B * Self.K_PAD)](),
-                        grid_dim=(B * Self.K_PAD + 255) // 256,
-                        block_dim=256,
-                    )
+                    comptime if Self.NEEDS_PAD:
+                        self.x_pad.ensure_gpu(c, B * Self.K_PAD)
+                        c.enqueue_function[
+                            _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
+                        ](
+                            in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                            self.x_pad.lt[
+                                "gpu", Layout.row_major(B * Self.K_PAD)
+                            ](),
+                            grid_dim=(B * Self.K_PAD + 255) // 256,
+                            block_dim=256,
+                        )
                     var xp_v = TileTensor(
-                        self.x_pad.dev.value(), row_major[B, Self.K_PAD]()
+                        self.x_pad.dev.value() if Self.NEEDS_PAD
+                        else in0d.dev.value(),
+                        row_major[B, Self.K_PAD](),
                     )
                     var wp_v = TileTensor(
                         self.w_pad.dev.value(),
-                        row_major[Self.K_PAD, Self.OUT_](),
+                        row_major[Self.K_PAD, Self.N_PAD](),
                     )
-                    max_matmul[target="gpu"](out_v, xp_v, wp_v, c)
+                    self.y_pad.ensure_gpu(c, B * Self.N_PAD)
+                    var yp_v = TileTensor(
+                        self.y_pad.dev.value(), row_major[B, Self.N_PAD]()
+                    )
+                    max_matmul[target="gpu"](yp_v, xp_v, wp_v, c)
+                    # Slice N back INSIDE the bias+activation epilogue, so the
+                    # padding costs no extra launch.
+                    c.enqueue_function[
+                        _bias_act_cache_slice_kernel[
+                            B, Self.OUT_, Self.N_PAD, Self.OP
+                        ]
+                    ](
+                        self.y_pad.lt[
+                            "gpu", Layout.row_major(B * Self.N_PAD)
+                        ](),
+                        self.bias.val.lt["gpu", Layout.row_major(Self.OUT_)](),
+                        outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                        cached.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                        grid_dim=(B * Self.OUT_ + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
                 else:
                     var x_v = TileTensor(
                         in0d.dev.value(), row_major[B, Self.IN_]()
@@ -389,13 +512,15 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                         row_major[Self.IN_, Self.OUT_](),
                     )
                     max_matmul[target="gpu"](out_v, x_v, w_v, c)
-                c.enqueue_function[_bias_act_cache_kernel[B, Self.OUT_, Self.OP]](
-                    outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
-                    self.bias.val.lt["gpu", Layout.row_major(Self.OUT_)](),
-                    cached.lt["gpu", Layout.row_major(B, Self.OUT_)](),
-                    grid_dim=(B * Self.OUT_ + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
+                    c.enqueue_function[
+                        _bias_act_cache_kernel[B, Self.OUT_, Self.OP]
+                    ](
+                        outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                        self.bias.val.lt["gpu", Layout.row_major(Self.OUT_)](),
+                        cached.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                        grid_dim=(B * Self.OUT_ + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
         else:
             # ── bf16-flow path (GPU-only) ──
             comptime assert (
@@ -551,42 +676,175 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     ),
                     block_dim=(_T_TILE, _T_BR),
                 )
-                var cT_v = TileTensor(
-                    self.cacheT.dev.value(), row_major[Self.IN_, B]()
-                )
-                var go_v = TileTensor(
-                    god.dev.value(), row_major[B, Self.OUT_]()
-                )
-                var dW_v = TileTensor(
-                    self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
-                )
-                comptime if splitk_path_applies[c.default_device_info]():
-                    if self._sk_p < 0:
-                        self._decide_sk_p(B, c)
-                    if self._sk_p > 1:
-                        dispatch_splitk_gemm(
-                            dW_v, cT_v, go_v,
-                            Self.IN_, Self.OUT_, B,
-                            self._sk_p, self.sk_ws, c,
+                comptime if Self.PADDED:
+                    # Both backward GEMMs run on the PADDED shapes, reusing the
+                    # forward's `w_pad` ([K_PAD, N_PAD]) so no extra weight copy
+                    # is needed. The zero tails contribute exactly 0 to every
+                    # dot product, so the gradients are unchanged up to fp32
+                    # reduction order.
+                    #
+                    # ⚠ The activation gate and the bias gradient above ran on
+                    # the UNPADDED [B, OUT_] grad — they must, the cache is that
+                    # shape — so the pad happens here, after the gate, not
+                    # before it.
+                    self._ensure_w_pad(c)
+                    var wp_v = TileTensor(
+                        self.w_pad.dev.value(),
+                        row_major[Self.K_PAD, Self.N_PAD](),
+                    )
+                    comptime if Self.NEEDS_N_PAD:
+                        self.go_pad.ensure_gpu(c, B * Self.N_PAD)
+                        c.enqueue_function[
+                            _pad_cols_kernel[B, Self.OUT_, Self.N_PAD]
+                        ](
+                            god.lt["gpu", Layout.row_major(B * Self.OUT_)](),
+                            self.go_pad.lt[
+                                "gpu", Layout.row_major(B * Self.N_PAD)
+                            ](),
+                            grid_dim=(B * Self.N_PAD + 255) // 256,
+                            block_dim=256,
+                        )
+                    var gop_v = TileTensor(
+                        self.go_pad.dev.value() if Self.NEEDS_N_PAD
+                        else god.dev.value(),
+                        row_major[B, Self.N_PAD](),
+                    )
+                    # cacheT: [IN_, B] -> [K_PAD, B]  (append zero ROWS)
+                    comptime if Self.NEEDS_PAD:
+                        self.cT_pad.ensure_gpu(c, Self.K_PAD * B)
+                        c.enqueue_function[
+                            _pad_2d_kernel[Self.IN_, B, Self.K_PAD, B]
+                        ](
+                            self.cacheT.lt[
+                                "gpu", Layout.row_major(Self.IN_ * B)
+                            ](),
+                            self.cT_pad.lt[
+                                "gpu", Layout.row_major(Self.K_PAD * B)
+                            ](),
+                            grid_dim=(Self.K_PAD * B + 255) // 256,
+                            block_dim=256,
+                        )
+                    var cTp_v = TileTensor(
+                        self.cT_pad.dev.value() if Self.NEEDS_PAD
+                        else self.cacheT.dev.value(),
+                        row_major[Self.K_PAD, B](),
+                    )
+                    self.dW_pad.ensure_gpu(c, Self.WPAD_SIZE)
+                    var dWp_v = TileTensor(
+                        self.dW_pad.dev.value(),
+                        row_major[Self.K_PAD, Self.N_PAD](),
+                    )
+                    comptime if splitk_path_applies[c.default_device_info]():
+                        if self._sk_p < 0:
+                            self._decide_sk_p(B, c)
+                        if self._sk_p > 1:
+                            dispatch_splitk_gemm(
+                                dWp_v, cTp_v, gop_v,
+                                Self.K_PAD, Self.N_PAD, B,
+                                self._sk_p, self.sk_ws, c,
+                            )
+                        else:
+                            max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                    else:
+                        max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                    # ⚠ STRIDED accumulate: dW_pad's row stride is N_PAD, the
+                    # master grad's is OUT_. A flat `_accum_kernel` would fold
+                    # the padded columns into the next row's gradient.
+                    c.enqueue_function[
+                        _accum_2d_kernel[Self.IN_, Self.OUT_, Self.N_PAD]
+                    ](
+                        self.weight.grd.lt[
+                            "gpu", Layout.row_major(Self.W_SIZE)
+                        ](),
+                        # PREFIX view: dW_pad is [K_PAD, N_PAD] but only its
+                        # first IN_ rows carry gradient — the rest correspond
+                        # to the zero-padded contraction rows. Row-major makes
+                        # those first IN_ rows contiguous from offset 0, and
+                        # `_accum_2d_kernel` types its src as ROWS * SRC_COLS,
+                        # so passing the full WPAD_SIZE is a shape error (it
+                        # only shows up when K is padded and N is not, which is
+                        # why the parity test carries that case).
+                        self.dW_pad.lt[
+                            "gpu", Layout.row_major(Self.IN_ * Self.N_PAD)
+                        ](),
+                        grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                    # grad_x = go_pad @ w_padᵀ -> [B, K_PAD], sliced to [B, IN_]
+                    comptime if Self.NEEDS_PAD:
+                        self.gi_pad.ensure_gpu(c, B * Self.K_PAD)
+                        var gip_v = TileTensor(
+                            self.gi_pad.dev.value(),
+                            row_major[B, Self.K_PAD](),
+                        )
+                        max_matmul[transpose_b=True, target="gpu"](
+                            gip_v, gop_v, wp_v, c
+                        )
+                        c.enqueue_function[
+                            _slice_cols_kernel[B, Self.IN_, Self.K_PAD]
+                        ](
+                            self.gi_pad.lt[
+                                "gpu", Layout.row_major(B * Self.K_PAD)
+                            ](),
+                            gind.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                            grid_dim=(B * Self.IN_ + 255) // 256,
+                            block_dim=256,
                         )
                     else:
-                        max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                        # K_PAD == IN_ here, so this writes `gind` directly.
+                        var gi_v = TileTensor(
+                            gind.dev.value(), row_major[B, Self.K_PAD]()
+                        )
+                        max_matmul[transpose_b=True, target="gpu"](
+                            gi_v, gop_v, wp_v, c
+                        )
                 else:
-                    max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
-                c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                    self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                    self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                    grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
-                var go_v2 = TileTensor(
-                    god.dev.value(), row_major[B, Self.OUT_]()
-                )
-                var w_v = TileTensor(
-                    self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]()
-                )
-                var gi_v = TileTensor(gind.dev.value(), row_major[B, Self.IN_]())
-                max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
+                    var cT_v = TileTensor(
+                        self.cacheT.dev.value(), row_major[Self.IN_, B]()
+                    )
+                    var go_v = TileTensor(
+                        god.dev.value(), row_major[B, Self.OUT_]()
+                    )
+                    var dW_v = TileTensor(
+                        self.dW_tmp.dev.value(),
+                        row_major[Self.IN_, Self.OUT_](),
+                    )
+                    comptime if splitk_path_applies[c.default_device_info]():
+                        if self._sk_p < 0:
+                            self._decide_sk_p(B, c)
+                        if self._sk_p > 1:
+                            dispatch_splitk_gemm(
+                                dW_v, cT_v, go_v,
+                                Self.IN_, Self.OUT_, B,
+                                self._sk_p, self.sk_ws, c,
+                            )
+                        else:
+                            max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                    else:
+                        max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                    c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                        self.weight.grd.lt[
+                            "gpu", Layout.row_major(Self.W_SIZE)
+                        ](),
+                        self.dW_tmp.lt[
+                            "gpu", Layout.row_major(Self.W_SIZE)
+                        ](),
+                        grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                    var go_v2 = TileTensor(
+                        god.dev.value(), row_major[B, Self.OUT_]()
+                    )
+                    var w_v = TileTensor(
+                        self.weight.val.dev.value(),
+                        row_major[Self.IN_, Self.OUT_](),
+                    )
+                    var gi_v = TileTensor(
+                        gind.dev.value(), row_major[B, Self.IN_]()
+                    )
+                    max_matmul[transpose_b=True, target="gpu"](
+                        gi_v, go_v2, w_v, c
+                    )
         else:
             # ── bf16-flow path (GPU-only) ──
             comptime assert (
