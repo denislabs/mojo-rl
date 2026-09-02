@@ -317,9 +317,38 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     #     K =  32 / 64 / 96   288 / 285 / 286 us   cutlass   ALLOCATES
     #     K = 128 / 160 / 192   8.6 / 10.1 / 11.9 us  multistage  free
     #
-    # (160 and 192 are NOT multiples of 128 and are free — K is a FLOOR, N is
-    # a MODULUS. The two axes do not obey the same test.)
-    comptime PAD_TO = 32
+    # ⚠ THAT LAST PARENTHETICAL WAS RIGHT ABOUT THE FORWARD AND WRONG ABOUT
+    # THE LAYER, AND IT COST A 3-7x. `K_PAD` is used on TWO axes:
+    #
+    #     forward      y_pad[B, N_PAD]  = x_pad[B, K_PAD] @ w_pad
+    #                  K = K_PAD  -> the FLOOR test, satisfied by K_MIN
+    #     grad_input   gi_pad[B, K_PAD] = go_pad[B, N_PAD] @ w_padᵀ
+    #                  N = K_PAD  -> the MODULUS test, NOT satisfied by K_MIN
+    #     grad_weight  dW_pad[K_PAD, N_PAD] = cT_pad @ go_pad
+    #                  M = K_PAD  -> untested; M only sets the tile grid
+    #
+    # So 160 and 192 are free in the FORWARD and land on cuBLAS in the
+    # BACKWARD, along with TD-MPC2's 518 -> 544. `PAD_TO = 128` makes K_PAD a
+    # multiple of 128, which satisfies both tests at once and subsumes K_MIN.
+    # Measured (`benchmarks/bench_linear_kpad_modulus.mojo`, 5090, all three
+    # GEMMs of one layer, floor-128 -> modulus-128):
+    #
+    #     IN_=518 B=256   450.7 -> 100.6 us   4.48x   grad_input 392 -> 36 us
+    #     IN_=518 B=960   473.8 -> 145.1 us   3.27x
+    #     IN_=160 B=256   415.7 ->  59.6 us   6.98x
+    #     IN_=192 B=960   470.1 -> 104.3 us   4.51x
+    #     three controls (K_PAD already a 128-multiple)   0.93x .. 1.07x
+    #
+    # The forward does get SLOWER (38.2 -> 44.2 us at 544 -> 640, +16% of K);
+    # it is repaid ~10x over by grad_input leaving the 32MB-per-call vendor
+    # path. The controls bracket the noise at +/-7.4%, so the smallest real
+    # win is 3x outside it.
+    #
+    # ⚠ ONE PADDING CONSTANT, TWO GEMMS, TWO DIFFERENT TESTS — and only one
+    # was checked. The same shape of miss put `Conv2D`'s forward on MAX's
+    # allocating split-K path (2e67eb83) and left `LinearAct` with no K floor
+    # at all. Grep for every GEMM a pad constant reaches before trusting it.
+    comptime PAD_TO = 128
     comptime K_MIN = 128
     comptime K_PAD = Self._round_up(Self.IN_, Self.PAD_TO) if Self._round_up(
         Self.IN_, Self.PAD_TO
