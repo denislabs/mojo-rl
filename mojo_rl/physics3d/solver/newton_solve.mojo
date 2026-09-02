@@ -334,8 +334,24 @@ def _chol_factor_coop[
     for _attempt in range(2):
         if tid == 0:
             ctrl_sh[2] = Scalar[DTYPE](0)
-        for k in range(tid, nv * nv, n_threads):
-            L_sh[k] = Scalar[DTYPE](0)
+        # ⚠⚠ PER BLOCK, AND HERE THE ZERO IS LOAD-BEARING — unlike `H_sh`.
+        # It is what makes the segmented factor equal the dense one: the terms
+        # the restricted `k` loops drop are `L[.,k]*L[.,k]` outside the block,
+        # and the dense version reads them AS ZERO. Within a block that
+        # property is preserved exactly. Outside, nothing reads `L_sh` at all
+        # — audited: every read is `[j*nv+k]`, `[i*nv+k]`, `[j*nv+j]` inside
+        # the factor's segment-restricted loops, and the tid-0 copy, which
+        # PN2c already restricted to the blocks.
+        var zp = 0
+        while zp < nv:
+            var ze = Int(rebind[Scalar[DTYPE]](seg1[zp]))
+            if ze <= zp:
+                ze = nv
+            for q in range(tid, (ze - zp) * (ze - zp), n_threads):
+                L_sh[(zp + q // (ze - zp)) * nv + zp + q % (ze - zp)] = (
+                    Scalar[DTYPE](0)
+                )
+            zp = ze
         barrier()
         for j in range(nv):
             # ⚠ THE BLOCK OF COLUMN j. The OUTER loop and both barriers are
@@ -391,6 +407,7 @@ def _matvec_mv_jve_coop[
     L_JE_SH: Layout,
     L_SEARCH_SH: Layout,
     L_JV_E_SH: Layout,
+    L_SEG: Layout,
     JE_AS: AddressSpace = AddressSpace.SHARED,
 ](
     tid: Int,
@@ -429,13 +446,31 @@ def _matvec_mv_jve_coop[
         MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ],
+    seg0: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+    seg1: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
 ):
     """Cooperative Mv = M·search and Jv_e = Je·search (verbatim from
-    matvec_mv_jve_coop). Ascending inner sums → bit-identical."""
+    matvec_mv_jve_coop). Ascending inner sums → bit-identical.
+
+    ⚠ `Mv` IS RESTRICTED TO ROW i'S BLOCK, and that is exact rather than
+    approximate: `M`'s off-tree entries are STRUCTURALLY zero — both CRBA
+    paths only ever write within a tree — and a segment is a UNION of trees,
+    so `[seg0[i], seg1[i])` is a superset of row i's nonzeros. Dropping exact
+    zeros from an ascending sum leaves the bits unchanged. `Jv_e` below is a
+    row sweep over `Je` and has no block structure to use."""
     var nv = dims.get_nv()
     for i in range(tid, nv, n_threads):
         var s: Scalar[DTYPE] = 0
-        for j in range(nv):
+        var j0 = Int(rebind[Scalar[DTYPE]](seg0[i]))
+        var j1 = Int(rebind[Scalar[DTYPE]](seg1[i]))
+        if j1 <= j0:
+            j0 = 0
+            j1 = nv
+        for j in range(j0, j1):
             s += rebind[Scalar[DTYPE]](M_sh[i * nv + j]) * rebind[
                 Scalar[DTYPE]
             ](search_sh[j])
@@ -4315,21 +4350,43 @@ def _newton_blocked_fields_kernel[
         # --- ALL threads: parallel Hessian assembly (inner edge-sum ascending
         # → bit-identical to the serial build) ---
         if valid_env:
-            for idx in range(tid, NV * NV, THREADS):
-                var i = idx // NV
-                var j = idx % NV
-                var h = rebind[Scalar[DTYPE]](M_sh[idx])
-                for e in range(num_edges_b):
-                    if (
-                        Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
-                        == SROW_QUADRATIC
-                    ):
-                        h += (
-                            rebind[Scalar[DTYPE]](De_sh[e])
-                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
-                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
-                        )
-                H_sh[idx] = h
+            # ⚠⚠ ONLY THE DIAGONAL BLOCKS, AND THIS WAS THE LARGEST TERM LEFT
+            # AFTER PN2c. The build ran over every one of `NV*NV` entries with
+            # an inner sweep of the rows — `NV^2*(1+E)/THREADS` = 1,575 per
+            # thread per iteration at nv=60 with six rows and THREADS=16 —
+            # while the segmented factorisation reads only the blocks. Every
+            # off-block write was dead. Audited: the only reads of `H_sh` are
+            # `[j*nv+j]` and `[i*nv+j]` inside the factor's segment-restricted
+            # loops, plus the rank-deficient retry's diagonal bump.
+            #
+            # ⚠ THE ENTRIES IT NO LONGER WRITES ARE NOW STALE, not zero. That
+            # is safe only because nothing reads them; it is NOT the same
+            # property as `L_sh` below, where zero is load-bearing.
+            var bp = 0
+            while bp < NV:
+                var be = Int(rebind[Scalar[DTYPE]](seg1_sh[bp]))
+                # A malformed partition would hang the walk; a runaway is worse
+                # than a wrong answer.
+                if be <= bp:
+                    be = NV
+                var bn = be - bp
+                for q in range(tid, bn * bn, THREADS):
+                    var i = bp + q // bn
+                    var j = bp + q % bn
+                    var idx = i * NV + j
+                    var h = rebind[Scalar[DTYPE]](M_sh[idx])
+                    for e in range(num_edges_b):
+                        if (
+                            Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
+                            == SROW_QUADRATIC
+                        ):
+                            h += (
+                                rebind[Scalar[DTYPE]](De_sh[e])
+                                * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
+                                * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
+                            )
+                    H_sh[idx] = h
+                bp = be
         barrier()
 
         # --- Cooperative Cholesky factor of H into L_sh ---
@@ -4376,7 +4433,7 @@ def _newton_blocked_fields_kernel[
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
         _matvec_mv_jve_coop[DTYPE, JE_AS=JE_AS](
-            tid, THREADS, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh
+            tid, THREADS, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh, seg0_sh, seg1_sh
         )
         barrier()
         if valid_env and tid == 0:
