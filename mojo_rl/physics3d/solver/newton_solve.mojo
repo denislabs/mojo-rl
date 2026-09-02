@@ -295,6 +295,7 @@ def _chol_factor_coop[
     D: DimsLike,
     L_H_SH: Layout,
     L_CTRL_SH: Layout,
+    L_SEG: Layout,
 ](
     tid: Int,
     n_threads: Int,
@@ -317,6 +318,15 @@ def _chol_factor_coop[
         MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ],
+    # ⚠ THE DIAGONAL BLOCKS. `seg0[j]`/`seg1[j]` are the half-open dof range
+    # of the block containing column j; a whole-matrix partition (one segment
+    # spanning [0, nv)) reproduces the previous body exactly.
+    seg0: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+    seg1: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
 ):
     """Cooperative column-parallel Cholesky of shared H_sh -> L_sh (verbatim
     from chol_factor_coop_gpu). Bit-identical to chol_factor_inline."""
@@ -328,9 +338,18 @@ def _chol_factor_coop[
             L_sh[k] = Scalar[DTYPE](0)
         barrier()
         for j in range(nv):
+            # ⚠ THE BLOCK OF COLUMN j. The OUTER loop and both barriers are
+            # untouched, so the cooperative schedule — and the per-column
+            # bit-identity with `chol_factor_inline` — is exactly what it was;
+            # only the two inner ranges shrink. Every term dropped is
+            # `L[.,k] * L[.,k]` with k outside the block, where L is exactly 0
+            # (zeroed above, never written, since no segment owns that column),
+            # so a sequential accumulation returns the identical bits.
+            var b0 = Int(rebind[Scalar[DTYPE]](seg0[j]))
+            var b1 = Int(rebind[Scalar[DTYPE]](seg1[j]))
             if tid == 0:
                 var s_d: Scalar[DTYPE] = 0
-                for k in range(j):
+                for k in range(b0, j):
                     var ljk = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
                     s_d += ljk * ljk
                 var diag = rebind[Scalar[DTYPE]](H_sh[j * nv + j]) - s_d
@@ -345,9 +364,9 @@ def _chol_factor_coop[
                 L_sh[j * nv + j] = sqrt(diag)
             barrier()
             var ljj = rebind[Scalar[DTYPE]](L_sh[j * nv + j])
-            for i in range(j + 1 + tid, nv, n_threads):
+            for i in range(j + 1 + tid, b1, n_threads):
                 var s: Scalar[DTYPE] = 0
-                for k in range(j):
+                for k in range(b0, j):
                     s += rebind[Scalar[DTYPE]](L_sh[i * nv + k]) * rebind[
                         Scalar[DTYPE]
                     ](L_sh[j * nv + k])
@@ -3593,6 +3612,19 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    # ⚠ `H`'s DIAGONAL BLOCKS, per dof: the half-open range of the segment
+    # containing dof i. Shared because the whole threadgroup factors against
+    # them. `2 * V_SIZE` scalars — 480 B at nv=60, against the 86,676 B this
+    # kernel already asks for at k=9. ⚠ IT IS SHARED FOOTPRINT `je_spills`
+    # DOES NOT COUNT, exactly like the three M_SIZE arrays; see P4.
+    var seg0_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var seg1_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
     var search_sh = LayoutTensor[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
@@ -4074,6 +4106,25 @@ def _newton_blocked_fields_kernel[
         # Publish num_edges to shared for all threads.
         ctrl_sh[0] = Scalar[DTYPE](num_edges)
 
+        # ── H's diagonal blocks, from the rows just built ────────────────
+        #
+        # ⚠ HERE AND NOT INSIDE THE ITERATION LOOP. `Je` is final at this
+        # point and does not change across iterations — only the row STATES
+        # do — so one partition serves the whole solve and is a superset of
+        # every iteration's coupling. Computing it per iteration would let the
+        # partition move under the factorisation.
+        _ = build_dof_segments[
+            DTYPE, J_AS=JE_AS, S_AS = AddressSpace.SHARED
+        ](
+            NV,
+            Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])),
+            num_edges,
+            trees,
+            Je_sh,
+            seg0_sh,
+            seg1_sh,
+        )
+
         # Initialize qacc/qacc_smooth from workspace
         for i in range(NV):
             var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
@@ -4283,7 +4334,7 @@ def _newton_blocked_fields_kernel[
 
         # --- Cooperative Cholesky factor of H into L_sh ---
         _chol_factor_coop[DTYPE](
-            tid, THREADS, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh
+            tid, THREADS, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
         )
 
         # --- Thread 0: Cholesky solve + negate search + publish ---
@@ -4291,9 +4342,31 @@ def _newton_blocked_fields_kernel[
             var L_chol = Scratch[Scalar[DTYPE], M_SIZE](
                 NV * NV, uninitialized=Scalar[DTYPE](0)
             )
-            for k in range(NV * NV):
-                L_chol[k] = rebind[Scalar[DTYPE]](L_sh[k])
-            chol_solve_inline[DTYPE, M_SIZE, V_SIZE](L_chol, grad, search, NV)
+            # ⚠⚠ COPIED AND SOLVED PER BLOCK, AND THE COPY MATTERS AS MUCH AS
+            # THE FACTOR. Both were O(NV^2) SERIAL ON THIS THREAD — 3,600
+            # scalars each at nv=60 — so segmenting only the factorisation
+            # would leave the copy as the new bottleneck. `chol_solve_seg`
+            # reads `L_chol` strictly inside `[s0, s1)`, so the entries outside
+            # every block are never read and are deliberately left
+            # uninitialised rather than zeroed, which would cost the O(NV^2)
+            # back.
+            var sp = 0
+            while sp < NV:
+                var se = Int(rebind[Scalar[DTYPE]](seg1_sh[sp]))
+                # A malformed partition would hang this loop; `seg1 > sp` is
+                # guaranteed by `build_dof_segments` (a segment holds at least
+                # one dof) but a runaway is worse than a wrong answer.
+                if se <= sp:
+                    se = NV
+                for i in range(sp, se):
+                    for j in range(sp, se):
+                        L_chol[i * NV + j] = rebind[Scalar[DTYPE]](
+                            L_sh[i * NV + j]
+                        )
+                chol_solve_seg[DTYPE, M_SIZE, V_SIZE](
+                    L_chol, grad, search, NV, sp, se
+                )
+                sp = se
             for i in range(NV):
                 search[i] = -search[i]
             # Publish search; Mv/Jv_e computed cooperatively below.

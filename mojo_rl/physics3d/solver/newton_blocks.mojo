@@ -46,6 +46,7 @@ which is today's behaviour, bit for bit.
 """
 
 from layout import Layout, LayoutTensor
+from max.gpu.memory import AddressSpace
 
 from ..gpu.constants import (
     MODEL_TREE_SIZE,
@@ -60,14 +61,21 @@ def build_dof_segments[
     LT: Layout,
     LJ: Layout,
     LS: Layout,
+    # ⚠ THE OPERANDS LIVE IN DIFFERENT ADDRESS SPACES. In the blocked kernel
+    # `Je` is SHARED or GLOBAL depending on whether it fit (`JE_AS`), the
+    # segment arrays are threadgroup memory, and `trees` is a plain model
+    # tensor. Defaults keep a CPU caller — and the gate — writing none of this.
+    T_AS: AddressSpace = AddressSpace.GENERIC,
+    J_AS: AddressSpace = AddressSpace.GENERIC,
+    S_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     nv: Int,
     ntree: Int,
     num_edges: Int,
-    trees: LayoutTensor[DTYPE, LT, MutAnyOrigin],
-    Je: LayoutTensor[DTYPE, LJ, MutAnyOrigin],
-    seg_start: LayoutTensor[DTYPE, LS, MutAnyOrigin],
-    seg_end: LayoutTensor[DTYPE, LS, MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, LT, MutAnyOrigin, address_space=T_AS],
+    Je: LayoutTensor[DTYPE, LJ, MutAnyOrigin, address_space=J_AS],
+    seg_start: LayoutTensor[DTYPE, LS, MutAnyOrigin, address_space=S_AS],
+    seg_end: LayoutTensor[DTYPE, LS, MutAnyOrigin, address_space=S_AS],
 ) -> Int:
     """Per-dof segment bounds for `H`. Returns the segment count.
 
