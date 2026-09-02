@@ -283,31 +283,38 @@ def read_kern(k, diagnose=False):
     return rows
 
 
+# The `dynamics/ldl.mojo` kernels, in the order RK4 enqueues them
+# (rk4.mojo:565, :566, :611). All three share one truncated module prefix and
+# differ only by hash, so this order is the only thing that identifies them.
+LDL_ROLES = ["ldl_factor", "compute_m_inv", "ldl_solve"]
+
+
 def disambiguate_by_launch_order(k, names):
-    """Split same-prefix kernels using an ANCHOR in the launch trace.
+    """Identify same-prefix kernels by their ORDER after an anchor launch.
 
-    Returns ({name: role}, why). The source order is
-    `compute_mass_matrix` (rk4.mojo:536) -> `ldl_factor` (:565) ->
-    `compute_m_inv` (:566), so after each CRBA launch the first of the two
-    ldl-module kernels to appear is the factorisation.
+    Returns ({name: role}, why). `dynamics/ldl.mojo` contributes three kernels
+    under one truncated prefix — `ldl_factor`, `compute_m_inv` and `ldl_solve`
+    — and CRBA (`dynamics/mass_matrix.mojo`, a different prefix) is enqueued
+    before all of them at rk4.mojo:536. So within each stage the order after a
+    CRBA launch is exactly `LDL_ROLES`.
 
-    ⚠⚠ ADJACENCY BETWEEN THE TWO ALONE PROVES NOTHING, and the first version
-    of this function used exactly that. Filter a trace down to two kernels that
-    strictly alternate and you get `a->b` 200, `b->a` 199 whichever way round
-    they really are — the counts are forced by the alternation, not by the
-    order. A fixture with a KNOWN order returned "undecided", which is how this
-    was caught. The anchor is what carries the information.
+    ⚠⚠ ADJACENCY BETWEEN THE TARGETS ALONE PROVES NOTHING, and the first
+    version of this used exactly that. Filter a trace to kernels that cycle in
+    a fixed order and the pairwise counts come out even whichever rotation is
+    the real one — a fixture with a KNOWN order returned "undecided", which is how it was
+    caught. The anchor is what carries the information.
 
-    ⚠ IT REPORTS AGREEMENT RATHER THAN ASSERTING IT. No anchor, or a split
-    vote, means "undecided": the two stay pooled. A pooled honest number beats
-    a split invented one.
+    ⚠ IT REPORTS AGREEMENT RATHER THAN ASSERTING IT. No anchor, a ragged
+    cycle, or a count mismatch means "undecided": the kernels stay pooled. A
+    pooled honest number beats a split invented one.
     """
     p = f"{OUT}/k{k}.trace.csv"
     if not os.path.exists(p):
         return {}, "no trace file"
-    if len(names) != 2:
-        return {}, f"{len(names)} kernels, not a pair"
-    a, b = names
+    if not 2 <= len(names) <= len(LDL_ROLES):
+        return {}, (f"{len(names)} kernels under one prefix; "
+                    f"only 2..{len(LDL_ROLES)} are named in LDL_ROLES")
+    tgt = set(names)
     seq = []
     try:
         with open(p, newline="", errors="replace") as fh:
@@ -315,38 +322,40 @@ def disambiguate_by_launch_order(k, names):
                 nm = (row.get("Name") or row.get("name") or "").strip()
                 if not nm:
                     continue
-                if nm == a:
-                    seq.append("a")
-                elif nm == b:
-                    seq.append("b")
+                if nm in tgt:
+                    seq.append(nm)
                 elif label(nm) == "crba":
-                    seq.append("anchor")
+                    seq.append(None)          # the anchor
     except Exception as e:                       # noqa: BLE001
         return {}, f"trace unreadable: {e}"
-    if "anchor" not in seq:
+    if None not in seq:
         return {}, "no CRBA launch in the trace to anchor on"
 
-    va = vb = 0
-    for i, tok in enumerate(seq):
-        if tok != "anchor":
-            continue
-        for nxt in seq[i + 1:]:
-            if nxt == "anchor":
-                break            # cycle ended without both; ignore it
-            if nxt == "a":
-                va += 1
-                break
-            if nxt == "b":
-                vb += 1
-                break
-    n = va + vb
-    if n == 0:
-        return {}, "no cycle held an anchor followed by either kernel"
-    if va >= 0.9 * n:
-        return {a: "ldl_factor", b: "compute_m_inv"}, f"{va}/{n} cycles"
-    if vb >= 0.9 * n:
-        return {b: "ldl_factor", a: "compute_m_inv"}, f"{vb}/{n} cycles"
-    return {}, f"split vote ({va} vs {vb} of {n})"
+    # Each cycle: the distinct targets seen after an anchor, in first-seen
+    # order, up to the next anchor.
+    votes, cycles, ragged = {}, 0, 0
+    cur = []
+    for tok in seq + [None]:
+        if tok is None:
+            if cur:
+                cycles += 1
+                if len(cur) == len(names):
+                    votes[tuple(cur)] = votes.get(tuple(cur), 0) + 1
+                else:
+                    ragged += 1
+            cur = []
+        elif tok not in cur:
+            cur.append(tok)
+    if not votes:
+        return {}, f"no complete cycle ({cycles} cycles, {ragged} ragged)"
+    order, n = max(votes.items(), key=lambda kv: kv[1])
+    total = sum(votes.values())
+    if n < 0.9 * total:
+        return {}, (f"order not stable ({n}/{total} cycles agree; "
+                    f"{len(votes)} distinct orders)")
+    return ({nm: LDL_ROLES[i] for i, nm in enumerate(order)},
+            f"{n}/{total} cycles"
+            + (f", {ragged} ragged ignored" if ragged else ""))
 
 
 def main():
@@ -434,7 +443,9 @@ def main():
           + "   <- gaps/host if +, a WRONG DIVISOR if -")
 
     # ── split the ldl pair, if it collided ────────────────────────────────
-    print("\n=== ldl_factor vs compute_m_inv ===")
+    print("\n=== splitting dynamics/ldl.mojo by launch order ===")
+    print("  (ldl_factor, compute_m_inv and ldl_solve share one "
+          "truncated prefix; rk4.mojo:565/566/611 fixes the order)")
     for k in ks:
         names = sorted({n for *_, n in kerns[k] if label(n) == "ldl_pair"})
         if len(names) <= 1:
