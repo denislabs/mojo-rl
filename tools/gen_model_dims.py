@@ -81,6 +81,16 @@ MODELS = [
     ("mojo_rl/envs/metaworld/sawyer_reach_xml.mojo", ["sawyer_reach_xml"]),
     ("mojo_rl/envs/robots/so_arm100_xml.mojo", ["SO_ARM100_XML"]),
     ("mojo_rl/envs/robots/so_arm101_xml.mojo", ["SO_ARM101_XML"]),
+    # ⚠ THE P0 SCENE-BUDGET PROBE MODELS, and they are here on purpose.
+    # `assets/so101_park_k*.xml` are emitted by
+    # `tools/tasks/gen_park_scenes.py`; listing them here makes their
+    # dimensions a CI ASSERTION AGAINST MuJoCo rather than a comment. That is
+    # the mechanism a task FAMILY will use to keep its fixed scene budget
+    # honest — see `docs/TASK_LAYER_IMPLEMENTATION.md` Gap B — so it is worth
+    # having the first user of it be something that already needs it.
+    ("mojo_rl/envs/robots/so101_park_xml.mojo",
+     ["SO101_PARK_K0_XML", "SO101_PARK_K3_XML",
+      "SO101_PARK_K6_XML", "SO101_PARK_K12_XML"]),
     ("mojo_rl/envs/dm_control/acrobot/acrobot_xml.mojo", ["dm_acrobot_xml"]),
     ("mojo_rl/envs/dm_control/ball_in_cup/ball_in_cup_xml.mojo",
      ["dm_ball_in_cup_xml"]),

@@ -190,6 +190,8 @@ test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", desc
 # slab wrong and the model still builds — so CI checks it on every push.
 gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate mojo_rl/envs/**/*_dims.mojo from the .xml assets" }
 gen-dims-check = { cmd = "python tools/gen_model_dims.py --check", description = "Fail if any generated *_dims.mojo is stale (CI)" }
+gen-park-scenes = { cmd = "python tools/tasks/gen_park_scenes.py", description = "Regenerate the P0 parked-slot scenes + pose module" }
+gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (CI)" }
 format = { cmd = "mojo format -l 80 ." }
 # Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
 # Clones ImGui into third_party/ on first run, then rebuilds only when stale.
