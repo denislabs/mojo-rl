@@ -29,6 +29,7 @@ from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from max.algorithm import parallelize
 from std.os import getenv
 from mojo_rl.nn.core.splitk_gemm import (
     splitk_path_applies,
@@ -136,6 +137,46 @@ def _out_decode[
         return (out_pos // SO, out_pos % SO)
 
 
+# ── when is it worth putting im2col on more than one core? ───────────────
+# `parallelize` here costs a FIXED ~200 us — measured, not assumed: `l3.down`
+# takes 21 us serial and 221 us parallel, and `l4.down` 11 us against 241 us.
+# That is enormous next to the small convolutions, so a blanket `parallelize`
+# would make five of ResNet18's eleven shapes SLOWER, one of them by 20x.
+#
+# Serial vs parallel, best of 30, every distinct ResNet18 shape at 240x320:
+#
+#     shape     N        OH    serial   parallel   speedup
+#     conv1     2822400  120   1921 us    341 us     5.63x
+#     layer1    2764800   60   2515 us    512 us     4.91x
+#     layer2    1382400   30   1243 us    292 us     4.26x
+#     l2.0c1     691200   30    627 us    184 us     3.41x
+#     layer3     691200   15    621 us    182 us     3.41x
+#     l3.0c1     345600   15    312 us    116 us     2.69x
+#     layer4     368640    8    359 us    372 us     0.97x   <- 8 tasks
+#     l4.0c1     184320    8    177 us    299 us     0.59x   <- 8 tasks
+#     l2.down     76800   30     38 us     42 us     0.90x   <- too little work
+#     l3.down     38400   15     21 us    221 us     0.10x
+#     l4.down     20480    8     11 us    241 us     0.05x
+#
+# TWO conditions, because neither alone separates the table: `layer4` has as
+# much work per task as `layer2` and still loses, on task COUNT — eight tasks
+# over eight cores leaves no slack for the slowest one. And `l2.down` has 30
+# tasks and still loses, on total WORK.
+comptime IM2COL_PAR_MIN_ROWS: Int = 16
+"""At least two tasks per core on an 8-core box. Every OH=8 shape lost."""
+comptime IM2COL_PAR_MIN_ELEMS: Int = 200_000
+"""~300 us of serial work, i.e. enough to pay the ~200 us launch. The measured
+boundary sits between `l2.down` (76,800, loses) and `l3.0c1` (345,600, wins
+2.7x); 200,000 is the middle of that gap, not a fitted edge."""
+
+
+@always_inline
+def im2col_uses_threads[OH: Int, ELEMS: Int]() -> Bool:
+    """The dispatch rule, in ONE place so the gate can report which path a
+    shape takes instead of restating the arithmetic and drifting from it."""
+    return OH >= IM2COL_PAR_MIN_ROWS and ELEMS >= IM2COL_PAR_MIN_ELEMS
+
+
 # ── CPU im2col / col2im over List storage (no pointers, no origins) ──────
 def _im2col_cpu[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
@@ -181,10 +222,25 @@ def _im2col_cpu[
     latency and by an inner `kw` run of about three elements, neither of which
     a hoisted branch touches.
 
-    ⚠ SO THE NEXT LEVER IS NOT FEWER INSTRUCTIONS. It is more cores (our Mojo
-    code is single-threaded here; only Accelerate's GEMM threads) or moving
-    fewer bytes (a direct convolution for the K=3 S=1 case reads its input once
-    instead of nine times). Measure IN SITU before believing either.
+    ⚠ SO THE LEVER WAS NOT FEWER INSTRUCTIONS — IT WAS MORE CORES, and that is
+    what the threaded path above now does: **38.0 -> 17.0 ms in situ**, taking
+    the whole ACT forward from 85.1 to 60.5 ms (-28.9%, minimum of 16
+    interleaved runs per arm).
+
+    ⚠ A DIRECT CONVOLUTION WAS TRIED AND LOSES BY 7.6x. On the dominant shape
+    it must beat im2col+GEMM+scatter at 2.83 ms; a SIMD direct conv, verified
+    against this path to 5.7e-6, took 22.5 ms (7 GMAC/s). The reason is not the
+    quality of that kernel: `max_matmul` here runs 176.9 MMAC in 0.354 ms =
+    **500 GMAC/s**, which is Accelerate on AMX across dispatch threads, while a
+    NEON core peaks near 25.6 GMAC/s. Even a PERFECT single-threaded direct
+    convolution would land at ~6.9 ms, still 2.4x slower. Trading a vendor
+    kernel at 500 GMAC/s for a hand-written one never pays here, whatever
+    memory traffic it saves. Do not re-litigate this without a new AMX story.
+
+    ⚠ AND THE ISOLATED BENCH OVER-PROMISED AGAIN, in the same direction: it
+    predicted 39.7 -> 10.9 ms (3.6x) for threading; in situ it is 2.2x. Alone,
+    the threads get the whole machine; inside the forward they contend with
+    Accelerate's own. Measure IN SITU. Twice now.
 
     ⚠ NHWC KEEPS THE ORIGINAL LOOP. Its COL axis is `(kh*K + kw)*IC + ic`, so
     the innermost `kw` run is strided by IC rather than contiguous and the same
@@ -234,6 +290,53 @@ def _im2col_cpu[
                 var x_at = in_off + ih * W + iw
                 for ic in range(IC):
                     col_list[row_off + ic] = in_list[x_at + ic * HW]
+        return
+
+    # ⚠ RAW POINTERS, NOT THE `List` REFS, and only for the threaded body.
+    # `parallelize`'s closure cannot infer a capture convention for a `ref` /
+    # `mut List` parameter, and this repo has a recorded case of a cross-thread
+    # write through an owned `List` being FOLDED AWAY by the compiler
+    # (`_a_mojo_owned_slab_folds_a_cross_thread_write_away`). Writing through
+    # pointers obtained here, with each `oh` owning a disjoint span of `col`,
+    # is the shape that was verified: 2,764,800 elements identical to the
+    # serial answer, and the gate re-checks it on every run.
+    var _xp = in_list.unsafe_ptr()
+    var _cp = col_list.unsafe_ptr()
+
+    @parameter
+    def _row(oh: Int):
+        var row0 = oh * OW * CK
+        for ow in range(OW):
+            var row_off = row0 + ow * CK
+            var iw0 = ow * S - P
+            var kw_lo = 0 if iw0 >= 0 else -iw0
+            if kw_lo > K:
+                kw_lo = K
+            var kw_hi = K if iw0 + K <= W else W - iw0
+            if kw_hi > K:
+                kw_hi = K
+            if kw_hi < kw_lo:
+                kw_hi = kw_lo
+            for ic in range(IC):
+                var c_ic = row_off + ic * K * K
+                var x_ic = in_off + ic * HW
+                for kh in range(K):
+                    var ih = oh * S + kh - P
+                    var c_base = c_ic + kh * K
+                    if ih < 0 or ih >= H:
+                        for kw in range(K):
+                            _cp[c_base + kw] = Scalar[DT](0)
+                        continue
+                    var x_row = x_ic + ih * W + iw0
+                    for kw in range(kw_lo):
+                        _cp[c_base + kw] = Scalar[DT](0)
+                    for kw in range(kw_lo, kw_hi):
+                        _cp[c_base + kw] = _xp[x_row + kw]
+                    for kw in range(kw_hi, K):
+                        _cp[c_base + kw] = Scalar[DT](0)
+
+    comptime if im2col_uses_threads[OH, OH * OW * CK]():
+        parallelize[_row](OH)
         return
 
     for oh in range(OH):

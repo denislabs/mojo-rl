@@ -22,6 +22,14 @@ half is the half that earns this file.
 ⚠ EXACT EQUALITY. im2col moves bytes; it does no arithmetic, so there is no
 rounding to tolerate and anything but bit equality is a bug.
 
+⚠⚠ **AND IT COVERS BOTH DISPATCH PATHS.** `_im2col_cpu` puts itself on more
+than one core above a size threshold, so half the shapes below are there to
+run the THREADED body against the same single-threaded reference — a cross-
+thread write that the compiler folds away, or a row written twice, is exactly
+the kind of failure that a benchmark reports as a speed-up. Every line of the
+output says which path it took; if they ever all say `[serial]`, this file has
+stopped testing the code that runs.
+
 ⚠ Covers BOTH layouts. NCHW takes the rewritten path, NHWC still takes the
 original loop, and the reference does not know the difference — it indexes
 through the same `_col_off` / `_in_off` the rest of the file uses.
@@ -34,6 +42,7 @@ from mojo_rl.nn.primitives.conv2d import (
     _col_off,
     _im2col_cpu,
     _in_off,
+    im2col_uses_threads,
 )
 
 
@@ -120,7 +129,18 @@ def shape[
             + " never written, " + String(trampled) + " bytes PAST THE END"
         )
     else:
-        print("  ok   " + name + "  " + String(N) + " elements")
+        # ⚠ REPORT WHICH PATH RAN. `_im2col_cpu` splits itself across cores
+        # above a size threshold, and a gate whose every shape fell on the
+        # serial side would be green while never executing the threaded body
+        # at all — the vacuity failure, one level up from the values.
+        # ⚠ THE PREDICATE IS IMPORTED, NOT RESTATED. Rewriting `OH >= 16 and
+        # ELEMS >= 200_000` here would leave the gate reporting a path the
+        # implementation had since stopped taking.
+        comptime par = im2col_uses_threads[OH, N]()
+        print(
+            "  ok   " + name + "  " + String(N) + " elements  "
+            + ("[threads]" if par else "[serial] ")
+        )
 
 
 def main() raises:
@@ -175,6 +195,16 @@ def main() raises:
     shape[2, 2, 6, 3, 6, 1, 2, 1]("K=2 P=3 S=6 OW=1 OH=2  spills off the end",
                                   failures, compared)
 
+    # ── the dispatch boundary itself ──────────────────────────────────────
+    # ⚠ A THRESHOLD NEEDS A SHAPE ON EACH SIDE OF IT, or it is only ever
+    # tested in one direction. These two differ by one output row: OH=16 is
+    # the first value that threads, OH=15 the last that does not, and both
+    # carry enough elements to clear the work condition.
+    shape[64, 3, 1, 1, 16, 220, 16, 220]("OH=16  first threaded", failures,
+                                         compared)
+    shape[64, 3, 1, 1, 15, 220, 15, 220]("OH=15  last serial", failures,
+                                         compared)
+
     # ── the other layout, which keeps the original loop ───────────────────
     print(" NHWC — the untouched path")
     shape[4, 3, 1, 1, 6, 7, 6, 7, LAYOUT_NHWC]("nhwc 3x3 s1 p1", failures,
@@ -188,6 +218,6 @@ def main() raises:
     if failures != 0:
         raise Error(String(failures) + " shape(s) FAILED")
     print(
-        "[PASS] " + String(compared) + " elements compared across 16 shapes,"
+        "[PASS] " + String(compared) + " elements compared across 18 shapes,"
         " all exact"
     )
