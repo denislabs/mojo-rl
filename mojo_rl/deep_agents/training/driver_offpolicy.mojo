@@ -1159,19 +1159,41 @@ def run_offpolicy_train_batched[
                 )
                 ce.synchronize()
                 var g = CUDAGraph(ce)
-                g.begin_capture()
+                # ⚠ CHECK is_disabled() BEFORE CAPTURING. `CUDAGraph`
+                # disables itself when the interceptor is not hooked into the
+                # process — which is the ORDINARY state of a binary you BUILD
+                # and then run directly, because LD_PRELOAD comes from pixi's
+                # nvidia activation and not from the binary. `begin_capture`
+                # RAISES on a disabled graph, so without this guard the whole
+                # run dies rather than falling back to running the step
+                # directly. `maybe_capture_replay` has always done this; these
+                # two env-graph sites did not, and a `mojo build` + direct run
+                # killed the process on the first iteration.
+                #
+                # The settle run above has already executed this iteration's
+                # work, so taking the disabled path here is a COMPLETED step,
+                # not a skipped one. Storing the disabled graph makes later
+                # iterations take the `else` branch instead of reconstructing
+                # (and re-printing) every time.
+                if not g.is_disabled():
+                    g.begin_capture()
+                    env.step_batch[N_ENVS](
+                        ctx=ctx,
+                        rng_seed=rng_seed + UInt64(iter_idx + 1),
+                    )
+                    g.end_capture()
+                    if verbose:
+                        print(
+                            "[CUDA Graph] Captured ENV STEP with",
+                            g.num_nodes(),
+                            "nodes",
+                        )
+                env_graph = g^
+            elif env_graph.value().is_disabled():
                 env.step_batch[N_ENVS](
                     ctx=ctx,
                     rng_seed=rng_seed + UInt64(iter_idx + 1),
                 )
-                g.end_capture()
-                if verbose:
-                    print(
-                        "[CUDA Graph] Captured ENV STEP with",
-                        g.num_nodes(),
-                        "nodes",
-                    )
-                env_graph = g^
             else:
                 env_graph.value().replay_on_mojo_stream()
         else:
@@ -1303,19 +1325,41 @@ def run_offpolicy_train_batched[
                 )
                 cr.synchronize()
                 var gr = CUDAGraph(cr)
-                gr.begin_capture()
+                # ⚠ CHECK is_disabled() BEFORE CAPTURING. `CUDAGraph`
+                # disables itself when the interceptor is not hooked into the
+                # process — which is the ORDINARY state of a binary you BUILD
+                # and then run directly, because LD_PRELOAD comes from pixi's
+                # nvidia activation and not from the binary. `begin_capture`
+                # RAISES on a disabled graph, so without this guard the whole
+                # run dies rather than falling back to running the step
+                # directly. `maybe_capture_replay` has always done this; these
+                # two env-graph sites did not, and a `mojo build` + direct run
+                # killed the process on the first iteration.
+                #
+                # The settle run above has already executed this iteration's
+                # work, so taking the disabled path here is a COMPLETED step,
+                # not a skipped one. Storing the disabled graph makes later
+                # iterations take the `else` branch instead of reconstructing
+                # (and re-printing) every time.
+                if not gr.is_disabled():
+                    gr.begin_capture()
+                    env.selective_reset_batch[N_ENVS](
+                        ctx=ctx,
+                        rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+                    )
+                    gr.end_capture()
+                    if verbose:
+                        print(
+                            "[CUDA Graph] Captured ENV RESET with",
+                            gr.num_nodes(),
+                            "nodes",
+                        )
+                env_reset_graph = gr^
+            elif env_reset_graph.value().is_disabled():
                 env.selective_reset_batch[N_ENVS](
                     ctx=ctx,
                     rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
                 )
-                gr.end_capture()
-                if verbose:
-                    print(
-                        "[CUDA Graph] Captured ENV RESET with",
-                        gr.num_nodes(),
-                        "nodes",
-                    )
-                env_reset_graph = gr^
             else:
                 env_reset_graph.value().replay_on_mojo_stream()
         else:
