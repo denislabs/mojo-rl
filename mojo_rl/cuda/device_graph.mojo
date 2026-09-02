@@ -87,6 +87,42 @@ with `-D LOGGING_LEVEL=INFO`:
 
 Both must be 0. Our own `nn/core/splitk_gemm.mojo` takes a caller-owned
 workspace and is safe by construction; it is MAX's dispatch that is not.
+
+## !! AND THAT RULES OUT MOST RL STEPS TODAY — MEASURED, NOT FEARED
+
+`multi_gemm_cond` (matmul/gpu/__init__.mojo:591) is
+
+    m > 1 and n % 128 == 0 and k % 32 == 0 and k >= 128
+
+so a `Linear` whose INPUT width is under 128, or whose OUTPUT width is not a
+multiple of 128, goes to `matmul_vendor` and its 32MB-per-call scratch. **That
+is the first and last layer of every actor and critic we have.** SAC on
+Pendulum (`OBS=3, ACT=1, H=128`) hits it four ways:
+
+    actor  L1   [256,3] @ [3,128]     k=3    -> vendor
+    critic L1   [256,4] @ [4,128]     k=4    -> vendor
+    actor  head 128 -> 2              n=2    -> vendor
+    critic head 128 -> 1              n=1    -> vendor
+
+Recording that step dies with `CUDA_ERROR_ILLEGAL_ADDRESS` a few hundred
+updates in. Under STREAM capture the same allocation RAISES, MAX catches it at
+matmul/gpu/__init__.mojo:1373 and drops to `matmul_kernel_naive` — correct,
+slower, alive. **So for any step containing a vendor-path GEMM, stream capture
+is strictly SAFER than recording, and small obs/act dims make that nearly every
+deep-RL step.**
+
+⚠ **THEREFORE `mojo_rl/cuda/graph.mojo` CANNOT BE RETIRED YET.** The mechanism
+here works — `benchmarks/bench_device_graph_spike.mojo` arms A/B/C pass and
+`tests/cuda/test_device_graph_minimal.mojo` records on a 5090 — but real
+training steps hit MAX's allocator. This module stays behind
+`MOJO_RL_GRAPH_BACKEND=device` as dormant infrastructure until either MAX
+allocates through `DeviceGraphBuilder.create_buffer` (the API its own docstring
+tells callers to use), or every GEMM in the step is routed off the vendor path.
+
+⚠ **CHECK THE CANDIDATE, DO NOT REASON FROM "its shapes look fine".** SAC was
+picked as the first migration precisely because its MLP GEMMs "never hit
+split-K or the vendor path". The split-K half was right; the vendor half was
+never checked, and the two greps above would have taken one run.
 """
 
 from std.os import getenv
