@@ -144,22 +144,47 @@ def _im2col_cpu[
     """x[IC·H·W] slab at `in_off` → col_list[OH·OW, COL] row-major. COL axis and
     input slab follow LAYOUT (NCHW default).
 
-    ⚠⚠ **THIS IS 60% OF ACT's CPU FORWARD AND IT COMPUTES NOTHING.** Measured on
-    an M1 Pro, ResNet18 at 240x320, BATCH=1, summed over all 20 convolutions of
-    both cameras: 59 ms of a 98 ms forward. It exists only to hand `max_matmul`
-    a contiguous matrix — and that GEMM is already near the single-core ceiling
-    (~150 GMAC/s implies AMX, well past NEON's ~51 GFLOP/s), so the arithmetic
-    is not what is slow here. The data movement around it is.
+    ⚠⚠ **THE LARGEST SINGLE ITEM IN ACT's CPU FORWARD, AND IT COMPUTES
+    NOTHING.** Measured IN SITU on an M1 Pro (timers inside this very loop,
+    ResNet18 at 240x320, BATCH=1, summed over all 20 convolutions of both
+    cameras) against an ~86 ms forward:
 
-    ⚠ THE COST WAS NEVER A BOUNDS CHECK, which is the intuitive suspicion after
+        im2col            38.0 ms   44%
+        cblas GEMM        12.9 ms   15%   (Accelerate, and it threads itself)
+        scatter + bias     3.5 ms    4%
+        everything else   ~31 ms    36%   (BN, ReLU, pool, adds, transformer)
+
+    Half of that 38 ms is ONE shape — `IC=64 K=3 S=1` at 60x80, layer1's four
+    convolutions across two cameras, 18.5 ms.
+
+    ⚠ THE COST IS NOT A BOUNDS CHECK, which is the intuitive suspicion after
     the stateful-tensor migration replaced pointers with `List`. The NCHW path
-    below performs **exactly the same `List` indexing** as the loop it replaced
-    — same storage, same origins, no pointers — and is 1.44x faster purely by
-    (a) hoisting the `iw` bounds test out of the inner loop and (b) strength-
-    reducing the per-element address arithmetic to running offsets. If the
-    `List` access itself carried a runtime check, restructuring the loop could
-    not have bought that. Measured across all 11 distinct ResNet18 shapes:
-    59.1 -> 41.0 ms for two cameras, bit-identical output.
+    below does **exactly the same `List` indexing** as the loop it replaced —
+    same storage, same origins, no pointers — and hoisting the `iw` test out of
+    the inner loop plus strength-reducing the addresses is worth **1.95 ms**
+    in situ (39.9 -> 38.0). If the access itself carried a runtime check,
+    restructuring the loop could not have bought even that.
+
+    ⚠⚠ **AND 1.95 ms IS THE NUMBER, NOT THE 16 ms AN ISOLATED BENCHMARK SAID.**
+    Calling this function in a tight loop on its own buffers reported the old
+    version at 59.9 ms and the new at 43.8 — a 1.44x that DID NOT SURVIVE
+    CONTACT WITH THE REAL FORWARD, where the same two versions are 39.9 and
+    38.0. The isolated loop overstated the old cost by 50% and the improvement
+    by 8x, and the end-to-end forward showed no change at all, which is what
+    sent us back to instrument the real thing.
+
+    The reason is that the two are not bottlenecked on the same resource. Alone
+    and warm, this loop is limited by the instructions it issues, so removing a
+    branch shows up. Inside the forward it alternates with a multi-threaded
+    BLAS GEMM that churns the caches, and it moves ~90 MB per camera at an
+    effective ~5 GB/s — nowhere near DRAM bandwidth, so it is bound by gather
+    latency and by an inner `kw` run of about three elements, neither of which
+    a hoisted branch touches.
+
+    ⚠ SO THE NEXT LEVER IS NOT FEWER INSTRUCTIONS. It is more cores (our Mojo
+    code is single-threaded here; only Accelerate's GEMM threads) or moving
+    fewer bytes (a direct convolution for the K=3 S=1 case reads its input once
+    instead of nine times). Measure IN SITU before believing either.
 
     ⚠ NHWC KEEPS THE ORIGINAL LOOP. Its COL axis is `(kh*K + kw)*IC + ic`, so
     the innermost `kw` run is strided by IC rather than contiguous and the same
