@@ -36,7 +36,15 @@ from std.math import exp
 
 from mojo_rl.nn.constants import DT
 
-from .config import ACT_TEMPORAL_ENSEMBLE_M
+from .config import (
+    ACT_TEMPORAL_ENSEMBLE_M,
+    IMAGENET_MEAN_B,
+    IMAGENET_MEAN_G,
+    IMAGENET_MEAN_R,
+    IMAGENET_STD_B,
+    IMAGENET_STD_G,
+    IMAGENET_STD_R,
+)
 
 
 struct TemporalEnsemble[ADIM: Int, K: Int](Movable & Deinitable):
@@ -98,8 +106,24 @@ struct TemporalEnsemble[ADIM: Int, K: Int](Movable & Deinitable):
         if i_min < 0:
             i_min = 0
 
-        # Pass 1: total weight. `rank` is the position in ASCENDING query order,
-        # so rank 0 is the OLDEST contributing chunk and takes weight exp(0)=1.
+        # Pass 1: total weight. The exponent is the offset from the WINDOW
+        # START, `i - i_min`, so the oldest step the window can reach takes
+        # weight exp(0) = 1 and newer queries decay from there.
+        #
+        # ⚠ THAT IS THE RANK ONLY WHEN QUERIES ARE DENSE. Training, the
+        # open-loop evaluation and the reference all query at EVERY step, so
+        # every `i` in the window is populated and `i - i_min` IS the position
+        # in ascending query order — which is what the paper's `w_i = exp(-k*i)`
+        # indexes. `act_so101_deploy_real.mojo` cannot query every step (one
+        # forward is ~95 ms against a 30 Hz grid), so its window is sparse and
+        # the exponent becomes an AGE IN GRID STEPS rather than a rank.
+        #
+        # That is the right generalisation and not an accident: two chunks
+        # queried 1 step apart should not be weighted as differently as two
+        # queried 20 steps apart merely because nothing was queried in
+        # between. It is a DIVERGENCE FROM A RANK-BASED READING though, and
+        # with `m = 0.01` over `K = 60` the whole weight range is 1.0 down to
+        # 0.55, so the two readings differ by a few percent at most.
         var wsum = Float64(0.0)
         var n = 0
         for i in range(i_min, t + 1):
@@ -157,3 +181,47 @@ def denormalize(
     """
     for j in range(dim):
         out[out_offset + j] = src[offset + j] * std[j] + mean[j]
+
+
+def normalize_camera_chw[
+    IMG_H: Int, IMG_W: Int
+](
+    ref src: List[Scalar[DType.uint8]],
+    src_off: Int,
+    mut dst: List[Scalar[DT]],
+    dst_off: Int,
+) raises:
+    """One camera's `[3, H, W]` uint8 CHW slot -> `/255` -> ImageNet normalize.
+
+    ⚠⚠ **THIS IS SHARED BECAUSE THE DEPLOYMENT PATH MUST NOT REIMPLEMENT IT.**
+    `ACTDataset._fill_one` prepares the images the model TRAINS on and
+    `act_so101_deploy_real.mojo` prepares the ones it is DEPLOYED on, and a
+    divergence between them does not raise, does not fail a gate and does not
+    look like a bug: it looks like a policy that behaves worse on the robot
+    than it did on the dataset, which is the most expensive thing to debug in
+    this project. A rule written inline twice drifts — so it is written once.
+
+    ⚠ `* (1/std)`, NOT `/ std`. The two differ in the last bit and the training
+    tensors were built with the reciprocal; matching it is free.
+    """
+    comptime HW = IMG_H * IMG_W
+    if len(src) < src_off + 3 * HW:
+        raise Error("normalize_camera_chw: source slot is short")
+    if len(dst) < dst_off + 3 * HW:
+        raise Error("normalize_camera_chw: destination slot is short")
+    for ch in range(3):
+        var mean = Scalar[DT](IMAGENET_MEAN_R) if ch == 0 else (
+            Scalar[DT](IMAGENET_MEAN_G) if ch == 1 else Scalar[DT](
+                IMAGENET_MEAN_B
+            )
+        )
+        var std = Scalar[DT](IMAGENET_STD_R) if ch == 0 else (
+            Scalar[DT](IMAGENET_STD_G) if ch == 1 else Scalar[DT](
+                IMAGENET_STD_B
+            )
+        )
+        var inv = Scalar[DT](1.0) / std
+        var base = ch * HW
+        for p in range(HW):
+            var v = Scalar[DT](Int(src[src_off + base + p])) / Scalar[DT](255.0)
+            dst[dst_off + base + p] = (v - mean) * inv

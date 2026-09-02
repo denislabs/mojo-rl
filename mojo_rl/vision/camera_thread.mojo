@@ -363,6 +363,50 @@ struct CameraReader(Movable):
         v.end_pop()
         return True
 
+    def take_latest(mut self, mut out: List[UInt8]) raises -> Int:
+        """Copy the NEWEST queued frame into `out`, discarding older ones.
+
+        Returns how many frames were consumed; 0 means nothing was ready and
+        `out` is untouched.
+
+        ⚠⚠ **A CONTROLLER WANTS THE NEWEST FRAME; A RECORDER WANTS THE OLDEST.**
+        `take` and `take_blocking` hand back the oldest queued frame, which is
+        exactly right for `record.mojo` — every frame is data and dropping one
+        puts a hole in the video. A policy is the opposite case: a frame that
+        has been sitting in the ring is a stale observation, and acting on it
+        adds its age to the control loop's latency for no benefit. Anything a
+        controller skips here is a frame it was never going to be able to act
+        on.
+
+        This matters more the slower inference is. At ~95 ms per ACT forward
+        against a 30 fps camera, roughly three frames queue during every
+        query; taking the oldest would mean acting on a 100 ms old view of the
+        world, on top of the 95 ms the forward itself costs.
+        """
+        if len(out) < self.frame_bytes():
+            raise Error(
+                "camera_thread: a " + String(len(out)) + "-byte buffer for a "
+                + String(self.frame_bytes()) + "-byte frame"
+            )
+        var v = self.ring.view()
+        var n = 0
+        while True:
+            var c = v.begin_pop()
+            if not c.ok():
+                break
+            # ⚠ COPY EVERY ONE, rather than peeking ahead to find the last.
+            # `begin_pop` is the only way to know whether another frame
+            # follows, and the copy it commits to cannot be taken back — so
+            # the loop overwrites `out` each time and the final iteration is
+            # the one that survives. At 921 KB and a queue depth of three or
+            # four this is well under a millisecond, against a 95 ms forward.
+            unsafe_memcpy(dest=_erase(out), src=c.data(), count=c.len)
+            v.end_pop()
+            n += 1
+        if n == 0:
+            self._starved += 1
+        return n
+
     def take_blocking(
         mut self, mut out: List[UInt8], timeout_ms: Int = 2000
     ) raises -> Bool:

@@ -66,16 +66,8 @@ from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.io.hdf5 import H5Dataset
 
-from .config import (
-    IMAGENET_MEAN_B,
-    IMAGENET_MEAN_G,
-    IMAGENET_MEAN_R,
-    IMAGENET_STD_B,
-    IMAGENET_STD_G,
-    IMAGENET_STD_R,
-    NORM_STD_FLOOR,
-    TRAIN_SPLIT_RATIO,
-)
+from .config import NORM_STD_FLOOR, TRAIN_SPLIT_RATIO
+from .inference import normalize_camera_chw
 
 
 # ── residency budget ─────────────────────────────────────────────────────
@@ -358,6 +350,34 @@ struct ACTDataset[
         self._fill_one[K](slot, ep_start + start_ts, ep_len - start_ts,
                           out_qpos, out_images, out_actions, out_valid)
 
+    def image_row_u8(
+        mut self, g: Int, mut out: List[Scalar[DType.uint8]]
+    ) raises:
+        """Row `g`'s images as the store holds them: `[N_CAM, 3, H, W]` uint8.
+
+        The UNNORMALIZED bytes, which is what makes this useful: it is the
+        only way to LOOK at what the policy was trained on.
+        `act_so101_deploy_real.mojo --snap` writes these beside the live
+        camera's frames so an operator can confirm that physical camera 0 is
+        the camera that filled slot 0 — a mix-up nothing else can detect and
+        that presents as a policy which simply does not work.
+        """
+        if g < 0 or g >= self.store.n_rows():
+            raise Error(
+                "ACTDataset.image_row_u8: row " + String(g) + " of "
+                + String(self.store.n_rows())
+            )
+        if len(out) != Self.IMG_ELEMS:
+            out = List[Scalar[DType.uint8]](
+                unsafe_uninit_length=Self.IMG_ELEMS
+            )
+        if self.images_resident:
+            var base = g * Self.IMG_ELEMS
+            for i in range(Self.IMG_ELEMS):
+                out[i] = self.images_raw[base + i]
+        else:
+            self._img_dset.read_range[DType.uint8](g, g + 1, mptr(out))
+
     def _fill_one[
         K: Int
     ](
@@ -418,31 +438,18 @@ struct ACTDataset[
         ref img = self.images_raw if self.images_resident else self._img_row
 
         var io = slot * Self.IMG_ELEMS
-        comptime HW = Self.IMG_H * Self.IMG_W
         var t_nm0 = perf_counter_ns()
+        # ⚠ THE PER-PIXEL RULE LIVES IN `inference.mojo`, NOT HERE. It used to
+        # be written out inline, and the same rule is needed by
+        # `act_so101_deploy_real.mojo` to prepare a LIVE camera frame. Two
+        # copies of "/255 then ImageNet" is the defect shape this repo hits
+        # most often, and its failure here is invisible: a policy that behaves
+        # on the dataset and worse on the robot, with nothing raising.
         for c in range(Self.N_CAM):
             var cbase = c * Self.CAM_ELEMS
-            for ch in range(3):
-                var mean = Scalar[DT](
-                    IMAGENET_MEAN_R
-                ) if ch == 0 else (
-                    Scalar[DT](IMAGENET_MEAN_G) if ch
-                    == 1 else Scalar[DT](IMAGENET_MEAN_B)
-                )
-                var std = Scalar[DT](
-                    IMAGENET_STD_R
-                ) if ch == 0 else (
-                    Scalar[DT](IMAGENET_STD_G) if ch
-                    == 1 else Scalar[DT](IMAGENET_STD_B)
-                )
-                var inv = Scalar[DT](1.0) / std
-                var base = cbase + ch * HW
-                for p in range(HW):
-                    var v = (
-                        Scalar[DT](Int(img[src + base + p]))
-                        / Scalar[DT](255.0)
-                    )
-                    out_images[io + base + p] = (v - mean) * inv
+            normalize_camera_chw[Self.IMG_H, Self.IMG_W](
+                img, src + cbase, out_images, io + cbase
+            )
         self.ns_img_norm += perf_counter_ns() - t_nm0
 
 

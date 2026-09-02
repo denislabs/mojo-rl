@@ -32,3 +32,9 @@ tests/vision/test_opencv_shim.mojo
 # about having called it. Regenerate its fixture with
 #   pixi run python tools/vision/make_resize_fixture.py
 tests/vision/test_act_preprocess.mojo
+# The two PIL-bilinear implementations against EACH OTHER, at the SO-101 rig's
+# own geometry (640x480 -> 320x240). Both are gated against PIL above and in
+# tests/io/test_image_resize.mojo — but the ACT deployment trains through one
+# and infers through the other, and no gate could see that boundary. Needs no
+# shim, no camera and no PIL.
+tests/vision/test_resize_deploy_vs_import.mojo

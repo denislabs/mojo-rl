@@ -155,6 +155,20 @@ def stdout_is_tty() -> Bool:
     return external_call["isatty", Int32](Int32(1)) == 1
 
 
+def stdin_is_tty() -> Bool:
+    """Whether stdin is a terminal.
+
+    ⚠ THE DISTINCTION MATTERS FOR `StdinReader.has_input`. On a terminal,
+    "input is waiting" means a key was pressed. On a PIPE that has reached its
+    end, `poll` returns POLLHUP — also a ready event — and `line()` then
+    returns an empty string, which is indistinguishable from the operator
+    pressing Enter. A tool that uses a keypress as "stop now" therefore stops
+    IMMEDIATELY when run as `printf '\n' | tool`, on its first check. Gate the
+    keypress affordance on this and scripted runs behave.
+    """
+    return external_call["isatty", Int32](Int32(0)) == 1
+
+
 struct StdinReader(Movable):
     """Line-at-a-time stdin for an interactive tool.
 

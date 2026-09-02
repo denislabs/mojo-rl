@@ -236,6 +236,13 @@ soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", de
 soarm-record = { cmd = "mojo run -I . examples/so101/record.mojo", depends-on = ["build-serial", "build-opencv"], description = "Record SO-101 teleop (terminal). Add --arm to move the follower" }
 # The same, with live camera views and buttons — what LeRobot uses Rerun for.
 soarm-record-ui = { cmd = "mojo run -I . examples/so101/record_ui.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Record SO-101 teleop with a live UI. Add --arm to move the follower" }
+# Run a trained ACT policy on the follower, from the two live cameras.
+# ⚠ SAFE BY DEFAULT: without `--arm` nothing is energised. `--store` is
+# REQUIRED (the normalization statistics live there, not in the checkpoint).
+# ⚠ `build` + run rather than `mojo run`: this example needs `-ld_classic`,
+# and a 3-minute compile in front of a robot should be a separate step you can
+# see finish. Extra args append, so `-- --store X --snap /tmp/snap` works.
+soarm-act-deploy = { cmd = "mojo build -I . -Xlinker -ld_classic -o /tmp/act_deploy examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy", depends-on = ["build-serial", "build-opencv"], description = "Run trained ACT on the SO-101 (needs --store; --arm to move it)" }
 # ⚠⚠ WRITES SERVO EEPROM. Safe by default (no --write); ALWAYS --backup first.
 soarm-calibrate = { cmd = "mojo run -I . tools/soarm/so101_calibrate.mojo", depends-on = ["build-serial"], description = "Calibrate an SO-101 arm (needs --port; --write to apply)" }
 # NVIDIA GPU information and profiling utilities
