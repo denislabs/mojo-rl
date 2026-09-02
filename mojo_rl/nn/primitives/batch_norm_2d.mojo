@@ -15,7 +15,7 @@ from max.gpu.host import DeviceContext
 from std.sys.info import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from mojo_rl.nn.constants import CPU_SIMD_W, DT, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor, TensorImpl
 from .linear import _cast_f2b_kernel, _cast_b2f_kernel
 from ..core.tensor_refs import TensorRefs
@@ -1112,13 +1112,57 @@ struct BatchNorm2D[
                     var bt = b_p[unsafe_offset=c]
                     for b in range(B):
                         var bb = b * Self.FLAT_DIM
-                        for s in range(Self.SPATIAL):
-                            var off = bb + _bn_off[
-                                Self.LAYOUT, Self.C_, Self.SPATIAL
-                            ](c, s)
-                            var xh = (in_p[unsafe_offset=off] - rm) * inv_std
-                            xhat_e[unsafe_offset=off] = xh
-                            out_p[unsafe_offset=off] = g * xh + bt
+                        # ⚠ VECTORISED FOR NCHW ONLY, and the layout is the
+                        # whole reason: `_bn_off` is `c*SPATIAL + s` there, so
+                        # the `s` axis is CONTIGUOUS and every coefficient in
+                        # this loop (`rm`, `inv_std`, `g`, `bt`) is a per-
+                        # CHANNEL constant — a broadcast against a contiguous
+                        # run, which is the shape SIMD wants. NHWC is
+                        # `s*C + c`: stride-C loads, where a vector load would
+                        # gather across channels and be slower than the scalar
+                        # loop it replaced.
+                        comptime if Self.LAYOUT == LAYOUT_NCHW:
+                            var base = bb + c * Self.SPATIAL
+                            var rmv = SIMD[DT, CPU_SIMD_W](rm)
+                            var isv = SIMD[DT, CPU_SIMD_W](inv_std)
+                            var gv = SIMD[DT, CPU_SIMD_W](g)
+                            var btv = SIMD[DT, CPU_SIMD_W](bt)
+                            var k = 0
+                            while k + CPU_SIMD_W <= Self.SPATIAL:
+                                var xv = in_p.unsafe_load[width=CPU_SIMD_W](
+                                    base + k
+                                )
+                                var xhv = (xv - rmv) * isv
+                                xhat_e.unsafe_store(base + k, xhv)
+                                out_p.unsafe_store(base + k, gv * xhv + btv)
+                                k += CPU_SIMD_W
+                            while k < Self.SPATIAL:
+                                var off = base + k
+                                var xh = (
+                                    in_p[unsafe_offset=off] - rm
+                                ) * inv_std
+                                xhat_e[unsafe_offset=off] = xh
+                                out_p[unsafe_offset=off] = g * xh + bt
+                                k += 1
+                        else:
+                            for s in range(Self.SPATIAL):
+                                var off = bb + _bn_off[
+                                    Self.LAYOUT, Self.C_, Self.SPATIAL
+                                ](c, s)
+                                var xh = (
+                                    in_p[unsafe_offset=off] - rm
+                                ) * inv_std
+                                xhat_e[unsafe_offset=off] = xh
+                                out_p[unsafe_offset=off] = g * xh + bt
+                # ⚠ `xhat` IS STILL WRITTEN IN EVAL, and that is not an
+                # oversight. Skipping it would halve this loop's memory traffic
+                # — inference never reads it — but eval-mode BACKWARD is a
+                # supported, GATED path here: the frozen-backbone perceptual
+                # loss backprops through BN in eval mode, and
+                # `test_batch_norm_2d_eval_vjp.mojo` pins it. Dropping the
+                # write would not fail that gate loudly; it would produce a
+                # wrong `dgamma`. It needs a real inference-mode flag, not a
+                # guess about who is calling.
                 self.cache_is_training = False
         else:
             var c = ctx.value()

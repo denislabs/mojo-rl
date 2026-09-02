@@ -20,6 +20,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
+from max.algorithm import parallelize
 from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
@@ -190,35 +191,65 @@ struct MaxPool2D[
         ref in0 = inputs[0]
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_FLAT)
-            for b in range(B):
+            # ⚠⚠ ONE CALL, 9.43 ms, 15.6% OF ACT's CPU FORWARD. Measured in
+            # situ: ResNet18's single 3x3/2 pool over 2,457,600 inputs (two
+            # cameras batched) is 5.5M taps of scalar work with an index
+            # computation and two branches EACH, and it was the largest item
+            # left after im2col was threaded. Splitting it over (batch,
+            # channel) — each pair owning a disjoint output plane, so there is
+            # nothing to synchronise — is the same treatment and the same
+            # measured ~200 us launch cost applies.
+            comptime TASKS = B * Self.C
+            comptime TAPS = B * Self.C * Self.OH * Self.OW * Self.K * Self.K
+            var _ip = in0.data.unsafe_ptr()
+            var _op = out.data.unsafe_ptr()
+
+            @parameter
+            def _plane(t: Int):
+                var b = t // Self.C
+                var c = t % Self.C
                 var in_base = b * Self.IN_FLAT
                 var out_base = b * Self.OUT_FLAT
-                for c in range(Self.C):
-                    for oh in range(Self.OH):
-                        for ow in range(Self.OW):
-                            var best: Scalar[DT] = MP_NEG_INF
-                            for kh in range(Self.K):
-                                var ih = oh * Self.S + kh - Self.P
-                                if ih < 0 or ih >= Self.H:
+                for oh in range(Self.OH):
+                    for ow in range(Self.OW):
+                        var best: Scalar[DT] = MP_NEG_INF
+                        for kh in range(Self.K):
+                            var ih = oh * Self.S + kh - Self.P
+                            if ih < 0 or ih >= Self.H:
+                                continue
+                            for kw in range(Self.K):
+                                var iw = ow * Self.S + kw - Self.P
+                                if iw < 0 or iw >= Self.W:
                                     continue
-                                for kw in range(Self.K):
-                                    var iw = ow * Self.S + kw - Self.P
-                                    if iw < 0 or iw >= Self.W:
-                                        continue
-                                    var v = in0.data[
-                                        in_base
-                                        + _in_off[
-                                            Self.LAYOUT, Self.C, Self.H, Self.W
-                                        ](c, ih, iw)
-                                    ]
-                                    if v > best:
-                                        best = v
-                            out.data[
-                                out_base
-                                + _out_off[
-                                    Self.LAYOUT, Self.C, Self.OH * Self.OW
-                                ](c, oh * Self.OW + ow)
-                            ] = best
+                                var v = _ip[
+                                    unsafe_offset = in_base
+                                    + _in_off[
+                                        Self.LAYOUT, Self.C, Self.H, Self.W
+                                    ](c, ih, iw)
+                                ]
+                                if v > best:
+                                    best = v
+                        _op[
+                            unsafe_offset = out_base
+                            + _out_off[
+                                Self.LAYOUT, Self.C, Self.OH * Self.OW
+                            ](c, oh * Self.OW + ow)
+                        ] = best
+
+            # ⚠ THE GATE IS NOT A FINELY SWEPT ONE, and saying so is the point.
+            # `parallelize`'s ~200 us fixed cost is measured (see conv2d.mojo's
+            # table, where a blanket call made five shapes slower and one 20x
+            # slower). ACT has exactly ONE pooling layer and it clears this
+            # bound by more than 30x, so the thresholds are a floor that keeps
+            # small pools off the thread pool, not a tuned crossover. A network
+            # whose pools sit near it deserves its own measurement.
+            comptime MP_PAR_MIN_TASKS = 16
+            comptime MP_PAR_MIN_TAPS = 200_000
+            comptime if TASKS >= MP_PAR_MIN_TASKS and TAPS >= MP_PAR_MIN_TAPS:
+                parallelize[_plane](TASKS)
+            else:
+                for t in range(TASKS):
+                    _plane(t)
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_FLAT)
