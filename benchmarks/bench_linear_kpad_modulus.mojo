@@ -43,12 +43,25 @@ three GEMMs are timed at both paddings and summed.
 
     pixi run -e nvidia mojo run -I . benchmarks/bench_linear_kpad_modulus.mojo
 
+⚠ EVERY DIMENSION HERE IS COMPTIME, AND THAT IS LOAD-BEARING.
+The first version of this file built its `TileTensor`s with a RUNTIME
+`row_major(M, N)`. MAX then sees dynamic shapes — its own dispatch log says
+`Static shapes available: N= True  K= True` when they are static — takes an
+unspecialized path, and the loop becomes host-bound. Every GEMM measured
+~350 us across an 81x span in work (0.05 implied TFLOPS on a 5090), and the
+null control (K_PAD 128 vs 128, the SAME configuration twice) reported a 3.3%
+difference. `Linear` passes static shapes, so a harness that does not is
+measuring a different dispatch than the one under test.
+
+`_assert_work_bound` below fails the run if that happens again: across an 80x
+work span the times must span at least 3x, or the harness is timing dispatch
+rather than arithmetic and every ratio it prints is noise.
+
 ⚠ Per-call sums are an UPPER BOUND on what a step will show — back-to-back
 launches with one sync measure throughput under saturation, and a step that is
 already ~95% GPU-busy does not compose 1:1. Quote the ratio, not the ms.
 """
 
-from std.math import ceildiv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
@@ -58,33 +71,36 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.splitk_gemm import multistage_shape_ok
 
 
-comptime WARMUP = 5
-comptime REPS = 50
+comptime WARMUP = 20
+comptime REPS = 200
 
 
 def _round_up(v: Int, m: Int) -> Int:
     return ((v + m - 1) // m) * m
 
 
-def kpad_floor(IN_: Int) -> Int:
+def _kpad_floor(IN_: Int) -> Int:
     """What `Linear` does today: multiple of 32, floor of 128."""
     var r = _round_up(IN_, 32)
     return r if r > 128 else 128
 
 
-def kpad_modulus(IN_: Int) -> Int:
+def _kpad_modulus(IN_: Int) -> Int:
     """The proposal: multiple of 128 (which subsumes both existing terms)."""
-    return _round_up(IN_, 128) if IN_ > 0 else 128
+    return _round_up(IN_, 128)
 
 
 def route(m: Int, n: Int, k: Int) -> String:
-    return "multistage" if multistage_shape_ok(m, n, k) else "VENDOR    "
+    return "multistage" if multistage_shape_ok(m, n, k) else "VENDOR"
 
 
 def time_gemm[
-    transpose_b: Bool
-](M: Int, N: Int, K: Int, ctx: DeviceContext) raises -> Float64:
-    """Microseconds per call for `[M,K] @ [K,N]` (or `@ [N,K]ᵀ`)."""
+    M: Int, N: Int, K: Int, transpose_b: Bool
+](ctx: DeviceContext) raises -> Float64:
+    """Microseconds per call for `[M,K] @ [K,N]` (or `@ [N,K]ᵀ`).
+
+    All three dims are COMPTIME so `max_matmul` sees static shapes and takes
+    the same dispatch `Linear` gets. See the header."""
     var ab = ctx.enqueue_create_buffer[DT](M * K)
     var bb = ctx.enqueue_create_buffer[DT](K * N)
     var cb = ctx.enqueue_create_buffer[DT](M * N)
@@ -93,73 +109,105 @@ def time_gemm[
     cb.enqueue_fill(Float32(0.0))
     ctx.synchronize()
 
-    var cv = TileTensor(cb, row_major(M, N))
-    var av = TileTensor(ab, row_major(M, K))
-    # transpose_b reads B as [N, K]; the buffer is the same K*N elements.
-    var bv_n = TileTensor(bb, row_major(K, N))
-    var bv_t = TileTensor(bb, row_major(N, K))
+    var cv = TileTensor(cb, row_major[M, N]())
+    var av = TileTensor(ab, row_major[M, K]())
 
+    var t0: Int
+    var t1: Int
     comptime if transpose_b:
+        var bv = TileTensor(bb, row_major[N, K]())
         for _ in range(WARMUP):
-            max_matmul[transpose_b=True, target="gpu"](cv, av, bv_t, ctx)
+            max_matmul[transpose_b=True, target="gpu"](cv, av, bv, ctx)
         ctx.synchronize()
-        var t0 = perf_counter_ns()
+        t0 = perf_counter_ns()
         for _ in range(REPS):
-            max_matmul[transpose_b=True, target="gpu"](cv, av, bv_t, ctx)
+            max_matmul[transpose_b=True, target="gpu"](cv, av, bv, ctx)
         ctx.synchronize()
-        var t1 = perf_counter_ns()
-        # Keep every operand alive past the last launch: Mojo destroys at LAST
-        # USE, and a freed operand under an async launch is a use-after-free.
-        _ = ab^
-        _ = bb^
-        _ = cb^
-        return Float64(t1 - t0) / 1e3 / Float64(REPS)
+        t1 = perf_counter_ns()
     else:
+        var bv = TileTensor(bb, row_major[K, N]())
         for _ in range(WARMUP):
-            max_matmul[target="gpu"](cv, av, bv_n, ctx)
+            max_matmul[target="gpu"](cv, av, bv, ctx)
         ctx.synchronize()
-        var t0 = perf_counter_ns()
+        t0 = perf_counter_ns()
         for _ in range(REPS):
-            max_matmul[target="gpu"](cv, av, bv_n, ctx)
+            max_matmul[target="gpu"](cv, av, bv, ctx)
         ctx.synchronize()
-        var t1 = perf_counter_ns()
-        _ = ab^
-        _ = bb^
-        _ = cb^
-        return Float64(t1 - t0) / 1e3 / Float64(REPS)
+        t1 = perf_counter_ns()
+
+    # Mojo destroys at LAST USE; a freed operand under an async launch is a
+    # use-after-free, and the sync above is the last mention of all three.
+    _ = ab^
+    _ = bb^
+    _ = cb^
+    return Float64(t1 - t0) / 1e3 / Float64(REPS)
 
 
-def one(label: String, B: Int, IN_: Int, OUT_: Int, ctx: DeviceContext) raises:
-    var N_PAD = _round_up(OUT_, 128)
-    var kf = kpad_floor(IN_)
-    var km = kpad_modulus(IN_)
+def one[
+    B: Int, IN_: Int, OUT_: Int
+](label: String, ctx: DeviceContext, mut probe: List[Float64]) raises:
+    comptime N_PAD = _round_up(OUT_, 128)
+    comptime KF = _kpad_floor(IN_)
+    comptime KM = _kpad_modulus(IN_)
 
-    print("──", label, " B=", B, " IN=", IN_, " OUT=", OUT_,
-          "   K_PAD ", kf, " -> ", km, "   N_PAD=", N_PAD, sep="")
-    if kf == km:
-        print("   K_PAD already a multiple of 128 — control, expect no change")
+    print(
+        "── ", label, "  B=", B, " IN=", IN_, " OUT=", OUT_,
+        "   K_PAD ", KF, " -> ", KM, "   N_PAD=", N_PAD, sep="",
+    )
+    comptime if KF == KM:
+        print("   (control: K_PAD unchanged — both arms are the SAME shape,")
+        print("    so any ratio away from 1.000 is this harness's noise floor)")
 
-    # forward:     [B, K_PAD] @ [K_PAD, N_PAD]          K = K_PAD  (floor)
-    # grad_input:  [B, N_PAD] @ [K_PAD, N_PAD]^T        N = K_PAD  (MODULUS)
-    # grad_weight: [K_PAD, B] @ [B, N_PAD]              M = K_PAD  (no test)
-    var f_a = time_gemm[False](B, N_PAD, kf, ctx)
-    var f_b = time_gemm[False](B, N_PAD, km, ctx)
-    var g_a = time_gemm[True](B, kf, N_PAD, ctx)
-    var g_b = time_gemm[True](B, km, N_PAD, ctx)
-    var w_a = time_gemm[False](kf, N_PAD, B, ctx)
-    var w_b = time_gemm[False](km, N_PAD, B, ctx)
+    # forward      [B, K_PAD] @ [K_PAD, N_PAD]      K = K_PAD  (floor test)
+    # grad_input   [B, N_PAD] @ [K_PAD, N_PAD]^T    N = K_PAD  (MODULUS test)
+    # grad_weight  [K_PAD, B] @ [B, N_PAD]          M = K_PAD  (no test)
+    var f_a = time_gemm[B, N_PAD, KF, False](ctx)
+    var f_b = time_gemm[B, N_PAD, KM, False](ctx)
+    var g_a = time_gemm[B, KF, N_PAD, True](ctx)
+    var g_b = time_gemm[B, KM, N_PAD, True](ctx)
+    var w_a = time_gemm[KF, N_PAD, B, False](ctx)
+    var w_b = time_gemm[KM, N_PAD, B, False](ctx)
 
-    print("   forward     ", route(B, N_PAD, kf), f_a, " us  ->  ",
-          route(B, N_PAD, km), f_b, " us", sep="")
-    print("   grad_input  ", route(B, kf, N_PAD), g_a, " us  ->  ",
-          route(B, km, N_PAD), g_b, " us", sep="")
-    print("   grad_weight ", route(kf, N_PAD, B), w_a, " us  ->  ",
-          route(km, N_PAD, B), w_b, " us", sep="")
+    probe.append(f_a)
+
+    print("   forward      ", route(B, N_PAD, KF), " ", f_a, " us   ->   ",
+          route(B, N_PAD, KM), " ", f_b, " us", sep="")
+    print("   grad_input   ", route(B, KF, N_PAD), " ", g_a, " us   ->   ",
+          route(B, KM, N_PAD), " ", g_b, " us", sep="")
+    print("   grad_weight  ", route(KF, N_PAD, B), " ", w_a, " us   ->   ",
+          route(KM, N_PAD, B), " ", w_b, " us", sep="")
     var ta = f_a + g_a + w_a
     var tb = f_b + g_b + w_b
-    print("   LAYER TOTAL  ", ta, " us  ->  ", tb, " us   ratio ",
+    print("   LAYER TOTAL   ", ta, " us   ->   ", tb, " us    speedup ",
           (ta / tb) if tb > 0.0 else 0.0, "x", sep="")
     print()
+
+
+def _assert_work_bound(probe: List[Float64]) raises:
+    """Fail the run if the harness is timing dispatch instead of arithmetic.
+
+    The forward shapes below span ~80x in FLOPs. If their measured times do
+    not span at least 3x, the loop is host-bound and every ratio printed above
+    is noise — which is exactly what the first version of this file did, at
+    350 us for everything. A benchmark that cannot fail is not a measurement.
+    """
+    var lo = probe[0]
+    var hi = probe[0]
+    for i in range(len(probe)):
+        if probe[i] < lo:
+            lo = probe[i]
+        if probe[i] > hi:
+            hi = probe[i]
+    var span = (hi / lo) if lo > 0.0 else 0.0
+    print("harness check: forward times span ", span,
+          "x across ~80x of work (need >= 3x)", sep="")
+    if span < 3.0:
+        raise Error(
+            "HOST-BOUND HARNESS: the forward GEMMs measured nearly the same"
+            " time across an 80x work span, so this run timed dispatch, not"
+            " the GEMM. Every ratio above is noise. Check that every dim is"
+            " comptime (static shapes) before reading anything."
+        )
 
 
 def main() raises:
@@ -167,17 +215,20 @@ def main() raises:
         print("Linear's three GPU GEMMs at K_PAD = floor-128 vs modulus-128.")
         print("multi_gemm_cond: m>1 and n%128==0 and k%32==0 and k>=128")
         print()
+        var probe = List[Float64]()
 
         print("=== K_PAD is NOT a multiple of 128 today — grad_input on cuBLAS")
         # TD-MPC2 ZA = LATENT + ACT, the shape linear.mojo's comment names.
-        one("tdmpc2 ZA   ", 256, 518, 512, ctx)
-        one("tdmpc2 ZA   ", 960, 518, 512, ctx)
-        one("concat 160  ", 256, 160, 256, ctx)
-        one("concat 192  ", 960, 192, 256, ctx)
+        one[256, 518, 512]("tdmpc2 ZA  ", ctx, probe)
+        one[960, 518, 512]("tdmpc2 ZA  ", ctx, probe)
+        one[256, 160, 256]("concat 160 ", ctx, probe)
+        one[960, 192, 256]("concat 192 ", ctx, probe)
 
         print("=== controls: K_PAD already a multiple of 128, must not move")
-        one("sac obs|act ", 256, 6, 256, ctx)     # K_PAD = 128 (the K_MIN case)
-        one("act dim     ", 2592, 256, 256, ctx)
-        one("act ff      ", 2592, 1024, 256, ctx)
+        one[256, 6, 256]("sac obs|act", ctx, probe)     # K_PAD = 128 (K_MIN)
+        one[2592, 256, 256]("act dim    ", ctx, probe)
+        one[2592, 1024, 256]("act ff     ", ctx, probe)
 
+        _assert_work_bound(probe)
+        print()
         print("⚠ Per-call sums are a CEILING on a step, not an estimate.")
