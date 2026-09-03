@@ -23,3 +23,11 @@ tests/deep_agents/smolvla/test_kv_cache.mojo
 # CONTENTS (all layers written, all distinct, post-RoPE and pre-broadcast), not
 # just that it ran — every interesting failure here produces finite output.
 tests/deep_agents/smolvla/test_prefill.mojo
+
+# Step 6 — the static-mask attention the denoising step needs, gated against the
+# torch-validated CrossAttention on the unmasked case.
+tests/deep_agents/smolvla/test_block_attention.mojo
+# Step 6 — one denoising step and then ten, over a prefilled cache. Asserts the
+# cache is bit-identical after ten steps and that repeated steps do not drift:
+# the crop bug does not crash, it quietly changes the chunk.
+tests/deep_agents/smolvla/test_denoise.mojo

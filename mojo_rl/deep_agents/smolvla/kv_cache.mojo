@@ -233,3 +233,36 @@ struct SmolVLAKVCache[
             var vs = v_suf.dev.value().create_sub_buffer[DT](0, Self.SUFFIX_N)
             d.enqueue_copy(kt, ks)
             d.enqueue_copy(vt, vs)
+
+    def read_layer_into[
+        target: StaticString
+    ](
+        mut self, layer: Int, mut k_dst: Tensor, mut v_dst: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Copy one layer's cached prefix K/V out, for a CROSS layer to project.
+
+        A cross-attention layer does not attend to the cache directly — it
+        pushes the VLM's 320-wide K/V through its own `[320, 320]` projections
+        first. The cache stays read-only.
+        """
+        self._require_filled(layer)
+        var off = layer * Self.LAYER_N
+        comptime if target == "cpu":
+            k_dst.ensure(Self.LAYER_N)
+            v_dst.ensure(Self.LAYER_N)
+            for i in range(Self.LAYER_N):
+                k_dst.data[i] = self.k.data[off + i]
+                v_dst.data[i] = self.v.data[off + i]
+        else:
+            var d = ctx.value()
+            k_dst.ensure_gpu(d, Self.LAYER_N)
+            v_dst.ensure_gpu(d, Self.LAYER_N)
+            d.enqueue_copy(
+                k_dst.dev.value().create_sub_buffer[DT](0, Self.LAYER_N),
+                self.k.dev.value().create_sub_buffer[DT](off, Self.LAYER_N),
+            )
+            d.enqueue_copy(
+                v_dst.dev.value().create_sub_buffer[DT](0, Self.LAYER_N),
+                self.v.dev.value().create_sub_buffer[DT](off, Self.LAYER_N),
+            )
