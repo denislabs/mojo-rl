@@ -24,6 +24,37 @@ mkdir -p "$OUT"
 
 command -v nsys >/dev/null || { echo "!! nsys not on PATH"; exit 1; }
 
+# ⚠ BUILD ONCE, RUN SIX TIMES. `mojo run` compiles, and the probe carries every
+# leg in one binary (a runtime switch over comptime instantiations). Measured on
+# Apple: a cold `mojo run` is 136 s and a warm one 30 s — so `mojo run` DOES
+# cache and the six invocations were NOT six full compiles, only one plus five
+# cache hits. Building once still removes those five (~150 s here) and, more
+# usefully, makes the sweep cost one predictable compile instead of a cache
+# behaviour.
+#
+# ⚠ WHERE THE TIME ACTUALLY WENT WHEN k=12/13 WERE ADDED, since it is worth
+# knowing before blaming the wrong change. The block work is compile-NEUTRAL:
+# `test_newton_solve_fields` (one model) builds in 81.9 s before the campaign
+# and 74.8 s after. The cost is the two new legs — 155 s for four, 195 s for
+# six — and they are the two LARGEST models AND they cross the `Je` spill
+# boundary, so `JE_IN_SHARED` flips and the blocked Newton kernel is
+# instantiated in BOTH address-space variants.
+#
+# ⚠ IF THAT FIRST COMPILE IS STILL TOO SLOW, the fix is fewer legs per binary,
+# not fewer runs: `KS="0 3 6 9"` skips the wide pair at RUNTIME but still
+# compiles it. Splitting the probe into a narrow and a wide file is the real
+# answer and has not been done.
+#
+# ⚠ RUN IT FROM INSIDE THE PIXI ENV, WHICH THIS SCRIPT ALREADY IS. The CUDA
+# interceptor arrives through `LD_PRELOAD`, set by the nvidia environment's
+# ACTIVATION and not by the binary — running the built executable from a plain
+# shell silently loses it. The tell is the `[intercept] ... loaded` banner: if
+# it is missing from the probe output, the environment is wrong.
+BIN="$OUT/park_attrib_probe"
+echo "=== building once ($PROBE) ==="
+mojo build -I . -o "$BIN" "$PROBE" || { echo "!! build failed"; exit 1; }
+echo "  -> $BIN"
+
 # ⚠ 12 AND 13 EXIST BECAUSE P4 MADE THEM COMPILE, AND THEY CROSS THE `Je`
 # SPILL BOUNDARY: k<=9 keeps `Je` in threadgroup memory, k>=10 re-reads it from
 # global every Newton iteration. Do not draw one `x k=0` curve across that —
@@ -36,7 +67,7 @@ for k in ${KS:-0 3 6 9 12 13}; do
   # --stats=false: the summaries are exported explicitly below, so a failure
   # to export is a visible error rather than a missing tail of stdout.
   nsys profile --force-overwrite=true -o "$rep" --stats=false \
-      mojo run -I . "$PROBE" "$k" 2>&1 | tee "$OUT/k$k.probe.txt"
+      "$BIN" "$k" 2>&1 | tee "$OUT/k$k.probe.txt"
   if [ ! -f "$rep.nsys-rep" ]; then
     echo "!! no report for k=$k — the leg did not run; NOT continuing to the"
     echo "   table, which would be computed from a missing arm."
