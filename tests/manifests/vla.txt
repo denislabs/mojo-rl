@@ -30,3 +30,8 @@ tests/deep_agents/smolvla/test_checkpoint_coverage.mojo
 # the two kinds away (even k=[320,720] self, odd k=[320,320] cross). With this
 # the consolidated gate above reaches 500/500.
 tests/deep_agents/smolvla/test_expert_name_map.mojo
+
+# Step 6 — the prefix-LM block mask (`make_att_2d_masks`'s cumsum rule), against
+# the three worked examples the reference documents, SmolVLA's own layout, and
+# the agreement of the prefill/denoise windows with the square mask.
+tests/deep_agents/smolvla/test_attn_mask.mojo
