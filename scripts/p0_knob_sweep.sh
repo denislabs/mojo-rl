@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Sweep ONE comptime knob in newton_solve.mojo across values, one build per
+# value, and collect a full attribution leg for each.
+#
+#   # WHICH serial term costs what (bit-exact at every value):
+#   KNOB=NEWTON_SERIAL_PROBE VALUES="0 1 2 3 4" \
+#       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
+#
+#   # Is the cost per-ITERATION or per-SOLVE? (NOT bit-exact — timing only):
+#   KNOB=NEWTON_MIN_ITER VALUES="0 8 16 32" \
+#       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
+#
+# This is one script rather than one per knob on purpose: the sed/restore/
+# fingerprint logic is the part that must not drift between sweeps, and it was
+# already copied once.
+#
+# ⚠⚠ THE MAGNITUDE IS THE NON-VACUITY CHECK, and it differs per knob. For
+# SERIAL_PROBE at REPEAT=10 a term worth 5% of newton must move newton ~45%; a
+# term inside the noise floor (~1.7% here for kernels over 1 ms/step) has either
+# been optimised away or is genuinely free, and THOSE ARE NOT THE SAME ANSWER —
+# re-run it at REPEAT=100 before believing it is free. For MIN_ITER, `t(N)` must
+# be FLAT then LINEAR; if it is linear from the very first value the knee is
+# below the smallest N and the sweep must be redone lower.
+#
+# ⚠ Restores the knob to 0 on ANY exit, including Ctrl-C. Check `git diff`
+# after a crash anyway: a probe build left in the tree is a wrong production
+# binary, and `NEWTON_MIN_ITER` is NOT bit-exact.
+set -uo pipefail
+
+SRC=mojo_rl/physics3d/solver/newton_solve.mojo
+KNOB=${KNOB:?set KNOB, e.g. KNOB=NEWTON_MIN_ITER}
+VALUES=${VALUES:?set VALUES, e.g. VALUES="0 8 16 32"}
+KEY="comptime ${KNOB}: Int"
+export KS=${KS:-"0 13"}
+TAG=${TAG:-$(echo "$KNOB" | tr 'A-Z_' 'a-z-')}
+
+command -v mojo >/dev/null || {
+  echo "!! run inside the pixi env: pixi run -e nvidia bash $0"; exit 1; }
+grep -q "^${KEY} = " "$SRC" || { echo "!! cannot find '$KEY' in $SRC"; exit 1; }
+
+_set() { sed -i "s/^${KEY} = .*/${KEY} = $1/" "$SRC"; }
+_restore() { _set 0; echo "-- restored ${KNOB} = 0"; }
+trap _restore EXIT INT TERM
+
+DIRS=()
+for V in $VALUES; do
+  echo "############## ${KNOB} = $V"
+  _set "$V"
+  grep -n "^${KEY} = " "$SRC"
+  D="p0_${TAG}_${V}"
+  OUT="$D" bash scripts/p0_attrib.sh || { echo "!! leg $V failed"; exit 1; }
+  DIRS+=("$D")
+done
+
+echo
+echo "=== build fingerprints — EVERY ONE MUST DIFFER ==="
+echo "    (equal hashes mean two arms are the same program; that voided a whole"
+echo "     sweep once, and it looked like a clean negative result)"
+for D in "${DIRS[@]}"; do
+  printf "  %-28s " "$D"
+  sed -n 's/^binary_md5 *//p' "$D/BUILD.txt" 2>/dev/null || echo "(missing)"
+done

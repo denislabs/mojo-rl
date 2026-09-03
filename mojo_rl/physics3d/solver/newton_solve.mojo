@@ -347,6 +347,36 @@ comptime NEWTON_COOP_DIV: Int = 1
 comptime NEWTON_SERIAL_PROBE: Int = 0
 comptime SERIAL_PROBE_REPEAT: Int = 10
 
+# ⚠⚠ THE ITERATION PROBE — a DIFFERENT INSTRUMENT, and the difference is the
+# point. `NEWTON_SERIAL_PROBE` answers "what does this term cost"; it cannot
+# answer "is that cost paid once per SOLVE or once per ITERATION", and after the
+# serial sweep left 89% of newton unaccounted, that split is what decides where
+# to look next. Sweeping a forced MINIMUM iteration count answers it in closed
+# form: `t(N)` is FLAT while N is below the count the solver takes anyway and
+# LINEAR above it, so
+#
+#     the KNEE      = the iteration count actually taken (never measured here)
+#     the SLOPE     = the per-iteration cost
+#     the INTERCEPT extrapolated back to N=0 = the SETUP cost
+#
+# ⚠ A MINIMUM, NOT A CAP, AND THAT IS A SAFETY DECISION. Capping iterations
+# would leave the solve UNCONVERGED, and over 500 steps an unconverged contact
+# solver does not merely report a wrong number — the scene diverges, contact
+# counts change, and the WORKLOAD stops being the one under test. Forcing EXTRA
+# iterations on an already-converged system is the safe direction: the line
+# search returns alpha ~ 0, nothing moves, and the answer changes only in its
+# last bits. The measurement stays honest because the extra iterations cost full
+# price whether or not they achieve anything.
+#
+# ⚠ NOT bit-exact — the only knob here that is not. It is a timing instrument
+# and must never ship at a non-zero value.
+#
+# ⚠ Both edits are `comptime`-elided at 0, so production codegen is untouched,
+# and `NEWTON_MIN_ITER` is comptime-uniform across the threadgroup — it cannot
+# desynchronise the loop's barriers, which is the property the two existing
+# breaks are documented to preserve.
+comptime NEWTON_MIN_ITER: Int = 0
+
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
 # dead-store elimination is entitled to delete the whole thing — and the probe
@@ -4462,8 +4492,12 @@ def _newton_blocked_fields_kernel[
         # every thread breaks on the same iteration.
         if num_edges_b == 0:
             break
-        if iter_n >= niter_rt:
-            break
+        comptime if NEWTON_MIN_ITER == 0:
+            if iter_n >= niter_rt:
+                break
+        else:
+            if iter_n >= niter_rt and iter_n >= NEWTON_MIN_ITER:
+                break
         # --- Thread 0: gradient + convergence check ---
         if valid_env and tid == 0:
             comptime if NEWTON_SERIAL_PROBE == 1:
@@ -4485,10 +4519,20 @@ def _newton_blocked_fields_kernel[
                 grad_norm += g * g
             # ⚠ NOT ON THE FIRST PASS — see the per-env twin. `mj_solPrimal`
             # tests `gradient` only after an update.
-            if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
-                ctrl_sh[1] = Scalar[DTYPE](1)  # done
+            comptime if NEWTON_MIN_ITER == 0:
+                if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
+                    ctrl_sh[1] = Scalar[DTYPE](1)  # done
+                else:
+                    ctrl_sh[1] = Scalar[DTYPE](0)
             else:
-                ctrl_sh[1] = Scalar[DTYPE](0)
+                # `>= NEWTON_MIN_ITER` subsumes the original `> 0` guard.
+                if (
+                    iter_n >= NEWTON_MIN_ITER
+                    and scale * sqrt(grad_norm) < tol_rt
+                ):
+                    ctrl_sh[1] = Scalar[DTYPE](1)  # done
+                else:
+                    ctrl_sh[1] = Scalar[DTYPE](0)
         barrier()
         if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
             break
