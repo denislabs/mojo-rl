@@ -41,3 +41,7 @@ tests/deep_agents/smolvla/test_flow.mojo
 # action chunk. Asserts the output MOVED off the noise, that ten steps differ
 # from one, and that a rerun reproduces exactly (no state mutated between calls).
 tests/deep_agents/smolvla/test_sample_actions.mojo
+
+# Step 7 — prefix assembly: the segments land where the mask expects, and only
+# image+language carry the sqrt(960) scale (the state must not).
+tests/deep_agents/smolvla/test_prefix_embed.mojo
