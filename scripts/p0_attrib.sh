@@ -24,6 +24,24 @@ mkdir -p "$OUT"
 
 command -v nsys >/dev/null || { echo "!! nsys not on PATH"; exit 1; }
 
+# ⚠⚠ PREFLIGHT, AND THE SECOND TEST MATTERS MORE THAN THE FIRST. A missing
+# `mojo` fails loudly two lines below; a missing LD_PRELOAD does NOT — it
+# produces a complete, plausible, WRONG measurement, because the CUDA
+# interceptor arrives through the nvidia environment's ACTIVATION and not
+# through the binary. Both have the same cause and the same fix.
+if ! command -v mojo >/dev/null; then
+  echo "!! \`mojo\` is not on PATH -- this script must run INSIDE the pixi env:"
+  echo "       pixi run -e nvidia bash scripts/p0_attrib.sh"
+  exit 1
+fi
+if [ -z "${LD_PRELOAD:-}" ]; then
+  echo "!! LD_PRELOAD is empty. The CUDA interceptor comes from the nvidia"
+  echo "   environment's activation, so this run would measure the wrong thing"
+  echo "   SILENTLY. Re-run as:"
+  echo "       pixi run -e nvidia bash scripts/p0_attrib.sh"
+  exit 1
+fi
+
 # ⚠ BUILD ONCE, RUN SIX TIMES. `mojo run` compiles, and the probe carries every
 # leg in one binary (a runtime switch over comptime instantiations). Measured on
 # Apple: a cold `mojo run` is 136 s and a warm one 30 s — so `mojo run` DOES
