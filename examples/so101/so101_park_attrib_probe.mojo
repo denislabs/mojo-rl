@@ -89,6 +89,14 @@ comptime N_ENVS = 1024
 # taken over. `scripts/p0_attrib.py` now FAILS on a negative residual rather
 # than printing a table that looks fine.
 comptime WARMUP_STEPS = 200
+# ⚠⚠ AND A TIME FLOOR, BECAUSE A STEP COUNT IS THE WRONG UNIT FOR A CLOCK RAMP.
+# 200 steps is 8 s of GPU work at k=13 and only 1.4 s at k=0, and k=0 runs FIRST
+# in the sweep, from the coldest state. Measured 2026-09-03 with a 200-step
+# warmup: k>=3 came within 1% of the previous clean run on every untouched
+# kernel, while k=0 was +43-46% ON EVERY KERNEL with a -20.1% residual. The
+# control is the denominator of the `x k=0` column, so a cold k=0 corrupts
+# every ratio in the table while looking like a fast control.
+comptime WARMUP_SECONDS = 5.0
 comptime TIMED_STEPS = 300
 
 comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]
@@ -116,9 +124,21 @@ def run_leg[
     var env = EnvT(ctx)
     env.reset_batch[N_ENVS](ctx, UInt64(42))
 
-    for _ in range(WARMUP_STEPS):
-        env.step_batch[N_ENVS](ctx, UInt64(0))
-    ctx.synchronize()
+    # Warm until BOTH floors are met. The sync is inside the loop because an
+    # un-synced enqueue measures host time, not GPU time, and the whole point
+    # here is elapsed GPU work.
+    var warm = 0
+    var t_warm = perf_counter_ns()
+    while True:
+        for _ in range(50):
+            env.step_batch[N_ENVS](ctx, UInt64(0))
+        ctx.synchronize()
+        warm += 50
+        if (
+            warm >= WARMUP_STEPS
+            and Float64(perf_counter_ns() - t_warm) / 1e9 >= WARMUP_SECONDS
+        ):
+            break
 
     var t0 = perf_counter_ns()
     for _ in range(TIMED_STEPS):
@@ -137,9 +157,14 @@ def run_leg[
     print("  k               ", k)
     print("  nv              ", nv)
     print("  n_envs          ", N_ENVS)
-    print("  warmup_steps    ", WARMUP_STEPS)
+    # ⚠⚠ THE ACTUAL WARMUP COUNT, NOT THE COMPTIME FLOOR. `nsys` counts every
+    # launch, so `total_steps` is the divisor the parser turns instance counts
+    # into launches/step with. Printing the constant while the loop ran a
+    # different number would make every per-step figure in the table wrong by
+    # that ratio — silently, and uniformly, which is the hardest kind to spot.
+    print("  warmup_steps    ", warm)
     print("  timed_steps     ", TIMED_STEPS)
-    print("  total_steps     ", WARMUP_STEPS + TIMED_STEPS)
+    print("  total_steps     ", warm + TIMED_STEPS)
     print("  wall_s          ", secs)
     print("  ms_per_step     ", secs * 1000.0 / Float64(TIMED_STEPS))
     print("=== done ===")
