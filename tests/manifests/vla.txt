@@ -11,3 +11,7 @@
 
 # Step 2 — the SigLIP vision tower's 197 tensors, ours <-> theirs, both ways.
 tests/deep_agents/smolvla/test_vision_name_map.mojo
+
+# Step 3 — GQA's K/V head broadcast: the grouping rule (g//REP, not g%N_KV),
+# the backward's SUM over REP, the adjoint identity, and GPU/CPU parity.
+tests/nn/test_repeat_kv_heads.mojo
