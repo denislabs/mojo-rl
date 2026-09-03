@@ -33,10 +33,44 @@ from ..fields import (
     AsStatic,
     Scratch,
     cap,
+    DYN1,
     DYN2,
+    rl1,
     rl2,
 )
-from ..gpu.constants import MODEL_TREE_SIZE
+from ..gpu.constants import (
+    MODEL_TREE_SIZE,
+    TREE_IDX_DOF_ADR,
+    TREE_IDX_DOF_NUM,
+)
+
+
+@always_inline
+def _dof_block[
+    DTYPE: DType, LT: Layout
+](trees: LayoutTensor[DTYPE, LT, MutAnyOrigin], nv: Int, j: Int) -> Tuple[Int, Int]:
+    """The half-open dof range of the kinematic tree containing dof `j`.
+
+    ⚠⚠ THE ONE SPELLING OF THE RULE, and it is called at BLOCK BOUNDARIES
+    ONLY. Every loop below advances `j` sequentially, so calling this when
+    `j >= b1` costs `ntree` walks of `ntree` steps — ~100 operations at k=9 —
+    against the ~400 the restriction leaves behind. Calling it per column
+    instead would be `nv*ntree` = 600 and would cost more than it saves.
+
+    ⚠ A DEGENERATE TABLE IS ONE BLOCK, NEVER ZERO. `trees` is zeroed by
+    `Model.__init__` and only the parser fills it, so `dof_num == 0` both
+    terminates the table and marks "no table" — a `Model` built without the
+    parser must factor the whole `nv`, exactly as it does today.
+    """
+    var adr = 0
+    for t in range(nv):
+        var num = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
+        if num <= 0:
+            break
+        adr = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
+        if j >= adr and j < adr + num:
+            return (adr, adr + num)
+    return (0, nv)
 
 comptime LDL_TPB: Int = 64
 
@@ -73,16 +107,31 @@ def _ldl_factor_env[
         D[env, i] = 0
         L[env, i * nv + i] = 1
 
+    # ⚠⚠ THE BLOCK OF COLUMN j, ADVANCED IN LOCKSTEP. `M`'s cross-tree entries
+    # are STRUCTURALLY exactly zero — the treewalk CRBA zeroes `M` and writes
+    # only ancestor pairs (`mass_matrix.mojo:592-600`), and the dense path
+    # accumulates only over bodies in BOTH subtrees (`:219-223`), which no
+    # cross-tree pair has. Between CRBA and here only `_armature_env` runs, and
+    # it touches the diagonal. So every term these ranges drop is a product
+    # with an exact `0.0`, and a sequential accumulation that drops exact zeros
+    # returns the identical bit pattern: this is bit-exact on EVERY model, not
+    # just single-tree ones.
+    var b0 = 0
+    var b1 = 0
     for j in range(nv):
+        if j >= b1:
+            var bb = _dof_block(trees, nv, j)
+            b0 = bb[0]
+            b1 = bb[1]
         var d_j = M[env, j * nv + j]
-        for k in range(j):
+        for k in range(b0, j):
             d_j = d_j - L[env, j * nv + k] * L[env, j * nv + k] * D[env, k]
         D[env, j] = d_j
 
         if d_j > 1e-14 or d_j < -1e-14:
-            for i in range(j + 1, nv):
+            for i in range(j + 1, b1):
                 var l_ij = M[env, i * nv + j]
-                for k in range(j):
+                for k in range(b0, j):
                     l_ij = (
                         l_ij
                         - L[env, i * nv + k] * L[env, j * nv + k] * D[env, k]
@@ -145,7 +194,9 @@ def _ldl_factor_fields_kernel[
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
@@ -170,7 +221,9 @@ def _ldl_factor_fields_mt_kernel[
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
@@ -183,19 +236,28 @@ def _ldl_factor_fields_mt_kernel[
         L[env, i * NV + i] = 1
     barrier()
 
+    # The block of column j, in lockstep — see `_ldl_factor_env` for why the
+    # restriction is bit-exact. Every thread walks it identically, so the
+    # per-column `barrier()` schedule below is untouched.
+    var b0 = 0
+    var b1 = 0
     for j in range(NV):
+        if j >= b1:
+            var bb = _dof_block(trees, NV, j)
+            b0 = bb[0]
+            b1 = bb[1]
         # d_j: identical reduction to serial (k ascending). All threads
         # compute it; only tid 0 commits to D.
         var d_j = M[env, j * NV + j]
-        for k in range(j):
+        for k in range(b0, j):
             d_j = d_j - L[env, j * NV + k] * L[env, j * NV + k] * D[env, k]
         if tid == 0:
             D[env, j] = d_j
 
         if d_j > 1e-14 or d_j < -1e-14:
-            for i in range(j + 1 + tid, NV, N_THREADS):
+            for i in range(j + 1 + tid, b1, N_THREADS):
                 var l_ij = M[env, i * NV + j]
-                for k in range(j):
+                for k in range(b0, j):
                     l_ij = (
                         l_ij
                         - L[env, i * NV + k] * L[env, j * NV + k] * D[env, k]
@@ -241,17 +303,20 @@ def ldl_factor[
     ignores PARALLEL."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
-    comptime L_TREE = Layout.row_major(D.NV, MODEL_TREE_SIZE)
+    # ⚠ FLAT — `[t*MODEL_TREE_SIZE + col]`, the single spelling shared with
+    # `newton_blocks` and `newton_solve`. A 2-D `LayoutTensor` given ONE index
+    # returns a ROW, so the two forms are not interchangeable.
+    comptime L_TREE = Layout.row_major(D.NV * MODEL_TREE_SIZE)
 
     comptime if target == "cpu":
         var dm = scratch.dims
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
         var rl_NV = rl2(BATCH, dm.get_nv())
-        var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
+        var rl_TREE = rl1(dm.get_nv() * MODEL_TREE_SIZE)
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
-        var T_v = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
+        var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
         for e in range(BATCH):
             _ldl_factor_env(e, dm, M_v, L_v, D_v, T_v)
     elif PARALLEL:
@@ -336,31 +401,51 @@ def _m_inv_col_env[
     var e = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     var col = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
 
+    # ⚠⚠ COLUMN j OF `M^-1` IS ZERO OUTSIDE j's TREE, AND TODAY'S CODE ALREADY
+    # COMPUTES IT AS EXACTLY ZERO. Forward substitution gives `y[i] = 0` for
+    # every i before the block by induction (`e` is 0 there and `L*0 = 0`);
+    # back-substitution then gives `col[i] = 0` because `L[k, i]` with k in the
+    # block and i outside it is a cross-tree entry, which `M` — and so `L` —
+    # holds as an exact `0.0`. So restricting the three loops to the block is
+    # bit-exact, and the explicit zeroing below reproduces what the dense
+    # version wrote.
+    var bb = _dof_block(trees, nv, j)
+    var b0 = bb[0]
+    var b1 = bb[1]
+
+    # ⚠ `col` MUST BE ZEROED OVER THE WHOLE `nv`, and `Scratch(uninitialized=0)`
+    # DOES NOT ZERO — the sibling `e` below is cleared by an explicit loop for
+    # the same reason. The dense version wrote every row of the column, so
+    # nothing downstream had to care; a block-restricted write that skipped the
+    # rest would leave `m_inv` holding the PREVIOUS STEP's values there, since
+    # it is reused scratch.
     for i in range(nv):
         e[i] = 0
+        col[i] = 0
     e[j] = 1
 
     var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
-    for i in range(nv):
+    for i in range(b0, b1):
         var s = e[i]
-        for k in range(i):
+        for k in range(b0, i):
             s = s - L[env, i * nv + k] * y[k]
         y[i] = s
 
     var z = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
-    for i in range(nv):
+    for i in range(b0, b1):
         var d_i = D[env, i]
         if d_i > 1e-14 or d_i < -1e-14:
             z[i] = y[i] / d_i
         else:
             z[i] = 0
 
-    for i in range(nv - 1, -1, -1):
+    for i in range(b1 - 1, b0 - 1, -1):
         var s = z[i]
-        for k in range(i + 1, nv):
+        for k in range(i + 1, b1):
             s = s - L[env, k * nv + i] * col[k]
         col[i] = s
 
+    # The FULL column, so the off-block zeros land in `m_inv` explicitly.
     for i in range(nv):
         m_inv[env, i * nv + j] = col[i]
 
@@ -395,7 +480,9 @@ def _m_inv_fields_kernel[
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
@@ -418,7 +505,9 @@ def _m_inv_fields_mt_kernel[
     L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    trees: LayoutTensor[DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
@@ -446,17 +535,20 @@ def compute_m_inv[
     ignores PARALLEL."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
-    comptime L_TREE = Layout.row_major(D.NV, MODEL_TREE_SIZE)
+    # ⚠ FLAT — `[t*MODEL_TREE_SIZE + col]`, the single spelling shared with
+    # `newton_blocks` and `newton_solve`. A 2-D `LayoutTensor` given ONE index
+    # returns a ROW, so the two forms are not interchangeable.
+    comptime L_TREE = Layout.row_major(D.NV * MODEL_TREE_SIZE)
 
     comptime if target == "cpu":
         var dm = scratch.dims
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
         var rl_NV = rl2(BATCH, dm.get_nv())
-        var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
+        var rl_TREE = rl1(dm.get_nv() * MODEL_TREE_SIZE)
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
-        var T_v = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
+        var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
         for e in range(BATCH):
             _m_inv_env(e, dm, L_v, D_v, mi_v, T_v)
     elif PARALLEL:

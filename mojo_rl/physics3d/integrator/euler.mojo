@@ -62,7 +62,9 @@ from ..fields import (
     Dims,
     DimsLike,
     AsStatic,
+    DYN1,
     DYN2,
+    rl1,
     rl2,
 )
 from ..gpu.constants import (
@@ -487,7 +489,7 @@ def _finalize_kernel[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
     trees: LayoutTensor[
-        DTYPE, Layout.row_major(NV, MODEL_TREE_SIZE), MutAnyOrigin
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
     ],
     # ⚠ A SCALAR, NOT A `Bool`, so the launch does not need a second
     # argument kind — every other model constant reaching a kernel here
@@ -590,7 +592,7 @@ struct EulerIntegrator[
 
         comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
         comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
-        comptime L_TREE = Layout.row_major(Self.D.NV, MODEL_TREE_SIZE)
+        comptime L_TREE = Layout.row_major(Self.D.NV * MODEL_TREE_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)
         comptime L_QPOS = Layout.row_major(Self.BATCH, Self.D.NQ)
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
@@ -802,8 +804,8 @@ struct EulerIntegrator[
             var fnet_v3 = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             var qacc_ws_v3 = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
             var qacc_c_v3 = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
-            var rl_TREE = rl2(dm.get_nv(), MODEL_TREE_SIZE)
-            var trees_v3 = m.trees.lt_dyn["cpu", DYN2](rl_TREE)
+            var rl_TREE = rl1(dm.get_nv() * MODEL_TREE_SIZE)
+            var trees_v3 = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
             for e in range(Self.BATCH):
                 _finalize_env[
                     Self.DTYPE](

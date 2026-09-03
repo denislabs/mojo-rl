@@ -37,6 +37,7 @@ from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Dims, DynDims
+from mojo_rl.physics3d.fields.rt_layout import DYN1
 from mojo_rl.physics3d.fields.dims import DIM_POISON
 from mojo_rl.physics3d.fields.scratch import Scratch
 from mojo_rl.physics3d.dynamics.ldl import _ldl_factor_env, _ldl_solve_env
@@ -98,7 +99,7 @@ def solve_static[NV: Int]() raises -> List[Float64]:
     """The arm that ships today: comptime dims, comptime layout."""
     comptime LM = Layout.row_major(BATCH, NV * NV)
     comptime LNV = Layout.row_major(BATCH, NV)
-    comptime LTREE = Layout.row_major(NV, MODEL_TREE_SIZE)
+    comptime LTREE = Layout.row_major(NV * MODEL_TREE_SIZE)
     var M = TensorImpl[DT].alloc(BATCH * NV * NV)
     var L = TensorImpl[DT].alloc(BATCH * NV * NV)
     var D = TensorImpl[DT].alloc(BATCH * NV)
@@ -165,10 +166,10 @@ def solve_dynamic(nv: Int) raises -> List[Float64]:
     var T = TensorImpl[DT].alloc(nv * MODEL_TREE_SIZE)
     for i in range(nv * MODEL_TREE_SIZE):
         T.data[i] = Scalar[DT](0)
-    var rl_t = RuntimeLayout[DYN2].row_major(
-        IndexList[2](nv, MODEL_TREE_SIZE)
+    var rl_t = RuntimeLayout[DYN1].row_major(
+        IndexList[1](nv * MODEL_TREE_SIZE)
     )
-    var T_v = T.lt_dyn["cpu", DYN2](rl_t)
+    var T_v = T.lt_dyn["cpu", DYN1](rl_t)
     var dims = DynDims(nv=nv)
     for e in range(BATCH):
         _ldl_factor_env(e, dims, M_v, L_v, D_v, T_v)
