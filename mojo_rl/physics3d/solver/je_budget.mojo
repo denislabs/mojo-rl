@@ -7,35 +7,66 @@ what the kernel writes, the overrun lands in whatever tensor was allocated
 next — silent corruption, not a crash. Hence this module rather than the
 formula written twice.
 
-WHY A SPILL EXISTS. `Je_sh` is `ME * NV` scalars of THREADGROUP memory and
-dominates the blocked kernel's shared-memory footprint. Measured on NVIDIA
+WHY A SPILL EXISTS. `Je_sh` is `ME * NV` scalars of THREADGROUP memory and is
+usually the largest single array in the blocked kernel. Measured on NVIDIA
 (2026-08-10), humanoid_CMU asked for 169,820 B against a 101,376 B limit and
-`ptxas` refused to compile the kernel at all — `Je` alone was 104 KB. Models
-past the budget put `Je` in a dedicated global buffer instead; models under it
-keep the threadgroup array and are untouched, bit for bit.
+`ptxas` refused to compile the kernel at all. Models past the budget put `Je`
+in a dedicated global buffer instead; models under it keep the threadgroup
+array and are untouched, bit for bit.
 
-⚠ THE BUDGET IS A COMPILE-TIME GUESS AT A RUNTIME LIMIT. Shared memory per
-block is device-specific (99 KB on the box this was measured on, 227 KB on an
-H100) and the kernel is compiled without knowing the target. 64 KB is
-deliberately conservative — the widely-supported opt-in floor — so a model that
-fits everywhere keeps the fast path and anything near the edge spills rather
-than failing to compile on the smallest plausible device.
+⚠⚠ THE BUDGET IS THE TOTAL, AND WAS `Je` ALONE UNTIL P4. That is the defect
+this file existed with: at the k=12 park scene `Je` is 54 KB — comfortably
+under the old 64 KB — so it declined to spill, while the three `NV*NV` matrices
+put the block at 136,212 B and `ptxas` refused. `Je` is the biggest array on a
+high-CONTACT model, which is what this was tuned on; it is not the biggest on a
+high-nv LOW-contact one, which is exactly the shape a fixed scene budget
+produces. `newton_shared_elems` below counts all eleven arrays.
 
-Measured sizes (float32):
+Measured sizes (float32). ⚠ THE TOTAL IS WHAT DECIDES; `Je` is shown only
+because it is the term that used to:
 
-    model          NV  MC   ME   Je      spills?
-    quadruped      22  16  156   13 KB   no
-    humanoid       27  32  199   20 KB   no
-    quadruped_fetch 28 24  340   37 KB   no   (at its real condim 6)
-    humanoid_CMU   62  64  432  104 KB   YES
-    dog            79  24  491  151 KB   YES
-    dog_fetch      85  28  539  178 KB   YES
+    model            NV   ME    Je      TOTAL    spills?
+    quadruped        22  156   13 KB    25 KB    no
+    humanoid         27  199   21 KB    37 KB    no
+    quadruped_fetch  28  340   37 KB    59 KB    no   (at its real condim 6)
+    humanoid_CMU     62  432  105 KB   166 KB    YES
+    dog              79  491  152 KB   244 KB    YES
+    dog_fetch        85  539  179 KB   285 KB    YES
+    so101_park k=9   60  154   36 KB    85 KB    no   <- the ceiling before P4
+    so101_park k=10  66  162   42 KB   100 KB    YES  <- would NOT COMPILE before
+    so101_park k=12  78  178   54 KB   134 KB    YES  <- would NOT COMPILE before
+
+None of the first six changes its answer under the new rule — gated in
+`tests/physics3d/test_newton_shared_budget.mojo`, arm E, because widening a
+budget can silently start spilling models that ran fine, and a spilled `Je` is
+re-read from global on every Newton iteration.
+
+⚠ SPILLING REACHES k=13, NOT FURTHER. Past that the three `NV*NV` arrays are
+the binding term and the fix is a different one (move the Hessian to global, as
+mujoco_warp does, or pack the triple by block).
 """
 
 from std.sys.info import size_of
 
 
-comptime JE_SHARED_BUDGET: Int = 64 * 1024
+# ⚠⚠ THE PER-BLOCK SHARED LIMIT THE BLOCKED KERNEL IS COMPILED AGAINST, and it
+# is an NVIDIA number ON PURPOSE. `solve_newton` routes PYRAMIDAL + NVIDIA to
+# `solve_newton_blocked` and everything else to the one-thread-per-env kernel,
+# which holds `Je` as per-thread `InlineArray`s and never consults this file.
+# So the only consumer of this budget is a kernel that only ever runs on CUDA.
+#
+# 0x18c00 is what `ptxas` itself reports as the maximum on an RTX 5090:
+#
+#     ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+#                   too much shared data (0x21414 bytes, 0x18c00 max)
+#
+# ⚠ THE OLD 64 KB WAS INCOHERENT, WHICH IS WHY IT IS GONE. It was justified as
+# "the widely-supported opt-in floor", so that a model fitting everywhere kept
+# the fast path — but it was compared against `Je` ALONE while the kernel's
+# TOTAL was already 87 KB at k=9 and compiling fine. A budget that guards one
+# array against a portability figure the whole block has already blown is not
+# protecting portability; it is just failing to predict `ptxas`.
+comptime SOLVER_SHARED_BUDGET: Int = 0x18C00
 
 
 def _max_one[N: Int]() -> Int:
@@ -99,6 +130,51 @@ def je_elems[
     )
 
 
+def newton_shared_elems[
+    NV: Int,
+    NJOINT: Int,
+    NTENDON: Int,
+    NEQUALITY: Int,
+    MAX_CONTACTS: Int,
+    MAX_CONDIM: Int,
+    JE_IN_SHARED: Bool,
+]() -> Int:
+    """Scalars of THREADGROUP memory `_newton_blocked_fields_kernel` asks for.
+
+    ⚠⚠ MUST MATCH THE KERNEL'S `stack_allocation()` LIST EXACTLY — this is the
+    same one-source-of-truth contract `je_elems` has with `ME`, and it is the
+    thing the old budget got wrong by counting a single array. In the order the
+    kernel declares them (`newton_solve.mojo:3640+`):
+
+        M_sh, H_sh, L_sh          3 * max(1, NV*NV)
+        seg0_sh, seg1_sh          2 * max(1, NV)      (PN2c)
+        Je_sh                     ME * max(1, NV), or 1 when spilled
+        De/bias_e/force/kind_e/
+        R_e/floss_e/state_e/
+        Jv_e/jar                  9 * ME
+        search/Mv/qacc/qfrc       4 * max(1, NV)
+        ctrl_sh                   3
+
+    ⚠ VERIFIED AGAINST `ptxas` ON FOUR POINTS, not derived and hoped for — see
+    `tests/physics3d/test_newton_shared_budget.mojo`, which pins it to the byte
+    counts the k=6/9/10/12 park scenes produced.
+    """
+    return (
+        3 * _max_one[NV * NV]()
+        + 6 * _max_one[NV]()
+        + (
+            je_elems[
+                NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+            ]() if JE_IN_SHARED else 1
+        )
+        + 9
+        * je_edge_rows[
+            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+        ]()
+        + 3
+    )
+
+
 def je_spills[
     DTYPE: DType,
     NV: Int,
@@ -108,11 +184,24 @@ def je_spills[
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
 ]() -> Bool:
-    """Does `Je` exceed the threadgroup budget and need the global buffer?"""
+    """Does the kernel's TOTAL threadgroup footprint force `Je` out?
+
+    ⚠⚠ THE TOTAL, NOT `Je`. This compared `Je` alone against 64 KB until P4,
+    and the failure mode is on record: at the k=12 park scene `Je` is 54 KB —
+    comfortably under — so it declined to spill, while the three `NV*NV`
+    matrices put the block at 136,212 B against a 101,376 B limit and `ptxas`
+    refused to compile the kernel at all. Budgeting one array out of eleven
+    cannot predict that, and the models it WAS tuned on (humanoid_CMU, dog)
+    hid it because they are high-nv AND high-contact, so `Je` dominated. A
+    fixed scene budget produces the shape it was never tuned for: high nv, LOW
+    contact count.
+    """
     return (
-        je_elems[NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM]()
+        newton_shared_elems[
+            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM, True
+        ]()
         * size_of[Scalar[DTYPE]]()
-    ) > JE_SHARED_BUDGET
+    ) > SOLVER_SHARED_BUDGET
 
 
 def je_ws_size[
