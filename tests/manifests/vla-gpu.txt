@@ -9,3 +9,6 @@ tests/deep_agents/smolvla/test_vision_forward_smoke.mojo
 # Step 3 — the RoPE leaf vs MAX's shipped `rope_ragged`, the adjoint identity,
 # and our own CPU/GPU parity. Needs a GPU because the reference kernel is one.
 tests/nn/test_rope_vs_max_kernel.mojo
+
+# Step 3 — the text tower forward + vjp at real widths (GQA + RoPE + SwiGLU).
+tests/deep_agents/smolvla/test_text_forward_smoke.mojo

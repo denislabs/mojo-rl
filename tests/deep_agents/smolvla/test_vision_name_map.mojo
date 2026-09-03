@@ -27,7 +27,6 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.fileio import read_file_bytes
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.param import ParamVisitor
@@ -35,40 +34,10 @@ from mojo_rl.nn.core.initializer import Deterministic
 from mojo_rl.nn.core.torch_names import TorchNameMap
 from mojo_rl.deep_agents.smolvla.vision import SigLIPVisionTower
 from mojo_rl.deep_agents.smolvla.names import vision_name_map, SMOLVLA_VISION
+from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
 
-comptime MANIFEST = String("tools/vla/smolvla_base_manifest.tsv")
 comptime N_VISION = 197
 comptime TOWER = SigLIPVisionTower[]
-
-
-struct Manifest(Movable):
-    """`<name>\\t<dtype>\\t<d0,d1,...>` per line, `#` comments skipped."""
-
-    var names: List[String]
-    var shapes: List[List[Int]]
-
-    def __init__(out self, path: String) raises:
-        self.names = List[String]()
-        self.shapes = List[List[Int]]()
-        var raw = read_file_bytes(path)
-        var text = String(from_utf8=Span(raw))
-        for line in text.split(String("\n")):
-            if line.byte_length() == 0 or line.startswith(String("#")):
-                continue
-            var parts = line.split(String("\t"))
-            if len(parts) < 3:
-                continue
-            var dims = List[Int]()
-            for d in parts[2].split(String(",")):
-                dims.append(Int(d))
-            self.names.append(String(parts[0]))
-            self.shapes.append(dims^)
-
-    def index_of(self, name: String) -> Int:
-        for i in range(len(self.names)):
-            if self.names[i] == name:
-                return i
-        return -1
 
 
 struct WalkCollect(ParamVisitor):
@@ -94,21 +63,12 @@ struct WalkCollect(ParamVisitor):
         return -1
 
 
-def _shape_str(ref s: List[Int]) -> String:
-    var out = String("[")
-    for i in range(len(s)):
-        if i > 0:
-            out += ", "
-        out += String(s[i])
-    return out + "]"
-
-
 def main() raises:
     print("=" * 68)
     print("SmolVLA SigLIP vision tower — name map coverage")
     print("=" * 68)
 
-    var man = Manifest(MANIFEST)
+    var man = Manifest()
     var map = vision_name_map()
     print("manifest tensors:", len(man.names), " map entries:", map.size())
     assert_equal(map.size(), N_VISION, "map should hold 197 entries")
@@ -121,17 +81,11 @@ def main() raises:
         assert_true(j >= 0, "map names '" + key + "' but the checkpoint has no"
                             " such tensor")
         var want = map.their_shape(i)
-        ref got = man.shapes[j]
-        var same = len(want) == len(got)
-        if same:
-            for k in range(len(want)):
-                if want[k] != got[k]:
-                    same = False
-                    break
+        var same = man.same_shape(j, want)
         assert_true(
             same,
-            "'" + key + "': map declares " + _shape_str(want)
-            + " but the checkpoint has " + _shape_str(got),
+            "'" + key + "': map declares " + shape_str(want)
+            + " but the checkpoint has " + shape_str(man.shapes[j]),
         )
         checked += 1
     print("  [1] theirs -> file :", checked, "names matched WITH shape")

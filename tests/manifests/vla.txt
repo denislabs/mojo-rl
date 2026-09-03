@@ -15,3 +15,7 @@ tests/deep_agents/smolvla/test_vision_name_map.mojo
 # Step 3 — GQA's K/V head broadcast: the grouping rule (g//REP, not g%N_KV),
 # the backward's SUM over REP, the adjoint identity, and GPU/CPU parity.
 tests/nn/test_repeat_kv_heads.mojo
+
+# Step 3 — the SmolLM2 text tower: 145 checkpoint tensors + 112 TN_ZEROS
+# biases, covered both ways, with the element arithmetic reconciled.
+tests/deep_agents/smolvla/test_text_name_map.mojo

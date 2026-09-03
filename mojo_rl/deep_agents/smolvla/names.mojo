@@ -35,15 +35,19 @@ load a shape-legal, silently scrambled table.
 """
 
 from mojo_rl.nn.core.torch_names import (
-    TorchNameMap, TN_PLAIN, TN_TRANSPOSE,
+    TorchNameMap, TN_PLAIN, TN_TRANSPOSE, TN_ZEROS,
 )
 from .vision import (
     SIGLIP_DIM, SIGLIP_FF, SIGLIP_LAYERS, SIGLIP_PATCH, SIGLIP_TOKENS,
+)
+from .text import (
+    SMOLLM_DIM, SMOLLM_FF, SMOLLM_HEAD_DIM, SMOLLM_KV_HEADS, SMOLLM_LAYERS,
 )
 
 
 comptime SMOLVLA_VLM = String("model.vlm_with_expert.vlm.")
 comptime SMOLVLA_VISION = SMOLVLA_VLM + "model.vision_model."
+comptime SMOLVLA_TEXT = SMOLVLA_VLM + "model.text_model."
 
 
 def vision_name_map[
@@ -109,4 +113,64 @@ def vision_name_map[
     # ── post-LayerNorm ───────────────────────────────────────────────────
     m.add(String("2.0.gamma"), T + "post_layernorm.weight", d1)
     m.add(String("2.0.beta"), T + "post_layernorm.bias", d1)
+    return m^
+
+
+def text_name_map[
+    DIM: Int = SMOLLM_DIM,
+    FF: Int = SMOLLM_FF,
+    LAYERS: Int = SMOLLM_LAYERS,
+    KV_W: Int = SMOLLM_KV_HEADS * SMOLLM_HEAD_DIM,
+]() raises -> TorchNameMap:
+    """The SmolLM2 tower: 145 checkpoint tensors + 112 zero-filled biases.
+
+    ⚠ **The biases are the interesting half.** SmolLM2 is bias-free
+    (`attention_bias=False`, `mlp_bias=False`) while our `Linear` ALWAYS carries
+    a `bias` Param — seven per layer. Left at their random initialisation the
+    loaded model is a DIFFERENT FUNCTION from the published one, at a magnitude
+    that reads as a numerical disagreement rather than as the missing tensors it
+    is. `TN_ZEROS` fills them and skips them on save; `theirs` is empty because
+    there is nothing on the other side to name. Exactly the torchvision ResNet18
+    conv-bias case this flag was introduced for.
+
+    `ours` are relative to the tower's walk root (`SmolLMTextTower`), which
+    covers `layers.*` and the final `norm`. `embed_tokens`, `lm_head` and the
+    connector are separate modules and are mapped with them.
+    """
+    var m = TorchNameMap()
+    var T = SMOLVLA_TEXT
+    var d1: List[Int] = [DIM]
+    var kv1: List[Int] = [KV_W]
+    var ff1: List[Int] = [FF]
+
+    for i in range(LAYERS):
+        var o = String("0.") + String(i) + "."
+        var t = T + "layers." + String(i) + "."
+
+        m.add(o + "0.0.0.0.gamma", t + "input_layernorm.weight", d1)
+        m.add_linear(o + "0.0.1.q.0.weight", t + "self_attn.q_proj.weight",
+                     DIM, DIM)
+        m.add(o + "0.0.1.q.0.bias", String(""), d1, TN_ZEROS)
+        m.add_linear(o + "0.0.1.k.0.weight", t + "self_attn.k_proj.weight",
+                     KV_W, DIM)
+        m.add(o + "0.0.1.k.0.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "0.0.1.v.0.weight", t + "self_attn.v_proj.weight",
+                     KV_W, DIM)
+        m.add(o + "0.0.1.v.0.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "0.0.1.o.0.weight", t + "self_attn.o_proj.weight",
+                     DIM, DIM)
+        m.add(o + "0.0.1.o.0.bias", String(""), d1, TN_ZEROS)
+
+        m.add(o + "1.0.0.0.gamma", t + "post_attention_layernorm.weight", d1)
+        m.add_linear(o + "1.0.1.gate.0.weight", t + "mlp.gate_proj.weight",
+                     FF, DIM)
+        m.add(o + "1.0.1.gate.0.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "1.0.1.up.0.weight", t + "mlp.up_proj.weight",
+                     FF, DIM)
+        m.add(o + "1.0.1.up.0.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "1.0.1.down.0.weight", t + "mlp.down_proj.weight",
+                     DIM, FF)
+        m.add(o + "1.0.1.down.0.bias", String(""), d1, TN_ZEROS)
+
+    m.add(String("1.0.gamma"), T + "norm.weight", d1)
     return m^
