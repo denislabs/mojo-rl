@@ -412,7 +412,7 @@ def _prep(
         sc.bias.lt["cpu", L_NV](),
         sc.fnet.lt["cpu", L_NV](),
     )
-    ldl_solve["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_solve["cpu", DTYPE, BATCH=1](mf, sc, None)
     _qacc_writeback_env[DTYPE](
         0,
         AsStatic[MD](),

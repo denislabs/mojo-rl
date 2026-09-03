@@ -125,7 +125,7 @@ def solve_static[NV: Int]() raises -> List[Float64]:
     var dims = Dims[nv=NV]()
     for e in range(BATCH):
         _ldl_factor_env(e, dims, M_v, L_v, D_v, T_v)
-        _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v)
+        _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v, T_v)
 
     var out = List[Float64]()
     for i in range(BATCH * NV):
@@ -173,7 +173,7 @@ def solve_dynamic(nv: Int) raises -> List[Float64]:
     var dims = DynDims(nv=nv)
     for e in range(BATCH):
         _ldl_factor_env(e, dims, M_v, L_v, D_v, T_v)
-        _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v)
+        _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v, T_v)
 
     var out = List[Float64]()
     for i in range(BATCH * nv):

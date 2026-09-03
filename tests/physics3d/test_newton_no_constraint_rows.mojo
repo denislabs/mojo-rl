@@ -169,7 +169,7 @@ def _prep(
         _fnet_passive_env[DTYPE](
             e, AsStatic[MD](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
         )
-    ldl_solve["cpu", DTYPE, BATCH=BATCH](sc, None)
+    ldl_solve["cpu", DTYPE, BATCH=BATCH](mf, sc, None)
     var qacc_ws_v = sc.qacc_ws.lt["cpu", L_NV]()
     var qacc_v = d.qacc.lt["cpu", L_NV]()
     var qacc_c_v = sc.qacc_constrained.lt["cpu", L_NV]()

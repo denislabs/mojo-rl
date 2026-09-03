@@ -1,4 +1,8 @@
-"""Block-restricted LDL / M^-1 == the dense ones, BIT FOR BIT. P2's gate.
+"""Block-restricted LDL / M^-1 / solve == the dense ones, BIT FOR BIT.
+
+P2's gate, extended by F1 to `_ldl_solve_env` — the third kernel in the module
+and, after P2 sped its two siblings up, the LARGEST of them (66% of `ldl_pair`
+at k=13).
 
 `_ldl_factor_env` and `_m_inv_col_env` restrict their loops to the kinematic
 tree containing each column. The claim is that this is BIT-EXACT on every
@@ -24,7 +28,7 @@ THE A/B NEEDS NO TOGGLE. A zeroed tree table means "no table", which
 code path, byte for byte. So arm B feeds the same `M` with the table cleared
 and the two results must agree.
 
-  A  two trees vs no table: `L`, `D` and `m_inv` bit-identical.
+  A  two trees vs no table: `L`, `D`, `m_inv` and `x = M^-1 b` bit-identical.
   B  `m_inv`'s cross-block entries are exactly 0 in BOTH arms — the property
      that lets a consumer keep treating it as dense.
   C  ⚠ THE NEGATIVE CONTROL. Plant a cross-block entry in `M` — which CRBA can
@@ -37,7 +41,9 @@ Run: pixi run mojo run -I . tests/physics3d/test_ldl_blocked.mojo
 from layout import Layout
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Dims
-from mojo_rl.physics3d.dynamics.ldl import _ldl_factor_env, _m_inv_env
+from mojo_rl.physics3d.dynamics.ldl import (
+    _ldl_factor_env, _m_inv_env, _ldl_solve_env,
+)
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_TREE_SIZE, TREE_IDX_DOF_ADR, TREE_IDX_DOF_NUM,
 )
@@ -100,13 +106,20 @@ def _table(mut T: TensorImpl[DT], two_trees: Bool):
 
 
 def _run(coupled: Bool, two_trees: Bool) raises -> Tuple[
-    List[Float64], List[Float64], List[Float64]
+    List[Float64], List[Float64], List[Float64], List[Float64]
 ]:
     var M = TensorImpl[DT].alloc(BATCH * NV * NV)
     var L = TensorImpl[DT].alloc(BATCH * NV * NV)
     var D = TensorImpl[DT].alloc(BATCH * NV)
     var MI = TensorImpl[DT].alloc(BATCH * NV * NV)
     var T = TensorImpl[DT].alloc(NV * MODEL_TREE_SIZE)
+    var bb_ = TensorImpl[DT].alloc(BATCH * NV)
+    var xx = TensorImpl[DT].alloc(BATCH * NV)
+    for i in range(BATCH * NV):
+        bb_.data[i] = Scalar[DT](1.0 + 0.5 * Float64(i))
+        # ⚠ POISONED like `m_inv`: `x` is written for every row today, so a
+        # restriction that skipped rows would show up rather than hide.
+        xx.data[i] = Scalar[DT](-999.0)
     _fill_M(M, coupled)
     _table(T, two_trees)
     # ⚠ POISONED, NOT ZEROED. `m_inv` is reused scratch in the engine, so a
@@ -122,8 +135,11 @@ def _run(coupled: Bool, two_trees: Bool) raises -> Tuple[
     var MIv = MI.lt["cpu", LM]()
     var Tv = T.lt["cpu", LT]()
     var dims = Dims[nv=NV]()
+    var bv = bb_.lt["cpu", LNV]()
+    var xv = xx.lt["cpu", LNV]()
     _ldl_factor_env(0, dims, Mv, Lv, Dv, Tv)
     _m_inv_env(0, dims, Lv, Dv, MIv, Tv)
+    _ldl_solve_env(0, dims, Lv, Dv, bv, xv, Tv)
 
     var lo = List[Float64]()
     var do_ = List[Float64]()
@@ -131,9 +147,11 @@ def _run(coupled: Bool, two_trees: Bool) raises -> Tuple[
     for i in range(NV * NV):
         lo.append(Float64(L.data[i]))
         mo.append(Float64(MI.data[i]))
+    var xo = List[Float64]()
     for i in range(NV):
         do_.append(Float64(D.data[i]))
-    return (lo^, do_^, mo^)
+        xo.append(Float64(xx.data[i]))
+    return (lo^, do_^, mo^, xo^)
 
 
 def _diff(a: List[Float64], b: List[Float64]) -> Int:
@@ -161,6 +179,20 @@ def main() raises:
     t.truth(_diff(seg[2], den[2]) == 0,
             String("m_inv identical over ", NV * NV, " entries (",
                    _diff(seg[2], den[2]), " differ)"))
+    t.truth(_diff(seg[3], den[3]) == 0,
+            String("x = M^-1 b identical over ", NV, " entries (",
+                   _diff(seg[3], den[3]), " differ) — F1"))
+    # ⚠ AND `x` WAS ACTUALLY WRITTEN. It is seeded to -999; a restriction that
+    # skipped rows outside the block would leave that value in place, and a
+    # bit-identical comparison against a dense arm that ALSO skipped them would
+    # still pass.
+    var poisoned = 0
+    for i in range(NV):
+        if seg[3][i] == -999.0:
+            poisoned += 1
+    t.truth(poisoned == 0,
+            String("x fully written: ", poisoned, " of ", NV,
+                   " rows still hold the -999 poison"))
 
     # ── B: m_inv's cross-block entries are exactly zero, in BOTH arms ─────
     print("--- B: m_inv is exactly 0 across the block boundary ---")
@@ -187,9 +219,10 @@ def main() raises:
     print("--- C: a cross-block M entry MUST make the arms diverge ---")
     var cseg = _run(True, True)
     var cden = _run(True, False)
-    var cd = _diff(cseg[0], cden[0]) + _diff(cseg[2], cden[2])
+    var cd = (_diff(cseg[0], cden[0]) + _diff(cseg[2], cden[2])
+              + _diff(cseg[3], cden[3]))
     t.truth(cd > 0,
-            String("L+m_inv differ in ", cd, " entries — the partition is not"
+            String("L+m_inv+x differ in ", cd, " entries — the partition is not"
                    " a no-op, so arm A's agreement means something"))
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")

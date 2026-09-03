@@ -410,7 +410,7 @@ def compute_invweight0[
             # legacy compute_body_invweight0 arithmetic bit-for-bit).
             for q in range(nv):
                 sc.fnet.data[q] = J_row[q]
-            ldl_solve["cpu", DTYPE, BATCH=1](sc)
+            ldl_solve["cpu", DTYPE, BATCH=1](mf, sc)
             var dot_val = Scalar[DTYPE](0)
             for q in range(nv):
                 dot_val += J_row[q] * sc.qacc_ws.data[q]
@@ -443,7 +443,7 @@ def compute_invweight0[
     for dd in range(nv):
         for q in range(nv):
             sc.fnet.data[q] = Scalar[DTYPE](1) if q == dd else Scalar[DTYPE](0)
-        ldl_solve["cpu", DTYPE, BATCH=1](sc)
+        ldl_solve["cpu", DTYPE, BATCH=1](mf, sc)
         mf.dof_invweight0.data[dd] = sc.qacc_ws.data[dd]
 
     # ── average within each free/ball dof group (engine_setconst.c:199-209) ──
@@ -563,7 +563,7 @@ def compute_invweight0[
 
             for q in range(nv):
                 sc.fnet.data[q] = tJ[q]
-            ldl_solve["cpu", DTYPE, BATCH=1](sc)
+            ldl_solve["cpu", DTYPE, BATCH=1](mf, sc)
             var iw = Scalar[DTYPE](0)
             for q in range(nv):
                 iw += tJ[q] * sc.qacc_ws.data[q]

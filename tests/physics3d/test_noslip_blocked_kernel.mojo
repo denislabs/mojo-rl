@@ -285,7 +285,7 @@ def _prep[
             _fnet_passive_env[DTYPE](
                 e, AsStatic[MD_2](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
@@ -315,7 +315,7 @@ def _prep[
             scratch.fnet.lt["gpu", L_NV](),
             grid_dim=(BATCH,), block_dim=(1,),
         )
-        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](

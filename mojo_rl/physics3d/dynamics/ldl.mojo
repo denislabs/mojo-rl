@@ -145,6 +145,7 @@ def _ldl_solve_env[
     DIMS: DimsLike,
     LM: Layout,
     LNV: Layout,
+    LTREE: Layout,
 ](
     env: Int,
     dims: DIMS,
@@ -152,6 +153,7 @@ def _ldl_solve_env[
     D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
     b: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
     x: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    trees: LayoutTensor[DTYPE, LTREE, MutAnyOrigin],
 ):
     """LDL solve x = M^-1 b for one env (verbatim from
     ldl_solve_workspace_gpu).
@@ -164,10 +166,25 @@ def _ldl_solve_env[
     the heap, so there is deliberately no third option here."""
     var nv = dims.get_nv()
     comptime V_CAP = cap[DIMS.NV]()
+    # ⚠⚠ THE BLOCK OF ROW i, LOOKED UP AT BOUNDARIES ONLY. `L` is block
+    # diagonal because `M` is — its cross-tree entries are STRUCTURALLY exactly
+    # `0.0` (see `_ldl_factor_env`) — so the segments are independent triangular
+    # systems and every term these ranges drop is a product with an exact zero.
+    # Bit-exact on every model, single-tree or not.
+    #
+    # ⚠ THE TEST IS `i < b0 or i >= b1`, NOT `i >= b1`, because the third loop
+    # below runs DESCENDING. One spelling that works in both directions beats
+    # two that each work in one.
     var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var b0 = 1
+    var b1 = 0
     for i in range(nv):
+        if i < b0 or i >= b1:
+            var bb = _dof_block(trees, nv, i)
+            b0 = bb[0]
+            b1 = bb[1]
         var s = b[env, i]
-        for j in range(i):
+        for j in range(b0, i):
             s = s - L[env, i * nv + j] * y[j]
         y[i] = s
 
@@ -179,9 +196,17 @@ def _ldl_solve_env[
         else:
             z[i] = 0
 
+    # ⚠ `x` IS STILL WRITTEN FOR EVERY i — only the inner sum is restricted, so
+    # there is no staleness to guard against here, unlike `m_inv`.
+    var c0 = 1
+    var c1 = 0
     for i in range(nv - 1, -1, -1):
+        if i < c0 or i >= c1:
+            var cc = _dof_block(trees, nv, i)
+            c0 = cc[0]
+            c1 = cc[1]
         var s = z[i]
-        for j in range(i + 1, nv):
+        for j in range(i + 1, c1):
             s = s - L[env, j * nv + i] * x[env, j]
         x[env, i] = s
 
@@ -276,11 +301,14 @@ def _ldl_solve_fields_kernel[
     D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     b: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     x: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _ldl_solve_env(env, Dims[nv=NV](), L, D, b, x)
+    _ldl_solve_env(env, Dims[nv=NV](), L, D, b, x, trees)
 
 
 def ldl_factor[
@@ -346,23 +374,27 @@ def ldl_factor[
 
 
 def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
+    mut m: Model[DTYPE, D],
     mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_TREE = Layout.row_major(D.NV * MODEL_TREE_SIZE)
 
     comptime if target == "cpu":
         var dm = scratch.dims
         var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
         var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_TREE = rl1(dm.get_nv() * MODEL_TREE_SIZE)
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+        var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
         for e in range(BATCH):
-            _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v)
+            _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v, T_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
@@ -371,6 +403,7 @@ def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
             scratch.D.lt["gpu", L_NV](),
             scratch.fnet.lt["gpu", L_NV](),
             scratch.qacc_ws.lt["gpu", L_NV](),
+            m.trees.lt["gpu", L_TREE](),
             grid_dim=(BLOCKS,),
             block_dim=(LDL_TPB,),
         )

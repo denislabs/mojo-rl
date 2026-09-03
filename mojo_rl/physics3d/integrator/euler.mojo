@@ -411,7 +411,7 @@ def _finalize_env[
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
     _ldl_factor_env(env, dims, M, L, D, trees)
-    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws)
+    _ldl_solve_env(env, dims, L, D, fnet, qacc_ws, trees)
 
     _finalize_integrate_env(
         env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
@@ -658,7 +658,7 @@ struct EulerIntegrator[
         # `<body gravcomp>`.
         compute_gravcomp_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
-        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
 
         comptime if target == "cpu":
             var dm = d.dims

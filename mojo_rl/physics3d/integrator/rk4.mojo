@@ -608,7 +608,7 @@ struct RK4Integrator[
         # `<body gravcomp>`.
         compute_gravcomp_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
-        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
 
         comptime if target == "cpu":
             var dm = d.dims

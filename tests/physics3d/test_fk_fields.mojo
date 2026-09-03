@@ -264,10 +264,10 @@ def test_walker2d() raises:
             scratch_c.fnet.data[e * NV + i] = f
     scratch.fnet.upload(ctx)
     ldl_factor["gpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
-    ldl_solve["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
     scratch.qacc_ws.download(ctx)
     ldl_factor["cpu", DTYPE, BATCH=BATCH](mf, scratch_c)
-    ldl_solve["cpu", DTYPE, BATCH=BATCH](scratch_c)
+    ldl_solve["cpu", DTYPE, BATCH=BATCH](mf, scratch_c)
     var worst_ld = Float64(0)
     for i in range(BATCH * NV):
         var err = abs(
