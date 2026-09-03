@@ -284,6 +284,28 @@ comptime _ELL_TRACE: Bool = False
 # plateaus just above `tolerance`. No aggregate shows that.
 comptime _PYR_TRACE: Bool = False
 
+# ⚠⚠ A PRICING KNOB, AND IT IS BIT-IDENTICAL AT EVERY VALUE — that is the only
+# reason it is safe to ship. It divides the STRIDE of the blocked kernel's
+# cooperative passes without touching `block_dim`, so at `d > 1` several
+# threads recompute the same element and store it again. Every cooperative pass
+# in this kernel is a PURE STORE of a value derived from reads that are already
+# final at that point (audited: the `M_sh` load, the `H` build, both loops of
+# `_chol_factor_coop`, both of `_matvec_mv_jve_coop`, both of
+# `_recompute_jfq_coop`) — never a read-modify-write — so the duplicates write
+# the SAME BITS to the same address and the answer cannot move. `barrier()`
+# positions are untouched.
+#
+# WHY IT EXISTS. `THREADS = MAX_CONTACTS = 16` is fixed by the launch shape,
+# so the kernel cannot be run at MORE threads without a guard audit
+# (see `:755`). It can be run at FEWER, and that is enough to price the audit
+# before paying for it: with `t(p) = S + P/p`, measuring `d=1` (p=16) and
+# `d=16` (p=1) gives S and P in closed form. If S dominates, raising the launch
+# is capped at `P` no matter how many threads it buys, and the work belongs on
+# the tid-0 serial floor instead.
+#
+# 1 = production. Anything else is a measurement build.
+comptime NEWTON_COOP_DIV: Int = 1
+
 
 # =============================================================================
 
@@ -3288,6 +3310,10 @@ def _newton_blocked_fields_kernel[
     comptime V_SIZE = _max_one[NV]()
     comptime M_SIZE = _max_one[NV * NV]()
     comptime THREADS = _max_one[MAX_CONTACTS]()
+    # The cooperative STRIDE. Equals `THREADS` in production; see
+    # `NEWTON_COOP_DIV`. `block_dim` is `THREADS` either way, so every
+    # thread still reaches every `barrier()`.
+    comptime COOP = _max_one[THREADS // NEWTON_COOP_DIV]()
 
     # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
     # base is 0 in the fields solver tensor)
@@ -3693,7 +3719,7 @@ def _newton_blocked_fields_kernel[
 
     # === COOPERATIVE LOAD: M into shared ===
     if valid_env:
-        for k in range(tid, NV * NV, THREADS):
+        for k in range(tid, NV * NV, COOP):
             M_sh[k] = rebind[Scalar[DTYPE]](M[env, k])
 
         # Cooperative load of contact edges (Je/De/bias_e) into shared. One
@@ -4395,7 +4421,7 @@ def _newton_blocked_fields_kernel[
                 if be <= bp:
                     be = NV
                 var bn = be - bp
-                for q in range(tid, bn * bn, THREADS):
+                for q in range(tid, bn * bn, COOP):
                     var i = bp + q // bn
                     var j = bp + q % bn
                     var idx = i * NV + j
@@ -4416,7 +4442,7 @@ def _newton_blocked_fields_kernel[
 
         # --- Cooperative Cholesky factor of H into L_sh ---
         _chol_factor_coop[DTYPE](
-            tid, THREADS, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
+            tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
         )
 
         # --- Thread 0: Cholesky solve + negate search + publish ---
@@ -4458,7 +4484,7 @@ def _newton_blocked_fields_kernel[
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
         _matvec_mv_jve_coop[DTYPE, JE_AS=JE_AS](
-            tid, THREADS, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh, seg0_sh, seg1_sh
+            tid, COOP, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh, seg0_sh, seg1_sh
         )
         barrier()
         if valid_env and tid == 0:
@@ -4748,7 +4774,7 @@ def _newton_blocked_fields_kernel[
         # finishes the accept/revert.
         barrier()
         _recompute_jfq_coop[DTYPE, JE_AS=JE_AS](
-            tid, THREADS, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), Je_sh, De_sh, bias_e_sh,
+            tid, COOP, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), Je_sh, De_sh, bias_e_sh,
             kind_e_sh, R_e_sh, floss_e_sh, state_e_sh, qacc_sh,
             jar_sh, force_sh, qfrc_sh,
         )
