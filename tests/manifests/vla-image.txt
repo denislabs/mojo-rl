@@ -1,0 +1,16 @@
+# SmolVLA image preprocessing — `pixi run test-vla-image`
+#
+# Needs the torch dump but NOT the 907 MB weights:
+#   pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img
+# (`pixi run test-vla-ref` produces this and the activation dump together.)
+#
+# Separate from `vla.txt` because that manifest promises gates that need
+# neither the network nor a reference dump, and separate from
+# `vla-weights.txt` because this one does not download the checkpoint.
+
+# The camera -> SigLIP chain against torch's own `F.interpolate`: five source
+# geometries, the LEFT/TOP pad convention, the `int()` truncation, and the
+# multi-camera block order. Its last section is the one that matters — it
+# feeds the repo's OTHER resize (`pil_bilinear_u8`, correct, and the wrong
+# filter here) through the same comparison and asserts it is REJECTED.
+tests/deep_agents/smolvla/test_image_preprocess.mojo
