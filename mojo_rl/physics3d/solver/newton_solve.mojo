@@ -4166,9 +4166,26 @@ def _newton_blocked_fields_kernel[
             qacc[i] = q_i
             qacc_smooth[i] = q_i
         # Ma = M * qacc (read from M_sh)
+        # ⚠⚠ `Ma = M*qacc` OVER ROW i'S BLOCK. `M`'s off-tree entries are
+        # STRUCTURALLY zero — both CRBA paths only ever write within a tree —
+        # and a segment is a UNION of trees, so `[seg0[i], seg1[i])` is a
+        # superset of row i's nonzeros and dropping the rest drops exact
+        # zeros. Same argument as `_matvec_mv_jve_coop`.
+        #
+        # ⚠ THIS IS `NV^2` SERIAL ON THREAD 0 — 3,600 operations at nv=60,
+        # against ~1,080 for the whole tid-0 half of one Newton ITERATION.
+        # PN2d segmented every dense pass INSIDE the iteration loop and missed
+        # both of the ones out here in the setup, which between them cost more
+        # than several iterations. `range(tid, ..., THREADS)` made the others
+        # easy to spot; a bare `for i in range(NV)` under `tid == 0` did not.
         for i in range(NV):
             Ma[i] = Scalar[DTYPE](0)
-            for j in range(NV):
+            var j0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+            var j1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+            if j1 <= j0:
+                j0 = 0
+                j1 = NV
+            for j in range(j0, j1):
                 Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
         for i in range(NV):
             f_smooth[i] = Ma[i]
@@ -4253,9 +4270,17 @@ def _newton_blocked_fields_kernel[
                     rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
                     rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                 )
+            # The warmstart trial's `Ma = M*qacc_w` — the second NV^2 serial
+            # matvec in this setup block, same block restriction and the same
+            # exact-zero argument as the one above.
             for i in range(NV):
                 var s_i: Scalar[DTYPE] = 0
-                for j in range(NV):
+                var w0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                var w1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                if w1 <= w0:
+                    w0 = 0
+                    w1 = NV
+                for j in range(w0, w1):
                     s_i += (
                         rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc_w[j]
                     )

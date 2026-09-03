@@ -73,11 +73,13 @@ from mojo_rl.physics3d.collision.contact_detection import (
 from mojo_rl.physics3d.solver.newton_solve import solve_newton
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_NTREE,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,
 )
 from mojo_rl.envs.ant.ant_xml import AntModel
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
@@ -89,6 +91,51 @@ comptime CONE_T = ConeType.PYRAMIDAL  # forces the blocked branch on NVIDIA
 # comptime guard below excludes it entirely when False, so Apple compiles
 # (Ant-only). On NVIDIA the blocked-humanoid kernel is the production path.
 comptime INCLUDE_HUMANOID = False
+
+
+# ⚠⚠ A MULTI-TREE MODEL, AND WITHOUT ONE THIS FILE GATES NOTHING ABOUT THE
+# BLOCK WORK. `Ant`, `Humanoid` and `Walker2d` — every model any GPU solver
+# test uses — are SINGLE-TREE, so `build_dof_segments` returns one segment
+# spanning `[0, nv)` and every loop restriction PN2c/d/e and P2 added is a
+# NO-OP on them. They would all pass against a completely broken partition.
+#
+# Three trees here: a slider body and two free boxes. The XML places the boxes
+# on the floor and TOUCHING EACH OTHER, so a contact row spans two trees and
+# the segment MERGE path runs too, not just the trivial all-separate case.
+comptime TREES_XML = """
+<mujoco model="three trees">
+  <option cone="pyramidal" timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="plane" pos="0 0 0" size="4 4 1"/>
+    <body name="slider" pos="0 0 0.30">
+      <joint name="sx" type="slide" axis="1 0 0"/>
+      <joint name="sz" type="slide" axis="0 0 1"/>
+      <geom name="gs" type="sphere" size="0.05"/>
+    </body>
+    <body name="boxA" pos="0.60 0 0.05">
+      <freejoint/>
+      <geom name="ga" type="box" size="0.05 0.05 0.05"/>
+    </body>
+    <body name="boxB" pos="0.69 0 0.05">
+      <freejoint/>
+      <geom name="gb" type="box" size="0.05 0.05 0.05"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+comptime _tp = parse_xml(TREES_XML)
+comptime ThreeTreesModel = ModelDefFromXML[
+    xml=TREES_XML,
+    nbody=_tp.NBODY, njoint=_tp.NJOINT, nq=_tp.NQ, nv=_tp.NV,
+    ngeom=_tp.NGEOM, nact=_tp.NACT, ntex=_tp.NTEX, nmat=_tp.NMAT,
+    nlight=_tp.NLIGHT, ncam=_tp.NCAM, nsite=_tp.NSITE,
+    cone_type=ConeType.PYRAMIDAL,
+    max_contacts=8,
+    obs_dim_override=4,
+    obs_qpos_skip=0,
+    timestep=_tp.TIMESTEP,
+]
 
 
 def _prep[target: StaticString, D: DimsLike](
@@ -172,6 +219,7 @@ def _validate[MODEL: ModelDefLike](
     ctx: DeviceContext,
     name: String,
     torso_z: Float64,
+    min_trees: Int = 1,
 ) raises -> Bool:
     """Returns True if GPU==CPU within tolerance (solver correct)."""
     # Dims as local comptime aliases OFF the model spec so the mf type
@@ -205,6 +253,21 @@ def _validate[MODEL: ModelDefLike](
     # no init_model_gpu / load_from_slab.
     var mf = Model[DTYPE, MD]()
     MODEL.init_fields[DTYPE](ctx, mf)
+
+    # ⚠⚠ THE ARM'S OWN PREMISE, CHECKED. `build_dof_segments` returns ONE
+    # segment on a single-tree model, so every loop restriction PN2c/d/e and P2
+    # added is a NO-OP there and this comparison would pass against a
+    # completely broken partition. Printing `ntree` tells a reader which arms
+    # actually exercise the block work; `min_trees` makes the multi-tree arm
+    # FAIL rather than quietly degrade if its XML ever collapses to one tree.
+    var ntree = Int(mf.meta.data[MODEL_META_IDX_NTREE])
+    print("    kinematic trees:", ntree,
+          "(1 = the block restriction is a no-op here)" if ntree <= 1 else
+          "(multi-tree: the block restriction is LIVE)")
+    if ntree < min_trees:
+        print("    FAIL:", name, "has", ntree, "trees, needs >=", min_trees,
+              "- this arm is VACUOUS for the block work")
+        return False
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).
     var d_g = Data[DTYPE, MD, BATCH]()
@@ -278,6 +341,13 @@ def main() raises:
 
     # ── Ant (free joint, NV=14) ────────────────────────────────────────────
     all_ok = _validate[AntModel](ctx, "Ant", 0.28) and all_ok
+
+    # ── ⚠ THE MULTI-TREE ARM. Every other model here is single-tree, so
+    # without this one the file says nothing about the block restrictions.
+    # `torso_z` is 0: the XML already places the bodies.
+    all_ok = _validate[ThreeTreesModel](
+        ctx, "ThreeTrees", 0.0, min_trees=3
+    ) and all_ok
 
     # ── Humanoid (free joint, NV=23) — the production blocked model ─────────
     # On NVIDIA this exercises the exact blocked kernel humanoid training uses.
