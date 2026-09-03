@@ -16,3 +16,8 @@ tests/deep_agents/smolvla/test_text_forward_smoke.mojo
 # Step 4 — PixelShuffle (1024x768 -> 64x12288) vs an independent re-derivation
 # of the reference's five view/permute steps, plus bijection and adjoint.
 tests/nn/test_pixel_shuffle.mojo
+
+# Step 6 — the static prefix KV cache: per-layer isolation, [prefix; suffix]
+# scratch, the prefix surviving ten denoising steps unchanged, the unfilled-read
+# guard, and GPU/CPU parity of the sub-buffer copies.
+tests/deep_agents/smolvla/test_kv_cache.mojo
