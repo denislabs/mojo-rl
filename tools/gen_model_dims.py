@@ -90,7 +90,11 @@ MODELS = [
     # having the first user of it be something that already needs it.
     ("mojo_rl/envs/robots/so101_park_xml.mojo",
      ["SO101_PARK_K0_XML", "SO101_PARK_K3_XML",
-      "SO101_PARK_K6_XML", "SO101_PARK_K9_XML"]),
+      "SO101_PARK_K6_XML", "SO101_PARK_K9_XML",
+      # ⚠ 12 and 13 exist only because P4 made them COMPILE. Before it,
+      # `je_spills` budgeted `Je` alone and the blocked Newton kernel asked
+      # ptxas for 136,212 B against a 101,376 B limit.
+      "SO101_PARK_K12_XML", "SO101_PARK_K13_XML"]),
     ("mojo_rl/envs/dm_control/acrobot/acrobot_xml.mojo", ["dm_acrobot_xml"]),
     ("mojo_rl/envs/dm_control/ball_in_cup/ball_in_cup_xml.mojo",
      ["dm_ball_in_cup_xml"]),

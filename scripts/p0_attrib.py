@@ -50,7 +50,12 @@ import csv
 from collections import defaultdict
 
 OUT = os.environ.get("OUT", "p0_attrib")
-KS = [0, 3, 6, 9]
+# ⚠ THE SPILL BOUNDARY SITS BETWEEN 9 AND 12. `je_spills` puts `Je` in global
+# memory from k=10 on (P4), so the two halves are different code paths and the
+# `d/dnv^2` column below mixes them if both are present. It is still the right
+# number for each half; read it as two curves.
+KS = [int(x) for x in os.environ.get("KS", "0 3 6 9 12 13").split()]
+SPILL_FROM = 10
 
 # ⚠⚠ THESE ARE TRUNCATED MODULE PATHS, AND THE TRUNCATION IS THE POINT.
 # Mojo emits a long kernel symbol as the module path CUT TO 29 CHARACTERS, then
@@ -433,6 +438,11 @@ def main():
     tot = {k: sum(per[t].get(k, 0.0) for t in terms) for k in ks}
     print("  " + "-" * (12 + 12 * len(ks) + 12))
     print(f"  {'GPU TOTAL':<12}" + "".join(f"{tot[k]:>12.3f}" for k in ks))
+    spilled = [k for k in ks if k >= SPILL_FROM]
+    if spilled and [k for k in ks if k < SPILL_FROM]:
+        print(f"  {'':12}" + "".join(
+            f"{('Je SPILLED' if k >= SPILL_FROM else 'Je shared'):>12}"
+            for k in ks))
     print(f"  {'probe wall':<12}"
           + "".join(f"{probes[k]['ms_per_step']:>12.3f}" for k in ks))
     # ⚠ THE RESIDUAL IS THE HONESTY CHECK. GPU kernel time under the wall time

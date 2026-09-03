@@ -24,7 +24,12 @@ mkdir -p "$OUT"
 
 command -v nsys >/dev/null || { echo "!! nsys not on PATH"; exit 1; }
 
-for k in 0 3 6 9; do
+# ⚠ 12 AND 13 EXIST BECAUSE P4 MADE THEM COMPILE, AND THEY CROSS THE `Je`
+# SPILL BOUNDARY: k<=9 keeps `Je` in threadgroup memory, k>=10 re-reads it from
+# global every Newton iteration. Do not draw one `x k=0` curve across that —
+# report 0..9 and 12..13 separately, or the slot count gets charged for a
+# change of code path.
+for k in ${KS:-0 3 6 9 12 13}; do
   echo "=== k=$k ==="
   rep="$OUT/k$k"
   rm -f "$rep.nsys-rep" "$rep.sqlite"

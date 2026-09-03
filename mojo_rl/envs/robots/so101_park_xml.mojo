@@ -55,6 +55,8 @@ from mojo_rl.envs.robots.so101_park_dims import (
     SO101_PARK_K3_DIMS,
     SO101_PARK_K6_DIMS,
     SO101_PARK_K9_DIMS,
+    SO101_PARK_K12_DIMS,
+    SO101_PARK_K13_DIMS,
 )
 from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 
@@ -84,6 +86,17 @@ comptime _k0 = SO101_PARK_K0_DIMS
 comptime _k3 = SO101_PARK_K3_DIMS
 comptime _k6 = SO101_PARK_K6_DIMS
 comptime _k9 = SO101_PARK_K9_DIMS
+# ⚠ 12 AND 13 EXIST ONLY BECAUSE P4 MADE THEM COMPILE. Before it,
+# `je_spills` budgeted `Je` alone, so the blocked Newton kernel asked ptxas
+# for 136,212 B against a 101,376 B limit and k=12 was a BUILD FAILURE, not
+# a slow scene. 13 is the new ceiling: spilling `Je` reaches 93,400 B and
+# k=14 is 106,360 B, still over.
+#
+# ⚠⚠ k>=10 SPILLS `Je` TO GLOBAL AND k<=9 DOES NOT, so a `x k=0` column
+# drawn across that boundary charges the slot count for a change of code
+# path. Read 0..9 and 12..13 as two curves.
+comptime _k12 = SO101_PARK_K12_DIMS
+comptime _k13 = SO101_PARK_K13_DIMS
 
 
 comptime SoArm101ParkK0Model = ModelDefFromXML[
@@ -125,6 +138,28 @@ comptime SoArm101ParkK9Model = ModelDefFromXML[
     ngeom=_k9.NGEOM, nact=_k9.NACT, ntex=_k9.NTEX, nmat=_k9.NMAT,
     nlight=_k9.NLIGHT, ncam=_k9.NCAM, nsite=_k9.NSITE, neq=_k9.NEQ,
     nexclude=_k9.NEXCLUDE, npair=_k9.NPAIR, timestep=_k9.TIMESTEP,
+    cone_type=ConeType.PYRAMIDAL,
+    max_contacts=PARK_MAX_CONTACTS,
+    action_dim_override=6,
+]
+
+comptime SoArm101ParkK12Model = ModelDefFromXML[
+    xml_path="mojo_rl/envs/robots/assets/so101_park_k12.xml",
+    nbody=_k12.NBODY, njoint=_k12.NJOINT, nq=_k12.NQ, nv=_k12.NV,
+    ngeom=_k12.NGEOM, nact=_k12.NACT, ntex=_k12.NTEX, nmat=_k12.NMAT,
+    nlight=_k12.NLIGHT, ncam=_k12.NCAM, nsite=_k12.NSITE, neq=_k12.NEQ,
+    nexclude=_k12.NEXCLUDE, npair=_k12.NPAIR, timestep=_k12.TIMESTEP,
+    cone_type=ConeType.PYRAMIDAL,
+    max_contacts=PARK_MAX_CONTACTS,
+    action_dim_override=6,
+]
+
+comptime SoArm101ParkK13Model = ModelDefFromXML[
+    xml_path="mojo_rl/envs/robots/assets/so101_park_k13.xml",
+    nbody=_k13.NBODY, njoint=_k13.NJOINT, nq=_k13.NQ, nv=_k13.NV,
+    ngeom=_k13.NGEOM, nact=_k13.NACT, ntex=_k13.NTEX, nmat=_k13.NMAT,
+    nlight=_k13.NLIGHT, ncam=_k13.NCAM, nsite=_k13.NSITE, neq=_k13.NEQ,
+    nexclude=_k13.NEXCLUDE, npair=_k13.NPAIR, timestep=_k13.TIMESTEP,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=PARK_MAX_CONTACTS,
     action_dim_override=6,

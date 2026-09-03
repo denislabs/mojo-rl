@@ -110,3 +110,53 @@ comptime SO101_PARK_K9_DIMS = ParsedModel(
     ccd_tol=1e-06,
     ccd_iter=35,
 )
+
+
+# mojo_rl/envs/robots/assets/so101_park_k12.xml
+comptime SO101_PARK_K12_DIMS = ParsedModel(
+    nbody=21,
+    njoint=18,
+    nq=90,
+    nv=78,
+    ngeom=44,
+    nact=6,
+    ntex=1,
+    nmat=14,
+    nlight=1,
+    ncam=1,
+    nsite=2,
+    neq=0,
+    nexclude=0,
+    npair=0,
+    ntendon=0,
+    timestep=0.002,
+    max_condim=3,
+    noslip_iter=0,
+    ccd_tol=1e-06,
+    ccd_iter=35,
+)
+
+
+# mojo_rl/envs/robots/assets/so101_park_k13.xml
+comptime SO101_PARK_K13_DIMS = ParsedModel(
+    nbody=22,
+    njoint=19,
+    nq=97,
+    nv=84,
+    ngeom=45,
+    nact=6,
+    ntex=1,
+    nmat=14,
+    nlight=1,
+    ncam=1,
+    nsite=2,
+    neq=0,
+    nexclude=0,
+    npair=0,
+    ntendon=0,
+    timestep=0.002,
+    max_condim=3,
+    noslip_iter=0,
+    ccd_tol=1e-06,
+    ccd_iter=35,
+)

@@ -65,6 +65,8 @@ from mojo_rl.envs.robots.so101_park_xml import (
     SoArm101ParkK3Model,
     SoArm101ParkK6Model,
     SoArm101ParkK9Model,
+    SoArm101ParkK12Model,
+    SoArm101ParkK13Model,
 )
 
 
@@ -79,6 +81,16 @@ comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]
 comptime ParkCfg3 = So101ParkProbeConfig[27, 24, 3]
 comptime ParkCfg6 = So101ParkProbeConfig[48, 42, 6]
 comptime ParkCfg9 = So101ParkProbeConfig[69, 60, 9]
+# ⚠⚠ 12 AND 13 CROSS THE `Je` SPILL BOUNDARY, AND THAT IS NOT A COST OF THE
+# DOFS. P4 made them compile by budgeting the kernel's TOTAL threadgroup
+# footprint instead of `Je` alone; the consequence is that k<=9 keeps `Je` in
+# shared memory and k>=10 re-reads it from GLOBAL on every Newton iteration. A
+# `x k=0` column drawn straight across that boundary charges the slot count for
+# a change of code path — the shape recorded as
+# `feedback_the_gates_name_named_the_wrong_axis`. Read 0..9 and 12..13 as two
+# curves, and say which side of the boundary any quoted ratio came from.
+comptime ParkCfg12 = So101ParkProbeConfig[90, 78, 12]
+comptime ParkCfg13 = So101ParkProbeConfig[97, 84, 13]
 
 
 def run_leg[
@@ -124,7 +136,7 @@ def main() raises:
     if len(argv()) < 2:
         print(
             "usage: mojo run -I . examples/so101/so101_park_attrib_probe.mojo"
-            " <0|3|6|9>"
+            " <0|3|6|9|12|13>"
         )
         return
     var k = Int(atol(String(argv()[1])))
@@ -141,7 +153,12 @@ def main() raises:
         run_leg[SoArm101ParkK6Model, ParkCfg6](ctx, 6, 42)
     elif k == 9:
         run_leg[SoArm101ParkK9Model, ParkCfg9](ctx, 9, 60)
+    elif k == 12:
+        run_leg[SoArm101ParkK12Model, ParkCfg12](ctx, 12, 78)
+    elif k == 13:
+        run_leg[SoArm101ParkK13Model, ParkCfg13](ctx, 13, 84)
     else:
-        # ⚠ NOT A DEFAULT. k=12 does not compile (ptxas, shared memory) and a
-        # silent fallback to k=0 would produce a full, plausible, wrong table.
-        print("unknown k:", k, "- expected one of 0, 3, 6, 9")
+        # ⚠ NOT A DEFAULT. A silent fallback to k=0 would produce a full,
+        # plausible, wrong table. (k=12 used to belong here because it did
+        # not compile; P4 fixed that and it is a real leg now.)
+        print("unknown k:", k, "- expected one of 0, 3, 6, 9, 12, 13")

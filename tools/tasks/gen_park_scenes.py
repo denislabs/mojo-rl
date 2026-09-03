@@ -12,7 +12,9 @@ parked slot COSTS. This emits the scenes that answer it:
     so101_park_k0.xml    the control — the arm as it ships
     so101_park_k3.xml    + 3 parked free bodies   (+21 nq, +18 nv)
     so101_park_k6.xml    + 6                      (+42 nq, +36 nv)
-    so101_park_k12.xml   + 12                     (+84 nq, +72 nv)
+    so101_park_k9.xml    + 9                       (+63 nq, +54 nv)
+    so101_park_k12.xml   + 12                      (+84 nq, +72 nv)
+    so101_park_k13.xml   + 13                      (+91 nq, +78 nv)
 
 ⚠⚠ THE PARK POSE IS NOT `(0, 0, -2)`, AND THE OBVIOUS CHOICE IS THE WORST ONE
 -----------------------------------------------------------------------------
@@ -99,7 +101,19 @@ OUT_DIR = "mojo_rl/envs/robots/assets"
 # memory, read across up to 200 Newton iterations) from the control, and leg 1
 # would be comparing two code paths while calling the difference a budget cost.
 # One path across the whole sweep is what makes the curve mean anything.
-SLOT_COUNTS = [0, 3, 6, 9]
+# ⚠ 12 AND 13 ARE THE P4 SCENES, AND 13 IS THE CEILING, NOT A ROUND NUMBER.
+# Before P4 the sweep stopped at 9 because k=12 did not COMPILE — `je_spills`
+# budgeted `Je` alone, so the blocked Newton kernel asked for 136,212 B against
+# ptxas's 101,376 B. Budgeting the TOTAL spills `Je` to global and reaches
+# exactly k=13 (93,400 B); k=14 is 106,360 B and still over, so 13 is where the
+# three `NV*NV` matrices become the binding term.
+#
+# ⚠⚠ A SWEEP ACROSS 9 AND 12 COMPARES TWO CODE PATHS. k<=9 keeps `Je` in
+# threadgroup memory and k>=10 spills it to global, where it is re-read on
+# every Newton iteration. That is a real cost and it is NOT a cost of the extra
+# dofs — quoting a `x k=0` column across the spill boundary would attribute it
+# to the slot count. Report the two halves separately.
+SLOT_COUNTS = [0, 3, 6, 9, 12, 13]
 
 # ── the park pose, measured (see the module docstring) ─────────────────────
 PARK_X = 10.0        # metres, well outside any workspace
