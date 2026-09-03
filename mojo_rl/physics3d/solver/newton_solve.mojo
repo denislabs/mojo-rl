@@ -307,6 +307,67 @@ comptime _PYR_TRACE: Bool = False
 # 1 = production. Anything else is a measurement build.
 comptime NEWTON_COOP_DIV: Int = 1
 
+# ⚠⚠ THE SERIAL PROBE — the same trick as `NEWTON_COOP_DIV`, pointed at the
+# tid-0 floor that knob proved was 90% of newton's excess. It answers "how much
+# does THIS term cost" by MEASURING, and it exists because op counts have now
+# over-predicted time-saved four times running (PN2c, P2, F2, F3b). Op counts
+# get RATIOS BETWEEN CONCURRENT TERMS right — the COOP_DIV split was predicted
+# 11% and measured 9.6% — and get TIME SAVED wrong, because serial tid-0 code
+# is latency-bound on dependent shared loads, not throughput-bound.
+#
+# HOW: at `NEWTON_SERIAL_PROBE == N` the selected term runs
+# `SERIAL_PROBE_REPEAT - 1` EXTRA times BEFORE its real, untouched instance.
+# `t(probe) - t(baseline)` over `REPEAT-1` is the term's marginal cost.
+#
+# ⚠ THE EXTRA COPIES GO BEFORE, NEVER AFTER, AND THAT IS THE SAFETY ARGUMENT.
+# The real instance runs last and overwrites whatever the copies wrote, so the
+# state entering the next statement is exactly production's. Each extra block is
+# also written as a PURE RECOMPUTE — no in-place mutation, no accumulator, no
+# `ctrl_sh` side effect that is not idempotent — so it cannot perturb its own
+# inputs. (This is why term 2 repeats only the solve and not the `-search_sh`
+# negate, which flips sign every time it runs.)
+#
+# ⚠ AND AT `== 0` THE `comptime if` ELIDES ENTIRELY, so the production build is
+# codegen-identical, not merely bit-identical. A `for _ in range(1)` wrapper
+# would NOT have been: it can move register allocation, and a measurement tool
+# whose baseline arm is perturbed measures itself.
+#
+# ⚠ NO `barrier()` MAY APPEAR IN AN EXTRA BLOCK. Every site below sits inside an
+# existing `if tid == 0` or block-uniform `if valid_env`, so barrier positions
+# are untouched — but a future term that needs one is NOT probeable this way.
+#
+# ⚠ THESE TERMS ARE ALL SHARED-MEMORY RESIDENT, which is what makes the repeat
+# UNBIASED. Repeating a GLOBAL-memory term would measure the warm cost and
+# under-report it; shared memory has no cache below it, so pass two costs what
+# pass one did.
+#
+#   0 = off (production)     3 = the `d_j` reduction inside _chol_factor_coop
+#   1 = the gradient loop    4 = the Mv/search read-back loop
+#   2 = the per-block solve
+comptime NEWTON_SERIAL_PROBE: Int = 0
+comptime SERIAL_PROBE_REPEAT: Int = 10
+
+# ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
+# extra block writes memory the real pass overwrites on the very next lines, so
+# dead-store elimination is entitled to delete the whole thing — and the probe
+# would then report ~0 for every term, which reads as "these terms are free"
+# rather than as "the probe did not run". So each block folds its work into a
+# checksum and consumes it against a value it cannot produce, which the compiler
+# cannot prove unreachable: the stores stay live, and so do the loads and the
+# arithmetic that are the cost being measured.
+#
+# ⚠ THE NON-VACUITY CHECK IS THE SWEEP ITSELF: at `REPEAT = 10` a term that is
+# 5% of newton must move newton by ~45%. **A term that comes back inside the
+# 1.7% noise floor has either been optimised away or is genuinely free, and
+# those are NOT the same answer** — re-run that term at `REPEAT = 100` before
+# believing it is free.
+@always_inline
+def _probe_sentinel[DTYPE: DType]() -> Scalar[DTYPE]:
+    """A value the checksums above cannot produce, in the kernel's own dtype.
+    One definition, four call sites — the constant must not drift between them,
+    and a per-site literal is exactly how that happens."""
+    return Scalar[DTYPE](-1.0e30)
+
 
 # =============================================================================
 
@@ -387,6 +448,20 @@ def _chol_factor_coop[
             var b0 = Int(rebind[Scalar[DTYPE]](seg0[j]))
             var b1 = Int(rebind[Scalar[DTYPE]](seg1[j]))
             if tid == 0:
+                comptime if NEWTON_SERIAL_PROBE == 3:
+                    # Pure recompute of the reduction. It reads `L_sh` columns
+                    # strictly BELOW j, which are final at this point and which
+                    # it does not write, so repeating it cannot move its own
+                    # input. The `ctrl_sh[2]` flag and `L_sh[j*nv+j]` write are
+                    # left to the real pass below.
+                    for _r in range(SERIAL_PROBE_REPEAT - 1):
+                        var p_sd: Scalar[DTYPE] = 0
+                        for k in range(b0, j):
+                            var p_l = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
+                            p_sd += p_l * p_l
+                        # Consume it so the reduction cannot be folded away.
+                        if p_sd == _probe_sentinel[DTYPE]():
+                            ctrl_sh[2] = Scalar[DTYPE](0)
                 var s_d: Scalar[DTYPE] = 0
                 for k in range(b0, j):
                     var ljk = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
@@ -4391,6 +4466,18 @@ def _newton_blocked_fields_kernel[
             break
         # --- Thread 0: gradient + convergence check ---
         if valid_env and tid == 0:
+            comptime if NEWTON_SERIAL_PROBE == 1:
+                # Pure recompute: writes only `grad_sh`, which the real loop
+                # below overwrites. The norm is deliberately NOT accumulated
+                # here — it is the one part that is not idempotent.
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    var p_ck: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        var p_g = Ma[i] - f_smooth[i] - qfrc[i]
+                        grad_sh[i] = p_g
+                        p_ck += p_g
+                    if p_ck == _probe_sentinel[DTYPE]():
+                        ctrl_sh[2] = Scalar[DTYPE](0)
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(NV):
                 var g = Ma[i] - f_smooth[i] - qfrc[i]
@@ -4485,6 +4572,35 @@ def _newton_blocked_fields_kernel[
         # substitution, so a concurrent duplicate is a genuine race — unlike
         # every pass `NEWTON_COOP_DIV` touches. See its note at `:307`.
         if valid_env:
+            comptime if NEWTON_SERIAL_PROBE == 2:
+                # The solve WITHOUT the negate — `search_sh[i] = -search_sh[i]`
+                # is the one statement here that is not idempotent, and the real
+                # pass below rewrites `search_sh` from scratch anyway.
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    var psp = 0
+                    var pbi = 0
+                    while psp < NV:
+                        var pse = Int(rebind[Scalar[DTYPE]](seg1_sh[psp]))
+                        if pse <= psp:
+                            pse = NV
+                        if pbi % THREADS == tid:
+                            chol_solve_seg_p[
+                                DTYPE, V_SIZE,
+                                L_AS = AddressSpace.SHARED,
+                                B_AS = AddressSpace.SHARED,
+                                X_AS = AddressSpace.SHARED,
+                            ](L_sh.ptr, grad_sh.ptr, search_sh.ptr, NV, psp, pse)
+                            # ⚠ THIS THREAD'S OWN BLOCK ONLY. Summing all of
+                            # `search_sh` would read slots other threads are
+                            # concurrently writing — a real data race, even for
+                            # a value that is discarded.
+                            var p_ck: Scalar[DTYPE] = 0
+                            for i in range(psp, pse):
+                                p_ck += rebind[Scalar[DTYPE]](search_sh[i])
+                            if p_ck == _probe_sentinel[DTYPE]():
+                                ctrl_sh[2] = Scalar[DTYPE](0)
+                        psp = pse
+                        pbi += 1
             var sp = 0
             var bidx = 0
             while sp < NV:
@@ -4515,6 +4631,15 @@ def _newton_blocked_fields_kernel[
         )
         barrier()
         if valid_env and tid == 0:
+            comptime if NEWTON_SERIAL_PROBE == 4:
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    var p_ck: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        Mv[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
+                        search[i] = rebind[Scalar[DTYPE]](search_sh[i])
+                        p_ck += Mv[i] + search[i]
+                    if p_ck == _probe_sentinel[DTYPE]():
+                        ctrl_sh[2] = Scalar[DTYPE](0)
             for i in range(NV):
                 Mv[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
                 # ⚠ THE READ-BACK RIDES THIS LOOP RATHER THAN ADDING A BARRIER.
