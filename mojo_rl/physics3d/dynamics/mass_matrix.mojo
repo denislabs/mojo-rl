@@ -10,6 +10,7 @@ Operands: xquat, xipos, subtree_com + body/joint records + cdof -> M
 
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -440,6 +441,13 @@ def _mass_matrix_fields_mt_kernel[
 # kernel simply does not do that dead work, mirroring legacy production.
 @always_inline
 def _mm_treewalk_env[
+    # ⚠ FIRST, AND `//` MARKS IT INFERRED-ONLY, exactly as `noslip_pyramidal`
+    # declares the one array it writes. This routine WRITES the composite
+    # through `comp`, and an inferred `_` origin comes out IMMUTABLE
+    # ("expression must be mutable in assignment"). Putting the marker after
+    # the explicit parameters instead makes ALL of them inferred-only and every
+    # call site stops compiling.
+    CO: MutOrigin, //,
     DTYPE: DType,
     N_THREADS: Int,
     GPU: Bool,
@@ -450,6 +458,7 @@ def _mm_treewalk_env[
     L_JOINTS: Layout,
     L_CDOF: Layout,
     L_M: Layout,
+    CMP_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     env: Int,
     tid: Int,
@@ -471,6 +480,15 @@ def _mm_treewalk_env[
     ],
     cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    # ⚠⚠ THE COMPOSITE INERTIA, OWNED BY THE CALLER AND SHARED ACROSS THE
+    # BLOCK ON GPU. It used to be a per-thread `Scratch`, so every one of the
+    # `N_THREADS = NV` threads rebuilt the whole `nbody`-body composite —
+    # quaternion rotation, parallel-axis shift, ten accumulators each — and
+    # then threw it away. Modelled against the measured kernel that redundancy
+    # is 93% of the launch at k=13 (119,532 of 128,568 units, reproducing the
+    # observed 32x growth from k=0 to k=13 to within 6%), while the dense
+    # `nv*nv` zeroing this term was ASSUMED to be about is 5%.
+    comp: Pointer[Scalar[DTYPE], CO, address_space=CMP_AS],
 ):
     """Tree-walk CRBA for ONE env — O(nv*depth), shared by CPU and GPU.
 
@@ -486,12 +504,10 @@ def _mm_treewalk_env[
     var njoint = dims.get_njoint()
     comptime NV_S = cap[D.NV]()
     comptime NB_S = cap[D.NBODY]()
-    comptime CMP_S = cap[D.NBODY]() * 10
     var dof_body = Scratch[Int, NV_S](nv, 0)
     var dof_parent = Scratch[Int, NV_S](nv, -1)
     var body_first = Scratch[Int, NB_S](nbody, -1)
     var body_last = Scratch[Int, NB_S](nbody, -1)
-    var comp = Scratch[Scalar[DTYPE], CMP_S](nbody * 10, 0)
 
     # --- dof_body + per-body dof range ---
     for j in range(njoint):
@@ -525,7 +541,11 @@ def _mm_treewalk_env[
                 p = Int(rebind[Scalar[DTYPE]](bodies[p, BODY_IDX_PARENT]))
 
     # --- per-body composite contribution about P = stcom[rootid] ---
-    for b in range(nbody):
+    # ⚠ STRIDED, AND BIT-EXACT BECAUSE IT IS. Each `b` writes only its own ten
+    # slots and reads nothing another `b` wrote, so distributing the loop
+    # changes which thread does the work and nothing else. On CPU
+    # `N_THREADS == 1` and `tid == 0`, so this reads `range(nbody)` exactly.
+    for b in range(tid, nbody, N_THREADS):
         var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
         # rotated body inertia (world-aligned, about body COM)
         var Ixx_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
@@ -582,12 +602,25 @@ def _mm_treewalk_env[
         comp[b * 10 + 8] = Iw_xz - mass * dx * dz
         comp[b * 10 + 9] = Iw_yz - mass * dy * dz
 
+    comptime if GPU:
+        barrier()
+
     # leaf→root accumulate (common P within a tree → additive; stop at roots)
-    for b in range(nbody - 1, 0, -1):
-        var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
-        if p > 0:
-            for e in range(10):
-                comp[p * 10 + e] = comp[p * 10 + e] + comp[b * 10 + e]
+    #
+    # ⚠⚠ SERIAL ON THREAD 0, AND IT MUST STAY THAT WAY. `comp[parent] +=
+    # comp[child]` walks bodies in DESCENDING index order and a parent
+    # accumulates several children, so the summation order is fixed by the
+    # loop. Distributing it would reorder a floating-point reduction and break
+    # the CPU/GPU bit-exactness this function's docstring promises — for
+    # O(nbody) work that is nothing beside the build above.
+    if tid == 0:
+        for b in range(nbody - 1, 0, -1):
+            var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
+            if p > 0:
+                for e in range(10):
+                    comp[p * 10 + e] = comp[p * 10 + e] + comp[b * 10 + e]
+    comptime if GPU:
+        barrier()
 
     # zero M (distributed)
     for idx in range(tid, nv * nv, N_THREADS):
@@ -668,10 +701,20 @@ def _mass_matrix_treewalk_fields_mt_kernel[
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
-    _mm_treewalk_env[DTYPE, N_THREADS, True](
+    # ⚠ ONE COMPOSITE INERTIA PER BLOCK, not one per thread. `NBODY*10`
+    # scalars — 880 B at k=13 against this kernel's otherwise trivial
+    # threadgroup use, and it replaces `N_THREADS` private copies of the same
+    # array. Allocated HERE rather than inside `_mm_treewalk_env` because
+    # shared memory belongs to the kernel scope; the env function takes a
+    # pointer so the CPU leg can hand it a `Scratch` instead.
+    var comp_sh = LayoutTensor[
+        DTYPE, Layout.row_major(NBODY * 10), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    _mm_treewalk_env[DTYPE, N_THREADS, True, CMP_AS = AddressSpace.SHARED](
         Int(block_idx.x), Int(thread_idx.x),
         Dims[nv=NV, nbody=NBODY, njoint=NJOINT](),
-        xquat, xipos, subtree_com, bodies, joints, cdof, M,
+        xquat, xipos, subtree_com, bodies, joints, cdof, M, comp_sh.ptr,
     )
 
 
@@ -764,11 +807,18 @@ def compute_mass_matrix[
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         comptime if TREEWALK:
+            # The CPU twin of the kernel's shared array. `N_THREADS == 1`, so
+            # one buffer serves the single "thread"; hoisted out of the env
+            # loop because it is overwritten wholesale each time anyway.
+            var comp_s = Scratch[Scalar[DTYPE], cap[D.NBODY]() * 10](
+                dm.get_nbody() * 10, 0
+            )
             for e in range(BATCH):
                 _mm_treewalk_env[DTYPE, 1, False](
                     e, 0,
                     dm,
                     xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
+                    comp_s.unsafe_ptr(),
                 )
         else:
             for e in range(BATCH):
