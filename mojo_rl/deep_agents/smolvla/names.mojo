@@ -174,3 +174,69 @@ def text_name_map[
 
     m.add(String("1.0.gamma"), T + "norm.weight", d1)
     return m^
+
+
+def misc_name_map[
+    DIM: Int = 960,
+    VOCAB: Int = 49280,
+    CONN_IN: Int = 12288,
+    STATE: Int = 32,
+    ACT: Int = 32,
+    W: Int = 720,
+]() raises -> TorchNameMap:
+    """Connector + token embedding + LM head + the five action heads.
+
+    `ours` are prefixed per component (`connector.`, `embed.`, `lm_head.`,
+    `state_proj.`, ...) because these are separate small modules rather than one
+    walked tree; a caller loads each with its own `GRAPH_PREFIX`.
+
+    ⚠ Bias handling is NOT uniform here and that is the point. The three BF16
+    tensors (connector, embed, lm_head) are bias-free in the checkpoint, so our
+    `Linear`'s always-present bias is `TN_ZEROS`. All five F32 action heads DO
+    ship a trained bias, mapped plainly. Applying either rule to the other set
+    silently discards or invents a bias.
+    """
+    var m = TorchNameMap()
+    var R = String("model.")
+    var d1: List[Int] = [DIM]
+    var v1: List[Int] = [VOCAB]
+    var w1: List[Int] = [W]
+    var a1: List[Int] = [ACT]
+
+    # connector: [960, 12288], no bias in the file.
+    # ⚠ It lives under the VLM subtree (`…vlm.model.connector.…`), unlike the
+    # action heads, which are top-level `model.…`. Two different roots in one
+    # map function; the coverage gate caught this exact slip.
+    m.add_linear(String("connector.weight"),
+                 SMOLVLA_VLM + "model.connector.modality_projection.proj.weight",
+                 DIM, CONN_IN)
+    m.add(String("connector.bias"), String(""), d1, TN_ZEROS)
+
+    # embedding: torch nn.Embedding.weight is [num_embeddings, dim] and ours is
+    # the same [VOCAB, DIM] — a rename, NOT a transpose.
+    var emb: List[Int] = [VOCAB, DIM]
+    m.add(String("embed.weight"), SMOLVLA_TEXT + "embed_tokens.weight", emb,
+          TN_PLAIN)
+
+    # lm_head: a Linear, so [out, in] -> transposed. No bias in the file.
+    m.add_linear(String("lm_head.weight"), SMOLVLA_VLM + "lm_head.weight",
+                 VOCAB, DIM)
+    m.add(String("lm_head.bias"), String(""), v1, TN_ZEROS)
+
+    # the five action heads — all F32, all WITH a real bias
+    m.add_linear(String("state_proj.weight"), R + "state_proj.weight",
+                 DIM, STATE)
+    m.add(String("state_proj.bias"), R + "state_proj.bias", d1)
+    m.add_linear(String("action_in.weight"), R + "action_in_proj.weight",
+                 W, ACT)
+    m.add(String("action_in.bias"), R + "action_in_proj.bias", w1)
+    m.add_linear(String("action_out.weight"), R + "action_out_proj.weight",
+                 ACT, W)
+    m.add(String("action_out.bias"), R + "action_out_proj.bias", a1)
+    m.add_linear(String("time_mlp_in.weight"), R + "action_time_mlp_in.weight",
+                 W, 2 * W)
+    m.add(String("time_mlp_in.bias"), R + "action_time_mlp_in.bias", w1)
+    m.add_linear(String("time_mlp_out.weight"),
+                 R + "action_time_mlp_out.weight", W, W)
+    m.add(String("time_mlp_out.bias"), R + "action_time_mlp_out.bias", w1)
+    return m^

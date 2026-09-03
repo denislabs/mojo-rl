@@ -19,3 +19,9 @@ tests/nn/test_repeat_kv_heads.mojo
 # Step 3 — the SmolLM2 text tower: 145 checkpoint tensors + 112 TN_ZEROS
 # biases, covered both ways, with the element arithmetic reconciled.
 tests/deep_agents/smolvla/test_text_name_map.mojo
+
+# Step 4 — connector + token embedding + LM head + the five action heads
+# (13 tensors), and the running total across every map at once: 355/500 with
+# nothing double-claimed. The consolidated gate is what catches a tensor named
+# by two maps, which a per-component gate cannot see.
+tests/deep_agents/smolvla/test_checkpoint_coverage.mojo

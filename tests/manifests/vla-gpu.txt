@@ -12,3 +12,7 @@ tests/nn/test_rope_vs_max_kernel.mojo
 
 # Step 3 — the text tower forward + vjp at real widths (GQA + RoPE + SwiGLU).
 tests/deep_agents/smolvla/test_text_forward_smoke.mojo
+
+# Step 4 — PixelShuffle (1024x768 -> 64x12288) vs an independent re-derivation
+# of the reference's five view/permute steps, plus bijection and adjoint.
+tests/nn/test_pixel_shuffle.mojo
