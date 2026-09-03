@@ -23,9 +23,11 @@ four byte counts `ptxas` actually printed for the k=6/9/10/12 park scenes —
 before any of this code existed.
 
 ⚠ THOSE FOUR NUMBERS PREDATE PN2c, which added `seg0_sh`/`seg1_sh` — `2 * NV`
-scalars. So the expectation is `recorded + 8*NV` bytes, and the test spells the
-delta out rather than folding it in: if someone adds another shared array, this
-arm fails and names the size, instead of the model failing to compile later.
+scalars — and F3b, which added `grad_sh` — `1 * NV`. So the expectation is
+`recorded + 12*NV` bytes, and the test spells the delta out rather than folding
+it in: if someone adds another shared array, this arm fails and names the size,
+instead of the model failing to compile later. (It did exactly that for
+`grad_sh`.)
 
 Run: pixi run mojo run -I . tests/physics3d/test_newton_shared_budget.mojo
 """
@@ -75,13 +77,16 @@ def main() raises:
     # ── A: the formula reproduces ptxas, to the byte ─────────────────────
     # (k, nv, njoint, the bytes ptxas reported BEFORE PN2c's two seg arrays)
     print("--- A: vs the four byte counts ptxas printed ---")
-    var seg_delta_42 = 8 * 42
-    var seg_delta_60 = 8 * 60
-    var seg_delta_66 = 8 * 66
-    var seg_delta_78 = 8 * 78
+    # PN2c's seg0/seg1 (2*NV) plus F3b's grad_sh (1*NV) = 3*NV scalars =
+    # 12*NV bytes. Spelled out, not folded in, so the NEXT array to arrive
+    # fails this arm and names its size instead of failing `ptxas` later.
+    var seg_delta_42 = 12 * 42
+    var seg_delta_60 = 12 * 60
+    var seg_delta_66 = 12 * 66
+    var seg_delta_78 = 12 * 78
     t.truth(_bytes[42, 12]() == 48372 + seg_delta_42,
             String("k=6  nv=42: ", _bytes[42, 12](), " == 48372 + ",
-                   seg_delta_42, " (ptxas + PN2c's 2*NV)"))
+                   seg_delta_42, " (ptxas + PN2c's 2*NV + F3b's grad_sh)"))
     t.truth(_bytes[60, 15]() == 86676 + seg_delta_60,
             String("k=9  nv=60: ", _bytes[60, 15](), " == 86676 + ",
                    seg_delta_60))

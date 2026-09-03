@@ -148,6 +148,7 @@ def newton_shared_elems[
 
         M_sh, H_sh, L_sh          3 * max(1, NV*NV)
         seg0_sh, seg1_sh          2 * max(1, NV)      (PN2c)
+        grad_sh                   1 * max(1, NV)      (F3b)
         Je_sh                     ME * max(1, NV), or 1 when spilled
         De/bias_e/force/kind_e/
         R_e/floss_e/state_e/
@@ -161,7 +162,8 @@ def newton_shared_elems[
     """
     return (
         3 * _max_one[NV * NV]()
-        + 6 * _max_one[NV]()
+        # 2 seg + 1 grad + search/Mv/qacc/qfrc
+        + 7 * _max_one[NV]()
         + (
             je_elems[
                 NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM

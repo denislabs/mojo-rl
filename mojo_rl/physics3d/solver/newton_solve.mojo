@@ -3687,6 +3687,15 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    # ⚠ SHARED, NOT PER-THREAD, BECAUSE THE SOLVE IS PER-BLOCK. `grad` was a
+    # tid-0 `Scratch` whose only readers were the norm and the Cholesky solve;
+    # once each thread solves a different diagonal block it needs the right-hand
+    # side, so the vector moves to threadgroup memory. Counted in
+    # `newton_shared_elems` — one term, `1 * NV`.
+    var grad_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
     var search_sh = LayoutTensor[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
@@ -3758,9 +3767,6 @@ def _newton_blocked_fields_kernel[
     )
     var jar = Scratch[Scalar[DTYPE], ME](
         ME, uninitialized=Scalar[DTYPE](0)
-    )
-    var grad = Scratch[Scalar[DTYPE], V_SIZE](
-        NV, uninitialized=Scalar[DTYPE](0)
     )
     var search = Scratch[Scalar[DTYPE], V_SIZE](
         NV, uninitialized=Scalar[DTYPE](0)
@@ -4387,8 +4393,9 @@ def _newton_blocked_fields_kernel[
         if valid_env and tid == 0:
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(NV):
-                grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
-                grad_norm += grad[i] * grad[i]
+                var g = Ma[i] - f_smooth[i] - qfrc[i]
+                grad_sh[i] = g
+                grad_norm += g * g
             # ⚠ NOT ON THE FIRST PASS — see the per-env twin. `mj_solPrimal`
             # tests `gradient` only after an update.
             if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
@@ -4446,24 +4453,40 @@ def _newton_blocked_fields_kernel[
             tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
         )
 
-        # --- Thread 0: Cholesky solve + negate search + publish ---
-        if valid_env and tid == 0:
-            # ⚠⚠ THE COPY IS GONE — THE SOLVE READS `L_sh` WHERE IT WAS
-            # WRITTEN. It used to land the factor in a per-thread
-            # `Scratch[NV*NV]` first, because `chol_solve_seg` took `Scratch`.
-            # That copy was `sum(bn^2)` scalars SERIAL ON THIS THREAD every
-            # Newton iteration — the same order as the solve it fed — and it
-            # also forced a 28 KB-per-thread local reservation at k=13, in the
-            # one kernel whose reason for existing is small per-thread local
-            # memory. `chol_solve_seg_p` takes address-space-parameterized
-            # pointers (the `noslip_pyramidal` pattern) so ONE body serves the
-            # per-thread `Scratch` callers and this SHARED one.
-            #
-            # SAFE because the solve READS `L` and writes only `x` and its own
-            # `y`, and because `_chol_factor_coop` above ends on a barrier —
-            # `L_sh` is complete and no thread writes it again before the
-            # barrier below.
+        # --- ALL threads: one DIAGONAL BLOCK each, Cholesky solve ---
+        #
+        # ⚠⚠ THE PARALLELISM AXIS CHANGED WHEN THE MATRIX DID, and this is the
+        # whole of F3b. `_chol_factor_coop` above parallelizes WITHIN a column
+        # (thread per row `i`), which is right for one dense `NV*NV` system and
+        # wrong for `1+k` independent 6-dof ones: the solve that consumed it ran
+        # `sum(bn^2)` scalars SERIAL ON TID 0, every Newton iteration, and
+        # measurement put that serial floor at 67% of the whole GPU excess at
+        # k=13. The blocks are INDEPENDENT SYSTEMS — the property this entire
+        # campaign established — so one block per THREAD costs `max(bn^2)`
+        # instead of `sum(bn^2)`, i.e. it stops scaling with the slot count.
+        #
+        # ⚠ BIT-EXACT, and for a duller reason than the factorisation's: the
+        # per-block solves were ALREADY separate calls over disjoint `[sp, se)`
+        # ranges, run back to back. This changes WHICH thread runs each call
+        # and nothing inside one. Each writes only `search_sh[sp:se]` and its
+        # own `y`; each reads `L_sh` and `grad_sh`, which no thread writes
+        # here. Disjoint ranges, so the concurrency is not a race.
+        #
+        # ⚠ THE WALK IS BY EVERY THREAD, THE SOLVE BY ONE. The segment list is
+        # a linked walk (`seg1_sh[sp]` names the next boundary), so a thread
+        # cannot jump to its b-th block — it walks all `1+k` boundaries and
+        # acts on the ones that are its own. That is `1+k` shared reads per
+        # thread against `bn^3` of solve, and it keeps ONE spelling of the walk.
+        #
+        # ⚠ `bidx % THREADS`, NOT `% COOP`. This is a partition of WORK across
+        # real threads, not a strided sweep: at `COOP < THREADS` two threads
+        # sharing a residue would solve the same block into the same slots.
+        # Same values, but `chol_solve_seg_p` reads `x[j]` back during back
+        # substitution, so a concurrent duplicate is a genuine race — unlike
+        # every pass `NEWTON_COOP_DIV` touches. See its note at `:307`.
+        if valid_env:
             var sp = 0
+            var bidx = 0
             while sp < NV:
                 var se = Int(rebind[Scalar[DTYPE]](seg1_sh[sp]))
                 # A malformed partition would hang this loop; `seg1 > sp` is
@@ -4471,16 +4494,19 @@ def _newton_blocked_fields_kernel[
                 # one dof) but a runaway is worse than a wrong answer.
                 if se <= sp:
                     se = NV
-                chol_solve_seg_p[DTYPE, V_SIZE, L_AS = AddressSpace.SHARED](
-                    L_sh.ptr, grad.unsafe_ptr(), search.unsafe_ptr(),
-                    NV, sp, se,
-                )
+                if bidx % THREADS == tid:
+                    chol_solve_seg_p[
+                        DTYPE, V_SIZE,
+                        L_AS = AddressSpace.SHARED,
+                        B_AS = AddressSpace.SHARED,
+                        X_AS = AddressSpace.SHARED,
+                    ](L_sh.ptr, grad_sh.ptr, search_sh.ptr, NV, sp, se)
+                    # Negate in place, over this block only. The publish is
+                    # gone with the copy: the solve wrote `search_sh` directly.
+                    for i in range(sp, se):
+                        search_sh[i] = -rebind[Scalar[DTYPE]](search_sh[i])
                 sp = se
-            for i in range(NV):
-                search[i] = -search[i]
-            # Publish search; Mv/Jv_e computed cooperatively below.
-            for i in range(NV):
-                search_sh[i] = search[i]
+                bidx += 1
 
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
@@ -4491,6 +4517,14 @@ def _newton_blocked_fields_kernel[
         if valid_env and tid == 0:
             for i in range(NV):
                 Mv[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
+                # ⚠ THE READ-BACK RIDES THIS LOOP RATHER THAN ADDING A BARRIER.
+                # `search` is now produced in shared memory by whichever thread
+                # owned each block, and the tid-0 tail below still needs it as a
+                # local (`gauss_a`, `snorm_sq`, the `qacc` update). This point is
+                # already past the barrier that publishes `search_sh`, and the
+                # cooperative matvec above consumed `search_sh` directly, so no
+                # reader is skipped and no new synchronisation is needed.
+                search[i] = rebind[Scalar[DTYPE]](search_sh[i])
             for e_idx in range(num_edges_b):
                 Jv_e[e_idx] = rebind[Scalar[DTYPE]](Jv_e_sh[e_idx])
 

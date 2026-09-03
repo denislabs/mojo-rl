@@ -70,7 +70,9 @@ from mojo_rl.physics3d.dynamics.rne import (
 from mojo_rl.physics3d.collision.contact_detection import (
     detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve import solve_newton
+from mojo_rl.physics3d.solver.newton_solve import (
+    solve_newton, solve_newton_blocked,
+)
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTREE,
@@ -215,7 +217,17 @@ def _prep[target: StaticString, D: DimsLike](
     detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
-def _validate[MODEL: ModelDefLike](
+def _validate[
+    MODEL: ModelDefLike,
+    # ⚠⚠ FORCE THE BLOCKED KERNEL, WHICH `solve_newton` WOULD NOT LAUNCH HERE.
+    # Its routing is `if has_nvidia_gpu_accelerator()` — a RUNTIME test, so the
+    # blocked kernel is COMPILED on Metal and simply never reached. That left a
+    # hole exactly where the block work lives: the only multi-tree model in the
+    # tree reached the blocked kernel on NVIDIA and nowhere else, so a change to
+    # its per-block code could only be gated on the 5090. Calling
+    # `solve_newton_blocked` directly closes it — Metal runs the same kernel.
+    FORCE_BLOCKED: Bool = False,
+](
     ctx: DeviceContext,
     name: String,
     torso_z: Float64,
@@ -297,7 +309,12 @@ def _validate[MODEL: ModelDefLike](
     _prep["gpu"](
         d_g, mf, sg, ctx
     )
-    solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)
+    comptime if FORCE_BLOCKED:
+        solve_newton_blocked[
+            "gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH
+        ](d_g, mf, sg, cg, ctx)
+    else:
+        solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)
 
     # CPU oracle (per-env).
     _prep["cpu"](
@@ -310,8 +327,10 @@ def _validate[MODEL: ModelDefLike](
     var ncon = 0
     for e in range(BATCH):
         ncon += Int(d_g.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
-    print("    contacts:", ncon, "(", "NVIDIA=blocked" if
-          has_nvidia_gpu_accelerator() else "Apple=per-env", ")")
+    print("    contacts:", ncon, "(",
+          "FORCED blocked" if FORCE_BLOCKED else
+          ("NVIDIA=blocked" if has_nvidia_gpu_accelerator()
+           else "Apple=per-env"), ")")
     if ncon == 0:
         print("    WARNING: 0 contacts (vacuous). Lower this model's torso_z\n"
               "    arg in main() by ~0.05 and re-run until contacts > 0.")
@@ -347,6 +366,18 @@ def main() raises:
     # `torso_z` is 0: the XML already places the bodies.
     all_ok = _validate[ThreeTreesModel](
         ctx, "ThreeTrees", 0.0, min_trees=3
+    ) and all_ok
+
+    # ── ⚠⚠ THE SAME MULTI-TREE MODEL, THROUGH THE BLOCKED KERNEL ITSELF.
+    # The arm above runs per-env on Apple, so on this machine it gates the
+    # partition but NOT the blocked kernel's per-block code — and F3b made that
+    # code thread-parallel (one diagonal block per thread). With three trees
+    # this is the arm where three threads solve three systems concurrently;
+    # every other blocked model in the tree is single-tree, where the loop
+    # degenerates to "thread 0 does block 0" and would pass whatever the
+    # mapping did.
+    all_ok = _validate[ThreeTreesModel, FORCE_BLOCKED=True](
+        ctx, "ThreeTrees/blocked", 0.0, min_trees=3
     ) and all_ok
 
     # ── Humanoid (free joint, NV=23) — the production blocked model ─────────
