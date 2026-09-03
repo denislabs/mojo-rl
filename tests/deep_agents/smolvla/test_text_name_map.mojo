@@ -28,12 +28,12 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.initializer import Deterministic
 from mojo_rl.nn.core.torch_names import TN_ZEROS
-from mojo_rl.deep_agents.smolvla.text import SmolLMTextTower
+from mojo_rl.deep_agents.smolvla.text import SmolVLMTextLayers
 from mojo_rl.deep_agents.smolvla.names import text_name_map, SMOLVLA_TEXT
 from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
 
-comptime SEQ = 8  # names do not depend on SEQ; keep the walk cheap
-comptime TOWER = SmolLMTextTower[SEQ]
+# names do not depend on any sequence length: this is a weight container
+comptime TOWER = SmolVLMTextLayers[]
 comptime N_FILE = 145      # layers.* + norm.weight  (embed_tokens is separate)
 comptime N_ZEROS = 112     # 7 bias Params per layer x 16
 comptime N_WALK = N_FILE + N_ZEROS

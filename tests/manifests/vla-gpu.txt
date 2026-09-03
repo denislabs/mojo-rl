@@ -10,9 +10,6 @@ tests/deep_agents/smolvla/test_vision_forward_smoke.mojo
 # and our own CPU/GPU parity. Needs a GPU because the reference kernel is one.
 tests/nn/test_rope_vs_max_kernel.mojo
 
-# Step 3 — the text tower forward + vjp at real widths (GQA + RoPE + SwiGLU).
-tests/deep_agents/smolvla/test_text_forward_smoke.mojo
-
 # Step 4 — PixelShuffle (1024x768 -> 64x12288) vs an independent re-derivation
 # of the reference's five view/permute steps, plus bijection and adjoint.
 tests/nn/test_pixel_shuffle.mojo
@@ -21,3 +18,8 @@ tests/nn/test_pixel_shuffle.mojo
 # scratch, the prefix surviving ten denoising steps unchanged, the unfilled-read
 # guard, and GPU/CPU parity of the sub-buffer copies.
 tests/deep_agents/smolvla/test_kv_cache.mojo
+
+# Step 6 — the prefill pass: 16 layers filling the KV cache. Checks the cache
+# CONTENTS (all layers written, all distinct, post-RoPE and pre-broadcast), not
+# just that it ran — every interesting failure here produces finite output.
+tests/deep_agents/smolvla/test_prefill.mojo

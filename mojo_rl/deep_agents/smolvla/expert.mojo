@@ -62,6 +62,7 @@ from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
+from .layer_weights import DecoderLayerWeights, DecoderMLP
 
 
 comptime EXPERT_W: Int = 720          # expert_width_multiplier 0.75 * 960
@@ -70,106 +71,6 @@ comptime EXPERT_LAYERS: Int = 16
 comptime EXPERT_SELF_EVERY: Int = 2   # self_attn_every_n_layers
 comptime VLM_W: Int = 960             # q/o meet the VLM here
 comptime VLM_KV_W: Int = 320          # 5 kv heads x 64
-
-
-struct ExpertMLP[W: Int, FF: Int](Movable):
-    """`down(silu(gate(x)) * up(x))` — three separate `Linear`s, as shipped."""
-
-    var gate: Linear[Self.W, Self.FF]
-    var up: Linear[Self.W, Self.FF]
-    var down: Linear[Self.FF, Self.W]
-
-    def __init__(out self):
-        self.gate = Linear[Self.W, Self.FF]()
-        self.up = Linear[Self.W, Self.FF]()
-        self.down = Linear[Self.FF, Self.W]()
-
-    def __init__(out self, *, deinit move: Self):
-        self.gate = move.gate^
-        self.up = move.up^
-        self.down = move.down^
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var m = Self()
-        m.gate = Linear[Self.W, Self.FF].make[target, INIT](ctx)
-        m.up = Linear[Self.W, Self.FF].make[target, INIT](ctx)
-        m.down = Linear[Self.FF, Self.W].make[target, INIT](ctx)
-        return m^
-
-    def walk[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut v: V, ctx: Optional[DeviceContext], prefix: String) raises:
-        self.gate.for_each_param[target](v, ctx, join_name(prefix, String("gate")))
-        self.up.for_each_param[target](v, ctx, join_name(prefix, String("up")))
-        self.down.for_each_param[target](v, ctx, join_name(prefix, String("down")))
-
-
-struct ExpertLayer[
-    W: Int, FF: Int, QW: Int, KVW: Int, KV_IN: Int
-](Movable):
-    """One expert layer. `KV_IN` is the only difference between the two kinds:
-    `W` (720) for a self-attention layer, `KVW` (320) for a cross-attention one,
-    which reads the VLM's cached K/V instead of its own stream."""
-
-    var input_layernorm: RMSNorm[Self.W]
-    var q: Linear[Self.W, Self.QW]
-    var k: Linear[Self.KV_IN, Self.KVW]
-    var v: Linear[Self.KV_IN, Self.KVW]
-    var o: Linear[Self.QW, Self.W]
-    var post_attention_layernorm: RMSNorm[Self.W]
-    var mlp: ExpertMLP[Self.W, Self.FF]
-
-    def __init__(out self):
-        self.input_layernorm = RMSNorm[Self.W]()
-        self.q = Linear[Self.W, Self.QW]()
-        self.k = Linear[Self.KV_IN, Self.KVW]()
-        self.v = Linear[Self.KV_IN, Self.KVW]()
-        self.o = Linear[Self.QW, Self.W]()
-        self.post_attention_layernorm = RMSNorm[Self.W]()
-        self.mlp = ExpertMLP[Self.W, Self.FF]()
-
-    def __init__(out self, *, deinit move: Self):
-        self.input_layernorm = move.input_layernorm^
-        self.q = move.q^
-        self.k = move.k^
-        self.v = move.v^
-        self.o = move.o^
-        self.post_attention_layernorm = move.post_attention_layernorm^
-        self.mlp = move.mlp^
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var l = Self()
-        l.input_layernorm = RMSNorm[Self.W].make[target, INIT](ctx)
-        l.q = Linear[Self.W, Self.QW].make[target, INIT](ctx)
-        l.k = Linear[Self.KV_IN, Self.KVW].make[target, INIT](ctx)
-        l.v = Linear[Self.KV_IN, Self.KVW].make[target, INIT](ctx)
-        l.o = Linear[Self.QW, Self.W].make[target, INIT](ctx)
-        l.post_attention_layernorm = RMSNorm[Self.W].make[target, INIT](ctx)
-        l.mlp = ExpertMLP[Self.W, Self.FF].make[target, INIT](ctx)
-        return l^
-
-    def walk[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut vis: V, ctx: Optional[DeviceContext],
-      prefix: String) raises:
-        self.input_layernorm.for_each_param[target](
-            vis, ctx, join_name(prefix, String("input_layernorm"))
-        )
-        var sa = join_name(prefix, String("self_attn"))
-        self.q.for_each_param[target](vis, ctx, join_name(sa, String("q")))
-        self.k.for_each_param[target](vis, ctx, join_name(sa, String("k")))
-        self.v.for_each_param[target](vis, ctx, join_name(sa, String("v")))
-        self.o.for_each_param[target](vis, ctx, join_name(sa, String("o")))
-        self.post_attention_layernorm.for_each_param[target](
-            vis, ctx, join_name(prefix, String("post_attention_layernorm"))
-        )
-        self.mlp.walk[target](vis, ctx, join_name(prefix, String("mlp")))
 
 
 struct SmolVLAExpert[
@@ -184,10 +85,10 @@ struct SmolVLAExpert[
 
     comptime N_SELF: Int = (Self.LAYERS + Self.SELF_EVERY - 1) // Self.SELF_EVERY
     comptime N_CROSS: Int = Self.LAYERS - Self.N_SELF
-    comptime SelfLayer = ExpertLayer[
+    comptime SelfLayer = DecoderLayerWeights[
         Self.W, Self.FF, Self.QW, Self.KVW, Self.W
     ]
-    comptime CrossLayer = ExpertLayer[
+    comptime CrossLayer = DecoderLayerWeights[
         Self.W, Self.FF, Self.QW, Self.KVW, Self.KVW
     ]
 

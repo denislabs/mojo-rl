@@ -133,13 +133,12 @@ def text_name_map[
     a `bias` Param — seven per layer. Left at their random initialisation the
     loaded model is a DIFFERENT FUNCTION from the published one, at a magnitude
     that reads as a numerical disagreement rather than as the missing tensors it
-    is. `TN_ZEROS` fills them and skips them on save; `theirs` is empty because
-    there is nothing on the other side to name. Exactly the torchvision ResNet18
-    conv-bias case this flag was introduced for.
+    is. `TN_ZEROS` fills them; `theirs` is empty because there is nothing on the
+    other side to name. The torchvision ResNet18 conv-bias case, again.
 
-    `ours` are relative to the tower's walk root (`SmolLMTextTower`), which
-    covers `layers.*` and the final `norm`. `embed_tokens`, `lm_head` and the
-    connector are separate modules and are mapped with them.
+    `ours` mirror the checkpoint's own indexing, matching `SmolVLMTextLayers`.
+    `embed_tokens`, `lm_head` and the connector are separate modules and are
+    mapped with them in `misc_name_map`.
     """
     var m = TorchNameMap()
     var T = SMOLVLA_TEXT
@@ -148,35 +147,33 @@ def text_name_map[
     var ff1: List[Int] = [FF]
 
     for i in range(LAYERS):
-        var o = String("0.") + String(i) + "."
+        var o = String("layers.") + String(i) + "."
         var t = T + "layers." + String(i) + "."
 
-        m.add(o + "0.0.0.0.gamma", t + "input_layernorm.weight", d1)
-        m.add_linear(o + "0.0.1.q.0.weight", t + "self_attn.q_proj.weight",
+        m.add(o + "input_layernorm.gamma", t + "input_layernorm.weight", d1)
+        m.add_linear(o + "self_attn.q.weight", t + "self_attn.q_proj.weight",
                      DIM, DIM)
-        m.add(o + "0.0.1.q.0.bias", String(""), d1, TN_ZEROS)
-        m.add_linear(o + "0.0.1.k.0.weight", t + "self_attn.k_proj.weight",
+        m.add(o + "self_attn.q.bias", String(""), d1, TN_ZEROS)
+        m.add_linear(o + "self_attn.k.weight", t + "self_attn.k_proj.weight",
                      KV_W, DIM)
-        m.add(o + "0.0.1.k.0.bias", String(""), kv1, TN_ZEROS)
-        m.add_linear(o + "0.0.1.v.0.weight", t + "self_attn.v_proj.weight",
+        m.add(o + "self_attn.k.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "self_attn.v.weight", t + "self_attn.v_proj.weight",
                      KV_W, DIM)
-        m.add(o + "0.0.1.v.0.bias", String(""), kv1, TN_ZEROS)
-        m.add_linear(o + "0.0.1.o.0.weight", t + "self_attn.o_proj.weight",
+        m.add(o + "self_attn.v.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "self_attn.o.weight", t + "self_attn.o_proj.weight",
                      DIM, DIM)
-        m.add(o + "0.0.1.o.0.bias", String(""), d1, TN_ZEROS)
+        m.add(o + "self_attn.o.bias", String(""), d1, TN_ZEROS)
 
-        m.add(o + "1.0.0.0.gamma", t + "post_attention_layernorm.weight", d1)
-        m.add_linear(o + "1.0.1.gate.0.weight", t + "mlp.gate_proj.weight",
-                     FF, DIM)
-        m.add(o + "1.0.1.gate.0.bias", String(""), ff1, TN_ZEROS)
-        m.add_linear(o + "1.0.1.up.0.weight", t + "mlp.up_proj.weight",
-                     FF, DIM)
-        m.add(o + "1.0.1.up.0.bias", String(""), ff1, TN_ZEROS)
-        m.add_linear(o + "1.0.1.down.0.weight", t + "mlp.down_proj.weight",
-                     DIM, FF)
-        m.add(o + "1.0.1.down.0.bias", String(""), d1, TN_ZEROS)
+        m.add(o + "post_attention_layernorm.gamma",
+              t + "post_attention_layernorm.weight", d1)
+        m.add_linear(o + "mlp.gate.weight", t + "mlp.gate_proj.weight", FF, DIM)
+        m.add(o + "mlp.gate.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "mlp.up.weight", t + "mlp.up_proj.weight", FF, DIM)
+        m.add(o + "mlp.up.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "mlp.down.weight", t + "mlp.down_proj.weight", DIM, FF)
+        m.add(o + "mlp.down.bias", String(""), d1, TN_ZEROS)
 
-    m.add(String("1.0.gamma"), T + "norm.weight", d1)
+    m.add(String("norm.gamma"), T + "norm.weight", d1)
     return m^
 
 
