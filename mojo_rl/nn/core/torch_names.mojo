@@ -278,6 +278,67 @@ struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
                 " weight would have been silently discarded"
             )
 
+    def unclaimed(self) -> List[String]:
+        """File tensors no entry of the map names.
+
+        The fifth way this goes wrong, and the only one `report` cannot see.
+        Its four counters are all model-side or map-side: a map that covers 400
+        of a file's 500 tensors has no `unmapped` parameter, names no `missing`
+        tensor, and loads plenty — so `report` passes and the other 100 weights
+        are silently never read. Coverage of the MODEL is not coverage of the
+        FILE, and for a port whose whole claim is "we load the published
+        weights" it is the file side that is being asserted.
+        """
+        var out = List[String]()
+        for i in range(len(self.file.names)):
+            ref n = self.file.names[i]
+            var seen = False
+            for j in range(self.map.size()):
+                if self.map.theirs[j] == n:
+                    seen = True
+                    break
+            if not seen:
+                out.append(String(n))
+        return out^
+
+    def report_exhaustive(self, what: String) raises:
+        """`report`, plus: every tensor in the file was claimed by the map.
+
+        Opt-in, because a prefix-scoped load is legitimately partial — the
+        torchvision ResNet18 file carries `fc.weight`/`fc.bias` that ACT's
+        backbone has no use for. Use this when the file is supposed to be
+        consumed WHOLE, and state the expected count so that a file which
+        silently changes shape under us fails here rather than downstream.
+        """
+        self.report(what)
+        var left = self.unclaimed()
+        if len(left) > 0:
+            raise Error(
+                what + ": " + String(len(left)) + " of the file's "
+                + String(len(self.file.names)) + " tensor(s) are named by no"
+                " map entry, first '" + left[0] + "' — those published weights"
+                " would never be read"
+            )
+
+    def report_exact(self, what: String, expect: Int) raises:
+        """`report_exhaustive`, and the file holds exactly `expect` tensors."""
+        if len(self.file.names) != expect:
+            raise Error(
+                what + ": expected a file of " + String(expect) + " tensors but"
+                " it holds " + String(len(self.file.names)) + " — this is not"
+                " the checkpoint this map was written against"
+            )
+        self.report_exhaustive(what)
+        # Non-vacuity: say what was actually covered, not merely that nothing
+        # complained. A silent pass and a pass over an empty walk read alike.
+        print(
+            "  " + what + ": " + String(len(self.loaded)) + " loaded + "
+            + String(len(self.zeroed)) + " zeroed = "
+            + String(len(self.loaded) + len(self.zeroed)) + " params from "
+            + String(len(self.file.names)) + "/" + String(expect)
+            + " file tensors, 0 unclaimed"
+        )
+
 
 struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
     """Collect one subtree into a `SafeTensorsWriter` under PyTorch names,
