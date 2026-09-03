@@ -35,3 +35,7 @@ tests/deep_agents/smolvla/test_expert_name_map.mojo
 # the three worked examples the reference documents, SmolVLA's own layout, and
 # the agreement of the prefill/denoise windows with the square mask.
 tests/deep_agents/smolvla/test_attn_mask.mojo
+
+# Step 7 — prefix/suffix assembly pieces: the sinusoidal time embedding against
+# a numpy transcription of openpi's, and the language gather's sqrt(DIM) scale.
+tests/deep_agents/smolvla/test_embed.mojo
