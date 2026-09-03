@@ -58,6 +58,14 @@ numpy = ">=1.26"
 # the same understanding the Mojo code encodes -- two parsers sharing one wrong
 # assumption is a gate that cannot see the assumption.
 safetensors = ">=0.4,<1"
+# The REFERENCE SmolVLM implementation, for gating the SmolVLA port's towers
+# (`tools/vla/dump_smolvla_reference.py`). Same argument as the line above, and
+# it is the argument that matters most here: every brick of the port is already
+# checked against an outside reference, but nothing yet checks that they are
+# WIRED TOGETHER right. A hand-rolled torch forward would share this port's
+# reading of the architecture and could not see a misreading; HuggingFace's own
+# SmolVLM can.
+transformers = ">=4.50"
 
 [feature.cpu.dependencies]
 # CPU-only environment for CI and headless test runs: base deps WITHOUT the
@@ -186,6 +194,7 @@ test-act-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/act-gpu.txt", 
 test-vla = { cmd = "bash scripts/run_tests.sh tests/manifests/vla.txt", description = "SmolVLA structural gates (name-map coverage; no weights, no network)" }
 test-vla-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-gpu.txt", description = "SmolVLA GPU smokes (vision tower forward/vjp at real shapes)" }
 test-vla-weights = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-weights.txt", description = "SmolVLA gates needing the published weights (~907 MB download, cached)" }
+test-vla-ref = { cmd = "pixi run -e act-ref python tools/vla/dump_smolvla_reference.py --out /tmp/vla_ref", description = "Dump SmolVLM reference activations for the SmolVLA parity gate" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
 # VALUE in an asset needs no regeneration; adding or removing an element does,

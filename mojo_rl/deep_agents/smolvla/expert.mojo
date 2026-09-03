@@ -62,7 +62,7 @@ from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
-from .layer_weights import DecoderLayerWeights, DecoderMLP
+from .layer_weights import DecoderLayerWeights, SmolNorm, DecoderMLP
 
 
 comptime EXPERT_W: Int = 720          # expert_width_multiplier 0.75 * 960
@@ -94,12 +94,12 @@ struct SmolVLAExpert[
 
     var self_layers: List[Self.SelfLayer]
     var cross_layers: List[Self.CrossLayer]
-    var norm: RMSNorm[Self.W]
+    var norm: SmolNorm[Self.W]
 
     def __init__(out self):
         self.self_layers = List[Self.SelfLayer]()
         self.cross_layers = List[Self.CrossLayer]()
-        self.norm = RMSNorm[Self.W]()
+        self.norm = SmolNorm[Self.W]()
 
     def __init__(out self, *, deinit move: Self):
         self.self_layers = move.self_layers^
@@ -121,7 +121,7 @@ struct SmolVLAExpert[
             e.self_layers.append(Self.SelfLayer.make[target, INIT](ctx))
         for _ in range(Self.N_CROSS):
             e.cross_layers.append(Self.CrossLayer.make[target, INIT](ctx))
-        e.norm = RMSNorm[Self.W].make[target, INIT](ctx)
+        e.norm = SmolNorm[Self.W].make[target, INIT](ctx)
         return e^
 
     def for_each_param[

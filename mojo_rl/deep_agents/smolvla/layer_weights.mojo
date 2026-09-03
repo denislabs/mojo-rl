@@ -36,6 +36,13 @@ from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
 
+comptime SMOLLM_RMS_EPS: Scalar[DT] = 1e-5
+"""⚠ SmolLM2's `rms_norm_eps`. `nn`'s `RMSNorm` defaults to **1e-4**, ten times
+larger — a real difference in the output that no shape or NaN check can see.
+Every norm in both towers is pinned to this."""
+
+comptime SmolNorm[D: Int] = RMSNorm[D, SMOLLM_RMS_EPS]
+
 
 struct DecoderMLP[W: Int, FF: Int](Movable):
     """`down(silu(gate(x)) * up(x))` — three separate `Linear`s, as shipped."""
@@ -79,21 +86,21 @@ struct DecoderLayerWeights[
     `W` (720) for a self-attention layer, `KVW` (320) for a cross-attention one,
     which reads the VLM's cached K/V instead of its own stream."""
 
-    var input_layernorm: RMSNorm[Self.W]
+    var input_layernorm: SmolNorm[Self.W]
     var q: Linear[Self.W, Self.QW]
     var k: Linear[Self.KV_IN, Self.KVW]
     var v: Linear[Self.KV_IN, Self.KVW]
     var o: Linear[Self.QW, Self.W]
-    var post_attention_layernorm: RMSNorm[Self.W]
+    var post_attention_layernorm: SmolNorm[Self.W]
     var mlp: DecoderMLP[Self.W, Self.FF]
 
     def __init__(out self):
-        self.input_layernorm = RMSNorm[Self.W]()
+        self.input_layernorm = SmolNorm[Self.W]()
         self.q = Linear[Self.W, Self.QW]()
         self.k = Linear[Self.KV_IN, Self.KVW]()
         self.v = Linear[Self.KV_IN, Self.KVW]()
         self.o = Linear[Self.QW, Self.W]()
-        self.post_attention_layernorm = RMSNorm[Self.W]()
+        self.post_attention_layernorm = SmolNorm[Self.W]()
         self.mlp = DecoderMLP[Self.W, Self.FF]()
 
     def __init__(out self, *, deinit move: Self):
@@ -110,12 +117,12 @@ struct DecoderLayerWeights[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var l = Self()
-        l.input_layernorm = RMSNorm[Self.W].make[target, INIT](ctx)
+        l.input_layernorm = SmolNorm[Self.W].make[target, INIT](ctx)
         l.q = Linear[Self.W, Self.QW].make[target, INIT](ctx)
         l.k = Linear[Self.KV_IN, Self.KVW].make[target, INIT](ctx)
         l.v = Linear[Self.KV_IN, Self.KVW].make[target, INIT](ctx)
         l.o = Linear[Self.QW, Self.W].make[target, INIT](ctx)
-        l.post_attention_layernorm = RMSNorm[Self.W].make[target, INIT](ctx)
+        l.post_attention_layernorm = SmolNorm[Self.W].make[target, INIT](ctx)
         l.mlp = DecoderMLP[Self.W, Self.FF].make[target, INIT](ctx)
         return l^
 

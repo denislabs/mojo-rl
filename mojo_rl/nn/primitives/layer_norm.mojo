@@ -37,6 +37,8 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime LN_EPS: Scalar[DT] = 1e-5
+"""Default epsilon. ⚠ SigLIP's vision tower uses `layer_norm_eps = 1e-6`; pass
+`LayerNorm[DIM, EPS=…]` rather than relying on this."""
 comptime LN_TPB: Int = 128
 # Reductions run in the accumulation dtype (f32 for bf16 inputs; identity for
 # DT=f32). ELEMS = per-thread feature slice; each thread reads its slice ONCE
@@ -254,7 +256,7 @@ def _layer_norm_backward_dparams_kernel[
         grad_beta[col] = rebind[Scalar[DT]](grad_beta[col]) + total_db[0]
 
 
-struct LayerNorm[DIM_: Int, ADT: DType = DT](Module):
+struct LayerNorm[DIM_: Int, ADT: DType = DT, EPS: Scalar[DT] = LN_EPS](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
@@ -345,7 +347,7 @@ struct LayerNorm[DIM_: Int, ADT: DType = DT](Module):
                         sv += diff * diff
                         d += 1
                     var var_v = sv * inv_dim
-                    var inv_std = Scalar[DT](1.0) / sqrt(var_v + LN_EPS)
+                    var inv_std = Scalar[DT](1.0) / sqrt(var_v + Self.EPS)
                     inv_v[b] = inv_std
                     var isv = SIMD[DT, W](inv_std)
                     d = 0

@@ -73,7 +73,12 @@ comptime SIGLIP_PATCH: Int = 16
 comptime SIGLIP_IMG: Int = 512
 comptime SIGLIP_GRID: Int = SIGLIP_IMG // SIGLIP_PATCH  # 32
 comptime SIGLIP_TOKENS: Int = SIGLIP_GRID * SIGLIP_GRID  # 1024
-comptime SIGLIP_EPS: Float64 = 1e-6
+comptime SIGLIP_EPS: Scalar[DT] = 1e-6
+"""⚠ SigLIP's `layer_norm_eps`. `nn`'s `LayerNorm` defaults to 1e-5, which is a
+different model — invisible to shapes and NaNs, visible in a parity check.
+`SigLIPLN` below pins it."""
+
+comptime SigLIPLN[D: Int] = LayerNorm[D, DT, SIGLIP_EPS]
 
 
 struct SigLIPAttention[SEQ: Int, DIM: Int, HEADS: Int](Module):
@@ -201,13 +206,13 @@ comptime SigLIPFFN[SEQ: Int, DIM: Int, FF: Int] = Sequential[
 comptime SigLIPLayer[SEQ: Int, DIM: Int, HEADS: Int, FF: Int] = Sequential[
     Residual[
         Sequential[
-            Tokenwise[SEQ, LayerNorm[DIM]],
+            Tokenwise[SEQ, SigLIPLN[DIM]],
             SigLIPAttention[SEQ, DIM, HEADS],
         ]
     ],
     Residual[
         Sequential[
-            Tokenwise[SEQ, LayerNorm[DIM]],
+            Tokenwise[SEQ, SigLIPLN[DIM]],
             SigLIPFFN[SEQ, DIM, FF],
         ]
     ],
@@ -246,5 +251,5 @@ comptime SigLIPVisionTower[
 ] = Sequential[
     SigLIPEmbeddings[IMG, PATCH, DIM, GRID, TOKENS],
     Repeat[LAYERS, SigLIPLayer[TOKENS, DIM, HEADS, FF]],
-    Tokenwise[TOKENS, LayerNorm[DIM]],
+    Tokenwise[TOKENS, SigLIPLN[DIM]],
 ]

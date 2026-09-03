@@ -35,7 +35,7 @@ from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
-from .layer_weights import DecoderLayerWeights
+from .layer_weights import DecoderLayerWeights, SmolNorm
 
 
 comptime SMOLLM_DIM: Int = 960
@@ -68,11 +68,11 @@ struct SmolVLMTextLayers[
     ]
 
     var layers: List[Self.Layer]
-    var norm: RMSNorm[Self.W]
+    var norm: SmolNorm[Self.W]
 
     def __init__(out self):
         self.layers = List[Self.Layer]()
-        self.norm = RMSNorm[Self.W]()
+        self.norm = SmolNorm[Self.W]()
 
     def __init__(out self, *, deinit move: Self):
         self.layers = move.layers^
@@ -85,7 +85,7 @@ struct SmolVLMTextLayers[
         var t = Self()
         for _ in range(Self.LAYERS):
             t.layers.append(Self.Layer.make[target, INIT](ctx))
-        t.norm = RMSNorm[Self.W].make[target, INIT](ctx)
+        t.norm = SmolNorm[Self.W].make[target, INIT](ctx)
         return t^
 
     def for_each_param[

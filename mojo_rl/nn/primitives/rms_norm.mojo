@@ -25,6 +25,10 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime RMS_EPS: Scalar[DT] = 1e-4
+"""Default epsilon. ⚠ It is NOT the value every model wants — SmolLM2 and Llama
+use `rms_norm_eps = 1e-5`, a factor of ten smaller, and the difference is
+visible in a parity check while being invisible to any shape or NaN test. Pass
+`RMSNorm[DIM, EPS=…]` rather than relying on this."""
 comptime RMS_TPB: Int = 128
 # Reductions run in the accumulation dtype (f32 for bf16 inputs; identity for
 # DT=f32). ELEMS = per-thread feature slice; each thread reads its slice ONCE
@@ -38,6 +42,7 @@ comptime RMS_REG_CAP = 8  # max per-thread slice (≈ DIM≤1024) to register-ca
 def _rms_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
+    EPS: Scalar[DT] = RMS_EPS,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -71,7 +76,7 @@ def _rms_norm_forward_kernel[
             * inv_dim
         )
         var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
-            mean2 + RMS_EPS.cast[RMS_ACC]()
+            mean2 + EPS.cast[RMS_ACC]()
         )
         if t == 0:
             cache_inv_rms[b] = inv_rms.cast[DT]()
@@ -94,7 +99,7 @@ def _rms_norm_forward_kernel[
             * inv_dim
         )
         var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
-            mean2 + RMS_EPS.cast[RMS_ACC]()
+            mean2 + EPS.cast[RMS_ACC]()
         )
         if t == 0:
             cache_inv_rms[b] = inv_rms.cast[DT]()
@@ -111,6 +116,7 @@ def _rms_norm_forward_kernel[
 def _rms_norm_backward_dx_kernel[
     BATCH: Int,
     DIM: Int,
+    EPS: Scalar[DT] = RMS_EPS,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
@@ -195,7 +201,7 @@ def _rms_norm_backward_dgamma_kernel[
         grad_gamma[col] = rebind[Scalar[DT]](grad_gamma[col]) + total_dg[0]
 
 
-struct RMSNorm[DIM_: Int](Module):
+struct RMSNorm[DIM_: Int, EPS: Scalar[DT] = RMS_EPS](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
@@ -255,7 +261,7 @@ struct RMSNorm[DIM_: Int](Module):
                     sumsq += x * x
                     d += 1
                 var mean2 = sumsq * inv_dim
-                var inv_rms = Scalar[DT](1.0) / sqrt(mean2 + RMS_EPS)
+                var inv_rms = Scalar[DT](1.0) / sqrt(mean2 + Self.EPS)
                 inv_v[b] = inv_rms
                 var irv = SIMD[DT, W](inv_rms)
                 d = 0
@@ -277,7 +283,7 @@ struct RMSNorm[DIM_: Int](Module):
             comptime l2d = Layout.row_major(B, Self.DIM_)
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
-            c.enqueue_function[_rms_norm_forward_kernel[B, Self.DIM_]](
+            c.enqueue_function[_rms_norm_forward_kernel[B, Self.DIM_, Self.EPS]](
                 in0.lt["gpu", l2d](),
                 out.lt["gpu", l2d](),
                 self.gamma.val.lt["gpu", ld](),
@@ -362,7 +368,7 @@ struct RMSNorm[DIM_: Int](Module):
             comptime l2d = Layout.row_major(B, Self.DIM_)
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
-            c.enqueue_function[_rms_norm_backward_dx_kernel[B, Self.DIM_]](
+            c.enqueue_function[_rms_norm_backward_dx_kernel[B, Self.DIM_, Self.EPS]](
                 grad_output.lt["gpu", l2d](),
                 self.gamma.val.lt["gpu", ld](),
                 self.cache_norm.lt["gpu", l2d](),
