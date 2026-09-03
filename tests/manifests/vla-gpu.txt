@@ -31,3 +31,8 @@ tests/deep_agents/smolvla/test_block_attention.mojo
 # cache is bit-identical after ten steps and that repeated steps do not drift:
 # the crop bug does not crash, it quietly changes the chunk.
 tests/deep_agents/smolvla/test_denoise.mojo
+
+# Step 7 — the flow-matching Euler schedule, pinned analytically: with a constant
+# velocity the integral is exactly -c, which catches a flipped dt, a wrong step
+# count and a wrong magnitude at once. Plus the per-token concat.
+tests/deep_agents/smolvla/test_flow.mojo
