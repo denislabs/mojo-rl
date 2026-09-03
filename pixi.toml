@@ -183,6 +183,8 @@ test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.
 # each gate is a file we write and cannot judge ourselves.
 test-interop = { cmd = "bash scripts/run_tests.sh tests/manifests/interop.txt", description = "safetensors / torch-name interop gates (needs the dumps in tests/manifests/interop.txt)" }
 test-act-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/act-gpu.txt", description = "ACT GPU-vs-CPU gates (use -e apple|nvidia)" }
+test-vla = { cmd = "bash scripts/run_tests.sh tests/manifests/vla.txt", description = "SmolVLA structural gates (name-map coverage; no weights, no network)" }
+test-vla-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-gpu.txt", description = "SmolVLA GPU smokes (vision tower forward/vjp at real shapes)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
 # VALUE in an asset needs no regeneration; adding or removing an element does,

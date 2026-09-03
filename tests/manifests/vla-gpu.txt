@@ -1,0 +1,11 @@
+# SmolVLA manifest (GPU) — `pixi run -e apple test-vla-gpu` (or -e nvidia)
+#
+# The companion to `vla.txt`: a name map over a module tree that cannot execute
+# proves very little, so these construct the real shapes and run them.
+
+# Step 2 — the vision tower forward + vjp at 512x512 -> 1024 x 768.
+tests/deep_agents/smolvla/test_vision_forward_smoke.mojo
+
+# Step 3 — the RoPE leaf vs MAX's shipped `rope_ragged`, the adjoint identity,
+# and our own CPU/GPU parity. Needs a GPU because the reference kernel is one.
+tests/nn/test_rope_vs_max_kernel.mojo

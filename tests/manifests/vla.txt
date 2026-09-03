@@ -1,0 +1,13 @@
+# SmolVLA manifest (CPU) — `pixi run test-vla`
+#
+# Structural gates for the SmolVLA port. These read
+# `tools/vla/smolvla_base_manifest.tsv` — the 500-tensor checklist fetched by
+# two HTTP Range requests — and NOT the 906,712,520-byte weight file, so they
+# need neither the network nor a download and belong in ordinary CI.
+#
+# ⚠ They gate STRUCTURE, not numbers: that the port names every published
+# tensor, with the right shape, in both directions. Numerical parity against
+# `lerobot` in Python is a separate, later gate that does need the weights.
+
+# Step 2 — the SigLIP vision tower's 197 tensors, ours <-> theirs, both ways.
+tests/deep_agents/smolvla/test_vision_name_map.mojo
