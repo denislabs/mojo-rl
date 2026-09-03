@@ -73,6 +73,34 @@ echo "=== building once ($PROBE) ==="
 mojo build -I . -o "$BIN" "$PROBE" || { echo "!! build failed"; exit 1; }
 echo "  -> $BIN"
 
+# ⚠⚠ THE BUILD FINGERPRINT, AND IT EXISTS BECAUSE A WHOLE SWEEP WAS ONCE VOID
+# WITHOUT ONE LINE SAYING SO. A `git checkout dev` on a box whose `dev` had
+# never been pulled produced a BYTE-IDENTICAL binary to the baseline, so the
+# "after" sweep re-measured the "before" code: every kernel came back at ratio
+# 1.00, every control was perfect, and the run looked like a clean negative
+# result instead of the no-op it was. `mojo build` is deterministic, so the
+# md5 of the binary is the honest answer to "did the code under test change?"
+# — stronger than the commit, which can be right while the tree is dirty, and
+# stronger than the source, which can be right while the build is stale.
+#
+# Compare it ACROSS `OUT=` directories before believing any A/B:
+#     md5sum p0_before/park_attrib_probe p0_after/park_attrib_probe
+# Equal hashes mean the two arms are the same program and the delta is noise
+# BY CONSTRUCTION.
+{
+  echo "binary_md5   $( (md5sum "$BIN" 2>/dev/null || md5 -q "$BIN") | awk '{print $1}')"
+  echo "git_head     $(git rev-parse HEAD 2>/dev/null || echo '(not a git tree)')"
+  echo "git_describe $(git describe --always --dirty 2>/dev/null || echo '-')"
+  echo "git_dirty"
+  git status --porcelain 2>/dev/null | sed 's/^/  /' | head -40
+} > "$OUT/BUILD.txt"
+echo "--- build fingerprint (also in $OUT/BUILD.txt) ---"
+sed -n '1,3p' "$OUT/BUILD.txt"
+if git rev-parse HEAD >/dev/null 2>&1 && ! git diff --quiet HEAD -- mojo_rl scripts tests 2>/dev/null; then
+  echo "  !! the tree is DIRTY under mojo_rl/scripts/tests — the commit above does"
+  echo "     NOT identify what was built. The md5 still does."
+fi
+
 # ⚠ 12 AND 13 EXIST BECAUSE P4 MADE THEM COMPILE, AND THEY CROSS THE `Je`
 # SPILL BOUNDARY: k<=9 keeps `Je` in threadgroup memory, k>=10 re-reads it from
 # global every Newton iteration. Do not draw one `x k=0` curve across that —
