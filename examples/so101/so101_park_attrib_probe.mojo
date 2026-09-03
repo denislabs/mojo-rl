@@ -74,7 +74,21 @@ from mojo_rl.envs.robots.so101_park_xml import (
 # would make the two tables incomparable, and the whole point of this one is to
 # decompose that one's rows.
 comptime N_ENVS = 1024
-comptime WARMUP_STEPS = 50
+# ⚠⚠ 200, NOT THE BUDGET PROBE'S 50, AND IT FIXES TWO THINGS AT ONCE.
+# `nsys` averages a kernel over EVERY launch — the warmup included — while
+# `probe wall` covers only the timed region. If the GPU is still ramping its
+# clocks during warmup, the per-launch average is inflated by launches the wall
+# time never saw, and the attribution comes out with GPU total ABOVE wall time:
+# a NEGATIVE residual, which is arithmetically impossible for a sound
+# measurement. That is exactly what a 2026-09-03 sweep produced — residuals of
+# -0.05 to -4.64 ms where every earlier run was within -0.4, and every kernel
+# the run did not touch inflated 12-85%.
+#
+# More warmup helps both halves: the timed region starts at settled clocks, AND
+# the fixed ramp becomes a smaller fraction of the launches the average is
+# taken over. `scripts/p0_attrib.py` now FAILS on a negative residual rather
+# than printing a table that looks fine.
+comptime WARMUP_STEPS = 200
 comptime TIMED_STEPS = 300
 
 comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]

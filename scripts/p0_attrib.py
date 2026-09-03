@@ -452,6 +452,34 @@ def main():
           + "".join(f"{probes[k]['ms_per_step']-tot[k]:>12.3f}" for k in ks)
           + "   <- gaps/host if +, a WRONG DIVISOR if -")
 
+    # ── ⚠⚠ THE VALIDITY GATE. A NEGATIVE residual means the summed per-launch
+    # GPU time EXCEEDS the wall clock, which cannot happen in a sound
+    # measurement: `nsys` averages over every launch including the WARMUP,
+    # while the wall covers only the timed region, so a GPU still ramping its
+    # clocks during warmup inflates the average past what the wall ever saw.
+    #
+    # It is not hypothetical. A 2026-09-03 sweep printed residuals of -0.05 to
+    # -4.64 ms where every earlier run was within -0.4, `collision`'s
+    # `d/dnv^2` came out NEGATIVE on a term that is flat in nv, and every
+    # untouched kernel inflated 12-85%. The table looked entirely normal and
+    # nothing failed; the run was spotted by eye. A tolerance of 2% separates
+    # every good run seen so far (within -1.1%) from that one (-7 to -12%).
+    bad = [(k, probes[k]["ms_per_step"] - tot[k]) for k in ks
+           if probes[k]["ms_per_step"] - tot[k] < -0.02 * probes[k]["ms_per_step"]]
+    if bad:
+        print()
+        print("  " + "!" * 66)
+        print("  !! THIS SWEEP IS NOT DECIDABLE. GPU kernel time exceeds the")
+        print("  !! wall clock by more than 2% at:", ", ".join(
+            f"k={k} ({100*r/probes[k]['ms_per_step']:+.1f}%)" for k, r in bad))
+        print("  !!")
+        print("  !! The per-launch averages include WARMUP launches the wall")
+        print("  !! time never saw. Raise WARMUP_STEPS in the probe, or profile")
+        print("  !! only the timed region, and re-run. Compare terms ACROSS")
+        print("  !! runs only after this is clean — every untouched kernel")
+        print("  !! moves together when it is not.")
+        print("  " + "!" * 66)
+
     # ── split the ldl pair, if it collided ────────────────────────────────
     print("\n=== splitting dynamics/ldl.mojo by launch order ===")
     print("  (ldl_factor, compute_m_inv and ldl_solve share one "
@@ -479,8 +507,13 @@ def main():
             for n in names:
                 print(f"        {n}")
 
+    return 1 if bad else 0
+
 
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
         sys.exit(1 if self_test() else 0)
-    main()
+    # ⚠ THE TABLE IS PRINTED EITHER WAY — an undecidable sweep is still worth
+    # looking at, it is just not worth QUOTING. The exit code is what stops it
+    # being pasted into a doc.
+    sys.exit(main() or 0)
