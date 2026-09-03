@@ -27,6 +27,7 @@ So NV became the runtime `nv` and the comptime parameters that remain
 """
 
 from std.math import sqrt
+from max.gpu.memory import AddressSpace
 from ..fields.scratch import Scratch
 
 # MuJoCo's `mjMINVAL` (`mjmodel.h`), which is what `mj_solNewton` passes as
@@ -239,8 +240,10 @@ def chol_solve_inline[
     M_CAP: Int,
     V_CAP: Int,
 ](
-    L: Scratch[Scalar[DTYPE], M_CAP],
-    b: Scratch[Scalar[DTYPE], V_CAP],
+    # `mut` for the same reason as `chol_solve_seg` below — taking a pointer
+    # out of a `Scratch` needs a mutable borrow; neither is written.
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    mut b: Scratch[Scalar[DTYPE], V_CAP],
     mut x: Scratch[Scalar[DTYPE], V_CAP],
     nv: Int,
 ):
@@ -262,9 +265,46 @@ def chol_solve_seg[
     M_CAP: Int,
     V_CAP: Int,
 ](
-    L: Scratch[Scalar[DTYPE], M_CAP],
-    b: Scratch[Scalar[DTYPE], V_CAP],
+    # ⚠ `mut` ON `L` AND `b`, WHICH ARE READ-ONLY TO THE ALGORITHM. `Scratch`
+    # hands out a pointer only through `unsafe_ptr[SO: MutOrigin](ref [SO]
+    # self)`, so taking the address at all requires a mutable borrow. The body
+    # below never writes through either — see its docstring.
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    mut b: Scratch[Scalar[DTYPE], V_CAP],
     mut x: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
+    s0: Int,
+    s1: Int,
+):
+    """`Scratch` adapter over `chol_solve_seg_p` — see it for the algorithm.
+
+    Every per-thread caller (the per-env solvers, `chol_solve_inline`, the
+    tests) holds its operands as `Scratch`, so this spelling stays. It owns no
+    arithmetic: it takes the three pointers and delegates.
+    """
+    chol_solve_seg_p[DTYPE, V_CAP](
+        L.unsafe_ptr(), b.unsafe_ptr(), x.unsafe_ptr(), nv, s0, s1
+    )
+
+
+@always_inline
+def chol_solve_seg_p[
+    LO: MutOrigin,
+    BO: MutOrigin,
+    XO: MutOrigin, //,
+    DTYPE: DType,
+    V_CAP: Int,
+    # GENERIC is the per-thread caller (`Scratch`, via the adapter above). The
+    # blocked Newton kernel passes `L_sh.ptr` — SHARED — so the factor is read
+    # WHERE IT WAS WRITTEN and there is no copy. See `noslip_pyramidal`, which
+    # takes its row storage the same way and for the same reason.
+    L_AS: AddressSpace = AddressSpace.GENERIC,
+    B_AS: AddressSpace = AddressSpace.GENERIC,
+    X_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    L: Pointer[Scalar[DTYPE], LO, address_space=L_AS],
+    b: Pointer[Scalar[DTYPE], BO, address_space=B_AS],
+    x: Pointer[Scalar[DTYPE], XO, address_space=X_AS],
     nv: Int,
     s0: Int,
     s1: Int,
@@ -278,6 +318,13 @@ def chol_solve_seg[
     exact-zero argument as the factorisation. Entries of `x` outside every
     segment are never written, and with a partition that tiles `[0, nv)` there
     are none.
+
+    ⚠ IT READS `L` AND WRITES ONLY `x` (and its own `y`), which is what lets
+    the blocked kernel hand it SHARED memory that other threads are also
+    reading. A caller that runs several segments CONCURRENTLY is therefore
+    safe iff the segments are disjoint — they are, by construction — but it
+    must still barrier before the first call, because `L` is only complete
+    after the cooperative factorisation's last barrier.
     """
     # Forward substitution: L*y = b
     var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))

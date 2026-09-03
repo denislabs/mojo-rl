@@ -81,6 +81,7 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
+    chol_solve_seg_p,
 )
 from .newton_blocks import build_dof_segments
 
@@ -4447,17 +4448,21 @@ def _newton_blocked_fields_kernel[
 
         # --- Thread 0: Cholesky solve + negate search + publish ---
         if valid_env and tid == 0:
-            var L_chol = Scratch[Scalar[DTYPE], M_SIZE](
-                NV * NV, uninitialized=Scalar[DTYPE](0)
-            )
-            # ⚠⚠ COPIED AND SOLVED PER BLOCK, AND THE COPY MATTERS AS MUCH AS
-            # THE FACTOR. Both were O(NV^2) SERIAL ON THIS THREAD — 3,600
-            # scalars each at nv=60 — so segmenting only the factorisation
-            # would leave the copy as the new bottleneck. `chol_solve_seg`
-            # reads `L_chol` strictly inside `[s0, s1)`, so the entries outside
-            # every block are never read and are deliberately left
-            # uninitialised rather than zeroed, which would cost the O(NV^2)
-            # back.
+            # ⚠⚠ THE COPY IS GONE — THE SOLVE READS `L_sh` WHERE IT WAS
+            # WRITTEN. It used to land the factor in a per-thread
+            # `Scratch[NV*NV]` first, because `chol_solve_seg` took `Scratch`.
+            # That copy was `sum(bn^2)` scalars SERIAL ON THIS THREAD every
+            # Newton iteration — the same order as the solve it fed — and it
+            # also forced a 28 KB-per-thread local reservation at k=13, in the
+            # one kernel whose reason for existing is small per-thread local
+            # memory. `chol_solve_seg_p` takes address-space-parameterized
+            # pointers (the `noslip_pyramidal` pattern) so ONE body serves the
+            # per-thread `Scratch` callers and this SHARED one.
+            #
+            # SAFE because the solve READS `L` and writes only `x` and its own
+            # `y`, and because `_chol_factor_coop` above ends on a barrier —
+            # `L_sh` is complete and no thread writes it again before the
+            # barrier below.
             var sp = 0
             while sp < NV:
                 var se = Int(rebind[Scalar[DTYPE]](seg1_sh[sp]))
@@ -4466,13 +4471,9 @@ def _newton_blocked_fields_kernel[
                 # one dof) but a runaway is worse than a wrong answer.
                 if se <= sp:
                     se = NV
-                for i in range(sp, se):
-                    for j in range(sp, se):
-                        L_chol[i * NV + j] = rebind[Scalar[DTYPE]](
-                            L_sh[i * NV + j]
-                        )
-                chol_solve_seg[DTYPE, M_SIZE, V_SIZE](
-                    L_chol, grad, search, NV, sp, se
+                chol_solve_seg_p[DTYPE, V_SIZE, L_AS = AddressSpace.SHARED](
+                    L_sh.ptr, grad.unsafe_ptr(), search.unsafe_ptr(),
+                    NV, sp, se,
                 )
                 sp = se
             for i in range(NV):
