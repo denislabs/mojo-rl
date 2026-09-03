@@ -36,3 +36,8 @@ tests/deep_agents/smolvla/test_denoise.mojo
 # velocity the integral is exactly -c, which catches a flipped dt, a wrong step
 # count and a wrong magnitude at once. Plus the per-token concat.
 tests/deep_agents/smolvla/test_flow.mojo
+
+# Step 7 — the whole V1 inference path: prefill, then ten Euler steps to an
+# action chunk. Asserts the output MOVED off the noise, that ten steps differ
+# from one, and that a rerun reproduces exactly (no state mutated between calls).
+tests/deep_agents/smolvla/test_sample_actions.mojo

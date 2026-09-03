@@ -33,11 +33,15 @@ heads DO ship a bias. Getting that backwards zeroes a real, trained bias.
 from mojo_rl.nn.combinators.tokenwise import Tokenwise
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.embedding import Embedding
+from .expert import EXPERT_W
 
 
 comptime SMOLVLA_STATE_DIM: Int = 32   # max_state_dim — padded, not the robot
 comptime SMOLVLA_ACTION_DIM: Int = 32  # max_action_dim
-comptime SMOLVLA_EXPERT_W: Int = 720
+# ⚠ ONE definition of the expert width. Mojo does not unify two comptime
+# expressions with the same value, so a second `= 720` here would make
+# `Linear[…, SMOLVLA_EXPERT_W]` fail to bind against `Linear[…, EXPERT_W]`.
+comptime SMOLVLA_EXPERT_W: Int = EXPERT_W
 comptime SMOLVLA_CONNECTOR_IN: Int = 12288  # 768 * scale_factor^2
 
 

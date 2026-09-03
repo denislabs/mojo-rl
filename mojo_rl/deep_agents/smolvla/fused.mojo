@@ -295,6 +295,10 @@ struct SmolVLADenoise[
     HD: Int = SMOLLM_HEAD_DIM,
     THETA: Float64 = SMOLLM_THETA,
     SELF_EVERY: Int = 2,
+    # A parameter, not `N_KV * HD`: Mojo does not unify `5 * (960 // 15)` with
+    # the same value written another way, so every container in the loop must
+    # name the SAME comptime expression. `SMOLLM_KV_W` is that one definition.
+    KVW: Int = SMOLLM_KV_W,
 ](Movable):
     """One denoising step: the 50-token action suffix through the 16 expert
     layers, reading the prefix K/V the prefill left behind.
@@ -323,7 +327,6 @@ struct SmolVLADenoise[
     """
 
     comptime REP: Int = Self.HEADS // Self.N_KV
-    comptime KVW: Int = Self.N_KV * Self.HD
     comptime FULL: Int = Self.P + Self.S
     comptime XN: Int = Self.S * Self.EW      # the suffix stream, 720 wide
     comptime QN: Int = Self.S * Self.W       # queries, in the VLM's 960 geometry
