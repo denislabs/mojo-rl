@@ -150,15 +150,23 @@ def main() raises:
 
     var lhs = Float64(0)
     var rhs = Float64(0)
+    var scale = Float64(0)
     for i in range(N):
-        lhs += Float64(ours.data[i]) * Float64(y.data[i])
+        var p = Float64(ours.data[i]) * Float64(y.data[i])
+        lhs += p
+        scale += abs(p)
         rhs += Float64(xin.data[i]) * Float64(gi.data[i])
-    var rel = abs(lhs - rhs) / (abs(lhs) + 1e-12)
+    # ⚠ Normalised by the sum of |terms|, not by |lhs|: these inner products
+    # cancel, and dividing by the cancelled result measures the cancellation
+    # rather than the vjp. See `test_repeat_kv_heads.mojo`, where the same
+    # identity reports 4e-7 against |lhs| and 6e-10 against sum|terms| for a
+    # gap that is exactly fp32 epsilon.
+    var rel = abs(lhs - rhs) / (scale + 1e-12)
     print("  [2] adjoint: <RoPE(x),y> =", lhs, " <x,vjp(y)> =", rhs,
-          " rel =", rel)
+          " sum|terms| =", scale, " rel =", rel)
     assert_true(abs(lhs) > 1e-6, "degenerate: the inner product is ~0, so the"
                                  " identity would hold vacuously")
-    assert_true(rel < 1e-6, "backward is not the adjoint of forward")
+    assert_true(rel < 1e-8, "backward is not the adjoint of forward")
 
     # ── [3] our GPU path == our CPU path ─────────────────────────────────
     # The GPU kernel is separate code from the CPU loop; checks [1] and [2]
