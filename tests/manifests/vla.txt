@@ -25,3 +25,8 @@ tests/deep_agents/smolvla/test_text_name_map.mojo
 # nothing double-claimed. The consolidated gate is what catches a tensor named
 # by two maps, which a per-component gate cannot see.
 tests/deep_agents/smolvla/test_checkpoint_coverage.mojo
+
+# Step 5/6 — the action expert's 145 tensors, and the layer parity that gives
+# the two kinds away (even k=[320,720] self, odd k=[320,320] cross). With this
+# the consolidated gate above reaches 500/500.
+tests/deep_agents/smolvla/test_expert_name_map.mojo

@@ -21,7 +21,7 @@ from std.testing import assert_true, assert_equal
 
 from mojo_rl.nn.core.torch_names import TorchNameMap, TN_ZEROS
 from mojo_rl.deep_agents.smolvla.names import (
-    vision_name_map, text_name_map, misc_name_map,
+    vision_name_map, text_name_map, misc_name_map, expert_name_map,
 )
 from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
 
@@ -29,9 +29,8 @@ comptime N_TOTAL = 500
 comptime N_VISION = 197
 comptime N_TEXT = 145
 comptime N_MISC = 13
-comptime N_CLAIMED = N_VISION + N_TEXT + N_MISC     # 355
-comptime N_EXPERT = 145                              # still to port
-comptime EXPERT_PREFIX = String("model.vlm_with_expert.lm_expert.")
+comptime N_EXPERT = 145
+comptime N_CLAIMED = N_VISION + N_TEXT + N_MISC + N_EXPERT   # 500
 
 
 def _claim(
@@ -82,40 +81,30 @@ def main() raises:
     var nv = _claim(owner, man, vm, 1, String("vision"))
     var nt = _claim(owner, man, tm, 2, String("text  "))
     var nm = _claim(owner, man, mm, 3, String("misc  "))
+    var em = expert_name_map()
+    var ne = _claim(owner, man, em, 4, String("expert"))
     assert_equal(nv, N_VISION, "vision should claim 197")
     assert_equal(nt, N_TEXT, "text should claim 145")
     assert_equal(nm, N_MISC, "misc should claim 13")
+    assert_equal(ne, N_EXPERT, "expert should claim 145")
 
     var claimed = 0
-    var unclaimed = 0
-    var expert = 0
     var other = List[String]()
     for i in range(man.size()):
         if owner[i] != 0:
             claimed += 1
-            continue
-        unclaimed += 1
-        if man.names[i].startswith(EXPERT_PREFIX):
-            expert += 1
         else:
             other.append(String(man.names[i]))
 
     print()
     print("  claimed        ", claimed, "/", N_TOTAL)
-    print("  unclaimed      ", unclaimed, " of which action expert:", expert)
-    assert_equal(claimed, N_CLAIMED, "expected 355 claimed")
-    assert_equal(expert, N_EXPERT, "expected the 145 expert tensors to be the"
-                                   " remainder")
-
-    # Anything unclaimed that is NOT the expert is an unaccounted-for tensor —
-    # the failure this gate exists to make impossible to overlook.
     if len(other) > 0:
         for i in range(len(other)):
             print("  UNACCOUNTED:", other[i])
-    assert_true(len(other) == 0, String(len(other)) + " unclaimed tensor(s)"
-                " outside the action expert — the remaining work is not just"
-                " the expert")
+    assert_true(len(other) == 0, String(len(other)) + " checkpoint tensor(s)"
+                " are claimed by no map")
+    assert_equal(claimed, N_CLAIMED, "expected all 500 claimed")
 
     print()
-    print("PASSED —", claimed, "of", N_TOTAL, "claimed, 0 double-claimed;")
-    print("         the remaining", expert, "are exactly the action expert")
+    print("PASSED — every one of", N_TOTAL, "checkpoint tensors is claimed")
+    print("         exactly once, with its shape checked")

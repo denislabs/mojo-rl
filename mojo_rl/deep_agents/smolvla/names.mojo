@@ -40,6 +40,9 @@ from mojo_rl.nn.core.torch_names import (
 from .vision import (
     SIGLIP_DIM, SIGLIP_FF, SIGLIP_LAYERS, SIGLIP_PATCH, SIGLIP_TOKENS,
 )
+from .expert import (
+    EXPERT_W, EXPERT_FF, EXPERT_LAYERS, EXPERT_SELF_EVERY, VLM_W, VLM_KV_W,
+)
 from .text import (
     SMOLLM_DIM, SMOLLM_FF, SMOLLM_HEAD_DIM, SMOLLM_KV_HEADS, SMOLLM_LAYERS,
 )
@@ -48,6 +51,7 @@ from .text import (
 comptime SMOLVLA_VLM = String("model.vlm_with_expert.vlm.")
 comptime SMOLVLA_VISION = SMOLVLA_VLM + "model.vision_model."
 comptime SMOLVLA_TEXT = SMOLVLA_VLM + "model.text_model."
+comptime SMOLVLA_EXPERT = String("model.vlm_with_expert.lm_expert.")
 
 
 def vision_name_map[
@@ -239,4 +243,65 @@ def misc_name_map[
     m.add_linear(String("time_mlp_out.weight"),
                  R + "action_time_mlp_out.weight", W, W)
     m.add(String("time_mlp_out.bias"), R + "action_time_mlp_out.bias", w1)
+    return m^
+
+
+def expert_name_map[
+    W: Int = EXPERT_W,
+    FF: Int = EXPERT_FF,
+    LAYERS: Int = EXPERT_LAYERS,
+    QW: Int = VLM_W,
+    KVW: Int = VLM_KV_W,
+    SELF_EVERY: Int = EXPERT_SELF_EVERY,
+]() raises -> TorchNameMap:
+    """The action expert: 145 checkpoint tensors + 112 zero-filled biases.
+
+    ⚠ **k and v change shape with the layer's parity.** Even layers project
+    their own 720-wide stream (`Linear[720 -> 320]`); odd layers project the
+    VLM's cached 320-wide K/V (`Linear[320 -> 320]`). Both produce a 320-wide
+    result, so a map that used one rule everywhere would be right about the
+    OUTPUT shape and wrong about the input on half the layers — and the shape
+    check in `LoadTorchNamed` is what would catch it, which is why the map
+    declares full 2-D shapes rather than element counts.
+
+    `ours` mirror the checkpoint's own layer indexing (`layers.7.self_attn.k`),
+    because `SmolVLAExpert` holds the two kinds in two lists and a positional
+    name would number each 0..7 twice.
+    """
+    var m = TorchNameMap()
+    var T = SMOLVLA_EXPERT
+    var w1: List[Int] = [W]
+    var q1: List[Int] = [QW]
+    var kv1: List[Int] = [KVW]
+    var ff1: List[Int] = [FF]
+
+    for i in range(LAYERS):
+        var o = String("layers.") + String(i) + "."
+        var t = T + "layers." + String(i) + "."
+        var kv_in = W if (i % SELF_EVERY == 0) else KVW
+
+        m.add(o + "input_layernorm.gamma", t + "input_layernorm.weight", w1)
+        m.add_linear(o + "self_attn.q.weight", t + "self_attn.q_proj.weight",
+                     QW, W)
+        m.add(o + "self_attn.q.bias", String(""), q1, TN_ZEROS)
+        m.add_linear(o + "self_attn.k.weight", t + "self_attn.k_proj.weight",
+                     KVW, kv_in)
+        m.add(o + "self_attn.k.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "self_attn.v.weight", t + "self_attn.v_proj.weight",
+                     KVW, kv_in)
+        m.add(o + "self_attn.v.bias", String(""), kv1, TN_ZEROS)
+        m.add_linear(o + "self_attn.o.weight", t + "self_attn.o_proj.weight",
+                     W, QW)
+        m.add(o + "self_attn.o.bias", String(""), w1, TN_ZEROS)
+
+        m.add(o + "post_attention_layernorm.gamma",
+              t + "post_attention_layernorm.weight", w1)
+        m.add_linear(o + "mlp.gate.weight", t + "mlp.gate_proj.weight", FF, W)
+        m.add(o + "mlp.gate.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "mlp.up.weight", t + "mlp.up_proj.weight", FF, W)
+        m.add(o + "mlp.up.bias", String(""), ff1, TN_ZEROS)
+        m.add_linear(o + "mlp.down.weight", t + "mlp.down_proj.weight", W, FF)
+        m.add(o + "mlp.down.bias", String(""), w1, TN_ZEROS)
+
+    m.add(String("norm.gamma"), T + "norm.weight", w1)
     return m^
