@@ -22,6 +22,7 @@ What it asserts is what only a simulation can say:
 Run: pixi run mojo run -I . tests/tasks/test_task_reset_steps.mojo
 """
 
+from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
 from mojo_rl.tasks.family import scene_path, park_pos
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, slot_body_id
@@ -89,7 +90,9 @@ def main() raises:
     # "mesh geoms do not collide" and `fields_build` RAISES rather than
     # letting the arm quietly stop colliding. That raise is the reason this
     # number is here and not guessed — set it to 1 and read the error.
-    var dims = dims_from_flat(fmd, max_contacts=32, nmesh_verts=26198)
+    var dims = dims_from_flat(
+        fmd, max_contacts=32, nmesh_verts=SO_ARM101_NMESH_VERTS
+    )
     var m = Model[DT, DynDims](dims)
     build_model_runtime[DT](fmd, dims, m)
     var d = Data[DT, DynDims, 1](dims)

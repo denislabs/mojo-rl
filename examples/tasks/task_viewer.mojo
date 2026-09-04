@@ -74,6 +74,7 @@ from mojo_rl.render.imgui import (
 )
 from mojo_rl.physics3d.studio.stepping import StudioRk4Pyr
 
+from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
@@ -97,10 +98,12 @@ comptime Quat = QuatG[DT]
 comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
 comptime TASK_DIR = "mojo_rl/tasks/tasks/"
 
-# ⚠ THE ARM'S OWN COLLISION HULLS. 0 means "mesh geoms do not collide" and
-# `fields_build` RAISES rather than letting the arm quietly stop colliding —
-# set it to 1 and read the error, which quotes the number it needs.
-comptime NMESH_VERTS = 26198
+# ⚠ THE ARM'S OWN COLLISION HULLS, FROM THE ARM'S OWN CONSTANT. 0 means
+# "mesh geoms do not collide" and `fields_build` RAISES rather than letting the
+# arm quietly stop colliding. ⚠ Do NOT hand-copy the figure an error quotes:
+# `parse_model_runtime` and the batched env's `ModelDims` disagree by ONE hull
+# vertex on this very scene, so a number tuned to one path fails on the other.
+comptime NMESH_VERTS = SO_ARM101_NMESH_VERTS
 comptime MAX_CONTACTS = 32
 comptime SIDEBAR_W: Float32 = 300.0
 

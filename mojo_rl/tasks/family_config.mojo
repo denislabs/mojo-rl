@@ -53,6 +53,7 @@ from mojo_rl.physics3d.gpu.constants import (
 
 from .gpu_eval import eval_tape_gpu
 from .so101_tabletop_xml import So101TabletopModel
+from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -72,9 +73,22 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
 
     # ⚠⚠ NONZERO OR THE ARM'S 30 COLLISION MESHES SILENTLY STOP COLLIDING.
     # 0 is not a size hint — both narrow phases gate their mesh branch on
-    # `NMESH_VERTS > 0` and emit no contact otherwise. Set it to 1 and read the
-    # error, which quotes the number it needs.
-    comptime NMESH_VERTS: Int = 26198
+    # `NMESH_VERTS > 0` and emit no contact otherwise.
+    #
+    # ⚠⚠ THE ARM'S OWN CONSTANT, NOT A NUMBER READ OFF AN ERROR. This said
+    # 26198 for one commit — the figure `parse_model_runtime` quoted for this
+    # exact scene — and the BATCHED path then demanded 26199. One vertex, two
+    # code paths, same model: `dims_from_flat` and the batched env's
+    # `ModelDims` do not agree to the last hull vertex.
+    #
+    # Chasing that one vertex is the wrong response. `so101_park_xml` already
+    # records the right rule and I should have followed it: reuse the arm's
+    # declared budget, which is correct-by-construction for this robot and
+    # comfortably above what either path asks. The props are BOXES — a
+    # primitive, not a mesh — so they add no hull vertices at all.
+    #
+    # ⚠ A drift here is LOUD: `fields_build` raises rather than truncating.
+    comptime NMESH_VERTS: Int = SO_ARM101_NMESH_VERTS
 
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         So101TabletopModel.NQ, So101TabletopModel.NV
