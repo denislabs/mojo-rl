@@ -16,9 +16,11 @@ prefix of the same length whose block structure no longer matches the mask.
 """
 
 from std.math import sqrt
+from std.gpu import global_idx
 from max.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.initializer import Initializer, Deterministic
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_pack import TensorPack
@@ -98,6 +100,68 @@ def copy_into[
             dst.dev.value().create_sub_buffer[DT](dst_off, n),
             src.dev.value().create_sub_buffer[DT](0, n),
         )
+
+
+def scaled_copy_into[
+    target: StaticString, N: Int, M: Int
+](
+    mut dst: Tensor, dst_off: Int, mut src: Tensor, scale: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`dst[dst_off:] <- src * scale` — the sqrt(960), fused into a copy that
+    had to happen anyway.
+
+    ⚠ **This replaces a GPU->CPU->GPU round trip per camera.** The scale used to
+    be applied by `download`, a host multiply, then `upload` — and `upload`
+    REALLOCATES the device buffer and calls `ctx.synchronize()` TWICE, so two
+    cameras cost four synchronisations and two device allocations to multiply
+    61,440 numbers by a constant. The copy into the prefix was already being
+    made; the multiply now rides on it and costs nothing extra.
+    """
+    # ⚠ `M` is the DESTINATION's full length, not `N`. The kernel writes at
+    # `dst_off + i`, so a view declared `row_major(N)` would be indexed past
+    # its own extent — and a LayoutTensor index is int32 regardless of the
+    # arithmetic that produced it.
+    comptime assert N <= M, "scaled_copy_into: source longer than destination"
+    if dst_off + N > M:
+        raise Error(
+            "scaled_copy_into: writing " + String(N) + " at " + String(dst_off)
+            + " overruns a destination of " + String(M)
+        )
+    comptime if target == "cpu":
+        for i in range(N):
+            dst.data[dst_off + i] = src.data[i] * scale
+    else:
+        var c = ctx.value()
+        comptime nb = (N + TPB - 1) // TPB
+        c.enqueue_function[_scaled_copy_kernel[N, M]](
+            dst.lt["gpu", Layout.row_major(M)](),
+            src.lt["gpu", Layout.row_major(N)](),
+            scale,
+            # ⚠ `Int32`, not `Int`. `Int`/`UInt`/`Bool` are NOT `DevicePassable`
+            # — a kernel taking one fails to instantiate, and the failure shows
+            # up only when the kernel is actually built, not when the CPU path
+            # of the same function type-checks.
+            Int32(dst_off),
+            grid_dim=nb,
+            block_dim=TPB,
+        )
+
+
+def _scaled_copy_kernel[
+    N: Int, M: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    scale: Scalar[DT],
+    dst_off: Int32,
+):
+    var i = Int(global_idx.x)
+    if i >= N:
+        return
+    dst.ptr[unsafe_offset = Int(dst_off) + i] = (
+        rebind[Scalar[DT]](src.ptr[unsafe_offset=i]) * scale
+    )
 
 
 struct SmolVLAActionSampler[
@@ -295,6 +359,13 @@ struct SmolVLAPrefixEmbed[
     different architecture."""
 
     var shuffle: Self.Shuffle
+    var one: Tensor
+    """One camera's pixels, allocated ONCE.
+
+    ⚠ This used to be `Tensor.alloc(VIS_IN)` inside the camera loop — 3.15 MB
+    per camera per call, so 6.3 MB of allocation churn per inference at two
+    cameras, plus an `upload` that reallocates the device buffer and
+    synchronises twice."""
     var vis: Tensor
     var shuf: Tensor
     var conn: Tensor
@@ -304,6 +375,7 @@ struct SmolVLAPrefixEmbed[
     def __init__(out self):
         comptime assert Self.N_CAM >= 1, "SmolVLAPrefixEmbed: need a camera"
         self.shuffle = Self.Shuffle()
+        self.one = Tensor()
         self.vis = Tensor()
         self.shuf = Tensor()
         self.conn = Tensor()
@@ -312,6 +384,7 @@ struct SmolVLAPrefixEmbed[
 
     def __init__(out self, *, deinit move: Self):
         self.shuffle = move.shuffle^
+        self.one = move.one^
         self.vis = move.vis^
         self.shuf = move.shuf^
         self.conn = move.conn^
@@ -324,6 +397,10 @@ struct SmolVLAPrefixEmbed[
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var p = Self()
         p.shuffle = Self.Shuffle.make[target, Deterministic](ctx)
+        comptime if target == "cpu":
+            p.one = Tensor.alloc(Self.VIS_IN)
+        else:
+            p.one = Tensor.alloc_gpu(ctx.value(), Self.VIS_IN)
         return p^
 
     def run[
@@ -341,7 +418,24 @@ struct SmolVLAPrefixEmbed[
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """`images` is `[N_CAM, 3*512*512]` (batch 1 per camera, as SmolVLA
-        runs them); `lang_ids` are PRE-TOKENISED ids."""
+        runs them); `lang_ids` are PRE-TOKENISED ids.
+
+        ⚠ **On GPU, `images` must ALREADY BE DEVICE-RESIDENT.** Each camera's
+        slab is taken with a device-to-device sub-buffer copy, which is what
+        makes it free; a host-only tensor would have to be uploaded per camera,
+        which is the cost this path exists to avoid. `fill_camera_images`
+        uploads, so the real producer already satisfies this. The check below
+        makes the requirement a named error rather than an `Optional.value()`
+        abort deep in the loop.
+        """
+        comptime if target != "cpu":
+            if not images.dev:
+                raise Error(
+                    "SmolVLAPrefixEmbed.run: `images` has no device buffer."
+                    " On GPU the per-camera slab is a device-to-device copy, so"
+                    " the caller must upload first —"
+                    " `fill_camera_images` does."
+                )
         if len(lang_ids) != Self.N_LANG:
             raise Error(
                 "SmolVLAPrefixEmbed: expected " + String(Self.N_LANG)
@@ -357,37 +451,46 @@ struct SmolVLAPrefixEmbed[
 
         # ── cameras ──────────────────────────────────────────────────────
         for cam in range(Self.N_CAM):
-            # one camera's pixels; `images` holds them back to back
-            var one = Tensor.alloc(Self.VIS_IN)
-            for i in range(Self.VIS_IN):
-                one.data[i] = images.data[cam * Self.VIS_IN + i]
-            comptime if target != "cpu":
-                one.upload(ctx.value())
-            vision.forward[target, 1](TensorRefs[1](one), self.vis, ctx)
+            # One camera's pixels out of the back-to-back block. On GPU this is
+            # a DEVICE-TO-DEVICE sub-buffer copy: no allocation, no host round
+            # trip, and none of `upload`'s two synchronisations.
+            comptime if target == "cpu":
+                for i in range(Self.VIS_IN):
+                    self.one.data[i] = images.data[cam * Self.VIS_IN + i]
+            else:
+                var c = ctx.value()
+                c.enqueue_copy(
+                    self.one.dev.value().create_sub_buffer[DT](
+                        0, Self.VIS_IN
+                    ),
+                    images.dev.value().create_sub_buffer[DT](
+                        cam * Self.VIS_IN, Self.VIS_IN
+                    ),
+                )
+            vision.forward[target, 1](TensorRefs[1](self.one), self.vis, ctx)
             self.shuffle.forward[target, 1](
                 TensorRefs[1](self.vis), self.shuf, ctx
             )
             connector.forward[target, 1](
                 TensorRefs[1](self.shuf), self.conn, ctx
             )
-            # ⚠ sqrt of the CONNECTOR's width (960), not the tower's (768)
-            comptime if target == "cpu":
-                for i in range(Self.IMG_N):
-                    self.conn.data[i] = self.conn.data[i] * scale
-            else:
-                self.conn.download(ctx.value())
-                for i in range(Self.IMG_N):
-                    self.conn.data[i] = self.conn.data[i] * scale
-                self.conn.upload(ctx.value())
-            copy_into[target](out, off, self.conn, Self.IMG_N, ctx)
+            # ⚠ sqrt of the CONNECTOR's width (960), not the tower's (768),
+            # fused into the copy rather than applied by a round trip.
+            scaled_copy_into[target, Self.IMG_N, Self.OUT_N](
+                out, off, self.conn, scale, ctx
+            )
             off += Self.IMG_N
 
         # ── language: a row gather, scaled the same way ──────────────────
         embed_language_tokens[VOCAB, Self.W](
             embed_weight, lang_ids, self.lang, True
         )
+        # ⚠ `upload_resident`, not `upload`: the latter recreates the device
+        # buffer and synchronises twice on every call. The gather is host-side
+        # (an index lookup per token), so the transfer stays — the realloc does
+        # not need to.
         comptime if target != "cpu":
-            self.lang.upload(ctx.value())
+            self.lang.upload_resident(ctx.value())
         copy_into[target](out, off, self.lang, Self.N_LANG * Self.W, ctx)
         off += Self.N_LANG * Self.W
 

@@ -80,6 +80,10 @@ def main() raises:
     var imgs = Tensor.alloc(N_CAM * VIS_IN)
     for i in range(N_CAM * VIS_IN):
         imgs.data[i] = Scalar[DT](((i * 29) % 17) - 8) * 0.03
+    # ⚠ `run` takes `images` DEVICE-RESIDENT on GPU — each camera's slab is a
+    # device-to-device sub-buffer copy. `fill_camera_images` uploads; this test
+    # stands in for it, so it uploads too.
+    imgs.upload(d)
     var state = Tensor.alloc(SDIM)
     for i in range(SDIM):
         state.data[i] = Scalar[DT](i - 16) * 0.05
