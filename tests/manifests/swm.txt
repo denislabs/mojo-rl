@@ -199,3 +199,16 @@ tests/experimental/swm/test_cscg_comparison.mojo
 # With the goal SET on the aliased pair the content offers 2 goal clones and
 # the frame picks cell and parity 80/80. ~1 min.
 tests/experimental/swm/test_klein_task.mojo
+# G27 — PHASE 9, THE TRANSFER TEST: a physical world (Pendulum), not built
+# for the method. What transfers: the split is found through an overcomplete
+# mixing (landmark R^2 0.990, speed leak 0.013) and det H = +1 everywhere, so
+# no obstruction is manufactured on a physical world. What does not: the frame
+# rollout is NOT flat (0.083 -> 0.520 over 24 steps vs E1's 0.092 -> 0.107).
+# Quantization of the velocity bottleneck is REFUTED as the cause (4x wider
+# bins cut the per-step angle error 4x and change nothing). And the MATCHED
+# control — same channel, same slots, orthogonality lifted — says the isometry
+# buys nothing here (ratio 0.85 at 12 bins, 1.06 at 48), because the
+# unconstrained fit is already nearly an isometry (|M^T M - I| = 0.13). On E1
+# the free arm was pushed off the manifold by a cocycle loss; least squares
+# applies no such force. ~4 min.
+tests/experimental/swm/test_pendulum_transfer.mojo

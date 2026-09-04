@@ -277,7 +277,12 @@ struct SwmPhase3[
     HID: Int,
     CONTENT_DIM: Int,
     dtype: DType = DType.float64,
+    N_ACTIONS: Int = 2,
 ]:
+    # N_ACTIONS is last, AFTER dtype, so that every Phase 3-8 call site
+    # (`SwmPhase3[12, 6, 16, 32, 8, DT]`) keeps binding its sixth argument to
+    # dtype. Ugly ordering, but the alternative silently rebinds dtype to an
+    # Int at a dozen sites.
     """Encoder + transport table trained on the Mobius corridor."""
 
     comptime D: Int = 2
@@ -286,9 +291,15 @@ struct SwmPhase3[
     comptime EnvT = MobiusRing[
         Self.N_CELLS, Self.NUISANCE_DIM, Self.OBS_DIM, Self.dtype
     ]
-    comptime TableT = TransportTable[Self.D, 2, Self.N_CELLS, Self.dtype]
+    comptime TableT = TransportTable[Self.D, Self.N_ACTIONS, Self.N_CELLS, Self.dtype]
     comptime ModelT = TrainedModel[
-        Self.OBS_DIM, Self.HID, Self.LAT, Self.D, 2, Self.N_CELLS, Self.dtype
+        Self.OBS_DIM,
+        Self.HID,
+        Self.LAT,
+        Self.D,
+        Self.N_ACTIONS,
+        Self.N_CELLS,
+        Self.dtype,
     ]
 
     @staticmethod

@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–8 complete, 24 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
+**Status: Phases 0–9 complete, 25 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -64,6 +64,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `map_builder.mojo` (Phase 8) | online labels from the content channel, successor conflicts, context splitting, per-clone transports |
 | `cscg.mojo` (Phase 8) | Clone-Structured Cognitive Graph by EM — the P5 baseline, gates only |
 | `graph_planner.mojo` (Phase 8) | breadth-first search over `(clone, u)` — planning on a learned graph in the double cover |
+| `envs/pendulum_swm.mojo` (Phase 9) | Pendulum: a PHYSICAL world with an exact `SO(2)` action, velocity bin as the bottleneck |
 
 ## What was learned (Phase 0–1)
 
@@ -543,6 +544,63 @@ choice to make, and the oracle's separation of those frames (`|F₀w − F₁w|�
 0.04–0.17 against a maximum of 4) puts all five in the lowest third of the
 episodes. A goal whose landmark lies along the reflection axis has no parity
 a frame can carry.
+
+## What was learned (Phase 9 — the transfer test, and a matched control)
+
+Pendulum is the first world here not built for the method. It contains an
+exact `SO(2)` action — `(cos θ, sin θ)` is carried by `R(θ̇′ dt)`, gated to
+4e-16 — beside a nonlinearly evolving velocity. The transport is selected by
+the velocity, which is *content*, so the design's rule is bent through its own
+escape hatch: the place index becomes a velocity bin, `log2(12)` bits.
+
+**What transfers.** The split is found through an overcomplete mixing:
+landmark R² **0.990**, speed leakage **0.013**, frame not collapsed. And
+`det H = +1` on every cycle: **no obstruction is manufactured on a physical
+world**, which is the only thing the `Z/2` machinery may be asked here, since
+every transport is a rotation and there is nothing to detect.
+
+**What does not.** The frame rollout is not flat. E1 gave 0.092 → 0.107 over
+12 steps; pendulum gives 0.083 → 0.520 over 24. Quantization of the bottleneck
+is **refuted** as the cause: widening it 4× cuts the per-step binning angle
+error exactly 4× (0.0166 → 0.0042 rad) and leaves the 24-step error where it
+was (0.520 → 0.604).
+
+**The matched control, which is the finding.** Comparing an orthogonal frame
+roll against a free *nonlinear content* roll is not a test of the isometry:
+the two predict different quantities in different spaces. The matched arm is
+the same channel, the same slots, the same data, with orthogonality lifted —
+a free 2×2 per (action, bin), rolled forward:
+
+| 24-step error | orthogonal | linear | ratio |
+|---|---|---|---|
+| 12 bins | 0.520 | 0.442 | 0.85 |
+| 48 bins | 0.604 | 0.641 | 1.06 |
+
+In matched units the isometry buys **nothing** here, in either direction. The
+reason is measured: the unconstrained least-squares fit is already nearly an
+isometry, `‖MᵀM − I‖_F` = 0.126 at 12 bins and 0.067 at 48. The data is a
+rotation, an honest fit finds one, and a constraint the solution already
+satisfies cannot buy anything. On E1 the free arm was driven *off* the
+manifold by a cocycle loss (G8: minimum singular value 1.0 → 0.64) — a force
+no least-squares fit applies.
+
+**What that says about 6a.** Phase 6a's numbers stand as measured: the frame
+rollout is flat and the content rollout drifts 11×. Its *interpretation* —
+that the orthogonal constraint buys the only channel still trustworthy after a
+long imagined rollout — has never had this matched control run against it, and
+on the one world where it has been run the constraint is not what does the
+work. That control belongs on E1 too, and is the first item below.
+
+## Open questions after Phase 9
+
+1. **Run the matched control on E1.** Same channel, same edges, orthogonality
+   lifted, rolled forward. If the free per-edge linear fit rolls as well as the
+   orthogonal one there too, 6a's interpretation needs rewriting and the
+   isometry's justification narrows to what it always provably was: making
+   `det H` an invariant.
+2. **What the constraint is actually for.** Pendulum suggests it is not
+   rollout stability but identifiability of the `Z/2` class. That is a
+   sharper and more defensible claim than 6a's, and it is already proven.
 
 ## Open questions after Phase 8
 
