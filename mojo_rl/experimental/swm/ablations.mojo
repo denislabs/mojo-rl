@@ -150,6 +150,48 @@ def fit_free_with_cocycle[
     return rs^
 
 
+def fit_free_lsq[
+    dtype: DType = DType.float64
+](batches: List[PairBatch[2, dtype]]) raises -> List[SqMat[2, dtype]]:
+    """Per-edge UNCONSTRAINED least squares: `M = (Y X^T)(X X^T)^-1`.
+
+    The matched control (Phase 9/10). Ablation C fits free morphisms under a
+    COCYCLE LOSS and they collapse; that says what the cocycle term does, not
+    what the orthogonality constraint buys. This is the same free morphism with
+    no cocycle term and no descent — the honest alternative to a Procrustes
+    fit, on the same pairs — so rolling the two forward compares the CONSTRAINT
+    and nothing else.
+    """
+    var out = List[SqMat[2, dtype]]()
+    for e in range(len(batches)):
+        var yxt = SqMat[2, dtype]()
+        var xxt = SqMat[2, dtype]()
+        var n = batches[e].count()
+        for k in range(n):
+            var xk = batches[e].x_at(k)
+            var yk = batches[e].y_at(k)
+            for i in range(2):
+                for j in range(2):
+                    yxt[i, j] = yxt[i, j] + yk[i] * xk[j]
+                    xxt[i, j] = xxt[i, j] + xk[i] * xk[j]
+        for i in range(2):
+            xxt[i, i] = xxt[i, i] + Scalar[dtype](1e-9)
+        out.append(yxt * xxt.inverse())
+    return out^
+
+
+def orthogonality_defect[
+    dtype: DType = DType.float64
+](ms: List[SqMat[2, dtype]]) -> Float64:
+    """Mean `|M^T M - I|_F`: how far a set of fits sits off the manifold."""
+    var t = Float64(0)
+    for e in range(len(ms)):
+        t += Float64(
+            (ms[e].transpose() * ms[e] - SqMat[2, dtype].identity()).frobenius_norm()
+        )
+    return t / Float64(len(ms)) if len(ms) > 0 else 0.0
+
+
 def fit_orthogonal_with_cocycle[
     dtype: DType = DType.float64
 ](

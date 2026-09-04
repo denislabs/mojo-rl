@@ -212,3 +212,15 @@ tests/experimental/swm/test_klein_task.mojo
 # the free arm was pushed off the manifold by a cocycle loss; least squares
 # applies no such force. ~4 min.
 tests/experimental/swm/test_pendulum_transfer.mojo
+# G28 — PHASE 10, the matched control on E1, where 6a's claim was made. Same
+# channel, same edges, orthogonality LIFTED (per-edge least squares, no
+# cocycle), fitted and rolled on disjoint episodes. The constraint buys
+# accuracy at the LOOP CLOSURE and only there: 1 step 0.105 vs 0.092 (the free
+# fit is BETTER), 12 steps level, 24 steps (TWO LAPS) 0.040 vs 0.119. The
+# mechanism is exact and measured — two laps of the constrained transports
+# compose to the identity to 6.1e-16 (a reflection squared) while the free
+# product sits 0.095 away. That reconciles G27: Pendulum closes no loop in 24
+# steps, so its matched control correctly found nothing. Leg B: the free fits'
+# det sign still carries the Z/2 class (4/4, 4/4) but |det| erodes to 0.85 —
+# the constraint is what makes the class exact rather than usually right. ~90s.
+tests/experimental/swm/test_swmh_matched_control.mojo

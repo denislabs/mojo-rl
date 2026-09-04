@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–9 complete, 25 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
+**Status: Phases 0–10 complete, 26 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -584,23 +584,45 @@ satisfies cannot buy anything. On E1 the free arm was driven *off* the
 manifold by a cocycle loss (G8: minimum singular value 1.0 → 0.64) — a force
 no least-squares fit applies.
 
-**What that says about 6a.** Phase 6a's numbers stand as measured: the frame
-rollout is flat and the content rollout drifts 11×. Its *interpretation* —
-that the orthogonal constraint buys the only channel still trustworthy after a
-long imagined rollout — has never had this matched control run against it, and
-on the one world where it has been run the constraint is not what does the
-work. That control belongs on E1 too, and is the first item below.
+**What that says about 6a — answered in Phase 10, and not as expected.** The
+matched control was then run on E1 itself (G28), and there the constraint
+*does* pay:
 
-## Open questions after Phase 9
+| horizon | 1 | 6 | 12 | 24 |
+|---|---|---|---|---|
+| orthogonal | 0.105 | 0.151 | 0.171 | **0.040** |
+| free least squares | **0.092** | 0.147 | 0.182 | 0.119 |
 
-1. **Run the matched control on E1.** Same channel, same edges, orthogonality
-   lifted, rolled forward. If the free per-edge linear fit rolls as well as the
-   orthogonal one there too, 6a's interpretation needs rewriting and the
-   isometry's justification narrows to what it always provably was: making
-   `det H` an invariant.
-2. **What the constraint is actually for.** Pendulum suggests it is not
-   rollout stability but identifiability of the `Z/2` class. That is a
-   sharper and more defensible claim than 6a's, and it is already proven.
+At one step the free fit is better — more degrees of freedom, and the
+constraint costs something locally. At 6 and 12 they are level. At 24, which
+on a 12-cell ring is **two laps**, the orthogonal arm is 3.0× better, and the
+mechanism is exact algebra: two laps of the constrained transports compose to
+the identity to **6.1e-16** (a reflection squared) while the free product sits
+0.095 away. The frame returns when the walk returns; the free one does not.
+
+That reconciles the two worlds. Pendulum closes no loop in 24 steps, so there
+was nothing for exact closure to buy and its matched control correctly found
+nothing. **The isometry pays at loop closures, not at arbitrary horizons.**
+6a's numbers stand and its reading needed narrowing, not withdrawing.
+
+And the sharper question, asked for the first time: can a free fit carry the
+observable? On this world yes — the sign of `det` of the free product is
+negative on Möbius and positive on the twin in 4/4 seeds — but `|det H|`
+erodes to 0.85 and the minimum singular value with it, against exactly 1 by
+construction. The constraint is what makes the class **exact** rather than
+usually right, and G8 measured where the other road ends (`det` −1.00 → −0.02
+under a cocycle loss).
+
+## Open questions after Phase 10
+
+1. **Global symmetry** (from Phase 8): a quotient with no successor conflict is
+   a consistent world to the graph; only the frame transports disagree, and the
+   encoder co-adapts. Whether the transport residual *vector* is bimodal on a
+   merged entry is unmeasured and is the only lead.
+2. **Gauge coincidence** (Phase 7): present in any dimension, governed by the
+   frames' angular spread against the tolerance. A second transported channel
+   would shrink it geometrically; not built.
+3. **Curved bundles**, and the deferred engineering (GPU, float32 `nn`).
 
 ## Open questions after Phase 8
 
