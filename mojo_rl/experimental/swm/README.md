@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–5 complete; Phase 6a (content) and 6b (multi-cycle) done.** With learned encoders on
+**Status: Phases 0–5 complete; Phase 6a/6b/6c done.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -55,6 +55,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `planner.mojo` | rollouts in edge coordinates, CEM + an exhaustive monotone planner, trust penalty |
 | `content.mojo` | the content channel: decoder (anchors both channels) + a free nonlinear transition |
 | `envs/klein_grid.mojo` | a non-orientable O(2) bundle over a torus grid — many cycles, one reversing |
+| `place_recognition.mojo` | appearance-based place memory, scored against the oracle |
 
 ## What was learned (Phase 0–1)
 
@@ -312,6 +313,45 @@ Same class, different fixed subspace. In 2D the two readings agree; above 2D
 they come apart, so a method that only reads the determinant is answering a
 coarser question than the one asked.
 
+**Removing the last oracle costs more than the doc expects.** Every result from
+Phase 3 on assumed an oracle place identity. Holding the landmark fixed so that
+mirroring is the only difference, the doc's predicted failure appears exactly as
+described — a whole-latent similarity misses precisely the revisits that create
+the informative cycle:
+
+| recogniser | parity 0 | parity 1 |
+|---|---|---|
+| naive, whole latent | 240/240 | **118/240** |
+| content channel only | 240/240 | **240/240** |
+
+The content channel supplies the required frame-invariance, and for a structural
+reason: under the reflection `u → Hu`, and the only O(2) invariant of a vector is
+its norm, which is near-constant here — the frame *cannot* carry frame-invariant
+place information.
+
+That makes E1 too easy unless the textures alias, so `aliased_mobius(2)` makes
+cells `c` and `c + 6` perceptually identical. Then: **a false identification
+manufactures `det H = −1` exactly as a true one does** (93 of 95 false, 115 of
+353 true). The holonomy depends on the *graph span*, not on whether the two
+places genuinely match — so `det H` inherits place recognition's reliability
+wholesale. The doc's §7 says a false identification "creates an aberrant edge
+(handled)"; under perceptual aliasing that is too optimistic, and it is the
+largest open risk in the method.
+
+**PCM defends, but its textbook criterion is wrong here.** Asking whether two
+composed closures return the *identity* assumes a global frame exists. On a
+Möbius ring it does not, and two genuine closures at opposite parities compose
+to the *reflection*. Asking instead whether the composition lies in the world's
+**holonomy group** recovers the good closures:
+
+| criterion | true–true consistent | true–false |
+|---|---|---|
+| composition = I (textbook) | 29270/62128 = 47% | 1234/33535 = 3.7% |
+| composition ∈ {I, H} (corrected) | 45196/62128 = **73%** | 3781/33535 = 11% |
+
+Both discriminate; the textbook form throws away more than half the loop
+closures a map depends on.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -331,10 +371,19 @@ measured here speaks to it.
 
 ## Next (Phase 6, in progress)
 
-6a (content channel) and 6b (multi-cycle) are done. Next: a learned,
-frame-invariant place recogniser (the acknowledged weak link, still an oracle).
-Deferred as before: the GPU port (engineering only), and CSCG with the P5
-sample-efficiency comparison.
+6a (content), 6b (multi-cycle) and 6c (place recognition) are done.
+
+Open questions this line has produced, in priority order:
+
+1. **`det H` inherits place recognition's reliability wholesale** (6c). The
+   group-aware PCM check is a partial defence at 73%/11%; making it a decision
+   rule (maximal-clique over the consistency graph, as PCM proper does) is the
+   obvious next step and is not built.
+2. **Multi-step training for the content transition** (6a). Its drift is what
+   makes it useless for long rollouts; latent overshooting would shrink the gap,
+   though not reverse the isometry's advantage.
+3. Deferred as before: the GPU port (engineering only), and CSCG with the P5
+   sample-efficiency comparison.
 
 **Not claimed anywhere in Phases 0–5:** a recurrent baseline. An RSSM or GRU can
 learn the parity bit, so that comparison is about sample efficiency at a matched

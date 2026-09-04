@@ -73,3 +73,10 @@ from .planner import (
 )
 from .content import ContentChannel
 from .so_d import fixed_subspace_dim
+from .place_recognition import (
+    PlaceMemory,
+    RecogniserStats,
+    score_recogniser,
+    MATCH_NONE,
+)
+from .observables import pairwise_consistent_in_group

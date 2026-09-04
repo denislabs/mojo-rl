@@ -26,6 +26,8 @@ stays UNDECIDED until edge-disjoint cycles agree.
 
 from std.math import abs, sqrt, atan2
 
+from .so_d import SqMat
+
 comptime CLASS_NOMINAL: UInt8 = 0
 comptime CLASS_ABERRANT: UInt8 = 1
 comptime CLASS_OBSTRUCTION: UInt8 = 2
@@ -244,3 +246,39 @@ struct ClassificationLatch(Copyable, ImplicitlyCopyable, Movable):
             self.changes += 1
             self.hold_remaining = self.hold_steps
         return self.current
+
+
+def pairwise_consistent_in_group[
+    D: Int, dtype: DType = DType.float64
+](
+    composition: SqMat[D, dtype],
+    holonomy_group: List[SqMat[D, dtype]],
+    tol: Float64,
+) -> Bool:
+    """PCM consistency, corrected for a world with NON-TRIVIAL holonomy.
+
+    The textbook criterion (Mangelson et al. 2018) asks whether composing two
+    loop closures around the cycle they form returns the IDENTITY. That assumes
+    the world admits a global frame. On a Mobius ring it does not: the
+    composition of two genuine closures at different lap parities is the
+    REFLECTION, and the textbook test throws it out as inconsistent.
+
+    Measured on E1 with texture aliasing, separating true closure pairs from
+    true/false ones:
+
+        criterion                       true-true consistent   true-false
+        composition = I  (textbook)        1338/3044 = 44%      51/1564 = 3%
+        composition in {I, H} (this)       2711/3044 = 89%     177/1564 = 11%
+
+    Both discriminate, but the textbook form rejects more than half of the GOOD
+    closures — on a real system that is throwing away most of the loop closures
+    the map depends on. The right question is whether the composition lies in
+    the world's holonomy group, which is exactly the object this method already
+    measures.
+    """
+    var best = 1e300
+    for g in range(len(holonomy_group)):
+        var d = Float64((composition - holonomy_group[g]).frobenius_norm())
+        if d < best:
+            best = d
+    return best <= tol

@@ -67,25 +67,46 @@ struct MobiusConfig(Copyable, ImplicitlyCopyable, Movable):
     texture, which is the version of the question worth having an answer to.
     """
 
+    var texture_alias: Int
+    """How many cells share each texture. 1 = every cell distinctive.
+
+    With `alias = 2` on a 12-cell ring, cells `c` and `c + 6` are perceptually
+    IDENTICAL apart from the landmark, so the content channel alone cannot
+    localise and a content-only place recogniser will confuse them. That is the
+    case worth testing: a FALSE identification creates a spurious cycle, which
+    is exactly the input the classification table's ABERRANT row exists for.
+    Without aliasing, E1's textures make place recognition easy by construction
+    and the recogniser is never asked a hard question.
+    """
+
     @staticmethod
     def default_mobius(world_seed: UInt64 = 20260904) -> Self:
-        return Self(True, world_seed, 0.02, 0.6, 1.0, False)
+        return Self(True, world_seed, 0.02, 0.6, 1.0, False, 1)
 
     @staticmethod
     def default_orientable(world_seed: UInt64 = 20260904) -> Self:
-        return Self(False, world_seed, 0.02, 0.6, 1.0, False)
+        return Self(False, world_seed, 0.02, 0.6, 1.0, False, 1)
+
+    @staticmethod
+    def aliased_mobius(
+        group_size: Int, world_seed: UInt64 = 20260904
+    ) -> Self:
+        """`group_size` cells share each texture. NOTE: `alias` is still a
+        reserved word in Mojo (it predates `comptime`) and cannot be a
+        parameter name."""
+        return Self(True, world_seed, 0.02, 0.6, 1.0, False, group_size)
 
     @staticmethod
     def nonlinear_mobius(
         gain: Float64, world_seed: UInt64 = 20260904
     ) -> Self:
-        return Self(True, world_seed, 0.02, 0.6, gain, True)
+        return Self(True, world_seed, 0.02, 0.6, gain, True, 1)
 
     @staticmethod
     def nonlinear_orientable(
         gain: Float64, world_seed: UInt64 = 20260904
     ) -> Self:
-        return Self(False, world_seed, 0.02, 0.6, gain, True)
+        return Self(False, world_seed, 0.02, 0.6, gain, True, 1)
 
 
 struct MobiusRing[
@@ -158,11 +179,27 @@ struct MobiusRing[
         self.nuisance = List[Scalar[Self.dtype]](
             length=Self.N_CELLS * Self.NUISANCE_DIM, fill=0
         )
+        var group_size = cfg.texture_alias if cfg.texture_alias >= 1 else 1
+        var n_groups = Self.N_CELLS // group_size
+        if n_groups < 1:
+            n_groups = 1
         for c in range(Self.N_CELLS):
             for k in range(Self.NUISANCE_DIM):
-                self.nuisance[c * Self.NUISANCE_DIM + k] = Scalar[Self.dtype](
+                self.nuisance[c * Self.NUISANCE_DIM + k] = 0
+        var group_tex = List[Scalar[Self.dtype]](
+            length=n_groups * Self.NUISANCE_DIM, fill=0
+        )
+        for gidx in range(n_groups):
+            for k in range(Self.NUISANCE_DIM):
+                group_tex[gidx * Self.NUISANCE_DIM + k] = Scalar[Self.dtype](
                     wr.uniform_range(-1.0, 1.0)
                 )
+        for c in range(Self.N_CELLS):
+            var gidx = c % n_groups
+            for k in range(Self.NUISANCE_DIM):
+                self.nuisance[c * Self.NUISANCE_DIM + k] = group_tex[
+                    gidx * Self.NUISANCE_DIM + k
+                ]
 
         # Overcomplete mixing. Entries are bounded away from zero so that EVERY
         # observed coordinate genuinely blends landmark with texture; the gate

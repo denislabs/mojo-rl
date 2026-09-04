@@ -123,3 +123,14 @@ tests/experimental/swm/test_swmh_content.mojo
 # which det H under-reports above 2D: the doc's own example, O(3) H = -I has
 # det -1 and fixes NOTHING, while an O(3) reflection fixes a plane. ~4s.
 tests/experimental/swm/test_klein_multicycle.mojo
+# G17 — PHASE 6c, removing the last oracle. Confirms the design doc's predicted
+# failure with the landmark held fixed so mirroring is the ONLY difference:
+# naive whole-latent recognition is 240/240 at parity 0 and 118/240 at parity 1,
+# while content-only is 240/240 at both. Then the finding that matters: under
+# texture aliasing, a FALSE identification manufactures det H = -1 just as a
+# true one does (93/95 vs 115/353) -- the holonomy depends on the graph span,
+# not on whether the places match, so det H inherits place recognition's
+# reliability wholesale. PCM defends, but the textbook "composition = I"
+# criterion assumes a global frame and rejects half the GOOD closures; the
+# group-aware form recovers them. ~6s.
+tests/experimental/swm/test_place_recognition.mojo
