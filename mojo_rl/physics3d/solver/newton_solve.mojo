@@ -424,6 +424,7 @@ comptime NEWTON_ITER_REPORT: Bool = False
 #   2 = after the contact normal/friction precompute
 #   3 = after the cooperative M_sh / Je loads   (i.e. before the tid-0 setup)
 #   4 = after the whole tid-0 setup             (i.e. before the Newton loop)
+#   5 = after the Newton LOOP                   (i.e. before the write-back tail)
 #
 # `t(4) - t(3)` is the 660-line tid-0 serial block, `t(3) - t(2)` the
 # cooperative loads, and so on. `t(4)` should land near the ~20 ms/step the
@@ -5220,6 +5221,16 @@ def _newton_blocked_fields_kernel[
     comptime if NEWTON_ITER_REPORT:
         if valid_env and tid == 0 and env == 0:
             print("[niter]", iters_done)
+
+    # ⚠ STAGE 5 — after the Newton LOOP, before the write-back tail. This is the
+    # stage that had to exist: stages 1-4 bisect the SETUP and stop at the loop,
+    # so everything after them was one 61% lump containing both the loop and the
+    # tail. MIN_ITER says the loop is ~5%, which can only be reconciled with the
+    # lump if the TAIL is the bulk — or if a real iteration costs vastly more
+    # than the post-convergence ones MIN_ITER was able to force. This separates
+    # them, and it is the discriminator between two very different targets.
+    comptime if NEWTON_STOP_AFTER == 5:
+        return
 
     # === THREAD 0: write back + reconstruct forces + equality/tendon ===
     if not valid_env or tid != 0:
