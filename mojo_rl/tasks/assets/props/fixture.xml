@@ -15,6 +15,12 @@
     <body name="fixture">
       <geom name="geom" type="box" size="0.15 0.15 0.01" density="800"
             rgba="0.55 0.45 0.35 1"/>
+      <!-- ⚠ THE SITE A REGION ATTACHES TO. `region=<name>:site:<site>` is
+           site-relative precisely so it TRAVELS with the body — see
+           `tasks/spec.mojo`'s RegionSpec. On the TOP face, so a sampled
+           placement lands on the surface rather than inside the slab.
+           `group="3"` keeps it out of the default render pass. -->
+      <site name="surface" pos="0 0 0.01" size="0.005" group="3"/>
     </body>
   </worldbody>
 </mujoco>

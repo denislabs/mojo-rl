@@ -65,6 +65,13 @@ tests/tasks/test_spec_roundtrip.mojo
 # other than the checked-in scene. `pixi run gen-family-scenes` fixes that.
 tests/tasks/test_family_compose_vs_mujoco.mojo
 
+# ── mojo_rl/tasks: the goal language (P2a) ──────────────────────────
+# ⚠ BINDS AGAINST THE REAL COMPOSED FAMILY, not a fixture — a goal's whole
+# job is to name things in a scene, so binding against invented names would
+# pass while every real task failed to resolve. Also asserts the POST-ORDER
+# invariant, which is what makes a stackless (GPU-shaped) evaluator legal.
+tests/tasks/test_goal_language.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

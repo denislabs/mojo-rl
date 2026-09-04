@@ -23,4 +23,8 @@ slot=cube_b:free:mojo_rl/tasks/assets/props/cube.xml
 
 park=10.0,0.0,50.0
 
+# ⚠ THE SITE NAME IS THE COMPOSED ONE: `<slot prefix>_<site in the asset>`.
+# `<attach prefix=>` renames every element of the asset, so the site declared
+# as `surface` in fixture.xml is `table_surface` once the `table` slot
+# instantiates it. Naming the raw asset site here would resolve to nothing.
 region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10

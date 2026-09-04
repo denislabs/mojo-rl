@@ -19,3 +19,13 @@ from .spec import (
     SLOT_FREE, SLOT_STATIC, slot_kind_name, slot_kind_from_name,
     SCHEMA_VERSION,
 )
+from .family import (
+    compose_family, write_family_scene, scene_path, park_pos,
+    SCENE_DIR, BASE_PREFIX, PARK_SPACING,
+)
+from .predicates import (
+    Goal, BoundGoal, GoalTerm, BoundTerm,
+    parse_goal, bind_goal, require_tier_a, slot_body_id, site_id,
+    op_name, op_arity, op_is_tier_a, op_is_composite,
+    MAX_GOAL_TERMS,
+)
