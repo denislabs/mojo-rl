@@ -49,6 +49,13 @@ tests/physics3d/test_model_dims_vs_mujoco.mojo
 # identity half cannot pass vacuously. Pure CPU, no references/, no GPU.
 tests/physics3d/test_expand_identity.mojo
 
+# ── mojo_rl/tasks: the .family / .task spec (P1b) ────────────────────
+# Pure text in, pure text out — no MuJoCo, no GPU, no assets. 18 of its 34
+# checks are REFUSAL arms: an unknown key, a missing goal, a reversed
+# rectangle, a task naming an object its family never declared. The happy
+# path alone would pass while accepting all of them.
+tests/tasks/test_spec_roundtrip.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
