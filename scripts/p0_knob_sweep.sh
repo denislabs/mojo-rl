@@ -7,7 +7,13 @@
 #       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
 #
 #   # Is the cost per-ITERATION or per-SOLVE? (NOT bit-exact — timing only):
-#   KNOB=NEWTON_MIN_ITER VALUES="0 8 16 32" \
+#   KNOB=NEWTON_MIN_ITER VALUES="0 20 100 180" \
+#       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
+#
+#   # F3 step 2 — OCCUPANCY. Threads per block = MAX_CONTACTS * MULT, so
+#   # 16/32/64/128 at MC=16. Bit-exact at every value; lives in je_budget.mojo:
+#   SRC=mojo_rl/physics3d/solver/je_budget.mojo \
+#   KNOB=NEWTON_THREADS_MULT VALUES="1 2 4 8" \
 #       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
 #
 # This is one script rather than one per knob on purpose: the sed/restore/
@@ -27,7 +33,9 @@
 # binary, and `NEWTON_MIN_ITER` is NOT bit-exact.
 set -uo pipefail
 
-SRC=mojo_rl/physics3d/solver/newton_solve.mojo
+# ⚠ The knobs do not all live in the same file — `NEWTON_THREADS_MULT` is in
+# `je_budget.mojo`, which owns the launch shape. Override SRC for those.
+SRC=${SRC:-mojo_rl/physics3d/solver/newton_solve.mojo}
 KNOB=${KNOB:?set KNOB, e.g. KNOB=NEWTON_MIN_ITER}
 VALUES=${VALUES:?set VALUES, e.g. VALUES="0 8 16 32"}
 KEY="comptime ${KNOB}: Int"

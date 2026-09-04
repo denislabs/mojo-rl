@@ -49,6 +49,31 @@ mujoco_warp does, or pack the triple by block).
 from std.sys.info import size_of
 
 
+# ⚠⚠ THE LAUNCH-SHAPE KNOB — F3 step 2, and it is an OCCUPANCY experiment, not
+# a work-division one. The blocked kernel holds ~88 KB of shared memory per
+# block against a per-SM budget of ~99-228 KB, so exactly ONE block is resident
+# per SM. At `MAX_CONTACTS = 16` that is 16 active threads per SM out of 2048 —
+# 0.8% occupancy, against the ~25-50% a GPU needs to hide memory latency. This
+# multiplier does NOT change shared memory, so blocks/SM stays 1 while
+# threads/SM goes 16 -> 32 -> 64 -> 128.
+#
+# ⚠ `NEWTON_COOP_DIV` PRICED A DIFFERENT MECHANISM AND ITS ANSWER STANDS. It
+# varied the cooperative STRIDE at a fixed thread count, so it measured how much
+# work DIVIDES (2.25 ms) and nothing about how many warps are resident. The two
+# are independent; do not quote that ceiling against this.
+#
+# ⚠ THE RISK THIS SWEEP EXISTS TO MEASURE is local memory, and it is the thing
+# this kernel was built to avoid — see its header. About fifteen per-thread
+# `Scratch` arrays of `NV` (qacc, Ma, f_smooth, jar, search, Mv, the five
+# `old_*`, ...) are reserved by EVERY thread even though only tid 0 uses most of
+# them: ~5 KB/thread at NV=84, so 8x threads is ~645 KB per block instead of
+# ~80 KB. If that spills hard enough it cancels the occupancy win, and the sweep
+# will show it as a curve that turns over rather than one that keeps improving.
+#
+# 1 = production. Sweep 1/2/4/8 (16/32/64/128 threads at MC=16).
+comptime NEWTON_THREADS_MULT: Int = 1
+
+
 def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
     """Threads per block for `_newton_blocked_fields_kernel`.
 
@@ -67,8 +92,11 @@ def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
     Today it returns exactly `MAX_CONTACTS`, so the launch is unchanged. It
     exists so that changing the shape is a one-line edit HERE rather than two
     edits 2,000 lines apart.
+
+    ⚠ NEVER LESS THAN `MAX_CONTACTS` — see the note on the contact phases above
+    — so the multiplier only ever scales UP, and a value below 1 is clamped.
     """
-    return _max_one[MAX_CONTACTS]()
+    return _max_one[MAX_CONTACTS]() * _max_one[NEWTON_THREADS_MULT]()
 
 
 # ⚠⚠ THE PER-BLOCK SHARED LIMIT THE BLOCKED KERNEL IS COMPILED AGAINST, and it
