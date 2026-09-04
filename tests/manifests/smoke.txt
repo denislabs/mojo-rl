@@ -125,6 +125,27 @@ tests/tasks/test_tape_gpu_parity.mojo
 # a drifted address table (3).
 tests/tasks/test_active_mask.mojo
 
+# ── mojo_rl/tasks: frozen init states — freeze, load, REFUSE (P4a) ──
+# ⚠ THE MECHANISM THAT MAKES A SUCCESS RATE COMPARABLE (plan §6.2). Rows
+# round-trip == and not almost_equal — a frozen init that came back to 1e-16
+# is a different episode. ABLATED four ways: apply() restoring only the free
+# slots (2 of 14 fail), a constant stored mask (1), a loader that ignores the
+# family key (1), and a sampler whose lane is ignored so every row is the same
+# state (1 — and ONLY the row-distinctness check sees that one).
+tests/tasks/test_init_table.mojo
+
+# ── mojo_rl/tasks: per-task success, and what reaches the monitor (P4b) ──
+# ⚠⚠ `same_as` COMPARES LANES, NOT RATES, and the gate builds the pair that
+# separates them: two runs with identical per-task rates on disjoint lanes. A
+# rate comparison passes that, which is the whole reason the check exists.
+# ⚠ The metrics are read back OFF DISK through CsvLogger, episode counts
+# included — a rate with no denominator cannot be told from the same rate over
+# a third as many episodes. ABLATED: a rate-based `same_as` (1 of 16 fails), a
+# per-task denominator that logs the LANE count instead (2), and an
+# unrecorded lane counted as a failure (1). The two tasks deliberately get
+# UNEQUAL episode counts — at 5 and 5 the wrong denominator reads as right.
+tests/tasks/test_eval_report.mojo
+
 # ── data: the manifest's task table, BYTE-EXACT ─────────────────────
 # ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
 # `parse_manifest` strips every value, so the two things that break it are a

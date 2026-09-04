@@ -42,6 +42,12 @@ examples/tasks/task_viewer.mojo
 # exceeds available stack space"): the physics kernels stack-allocate
 # per-thread arrays sized by nv. It builds here and launches only on NVIDIA:
 #   pixi run -e nvidia mojo run -I . examples/tasks/task_batched_gpu.mojo
+
+# ⚠ NVIDIA ONLY, same nv=24 reason. Three runs: frozen table at two reset
+# seeds (must agree, bit for bit) and a third that never applies the table
+# (must differ). Run it with:
+#   pixi run -e nvidia mojo run -I . examples/tasks/task_eval_frozen.mojo
+examples/tasks/task_eval_frozen.mojo
 examples/tasks/task_batched_gpu.mojo
 
 # GPU device code — local-only probes (see note above):
