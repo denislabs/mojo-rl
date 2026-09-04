@@ -142,6 +142,32 @@ def region_sites(f: FamilySpec, site_names: List[String]) raises -> List[Int]:
     return out^
 
 
+def region_rects(f: FamilySpec) -> List[List[Float64]]:
+    """`[xmin, ymin, xmax, ymax]` per region, in family order.
+
+    ⚠ THE NO-RECTANGLE CASE IS RESOLVED HERE, ONCE. A region with no rect is
+    the site's own extent, which `eval_goal` renders as a token radius; the
+    device tape has no `has_rect` flag and must not grow one, so the two
+    readers agree by both taking the rectangle from this function.
+    """
+    var out = List[List[Float64]]()
+    for i in range(len(f.regions)):
+        ref r = f.regions[i]
+        var q = List[Float64]()
+        if r.has_rect:
+            q.append(r.x_min)
+            q.append(r.y_min)
+            q.append(r.x_max)
+            q.append(r.y_max)
+        else:
+            q.append(-0.02)
+            q.append(-0.02)
+            q.append(0.02)
+            q.append(0.02)
+        out.append(q^)
+    return out^
+
+
 # ── the host driver ───────────────────────────────────────────────────────
 
 

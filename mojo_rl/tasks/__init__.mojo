@@ -36,6 +36,10 @@ from .sampler import (
 from .eval import (
     eval_goal, region_sites,
     pred_in_rect, pred_near, pred_above, pred_upright,
+    region_rects,
+)
+from .tape import (
+    encode_goal, eval_tape, TAPE_WORDS, TERM_WORDS, MAX_TAPE_TERMS,
 )
 from .reset import (
     SlotAddress, free_slot_addresses, reset_slots,

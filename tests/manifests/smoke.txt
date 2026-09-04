@@ -95,6 +95,13 @@ tests/tasks/test_task_eval.mojo
 # model, resets from a sampled init, and checks the region is within reach.
 tests/tasks/test_task_reset_steps.mojo
 
+# ── mojo_rl/tasks: the device tape vs the host evaluator (P3a) ──────
+# ⚠ THE SWEEP MUST MAKE EACH GOAL FLIP, and the gate asserts it does. Two
+# evaluators agreeing on states where every goal is False is what `return
+# False` also achieves; the per-task "N of 25 satisfy it" line is the check
+# that the agreement means something.
+tests/tasks/test_task_tape.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
