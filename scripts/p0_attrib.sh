@@ -68,6 +68,35 @@ fi
 # ACTIVATION and not by the binary — running the built executable from a plain
 # shell silently loses it. The tell is the `[intercept] ... loaded` banner: if
 # it is missing from the probe output, the environment is wrong.
+# ⚠⚠ THE PROBE'S OWN KNOBS MUST BE AT PRODUCTION, and one of them cost a whole
+# sweep. `RESET_EVERY_STEP` pins the state so a bisect cannot feed back into its
+# own workload — invaluable for comparing truncated arms, and RUINOUS for an
+# ordinary A/B, because it measures the RESET POSE instead of a settled
+# trajectory. Left on by accident it does not fail: it produces a complete table
+# whose untouched kernels sit 20-35% away from the baseline's, which reads as a
+# regression in the change under test.
+#
+# The sweep cannot know which you meant, so it refuses to guess and says which
+# knob and how to clear it.
+_probe_knob_check() {
+  local f="$PROBE" k v
+  for k in RESET_EVERY_STEP; do
+    v=$(sed -n "s/^comptime ${k}: Bool = //p" "$f")
+    if [ "$v" = "True" ]; then
+      echo "!! ${k} is True in $f."
+      echo "   That pins the state to the RESET POSE. Valid only for comparing"
+      echo "   arms of one bisect; it makes this table incomparable with any"
+      echo "   normal sweep, including the baseline you are about to diff it"
+      echo "   against. If that is deliberate, set OUT to something that says"
+      echo "   so and re-run with ALLOW_PINNED=1."
+      echo "   Otherwise:  git checkout $f"
+      [ "${ALLOW_PINNED:-0}" = "1" ] || exit 1
+      echo "   ALLOW_PINNED=1 — continuing, and the header will say 'pinned'."
+    fi
+  done
+}
+_probe_knob_check
+
 BIN="$OUT/park_attrib_probe"
 echo "=== building once ($PROBE) ==="
 mojo build -I . -o "$BIN" "$PROBE" || { echo "!! build failed"; exit 1; }
