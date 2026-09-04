@@ -29,6 +29,26 @@ anything but bit equality means one of them has drifted from it.
 
 ⚠ NO CAMERA, NO PIL, NO NETWORK. The committed 640x480 fixture is decoded with
 our own PNG reader.
+
+## Leg 4: a SAME-SIZE resize must be the IDENTITY
+
+⚠⚠ **A 26.5 GiB STORE RESTS ON THIS.** `import_lerobot_v3` ALWAYS calls
+`resize_bilinear_pil`, with no early-out when the target equals the source. So
+importing the SO-101 recording at its native 480x640 — which is what the
+SmolVLA path needs, because SmolVLA wants torch's bilinear applied later and
+NOT PIL's applied twice — is lossless only if a same-size resize returns its
+input byte for byte.
+
+The arithmetic says it must: at scale 1.0 the support is 1.0, the window is
+three taps, the triangle puts weight 1 on the centre and 0 on its neighbours,
+and the fixed-point accumulator (`1 << 21` then `>> 22`) rounds an integer
+straight back to itself. That is a chain of four things being individually
+right, which is a description of code that is usually right rather than a
+proof, and the cost of being wrong is a 26.5 GiB dataset that is quietly a
+blurred copy of the recording.
+
+⚠ The other three legs all DOWNSCALE. Scale 1.0 is the corner they never
+reach, and it is the only one the native import uses.
 """
 
 from std.pathlib import Path
@@ -164,6 +184,33 @@ def main() raises:
                         213 * 157 * 3)
     compared += 213 * 157 * 3
 
+    # ── leg 4: identity at scale 1.0, BOTH implementations ───────────────
+    # ⚠ BOTH, and `resize_bilinear_pil` FIRST — it is the one the importer
+    # calls and therefore the one the store depends on. Checking only the
+    # deploy-side `pil_bilinear_u8` here would be checking the wrong function;
+    # legs 1-3 make them equal on DOWNSCALES, which does not extend to a case
+    # they never exercise.
+    print("")
+    print("  leg 4: same-size resize must be the identity")
+    var same_i = List[UInt8](length=SRC_W * SRC_H * 3, fill=0)
+    resize_bilinear_pil(
+        _uptr(img.pixels), SRC_H, SRC_W, _uptr(same_i), SRC_H, SRC_W,
+        scratch, 3
+    )
+    failures += compare(
+        "import  resize_bilinear_pil(640x480 -> 640x480) vs input",
+        img.pixels, same_i, SRC_W * SRC_H * 3,
+    )
+    compared += SRC_W * SRC_H * 3
+
+    var same_d = List[UInt8]()
+    pil_bilinear_u8(img.pixels, SRC_W, SRC_H, 3, same_d, SRC_W, SRC_H)
+    failures += compare(
+        "deploy  pil_bilinear_u8(640x480 -> 640x480)      vs input",
+        img.pixels, same_d, SRC_W * SRC_H * 3,
+    )
+    compared += SRC_W * SRC_H * 3
+
     print("")
     if failures != 0:
         print(
@@ -173,6 +220,6 @@ def main() raises:
         )
         raise Error("resize implementations disagree")
     print(
-        "[PASS] " + String(compared) + " bytes compared across 3 legs, 0"
-        " differ"
+        "[PASS] " + String(compared) + " bytes compared across 5"
+        " comparisons (3 downscales + 2 identities), 0 differ"
     )
