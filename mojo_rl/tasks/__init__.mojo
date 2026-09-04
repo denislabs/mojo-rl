@@ -29,3 +29,7 @@ from .predicates import (
     op_name, op_arity, op_is_tier_a, op_is_composite,
     MAX_GOAL_TERMS,
 )
+from .sampler import (
+    Placement, RegionFrame, SampleReport,
+    sample_placements, MAX_PLACE_ATTEMPTS, PLACEMENT_SALT,
+)

@@ -72,6 +72,14 @@ tests/tasks/test_family_compose_vs_mujoco.mojo
 # invariant, which is what makes a stackless (GPU-shaped) evaluator legal.
 tests/tasks/test_goal_language.mojo
 
+# ── mojo_rl/tasks: placement sampling (P2b) ─────────────────────────
+# ⚠ THE REJECTION BRANCH IS THE THING UNDER TEST. A sampler with the overlap
+# check deleted still returns poses, still lands them in the region and still
+# reproduces per seed — VERIFIED by ablation: 8 of the 13 checks still pass
+# without it. The two that do not are the crowded-region attempt counter and
+# the over-constrained raise. Do not "simplify" either away.
+tests/tasks/test_sampler.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
