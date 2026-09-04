@@ -40,6 +40,19 @@ comptime C = SmolVLAKVCache[LAYERS, PREFIX, SUFFIX, N_KV, HD, B]
 comptime LN = C.LAYER_N
 comptime SN = C.SUFFIX_N
 
+# ── the B > 1 fixture (leg [6]) ──────────────────────────────────────────
+# ⚠ Tiny and separate ON PURPOSE. Every other leg here runs at B == 1, which
+# is exactly the value at which the layout bug leg [6] exists to catch is
+# invisible. A gate that only scales the main fixture would have inherited the
+# blind spot.
+comptime B2 = 2
+comptime P2 = 2
+comptime S2 = 1
+comptime NKV2 = 1
+comptime HD2 = 2
+comptime C2 = SmolVLAKVCache[1, P2, S2, NKV2, HD2, B2]
+comptime KVW2 = NKV2 * HD2
+
 
 def _pattern(layer: Int, i: Int) -> Scalar[DT]:
     """Distinct per (layer, element) — so a layer-offset bug cannot alias."""
@@ -168,6 +181,68 @@ def main() raises:
     print("  [5] GPU vs CPU scratch: compared", LN + 2 * SN, " wrong", gbad)
     assert_true(gbad == 0, "the GPU sub-buffer copies disagree with the CPU"
                            " path")
+
+    # ── [6] the scratch is BATCH-MAJOR, which only B > 1 can see ─────────
+    # `build_scratch` splices a prefix and a suffix into one slab that
+    # `RepeatKVHeads` and then `BlockCrossAttention` read as [B, FULL*KVW]:
+    # batch b's prefix followed by batch b's OWN suffix. Splicing the whole
+    # prefix slab and then the whole suffix slab gives the identical bytes at
+    # B == 1 and a different tensor at B == 2, where batch 1's prefix lands
+    # inside batch 0's key window. Nothing crashes — attention over the wrong
+    # keys is finite, plausible, and wrong.
+    #
+    # ⚠ This is on V2's critical path in a way it was not on V1's: inference
+    # runs one observation, training runs batches.
+    var c2 = C2.make["cpu"]()
+    var kp2 = Tensor.alloc(B2 * P2 * KVW2)
+    var vp2 = Tensor.alloc(B2 * P2 * KVW2)
+    for b in range(B2):
+        for t in range(P2):
+            for e in range(KVW2):
+                # 100b + 10t + e: batch, token and channel all separable, so a
+                # transposition cannot alias into a right-looking value.
+                kp2.data[b * P2 * KVW2 + t * KVW2 + e] = Scalar[DT](
+                    100 * b + 10 * t + e
+                )
+                vp2.data[b * P2 * KVW2 + t * KVW2 + e] = Scalar[DT](
+                    -(100 * b + 10 * t + e)
+                )
+    c2.write_prefix["cpu"](0, kp2, vp2)
+    var ks2 = Tensor.alloc(B2 * S2 * KVW2)
+    var vs2 = Tensor.alloc(B2 * S2 * KVW2)
+    for b in range(B2):
+        for e in range(KVW2):
+            ks2.data[b * S2 * KVW2 + e] = Scalar[DT](900 + 100 * b + e)
+            vs2.data[b * S2 * KVW2 + e] = Scalar[DT](-(900 + 100 * b + e))
+    c2.build_scratch["cpu"](0, ks2, vs2)
+
+    var b2cmp = 0
+    var b2bad = 0
+    for b in range(B2):
+        for t in range(P2 + S2):
+            for e in range(KVW2):
+                var want: Scalar[DT]
+                if t < P2:
+                    want = Scalar[DT](100 * b + 10 * t + e)
+                else:
+                    want = Scalar[DT](900 + 100 * b + e)
+                var got = c2.sk.data[b * (P2 + S2) * KVW2 + t * KVW2 + e]
+                b2cmp += 1
+                if got != want:
+                    b2bad += 1
+                if c2.sv.data[b * (P2 + S2) * KVW2 + t * KVW2 + e] != -want:
+                    b2bad += 1
+                b2cmp += 1
+    print("  [6] B=2 scratch is batch-major: compared", b2cmp, " wrong",
+          b2bad)
+    assert_equal(
+        b2cmp, 2 * B2 * (P2 + S2) * KVW2, "every scratch slot must be probed"
+    )
+    assert_true(
+        b2bad == 0,
+        "build_scratch is not batch-major: at B > 1 one batch's prefix sits"
+        " in another's key window",
+    )
 
     print()
     print("PASSED")

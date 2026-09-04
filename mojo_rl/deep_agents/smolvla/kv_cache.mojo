@@ -67,6 +67,15 @@ struct SmolVLAKVCache[
     comptime FULL: Int = Self.PREFIX + Self.SUFFIX
     comptime SCRATCH_N: Int = Self.B * Self.FULL * Self.KVW
     comptime SUFFIX_N: Int = Self.B * Self.SUFFIX * Self.KVW
+    # ⚠ PER-BATCH spans. The three totals above are B times these, and every
+    # consumer of `sk`/`sv` (`RepeatKVHeads`, then `BlockCrossAttention`)
+    # indexes them as `[B, FULL*KVW]` — batch-major, so each batch's prefix is
+    # followed by ITS OWN suffix. Concatenating the totals instead gives every
+    # batch's prefix and then every batch's suffix, which is the same bytes at
+    # B == 1 and a different tensor at B > 1. See `build_scratch`.
+    comptime PRE_B: Int = Self.PREFIX * Self.KVW
+    comptime SUF_B: Int = Self.SUFFIX * Self.KVW
+    comptime FULL_B: Int = Self.FULL * Self.KVW
 
     var k: Tensor
     var v: Tensor
@@ -211,42 +220,61 @@ struct SmolVLAKVCache[
         This is what a denoising SELF-attention layer attends over. The prefix
         slab is untouched, so nothing has to be cropped afterwards and ten steps
         in a row see the identical prefix.
+
+        ⚠ **PER BATCH ELEMENT.** The result is `[B, FULL*KVW]` — batch b's
+        prefix followed by batch b's own suffix — because that is how
+        `RepeatKVHeads` and then `BlockCrossAttention` index it. Splicing the
+        whole prefix slab and then the whole suffix slab is the same bytes at
+        B == 1 and a *different tensor* at B > 1, where it interleaves batch 1's
+        prefix into batch 0's key window. That was this routine's behaviour
+        until 5 Sep 2026, invisible to every gate because every gate ran at
+        B == 1 and it never crashes: attention over the wrong keys is finite.
         """
         self._require_filled(layer)
         var off = layer * Self.LAYER_N
         comptime if target == "cpu":
-            for i in range(Self.LAYER_N):
-                self.sk.data[i] = self.k.data[off + i]
-                self.sv.data[i] = self.v.data[off + i]
-            for i in range(Self.SUFFIX_N):
-                self.sk.data[Self.LAYER_N + i] = k_suf.data[i]
-                self.sv.data[Self.LAYER_N + i] = v_suf.data[i]
+            for b in range(Self.B):
+                var so = b * Self.FULL_B
+                var po = off + b * Self.PRE_B
+                for i in range(Self.PRE_B):
+                    self.sk.data[so + i] = self.k.data[po + i]
+                    self.sv.data[so + i] = self.v.data[po + i]
+                for i in range(Self.SUF_B):
+                    self.sk.data[so + Self.PRE_B + i] = k_suf.data[
+                        b * Self.SUF_B + i
+                    ]
+                    self.sv.data[so + Self.PRE_B + i] = v_suf.data[
+                        b * Self.SUF_B + i
+                    ]
         else:
             var d = ctx.value()
-            var kp = self.k.dev.value().create_sub_buffer[DT](
-                off, Self.LAYER_N
-            )
-            var vp = self.v.dev.value().create_sub_buffer[DT](
-                off, Self.LAYER_N
-            )
-            var kd = self.sk.dev.value().create_sub_buffer[DT](
-                0, Self.LAYER_N
-            )
-            var vd = self.sv.dev.value().create_sub_buffer[DT](
-                0, Self.LAYER_N
-            )
-            d.enqueue_copy(kd, kp)
-            d.enqueue_copy(vd, vp)
-            var kt = self.sk.dev.value().create_sub_buffer[DT](
-                Self.LAYER_N, Self.SUFFIX_N
-            )
-            var vt = self.sv.dev.value().create_sub_buffer[DT](
-                Self.LAYER_N, Self.SUFFIX_N
-            )
-            var ks = k_suf.dev.value().create_sub_buffer[DT](0, Self.SUFFIX_N)
-            var vs = v_suf.dev.value().create_sub_buffer[DT](0, Self.SUFFIX_N)
-            d.enqueue_copy(kt, ks)
-            d.enqueue_copy(vt, vs)
+            for b in range(Self.B):
+                var so = b * Self.FULL_B
+                var po = off + b * Self.PRE_B
+                d.enqueue_copy(
+                    self.sk.dev.value().create_sub_buffer[DT](so, Self.PRE_B),
+                    self.k.dev.value().create_sub_buffer[DT](po, Self.PRE_B),
+                )
+                d.enqueue_copy(
+                    self.sv.dev.value().create_sub_buffer[DT](so, Self.PRE_B),
+                    self.v.dev.value().create_sub_buffer[DT](po, Self.PRE_B),
+                )
+                d.enqueue_copy(
+                    self.sk.dev.value().create_sub_buffer[DT](
+                        so + Self.PRE_B, Self.SUF_B
+                    ),
+                    k_suf.dev.value().create_sub_buffer[DT](
+                        b * Self.SUF_B, Self.SUF_B
+                    ),
+                )
+                d.enqueue_copy(
+                    self.sv.dev.value().create_sub_buffer[DT](
+                        so + Self.PRE_B, Self.SUF_B
+                    ),
+                    v_suf.dev.value().create_sub_buffer[DT](
+                        b * Self.SUF_B, Self.SUF_B
+                    ),
+                )
 
     def read_layer_into[
         target: StaticString
