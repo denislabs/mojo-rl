@@ -123,15 +123,18 @@ def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
     fixture owns bit 0), and the two disagree on purpose: the mask describes
     the scene and this describes the reset, which only free slots take part in.
 
-    ⚠ `-1` FOR A SLOT WITH NO `init=`, which includes every inactive slot.
-    Region 0 would be a real, wrong placement; -1 is a value the device can
-    branch on. `constants.INIT_REGION_NONE` is that number.
+    ⚠⚠ THE VALUE IS `region_index + 1`, AND ZERO MEANS "NO init=". `Data`
+    uploads a ZERO-FILLED `meta` at construction, so zero is what a lane reads
+    until a driver writes these words — and with 0 meaning `table_top` a
+    driver that forgot them would silently PLACE every free slot instead of
+    parking it. Biasing by one makes the untouched value mean the safe thing.
+    `constants.INIT_REGION_NONE` is that zero.
 
-    ⚠ THE VALUE IS A FAMILY REGION INDEX, so it indexes the same table
-    `region_rects` and `region_half_heights` produce — and it is the index the
-    DEVICE resolves against its restated copy of that table. A task naming a
-    region the family does not declare is refused by
-    `validate_task_against_family` long before here.
+    ⚠ THE UNBIASED VALUE IS A FAMILY REGION INDEX, so it indexes the same
+    table `region_rects` and `region_half_heights` produce — and it is what
+    the DEVICE resolves against its restated copy. A task naming a region the
+    family does not declare is refused by `validate_task_against_family` long
+    before here.
     """
     var out = List[Float64]()
     for i in range(len(f.slots)):
@@ -141,5 +144,5 @@ def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
         for k in range(len(t.inits)):
             if t.inits[k].slot == f.slots[i].name:
                 ri = f.region_index(t.inits[k].region)
-        out.append(Float64(ri))
+        out.append(Float64(ri + 1))
     return out^

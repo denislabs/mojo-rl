@@ -265,10 +265,14 @@ comptime META_IDX_TASK_ACTIVE: Int = 18
 # draw, which is what makes 1024 lanes cheap and what `tasks/sampler.mojo` was
 # written to be callable from.
 #
-# ⚠ `-1` MEANS "NOT PLACED" and is what an inactive slot carries. It is a
-# distinguishable value rather than region 0, because "no init" and "init into
-# the first region" are different statements and the second is a real, wrong
-# placement.
+# ⚠⚠ THE WORD IS `region_index + 1`, SO **ZERO MEANS NOT PLACED**. That looks
+# like an off-by-one waiting to happen and it is the opposite: `Data.__init__`
+# uploads a ZERO-FILLED `meta` to device (`fields/data.mojo`), so zero is what
+# every lane reads until a driver writes something. With `-1` as the sentinel
+# and 0 meaning `table_top`, a driver that forgot these words would silently
+# PLACE every free slot on the table instead of parking it — a real, wrong
+# scene, in the tasks that park a prop deliberately. Biasing by one makes the
+# untouched value mean the safe thing.
 #
 # ⚠ THREE, MATCHING `So101TabletopConfig.N_FREE_SLOTS`. A family with more
 # free slots needs more words here — the ceiling is the same 13-slot compile
@@ -277,8 +281,9 @@ comptime META_IDX_INIT_REGION_0: Int = 19
 comptime META_IDX_INIT_REGION_1: Int = 20
 comptime META_IDX_INIT_REGION_2: Int = 21
 
-comptime INIT_REGION_NONE: Float64 = -1.0
-"""What `META_IDX_INIT_REGION_*` holds for a slot with no `init=`."""
+comptime INIT_REGION_NONE: Float64 = 0.0
+"""What `META_IDX_INIT_REGION_*` holds for a slot with no `init=` — and what
+an untouched `meta` already holds. See the note above."""
 
 
 # =============================================================================

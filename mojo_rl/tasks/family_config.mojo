@@ -906,12 +906,14 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
                     else META_IDX_INIT_REGION_2
                 )
             )
-            var ri = Int(rebind[Scalar[DTYPE]](meta[env, mw]))
-            # ⚠ `-1` IS "NO init=", INCLUDING EVERY INACTIVE SLOT. Left where
-            # `qpos0` put it, which is the park pose, which is where
-            # `pre_step_full_gpu` pins it every step anyway. Treating -1 as
-            # region 0 would place an inactive prop on the table, visible in
-            # nothing but the contact count.
+            # ⚠⚠ THE WORD IS `region_index + 1` AND ZERO MEANS "NO init=" —
+            # which is also what an untouched `meta` holds, because `Data`
+            # uploads a zero-filled one at construction. A driver that forgot
+            # these words therefore PARKS every free slot, which is the safe
+            # answer; with 0 meaning `table_top` it would silently place them.
+            # A slot left alone stays where `qpos0` put it — the park pose,
+            # which `pre_step_full_gpu` pins every step anyway.
+            var ri = Int(rebind[Scalar[DTYPE]](meta[env, mw])) - 1
             if ri >= 0:
                 # the region rectangle, resolved from the restated table
                 var rx0 = Scalar[DTYPE](Self.REGION_X0_0)

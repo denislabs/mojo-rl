@@ -325,6 +325,59 @@ def main() raises:
     ta.check(total_cmp >= 3 * 2 * BATCH,
              "the comparison covered at least two props per lane somewhere")
 
+    # ── 3. an UNTOUCHED `meta` parks everything ───────────────────────────
+    #
+    # ⚠⚠ THE CASE A DRIVER FALLS INTO BY FORGETTING. `Data.__init__` uploads a
+    # ZERO-FILLED `meta`, so zero is what every lane reads until something
+    # writes these words — and `task_batched_gpu.mojo` and
+    # `task_eval_frozen.mojo` both call `reset_batch` BEFORE they write any.
+    # The word is `region_index + 1` precisely so that zero means "not
+    # placed": with 0 meaning `table_top` those two would silently place every
+    # free slot on the table instead of parking it, and the only visible trace
+    # would be the contact count.
+    print()
+    print("--- 3. an untouched meta parks every free slot ---")
+    var zs = TensorImpl[DT].alloc(BATCH * NQ)
+    var zv = TensorImpl[DT].alloc(BATCH * NV)
+    var zm = TensorImpl[DT].alloc(BATCH * METADATA_SIZE)
+    for i in range(BATCH * METADATA_SIZE):
+        zm.data[i] = Scalar[DT](0)     # exactly what Data uploads
+    var zqt = zs.lt["cpu", L_Q]()
+    var zvt = zv.lt["cpu", L_V]()
+    var zmt = zm.lt["cpu", L_M]()
+    var parked_ok = True
+    for lane in range(BATCH):
+        for j in range(NF):
+            var qa = (
+                CFG.FREE_QADR_0 if j == 0
+                else (CFG.FREE_QADR_1 if j == 1 else CFG.FREE_QADR_2)
+            )
+            var si = (
+                CFG.FREE_SLOT_IDX_0 if j == 0
+                else (CFG.FREE_SLOT_IDX_1 if j == 1 else CFG.FREE_SLOT_IDX_2)
+            )
+            zqt[lane, qa + 0] = Scalar[DT](
+                CFG.PARK_X + Float64(si) * CFG.PARK_SPACING
+            )
+            zqt[lane, qa + 1] = Scalar[DT](CFG.PARK_Y)
+            zqt[lane, qa + 2] = Scalar[DT](CFG.PARK_Z)
+        CFG.init_qpos_gpu[DT, BATCH, NQ, 1, NV, 1, 1](
+            zqt, zvt,
+            dj.lt["cpu", L_J](), dm3.lt["cpu", L_M3](), dm4.lt["cpu", L_M4](),
+            db.lt["cpu", L_B](), dg.lt["cpu", L_G](),
+            zmt, lane, SEED,
+        )
+        for j in range(NF):
+            var qa2 = (
+                CFG.FREE_QADR_0 if j == 0
+                else (CFG.FREE_QADR_1 if j == 1 else CFG.FREE_QADR_2)
+            )
+            if Float64(rebind[Scalar[DT]](zqt[lane, qa2 + 2])) != CFG.PARK_Z:
+                parked_ok = False
+    ta.check(parked_ok,
+             "a zero `meta` leaves every free slot AT ITS PARK POSE"
+             " (the word is region_index + 1)")
+
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")
     if ta.failures != 0:

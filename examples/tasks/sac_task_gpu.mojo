@@ -261,7 +261,7 @@ def main() raises:
     var iw = init_region_words(t, f)
     var n_active_free = 0
     for j in range(len(iw)):
-        if iw[j] >= 0.0:
+        if iw[j] > 0.0:      # the word is region_index + 1; 0 = not placed
             n_active_free += 1
     print("  free slots placed at reset:", n_active_free, "of", len(iw))
 
