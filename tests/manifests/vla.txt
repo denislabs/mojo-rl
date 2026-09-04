@@ -45,13 +45,3 @@ tests/deep_agents/smolvla/test_embed.mojo
 # newline `NewLineTaskProcessorStep` appends survived, and that two
 # instructions of different lengths raise rather than silently picking one.
 tests/deep_agents/smolvla/test_tasks.mojo
-
-# V2 — the backward driver, every gradient against Richardson-extrapolated
-# central differences of its OWN forward: 704 components, 16 parameter kinds,
-# total ||err||/||fd|| 2.7e-05. Self-consistency, not parity — it says the
-# backward differentiates the forward we have, which is the one property no
-# amount of parity testing gives. Carries four measured ablations, one of
-# which is invisible to the input-gradient leg and one of which changes
-# nothing (and says so).
-# ⚠ ~1,400 forward passes. Seconds at these dims, but not instant.
-tests/deep_agents/smolvla/test_denoise_backward.mojo

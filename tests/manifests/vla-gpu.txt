@@ -70,3 +70,15 @@ tests/deep_agents/smolvla/test_prefix_embed.mojo
 # repeated one must reproduce exactly. Seeded weights, no download.
 # ⚠ ~4 min, nearly all compile — one instantiation of all 44 layers.
 tests/deep_agents/smolvla/test_policy.mojo
+
+# V2 — the backward driver, every gradient against Richardson-extrapolated
+# central differences of its OWN forward: 704 components, 16 parameter kinds,
+# total ||err||/||fd|| 2.7e-05. Self-consistency, not parity — it says the
+# backward differentiates the forward we have, which is the one property no
+# amount of parity testing gives. Carries four measured ablations, one of
+# which is invisible to the input-gradient leg and one of which changes
+# nothing (and says so).
+# Legs [5]-[6] then carry it to the GPU, where training will run and where
+# finite differences cannot go: 704 components, 1.5e-07 norm-relative.
+# ⚠ ~1,400 CPU forward passes. Seconds at these dims, but not instant.
+tests/deep_agents/smolvla/test_denoise_backward.mojo

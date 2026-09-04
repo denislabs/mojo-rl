@@ -18,7 +18,10 @@ So every gradient is compared against a central difference of the loss:
     L(theta) = sum_t g_t * out_t(theta)          g fixed, arbitrary
     dL/dtheta ~ [L(theta + h) - L(theta - h)] / 2h
 
-taken through the SAME `step` the backward claims to invert. That makes this a
+taken through the SAME `step` the backward claims to invert. Legs [5] and [6]
+then carry the result to the GPU, which is where training will actually run
+and which finite differences cannot reach — hundreds of cheap forwards is a
+CPU shape. That makes this a
 self-consistency gate rather than a parity gate — it cannot tell us the
 forward matches `lerobot` (that is `test_parity_vs_hf.mojo`), only that the
 backward differentiates the forward we have. That is exactly the property no
@@ -48,6 +51,14 @@ is what says the band is still tight enough to be worth having.
   * **The forward wrote both layernorm outputs into one slot.** Split into
     `H` and `H2` when recording, or every q/k/v weight gradient in every layer
     is formed against the MLP norm's output.
+  * **The finite differences leave their own scratch perturbed.** `_loss`
+    writes into a shared `out`, and each probe ends on an evaluation at
+    `theta - h/2` and then restores `theta` WITHOUT re-running. Legs [5] and
+    [6] compare the GPU against `out`, and the first version of them reported
+    a 2e-2 disagreement that was entirely a stale CPU reference — the GPU and
+    CPU forwards actually agree to 8.8e-08. The unperturbed forward is
+    recomputed before the GPU legs, and `l1 == l0` asserts the restore was
+    exact, which is the check that would have said so immediately.
   * **`Module.vjp` ASSIGNS `grad_inputs`.** `H` feeds q, k and v; `X` and `X2`
     each feed a residual and a norm. Every one of those is an explicit sum
     into a separate slab, because sharing a destination silently keeps the
@@ -86,6 +97,7 @@ this call is already right — and no gate would have told us.
 
 from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -247,6 +259,27 @@ def _pgrad(which: Int, t: Int, mut e: Expert) raises -> Scalar[DT]:
     if which == 13: return e.cross_layers[0].mlp.up.weight.grd.data[t]
     if which == 14: return e.cross_layers[0].input_layernorm.gamma.grd.data[t]
     return e.norm.gamma.grd.data[t]
+
+
+def _pdownload(which: Int, mut e: Expert, d: DeviceContext) raises:
+    """Bring one probed `.grd` back from the device, so `_pgrad` can read it."""
+    if which == 0: e.self_layers[0].q.weight.grd.download(d)
+    elif which == 1: e.self_layers[0].k.weight.grd.download(d)
+    elif which == 2: e.self_layers[0].v.weight.grd.download(d)
+    elif which == 3: e.self_layers[0].o.weight.grd.download(d)
+    elif which == 4: e.self_layers[0].mlp.gate.weight.grd.download(d)
+    elif which == 5: e.self_layers[0].mlp.down.weight.grd.download(d)
+    elif which == 6: e.self_layers[0].input_layernorm.gamma.grd.download(d)
+    elif which == 7:
+        e.self_layers[0].post_attention_layernorm.gamma.grd.download(d)
+    elif which == 8: e.self_layers[0].q.bias.grd.download(d)
+    elif which == 9: e.cross_layers[0].q.weight.grd.download(d)
+    elif which == 10: e.cross_layers[0].k.weight.grd.download(d)
+    elif which == 11: e.cross_layers[0].v.weight.grd.download(d)
+    elif which == 12: e.cross_layers[0].o.weight.grd.download(d)
+    elif which == 13: e.cross_layers[0].mlp.up.weight.grd.download(d)
+    elif which == 14: e.cross_layers[0].input_layernorm.gamma.grd.download(d)
+    else: e.norm.gamma.grd.download(d)
 
 
 def _loss(
@@ -495,6 +528,97 @@ def main() raises:
         total.rel_norm() < NORM_BAND, "the weight gradients disagree in norm"
     )
 
+    # ── [5] the GPU path, which is where training will actually run ──────
+    # ⚠ Legs [2]-[4] are CPU-only — finite differences need hundreds of cheap
+    # forwards. So everything above says nothing whatever about the kernels in
+    # `grad_ops` or the GPU branches of `backward`, and those are the ones a
+    # training run uses. This leg is the bridge.
+    #
+    # The two experts are built from the same deterministic initialiser rather
+    # than copied. That is only sound if it really does produce identical
+    # weights, so the forward outputs are compared FIRST: if they agree, the
+    # weights agree, and any gradient difference is the backward's.
+    # ⚠ `out` currently holds the LAST finite-difference forward — legs [2]
+    # and [3] each end on a perturbed evaluation and restore the parameter
+    # without re-running. Recompute the unperturbed forward before comparing
+    # anything to it. (This cost an hour: the GPU leg reported a 2e-2
+    # disagreement that was entirely a stale CPU reference.)
+    var l1 = _loss(den, e, c, x, g, out)
+    assert_true(
+        abs(l1 - l0) < 1.0e-9,
+        "the finite differences did not restore every perturbed value",
+    )
+
+    var d = DeviceContext()
+    var eg = Expert.make["gpu", Deterministic](Optional(d))
+    var cg = Cache.make["gpu"](Optional(d))
+    var deng = Den.make["gpu"](mask_self, mask_cross, Optional(d))
+    var kg = Tensor.alloc(PKV)
+    var vg = Tensor.alloc(PKV)
+    for l in range(L):
+        for i in range(PKV):
+            kg.data[i] = Scalar[DT](((i * 31 + l * 7) % 13) - 6) * 0.11
+            vg.data[i] = Scalar[DT](((i * 17 + l * 5) % 11) - 5) * 0.09
+        kg.upload(d)
+        vg.upload(d)
+        cg.write_prefix["gpu"](l, kg, vg, Optional(d))
+
+    var xg = Tensor.alloc(XN)
+    var gog = Tensor.alloc(XN)
+    for i in range(XN):
+        xg.data[i] = x.data[i]
+        gog.data[i] = Scalar[DT](g[i])
+    xg.upload(d)
+    gog.upload(d)
+    var outg = Tensor.alloc(XN)
+    outg.upload(d)
+    deng.step["gpu"](eg, cg, xg, outg, Optional(d))
+    d.synchronize()
+    outg.download(d)
+
+    var fwd = Cmp()
+    var fl = List[Float64]()
+    for i in range(XN):
+        fl.append(Float64(out.data[i]))
+    fwd.set_group(fl)
+    for i in range(XN):
+        fwd.add(Float64(outg.data[i]), Float64(out.data[i]), i)
+    print("  [5] GPU forward vs CPU: compared", fwd.n, " ||err||/||fd||",
+          fwd.rel_norm())
+    assert_true(
+        fwd.rel_norm() < 1.0e-4,
+        "the GPU forward disagrees with the CPU one, so leg [6] cannot"
+        " attribute a gradient difference to the backward",
+    )
+
+    var gxg = Tensor.alloc(XN)
+    gxg.upload(d)
+    deng.backward["gpu"](eg, cg, gog, gxg, Optional(d))
+    d.synchronize()
+    gxg.download(d)
+
+    var gcmp = Cmp()
+    gcmp.set_group(gx)
+    for t in range(XN):
+        gcmp.add(Float64(gxg.data[t]), gx[t], t)
+    var k1 = 0
+    for which in range(N_KINDS):
+        _pdownload(which, eg, d)
+        for t in range(_psize(which)):
+            gcmp.add(Float64(_pgrad(which, t, eg)), snap[k1 + t],
+                     XN + k1 + t)
+        k1 += _psize(which)
+    print("  [6] GPU backward vs CPU: compared", gcmp.n, " ||err||/||fd||",
+          gcmp.rel_norm(), " outside band", gcmp.bad, " worst rel",
+          gcmp.worst)
+    assert_equal(
+        gcmp.n, XN + total.n, "the GPU leg must compare every component"
+    )
+    assert_true(
+        gcmp.rel_norm() < 1.0e-4,
+        "the GPU backward disagrees with the CPU one",
+    )
+
     print()
     print("PASSED — " + String(total.n + cx.n) + " gradient components against"
-          " central differences")
+          " central differences, " + String(gcmp.n) + " against the GPU")
