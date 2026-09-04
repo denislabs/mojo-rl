@@ -850,28 +850,32 @@ struct SmolVLAPolicy[
             + " tensors loaded (lm_head's 1 skipped by design)"
         )
 
-    def select_action[
+    def build_prefix[
         target: StaticString
     ](
         mut self,
         mut images: Tensor,
         ref lang_ids: List[Int],
         ref raw_state: List[Float32],
-        mut noise: Tensor,
-        mut actions: List[Float32],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """One observation to `[CHUNK, action_dim]` in robot units.
+        """One observation to a filled KV cache. Everything before the action.
 
-        `images` is `[N_CAM, 3*512*512]` in `[-1, 1]` (see
-        `smolvla/observation.mojo`); `raw_state` is the robot's own joint
-        values; `noise` is x_1, `[B, CHUNK*ADIM]`, supplied by the caller so the
-        RNG stays outside and a gate can pin it.
+        Inference calls this and then integrates; TRAINING calls it and then
+        takes one denoising step at a sampled `t`. It is factored out so the
+        two share a single description of what a prefix IS — the state
+        normalisation, the segment order, the cache reset — rather than a
+        training driver growing its own copy that drifts from this one. That
+        drift is the defect shape this port has paid for most.
+
+        ⚠ The cache is RESET every call. A cache carried across observations
+        is a policy acting on the previous scene, silently — and in training
+        it is a batch element conditioned on its predecessor's images.
         """
         if self.stats.state_dim() == 0:
             raise Error(
                 "SmolVLAPolicy: no stats — call load_stats() before"
-                " select_action, or the state goes in unnormalised"
+                " build_prefix, or the state goes in unnormalised"
             )
 
         # ── state: normalise, pad to 32 ──────────────────────────────────
@@ -892,12 +896,30 @@ struct SmolVLAPolicy[
             self.state_proj, images, lang_ids, self.state_buf,
             self.prefix_buf, ctx,
         )
-        # ⚠ Refilled EVERY call. A cache carried across observations is a
-        # policy acting on the previous scene, silently.
         self.cache.reset()
         self.prefill.run[target](
             self.tower, self.cache, self.prefix_buf, self.prefill_out, ctx
         )
+
+    def select_action[
+        target: StaticString
+    ](
+        mut self,
+        mut images: Tensor,
+        ref lang_ids: List[Int],
+        ref raw_state: List[Float32],
+        mut noise: Tensor,
+        mut actions: List[Float32],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """One observation to `[CHUNK, action_dim]` in robot units.
+
+        `images` is `[N_CAM, 3*512*512]` in `[-1, 1]` (see
+        `smolvla/observation.mojo`); `raw_state` is the robot's own joint
+        values; `noise` is x_1, `[B, CHUNK*ADIM]`, supplied by the caller so the
+        RNG stays outside and a gate can pin it.
+        """
+        self.build_prefix[target](images, lang_ids, raw_state, ctx)
 
         # ── ten Euler steps ──────────────────────────────────────────────
         self.sampler.sample[target, Self.P](

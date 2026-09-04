@@ -109,3 +109,11 @@ tests/deep_agents/smolvla/test_train_step.mojo
 # zero_trainable_grads really zeroes all of them, and a control at lr=0 that
 # must not move at all. Leg [6] runs the loop on GPU (1e-06 per step).
 tests/deep_agents/smolvla/test_finetune_overfit.mojo
+
+# V2 — the last join between training and deployment, running actual weights:
+# the whole prefix (SigLIP, PixelShuffle, connector, language, state_proj,
+# then the VLM layers into the KV cache) from a store row and from the
+# equivalent camera capture, demanded BIT-IDENTICAL. The pixel gates say the
+# images agree; only this says the artefact the denoising step reads agrees,
+# because the prefix also folds in the state and the language tokens.
+tests/deep_agents/smolvla/test_store_prefix.mojo
