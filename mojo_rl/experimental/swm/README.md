@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–8 complete.** With learned encoders on
+**Status: Phases 0–8 complete, 24 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -63,6 +63,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `envs/klein_grid.mojo` `KleinWorld` (Phase 8) | the 2D bundle with an observation model (landmark + texture, aliasing modes) |
 | `map_builder.mojo` (Phase 8) | online labels from the content channel, successor conflicts, context splitting, per-clone transports |
 | `cscg.mojo` (Phase 8) | Clone-Structured Cognitive Graph by EM — the P5 baseline, gates only |
+| `graph_planner.mojo` (Phase 8) | breadth-first search over `(clone, u)` — planning on a learned graph in the double cover |
 
 ## What was learned (Phase 0–1)
 
@@ -514,6 +515,29 @@ enough pairs per edge to read all 5 reversing cycles.
 | 242 | 30 | 30 | both | both |
 | 484 | 30 | 39 | both | SWM only |
 | 1936 | 30 | 56 | both | SWM only |
+
+**The end-to-end task (G26).** The capability the diagnostics were for: on
+the aliased 2D world the agent explores, labels its visits, clones what the
+graph contradicts, fits transports per clone, is shown one observation of a
+goal, and plans on its own map through the double cover — a breadth-first
+search over `(clone, u)` with the frame transported along every edge, never
+predicted. The goal is a cell *and* a parity. The oracle appears only in the
+judge.
+
+| arm | goal | cell | parity | of |
+|---|---|---|---|---|
+| SWM on the learned map | **75** | 80 | 75 | 80 |
+| SWM on oracle vertices, same encoded transports | 75 | 80 | 75 | 80 |
+| constant sheaf (frames never transported) | 34 | 80 | 34 | 80 |
+
+The learned map costs nothing against oracle vertices. The planted transports
+cannot be used as the oracle arm — they live in the world's gauge, not the
+encoder's, and read 39/80 when tried. With the goal set on the aliased pair
+(both cells, both parities, ten landmark draws each) the content channel
+offers exactly two goal clones every time and the frame picks the right cell
+and the right parity in **80/80**: the same mechanism disambiguates the
+aliased goal and the parity. The five parity misses on the argmax goals are
+not yet attributed; G21's fixed-subspace explanation is the candidate.
 
 ## Open questions after Phase 8
 

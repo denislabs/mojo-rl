@@ -23,7 +23,7 @@ non-triviality then comes from the seam and nothing else — the same discipline
 as the ring's "angles sum to zero".
 """
 
-from std.math import abs, cos, sin
+from std.math import abs, cos, sin, sqrt
 
 from ..so_d import SqMat
 from ..rng import Rng
@@ -248,6 +248,7 @@ struct KleinWorld[
     var y: Int
     var frame: SqMat[2, Self.dtype]
     var w: List[Scalar[Self.dtype]]
+    var seam_crossings: Int
     var rng: Rng
 
     def __init__(out self, cfg: KleinWorldConfig) raises:
@@ -301,6 +302,7 @@ struct KleinWorld[
         self.frame = SqMat[2, Self.dtype].identity()
         self.w = List[Scalar[Self.dtype]](length=2, fill=0)
         self.w[0] = 1
+        self.seam_crossings = 0
         self.rng = Rng(cfg.world_seed ^ 0xA5A5_A5A5_A5A5_A5A5)
 
     def __init__(out self, *, copy: Self):
@@ -313,6 +315,7 @@ struct KleinWorld[
         self.y = copy.y
         self.frame = copy.frame.copy()
         self.w = copy.w.copy()
+        self.seam_crossings = copy.seam_crossings
         self.rng = copy.rng
 
     def __init__(out self, *, deinit move: Self):
@@ -325,6 +328,7 @@ struct KleinWorld[
         self.y = move.y
         self.frame = move.frame^
         self.w = move.w^
+        self.seam_crossings = move.seam_crossings
         self.rng = move.rng
 
     def reset(mut self, seed: UInt64) raises:
@@ -335,11 +339,14 @@ struct KleinWorld[
         self.x = 0
         self.y = 0
         self.frame = SqMat[2, Self.dtype].identity()
+        self.seam_crossings = 0
 
     def step(mut self, action: Int) raises:
         var p = self.place_id()
         if action == ACT_X:
             self.frame = self.grid.x_edge[p] * self.frame
+            if self.x == Self.W - 1:
+                self.seam_crossings += 1
             self.x = (self.x + 1) % Self.W
         elif action == ACT_Y:
             self.frame = self.grid.y_edge[p] * self.frame
@@ -367,6 +374,64 @@ struct KleinWorld[
                 self.rng.normal() * self.cfg.obs_noise
             )
         return obs^
+
+    # -- the task: reach the double-cover state showing the landmark furthest
+    #    LEFT. As on the ring (v2 §6, G5): an argmax over all 2 * N_PLACES
+    #    states, so a goal always exists and is a (cell, PARITY) pair.
+
+    def lap_parity(self) -> Int:
+        """Parity of x-seam crossings — the homotopy class that matters on a
+        flat bundle with one reversing generator."""
+        return self.seam_crossings % 2
+
+    def frame_at(self, cell: Int, parity: Int) -> SqMat[2, Self.dtype]:
+        """Frame reached by a reference path: `parity` full x-loops along row
+        0 from the origin, then `+x` along row 0 to the cell's column, then
+        `+y` up that column. Flatness makes every path in the class agree."""
+        var f = SqMat[2, Self.dtype].identity()
+        for _ in range(parity % 2):
+            for xx in range(Self.W):
+                f = self.grid.x_edge[xx] * f
+        var cx = cell % Self.W
+        var cy = cell // Self.W
+        for xx in range(cx):
+            f = self.grid.x_edge[xx] * f
+        for yy in range(cy):
+            f = self.grid.y_edge[yy * Self.W + cx] * f
+        return f^
+
+    def _left_alignment(self, cell: Int, parity: Int) -> Float64:
+        var f = self.frame_at(cell, parity)
+        var x = Float64(f[0, 0] * self.w[0] + f[0, 1] * self.w[1])
+        var y = Float64(f[1, 0] * self.w[0] + f[1, 1] * self.w[1])
+        var n = sqrt(x * x + y * y)
+        if n < 1e-12:
+            return -2.0
+        return y / n
+
+    def _argmax_state(self) -> Int:
+        var best = -3.0
+        var best_idx = 0
+        for cell in range(Self.N_PLACES):
+            for parity in range(2):
+                var a = self._left_alignment(cell, parity)
+                if a > best:
+                    best = a
+                    best_idx = cell * 2 + parity
+        return best_idx
+
+    def goal_cell(self) -> Int:
+        return self._argmax_state() // 2
+
+    def goal_parity(self) -> Int:
+        return self._argmax_state() % 2
+
+    def reward(self) -> Float64:
+        if self.place_id() != self.goal_cell():
+            return 0.0
+        if self.lap_parity() != self.goal_parity():
+            return 0.0
+        return 1.0
 
     # -- oracles --------------------------------------------------------------
 

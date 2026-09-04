@@ -190,3 +190,12 @@ tests/experimental/swm/test_klein_map_builder.mojo
 # into extra pure clones as data grows (30 -> 56) while the context rule stays
 # at 30. Recorded and gated. ~1 min.
 tests/experimental/swm/test_cscg_comparison.mojo
+# G26 — PHASE 8d, the end-to-end task with no oracle in the loop. The agent
+# explores, labels visits with its own content channel, clones the labels
+# the graph contradicts, fits transports per clone, is shown one goal
+# observation and plans on its own map through the DOUBLE COVER (BFS over
+# (clone, u)). Goal = cell AND parity: 75/80 on the learned map, 75/80 with
+# oracle vertices (the map costs nothing), constant sheaf 34/80 (chance).
+# With the goal SET on the aliased pair the content offers 2 goal clones and
+# the frame picks cell and parity 80/80. ~1 min.
+tests/experimental/swm/test_klein_task.mojo
