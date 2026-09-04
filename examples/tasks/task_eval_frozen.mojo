@@ -41,6 +41,20 @@ ignored the table. **The state comparison is what has teeth here** — final
 `qpos`, bit for bit — and the rates are reported beside it. When a policy
 exists, the rates gain teeth on their own and this note stops applying.
 
+## ⚠⚠ THE SUCCESS SIGNAL IS `_reward`, NOT `_done`
+
+`Phyics3dBatchedEnv` takes `TERMINATE_ON_UNHEALTHY` as a comptime parameter
+**defaulting to False**, and then discards the config's `done` return
+outright (`phyics3d_batched_env.mojo:1161`). So `_done` carries only
+truncation at `MAX_STEPS`, and a 40-step loop over a 300-step horizon reads a
+constant zero. The first version of this file read it and reported 0/128 on a
+task that holds at reset.
+
+⚠ AND THE GATE STILL PASSED, which is the part worth remembering: an all-False
+outcome vector compares EQUAL to another all-False one, so `same_as` and every
+rate check agreed perfectly about nothing. The `any_solved` check below exists
+because of that run.
+
 ## WHAT IT PRINTS
 
 Per-task success from `tasks/eval_report.SuccessReport`, which is what a run
@@ -150,18 +164,34 @@ def run_eval(
     solved = List[Bool]()
     for _ in range(N_ENVS):
         solved.append(False)
-    var done_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+    # ⚠⚠ `_reward`, **NOT** `_done`. This read `_done` first and every lane
+    # came back False — including `gather`, which `test_task_reset_steps`
+    # proves holds AT RESET. `Phyics3dBatchedEnv` takes
+    # `TERMINATE_ON_UNHEALTHY` as a comptime parameter DEFAULTING TO FALSE,
+    # and `phyics3d_batched_env.mojo:1161` then does
+    #
+    #     comptime if not Self.TERMINATE_ON_UNHEALTHY:
+    #         is_terminated = False
+    #
+    # — so the CONFIG's `done` return is DISCARDED unless the env was
+    # instantiated with that flag, and `_done` carries only truncation at
+    # `MAX_STEPS`. Over 40 steps of a 300-step horizon it is a constant zero.
+    #
+    # ⚠ THE REWARD IS THE GOAL HERE, so `_reward > 0.5` is the same signal
+    # P3's gate compares against the CPU evaluator, and it does not depend on
+    # a flag this file does not set.
+    var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
     for _ in range(EVAL_STEPS):
         env.step_batch[N_ENVS](ctx, UInt64(0))
         # ⚠ NO `selective_reset_batch`. This loop deliberately never resets a
         # done lane: the frozen init must survive the whole episode, and an
         # auto-reset would replace it with a fresh sample the moment a lane
         # succeeded.
-        ctx.enqueue_copy(done_h, env._done)
+        ctx.enqueue_copy(rew_h, env._reward)
         ctx.synchronize()
-        var dp = done_h.unsafe_ptr()
+        var rp = rew_h.unsafe_ptr()
         for e in range(N_ENVS):
-            if Float64(dp[e]) > 0.5:
+            if Float64(rp[e]) > 0.5:
                 solved[e] = True
 
     env.d.qpos.download(ctx)
@@ -332,6 +362,28 @@ def main() raises:
             )
         print("  ok: WITHOUT the table the same seed reaches a DIFFERENT state"
               " — so it is the table that fixes the episode")
+
+        # ⚠⚠ THE CHECK THAT WOULD HAVE CAUGHT THE `_done` BUG, AND DID NOT
+        # EXIST WHEN IT BIT. An outcome vector that is entirely False compares
+        # EQUAL to another entirely False one, so every agreement check below
+        # passed while the success metric was structurally a constant zero.
+        # "Two runs agree" is worth nothing until something has varied.
+        var any_solved = 0
+        for e in range(N_ENVS):
+            if sa[e]:
+                any_solved += 1
+        if any_solved == 0:
+            raise Error(
+                "P4: NO lane met its goal in run A, so every agreement below"
+                " is an agreement between two constant-False vectors."
+                " `gather` holds AT RESET (tests/tasks/test_task_reset_steps"
+                " asserts it), so zero successes means the success SIGNAL is"
+                " not being read — check that the loop reads `_reward` and"
+                " not `_done`: `TERMINATE_ON_UNHEALTHY` defaults to False and"
+                " discards the config's `done`."
+            )
+        print("  ok:", any_solved, "of", N_ENVS, "lanes met their goal —"
+              " the outcome vector is not a constant")
 
         if not ra.same_as(rb):
             raise Error(

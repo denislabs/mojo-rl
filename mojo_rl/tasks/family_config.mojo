@@ -554,10 +554,30 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         var holds = eval_tape_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
             meta, curriculum, xpos, xquat, site_xpos, env
         )
-        # ⚠ TERMINATES ON SUCCESS. A sparse task that keeps running after the
-        # goal is met pays for steps that teach nothing and lets a policy
-        # bank the reward repeatedly; the driver's truncation still ends the
-        # unsolved ones at MAX_STEPS.
+        # ⚠ ASKS TO TERMINATE ON SUCCESS. A sparse task that keeps running
+        # after the goal is met pays for steps that teach nothing and lets a
+        # policy bank the reward repeatedly; the driver's truncation still
+        # ends the unsolved ones at MAX_STEPS.
+        #
+        # ⚠⚠ **AND THE ASK IS IGNORED BY DEFAULT.** `Phyics3dBatchedEnv` takes
+        # `TERMINATE_ON_UNHEALTHY` as a comptime parameter DEFAULTING TO
+        # FALSE, and then does
+        #
+        #     comptime if not Self.TERMINATE_ON_UNHEALTHY:
+        #         is_terminated = False        # phyics3d_batched_env.mojo:1161
+        #
+        # so this `Bool` is DISCARDED unless the env was instantiated with the
+        # flag, and `_done` then carries only truncation. A driver that wants
+        # success-termination must spell it:
+        #
+        #     Phyics3dBatchedEnv[So101TabletopModel, So101TabletopConfig,
+        #                        N_ENVS, TERMINATE_ON_UNHEALTHY=True]
+        #
+        # ⚠ A DRIVER READING SUCCESS OUT OF `_done` WITHOUT IT READS ZERO —
+        # not an error, a constant. `examples/tasks/task_eval_frozen.mojo` did
+        # exactly that and reported 0/128 on a task that holds at reset; the
+        # eval reads `_reward` instead, which is this hook's other return and
+        # needs no flag.
         var r = Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
         _ = qpos
         _ = qvel
