@@ -47,6 +47,10 @@ examples/tasks/task_viewer.mojo
 # seeds (must agree, bit for bit) and a third that never applies the table
 # (must differ). Run it with:
 #   pixi run -e nvidia mojo run -I . examples/tasks/task_eval_frozen.mojo
+
+# ⚠ Needs `references/LIBERO-master` (gitignored); SKIPS LOUDLY without it,
+# and a skip is not a pass. Reports what LIBERO needs that we do not have.
+examples/tasks/libero_survey.mojo
 examples/tasks/task_eval_frozen.mojo
 examples/tasks/task_batched_gpu.mojo
 

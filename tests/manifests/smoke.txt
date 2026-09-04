@@ -155,6 +155,20 @@ tests/tasks/test_init_table.mojo
 # UNEQUAL episode counts — at 5 and 5 the wrong denominator reads as right.
 tests/tasks/test_eval_report.mojo
 
+# ── mojo_rl/tasks: LIBERO's .bddl, read (P5) ────────────────────────
+# ⚠⚠ THE FIXTURE IS ONE UPSTREAM FILE, VERBATIM (LIBERO, MIT). `references/`
+# is gitignored, so a corpus-reading gate tests nothing on a fresh clone — and
+# a fixture I wrote would gate the parser against my own idea of the format.
+# It carries every construct that broke the reader: a PDDL TYPED LIST
+# (`moka_pot_1 moka_pot_2 - moka_pot`, used by 40 of the 130 files), a region
+# with no :ranges, a three-term goal, and an articulation predicate.
+# ABLATED: typed list taking only the last name (3 of 23 fail), regions keyed
+# by BARE name (4 — the name is not unique in the corpus), the outer `And`
+# left wrapped (3), and an unranged region emitted with a 0,0,0,0 rect (2).
+# ⚠ The corpus-wide survey is `examples/tasks/libero_survey.mojo`, which
+# SKIPS LOUDLY without the tree: 130/130 parse, 8/130 goals translate.
+tests/tasks/test_bddl.mojo
+
 # ── data: the manifest's task table, BYTE-EXACT ─────────────────────
 # ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
 # `parse_manifest` strips every value, so the two things that break it are a
