@@ -27,6 +27,12 @@ struct GraphPlan(Copyable, Movable):
     var found: Bool
     var goal_clone: Int
     var u_err: Float64
+    var u_err_runner_up: Float64
+    """Smallest `‖u − u_goal‖` over the OTHER reached states at goal clones —
+    typically the same cell at the other parity. `u_err_runner_up − u_err` is
+    the frame's margin for the choice it made; small when the goal's
+    landmark lies along the reflection axis (the holonomy's fixed
+    subspace), where the two parities look alike."""
     var n_states: Int
     var n_goal_clones: Int
 
@@ -35,6 +41,7 @@ struct GraphPlan(Copyable, Movable):
         self.found = False
         self.goal_clone = -1
         self.u_err = 1e300
+        self.u_err_runner_up = 1e300
         self.n_states = 0
         self.n_goal_clones = 0
 
@@ -43,6 +50,7 @@ struct GraphPlan(Copyable, Movable):
         self.found = copy.found
         self.goal_clone = copy.goal_clone
         self.u_err = copy.u_err
+        self.u_err_runner_up = copy.u_err_runner_up
         self.n_states = copy.n_states
         self.n_goal_clones = copy.n_goal_clones
 
@@ -51,6 +59,7 @@ struct GraphPlan(Copyable, Movable):
         self.found = move.found
         self.goal_clone = move.goal_clone
         self.u_err = move.u_err
+        self.u_err_runner_up = move.u_err_runner_up
         self.n_states = move.n_states
         self.n_goal_clones = move.n_goal_clones
 
@@ -175,8 +184,11 @@ def plan_double_cover(
         var d1 = st_u[k * 2 + 1] - u_goal[1]
         var d = sqrt(d0 * d0 + d1 * d1)
         if d < out.u_err:
+            out.u_err_runner_up = out.u_err
             out.u_err = d
             best = k
+        elif d < out.u_err_runner_up:
+            out.u_err_runner_up = d
     if best < 0:
         return out^
     out.found = True

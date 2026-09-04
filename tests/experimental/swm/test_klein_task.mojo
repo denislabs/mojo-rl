@@ -26,6 +26,13 @@ Arms, on the same trained models and the same learned map:
                                       the learned map must be within a few
                                       episodes of it
 
+The parity misses are attributed the way G21 attributed the ring's: by the
+frame's own margin, the gap between the chosen goal state and the runner-up
+(the same cell at the other parity). Every miss must fall in the lowest
+third of that margin — the goal's landmark along the reflection axis, the
+holonomy's fixed subspace, where the two parities look alike — and none
+above.
+
 Then a second leg with the goal SET on the aliased pair — both cells, both
 parities, ten landmark draws each — because the argmax goal happened to land
 there in 0 of 80 episodes and the claim would otherwise go untested.
@@ -109,6 +116,9 @@ def main() raises:
     var alias_cell_only = 0
     var alias_wrong_twin = 0
     var alias_goal_clones = 0
+    var margins = List[Float64]()
+    var margin_ok = List[Bool]()
+    var oracle_sep = List[Float64]()
 
     for s in range(SEEDS):
         var cfg = Phase3Config.with_content()
@@ -183,6 +193,26 @@ def main() raises:
                 var on_alias = gc == ALIASED_A or gc == ALIASED_B
                 var ok_cell = env.place_id() == gc
                 var ok_par = env.lap_parity() == gp
+                if arm == 0:
+                    # No runner-up = the two parities' frames fell within
+                    # FRAME_TOL of each other and were merged into one search
+                    # state: the frame had no choice to make. Margin zero.
+                    var mg = p.u_err_runner_up - p.u_err
+                    if p.u_err_runner_up > 1e100:
+                        mg = 0.0
+                    margins.append(mg)
+                    margin_ok.append(ok_par)
+                    # The oracle's own separation of the two parity frames at
+                    # the goal cell: 2 |w_perp| to the reflection axis, the
+                    # distance to the holonomy's fixed subspace.
+                    var f0 = env.frame_at(gc, 0)
+                    var f1 = env.frame_at(gc, 1)
+                    var sep = Float64(0)
+                    for i in range(2):
+                        var a0 = Float64(f0[i, 0] * env.w[0] + f0[i, 1] * env.w[1])
+                        var a1 = Float64(f1[i, 0] * env.w[0] + f1[i, 1] * env.w[1])
+                        sep += (a0 - a1) * (a0 - a1)
+                    oracle_sep.append(sep)
                 tot[arm * 7 + 3] += 1
                 if ok_cell:
                     tot[arm * 7 + 1] += 1
@@ -240,11 +270,70 @@ def main() raises:
         print(names[arm], "|", tot[arm * 7 + 0], "|", tot[arm * 7 + 1], "|",
               tot[arm * 7 + 2], "|", tot[arm * 7 + 5], "/", tot[arm * 7 + 4],
               "|", tot[arm * 7 + 6])
+    # ---- attribute the parity misses: the frame's own margin, in thirds ----
+    var sorted = margins.copy()
+    for i in range(1, len(sorted)):
+        var x = sorted[i]
+        var j = i - 1
+        while j >= 0 and sorted[j] > x:
+            sorted[j + 1] = sorted[j]
+            j -= 1
+        sorted[j + 1] = x
+    var t1 = sorted[len(sorted) // 3]
+    var t2 = sorted[(2 * len(sorted)) // 3]
+    var band_n = List[Int](length=3, fill=0)
+    var band_fail = List[Int](length=3, fill=0)
+    var fail_margins = String("")
+    for i in range(len(margins)):
+        var b = 0 if margins[i] < t1 else (1 if margins[i] < t2 else 2)
+        band_n[b] += 1
+        if not margin_ok[i]:
+            band_fail[b] += 1
+            fail_margins += " " + String(Int(margins[i] * 1000))
+    print("parity margin (runner-up - best |u - u_goal|, 0 = parities merged) in thirds: low <", t1,
+          " mid <", t2, "  max", sorted[len(sorted) - 1])
+    print("  parity misses by band: low", band_fail[0], "/", band_n[0], " mid",
+          band_fail[1], "/", band_n[1], " high", band_fail[2], "/", band_n[2],
+          "  miss margins x1000:" + fail_margins)
+    # independent check: the ORACLE separation of the two parity frames
+    var osorted = oracle_sep.copy()
+    for i in range(1, len(osorted)):
+        var x = osorted[i]
+        var j = i - 1
+        while j >= 0 and osorted[j] > x:
+            osorted[j + 1] = osorted[j]
+            j -= 1
+        osorted[j + 1] = x
+    var o1 = osorted[len(osorted) // 3]
+    var o2 = osorted[(2 * len(osorted)) // 3]
+    var oband_fail = List[Int](length=3, fill=0)
+    var miss_seps = String("")
+    for i in range(len(oracle_sep)):
+        var b = 0 if oracle_sep[i] < o1 else (1 if oracle_sep[i] < o2 else 2)
+        if not margin_ok[i]:
+            oband_fail[b] += 1
+            miss_seps += " " + String(Int(oracle_sep[i] * 1000))
+    print("  oracle |F0 w - F1 w|^2 at the goal, thirds: low <", o1, " mid <", o2,
+          "  misses by band: low", oband_fail[0], " mid", oband_fail[1], " high",
+          oband_fail[2], "  miss separations x1000:" + miss_seps)
     print("goal SET on the aliased pair:", alias_ok, "/", alias_n,
           " reached;", alias_cell_only, "right cell wrong parity;",
           alias_wrong_twin, "went to the aliased TWIN;  goal clones per plan",
           Float64(alias_goal_clones) / Float64(alias_n))
-    checks += 5
+    checks += 7
+    assert_true(
+        band_fail[1] == 0 and band_fail[2] == 0 and band_fail[0] > 0,
+        "the parity misses must be the FIXED SUBSPACE: every miss in the "
+        + "lowest third of the frame's margin, none above. got low "
+        + String(band_fail[0]) + " mid " + String(band_fail[1]) + " high "
+        + String(band_fail[2]),
+    )
+    assert_true(
+        oband_fail[1] == 0 and oband_fail[2] == 0,
+        "...and independently, every miss must be a goal whose two parity "
+        + "frames the ORACLE places closest together: mid " + String(oband_fail[1])
+        + " high " + String(oband_fail[2]),
+    )
     assert_true(
         map_clones == SEEDS * NP and map_purity / Float64(SEEDS) > 0.97,
         "the learned map must be exact before the task means anything",

@@ -536,8 +536,13 @@ encoder's, and read 39/80 when tried. With the goal set on the aliased pair
 (both cells, both parities, ten landmark draws each) the content channel
 offers exactly two goal clones every time and the frame picks the right cell
 and the right parity in **80/80**: the same mechanism disambiguates the
-aliased goal and the parity. The five parity misses on the argmax goals are
-not yet attributed; G21's fixed-subspace explanation is the candidate.
+aliased goal and the parity. The five parity misses are the fixed subspace,
+as on the ring: in every one the two parity frames at the goal fell within
+the search's frame tolerance and merged into one state, so the planner had no
+choice to make, and the oracle's separation of those frames (`|F₀w − F₁w|²`,
+0.04–0.17 against a maximum of 4) puts all five in the lowest third of the
+episodes. A goal whose landmark lies along the reflection axis has no parity
+a frame can carry.
 
 ## Open questions after Phase 8
 
