@@ -28,7 +28,7 @@
 # be FLAT then LINEAR; if it is linear from the very first value the knee is
 # below the smallest N and the sweep must be redone lower.
 #
-# ⚠ Restores the knob to 0 on ANY exit, including Ctrl-C. Check `git diff`
+# ⚠ Restores the knob to ITS ORIGINAL VALUE on ANY exit, including Ctrl-C. Check `git diff`
 # after a crash anyway: a probe build left in the tree is a wrong production
 # binary, and `NEWTON_MIN_ITER` is NOT bit-exact.
 set -uo pipefail
@@ -46,8 +46,16 @@ command -v mojo >/dev/null || {
   echo "!! run inside the pixi env: pixi run -e nvidia bash $0"; exit 1; }
 grep -q "^${KEY} = " "$SRC" || { echo "!! cannot find '$KEY' in $SRC"; exit 1; }
 
+# ⚠ RESTORE WHAT WAS THERE, NOT A HARD-CODED 0. Production is 0 for the probe
+# knobs and 1 for `NEWTON_THREADS_MULT` (a 0 there would be clamped by
+# `_max_one`, so it would not break — it would just leave the tree quietly
+# differing from the commit, which is worse).
+ORIG=$(sed -n "s/^${KEY} = \(.*\)$/\1/p" "$SRC")
+[ -n "$ORIG" ] || { echo "!! could not read the current value of $KNOB"; exit 1; }
+echo "-- ${KNOB} is currently $ORIG; that is what gets restored"
+
 _set() { sed -i "s/^${KEY} = .*/${KEY} = $1/" "$SRC"; }
-_restore() { _set 0; echo "-- restored ${KNOB} = 0"; }
+_restore() { _set "$ORIG"; echo "-- restored ${KNOB} = $ORIG"; }
 trap _restore EXIT INT TERM
 
 DIRS=()
