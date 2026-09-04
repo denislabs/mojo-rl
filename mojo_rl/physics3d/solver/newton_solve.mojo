@@ -357,6 +357,9 @@ comptime NEWTON_COOP_DIV: Int = 1
 #   6 = the contact normal/friction precompute
 #   7 = the `M_sh` cooperative load          (NV^2 read from global)
 #   8 = `Ma = M*qacc` + f_smooth             (tid-0, sum(bn^2) after PN2e)
+#   --- inside the Newton LOOP (60.8% of newton, internally unmeasured) ---
+#   9 = ONE `_bl_peval`  (the line search's unit; x [lseval] = its total)
+#  10 = the H build
 comptime NEWTON_SERIAL_PROBE: Int = 0
 comptime SERIAL_PROBE_REPEAT: Int = 10
 
@@ -4642,6 +4645,7 @@ def _newton_blocked_fields_kernel[
 
     # === Newton iterations — ALL threads execute the loop ===
     var iters_done = 0
+    var ls_evals = 0
     for iter_n in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
         # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -4739,6 +4743,24 @@ def _newton_blocked_fields_kernel[
                 if be <= bp:
                     be = NV
                 var bn = be - bp
+                comptime if NEWTON_SERIAL_PROBE == 10:
+                    for _r in range(SERIAL_PROBE_REPEAT - 1):
+                        for q in range(tid, bn * bn, COOP):
+                            var pi = bp + q // bn
+                            var pj = bp + q % bn
+                            var pidx = pi * NV + pj
+                            var ph = rebind[Scalar[DTYPE]](M_sh[pidx])
+                            for e in range(num_edges_b):
+                                if (
+                                    Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
+                                    == SROW_QUADRATIC
+                                ):
+                                    ph += (
+                                        rebind[Scalar[DTYPE]](De_sh[e])
+                                        * rebind[Scalar[DTYPE]](Je_sh[e * NV + pi])
+                                        * rebind[Scalar[DTYPE]](Je_sh[e * NV + pj])
+                                    )
+                            H_sh[pidx] = ph
                 for q in range(tid, bn * bn, COOP):
                     var i = bp + q // bn
                     var j = bp + q % bn
@@ -4958,6 +4980,18 @@ def _newton_blocked_fields_kernel[
             var p0_c = Scalar[DTYPE](0)
             var p0_d0 = Scalar[DTYPE](0)
             var p0_d1 = Scalar[DTYPE](0)
+            comptime if NEWTON_SERIAL_PROBE == 9:
+                # `_bl_peval` is PURE — it writes only its `mut` outputs — so
+                # repeating it is idempotent and the real call below overwrites
+                # everything it touched. `lsiter_b` is a throwaway counter here.
+                var q_c = Scalar[DTYPE](0)
+                var q_d0 = Scalar[DTYPE](0)
+                var q_d1 = Scalar[DTYPE](0)
+                var q_it = 0
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    _bl_peval(Scalar[DTYPE](0), q_c, q_d0, q_d1, q_it)
+                if q_c == _probe_sentinel[DTYPE]():
+                    ctrl_sh[2] = Scalar[DTYPE](0)
             _bl_peval(Scalar[DTYPE](0), p0_c, p0_d0, p0_d1, lsiter_b)
 
             var alpha: Scalar[DTYPE] = 0
@@ -5114,6 +5148,12 @@ def _newton_blocked_fields_kernel[
                     elif p2_c <= p1_c and p2_c < Scalar[DTYPE](0):
                         alpha = p2_a
 
+            # ⚠ HERE, NOT AT THE IMPROVEMENT TEST — `lsiter_b` is scoped to this
+            # tid-0 block and that test lives further down the loop body. And
+            # anchored on `alpha = p2_a` because the bare `if alpha < 1e-10`
+            # appears TWICE: the per-env solver carries the same guard.
+            comptime if NEWTON_ITER_REPORT:
+                ls_evals += lsiter_b
             if alpha < Scalar[DTYPE](1e-10):
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done (break next iter)
             else:
@@ -5220,7 +5260,12 @@ def _newton_blocked_fields_kernel[
 
     comptime if NEWTON_ITER_REPORT:
         if valid_env and tid == 0 and env == 0:
-            print("[niter]", iters_done)
+            # ⚠ TWO NUMBERS, BECAUSE ONE OF THEM IS THE MULTIPLIER. `_bl_peval`
+            # is the line search's unit of work; `NEWTON_SERIAL_PROBE == 9`
+            # prices ONE of them. Cost = price x count, both measured on the
+            # SAME run — which is exactly what the discarded "54%" figure was
+            # not: that subtracted an unpinned slope from a pinned fraction.
+            print("[niter]", iters_done, "[lseval]", ls_evals)
 
     # ⚠ STAGE 5 — after the Newton LOOP, before the write-back tail. This is the
     # stage that had to exist: stages 1-4 bisect the SETUP and stop at the loop,
