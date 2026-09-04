@@ -377,6 +377,29 @@ comptime SERIAL_PROBE_REPEAT: Int = 10
 # breaks are documented to preserve.
 comptime NEWTON_MIN_ITER: Int = 0
 
+# ⚠⚠ COUNT THE ITERATIONS AND PRINT THEM. This exists because the iteration
+# count has now confounded TWO probes, and both times it was INFERRED rather
+# than read: the serial sweep divided by an "order 3x" growth taken from two
+# terms whose k=0 deltas sat at the resolution limit, and the MIN_ITER sweep
+# came back FLAT from 20 to 180 — which no model of this loop produces, since
+# `niter_rt` is 100 (measured off the built model, the scenes carry no
+# `<option>`) and 180 iterations cannot cost what 20 do while each one still
+# factors an 84x84 Cholesky.
+#
+# The lesson is the cheap one: an indirect instrument for a number you can
+# simply COUNT is a false economy. Two sweeps — about 40 minutes of somebody's
+# GPU — against one print.
+#
+# One line per SOLVE for env 0 (`[niter] <count>`), which the attribution
+# script already captures into `k*.probe.txt`. At RK4 x FRAME_SKIP that is 8
+# lines per step: verbose ON PURPOSE, because the DISTRIBUTION is the answer
+# and a mean would hide it. A solver that takes 3 iterations on most steps and
+# 100 on a few has a different problem from one that always takes 50.
+#
+# ⚠ PROBE ONLY, AND NEVER READ A DURATION FROM A RUN WITH IT ON — a `print` per
+# solve serialises the block. Read the counts, then turn it off and re-time.
+comptime NEWTON_ITER_REPORT: Bool = False
+
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
 # dead-store elimination is entitled to delete the whole thing — and the probe
@@ -4466,6 +4489,7 @@ def _newton_blocked_fields_kernel[
     var num_edges_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
 
     # === Newton iterations — ALL threads execute the loop ===
+    var iters_done = 0
     for iter_n in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
         # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -4498,6 +4522,9 @@ def _newton_blocked_fields_kernel[
         else:
             if iter_n >= niter_rt and iter_n >= NEWTON_MIN_ITER:
                 break
+        # Counted AFTER every exit test, so it is the number of iterations
+        # actually ENTERED, not the number the `range()` offered.
+        iters_done = iter_n + 1
         # --- Thread 0: gradient + convergence check ---
         if valid_env and tid == 0:
             comptime if NEWTON_SERIAL_PROBE == 1:
@@ -5006,10 +5033,24 @@ def _newton_blocked_fields_kernel[
                     )
 
                 var improvement = scale * (old_cost - new_cost)
-                if (
-                    improvement < tol_rt
-                    and iter_n > 0
-                ):
+                # ⚠⚠ THE THIRD EXIT, and the one that made the first MIN_ITER
+                # sweep read FLAT from 20 to 180. It sets `ctrl_sh[1]` and the
+                # loop breaks on it, and the probe did not guard it — so the
+                # loop left at the same iteration whatever the minimum asked
+                # for. Missed because the search for exits was BOUNDED to the
+                # lines around the loop HEAD, and this one lives ~600 lines
+                # further down inside the line-search tail. Enumerate a loop's
+                # exits over its WHOLE body, not over the part you are reading.
+                # ⚠ DECLARED OUTSIDE THE `comptime if` — that construct opens
+                # a scope, so a `var` inside either branch is not visible here.
+                var _stop = False
+                comptime if NEWTON_MIN_ITER == 0:
+                    _stop = improvement < tol_rt and iter_n > 0
+                else:
+                    _stop = (
+                        improvement < tol_rt and iter_n >= NEWTON_MIN_ITER
+                    )
+                if _stop:
                     if improvement < Scalar[DTYPE](0):
                         for i in range(NV):
                             qacc[i] = old_qacc[i]
@@ -5024,6 +5065,10 @@ def _newton_blocked_fields_kernel[
         barrier()
         if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
             break
+
+    comptime if NEWTON_ITER_REPORT:
+        if valid_env and tid == 0 and env == 0:
+            print("[niter]", iters_done)
 
     # === THREAD 0: write back + reconstruct forces + equality/tendon ===
     if not valid_env or tid != 0:
