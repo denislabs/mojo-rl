@@ -82,3 +82,10 @@ tests/deep_agents/smolvla/test_policy.mojo
 # finite differences cannot go: 704 components, 1.5e-07 norm-relative.
 # ⚠ ~1,400 CPU forward passes. Seconds at these dims, but not instant.
 tests/deep_agents/smolvla/test_denoise_backward.mojo
+
+# V2 — the training objective: the Beta(1.5,1) time law (empirical CDF against
+# x^1.5, and a uniform draw REJECTED by 25x the band), both endpoints of the
+# interpolant exactly, dL/dv against central differences of a Float64
+# reference, and the property that matters most — the 26 padded action columns
+# get EXACTLY zero gradient, with a control proving the real ones do not.
+tests/deep_agents/smolvla/test_flow_loss.mojo
