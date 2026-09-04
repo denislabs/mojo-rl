@@ -50,3 +50,10 @@ from .reset import (
     SlotAddress, free_slot_addresses, reset_slots,
     write_free_pose, write_free_vel_zero,
 )
+from .active import (
+    active_mask, mask_slots, MASK_SLOT_LIMIT,
+)
+from .obs import (
+    slot_active, write_free_slot_obs, write_free_slot_obs_host,
+    FREE_JOINT_NQ, FREE_JOINT_NV,
+)

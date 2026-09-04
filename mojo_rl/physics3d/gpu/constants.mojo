@@ -122,9 +122,9 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 18
+comptime METADATA_SIZE: Int = 19
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
-`META_IDX_ACTDAMP_LIVE` and `META_IDX_SIM_TIME`.
+`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME` and `META_IDX_TASK_ACTIVE`.
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
 five-entry orders — `desired_order` and `initial_order`, the second because its
@@ -216,6 +216,34 @@ comptime META_IDX_ACTDAMP_LIVE: Int = 16
 # the `act` vector it already clears; a caller that zeroes `act` and not this
 # would start the next episode with a previous control of 0 treated as real.
 comptime META_IDX_SIM_TIME: Int = 17
+
+
+# ── WHICH SLOTS OF A TASK FAMILY THIS LANE IS ACTUALLY RUNNING ────────────
+#
+# A BITMASK over family slot indices, LSB = slot 0, float-encoded. Written by
+# `tasks/active.active_mask` (host), decoded by `tasks/obs.slot_active`
+# (device).
+#
+# ⚠⚠ WHY IT IS NOT ONE OF THE TWELVE `TASK_PARAM` WORDS. All twelve are the
+# goal tape and `tape.encode_goal` writes EVERY one of them — `OP_NONE` into
+# the slots a shorter goal does not use. There is no spare word there; a mask
+# parked in one would be erased by the next episode's `encode_goal`.
+#
+# ⚠ WHY A BITMASK AND NOT ONE WORD PER SLOT. `METADATA_SIZE` is paid by every
+# env in the tree, not just by a task family, and the compile ceiling for a
+# family is k=13 slots (`docs/TASK_LAYER_IMPLEMENTATION.md` §1.0). Thirteen
+# words against one, for a quantity a kernel reads with a shift and an AND.
+# Integers stay EXACT in the float that carries them well past that ceiling —
+# float32's mantissa is 24 bits, so 2^24 slots — and `active_mask` refuses a
+# family wide enough to test it.
+#
+# ⚠⚠ IT MUST BE REWRITTEN EVERY EPISODE, and the reason is the same property
+# that makes it work: `_reset_env_lane` preserves it, so a lane that ran a
+# 3-slot task and then a 2-slot one KEEPS the stale third bit. Exactly the trap
+# `OP_NONE` exists for in the tape beside it. Zero here means "no slot is
+# active", which is a legible state, not a safe default — a lane whose mask was
+# never written observes every prop as absent while the physics moves them.
+comptime META_IDX_TASK_ACTIVE: Int = 18
 
 
 # =============================================================================

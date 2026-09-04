@@ -29,6 +29,21 @@ preserves it (`gpu/constants.mojo:164`) — and the region table into
 
 ⚠ NEITHER NEEDED A NEW KERNEL OPERAND. Gap E scoped this as two; both channels
 already existed and were unused.
+
+## AND THE ACTIVE MASK, IN THE OBSERVATION
+
+`meta[env, META_IDX_TASK_ACTIVE]` carries which slots this lane is running
+(§3.4), and `So101TabletopConfig.custom_extract_obs_gpu` turns it into the
+observation's last `N_FREE_SLOTS` words. The two tasks here have DIFFERENT
+active sets — `gather` runs `cube_a`, `lift` does too, so a third task would
+be needed to separate them on that axis; what separates them here is the mask
+WORD, which is read per lane from `meta`.
+
+⚠ `tests/tasks/test_active_mask.mojo` gates the hook's arithmetic on the CPU
+at float64. What only THIS can say is that the word survives the round trip
+through a real device buffer, a real reset and eight real steps — the mask is
+written once, before the loop, and `_reset_env_lane` is what has to preserve
+it.
 """
 
 from std.random import seed as seed_rng
@@ -36,7 +51,8 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.physics3d.gpu.constants import (
-    METADATA_SIZE, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
+    METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
+    MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
@@ -51,6 +67,7 @@ from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words
 from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
 from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
+from mojo_rl.tasks.active import active_mask
 
 
 comptime N_ENVS = 1024
@@ -87,6 +104,8 @@ def main() raises:
     require_tier_a(gb, tb.name)
     var tpa = encode_goal(ga)
     var tpb = encode_goal(gb)
+    var mka = active_mask(ta, f)
+    var mkb = active_mask(tb, f)
     print("  even lanes:", ta.name, "|", ta.goal)
     print("  odd  lanes:", tb.name, "|", tb.goal)
 
@@ -140,6 +159,13 @@ def main() raises:
                 env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_PARAM_0 + k] = (
                     Scalar[DT](tpa[k]) if is_a else Scalar[DT](tpb[k])
                 )
+            # ⚠ THE WHOLE WORD, EVERY EPISODE. `meta` is not zeroed between
+            # episodes — that is what lets this be written once and read every
+            # step — so a lane keeps the PREVIOUS episode's mask unless it is
+            # rewritten. Same trap `OP_NONE` exists for in the tape above.
+            env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_ACTIVE] = (
+                Scalar[DT](mka) if is_a else Scalar[DT](mkb)
+            )
             var qpos = List[Float64]()
             for i in range(NQ):
                 qpos.append(Float64(env.d.qpos.data[e * NQ + i]))
@@ -248,5 +274,71 @@ def main() raises:
             )
         print("  ok: the two task groups scored DIFFERENTLY —",
               a_true, "vs", b_true, "— so each lane ran its own goal")
+
+        # ── the active mask, through the real device path ─────────────────
+        #
+        # ⚠ WHAT THIS ADDS OVER `tests/tasks/test_active_mask.mojo`, WHICH
+        # ALREADY GATES THE HOOK'S ARITHMETIC ON THE CPU: the word was written
+        # into a DEVICE buffer, survived `reset_batch`'s `_reset_env_lane` and
+        # eight steps, and came back out of the observation kernel. That chain
+        # is what the CPU gate cannot exercise, and it is the half that would
+        # break if the reset ever started zeroing `meta`.
+        #
+        # ⚠⚠ THESE TWO TASKS SHARE AN ACTIVE SET — `gather` and `lift` both
+        # run table/brick/cube_a — so the mask does NOT vary by lane here and
+        # this cannot catch a hook that reads lane 0's word for everyone.
+        # `test_active_mask` runs `reach` beside `gather` for exactly that, at
+        # BATCH=2. Stated rather than left for a reader to discover, because a
+        # per-lane check that cannot vary is the shape of a vacuous gate.
+        var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * EnvT.OBS_DIM)
+        ctx.enqueue_copy(obs_h, env._obs)
+        ctx.synchronize()
+        var ob = obs_h.unsafe_ptr()
+
+        comptime MB = So101TabletopConfig.OBS_MASK_BASE
+        comptime NF = So101TabletopConfig.N_FREE_SLOTS
+        var mask_bad = 0
+        var lit = 0
+        var off = 0
+        for e in range(N_ENVS):
+            var want = mka if (e % 2) == 0 else mkb
+            for j in range(NF):
+                var si = (
+                    So101TabletopConfig.FREE_SLOT_IDX_0 if j == 0
+                    else (So101TabletopConfig.FREE_SLOT_IDX_1 if j == 1
+                          else So101TabletopConfig.FREE_SLOT_IDX_2)
+                )
+                var on = ((Int(want) >> si) & 1) == 1
+                var got = Float64(ob[e * EnvT.OBS_DIM + MB + j])
+                if got != (1.0 if on else 0.0):
+                    mask_bad += 1
+                if on:
+                    lit += 1
+                else:
+                    off += 1
+
+        print()
+        print("  active words:", lit, "on,", off, "off, across",
+              N_ENVS * NF, "lane-slots")
+        if mask_bad != 0:
+            raise Error(
+                "P3: " + String(mask_bad) + " active words in the observation"
+                " disagree with the mask the host wrote. The word is at"
+                " `meta[env, META_IDX_TASK_ACTIVE]`; if it reads 0 everywhere,"
+                " something in the reset path now ZEROES `meta` and the tape"
+                " beside it is next."
+            )
+        # ⚠ ANTI-VACUITY. "Every active word matches" is also true when every
+        # slot is active and every word is 1 — and `cube_b` is parked in all
+        # three shipped tasks, so a 0 must appear or the comparison above was
+        # against a constant.
+        if lit == 0 or off == 0:
+            raise Error(
+                "P3: the observation's active words are all "
+                + ("0" if lit == 0 else "1") + ". A mask that never varies"
+                " cannot be told from a hook that writes a constant."
+            )
+        print("  ok: every lane's active words are the mask the host wrote,"
+              " and BOTH values occur")
         print()
         print("=== PASS ===")

@@ -113,6 +113,18 @@ tests/tasks/test_task_tape.mojo
 # test would pass that.
 tests/tasks/test_tape_gpu_parity.mojo
 
+# ── mojo_rl/tasks: the per-lane ACTIVE MASK and the obs (P3d) ───────
+# ⚠ RUNS THE REAL HOOK, ON THE CPU AT float64. `custom_extract_obs_gpu` is
+# generic over dtype and origin, so the gate instantiates the config's own
+# observation writer rather than a re-spelling of it.
+# ⚠⚠ IT ALSO CHECKS A RESTATEMENT. `So101TabletopConfig` restates the free
+# slots' qposadr/dofadr because a comptime type cannot read a runtime
+# `.family`; this resolves them out of the composed scene and asserts every
+# one. ABLATED three ways — lane-0 mask for every lane (3 of 16 fail, and the
+# negative leg is the only check that sees it), flag-without-zeroing (2), and
+# a drifted address table (3).
+tests/tasks/test_active_mask.mojo
+
 # ── data: the manifest's task table, BYTE-EXACT ─────────────────────
 # ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
 # `parse_manifest` strips every value, so the two things that break it are a

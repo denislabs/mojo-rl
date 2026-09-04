@@ -45,6 +45,36 @@ comptime _pm = SO101_TABLETOP_DIMS
 # measure it (print the contacts actually solved, not the budget).
 comptime SO101_TABLETOP_MAX_CONTACTS: Int = 32
 
+
+# ── THE OBSERVATION'S WIDTH, AND WHY IT IS NOT THE DEFAULT ────────────────
+#
+# `ModelDefFromXML`'s default is `nq - obs_qpos_skip + nv` with
+# `obs_qpos_skip = 1`. That default is written for a FLOATING-BASE Gym model,
+# where `qpos[0]` is the root x the reward already prices and the observation
+# is deliberately translation-invariant.
+#
+# ⚠⚠ THIS FAMILY HAS NO FLOATING BASE. SO-101 is bolted to the world and
+# `qpos[0]` is `shoulder_pan` — the joint that decides which way the arm is
+# pointing. The default silently dropped it, and a policy that cannot see its
+# own base rotation is not a policy with a bad observation, it is a policy
+# with an unobservable state. Nothing had trained on this family yet, which is
+# the only reason this is a correction and not a regression.
+#
+# The three extra words are the ACTIVE MASK, one per free slot —
+# `TASK_LAYER_PLAN.md` §3.4, written by `So101TabletopConfig.
+# custom_extract_obs_gpu`. Layout:
+#
+#   [0            .. NQ)               qpos, IN FULL
+#   [NQ           .. NQ+NV)            qvel
+#   [NQ+NV        .. NQ+NV+N_FREE)     1.0 if that free slot is active
+#
+# ⚠ AN INACTIVE SLOT'S POSE AND VELOCITY WORDS ARE ZEROED, not left at the
+# park pose. See `tasks/obs.mojo` for why both halves are needed.
+comptime SO101_TABLETOP_N_FREE_SLOTS: Int = 3
+comptime SO101_TABLETOP_OBS_DIM: Int = (
+    _pm.NQ + _pm.NV + SO101_TABLETOP_N_FREE_SLOTS
+)
+
 comptime So101TabletopModel = ModelDefFromXML[
     xml_path="mojo_rl/tasks/scenes/so101_tabletop.xml",
     nbody=_pm.NBODY,
@@ -64,5 +94,6 @@ comptime So101TabletopModel = ModelDefFromXML[
     timestep=_pm.TIMESTEP,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=SO101_TABLETOP_MAX_CONTACTS,
+    obs_dim_override=SO101_TABLETOP_OBS_DIM,
     action_dim_override=6,
 ]

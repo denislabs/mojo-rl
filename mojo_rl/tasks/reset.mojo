@@ -37,6 +37,7 @@ raises rather than returning something that looks like an address.
 from .spec import FamilySpec, TaskSpec, SLOT_FREE, SLOT_STATIC
 from .sampler import Placement
 from .family import park_pos
+from .obs import FREE_JOINT_NV
 from mojo_rl.physics3d.joint_types import JNT_FREE
 
 
@@ -107,7 +108,12 @@ def write_free_pose(
     mut qpos: List[Float64], qadr: Int,
     x: Float64, y: Float64, z: Float64,
 ):
-    """A free joint's 7 `qpos`: position then an IDENTITY quaternion.
+    """A free joint's seven `qpos`: position, then an IDENTITY quaternion.
+
+    ⚠ SPELLED OUT, NOT A LOOP, because the seven words are not
+    interchangeable — three are a position and four are a quaternion whose
+    identity is `(1, 0, 0, 0)`. `obs.FREE_JOINT_NQ` is the same seven seen as a
+    WIDTH, which is what a reader that only has to skip them needs.
 
     ⚠ THE QUATERNION IS NOT OPTIONAL AND IT IS NOT ZERO. `(0,0,0,0)` is a
     DEGENERATE rotation — forward kinematics normalises it and gets a
@@ -126,8 +132,15 @@ def write_free_pose(
 
 @always_inline
 def write_free_vel_zero(mut qvel: List[Float64], dadr: Int):
-    """A free joint's 6 `qvel`. See the module header for why this matters."""
-    for k in range(6):
+    """A free joint's `FREE_JOINT_NV` `qvel`. See the module header for why
+    this matters.
+
+    ⚠ THE WIDTH COMES FROM `obs.mojo`, NOT FROM A LITERAL HERE. The
+    observation zeroes the SAME two spans for an inactive slot
+    (`obs.write_free_slot_obs`), so a free joint's velocity width is written in
+    one place and read in two.
+    """
+    for k in range(FREE_JOINT_NV):
         qvel[dadr + k] = 0.0
 
 
