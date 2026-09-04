@@ -50,7 +50,7 @@ from mojo_rl.io.hdf5 import H5File, H5Dataset, H5Writer, H5DatasetWriter
 from .column import ColumnSpec, dtype_bytes, dtype_from_h5, dtype_name
 from .episode_index import EpisodeIndex
 from .manifest import (
-    MANIFEST_DATASET, Manifest, SCHEMA_VERSION, parse_manifest,
+    MANIFEST_DATASET, Manifest, SCHEMA_VERSION, TaskEntry, parse_manifest,
 )
 
 
@@ -109,6 +109,15 @@ struct TrajectoryStoreWriter(Movable):
 
     var _file: H5Writer
     var _specs: List[ColumnSpec]
+    var _tasks: List[TaskEntry]
+    """The dataset's task table, written into the manifest at `close()`.
+
+    ⚠ SET BY THE CALLER, NOT DERIVED FROM A COLUMN. A `task_index` column says
+    WHICH task each frame is; only the source dataset knows what those indices
+    MEAN. A store with the column and no table is readable but cannot resolve
+    an instruction, so an importer that has the text must pass it — see
+    `add_task`.
+    """
     var _dsets: List[H5DatasetWriter]
     var _ep_len: List[Int64]
     var _ep_offset: List[Int64]
@@ -147,6 +156,7 @@ struct TrajectoryStoreWriter(Movable):
 
         self._file = H5Writer(path^)
         self._specs = columns^
+        self._tasks = List[TaskEntry]()
         self._dsets = List[H5DatasetWriter]()
         self._ep_len = List[Int64]()
         self._ep_offset = List[Int64]()
@@ -164,6 +174,7 @@ struct TrajectoryStoreWriter(Movable):
     def __init__(out self, *, deinit move: Self):
         self._file = move._file^
         self._specs = move._specs^
+        self._tasks = move._tasks^
         self._dsets = move._dsets^
         self._ep_len = move._ep_len^
         self._ep_offset = move._ep_offset^
@@ -291,6 +302,20 @@ struct TrajectoryStoreWriter(Movable):
         self._ep_len.append(Int64(length))
         self._rows_committed = n
 
+    def add_task(mut self, index: Int, var text: String):
+        """Record `task_index` -> its instruction, BYTE-EXACT.
+
+        ⚠ THE TEXT IS STORED AS GIVEN. A consumer tokenises it and the
+        tokenisation is byte-sensitive, so this must not trim, normalise or
+        re-encode — see `manifest.escape_task_text`, which is what makes a
+        newline or edge whitespace survive the `key=value` format.
+
+        ⚠ CALL IT BEFORE `close()`. The manifest is built there; a task added
+        afterwards is silently dropped, which is why `close()` is the only
+        place the table is read.
+        """
+        self._tasks.append(TaskEntry(index, text^))
+
     def close(mut self) raises:
         """Write the episode index and the manifest, then flush."""
         if self._closed:
@@ -333,6 +358,8 @@ struct TrajectoryStoreWriter(Movable):
         m.source_commit = String(self.source_commit)
         for i in range(len(self._specs)):
             m.columns.append(ColumnSpec(copy=self._specs[i]))
+        for i in range(len(self._tasks)):
+            m.tasks.append(self._tasks[i])
         var text = m.encode()
 
         var tbytes = text.as_bytes()

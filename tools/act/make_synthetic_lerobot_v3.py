@@ -136,7 +136,21 @@ def main():
             ),
             "episode_index": pa.array(ep_col),
             "index": pa.array(np.arange(n_rows, dtype=np.int64)),
-            "task_index": pa.array(np.zeros(n_rows, np.int64)),
+            # ⚠⚠ MULTI-TASK, AND DELIBERATELY NOT ALL-ZERO. This column was
+            # zeros until 2026-09-04 and the importer dropped it entirely, so
+            # nothing in the suite could tell a store that carried task
+            # identity from one that lost it. Cycling per EPISODE means the
+            # gate fails if the importer drops the column, mis-orders rows, or
+            # writes a per-episode value where a per-frame one belongs.
+            #
+            # ⚠ The real SO-101 dataset is SINGLE-TASK, so this synthetic one
+            # is the only place multi-task is exercised at all.
+            "task_index": pa.array(
+                np.concatenate(
+                    [np.full(n, e % 3, np.int64)
+                     for e, n in enumerate(LENGTHS)]
+                )
+            ),
         }
     )
     (root / "data/chunk-000").mkdir(parents=True)
@@ -189,6 +203,36 @@ def main():
     (root / "meta/episodes/chunk-000").mkdir(parents=True)
     pq.write_table(
         pa.table(cols), root / "meta/episodes/chunk-000/file-000.parquet",
+        compression="snappy",
+    )
+
+    # ── meta/tasks.parquet ───────────────────────────────────────────────
+    #
+    # ⚠⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The store carries this text
+    # BYTE-EXACT because a consumer tokenises it, and the manifest it lands in
+    # is a `key=value` LINE format whose reader STRIPS values — so a trailing
+    # space and a newline are the two things most likely to be silently eaten
+    # between parquet and store. Non-ASCII is here because a per-byte `chr`
+    # round trip re-encodes anything above 127, which is a bug this tree
+    # actually had in `manifest._split`.
+    #
+    # If these ever look like gratuitous awkwardness: an ordinary instruction
+    # round-trips through a broken escaper too.
+    (root / "meta").mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table(
+            {
+                "task_index": pa.array(np.arange(3, dtype=np.int64)),
+                "task": pa.array(
+                    [
+                        "Grab the green cube",
+                        "Place it on the shelf ",      # TRAILING SPACE
+                        "Push the ünïcøde block ✓",    # multi-byte
+                    ]
+                ),
+            }
+        ),
+        root / "meta/tasks.parquet",
         compression="snappy",
     )
 

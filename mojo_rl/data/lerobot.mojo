@@ -378,6 +378,17 @@ struct EpisodeIndex(Movable):
 struct FrameTable(Movable):
     var qpos: List[Float32]
     var action: List[Float32]
+    var task_index: List[Int32]
+    """The per-frame `task_index`, straight from the parquet.
+
+    ⚠⚠ PER FRAME, NOT PER EPISODE. LeRobot stores it per row and a consumer
+    doing multi-task work needs it there — a per-episode id would be strictly
+    less general and would have to be re-derived. Dropping it, which this
+    importer did until now, makes every frame of a multi-task dataset look
+    like one task and NOTHING says so: the store loads, the shapes are right,
+    and a VLA trains every sample against whichever instruction the consumer
+    happened to pick.
+    """
     var state_dim: Int
     var action_dim: Int
     var n_rows: Int
@@ -385,6 +396,7 @@ struct FrameTable(Movable):
     def __init__(out self, *, deinit move: Self):
         self.qpos = move.qpos^
         self.action = move.action^
+        self.task_index = move.task_index^
         self.state_dim = move.state_dim
         self.action_dim = move.action_dim
         self.n_rows = move.n_rows
@@ -395,6 +407,7 @@ struct FrameTable(Movable):
         self.action_dim = action_dim
         self.qpos = List[Float32]()
         self.action = List[Float32]()
+        self.task_index = List[Int32]()
         self.n_rows = 0
 
         for fi in range(len(files)):
@@ -402,6 +415,12 @@ struct FrameTable(Movable):
             var rows = pf.num_rows()
             var q = pf.read_f64(String("observation.state.list.element"))
             var a = pf.read_f64(String("action.list.element"))
+            # ⚠ A SCALAR COLUMN, so no `.list.element` suffix — the two above
+            # are LIST columns and the reader spells the leaf path. Using the
+            # list spelling here returns nothing and the length check below
+            # reports it as a row-count mismatch, which points at the file
+            # rather than at the path.
+            var ti = pf.read_i64(String("task_index"))
             if len(q) != rows * state_dim:
                 raise Error(
                     "lerobot: " + files[fi].path + " has " + String(len(q))
@@ -420,6 +439,20 @@ struct FrameTable(Movable):
                 self.qpos.append(Float32(q[i]))
             for i in range(len(a)):
                 self.action.append(Float32(a[i]))
+            # ⚠ REQUIRED, NOT OPTIONAL. Every LeRobot v3 frame table carries
+            # `task_index`; a file without one is not a v3 dataset, and
+            # silently defaulting to 0 is exactly the failure this column
+            # exists to prevent.
+            if len(ti) != rows:
+                raise Error(
+                    "lerobot: " + files[fi].path + " has " + String(len(ti))
+                    + " task_index values for " + String(rows) + " rows."
+                    " Every v3 frame table carries one per frame; a store"
+                    " written without it makes a multi-task dataset look"
+                    " single-task with nothing to say so."
+                )
+            for i in range(len(ti)):
+                self.task_index.append(Int32(ti[i]))
             self.n_rows += rows
 
     def check_episode_order(self, root: String, index: EpisodeIndex) raises:
@@ -595,6 +628,57 @@ def _fptr(
     )
 
 
+@always_inline
+def read_task_table(root: String) raises -> List[Tuple[Int, String]]:
+    """`meta/tasks.parquet` -> `[(task_index, task text)]`, BYTE-EXACT.
+
+    ⚠⚠ THE TEXT IS PASSED THROUGH UNCHANGED — no trim, no normalisation, no
+    re-encode. A consumer tokenises it, and lerobot's own pipeline appends
+    "\n" BEFORE tokenising (`NewLineTaskProcessorStep`), so "Grab the green
+    cube" is six ids ending in 198, not five. A store that normalised the text
+    would let an equality gate against a token table either fail on a cosmetic
+    difference or — worse — PASS while the ids came from different bytes than
+    the store records.
+
+    ⚠ `task` IS A BYTE_ARRAY COLUMN, so it comes back as one concatenated
+    buffer plus offsets rather than a list of strings — see
+    `ParquetFile.read_byte_arrays` for why (CIFAR's 60k blobs). The bytes are
+    copied out span by span and NUL-terminated, never walked with `chr`, which
+    would re-encode every byte above 127.
+    """
+    var path = root + "/meta/tasks.parquet"
+    var pf = ParquetFile(path)
+    var idx = pf.read_i64(String("task_index"))
+    var vals = List[UInt8]()
+    var offs = List[Int]()
+    var n = pf.read_byte_arrays(String("task"), vals, offs)
+    if n != len(idx):
+        raise Error(
+            "lerobot: " + path + " has " + String(len(idx))
+            + " task_index values and " + String(n) + " task strings"
+        )
+    var out = List[Tuple[Int, String]]()
+    for i in range(n):
+        var b = List[UInt8]()
+        for k in range(offs[i], offs[i + 1]):
+            b.append(vals[k])
+        b.append(0)
+        out.append(
+            (Int(idx[i]), String(unsafe_from_utf8_ptr=b.unsafe_ptr()))
+        )
+    return out^
+
+
+@always_inline
+def _iptr(
+    mut lst: List[Int32],
+) -> Pointer[Scalar[DType.int32], MutAnyOrigin]:
+    return (
+        lst.unsafe_ptr().unsafe_bitcast[Scalar[DType.int32]]()
+        .as_unsafe_any_origin()
+    )
+
+
 def _check_forward_only(
     index: EpisodeIndex, cameras: List[String], fps: Int
 ) raises:
@@ -752,6 +836,11 @@ def import_lerobot_v3(
     var columns = List[ColumnSpec]()
     columns.append(ColumnSpec(String("qpos"), DType.float32, info.state_dim))
     columns.append(ColumnSpec(String("action"), DType.float32, info.action_dim))
+    # ⚠ INT32, NOT INT64. The parquet is i64 and this narrows: LeRobot's task
+    # tables are tens of rows, and the column is per FRAME, so the width is
+    # paid on every row of the store. A dataset with more than 2^31 tasks is
+    # not a thing; a store twice the size for a column of small integers is.
+    columns.append(ColumnSpec(String("task_index"), DType.int32, 1))
     var img_shape = List[Int]()
     img_shape.append(n_cam)
     img_shape.append(3)
@@ -763,6 +852,17 @@ def import_lerobot_v3(
     var w = TrajectoryStoreWriter(
         String(tmp), columns^, env_id^, 0, source_commit^
     )
+    # ⚠ THE TASK TABLE, so a `task_index` in the store can be RESOLVED. The
+    # column alone says which task each frame is; only this says what those
+    # indices mean. Without it a consumer needs a side-car table whose only
+    # binding to the store is its filename — and if the two drift, index 0
+    # resolves to a different instruction than the one a tokeniser saw, with
+    # nothing anywhere to complain.
+    var task_rows = read_task_table(String(root))
+    for i in range(len(task_rows)):
+        w.add_task(task_rows[i][0], String(task_rows[i][1]))
+    if verbose:
+        print("[2/4] task table: " + String(len(task_rows)) + " task(s)")
 
     # ── decode + write, one episode at a time ─────────────────────────
     if verbose:
@@ -814,6 +914,11 @@ def import_lerobot_v3(
             w.append[DType.float32](
                 String("action"),
                 _fptr(frames.action).unsafe_offset(g * info.action_dim),
+                1,
+            )
+            w.append[DType.int32](
+                String("task_index"),
+                _iptr(frames.task_index).unsafe_offset(g),
                 1,
             )
         w.end_episode()

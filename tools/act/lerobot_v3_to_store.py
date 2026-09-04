@@ -66,10 +66,57 @@ STD_FLOOR = 1e-2  # references/act-main/utils.py:96 `torch.clip(std, 1e-2, inf)`
 # ── manifest -----------------------------------------------------------------
 
 
-def encode_manifest(env_id, n_rows, n_episodes, seed, source_commit, columns):
+def escape_task_text(s: str) -> str:
+    """`manifest.escape_task_text`, in Python. Byte-exact and quoted.
+
+    ⚠ OPERATES ON BYTES, not on str characters. The Mojo side escapes five
+    BYTE values and copies the rest verbatim; doing this per-character would
+    diverge the moment a task string is non-ASCII, and the two writers would
+    disagree on exactly the input nobody tests.
+    """
+    b = s.encode("utf-8")
+    out = bytearray(b'"')
+    for c in b:
+        if c == 0x5C:
+            out += b"\\\\"
+        elif c == 0x22:
+            out += b'\\"'
+        elif c == 0x0A:
+            out += b"\\n"
+        elif c == 0x0D:
+            out += b"\\r"
+        elif c == 0x09:
+            out += b"\\t"
+        else:
+            out.append(c)
+    out += b'"'
+    return out.decode("utf-8", errors="surrogateescape")
+
+
+def read_task_table(root: Path):
+    """`meta/tasks.parquet` -> `[(task_index, text)]`, text unchanged."""
+    import pyarrow.parquet as pq
+
+    t = pq.read_table(root / "meta" / "tasks.parquet")
+    idx = [int(v) for v in t.column("task_index")]
+    txt = [str(v) for v in t.column("task")]
+    return list(zip(idx, txt))
+
+
+def encode_manifest(
+    env_id, n_rows, n_episodes, seed, source_commit, columns, tasks=()
+):
     """`data/manifest.mojo::Manifest.encode` — byte-for-byte the same format.
 
     `columns` is a list of `(name, dtype_name, trailing_shape_tuple)`.
+    `tasks` is `[(task_index, text)]` and is written AFTER the columns, in the
+    order given — the Mojo encoder does the same and the two must agree byte
+    for byte.
+
+    ⚠ THE TEXT IS QUOTED AND ESCAPED, mirroring `manifest.escape_task_text`.
+    The manifest is `key=value` LINES and its reader strips every value, so a
+    newline would split the record and edge whitespace would vanish. The text
+    must survive BYTE-EXACT because a consumer tokenises it.
     """
     lines = [
         f"schema_version={SCHEMA_VERSION}",
@@ -84,6 +131,8 @@ def encode_manifest(env_id, n_rows, n_episodes, seed, source_commit, columns):
         if shape:
             spec += ":" + ",".join(str(d) for d in shape)
         lines.append(f"column={spec}")
+    for index, text in tasks:
+        lines.append(f"task={index}\t{escape_task_text(text)}")
     return "\n".join(lines) + "\n"
 
 
@@ -139,6 +188,7 @@ def read_frames(root: Path):
         "action": fixed_list("action"),
         "qpos": fixed_list("observation.state"),
         "episode_index": np.asarray(t.column("episode_index"), dtype=np.int64),
+        "task_index": np.asarray(t.column("task_index"), dtype=np.int32),
         "n_rows": t.num_rows,
     }
 
@@ -463,8 +513,22 @@ def main():
     columns = [
         ("qpos", "float32", (s_dim,)),
         ("action", "float32", (a_dim,)),
+        # ⚠ int32, matching the Mojo importer: the parquet is i64 and this
+        # narrows deliberately — the column is per FRAME, so its width is paid
+        # on every row, and no dataset has 2^31 tasks.
+        #
+        # ⚠⚠ EMPTY SHAPE, NOT `(1,)`. `ColumnSpec.__init__(name, dtype,
+        # row_dim)` documents `row_dim=1` as a SCALAR COLUMN: it stores NO
+        # trailing shape, so the manifest reads `column=task_index:int32` and
+        # the dataset is RANK-1. Writing `(1,)` here produced
+        # `column=task_index:int32:1` and a `(N, 1)` dataset — a 2-byte
+        # manifest difference and a rank difference, both caught by the
+        # byte-identity gate. The FORMAT is defined by the Mojo writer; this
+        # file mirrors it.
+        ("task_index", "int32", ()),
         ("images", "uint8", (len(cams), 3, h, w)),
     ]
+    tasks = read_task_table(root)
     manifest = encode_manifest(
         env_id=f"lerobot/{args.repo}" if args.repo else f"lerobot/{root}",
         n_rows=n_rows,
@@ -472,6 +536,7 @@ def main():
         seed=0,
         source_commit=args.revision or "",
         columns=columns,
+        tasks=tasks,
     )
 
     # The output file is opened BEFORE the decode, so frames go straight into
@@ -484,6 +549,8 @@ def main():
         # trailing shape (`TrajectoryStoreWriter._create_for`).
         f.create_dataset("qpos", data=fr["qpos"], dtype="f4")
         f.create_dataset("action", data=fr["action"], dtype="f4")
+        # ⚠ RANK-1, matching a SCALAR column — see the ColumnSpec note above.
+        f.create_dataset("task_index", data=fr["task_index"], dtype="i4")
         images = f.create_dataset(
             "images",
             shape=(n_rows, len(cams) * cam_elems),

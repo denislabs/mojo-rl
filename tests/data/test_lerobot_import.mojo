@@ -87,6 +87,34 @@ def compare_f32(
     return len(a)
 
 
+def compare_i32(
+    mut fails: Int,
+    name: String,
+    a: List[Scalar[DType.int32]],
+    b: List[Scalar[DType.int32]],
+) raises -> Int:
+    """Exact equality — an INDEX has no tolerance. A `task_index` that is off
+    by one names a different instruction, so "close" is meaningless here."""
+    if len(a) != len(b):
+        fails += 1
+        print(
+            "  FAIL  " + name + "  length " + String(len(b)) + " vs reference "
+            + String(len(a))
+        )
+        return 0
+    var diff = 0
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            diff += 1
+    if diff != 0:
+        fails += 1
+        print("  FAIL  " + name + "  " + String(diff) + " of "
+              + String(len(a)) + " differ")
+    else:
+        print("  ok    " + name + "  " + String(len(a)) + " exact")
+    return len(a)
+
+
 def compare_u8(
     mut fails: Int,
     name: String,
@@ -223,6 +251,46 @@ def main() raises:
         a.load_column[DType.float32](String("action")),
         b.load_column[DType.float32](String("action")),
     )
+    # ⚠⚠ THE TASK COLUMN AND THE TASK TABLE, added 2026-09-04. Until then the
+    # importer DROPPED task identity: a LeRobot v3 parquet carries
+    # `task_index` per frame and nothing read it, so every frame of a
+    # multi-task dataset looked like one task and NOTHING said so — the store
+    # loaded, the shapes were right, and a VLA would train every sample
+    # against whichever instruction its consumer happened to pick.
+    compared += compare_i32(
+        fails,
+        "task_index",
+        a.load_column[DType.int32](String("task_index")),
+        b.load_column[DType.int32](String("task_index")),
+    )
+
+    # ⚠ AND THE TEXT, BYTE-EXACT. The index alone is unresolvable; the table is
+    # what binds it to an instruction. A consumer tokenises that text and the
+    # tokenisation is byte-sensitive, so a store that trimmed or normalised it
+    # would let an equality gate against a token table PASS while the ids came
+    # from different bytes than the store records.
+    ref ma = a.manifest
+    ref mb = b.manifest
+    var t_ok = len(ma.tasks) == len(mb.tasks) and len(ma.tasks) > 0
+    var t_detail = String(len(ma.tasks)) + " vs " + String(len(mb.tasks))
+    if t_ok:
+        for i in range(len(ma.tasks)):
+            if (
+                ma.tasks[i].index != mb.tasks[i].index
+                or ma.tasks[i].text != mb.tasks[i].text
+            ):
+                t_ok = False
+                t_detail = (
+                    "task " + String(i) + ": '" + ma.tasks[i].text
+                    + "' vs '" + mb.tasks[i].text + "'"
+                )
+    check(
+        fails,
+        "task table (byte-exact)",
+        t_ok,
+        String(len(ma.tasks)) + " task(s) compared" if t_ok else t_detail,
+    )
+
     compared += compare_u8(
         fails,
         "images",
