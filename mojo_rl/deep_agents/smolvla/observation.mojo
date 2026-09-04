@@ -93,4 +93,8 @@ def fill_camera_images[
         images.ensure(TOTAL)
         for i in range(TOTAL):
             images.data[i] = Scalar[DT](scratch[i])
-        images.upload(ctx.value())
+        # ⚠ `upload_resident`, not `upload`. `upload` RECREATES the device
+        # buffer and synchronises TWICE on every call — by design, it is the
+        # resize path — and this runs once per control tick on a 6.3 MB
+        # tensor. Measured at 127 ms per tick before this change.
+        images.upload_resident(ctx.value())

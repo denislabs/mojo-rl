@@ -197,14 +197,25 @@ struct SmolVLAActionSampler[
 
     var act: Self.Act
     var pool: TensorPack[Self.N_SLOTS]
+    var temb: Tensor
+    """All `STEPS` time embeddings, `[STEPS, EW]`, computed ONCE.
+
+    ⚠ These are CONSTANTS. `time_at(step)` reads only the schedule, which is a
+    comptime parameter, so the same ten vectors were being recomputed on the
+    host and uploaded on EVERY query — and `upload` reallocates the device
+    buffer and synchronises TWICE, so a ten-step denoise paid ten allocations
+    and twenty full pipeline drains to transfer numbers that never change.
+    Measured before this change: denoise was 76% of a 3.2 s query."""
 
     def __init__(out self):
         self.act = Self.Act()
         self.pool = TensorPack[Self.N_SLOTS]()
+        self.temb = Tensor()
 
     def __init__(out self, *, deinit move: Self):
         self.act = move.act^
         self.pool = move.pool^
+        self.temb = move.temb^
 
     @staticmethod
     def make[
@@ -212,6 +223,16 @@ struct SmolVLAActionSampler[
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var s = Self()
         s.act = Self.Act.make[target, Deterministic](ctx)
+        # Build the whole schedule's embeddings here, upload once.
+        s.temb = Tensor.alloc(Self.STEPS * Self.EW)
+        for step in range(Self.STEPS):
+            var te = sinusoidal_time_embedding[Self.EW](
+                Self.Sched.time_at(step)
+            )
+            for i in range(Self.EW):
+                s.temb.data[step * Self.EW + i] = te[i]
+        comptime if target != "cpu":
+            s.temb.upload(ctx.value())
         return s^
 
     def sample[
@@ -257,20 +278,31 @@ struct SmolVLAActionSampler[
             )
 
         for step in range(Self.STEPS):
-            var t = Self.Sched.time_at(step)
-
             # ── embed_suffix ─────────────────────────────────────────────
             action_in.forward[target, TOK](
                 TensorRefs[1](self.pool[Self.XT]), self.pool[Self.AEMB], ctx
             )
-            # The time embedding is one vector, computed in Float64 and shared
-            # by every token — `time_emb[:, None, :].expand_as(action_emb)`.
-            var te = sinusoidal_time_embedding[Self.EW](t)
-            self.pool[Self.TEMB].ensure(Self.EW)
-            for i in range(Self.EW):
-                self.pool[Self.TEMB].data[i] = te[i]
-            comptime if target != "cpu":
-                self.pool[Self.TEMB].upload(ctx.value())
+            # The time embedding is one vector, shared by every token —
+            # `time_emb[:, None, :].expand_as(action_emb)`. Read from the
+            # precomputed table: on GPU a device-to-device copy, so no host
+            # round trip and no synchronisation inside the loop.
+            comptime if target == "cpu":
+                self.pool[Self.TEMB].ensure(Self.EW)
+                for i in range(Self.EW):
+                    self.pool[Self.TEMB].data[i] = self.temb.data[
+                        step * Self.EW + i
+                    ]
+            else:
+                var dc = ctx.value()
+                self.pool[Self.TEMB].ensure_gpu(dc, Self.EW)
+                dc.enqueue_copy(
+                    self.pool[Self.TEMB].dev.value().create_sub_buffer[DT](
+                        0, Self.EW
+                    ),
+                    self.temb.dev.value().create_sub_buffer[DT](
+                        step * Self.EW, Self.EW
+                    ),
+                )
             # ⚠ per token: [action_t ‖ time], NOT [all actions ‖ all times]
             token_concat[target, Self.B, Self.CHUNK, Self.EW, Self.EW](
                 self.pool[Self.AEMB], self.pool[Self.TEMB],
@@ -851,7 +883,8 @@ struct SmolVLAPolicy[
         for i in range(Self.SDIM):
             self.state_buf.data[i] = Scalar[DT](st[i])
         comptime if target != "cpu":
-            self.state_buf.upload(ctx.value())
+            # `upload_resident`: reuses the buffer instead of recreating it.
+            self.state_buf.upload_resident(ctx.value())
 
         # ── prefix, then prefill ─────────────────────────────────────────
         self.prefix.run[target, Self.VOCAB, SMOLVLA_CONNECTOR_IN, Self.SDIM](
