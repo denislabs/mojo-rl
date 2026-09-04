@@ -55,8 +55,35 @@ from .kv_cache import SmolVLAKVCache
 from .expert import SmolVLAExpert
 from .block_attention import BlockCrossAttention
 from .grad_ops import (
-    accum_into, copy_into, suffix_tail, prefix_head,
+    accum_into, copy_into, zero_into, suffix_tail, prefix_head,
 )
+
+
+
+def _load_cache_grad[
+    target: StaticString, LAYER_N: Int
+](
+    layer: Int, mut src: Tensor, mut dst: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Read one layer's `[B*P*KVW]` slice out of a cache-shaped slab.
+
+    The mirror of `_store_cache_grad`, and the two must index identically —
+    `layer * LAYER_N` in both, or the denoise writes layer i's gradient where
+    the prefill reads layer j's, which is finite, plausible and wrong.
+    """
+    var off = layer * LAYER_N
+    comptime if target == "cpu":
+        dst.ensure(LAYER_N)
+        for i in range(LAYER_N):
+            dst.data[i] = src.data[off + i]
+    else:
+        var c = ctx.value()
+        dst.ensure_gpu(c, LAYER_N)
+        c.enqueue_copy(
+            dst.dev.value().create_sub_buffer[DT](0, LAYER_N),
+            src.dev.value().create_sub_buffer[DT](off, LAYER_N),
+        )
 
 
 struct SmolVLAPrefill[
@@ -70,6 +97,8 @@ struct SmolVLAPrefill[
     N_KV: Int = SMOLLM_KV_HEADS,
     HD: Int = SMOLLM_HEAD_DIM,
     THETA: Float64 = SMOLLM_THETA,
+    # V2 stage 7. See `SmolVLADenoise`'s RECORD — same parameter, same reason.
+    RECORD: Bool = False,
 ](Movable):
     """The prefill driver. Owns the stateless leaves and every scratch slab, so
     one instance runs all 16 layers without allocating in the loop."""
@@ -123,9 +152,45 @@ struct SmolVLAPrefill[
     comptime CAT = 15
     comptime GLU = 16
     comptime DOWN = 17
-    comptime N_SLOTS = 18
+    comptime N_BASE = 18
+    comptime XO: Int = Self.N_BASE if Self.RECORD else Self.X
+    comptime H2: Int = Self.N_BASE + 1 if Self.RECORD else Self.H
+    comptime N_SLOTS: Int = (
+        Self.N_BASE + 2 if Self.RECORD else Self.N_BASE
+    )
+    comptime N_POOLS: Int = Self.LAYERS + 1 if Self.RECORD else 1
+    comptime LAST: Int = Self.LAYERS if Self.RECORD else 0
 
-    var pool: TensorPack[Self.N_SLOTS]
+    var pools: List[TensorPack[Self.N_SLOTS]]
+
+    # ── the backward's scratch ───────────────────────────────────────────
+    comptime GXO = 0
+    comptime GX2 = 1
+    comptime GDOWN = 2
+    comptime GGLU = 3
+    comptime GCAT = 4
+    comptime GUP = 5
+    comptime GGATE = 6
+    comptime GHA = 7
+    comptime GHB = 8
+    comptime GHC = 9
+    comptime GAO = 10
+    comptime GATT = 11
+    comptime GPACKED = 12
+    comptime GQR = 13
+    comptime GKX = 14
+    comptime GVX = 15
+    comptime GKR = 16
+    comptime GV = 17
+    comptime GQ = 18
+    comptime GK = 19
+    comptime GRC = 20     # SwiGLU cache-refill scratch
+    comptime GRC2 = 21    # MaskedAttention cache-refill scratch
+    comptime GCK = 22     # this layer's slice of dL/d(cache K)
+    comptime GCV = 23
+    comptime G_SLOTS = 24
+
+    var g: TensorPack[Self.G_SLOTS]
 
     def __init__(out self):
         comptime assert Self.W == Self.HEADS * Self.HD, (
@@ -140,7 +205,10 @@ struct SmolVLAPrefill[
         self.glu = Self.Glu()
         self.glu_cat = Self.GluCat()
         self.res = Self.Res()
-        self.pool = TensorPack[Self.N_SLOTS]()
+        self.pools = List[TensorPack[Self.N_SLOTS]]()
+        for _ in range(Self.N_POOLS):
+            self.pools.append(TensorPack[Self.N_SLOTS]())
+        self.g = TensorPack[Self.G_SLOTS]()
 
     def __init__(out self, *, deinit move: Self):
         self.rope_q = move.rope_q^
@@ -152,7 +220,8 @@ struct SmolVLAPrefill[
         self.glu = move.glu^
         self.glu_cat = move.glu_cat^
         self.res = move.res^
-        self.pool = move.pool^
+        self.pools = move.pools^
+        self.g = move.g^
 
     @staticmethod
     def make[
@@ -193,97 +262,296 @@ struct SmolVLAPrefill[
         # Seed the pool. The running activation lives in a slot from here on, so
         # every residual pairs two slabs of one origin.
         comptime if target == "cpu":
-            self.pool[Self.X].ensure(XN)
+            self.pools[0][Self.X].ensure(XN)
             for i in range(XN):
-                self.pool[Self.X].data[i] = x.data[i]
+                self.pools[0][Self.X].data[i] = x.data[i]
         else:
             var c = ctx.value()
-            self.pool[Self.X].ensure_gpu(c, XN)
+            self.pools[0][Self.X].ensure_gpu(c, XN)
             c.enqueue_copy(
-                self.pool[Self.X].dev.value().create_sub_buffer[DT](0, XN),
+                self.pools[0][Self.X].dev.value().create_sub_buffer[DT](0, XN),
                 x.dev.value().create_sub_buffer[DT](0, XN),
             )
 
         for i in range(Self.LAYERS):
+            var pi = i if Self.RECORD else 0
+            ref PK = self.pools[pi]
             # ── attention branch ─────────────────────────────────────────
             tower.layers[i].input_layernorm.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.X]), self.pool[Self.H], ctx
+                TensorRefs[1](PK[Self.X]), PK[Self.H], ctx
             )
             tower.layers[i].q.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.H]), self.pool[Self.Q], ctx
+                TensorRefs[1](PK[Self.H]), PK[Self.Q], ctx
             )
             tower.layers[i].k.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.H]), self.pool[Self.K], ctx
+                TensorRefs[1](PK[Self.H]), PK[Self.K], ctx
             )
             tower.layers[i].v.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.H]), self.pool[Self.V], ctx
+                TensorRefs[1](PK[Self.H]), PK[Self.V], ctx
             )
             # RoPE on q and k, never on v.
             self.rope_q.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.Q]), self.pool[Self.QR], ctx
+                TensorRefs[1](PK[Self.Q]), PK[Self.QR], ctx
             )
             self.rope_k.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.K]), self.pool[Self.KR], ctx
+                TensorRefs[1](PK[Self.K]), PK[Self.KR], ctx
             )
             # Cache the POST-RoPE, PRE-broadcast K/V: 5 heads, not 15.
             cache.write_prefix[target](
-                i, self.pool[Self.KR], self.pool[Self.V], ctx
+                i, PK[Self.KR], PK[Self.V], ctx
             )
             self.rep_k.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.KR]), self.pool[Self.KX], ctx
+                TensorRefs[1](PK[Self.KR]), PK[Self.KX], ctx
             )
             self.rep_v.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.V]), self.pool[Self.VX], ctx
+                TensorRefs[1](PK[Self.V]), PK[Self.VX], ctx
             )
             self.pack.forward[target, Self.B](
                 TensorRefs[3](
-                    self.pool[Self.QR], self.pool[Self.KX], self.pool[Self.VX]
+                    PK[Self.QR], PK[Self.KX], PK[Self.VX]
                 ),
-                self.pool[Self.PACKED], ctx,
+                PK[Self.PACKED], ctx,
             )
             self.attn.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.PACKED]), self.pool[Self.ATT], ctx
+                TensorRefs[1](PK[Self.PACKED]), PK[Self.ATT], ctx
             )
             tower.layers[i].o.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.ATT]), self.pool[Self.AO], ctx
+                TensorRefs[1](PK[Self.ATT]), PK[Self.AO], ctx
             )
             self.res.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.X], self.pool[Self.AO]),
-                self.pool[Self.X2], ctx,
+                TensorRefs[2](PK[Self.X], PK[Self.AO]),
+                PK[Self.X2], ctx,
             )
 
             # ── MLP branch ───────────────────────────────────────────────
             tower.layers[i].post_attention_layernorm.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.X2]), self.pool[Self.H], ctx
+                TensorRefs[1](PK[Self.X2]), PK[Self.H2], ctx
             )
             tower.layers[i].mlp.gate.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.H]), self.pool[Self.GATE], ctx
+                TensorRefs[1](PK[Self.H2]), PK[Self.GATE], ctx
             )
             tower.layers[i].mlp.up.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.H]), self.pool[Self.UP], ctx
+                TensorRefs[1](PK[Self.H2]), PK[Self.UP], ctx
             )
             # ⚠ (up, gate): SwiGLU reads [u ‖ v] -> u * silu(v), and the
             # reference computes down(silu(gate) * up). Reversed is the same
             # shape and a different function.
             self.glu_cat.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.UP], self.pool[Self.GATE]),
-                self.pool[Self.CAT], ctx,
+                TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
+                PK[Self.CAT], ctx,
             )
             self.glu.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.CAT]), self.pool[Self.GLU], ctx
+                TensorRefs[1](PK[Self.CAT]), PK[Self.GLU], ctx
             )
             tower.layers[i].mlp.down.forward[target, TOK](
-                TensorRefs[1](self.pool[Self.GLU]), self.pool[Self.DOWN], ctx
+                TensorRefs[1](PK[Self.GLU]), PK[Self.DOWN], ctx
             )
             self.res.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.X2], self.pool[Self.DOWN]),
-                self.pool[Self.X], ctx,
+                TensorRefs[2](PK[Self.X2], PK[Self.DOWN]),
+                PK[Self.XO], ctx,
             )
 
+            comptime if Self.RECORD:
+                var pn = i + 1
+                comptime if target == "cpu":
+                    self.pools[pn][Self.X].ensure(XN)
+                    var dst = self.pools[pn][Self.X].data.unsafe_ptr()
+                    var src = self.pools[pi][Self.XO].data.unsafe_ptr()
+                    for t in range(XN):
+                        dst[unsafe_offset=t] = src[unsafe_offset=t]
+                else:
+                    var c2 = ctx.value()
+                    self.pools[pn][Self.X].ensure_gpu(c2, XN)
+                    var sb = self.pools[pi][Self.XO].dev.value(
+                    ).create_sub_buffer[DT](0, XN)
+                    var db = self.pools[pn][Self.X].dev.value(
+                    ).create_sub_buffer[DT](0, XN)
+                    c2.enqueue_copy(db, sb)
+
         tower.norm.forward[target, TOK](
-            TensorRefs[1](self.pool[Self.X]), out, ctx
+            TensorRefs[1](self.pools[Self.LAST][Self.X]), out, ctx
         )
 
+
+
+    def backward[
+        target: StaticString
+    ](
+        mut self,
+        mut tower: SmolVLMTextLayers[
+            Self.LAYERS, Self.W, Self.FF, Self.KVW
+        ],
+        mut grad_cache_k: Tensor,
+        mut grad_cache_v: Tensor,
+        mut grad_x: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Reverse of `run`, from the cache gradient down to the embeddings.
+
+        `grad_cache_k` / `grad_cache_v` are what `SmolVLADenoise.backward`
+        produced. `grad_x` receives dL/d(the prefix embeddings), whose STATE
+        token slice is `state_proj`'s gradient.
+
+        ⚠ **It starts from ZERO, not from a `grad_out`.** `run`'s `out` — the
+        final norm of the prefix — is discarded by the training forward
+        (`(_, suffix_out), _ = vlm_with_expert.forward(...)`), so the loss does
+        not read it and its gradient is genuinely zero. EVERY bit of gradient
+        in this pass enters sideways, through the per-layer cached K/V. A
+        `grad_out` parameter here would be an invitation to pass something
+        nonzero and train on a term the reference does not have.
+
+        ⚠ **Two sources meet at KR and V.** Layer i's post-RoPE K and its V
+        each feed TWO consumers: the cache (read by every denoising step) and
+        this layer's own attention. Their gradients must be SUMMED. Taking
+        only the attention side leaves `state_proj` with a gradient that looks
+        reasonable and is missing most of itself; taking only the cache side
+        silently deletes the prefix's internal structure.
+
+        ⚠ **No VLM weight gradient is wanted** — the tower is frozen — but
+        `Linear.vjp` forms one anyway, because it has no flag to skip dW.
+        That is roughly double the backward cost of this pass and it pollutes
+        `.grd` on frozen parameters, which nothing zeroes. Named here rather
+        than discovered later; the fix is a `NO_DW` parameter on `Linear.vjp`
+        and it belongs with the Jetson work.
+        """
+        comptime assert Self.RECORD, (
+            "SmolVLAPrefill.backward needs RECORD=True — the non-recording"
+            " driver keeps one pool and its tape is the last layer's"
+            " activations sixteen times over"
+        )
+        comptime TOK = Self.B * Self.P
+        comptime XN = Self.B * Self.XN
+        comptime KVN = Self.B * Self.KVN
+        comptime FFN = Self.B * Self.FFN
+        comptime CACHE_LAYER = Self.B * Self.P * Self.KVW
+
+        zero_into[target, XN](self.g[Self.GXO], ctx)
+
+        for ridx in range(Self.LAYERS):
+            var i = Self.LAYERS - 1 - ridx
+            ref PK = self.pools[i]
+
+            # ── MLP branch, reversed ─────────────────────────────────────
+            self.res.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.X2], PK[Self.DOWN]),
+                self.g[Self.GXO],
+                TensorRefs[2](self.g[Self.GX2], self.g[Self.GDOWN]),
+                ctx,
+            )
+            tower.layers[i].mlp.down.vjp[target, TOK](
+                TensorRefs[1](PK[Self.GLU]), self.g[Self.GDOWN],
+                TensorRefs[1](self.g[Self.GGLU]), ctx,
+            )
+            # ⚠ SwiGLU is output-caching with ONE instance for all sixteen
+            # layers — see `SmolVLADenoise.backward`. Refill with this layer's
+            # own CAT before differentiating.
+            self.glu.forward[target, Self.B](
+                TensorRefs[1](PK[Self.CAT]), self.g[Self.GRC], ctx
+            )
+            self.glu.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.CAT]), self.g[Self.GGLU],
+                TensorRefs[1](self.g[Self.GCAT]), ctx,
+            )
+            self.glu_cat.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
+                self.g[Self.GCAT],
+                TensorRefs[2](self.g[Self.GUP], self.g[Self.GGATE]),
+                ctx,
+            )
+            tower.layers[i].mlp.up.vjp[target, TOK](
+                TensorRefs[1](PK[Self.H2]), self.g[Self.GUP],
+                TensorRefs[1](self.g[Self.GHA]), ctx,
+            )
+            tower.layers[i].mlp.gate.vjp[target, TOK](
+                TensorRefs[1](PK[Self.H2]), self.g[Self.GGATE],
+                TensorRefs[1](self.g[Self.GHB]), ctx,
+            )
+            accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
+            tower.layers[i].post_attention_layernorm.vjp[target, TOK](
+                TensorRefs[1](PK[Self.X2]), self.g[Self.GHA],
+                TensorRefs[1](self.g[Self.GHC]), ctx,
+            )
+            accum_into[target, XN](self.g[Self.GX2], self.g[Self.GHC], ctx)
+
+            # ── attention branch, reversed ───────────────────────────────
+            self.res.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.X], PK[Self.AO]),
+                self.g[Self.GX2],
+                TensorRefs[2](self.g[Self.GHC], self.g[Self.GAO]),
+                ctx,
+            )
+            tower.layers[i].o.vjp[target, TOK](
+                TensorRefs[1](PK[Self.ATT]), self.g[Self.GAO],
+                TensorRefs[1](self.g[Self.GATT]), ctx,
+            )
+            # ⚠ MaskedAttention is ALSO output-caching, ALSO one instance for
+            # sixteen layers. Same refill, same reason.
+            self.attn.forward[target, Self.B](
+                TensorRefs[1](PK[Self.PACKED]), self.g[Self.GRC2], ctx
+            )
+            self.attn.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.PACKED]), self.g[Self.GATT],
+                TensorRefs[1](self.g[Self.GPACKED]), ctx,
+            )
+            self.pack.vjp[target, Self.B](
+                TensorRefs[3](PK[Self.QR], PK[Self.KX], PK[Self.VX]),
+                self.g[Self.GPACKED],
+                TensorRefs[3](
+                    self.g[Self.GQR], self.g[Self.GKX], self.g[Self.GVX]
+                ),
+                ctx,
+            )
+            self.rep_k.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.KR]), self.g[Self.GKX],
+                TensorRefs[1](self.g[Self.GKR]), ctx,
+            )
+            self.rep_v.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.V]), self.g[Self.GVX],
+                TensorRefs[1](self.g[Self.GV]), ctx,
+            )
+
+            # ⚠ THE SECOND SOURCE. KR and V went to the cache as well as to
+            # the attention, so the denoise's gradient is added here.
+            _load_cache_grad[target, CACHE_LAYER](
+                i, grad_cache_k, self.g[Self.GCK], ctx
+            )
+            _load_cache_grad[target, CACHE_LAYER](
+                i, grad_cache_v, self.g[Self.GCV], ctx
+            )
+            accum_into[target, KVN](self.g[Self.GKR], self.g[Self.GCK], ctx)
+            accum_into[target, KVN](self.g[Self.GV], self.g[Self.GCV], ctx)
+
+            self.rope_k.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.K]), self.g[Self.GKR],
+                TensorRefs[1](self.g[Self.GK]), ctx,
+            )
+            self.rope_q.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],
+                TensorRefs[1](self.g[Self.GQ]), ctx,
+            )
+            tower.layers[i].q.vjp[target, TOK](
+                TensorRefs[1](PK[Self.H]), self.g[Self.GQ],
+                TensorRefs[1](self.g[Self.GHA]), ctx,
+            )
+            tower.layers[i].k.vjp[target, TOK](
+                TensorRefs[1](PK[Self.H]), self.g[Self.GK],
+                TensorRefs[1](self.g[Self.GHB]), ctx,
+            )
+            tower.layers[i].v.vjp[target, TOK](
+                TensorRefs[1](PK[Self.H]), self.g[Self.GV],
+                TensorRefs[1](self.g[Self.GXO]), ctx,
+            )
+            accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
+            accum_into[target, XN](self.g[Self.GHA], self.g[Self.GXO], ctx)
+            tower.layers[i].input_layernorm.vjp[target, TOK](
+                TensorRefs[1](PK[Self.X]), self.g[Self.GHA],
+                TensorRefs[1](self.g[Self.GHB]), ctx,
+            )
+            accum_into[target, XN](self.g[Self.GHC], self.g[Self.GHB], ctx)
+            copy_into[target, XN](self.g[Self.GXO], self.g[Self.GHC], ctx)
+
+        copy_into[target, XN](grad_x, self.g[Self.GXO], ctx)
+        _ = FFN
 
 
 def _store_cache_grad[

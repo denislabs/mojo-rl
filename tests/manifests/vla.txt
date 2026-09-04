@@ -70,3 +70,12 @@ tests/deep_agents/smolvla/test_store_vs_camera_frame.mojo
 # camera SWAP must be detectable — nothing else about a swap is observable at
 # runtime, no shape change and no error, only the policy behaving wrongly.
 tests/deep_agents/smolvla/test_store_observation.mojo
+
+# V2 stage 7 — the gradient back to the prefix embeddings, which is what
+# train_state_proj=True needs: the state token is a prefix embedding, so
+# state_proj's gradient is a slice of this and every VLM layer sits between it
+# and the loss. Differences the WHOLE chain (prefill -> cache -> one denoising
+# step) because the two drivers are separately gated and their JOIN is not.
+# Carries three measured ablations, including the two-source accumulation at
+# KR that leaves state_proj with 79% of a gradient.
+tests/deep_agents/smolvla/test_prefill_backward.mojo

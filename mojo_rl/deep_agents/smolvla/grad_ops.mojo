@@ -171,3 +171,33 @@ def prefix_head[
             grid_dim=(B * PRE_B + TPB - 1) // TPB,
             block_dim=TPB,
         )
+
+
+def _zero_kernel[N: Int](
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst.ptr[unsafe_offset=i] = Scalar[DT](0)
+
+
+def zero_into[
+    target: StaticString, N: Int
+](mut dst: Tensor, ctx: Optional[DeviceContext] = None) raises:
+    """`dst[0:N] = 0`, sizing it first.
+
+    Used to seed a backward whose starting gradient is genuinely zero — the
+    prefill's, whose final hidden state the loss never reads.
+    """
+    comptime if target == "cpu":
+        dst.ensure(N)
+        for i in range(N):
+            dst.data[i] = Scalar[DT](0)
+    else:
+        var c = ctx.value()
+        dst.ensure_gpu(c, N)
+        c.enqueue_function[_zero_kernel[N]](
+            dst.lt["gpu", Layout.row_major(N)](),
+            grid_dim=(N + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
