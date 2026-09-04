@@ -37,6 +37,13 @@ examples/solve_taxi.mojo
 # evaluates the goal and steps once, with no display.
 examples/tasks/task_viewer.mojo
 
+# ⚠ COMPILE-PROBED, NOT RUN — and not runnable on Apple at all. The family is
+# nv=24, exactly where the P0 park probe died on Metal ("Compute function
+# exceeds available stack space"): the physics kernels stack-allocate
+# per-thread arrays sized by nv. It builds here and launches only on NVIDIA:
+#   pixi run -e nvidia mojo run -I . examples/tasks/task_batched_gpu.mojo
+examples/tasks/task_batched_gpu.mojo
+
 # GPU device code — local-only probes (see note above):
 # examples/bipedal_walker_gpu_demo.mojo
 # examples/bipedal_walker_cpu_gpu_compare.mojo
