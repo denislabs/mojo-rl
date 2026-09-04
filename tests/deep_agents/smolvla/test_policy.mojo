@@ -25,12 +25,16 @@ Deterministic weights, no download: this gates the assembly, not the numbers.
 Parity against the real checkpoint is `test_parity_vs_hf`.
 
 ⚠⚠ **ONE POLICY. NEVER TWO.** `Tensor` holds host AND device copies, so a
-single `SmolVLAPolicy` at real shapes is 402,737,376 params x 4 bytes x 2 =
+single `SmolVLAPolicy` at PUBLISHED depth is 402,737,376 params x 4 bytes x 2 =
 **3.2 GB**. An earlier draft of this file built three — one to vary the action
 stats, one to test the missing-stats error — for **9.7 GB**, which on a 16 GiB
 machine took the whole laptop down with it, mid-compile. Both variations need
 nothing but a different 6-element stats list, so both mutate the ONE policy and
 restore it. If you need another configuration, change `pol.stats`, not `Pol`.
+
+That incident is also why this file now runs a SHALLOW fixture (below). The two
+fixes are independent: depth cuts the size of one policy, the mutate-and-restore
+rule cuts how many exist. Either alone still leaves the other mistake available.
 
 Run:
   pixi run -e apple mojo run -I . tests/deep_agents/smolvla/test_policy.mojo
@@ -54,7 +58,22 @@ comptime N_CAM = 2
 comptime N_LANG = 6
 comptime CHUNK = 50
 comptime STEPS = 10
-comptime Pol = SmolVLAPolicy[N_CAM, N_LANG, CHUNK, STEPS, 1]
+comptime VLM_LAYERS = 2
+comptime VIS_LAYERS = 2
+comptime Pol = SmolVLAPolicy[
+    N_CAM, N_LANG, CHUNK, STEPS, 1, VLM_LAYERS, VIS_LAYERS
+]
+"""⚠ A SHALLOW FIXTURE — 2 VLM / 2 expert / 2 vision layers, not 16/16/12.
+
+Every failure this file gates is in the WIRING, and wiring does not get more
+wrong with depth: `P` is threaded to four containers, the cache is refilled per
+observation, the stats are applied per dimension. None of that reads the layer
+count. What depth costs is memory, and at the published depths one policy is
+3.2 GB.
+
+⚠ It also means this file CANNOT load the checkpoint, and `load` refuses to try
+— see `SmolVLAPolicy.load`'s assertions. Real depths, real weights and the
+per-component load counts are `test_policy_load.mojo`."""
 comptime CAM_W = 640
 comptime CAM_H = 480
 comptime RDIM = 6
@@ -99,7 +118,9 @@ def main() raises:
     assert_equal(Pol.P, N_CAM * 64 + N_LANG + 1, "P was not derived")
 
     var d = DeviceContext()
-    print("      building the policy (16 VLM + 16 expert + 12 vision layers)…")
+    print("      building the policy:", VLM_LAYERS, "VLM +", VLM_LAYERS,
+          "expert +", VIS_LAYERS, "vision layers (a fixture, not the"
+          " checkpoint's 16/16/12)")
     var pol = Pol.make["gpu", Deterministic](Optional(d))
     pol.stats = robot_stats()
 

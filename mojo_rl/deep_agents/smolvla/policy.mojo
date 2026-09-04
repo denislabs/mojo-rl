@@ -30,6 +30,7 @@ from mojo_rl.nn.combinators.tokenwise import Tokenwise
 
 from .vision import (
     SigLIPVisionTower, SIGLIP_GRID, SIGLIP_DIM, SIGLIP_IMG, SIGLIP_TOKENS,
+    SIGLIP_PATCH, SIGLIP_HEADS, SIGLIP_FF, SIGLIP_LAYERS,
 )
 from .text import (
     SMOLLM_DIM, SMOLLM_KV_W, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, SMOLLM_LAYERS,
@@ -105,6 +106,7 @@ struct SmolVLAActionSampler[
     EW: Int = SMOLVLA_EXPERT_W,
     STEPS: Int = 10,
     B: Int = 1,
+    LAYERS: Int = SMOLLM_LAYERS,
 ](Movable):
     """The ten-step Euler loop, with `embed_suffix` and `action_out` inside it.
 
@@ -158,14 +160,14 @@ struct SmolVLAActionSampler[
         # types, so every container in the loop must be spelled from the same
         # definitions.
         mut expert: SmolVLAExpert[
-            SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
+            Self.LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
             SMOLLM_KV_W, 2,
         ],
         mut cache: SmolVLAKVCache[
-            SMOLLM_LAYERS, P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
+            Self.LAYERS, P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
             Self.B,
         ],
-        mut denoise: SmolVLADenoise[P, Self.CHUNK, Self.B],
+        mut denoise: SmolVLADenoise[P, Self.CHUNK, Self.B, Self.LAYERS],
         mut action_in: Linear[Self.ADIM, Self.EW],
         mut time_mlp_in: Linear[2 * Self.EW, Self.EW],
         mut time_mlp_out: Linear[Self.EW, Self.EW],
@@ -255,6 +257,7 @@ struct SmolVLAPrefixEmbed[
     B: Int = 1,
     W: Int = SMOLLM_DIM,
     IMG_TOK: Int = 64,
+    VIS_LAYERS: Int = SIGLIP_LAYERS,
 ](Movable):
     """`[images…, language…, state]` -> `[B, P * 960]`, the VLM stream.
 
@@ -282,6 +285,14 @@ struct SmolVLAPrefixEmbed[
     comptime VIS_IN: Int = 3 * SIGLIP_IMG * SIGLIP_IMG
     comptime VIS_OUT: Int = SIGLIP_TOKENS * SIGLIP_DIM
     comptime Shuffle = PixelShuffle[SIGLIP_GRID, SIGLIP_DIM, 4]
+    comptime Vision = SigLIPVisionTower[
+        SIGLIP_IMG, SIGLIP_PATCH, SIGLIP_DIM, SIGLIP_HEADS, SIGLIP_FF,
+        Self.VIS_LAYERS, SIGLIP_GRID, SIGLIP_TOKENS,
+    ]
+    """⚠ Only the DEPTH is reducible. `IMG`/`GRID`/`TOKENS` are load-bearing
+    downstream — `PixelShuffle[32, 768, 4]` and `IMG_TOK = 64` are derived from
+    the 32x32 patch grid — so a smaller image is not a cheaper test, it is a
+    different architecture."""
 
     var shuffle: Self.Shuffle
     var vis: Tensor
@@ -319,7 +330,7 @@ struct SmolVLAPrefixEmbed[
         target: StaticString, VOCAB: Int, CONN_IN: Int, SDIM: Int
     ](
         mut self,
-        mut vision: SigLIPVisionTower[],
+        mut vision: Self.Vision,
         mut connector: Tokenwise[Self.IMG_TOK, Linear[CONN_IN, Self.W]],
         mut embed_weight: Tensor,
         mut state_proj: Linear[SDIM, Self.W],
@@ -400,6 +411,8 @@ struct SmolVLAPolicy[
     CHUNK: Int = 50,
     STEPS: Int = 10,
     B: Int = 1,
+    LAYERS: Int = SMOLLM_LAYERS,
+    VIS_LAYERS: Int = SIGLIP_LAYERS,
 ](Movable):
     """Every component of SmolVLA in one object: pixels and a pose in, joint
     angles out.
@@ -433,13 +446,22 @@ struct SmolVLAPolicy[
     ⚠ **The cache belongs to ONE observation.** `select_action` refills it every
     call. Prefilling once and sampling repeatedly would run the expert against a
     stale scene: no error, no NaN, just a policy acting on what it saw before.
+
+    ⚠ **`LAYERS` / `VIS_LAYERS` exist for TEST FIXTURES ONLY.** At the published
+    depths one policy is 402,737,376 params x 4 bytes x 2 (`Tensor` keeps a host
+    AND a device copy) = **3.2 GB**, which is more than a wiring gate should
+    need. A shallow build exercises the same wiring for a fraction of it.
+    `load` REFUSES anything but the real depths — see its assertions. Only the
+    depth is reducible: image size, widths and the vocabulary are load-bearing
+    downstream, so a smaller one of those is a different architecture rather
+    than a cheaper test.
     """
 
     comptime IMG_TOK: Int = 64
     comptime P: Int = Self.N_CAM * Self.IMG_TOK + Self.N_LANG + 1
     comptime W: Int = SMOLLM_DIM
     comptime EW: Int = SMOLVLA_EXPERT_W
-    comptime L: Int = SMOLLM_LAYERS
+    comptime L: Int = Self.LAYERS
     comptime ADIM: Int = SMOLVLA_ACTION_DIM
     comptime SDIM: Int = SMOLVLA_STATE_DIM
     comptime VOCAB: Int = 49280
@@ -453,20 +475,22 @@ struct SmolVLAPolicy[
     comptime Cache = SmolVLAKVCache[
         Self.L, Self.P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, Self.B
     ]
-    comptime Pre = SmolVLAPrefill[Self.P, Self.CHUNK, Self.B]
-    comptime Den = SmolVLADenoise[Self.P, Self.CHUNK, Self.B]
+    comptime Pre = SmolVLAPrefill[Self.P, Self.CHUNK, Self.B, Self.LAYERS]
+    comptime Den = SmolVLADenoise[Self.P, Self.CHUNK, Self.B, Self.LAYERS]
     comptime Sam = SmolVLAActionSampler[
-        Self.CHUNK, SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W, Self.STEPS, Self.B
+        Self.CHUNK, SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W, Self.STEPS, Self.B,
+        Self.LAYERS,
     ]
     comptime Prefix = SmolVLAPrefixEmbed[
-        Self.N_CAM, Self.N_LANG, Self.B, SMOLLM_DIM, Self.IMG_TOK
+        Self.N_CAM, Self.N_LANG, Self.B, SMOLLM_DIM, Self.IMG_TOK,
+        Self.VIS_LAYERS,
     ]
     comptime Conn = Tokenwise[
         Self.IMG_TOK, Linear[SMOLVLA_CONNECTOR_IN, SMOLLM_DIM]
     ]
     comptime Embed = SmolVLATokenEmbed[Self.VOCAB, SMOLLM_DIM]
 
-    var vision: SigLIPVisionTower[]
+    var vision: Self.Prefix.Vision
     var connector: Self.Conn
     var embed: Self.Embed
     var tower: Self.Tower
@@ -492,7 +516,7 @@ struct SmolVLAPolicy[
     def __init__(out self):
         comptime assert Self.N_CAM >= 1, "SmolVLAPolicy: need a camera"
         comptime assert Self.N_LANG >= 1, "SmolVLAPolicy: need an instruction"
-        self.vision = SigLIPVisionTower[]()
+        self.vision = Self.Prefix.Vision()
         self.connector = Self.Conn()
         self.embed = Self.Embed()
         self.tower = Self.Tower()
@@ -559,7 +583,7 @@ struct SmolVLAPolicy[
             ar_full, Self.P, Self.P + Self.CHUNK, 0, Self.P
         )
 
-        p.vision = SigLIPVisionTower[].make[target, INIT](ctx)
+        p.vision = Self.Prefix.Vision.make[target, INIT](ctx)
         p.connector = Self.Conn.make[target, INIT](ctx)
         p.embed = Self.Embed.make[target, INIT](ctx)
         p.tower = Self.Tower.make[target, INIT](ctx)
@@ -608,6 +632,25 @@ struct SmolVLAPolicy[
         # question is answered once, by `test_checkpoint_coverage`; what each
         # walk must answer is its own — nothing unmapped, nothing missing, and
         # the count it was supposed to fill.
+        # ⚠ A REDUCED-DEPTH POLICY CANNOT HOLD THIS CHECKPOINT, and must say
+        # so here rather than fail downstream. The name maps enumerate all 16
+        # VLM / 16 expert / 12 vision layers, so a shallower walk leaves most
+        # entries unclaimed — `_claimed_every_entry` would catch it, but with a
+        # message about counts rather than about depth. Worse, the tempting
+        # "fix" is to parameterise the maps too, which would silently give a
+        # policy holding the FIRST TWO of sixteen layers: it runs, it is
+        # finite, and it emits plausible actions.
+        comptime assert Self.LAYERS == SMOLLM_LAYERS, (
+            "SmolVLAPolicy.load: this policy was built with a reduced LAYERS."
+            " A shallow policy is a TEST FIXTURE — it cannot hold"
+            " lerobot/smolvla_base."
+        )
+        comptime assert Self.VIS_LAYERS == SIGLIP_LAYERS, (
+            "SmolVLAPolicy.load: this policy was built with a reduced"
+            " VIS_LAYERS. A shallow vision tower is a TEST FIXTURE — it cannot"
+            " hold lerobot/smolvla_base."
+        )
+
         var vl = LoadTorchNamed[""](SafeTensors(weights), vision_name_map())
         self.vision.for_each_param[target](vl, ctx)
         vl.report(String("vision"))
