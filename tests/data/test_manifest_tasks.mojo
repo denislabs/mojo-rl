@@ -29,6 +29,13 @@ from mojo_rl.data.manifest import (
     escape_task_text, unescape_task_text,
 )
 from mojo_rl.data.column import ColumnSpec
+from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
+
+
+def _f32ptr(
+    mut lst: List[Scalar[DType.float32]],
+) -> Pointer[Scalar[DType.float32], MutAnyOrigin]:
+    return lst.unsafe_ptr().as_unsafe_any_origin()
 
 
 def _hostile() -> List[String]:
@@ -128,6 +135,54 @@ def main() raises:
         bad += 1
     else:
         print("  ok: unknown escape, unquoted text and unknown index all RAISE")
+
+    # ── 4. ⚠⚠ THROUGH A REAL STORE, AGAINST A LITERAL ────────────────────
+    #
+    # The arms above are in-memory. They passed while `TrajectoryStore`'s
+    # manifest READER corrupted every byte above 127 — `text += chr(Int(b))`
+    # again, one layer down — so a store written with a byte-exact task table
+    # read it back as mojibake.
+    #
+    # ⚠ AND THE IMPORT GATE COULD NOT SEE IT EITHER: it compares two stores,
+    # both read through that same function, so both were wrong identically and
+    # agreed. Comparing against a LITERAL is the only arm that catches a
+    # reader shared by both sides of a comparison — the same two-halves
+    # blindness this file's header describes, reproduced one layer down while
+    # the header was being written.
+    print("--- through a real store, against a literal ---")
+    var tmp = String("/tmp/mojo_rl_manifest_tasks.h5")
+    var cols2 = List[ColumnSpec]()
+    var shp2 = List[Int]()
+    shp2.append(2)
+    cols2.append(ColumnSpec(String("qpos"), DType.float32, shp2^))
+    var w = TrajectoryStoreWriter(
+        tmp, cols2^, String("test"), 0, String("")
+    )
+    for i in range(len(cases)):
+        w.add_task(i, String(cases[i]))
+    var row = List[Scalar[DType.float32]]()
+    row.append(1.0)
+    row.append(2.0)
+    w.append[DType.float32](String("qpos"), _f32ptr(row), 1)
+    w.end_episode()
+    w.close()
+
+    var st = TrajectoryStore(tmp)
+    if len(st.manifest.tasks) != len(cases):
+        print("  FAIL: store holds", len(st.manifest.tasks), "of",
+              len(cases), "tasks")
+        bad += 1
+    else:
+        var rt_bad = 0
+        for i in range(len(cases)):
+            if st.manifest.task_text(i) != cases[i]:
+                print("  FAIL round trip", i, ": got '",
+                      st.manifest.task_text(i), "' want '", cases[i], "'")
+                rt_bad += 1
+        if rt_bad == 0:
+            print("  ok: all", len(cases),
+                  "survive write -> HDF5 -> read, byte for byte")
+        bad += rt_bad
 
     print()
     if bad != 0:

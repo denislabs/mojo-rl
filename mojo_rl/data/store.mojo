@@ -430,10 +430,26 @@ struct TrajectoryStore(Movable):
         var buf = buf_a.unsafe_ptr().as_unsafe_any_origin()
         try:
             ds.read_all[DType.uint8](buf)
-            var text = String()
+            # ⚠⚠ BYTES, NOT `chr` PER BYTE — AND THIS ONE READ BACK THE
+            # MANIFEST. `text += chr(Int(byte))` yields the CODEPOINT of any
+            # value above 127, which re-encodes as two bytes, so every
+            # non-ASCII value in every manifest was corrupted ON READ.
+            # Measured: a task text of "Push the ünïcøde block ✓" came back as
+            # "Push the Ã¼nÃ¯cÃ¸de block â".
+            #
+            # ⚠ AND THE IMPORT GATE COULD NOT SEE IT. It compares two stores,
+            # both read through THIS function, so both were corrupted
+            # identically and agreed. That is the two-halves blindness the
+            # manifest work had just documented, reproduced one layer down.
+            # `test_manifest_tasks` now reads the text back and compares it
+            # against a LITERAL, which is the only arm that can catch this.
+            var raw = List[UInt8]()
             for i in range(n):
-                text += chr(Int(buf[unsafe_offset=i]))
-            return parse_manifest(text)
+                raw.append(buf[unsafe_offset=i])
+            raw.append(0)
+            return parse_manifest(
+                String(unsafe_from_utf8_ptr=raw.unsafe_ptr())
+            )
 
         finally:
             dealloc(buf_a^)
