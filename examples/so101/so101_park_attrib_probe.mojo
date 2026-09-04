@@ -99,6 +99,35 @@ comptime WARMUP_STEPS = 200
 comptime WARMUP_SECONDS = 5.0
 comptime TIMED_STEPS = 300
 
+# ⚠⚠ RESET EVERY STEP — THE FIX FOR A BISECT THAT FED BACK INTO ITS OWN INPUT.
+# `NEWTON_STOP_AFTER` truncates the solver, which leaves `qacc_constrained` at
+# the SMOOTH acceleration. That is a stable answer, and I checked it was
+# bounded — but stability is not workload equivalence. An unconstrained arm
+# blows through its JOINT LIMITS, and joint limits are constraint ROWS, so the
+# truncated build ran a different and more expensive problem. The tell was
+# arithmetic: `STOP=5` measured 18.002 ms against the FULL kernel's 16.554, and
+# a PREFIX OF A PROGRAM CANNOT COST MORE THAN THE WHOLE PROGRAM ON THE SAME
+# INPUT — so the input had changed.
+#
+# ⚠ AND THE CONTROLS DID NOT CATCH IT. `collision` sat at 1.005 throughout,
+# because its cost is dominated by the geometry-pair count and not by how many
+# constraint rows the state produces. A control that cannot observe the quantity
+# you are worried about is not a control.
+#
+# With a FIXED seed, `reset_batch` makes every step start from the identical
+# state, so nothing the kernel writes can reach the next step and every arm
+# measures the same problem. That is the only property a bisect needs.
+#
+# ⚠ IT CHANGES WHAT IS ATTRIBUTED, and the number is not comparable to a
+# non-reset run: this measures the RESET POSE, not a settled trajectory. Use it
+# to compare arms with each other, never against the main sweep's absolutes.
+#
+# ⚠ The reset's own kernels enter the nsys table. They are identical across
+# arms so they cannot bias a comparison, but they do inflate wall time and the
+# non-`newton` rows.
+comptime RESET_EVERY_STEP: Bool = False
+comptime RESET_SEED: UInt64 = 42
+
 comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]
 comptime ParkCfg3 = So101ParkProbeConfig[27, 24, 3]
 comptime ParkCfg6 = So101ParkProbeConfig[48, 42, 6]
@@ -131,6 +160,8 @@ def run_leg[
     var t_warm = perf_counter_ns()
     while True:
         for _ in range(50):
+            comptime if RESET_EVERY_STEP:
+                env.reset_batch[N_ENVS](ctx, RESET_SEED)
             env.step_batch[N_ENVS](ctx, UInt64(0))
         ctx.synchronize()
         warm += 50
@@ -142,6 +173,8 @@ def run_leg[
 
     var t0 = perf_counter_ns()
     for _ in range(TIMED_STEPS):
+        comptime if RESET_EVERY_STEP:
+            env.reset_batch[N_ENVS](ctx, RESET_SEED)
         env.step_batch[N_ENVS](ctx, UInt64(0))
     # The sync is inside the timed region: it is what makes the number mean
     # "the work finished" rather than "the work was enqueued".
@@ -164,6 +197,9 @@ def run_leg[
     # that ratio — silently, and uniformly, which is the hardest kind to spot.
     print("  warmup_steps    ", warm)
     print("  timed_steps     ", TIMED_STEPS)
+    comptime if RESET_EVERY_STEP:
+        print("  reset_every_step TRUE  <- state pinned; absolutes NOT comparable")
+        print("                          to a normal sweep, only arm-to-arm")
     print("  total_steps     ", warm + TIMED_STEPS)
     print("  wall_s          ", secs)
     print("  ms_per_step     ", secs * 1000.0 / Float64(TIMED_STEPS))
