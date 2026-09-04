@@ -41,6 +41,8 @@ Memory is bounded: members are copied through a 1 MiB buffer, so a 200 MB
 archive costs 1 MiB whatever its members weigh.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.os import makedirs
 from std.os.path import exists
 
@@ -100,18 +102,23 @@ def _pax_path(ref data: List[UInt8]) raises -> String:
         if digits == 0 or n <= digits or pos + n > len(data):
             raise Error("tar: a malformed PAX record length")
         var body_start = pos + digits + 1  # skip the space
-        var key = String("")
+        # ⚠⚠ BYTES — see `core/bytes.mojo`. PAX headers are UTF-8 BY THE TAR
+        # SPEC, so this is the one reader in the tree where non-ASCII is not
+        # merely possible but expected: a `path` record exists precisely to
+        # carry a name the ustar header could not.
+        var kb = List[UInt8]()
         var i = body_start
         while i < pos + n and data[i] != 0x3D:  # "="
-            key += chr(Int(data[i]))
+            kb.append(data[i])
             i += 1
+        var key = string_from_bytes(kb)
         if key == "path":
-            var v = String("")
+            var vb = List[UInt8]()
             var j = i + 1
             while j < pos + n - 1:  # the record ends with a newline
-                v += chr(Int(data[j]))
+                vb.append(data[j])
                 j += 1
-            return v^
+            return string_from_bytes(vb)
         pos += n
     return String("")
 
@@ -184,12 +191,13 @@ def untar(tar_path: String, dest: String, verbose: Bool = False) raises -> Int:
                 if p.byte_length() > 0:
                     pending_name = p^
             elif typeflag == 0x4C:  # L — the data IS the name, NUL-terminated
-                var ln = String("")
+                # ⚠ BYTES — a GNU long-name record, same reason as PAX.
+                var lb = List[UInt8]()
                 for i in range(len(meta)):
                     if meta[i] == 0:
                         break
-                    ln += chr(Int(meta[i]))
-                pending_name = ln^
+                    lb.append(meta[i])
+                pending_name = string_from_bytes(lb)
             # 'g' is archive-wide metadata with nothing this reader needs.
             continue
 

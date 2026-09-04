@@ -31,6 +31,8 @@ written in the destination's layout or the load fails on size. The one place
 that convention is decided is `dump_act_reference.py`.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -49,24 +51,28 @@ struct RefDump(Movable & Deinitable):
         self.root = root^
         self.names = List[String]()
         self.sizes = List[Int]()
+        # ⚠ BYTES — see `core/bytes.mojo`. A param NAME is ASCII in every
+        # dump this reader has seen, but it is written by a Python tool from
+        # whatever `for_each_param` yields, so this does not get to assume it.
         var text: String
         with open(String(self.root) + "/manifest.txt", "r") as f:
             var raw = f.read_bytes()
-            text = String()
+            var tb = List[UInt8]()
             for i in range(len(raw)):
-                text += chr(Int(raw[i]))
+                tb.append(raw[i])
+            text = string_from_bytes(tb)
             _ = raw^
-        var line = String()
+        var lb = List[UInt8]()
         var bytes = text.as_bytes()
         for i in range(len(bytes)):
             if bytes[i] == UInt8(ord("\n")):
-                if line.byte_length() > 0:
-                    self._add(line)
-                line = String()
+                if len(lb) > 0:
+                    self._add(string_from_bytes(lb))
+                lb = List[UInt8]()
             else:
-                line += chr(Int(bytes[i]))
-        if line.byte_length() > 0:
-            self._add(line)
+                lb.append(bytes[i])
+        if len(lb) > 0:
+            self._add(string_from_bytes(lb))
 
     def __init__(out self, *, deinit move: Self):
         self.root = move.root^
@@ -83,20 +89,23 @@ struct RefDump(Movable & Deinitable):
                 break
         if tab < 0:
             raise Error("RefDump: manifest line has no tab: " + line)
-        var name = String()
+        var nb = List[UInt8]()
         for i in range(tab):
-            name += chr(Int(b[i]))
+            nb.append(b[i])
         var n = 1
-        var cur = String()
+        # ⚠ THE DIMENSIONS ARE DIGITS, so `cur` could stay a String — it is a
+        # List here only so the two loops read the same way. `Int(...)` of a
+        # byte-built string is identical for ASCII digits.
+        var cb = List[UInt8]()
         for i in range(tab + 1, len(b)):
             if b[i] == UInt8(ord(",")):
-                n *= Int(cur)
-                cur = String()
+                n *= Int(string_from_bytes(cb))
+                cb = List[UInt8]()
             else:
-                cur += chr(Int(b[i]))
-        if cur.byte_length() > 0:
-            n *= Int(cur)
-        self.names.append(name^)
+                cb.append(b[i])
+        if len(cb) > 0:
+            n *= Int(string_from_bytes(cb))
+        self.names.append(string_from_bytes(nb))
         self.sizes.append(n)
 
     def has(self, name: String) -> Bool:

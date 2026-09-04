@@ -49,6 +49,8 @@ Use "###" for any caption that varies:
 widget's own label, so a varying label still yields a varying id.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.os import abort, getenv
 from std.sys import CompilationTarget
 from std.pathlib import Path
@@ -857,10 +859,13 @@ struct TextBuffer(Copyable, Movable):
         var n = 0
         while n < Self.CAP and self.data[n] != 0:
             n += 1
-        var out = String("")
+        # ⚠ BYTES, not `chr` per byte — see `core/bytes.mojo`. This is a
+        # text INPUT buffer: whatever the user typed, including anything
+        # non-ASCII, must come back as the bytes ImGui holds.
+        var o = List[UInt8]()
         for i in range(n):
-            out += chr(Int(self.data[i]))
-        return out^
+            o.append(self.data[i])
+        return string_from_bytes(o)
 
     def is_empty(self) -> Bool:
         return self.data[0] == 0

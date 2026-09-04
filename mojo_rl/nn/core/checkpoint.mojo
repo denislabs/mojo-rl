@@ -31,6 +31,8 @@ same param section when populated (`m.n >= N`), enabling exact training resume.
 download on save / upload on load.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from max.gpu.host import DeviceContext
 from std.memory import unsafe_memcpy
 from std.sys.info import size_of
@@ -89,17 +91,18 @@ def _is_v3_header(bytes: List[UInt8]) -> Bool:
 
 def _split_lines(content: String) -> List[String]:
     var lines = List[String]()
-    var cur = String("")
+    # ⚠ BYTES — see `core/bytes.mojo`.
+    var cur = List[UInt8]()
     var bytes = content.as_bytes()
     for i in range(len(bytes)):
         var c = bytes[i]
         if c == UInt8(ord("\n")):
-            lines.append(cur)
-            cur = String("")
+            lines.append(string_from_bytes(cur))
+            cur = List[UInt8]()
         else:
-            cur += chr(Int(c))
-    if cur.byte_length() > 0:
-        lines.append(cur)
+            cur.append(c)
+    if len(cur) > 0:
+        lines.append(string_from_bytes(cur))
     return lines^
 
 
@@ -282,10 +285,12 @@ struct BinaryCheckpointReader(ParamVisitor):
     def _next_line(mut self) raises -> String:
         if self.cur >= len(self.bytes):
             raise Error("checkpoint: unexpected end of file")
-        var s = String("")
+        # ⚠ BYTES — see `core/bytes.mojo`.
+        var o = List[UInt8]()
         while self.cur < len(self.bytes) and self.bytes[self.cur] != UInt8(10):
-            s += chr(Int(self.bytes[self.cur]))
+            o.append(self.bytes[self.cur])
             self.cur += 1
+        var s = string_from_bytes(o)
         if self.cur < len(self.bytes):
             self.cur += 1  # consume '\n'
         return s^

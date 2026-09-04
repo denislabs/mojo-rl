@@ -35,6 +35,8 @@ failing where the mistake was made.
 raw little-endian bytes, and `BINARY`'s length is an UNSIGNED varint.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.memory import Pointer, bitcast
 
 
@@ -169,11 +171,14 @@ struct ByteCursor(Copyable, ImplicitlyCopyable, Movable):
         """
         var k = self.uvarint()
         self._need(k)
-        var out = String("")
+        # ⚠ BYTES, not `chr` per byte — see `core/bytes.mojo`. Thrift strings
+        # are parquet's column and schema NAMES; a non-ASCII one would be
+        # corrupted before any reader saw it.
+        var o = List[UInt8]()
         for i in range(k):
-            out += chr(Int(self.p[unsafe_offset = self.pos + i]))
+            o.append(self.p[unsafe_offset = self.pos + i])
         self.pos += k
-        return out^
+        return string_from_bytes(o)
 
 
 @fieldwise_init

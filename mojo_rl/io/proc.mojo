@@ -53,6 +53,8 @@ number you predict from the signal story — measure the child you actually
 spawn before believing which arm fires.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.ffi import external_call
 
 
@@ -174,7 +176,7 @@ def run_capture(var command: String, max_bytes: Int = 1 << 16) raises -> String:
     meaningless offset, which is a much worse thing to debug than a cap.
     """
     var p = Pipe(String(command))
-    var out = String("")
+    var ob = List[UInt8]()
     var chunk = List[UInt8](unsafe_uninit_length=4096)
     var got = 0
     var overflow = False
@@ -189,15 +191,17 @@ def run_capture(var command: String, max_bytes: Int = 1 << 16) raises -> String:
         if got + n > max_bytes:
             overflow = True
             break
+        # ⚠ BYTES — see `core/bytes.mojo`. This is a subprocess's stdout;
+        # `ffmpeg` and `curl` both emit non-ASCII in diagnostics.
         for i in range(n):
-            out += chr(Int(chunk[i]))
+            ob.append(chunk[i])
         got += n
     _ = p.close(overflow)
     if overflow:
         raise Error(
             "proc: output exceeded " + String(max_bytes) + " bytes: " + command
         )
-    return out^
+    return string_from_bytes(ob)
 
 
 # ══════════════════════════════════════════════════════════════════════════

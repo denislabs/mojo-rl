@@ -13,6 +13,8 @@ FFI. Index-based lookup needs neither: call with increasing `n` until it
 returns negative.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 
 from . import _get_dylib_function, c_char, c_int, c_size_t, lib, Ptr
 from .h5_types import H5P_DEFAULT, hid_t, hsize_t
@@ -114,9 +116,14 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
                 + String(Int(n)) + " bytes, exceeding the "
                 + String(_NAME_BUF) + "-byte buffer"
             )
-        var s = String()
+        # ⚠ BYTES, not `chr` per byte — see `core/bytes.mojo`. HDF5 link
+        # names are arbitrary bytes as far as the library is concerned.
+        var o = List[UInt8]()
         for k in range(Int(n)):
-            s += chr(Int(buf[k]))
-        names.append(s)
+            # ⚠ `buf` is Int8 (a C `char*`); the byte value is the
+            # same bit pattern, and `UInt8` is what a byte-safe
+            # String build needs.
+            o.append(UInt8(buf[k]))
+        names.append(string_from_bytes(o))
         i += 1
     return names^

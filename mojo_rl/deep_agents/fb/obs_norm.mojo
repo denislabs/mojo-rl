@@ -28,6 +28,8 @@ file is deliberately deleted. Neither script owns a copy of the statistics and
 neither has a flag that could disagree with the other.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.math import sqrt
 
 from mojo_rl.nn.constants import DT
@@ -157,16 +159,17 @@ def _read_or_empty(path: String) -> String:
 
 def _split_ws(s: String) -> List[String]:
     var out = List[String]()
-    var cur = String("")
+    # ⚠ BYTES — see `core/bytes.mojo`.
+    var cur = List[UInt8]()
     var bytes = s.as_bytes()
     for i in range(len(bytes)):
         var c = bytes[i]
         if c == UInt8(ord(" ")) or c == UInt8(ord("\t")):
             if cur.byte_length() > 0:
-                out.append(cur)
-                cur = String("")
+                out.append(string_from_bytes(cur))
+                cur = List[UInt8]()
         else:
-            cur += chr(Int(c))
-    if cur.byte_length() > 0:
-        out.append(cur)
+            cur.append(c)
+    if len(cur) > 0:
+        out.append(string_from_bytes(cur))
     return out^

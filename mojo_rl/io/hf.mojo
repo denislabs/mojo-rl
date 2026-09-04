@@ -34,6 +34,8 @@ LFS or not.
 (whole-repo download, the `huggingface_hub` snapshot cache, resolution order).
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.os import getenv, makedirs
 from std.os.path import exists
 
@@ -136,11 +138,13 @@ def hf_client(var token: String = String("")) raises -> HttpClient:
 def path_prefix(s: String, n: Int) -> String:
     """The first `n` BYTES of `s`. Mojo has no string slicing, and these are
     ASCII repo paths."""
-    var out = String("")
+    # ⚠ BYTES, not `chr` per byte — see `core/bytes.mojo`. HF responses carry
+    # repo and file names that are not guaranteed ASCII.
     var b = s.as_bytes()
+    var o = List[UInt8]()
     for i in range(n):
-        out += chr(Int(b[i]))
-    return out^
+        o.append(b[i])
+    return string_from_bytes(o)
 
 
 def hf_tree(

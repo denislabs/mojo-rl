@@ -4,6 +4,8 @@ Reads KEY=VALUE lines from a file, skipping comments and blank lines.
 Strips surrounding quotes (single or double) from values.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
+
 from std.collections import Dict
 from std.pathlib import Path
 
@@ -11,16 +13,18 @@ from std.pathlib import Path
 def _split_lines(content: String) -> List[String]:
     """Split content into lines."""
     var lines = List[String]()
-    var current = String("")
+    # ⚠ BYTES, not a String accumulated with `chr` — see `core/bytes.mojo`.
+    # A `.env` value can hold a token or an accented path.
+    var cur = List[UInt8]()
     var bytes = content.as_bytes()
     for i in range(len(bytes)):
         if bytes[i] == UInt8(ord("\n")):
-            lines.append(current)
-            current = String("")
+            lines.append(string_from_bytes(cur))
+            cur = List[UInt8]()
         else:
-            current += chr(Int(bytes[i]))
-    if current.byte_length() > 0:
-        lines.append(current)
+            cur.append(bytes[i])
+    if len(cur) > 0:
+        lines.append(string_from_bytes(cur))
     return lines^
 
 

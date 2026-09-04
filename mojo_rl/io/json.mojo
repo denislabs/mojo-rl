@@ -276,6 +276,12 @@ def _parse_number(mut s: _Scanner) raises -> Float64:
             break
     if s.pos == start:
         raise Error("json: expected a number at byte " + String(start))
+    # ⚠ `chr` PER BYTE IS SAFE **HERE ONLY**, and this note exists so nobody
+    # "fixes" it again. A JSON NUMBER is `[-+0-9.eE]` by the grammar — every
+    # byte is below 128, so the codepoint and the byte coincide. The same
+    # spelling corrupts anything non-ASCII (see `core/bytes.mojo`), which is
+    # why string literals in this file already use
+    # `String(unsafe_from_utf8_ptr=)` and must keep doing so.
     var lit = String("")
     for i in range(start, s.pos):
         lit += chr(Int(s.b[i]))
