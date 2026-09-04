@@ -71,7 +71,7 @@ from std.math import sqrt, pow, abs
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
-from .je_budget import je_spills
+from .je_budget import je_spills, newton_block_threads
 from std.sys.info import size_of
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
@@ -3451,7 +3451,9 @@ def _newton_blocked_fields_kernel[
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime V_SIZE = _max_one[NV]()
     comptime M_SIZE = _max_one[NV * NV]()
-    comptime THREADS = _max_one[MAX_CONTACTS]()
+    # ⚠ FROM `je_budget.newton_block_threads`, which the LAUNCH also reads —
+    # the stride and `block_dim` must not drift apart.
+    comptime THREADS = newton_block_threads[MAX_CONTACTS]()
     # The cooperative STRIDE. Equals `THREADS` in production; see
     # `NEWTON_COOP_DIV`. `block_dim` is `THREADS` either way, so every
     # thread still reaches every `barrier()`.
@@ -3480,9 +3482,9 @@ def _newton_blocked_fields_kernel[
         comptime if NEWTON_SERIAL_PROBE == 5:
             # Pure stores of constants; the real pass below rewrites every one.
             for _r in range(SERIAL_PROBE_REPEAT - 1):
-                _init_common_normal_ws[
-                    DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
                 if contact_tid < MC:
+                    _init_common_normal_ws[
+                        DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
                     var p_ck: Scalar[DTYPE] = 0
                     for e in range(NE_ZERO):
                         for d in range(NV):
@@ -3495,9 +3497,28 @@ def _newton_blocked_fields_kernel[
                     # branch is unreachable; it only has to be UNPROVABLY so.
                     if p_ck == _probe_sentinel[DTYPE]():
                         solver[env, ws_Jt_idx] = Scalar[DTYPE](0)
-        _init_common_normal_ws[
-            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
+        # ⚠⚠ THE GUARD THAT WAS DELETED AS VACUOUS, PUT BACK. `:755` records it
+        # being dropped because "the legacy `contact_tid < MC` guard is vacuous
+        # with block_dim.y = MC" — true only while `THREADS == MAX_CONTACTS`.
+        # `_init_common_normal_ws` has NO internal bound: it writes
+        # `solver[env, k*MC + contact_tid]` for k in 0..14 and
+        # `[15*MC + contact_tid*nv + i]`, so a thread with `contact_tid >= MC`
+        # writes OUTSIDE its slot region by construction, and this layout's one
+        # failure mode (see `:718`) is that a row overrun lands in the NEXT
+        # ENV's workspace rather than faulting.
+        #
+        # ⚠ HONEST LIMIT OF THE EVIDENCE: it is restored because it is correct
+        # and free, NOT because a test proved it necessary. Removing it at
+        # `THREADS = 2*MC` and again at `8*MC` left the blocked golden
+        # fingerprint BIT-IDENTICAL on every model available — at these contact
+        # counts the overrun lands in slots the producer rewrites or nothing
+        # reads. So the negative control does NOT fire, and a future reader
+        # should not take this guard's presence as evidence that it does.
+        # What IS verified: the kernel is bit-identical at 1x, 2x and 8x
+        # `MAX_CONTACTS` threads WITH the guards in place.
         if contact_tid < MC:
+            _init_common_normal_ws[
+                DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
             # ⚠ ALL `2*(dim-1)` EDGE BLOCKS, not the four this used to zero.
             # The producer re-zeros every edge of a non-penetrating contact
             # itself, which is the only reason the short version was survivable.
@@ -3567,12 +3588,16 @@ def _newton_blocked_fields_kernel[
             impratio = Scalar[DTYPE](1.0)
 
     # === PARALLEL PHASE 1: each thread precomputes one contact's normal data ==
-    if valid_env:
+    # ⚠ THE `< nc` IS SEMANTICALLY A NO-OP AND KEPT ANYWAY, because it is one
+    # less thing to reason about at a different launch shape. The helper carries
+    # its own `contact_tid < nc` and would be correct unguarded at any thread
+    # count — but it allocates a `Scratch[V_CAP]` and zeroes `nv` entries BEFORE
+    # that test, which every surplus thread would pay for nothing. `nc <= MC <=
+    # THREADS`, so this can never hide a slot.
+    if valid_env and contact_tid < nc:
         comptime if NEWTON_SERIAL_PROBE == 6:
             # Both are pure functions of contacts/qvel/cdof/m_inv into the
             # solver workspace; the real passes below rewrite the same slots.
-            # ⚠ The friction half keeps its `contact_tid < nc` CALL-SITE guard —
-            # it has no internal one, unlike the normal half.
             for _r in range(SERIAL_PROBE_REPEAT - 1):
                 _precompute_contact_normal[
                     DTYPE, V_SIZE](
@@ -3581,12 +3606,11 @@ def _newton_blocked_fields_kernel[
                     K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
                     si_power,
                 )
-                if contact_tid < nc:
-                    _precompute_contact_friction[
-                        DTYPE, V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
-                        env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
-                        mmeta, cdof, solver, B_damp, impratio, K_spring,
-                    )
+                _precompute_contact_friction[
+                    DTYPE, V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
+                    env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
+                    mmeta, cdof, solver, B_damp, impratio, K_spring,
+                )
         _precompute_contact_normal[
             DTYPE, V_SIZE](
             env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
@@ -5418,5 +5442,7 @@ def solve_newton_blocked[
             cscratch.solver.lt["gpu", L_SOLVER](),
             cscratch.je.lt["gpu", L_JE_WS](),
             grid_dim=(BATCH,),
-            block_dim=(MC,),
+            # ⚠ SAME SOURCE AS THE KERNEL'S `THREADS`, not `MC`. They were
+            # equal by coincidence of both spelling `_max_one[MAX_CONTACTS]`.
+            block_dim=(newton_block_threads[D.MAX_CONTACTS](),),
         )

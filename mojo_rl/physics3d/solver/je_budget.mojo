@@ -49,6 +49,28 @@ mujoco_warp does, or pack the triple by block).
 from std.sys.info import size_of
 
 
+def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
+    """Threads per block for `_newton_blocked_fields_kernel`.
+
+    ⚠⚠ ONE SOURCE FOR TWO PLACES THAT MUST NOT DISAGREE — the kernel's
+    cooperative stride (`comptime THREADS`) and the launch's `block_dim`. They
+    were two independent spellings of `_max_one[MAX_CONTACTS]()`, which is
+    exactly the shape of `_a_rule_written_inline_twice_drifts`: numerically
+    equal today, and a silent out-of-range thread the moment one moves.
+
+    ⚠ IT MUST NEVER RETURN LESS THAN `MAX_CONTACTS`. The contact phases map one
+    slot to one thread, so a smaller block leaves the tail slots
+    UNINITIALISED — `_init_common_normal_ws` never runs for them and the
+    workspace keeps the previous step's values. More is safe (every such phase
+    is now guarded `< MC` or `< nc`); fewer is a wrong answer.
+
+    Today it returns exactly `MAX_CONTACTS`, so the launch is unchanged. It
+    exists so that changing the shape is a one-line edit HERE rather than two
+    edits 2,000 lines apart.
+    """
+    return _max_one[MAX_CONTACTS]()
+
+
 # ⚠⚠ THE PER-BLOCK SHARED LIMIT THE BLOCKED KERNEL IS COMPILED AGAINST, and it
 # is an NVIDIA number ON PURPOSE. `solve_newton` routes PYRAMIDAL + NVIDIA to
 # `solve_newton_blocked` and everything else to the one-thread-per-env kernel,
