@@ -3,7 +3,7 @@
 # Sheaf World Model with holonomy as an observable (SWM-H).
 # Design: docs/SHEAF_WORLD_MODELS_V2.md   Plan + gates: docs/SWM_IMPLEMENTATION_PLAN.md
 #
-# Phase 1 gates only so far. They are CPU-only, float64, and self-contained
+# Phases 1-7. They are CPU-only, float64, and self-contained
 # apart from the pinned oracle, which is checked in under
 # tests/experimental/swm/reference/ and regenerated with:
 #
@@ -131,6 +131,43 @@ tests/experimental/swm/test_klein_multicycle.mojo
 # true one does (93/95 vs 115/353) -- the holonomy depends on the graph span,
 # not on whether the places match, so det H inherits place recognition's
 # reliability wholesale. PCM defends, but the textbook "composition = I"
-# criterion assumes a global frame and rejects half the GOOD closures; the
-# group-aware form recovers them. ~6s.
+# criterion assumes a global frame and rejects the mixed-parity pairs; the
+# group-aware form, composed in ROOT GAUGE (the tree is flat, so the
+# composition is the product of the two holonomies), accepts 100% of true
+# pairs. An earlier version composed across gauges and read 73%. ~6s.
 tests/experimental/swm/test_place_recognition.mojo
+# G18 — PHASE 7, which identifications to believe. The maximal Z/2 clique with
+# the group BOOTSTRAPPED from the closures (no lap length, no oracle M) keeps
+# 353/353 true closures and 10/95 false ones — the gauge-coincident residual.
+# The control 6c lacked: on an ORIENTABLE aliased twin zero closures read
+# det = -1, so a false identification cannot invent a reflection, only
+# mis-attribute one. And the oracle leak closed: with transports indexed by the
+# TEXTURE label the merged entries show a residual 2-9x the floor (below the
+# ABERRANT threshold, the encoder co-adapts) and the seam becomes
+# unrepresentable — the obstruction is LOST, never manufactured. ~7s in the suite, ~90s standalone.
+tests/experimental/swm/test_swmh_clique.mojo
+# G19 — PHASE 7 in two dimensions, on a FLAT non-orientable bundle (the seam as
+# a deck transformation; 6b's bundle is curved along its seam and is the
+# control). The Z/2 clique is exact on the flat bundle (2166/2166, M within
+# 0.003 of the seam) and keeps only 18% of true closures on the curved one —
+# the flatness assumption, gated. Gauge coincidence is NOT resolved by the
+# second dimension (41% of false closures survive vs 10% on the ring; the
+# driver is the angular spread of frames between aliased places). What refutes
+# a LOCAL false identification is the graph: successor-label conflicts, the
+# signal a clone-splitting rule runs on; a GLOBAL symmetry has none. ~10s.
+tests/experimental/swm/test_klein_recognition.mojo
+# G20 — E3 as the doc claims it: faults THROUGH the learned encoder. Same four
+# worlds as G9, same asymmetry, zero false obstructions. The encoder COMPRESSES
+# the fault: 30x sensor noise gives a residual 4.7x the median (920x at frame
+# level), clean worlds 1.5-1.7x, so the outlier factor is 3 and gated from both
+# sides. ~5s in the suite.
+tests/experimental/swm/test_swmh_faults_encoder.mojo
+# G21 — the content channel as a PLACE CODE. Naive replanning is recorded as
+# the wrong design (rolled content: cell 103; frame-only loop oscillates: 28).
+# A centroid lookup along the rollout, plus one observation at arrival, is
+# what turns 6a's localisation into cells (120/120). ~4s in the suite.
+tests/experimental/swm/test_swmh_replan.mojo
+# G22 — the verdict carries dim ker(H - I): O(3) reflection fixes a plane, -I
+# fixes nothing, both det = -1 OBSTRUCTIONs that det-only classification cannot
+# tell apart (shown). <1s.
+tests/experimental/swm/test_fixed_subspace_classify.mojo

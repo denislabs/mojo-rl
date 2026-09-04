@@ -59,8 +59,20 @@ struct KleinGrid[W: Int, H: Int](Copyable, Movable):
     var x_edge: List[SqMat[2, DType.float64]]
     var y_edge: List[SqMat[2, DType.float64]]
     var klein: Bool
+    var flat: Bool
 
-    def __init__(out self, klein: Bool, seed: UInt64 = 20260904):
+    def __init__(
+        out self, klein: Bool, seed: UInt64 = 20260904, flat: Bool = False
+    ):
+        """`flat=False` reproduces 6b's bundle, whose seam is CURVED: a square
+        straddling it composes `refl r refl^-1 = r^-1`, so 8 of its 31
+        fundamental cycles are non-trivial rotations and the holonomy group is
+        not finite. `flat=True` inserts the reflection as a deck
+        transformation, `R_x(W-1, y) = g(0, y) M g(W-1, y)^-1`, which makes
+        every elementary square trivial: the connection is flat, every
+        root-gauge holonomy lies in `{I, M}`, and the bundle is what a frame
+        bundle over a physical Klein-like world would be. G19 uses the flat
+        one and keeps the curved one as the control on the Z/2 assumption."""
         var rng = Rng(seed)
         # A frame per cell; edge transports are the differences, so every
         # elementary square is trivial and both loops start out trivial.
@@ -82,21 +94,27 @@ struct KleinGrid[W: Int, H: Int](Copyable, Movable):
                 # the single edge that makes the bundle a Klein bottle rather
                 # than a torus.
                 if klein and x == Self.W - 1:
-                    rx = refl * rx
+                    if flat:
+                        rx = (_rot(theta[y * Self.W + nx]) * refl) * _rot(-here)
+                    else:
+                        rx = refl * rx
                 self.x_edge.append(rx^)
                 var ny = (y + 1) % Self.H
                 self.y_edge.append(_rot(theta[ny * Self.W + x] - here))
         self.klein = klein
+        self.flat = flat
 
     def __init__(out self, *, copy: Self):
         self.x_edge = copy.x_edge.copy()
         self.y_edge = copy.y_edge.copy()
         self.klein = copy.klein
+        self.flat = copy.flat
 
     def __init__(out self, *, deinit move: Self):
         self.x_edge = move.x_edge^
         self.y_edge = move.y_edge^
         self.klein = move.klein
+        self.flat = move.flat
 
     def place_of(self, x: Int, y: Int) -> Int:
         return y * Self.W + x

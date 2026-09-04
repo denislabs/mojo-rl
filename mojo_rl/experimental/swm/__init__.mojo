@@ -64,6 +64,7 @@ from .planner import (
     Plan,
     plan,
     plan_exhaustive,
+    plan_exhaustive_with_place_code,
     score_plan,
     MODEL_ORTHOGONAL,
     MODEL_TRANSLATION,
@@ -79,4 +80,11 @@ from .place_recognition import (
     score_recogniser,
     MATCH_NONE,
 )
-from .observables import pairwise_consistent_in_group
+from .observables import (
+    pairwise_consistent_in_group,
+    closure_pair_composition,
+    Z2Clique,
+    maximal_clique_z2,
+    CycleVerdict,
+    classify_cycle,
+)

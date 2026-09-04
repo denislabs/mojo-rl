@@ -95,10 +95,22 @@ struct Phase3Config(Copyable, ImplicitlyCopyable, Movable):
     """Relative margin the losing branch must beat the incumbent by. 0 = a bare
     argmin, which is what the design doc specifies and what G7 shows chatters."""
     var min_observations: Int
+    var place_labels_from_texture: Bool
+    """Index the transport table (and the per-place hinge) by the TEXTURE
+    GROUP, `cell % (N_CELLS // texture_alias)`, instead of the oracle cell.
+
+    That is the label a content-only recogniser can actually deliver under
+    aliasing. Phases 3-6c indexed the table by the oracle cell even while the
+    recogniser was being tested (G17), which is an oracle leak: the transport
+    for `(forward, label)` then never has to serve two different cells. G18
+    measures what happens when it does."""
 
     @staticmethod
     def default() -> Self:
-        return Self(80, 24, 8, 3, 0.004, 0.05, 20, 1.0, 1.0, 0.0, 0.0, 20260904, 0.25, 64)
+        return Self(
+            80, 24, 8, 3, 0.004, 0.05, 20, 1.0, 1.0, 0.0, 0.0, 20260904, 0.25,
+            64, False,
+        )
 
     @staticmethod
     def with_content() -> Self:
@@ -287,6 +299,11 @@ struct SwmPhase3[
 
         var steps = cfg.laps * Self.N_CELLS
         var n_frames = steps + 1
+        var n_labels = Self.N_CELLS
+        if cfg.place_labels_from_texture and env_cfg.texture_alias > 1:
+            n_labels = Self.N_CELLS // env_cfg.texture_alias
+            if n_labels < 1:
+                n_labels = 1
 
         for epoch in range(cfg.epochs):
             var allow_flip = epoch >= cfg.warmup_epochs
@@ -324,7 +341,7 @@ struct SwmPhase3[
                         dlat_all.append(
                             List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
                         )
-                        place_all.append(env.place_id())
+                        place_all.append(env.place_id() % n_labels)
                         is_last.append(t == steps)
                         if t < steps:
                             env.step(ACTION_FORWARD)

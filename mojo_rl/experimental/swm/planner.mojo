@@ -430,3 +430,72 @@ def plan_exhaustive_with_content[
                 best_k = k + 1
     var actions = List[Int](length=best_k, fill=best_dir)
     return Plan(actions^, best_k, best_score)
+
+
+def plan_exhaustive_with_place_code[
+    N_CELLS: Int, dtype: DType = DType.float64
+](
+    mut model: FrameModel[N_CELLS, dtype],
+    u0: List[Float64],
+    cell0: Int,
+    u_goal: List[Float64],
+    h_goal: List[Scalar[dtype]],
+    centroids: List[Scalar[dtype]],
+    content_dim: Int,
+    cfg: PlannerConfig,
+    content_weight: Float64 = 1.0,
+) -> Plan:
+    """The monotone scan with the content channel used as a PLACE CODE.
+
+    6a measured that the content channel localises from an observation (cell
+    accuracy 0.998) and drifts when rolled (0.405 -> 4.398 over 12 steps), so
+    `plan_exhaustive_with_content`, which rolls it, HURTS the planner. Here the
+    content term at rollout step `k` is the stored centroid of the cell the
+    rollout stands in — a lookup, never a prediction — matched against the
+    goal's observed `h`. The frame still decides the parity; the content
+    decides the cell; nothing is rolled that drifts. `centroids` is
+    `N_CELLS x content_dim`, row-major, learned from the agent's own visits.
+    """
+    var best_score = 1e300
+    var best_dir = PLAN_FORWARD
+    var best_k = 0
+    for direction in range(2):
+        var u = u0.copy()
+        var cell = cell0
+        var cost = Float64(0)
+        var d0 = _dist2(u, u_goal) + content_weight * _place_code_dist2(
+            centroids, cell, content_dim, h_goal
+        )
+        if d0 < best_score:
+            best_score = d0
+            best_dir = direction
+            best_k = 0
+        for k in range(2 * N_CELLS):
+            var e = model.edge_of(cell, direction)
+            cost += cfg.trust_lambda * (1.0 - model.edge_w[e])
+            u = model.step(u, cell, direction)
+            cell = model.next_cell(cell, direction)
+            var d = _dist2(u, u_goal) + cost + content_weight * _place_code_dist2(
+                centroids, cell, content_dim, h_goal
+            )
+            if d < best_score:
+                best_score = d
+                best_dir = direction
+                best_k = k + 1
+    var actions = List[Int](length=best_k, fill=best_dir)
+    return Plan(actions^, best_k, best_score)
+
+
+def _place_code_dist2[
+    dtype: DType
+](
+    centroids: List[Scalar[dtype]],
+    cell: Int,
+    content_dim: Int,
+    h_goal: List[Scalar[dtype]],
+) -> Float64:
+    var d = Float64(0)
+    for i in range(content_dim):
+        var x = Float64(centroids[cell * content_dim + i] - h_goal[i])
+        d += x * x
+    return d

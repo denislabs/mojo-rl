@@ -9,8 +9,8 @@ whole encoding misses exactly the revisits that create the informative cycle.
 Holding the landmark direction fixed so that mirroring is the ONLY thing that
 changes:
 
-    naive full-latent   parity 0: 360/360      parity 1: 190/360
-    content only        parity 0: 360/360      parity 1: 360/360
+    naive full-latent   parity 0: 240/240      parity 1: 118/240
+    content only        parity 0: 240/240      parity 1: 240/240
 
 The content channel supplies the frame-invariance the doc asks for, and it does
 so for a structural reason: under the reflection `u -> H u`, and the only O(2)
@@ -57,7 +57,10 @@ from mojo_rl.experimental.swm.place_recognition import (
     score_recogniser,
     MATCH_NONE,
 )
-from mojo_rl.experimental.swm.observables import pairwise_consistent_in_group
+from mojo_rl.experimental.swm.observables import (
+    pairwise_consistent_in_group,
+    closure_pair_composition,
+)
 
 comptime DT = DType.float64
 comptime N = 12
@@ -221,17 +224,31 @@ def main() raises:
     var tf_n = 0
     var tt_i = 0
     var tf_i = 0
+    var ff_n = 0
+    var ff_g = 0
+    var ff_i = 0
     for a in range(len(s_list)):
         for b in range(a + 1, len(s_list)):
-            var c = (tr[t_list[a]].transpose() * tr[t_list[b]]) * (
-                tr[s_list[b]].transpose() * tr[s_list[a]]
+            # Root gauge: the tree is flat, so the 4-cycle PCM composition is
+            # the product of the two closure holonomies. The first version of
+            # this gate formed T_ta^T T_tb * T_sb^T T_sa, which treats the tree
+            # path between the base places as a transport and mixes gauges;
+            # it read 73 % where the correct composition reads 100 %.
+            var c = closure_pair_composition[2, DT](
+                tr[t_list[a]].transpose() * tr[s_list[a]],
+                tr[t_list[b]].transpose() * tr[s_list[b]],
             )
             var same = ok_list[a] and ok_list[b]
             var mixed = ok_list[a] != ok_list[b]
-            if not (same or mixed):
-                continue
             var g_ok = pairwise_consistent_in_group[2, DT](c, group, 0.3)
             var i_ok = pairwise_consistent_in_group[2, DT](c, only_i, 0.3)
+            if not (same or mixed):
+                ff_n += 1
+                if g_ok:
+                    ff_g += 1
+                if i_ok:
+                    ff_i += 1
+                continue
             if same:
                 tt_n += 1
                 if g_ok:
@@ -248,6 +265,8 @@ def main() raises:
           "  true-false", tf_i, "/", tf_n)
     print("PCM  group-aware (in {I, H})    : true-true", tt_g, "/", tt_n,
           "  true-false", tf_g, "/", tf_n)
+    print("PCM  false-false pairs          : textbook", ff_i, "/", ff_n,
+          "  group-aware", ff_g, "/", ff_n)
     var tt_rate_g = Float64(tt_g) / Float64(tt_n)
     var tf_rate_g = Float64(tf_g) / Float64(tf_n)
     var tt_rate_i = Float64(tt_i) / Float64(tt_n)

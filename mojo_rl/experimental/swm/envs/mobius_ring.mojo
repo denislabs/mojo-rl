@@ -45,6 +45,10 @@ from ..rng import Rng
 comptime ACTION_FORWARD: Int = 0
 comptime ACTION_BACKWARD: Int = 1
 
+comptime FAULT_NONE: Int = 0
+comptime FAULT_NOISY_CELL: Int = 1
+comptime FAULT_BIASED_EDGE: Int = 2
+
 
 @fieldwise_init
 struct MobiusConfig(Copyable, ImplicitlyCopyable, Movable):
@@ -79,13 +83,24 @@ struct MobiusConfig(Copyable, ImplicitlyCopyable, Movable):
     and the recogniser is never asked a hard question.
     """
 
+    var fault_kind: Int
+    """E3 fault injection THROUGH THE OBSERVATION (G20). `FAULT_NOISY_CELL`:
+    observations taken in cell `fault_index` carry noise of std
+    `fault_magnitude` instead of `obs_noise` — a broken sensor at one place.
+    `FAULT_BIASED_EDGE`: crossing edge `fault_index` applies an extra rotation
+    of `fault_magnitude` radians that is NOT compensated elsewhere — a constant
+    bias, i.e. real curvature of the world as far as any single cycle can
+    tell (control D')."""
+    var fault_index: Int
+    var fault_magnitude: Float64
+
     @staticmethod
     def default_mobius(world_seed: UInt64 = 20260904) -> Self:
-        return Self(True, world_seed, 0.02, 0.6, 1.0, False, 1)
+        return Self(True, world_seed, 0.02, 0.6, 1.0, False, 1, 0, 0, 0.0)
 
     @staticmethod
     def default_orientable(world_seed: UInt64 = 20260904) -> Self:
-        return Self(False, world_seed, 0.02, 0.6, 1.0, False, 1)
+        return Self(False, world_seed, 0.02, 0.6, 1.0, False, 1, 0, 0, 0.0)
 
     @staticmethod
     def aliased_mobius(
@@ -94,19 +109,42 @@ struct MobiusConfig(Copyable, ImplicitlyCopyable, Movable):
         """`group_size` cells share each texture. NOTE: `alias` is still a
         reserved word in Mojo (it predates `comptime`) and cannot be a
         parameter name."""
-        return Self(True, world_seed, 0.02, 0.6, 1.0, False, group_size)
+        return Self(True, world_seed, 0.02, 0.6, 1.0, False, group_size, 0, 0, 0.0)
+
+    @staticmethod
+    def aliased_orientable(
+        group_size: Int, world_seed: UInt64 = 20260904
+    ) -> Self:
+        """The orientable twin with the same texture aliasing. This is where a
+        false identification would have to manufacture a reflection out of
+        nothing for the 6c finding to be a false-obstruction risk (G18)."""
+        return Self(False, world_seed, 0.02, 0.6, 1.0, False, group_size, 0, 0, 0.0)
+
+    def with_noisy_cell(self, cell: Int, sigma: Float64) -> Self:
+        var c = self
+        c.fault_kind = FAULT_NOISY_CELL
+        c.fault_index = cell
+        c.fault_magnitude = sigma
+        return c
+
+    def with_biased_edge(self, edge: Int, angle: Float64) -> Self:
+        var c = self
+        c.fault_kind = FAULT_BIASED_EDGE
+        c.fault_index = edge
+        c.fault_magnitude = angle
+        return c
 
     @staticmethod
     def nonlinear_mobius(
         gain: Float64, world_seed: UInt64 = 20260904
     ) -> Self:
-        return Self(True, world_seed, 0.02, 0.6, gain, True, 1)
+        return Self(True, world_seed, 0.02, 0.6, gain, True, 1, 0, 0, 0.0)
 
     @staticmethod
     def nonlinear_orientable(
         gain: Float64, world_seed: UInt64 = 20260904
     ) -> Self:
-        return Self(False, world_seed, 0.02, 0.6, gain, True, 1)
+        return Self(False, world_seed, 0.02, 0.6, gain, True, 1, 0, 0, 0.0)
 
 
 struct MobiusRing[
@@ -171,6 +209,13 @@ struct MobiusRing[
             r[1, 1] = Scalar[Self.dtype](cos(angles[i]))
             if cfg.mobius and i == Self.SEAM_EDGE:
                 r = reflection * r
+            if cfg.fault_kind == FAULT_BIASED_EDGE and i == cfg.fault_index:
+                var b = SqMat[2, Self.dtype]()
+                b[0, 0] = Scalar[Self.dtype](cos(cfg.fault_magnitude))
+                b[0, 1] = Scalar[Self.dtype](-sin(cfg.fault_magnitude))
+                b[1, 0] = Scalar[Self.dtype](sin(cfg.fault_magnitude))
+                b[1, 1] = Scalar[Self.dtype](cos(cfg.fault_magnitude))
+                r = b * r
             self.edge_rot.append(r)
 
         # Texture per cell. Well separated so it identifies the cell on its own
@@ -301,6 +346,12 @@ struct MobiusRing[
         for k in range(Self.NUISANCE_DIM):
             latent[2 + k] = self.nuisance[self.cell * Self.NUISANCE_DIM + k]
 
+        var sigma = self.cfg.obs_noise
+        if (
+            self.cfg.fault_kind == FAULT_NOISY_CELL
+            and self.cell == self.cfg.fault_index
+        ):
+            sigma = self.cfg.fault_magnitude
         var obs = List[Scalar[Self.dtype]](length=Self.OBS_DIM, fill=0)
         for r in range(Self.OBS_DIM):
             var s = Scalar[Self.dtype](0)
@@ -310,9 +361,7 @@ struct MobiusRing[
                 s = Scalar[Self.dtype](
                     tanh(self.cfg.obs_gain * Float64(s))
                 )
-            obs[r] = s + Scalar[Self.dtype](
-                self.rng.normal() * self.cfg.obs_noise
-            )
+            obs[r] = s + Scalar[Self.dtype](self.rng.normal() * sigma)
         return obs^
 
     def frame_at(self, cell: Int, parity: Int) -> SqMat[2, Self.dtype]:

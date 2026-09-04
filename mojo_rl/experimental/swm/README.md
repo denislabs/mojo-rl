@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–5 complete; Phase 6a/6b/6c done.** With learned encoders on
+**Status: Phases 0–7 complete.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -56,6 +56,9 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `content.mojo` | the content channel: decoder (anchors both channels) + a free nonlinear transition |
 | `envs/klein_grid.mojo` | a non-orientable O(2) bundle over a torus grid — many cycles, one reversing |
 | `place_recognition.mojo` | appearance-based place memory, scored against the oracle |
+| `observables.mojo` (Phase 7) | root-gauge PCM composition, the bootstrapped Z/2 maximal clique, `classify_cycle` with `dim ker(H − I)` |
+| `planner.mojo` (Phase 7) | `plan_exhaustive_with_place_code`: the content channel as a per-cell lookup along the rollout |
+| `envs/klein_grid.mojo` (`flat=True`) | the seam as a deck transformation: a FLAT non-orientable bundle, holonomy group `{I, M}` |
 
 ## What was learned (Phase 0–1)
 
@@ -369,29 +372,117 @@ naive encoding similarity would miss exactly the identifications that create the
 informative cycle. A learned, frame-invariant recogniser is Phase 6, and nothing
 measured here speaks to it.
 
-## Next (Phase 6, in progress)
+## What was learned (Phase 7 — identifications without an oracle)
 
-6a (content), 6b (multi-cycle) and 6c (place recognition) are done.
+**6c's PCM composition mixed gauges, and the 73 % was an artefact.** In the
+spanning-tree gauge the tree is flat, so the PCM composition of two closures is
+the product of their holonomies, `H_a H_b^T`. G17 had composed
+`T_ta^T T_tb · T_sb^T T_sa`, which treats the tree path between base places as a
+transport. Corrected, on the same 353 true and 95 false closures:
 
-Open questions this line has produced, in priority order:
+| criterion | true–true | true–false | false–false |
+|---|---|---|---|
+| G17 as first written, `= I` | 47 % | 3.7 % | not measured |
+| G17 as first written, `∈ {I, H}` | 73 % | 11 % | not measured |
+| root gauge, `= I` | 56 % | 4.8 % | 16 % |
+| root gauge, `∈ {I, M}` | **100 %** | 12.6 % | 16.5 % |
 
-1. **`det H` inherits place recognition's reliability wholesale** (6c). The
-   group-aware PCM check is a partial defence at 73%/11%; making it a decision
-   rule (maximal-clique over the consistency graph, as PCM proper does) is the
-   obvious next step and is not built.
-2. **Multi-step training for the content transition** (6a). Its drift is what
-   makes it useless for long rollouts; latent overshooting would shrink the gap,
-   though not reverse the isometry's advantage.
-3. Deferred as before: the GPU port (engineering only), and CSCG with the P5
-   sample-efficiency comparison.
+The corrected textbook figure is exactly the same-parity pair count
+(28203 + 6555 of 62128), which is the check that the fix is right. False
+closures agree with each other only when they share a base cell, so they do
+not form a competing clique.
 
-**Not claimed anywhere in Phases 0–5:** a recurrent baseline. An RSSM or GRU can
-learn the parity bit, so that comparison is about sample efficiency at a matched
-budget — a study rather than a gate. What is claimed is structural: a model that
-cannot *represent* the seam cannot get the parity, whatever its capacity.
+**The clique, with the group bootstrapped from the closures (G18).** No lap
+length, no true monodromy: each `det = −1` closure is tried as `M`, the largest
+set within tolerance of `{I, M}` wins, and `M` is refined to the polar factor
+of the members' sum — the seed closure sat 0.285 from the true monodromy
+(between the true reflections and a cluster of gauge-coincident false ones),
+the refined one 0.071. The clique keeps **353/353** true closures and
+**10/95** false ones, from two base cells. Those ten are the residual no
+consistency test can see: their spurious holonomy coincides with `I` or `M`.
 
-A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
-landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and
-is linearly recoverable. G6 establishes that the mechanism finds it and that
-`det H` survives the encoder's gauge. It does **not** establish that the method
-works when the split is only approximate.
+**A false identification cannot invent a reflection (G18).** The control 6c
+did not run: on the ORIENTABLE aliased twin, with confusion modelled (the
+learned content channel disambiguates aliased cells there on its own — it is
+free to absorb frame information when nothing flips — 1 false match in 480),
+**zero** of 960 closures read `det = −1`. A closure's holonomy is the transport
+along the walk it spans, and on an orientable world every walk is a rotation.
+So 6c's "det H inherits place recognition's reliability wholesale" narrows to:
+**the graph inherits it; the Z/2 class of a walk is a fact about the walk.** A
+false identification mis-attributes a reflection the world has to a spurious
+cycle; it never manufactures one.
+
+**The oracle leak, closed (G18).** Phases 3–6c indexed the transport table by
+the oracle cell even while the recogniser was under test. Indexed by the
+texture label instead — what a content recogniser can deliver — a merged entry
+must fit two rotations with one matrix. The design's §7 promised an aberrant
+edge; what happens is co-adaptation: the residual is elevated **2.1–9.0×** the
+floor, below the 10× ABERRANT threshold, the frame channel's landmark R² drops
+0.998 → 0.752, the per-cell residual under a merged transport is *not* bimodal
+(worst pair ratio 1.01, so a residual-norm splitting rule has no signal), and
+the seam becomes unrepresentable — one entry would have to be a rotation for
+one cell and a reflection for its alias. **The obstruction is lost, never
+manufactured**: 0 OBSTRUCTION and 0 ABERRANT of 410 closures, against 115
+true odd-lap obstructions with oracle labels.
+
+**Two dimensions, on a flat bundle (G19).** 6b's bundle is curved along its
+seam (a square straddling it composes `refl r refl⁻¹ = r⁻¹`), which is why it
+had 8 rotation cycles. With the seam inserted as a deck transformation the
+bundle is flat and every root-gauge holonomy lies in `{I, M}`. There the Z/2
+clique is exact (2166/2166 true closures, `M` within 0.003 of the seam); on
+the curved bundle it keeps **18 %** — the flatness assumption, gated so it
+cannot be forgotten. And the plan's prediction that the second dimension
+resolves gauge coincidence is **refuted**: 41 % of false closures survive on
+the grid against 10 % on the ring, because on a flat bundle the transport
+between two aliased places is the same along every homotopic path and differs
+by `M` across classes, so coincidence in one class is coincidence in all. The
+driver is the angular spread of frames between aliased places relative to the
+tolerance, not the dimension. What refutes a *local* false identification is
+the graph: a merged label has two successor labels under one action (2
+conflicts on the one merged pair; 0 without aliasing; 0 under a global
+symmetry, whose quotient is a consistent world). That is the signal a
+clone-splitting rule runs on.
+
+**E3 through the encoder, and the encoder compresses the fault (G20).** Same
+four worlds as G9, faults now in the observation. Verdicts 3/3 in every cell,
+zero false obstructions, biased edge `‖H − I‖ = 0.41–0.48` against the
+prototype's 0.43. But a sensor with 30× the noise gives a residual **4.7×**
+the median through the encoder, where G9 saw **920×** at frame level: an MLP
+over 16 mixed coordinates averages the noise down. Clean worlds sit at
+1.5–1.7×. The ABERRANT band is one order of magnitude wide here, not three;
+the outlier factor is 3 and gated from both sides.
+
+**The content channel is a place code, not a dynamics (G21).** Re-planning
+every step does not fix 6a: with rolled content in the score, cell 103 and
+parity down to 106; frame-only, the loop oscillates (28 cells, budget
+exhausted — "stay when the best plan is to stay" is unstable on a noisy frame
+match). A ±1 probe at arrival helps nothing (97 vs 96) because the failures
+are 2–3 cells away, never adjacent. What works: the rollout's content term is
+a **lookup** of the stored centroid of the cell the rollout stands in, matched
+against the goal's observed `h`. Cell accuracy **120/120** (open-loop 96,
+rolled content 103; the same planner at content weight 0 is exactly the
+open-loop arm, 96).
+
+**The parity residue is the fixed subspace (G21 ⇄ G22).** With the cell
+pinned the frame chooses between two states one lap apart, which differ by
+`M`. Every one of the 10/120 parity failures falls in the lowest third of the
+frame's own margin `|u_k − u_{k+N}|²`, none in the upper two thirds: where the
+goal's landmark lies along `M`'s axis — `dim ker(H − I) = 1`, the direction
+that admits a global frame — the frame carries no parity. `classify_cycle`
+now returns that dimension beside the class (O(3) reflection fixes a plane,
+`−I` fixes nothing, both `det = −1`; det-only classification files them
+identically, shown).
+
+## Open questions after Phase 7
+
+1. **Label splitting needs a signal, and the residual norm is not it** (G18 C:
+   worst pair ratio 1.01). The graph's successor conflicts are (G19 C), for
+   local aliasing. For a global symmetry there is nothing to split: the
+   quotient is a consistent world, and only the frame transports disagree.
+   That is CSCG's clone count read from the graph rather than from EM, and it
+   is not built.
+2. **Curved bundles.** The Z/2 clique assumes flatness. A frame bundle over a
+   physical world is flat; 6b's is not. Whether learned transports on a
+   physical 2D world come out flat enough for the clique is unmeasured.
+3. Deferred as before: the GPU port, the float32 `nn` port, CSCG and P5, E2.
+
