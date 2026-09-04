@@ -1,8 +1,11 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–2 of 6 complete.** Algebra core, place graph, analytic
-gates, and the E1 environment land. Nothing is learned yet, and the central
-hypothesis is still untested — that is Phase 3.
+**Status: Phase 3 largely complete — P1 answered.** With learned encoders on
+observations that mix a transported landmark with non-transported texture,
+`det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
+zero false obstructions**, with the frame channel carrying the landmark
+(R² ≥ 0.983) and rejecting the texture (R² ≤ 0.009). Hypothesis 4.0 holds on
+E1. Remaining in Phase 3: the G8 ablations.
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -38,6 +41,9 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `reference_io.mojo` | reader for the pinned Phase 0 oracle |
 | `rng.mojo` | xorshift64\* — reproducible from a seed the env carries, independent of `std.random` |
 | `envs/mobius_ring.mojo` | E1: ring world, transported landmark + non-transported texture |
+| `mlp.mojo` | 2-layer MLP, hand-written grads + Adam, float64 (see below) |
+| `transport.mojo` | per-(action, place) O(D) transports, both components carried, orientation bit |
+| `swm_trainer.mojo` | Phase 3 training loop and the observables it reads |
 
 ## What was learned (Phase 0–1)
 
@@ -94,6 +100,29 @@ cell is not enough. The orientable control ties exactly across parities in
 20/20 episodes, which is what shows the difficulty comes from the seam and not
 from how the reward is written.
 
+**The transport loss is trivially satisfiable by a place-indexed constant, and
+that nearly produced a false P1.** If the encoder learns `u = f(place)`, the
+transport for `(action, place)` — itself indexed by place — only has to carry
+one fixed vector to one fixed vector. In 2D exactly one rotation and one
+reflection do that, both at ~zero residual, so the orientation bit is chosen by
+noise and `det H` becomes a **fair coin**. Measured: landmark R² = 0.003,
+nuisance R² = 0.5, and `det H = −1` in 2/6 Möbius seeds *and* 2/6 orientable
+seeds. The first Möbius run alone looked like a clean P1 pass.
+
+The fix is that the anti-collapse term must be measured **within a place**, not
+across places — the degenerate solution has excellent across-place variance,
+that is what it *is*. This is not a trick: a frame is precisely what varies
+while you stand still, and a place label is precisely what does not. With a
+per-place variance hinge the encoder finds the landmark (R² 0.99) and rejects
+the texture (R² 0.003).
+
+**Why `mlp.mojo` and not `mojo_rl.nn`.** `nn` is float32
+(`nn/constants.mojo`). Phase 3 must distinguish "the frame channel collapsed to
+rank one" from "the obstruction is genuinely absent" — the first makes a
+reflection act like the identity and reads `+1` for reasons unrelated to the
+world. That is a 1e-12-scale distinction, and the networks here are 16→32→10.
+Porting to `nn` is graduation work.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -105,8 +134,14 @@ miscompute in this repo, so CPU numbers get frozen as the reference first.
 
 ## Next
 
-Phase 3 — the first phase that can refute the thesis. A learned encoder must
-find the transported subspace under the mixing, and a learned transport must
-keep the orientation bit stable. Does `det H = −1` survive? If not, hypothesis
-4.0 is false as stated, and that is the result: write it up here and stop,
-rather than build Phases 4–6 on it.
+G8, the ablations (translation baseline; free morphisms + cocycle loss; and
+orthogonal morphisms + cocycle loss, which should be measurably inert). Then
+the Phase 3→4 boundary: G9 (fault classification) needs GNC weights and the
+classification table, which live in Phase 4's `observables.mojo` — this plan
+originally listed it under Phase 3, which was an error in the plan.
+
+A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
+landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and
+is linearly recoverable. G6 establishes that the mechanism finds it and that
+`det H` survives the encoder's gauge. It does **not** establish that the method
+works when the split is only approximate.

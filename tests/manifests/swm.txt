@@ -38,3 +38,16 @@ tests/experimental/swm/test_procrustes_vs_oracle.mojo
 # parities, and is NOT transported, mixed overcompletely with the landmark so
 # the frame subspace has to be learned rather than read off a coordinate.
 tests/experimental/swm/test_mobius_ring_env.mojo
+# G6 — PHASE 3, THE DECISION POINT (P1). Does det H = -1 survive learned
+# encoders? Runs Mobius and its orientable twin ON THE SAME BINARY, because a
+# learned encoder with an unstable gauge manufactures obstructions: measured
+# during development, det H = -1 came out in 2/6 Mobius seeds AND 2/6
+# orientable seeds before the per-place anti-collapse term existed. Also gates
+# the frame channel as VALID (not collapsed, not a place-indexed constant)
+# before reading det H from it at all. ~21s.
+tests/experimental/swm/test_swmh_e1_det_h.mojo
+# G7 — the orientation bit, which carries the entire Z/2 signal (det H is
+# exactly the product of the bits). Control: with flips disabled the
+# obstruction is unreachable, 0/8. Records an honest NEGATIVE on a mechanism
+# this plan proposed: margin + min-count hysteresis is INERT on E1. ~21s.
+tests/experimental/swm/test_swmh_bit_stability.mojo
