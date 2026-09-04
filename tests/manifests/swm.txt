@@ -30,3 +30,11 @@ tests/experimental/swm/test_holonomy_ring.mojo
 # translation ablation's 7-10x odd/even parity gap as a negative control on the
 # closure-error metric itself.
 tests/experimental/swm/test_procrustes_vs_oracle.mojo
+# G5 — the Mobius corridor (Phase 2). Welds the environment to Phase 1: both
+# the PLANTED transports and transports RECOVERED by Procrustes from noisy
+# observed pairs must give det H = -1, with the orientable twin as the control
+# on both. Also enforces what makes E1 a test rather than a tautology — a
+# per-cell texture that identifies the cell, is bit-identical at both lap
+# parities, and is NOT transported, mixed overcompletely with the landmark so
+# the frame subspace has to be learned rather than read off a coordinate.
+tests/experimental/swm/test_mobius_ring_env.mojo

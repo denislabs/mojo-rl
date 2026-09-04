@@ -1,7 +1,8 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phase 1 of 6 complete.** Algebra core + analytic gates land; nothing
-is learned yet, and the central hypothesis is still untested.
+**Status: Phases 0–2 of 6 complete.** Algebra core, place graph, analytic
+gates, and the E1 environment land. Nothing is learned yet, and the central
+hypothesis is still untested — that is Phase 3.
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -35,6 +36,8 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `place_graph.mojo` | runtime place graph, spanning-tree gauge, `holonomy()` in `O(D³)` per cycle |
 | `sheaf_laplacian.mojo` | dense `L = δᵀδ` + Jacobi spectrum — **gates only**, on no execution path |
 | `reference_io.mojo` | reader for the pinned Phase 0 oracle |
+| `rng.mojo` | xorshift64\* — reproducible from a seed the env carries, independent of `std.random` |
+| `envs/mobius_ring.mojo` | E1: ring world, transported landmark + non-transported texture |
 
 ## What was learned (Phase 0–1)
 
@@ -71,6 +74,26 @@ at parser time"). `skew_from_vector` and `householder` take a `Span` instead,
 with the length checked at runtime — which is also the natural spelling once
 Phase 3 generates the coefficients from `W_a a + W_l l + W_c c`.
 
+**The environment carries nuisance, and that is not decoration.** The design
+doc's E1 is `x_i = g_i w` with `g_i ∈ O(2)` and nothing else — the observation
+*is* an orthogonal group action, so recovering `O(2)` structure from it would
+not test hypothesis 4.0 (that the topologically relevant part is *separable*
+from ordinary content). A world with no "rest" cannot falsify that. So each
+cell also carries a texture which identifies the cell, is bit-identical at both
+lap parities, and is not transported; the observation is an overcomplete
+mixing (2 + 6 → 16) of the two. The aliasing is then sharp: texture says "same
+cell", landmark says "mirrored", and only the holonomy explains both.
+
+**A tolerance-based reward made the task ill-posed.** "Reach the cell where the
+landmark appears on the left" with a fixed goal cell and an angular tolerance
+is satisfiable in only ~45% of episodes, because the landmark direction is
+redrawn each episode — some episodes have no goal at any parity. The reward is
+now an **argmax over all `2N` frames** (the double cover), which always exists,
+is generically unique, and is a (cell, *parity*) pair — so standing in the right
+cell is not enough. The orientable control ties exactly across parities in
+20/20 episodes, which is what shows the difficulty comes from the seam and not
+from how the reward is written.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -82,6 +105,8 @@ miscompute in this repo, so CPU numbers get frozen as the reference first.
 
 ## Next
 
-Phase 2 (Möbius environment carrying **nuisance** dimensions) then Phase 3, the
-first phase that can refute the thesis: does `det H = −1` survive learned
-encoders? If not, hypothesis 4.0 is false as stated and that is the result.
+Phase 3 — the first phase that can refute the thesis. A learned encoder must
+find the transported subspace under the mixing, and a learned transport must
+keep the orientation bit stable. Does `det H = −1` survive? If not, hypothesis
+4.0 is false as stated, and that is the result: write it up here and stop,
+rather than build Phases 4–6 on it.
