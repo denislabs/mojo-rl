@@ -1,0 +1,32 @@
+# SWM manifest — `pixi run test-swm`
+#
+# Sheaf World Model with holonomy as an observable (SWM-H).
+# Design: docs/SHEAF_WORLD_MODELS_V2.md   Plan + gates: docs/SWM_IMPLEMENTATION_PLAN.md
+#
+# Phase 1 gates only so far. They are CPU-only, float64, and self-contained
+# apart from the pinned oracle, which is checked in under
+# tests/experimental/swm/reference/ and regenerated with:
+#
+#   pixi run python tools/swm/dump_mobius_reference.py
+#
+# Every gate here carries an explicit NEGATIVE CONTROL leg and prints the
+# number of cases compared, because on this line of work "nothing detected"
+# and "nothing tested" have the same signature.
+
+# G1 — the O(D) generators and the polar Procrustes factor. Includes the exact
+# closed forms exp(skew(t)) = rot(t) and cayley(skew(t)) = rot(-2 atan t): the
+# only legs that pin the VALUE rather than mere membership in O(D). An
+# orthogonality-only version of this gate was measured to MISS a mutant that
+# dropped the scaling-and-squaring, because exp(S/2^k) is still orthogonal.
+tests/experimental/swm/test_so_d_ops.mojo
+# G2 + G3 — ring holonomy and the sheaf-Laplacian spectrum. Pins the claim that
+# decides which observable the runtime reads: ||H - I||_F = 2 at every ring
+# length, while the spectral gap lambda_2 = 2(1 - cos(pi/N)) decays as 1/N^2.
+# The orientable ring is the negative control on both.
+tests/experimental/swm/test_holonomy_ring.mojo
+# G4 — the per-edge O(2) fit against the pinned numpy oracle, on the EXACT
+# pairs numpy saw. numpy fits by SVD, this tree fits by Newton polar
+# decomposition, so a shared bug cannot make it pass. Also reproduces the
+# translation ablation's 7-10x odd/even parity gap as a negative control on the
+# closure-error metric itself.
+tests/experimental/swm/test_procrustes_vs_oracle.mojo
