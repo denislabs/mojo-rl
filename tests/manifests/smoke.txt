@@ -80,6 +80,13 @@ tests/tasks/test_goal_language.mojo
 # the over-constrained raise. Do not "simplify" either away.
 tests/tasks/test_sampler.mojo
 
+# ── mojo_rl/tasks: goal evaluation, three tasks one family (P2c) ────
+# ⚠ EVERY GOAL IS CHECKED IN A STATE WHERE IT MUST HOLD *AND* ONE WHERE IT
+# MUST NOT. A predicate that returns True unconditionally satisfies every
+# positive assertion, and `On` degenerating to XY-only containment would pass
+# all of them but the metre-above arm.
+tests/tasks/test_task_eval.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

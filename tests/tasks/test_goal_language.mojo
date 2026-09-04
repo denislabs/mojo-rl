@@ -122,7 +122,7 @@ def main() raises:
     # resolve one body early and still return an id — the silent kind.
     ta.check(fmd.body_names[0] == "world", "body 0 is the worldbody")
 
-    var b1 = bind_goal(g1, f, fmd.body_names)
+    var b1 = bind_goal(g1, f, fmd.body_names, fmd.site_names)
     ta.check(len(b1.terms) == 1, "bound goal has the same shape")
     ta.check(b1.terms[0].a == brick_id, "In's first arg is the brick's body")
     ta.check(b1.terms[0].b == 0, "In's second arg is the REGION index")
@@ -131,7 +131,7 @@ def main() raises:
     print("  ok: require_tier_a accepts it")
     ta.checks += 1
 
-    var b2 = bind_goal(g2, f, fmd.body_names)
+    var b2 = bind_goal(g2, f, fmd.body_names, fmd.site_names)
     ta.check(
         b2.terms[b2.root()].a == 0 and b2.terms[b2.root()].b == 1,
         "And's args are TERM indices, not body ids",
@@ -140,7 +140,7 @@ def main() raises:
     # ── 4. Tier B binds, and is refused where it matters ──────────────────
     print("--- Tier B ---")
     var gb = parse_goal(String("Grasped(brick)"))
-    var bb = bind_goal(gb, f, fmd.body_names)
+    var bb = bind_goal(gb, f, fmd.body_names, fmd.site_names)
     ta.check(not bb.is_tier_a(), "Grasped is NOT Tier A")
     var raised = False
     try:
@@ -154,16 +154,22 @@ def main() raises:
     var bad = 0
     try:
         _ = bind_goal(parse_goal(String("In(hammer, table_top)")), f,
-                      fmd.body_names)
+                      fmd.body_names, fmd.site_names)
     except e:
         bad += 1
     try:
         _ = bind_goal(parse_goal(String("In(brick, nowhere)")), f,
-                      fmd.body_names)
+                      fmd.body_names, fmd.site_names)
     except e:
         bad += 1
     ta.check(bad == 2,
              "a goal naming an unknown SLOT or REGION is refused at bind")
+
+    # ⚠ AtRegion resolves a SITE, not a slot — the gripper belongs to no slot.
+    var gr = parse_goal(String("AtRegion(robot_gripperframe, table_top)"))
+    var br = bind_goal(gr, f, fmd.body_names, fmd.site_names)
+    ta.check(br.terms[0].a >= 0 and br.terms[0].a < len(fmd.site_names),
+             "AtRegion binds its first arg to a SITE id")
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

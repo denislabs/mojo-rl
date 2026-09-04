@@ -1,0 +1,20 @@
+# LIFT — the brick off the table.
+#
+# ⚠ `Above(brick, table)` and NOT `Grasped(brick)`. Grasped is TIER B (it
+# reads contacts) and §5.1 forbids a Tier B REWARD: it cannot be evaluated in
+# the batched reward kernel, so a task using it would train against whatever
+# the default is — a flat curve, not a crash. Above is pure geometry and says
+# the thing that matters for the task.
+schema_version=1
+task=so101_lift_brick
+family=so101_tabletop
+language=Pick up the brick
+
+goal=Above(brick, table)
+
+active=table
+active=brick
+active=cube_a
+
+init=brick@table_top
+init=cube_a@table_top

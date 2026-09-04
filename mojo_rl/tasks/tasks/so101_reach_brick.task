@@ -1,0 +1,15 @@
+# REACH — the gripper over the brick's zone.
+#
+# ⚠ AtRegion's first argument is a SITE, not a slot: `robot_gripperframe` is
+# on the robot and belongs to no slot. See predicates.bind_goal.
+schema_version=1
+task=so101_reach_brick
+family=so101_tabletop
+language=Move the gripper over the table
+
+goal=AtRegion(robot_gripperframe, table_top)
+
+active=table
+active=brick
+
+init=brick@table_top

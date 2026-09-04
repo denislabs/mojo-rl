@@ -33,3 +33,7 @@ from .sampler import (
     Placement, RegionFrame, SampleReport,
     sample_placements, MAX_PLACE_ATTEMPTS, PLACEMENT_SALT,
 )
+from .eval import (
+    eval_goal, region_sites,
+    pred_in_rect, pred_near, pred_above, pred_upright,
+)

@@ -433,7 +433,10 @@ def site_id(name: String, site_names: List[String]) raises -> Int:
 
 
 def bind_goal(
-    g: Goal, f: FamilySpec, body_names: List[String]
+    g: Goal,
+    f: FamilySpec,
+    body_names: List[String],
+    site_names: List[String],
 ) raises -> BoundGoal:
     """Resolve every name to an index. Runs ONCE, on the host, at load time.
 
@@ -463,6 +466,20 @@ def bind_goal(
                 " tree has an articulated fixture. Add the joint lookup when"
                 " one does, rather than guessing the convention now."
             )
+        elif t.op == OP_AT_REGION:
+            # ⚠ AT_REGION's FIRST ARGUMENT IS A SITE, NOT A SLOT. It is what
+            # asks "is the gripper over the drop zone" — `robot_gripperframe`
+            # is a site on the robot and belongs to no slot at all. Binding it
+            # through `slot_body_id` like every other op would look for a body
+            # named `robot_gripperframe_*` and raise on a goal that is
+            # perfectly well formed.
+            a = site_id(t.arg0, site_names)
+            b = f.region_index(t.arg1)
+            if b < 0:
+                raise Error(
+                    "tasks: AtRegion names region '" + t.arg1 + "', which"
+                    " family '" + f.name + "' does not declare"
+                )
         else:
             a = slot_body_id(t.arg0, body_names)
             if op_takes_region(t.op):

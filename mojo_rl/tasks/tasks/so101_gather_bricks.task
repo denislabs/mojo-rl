@@ -1,0 +1,18 @@
+# GATHER — both props on the table's zone, upright.
+#
+# ⚠ THE SAME FAMILY, THE SAME BINARY, A DIFFERENT GOAL AND A DIFFERENT ACTIVE
+# SET. That is the claim the task layer exists to make: this file and the two
+# beside it produce three different tasks with no .mojo touched between them.
+schema_version=1
+task=so101_gather_bricks
+family=so101_tabletop
+language=Put both blocks on the table
+
+goal=And(On(brick, table_top), On(cube_a, table_top))
+
+active=table
+active=brick
+active=cube_a
+
+init=brick@table_top
+init=cube_a@table_top
