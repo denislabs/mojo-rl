@@ -106,7 +106,9 @@ struct SmolVLATrainStep[
     comptime GCAT = 14
     comptime GAEMB = 15
     comptime GXT = 16
-    comptime N_SLOTS = 17
+    comptime GCK = 17     # dL/d(cached prefix K) — stage 7's path to the VLM
+    comptime GCV = 18
+    comptime N_SLOTS = 19
 
     var act: Self.Act
     var pool: TensorPack[Self.N_SLOTS]
@@ -239,8 +241,14 @@ struct SmolVLATrainStep[
             TensorRefs[1](self.pool[Self.SUF]), self.pool[Self.GV],
             TensorRefs[1](self.pool[Self.GSUF]), ctx,
         )
+        # ⚠ GCK/GCV receive dL/d(the cached prefix K/V) — the gradient into
+        # the frozen VLM and so into `state_proj`. This driver is the
+        # `train_state_proj = False` regime and does not consume them; they
+        # are kept as named slots rather than dropped so the omission is
+        # visible here instead of inferred from what is missing.
         denoise.backward[target](
-            expert, cache, self.pool[Self.GSUF], self.pool[Self.GOUT], ctx
+            expert, cache, self.pool[Self.GSUF], self.pool[Self.GOUT],
+            self.pool[Self.GCK], self.pool[Self.GCV], ctx,
         )
         time_mlp_out.vjp[target, TOK](
             TensorRefs[1](self.pool[Self.SIL]), self.pool[Self.GOUT],

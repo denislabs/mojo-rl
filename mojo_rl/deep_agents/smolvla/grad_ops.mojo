@@ -19,7 +19,12 @@ between leaf `vjp` calls, which the `nn` contract does not cover:
     own K/V. The prefix rows carry the gradient into the VLM, which the
     `train_state_proj = False` regime discards.
 
-⚠ `suffix_tail` mirrors `build_scratch`'s BATCH-MAJOR layout — batch b's
+  * **`prefix_head`** is the other half of the same slab — the rows that
+    carry the gradient into the VLM's cached K/V, and so into `state_proj`.
+    Discarded under `train_state_proj = False`, which is why it arrived later
+    than its twin.
+
+⚠ `suffix_tail` and `prefix_head` mirror `build_scratch`'s BATCH-MAJOR layout — batch b's
 prefix followed by batch b's own suffix. If one of the two ever changes the
 other must, and at B == 1 neither would notice.
 """
@@ -123,5 +128,46 @@ def suffix_tail[
             src.lt["gpu", Layout.row_major(B, FULL_B)](),
             dst.lt["gpu", Layout.row_major(B, SUF_B)](),
             grid_dim=(B * SUF_B + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+
+
+def _prefix_kernel[B: Int, FULL_B: Int, PRE_B: Int](
+    src: LayoutTensor[DT, Layout.row_major(B, FULL_B), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B, PRE_B), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i >= B * PRE_B:
+        return
+    var b = i // PRE_B
+    var j = i % PRE_B
+    dst.ptr[unsafe_offset=i] = rebind[Scalar[DT]](
+        src.ptr[unsafe_offset = b * FULL_B + j]
+    )
+
+
+def prefix_head[
+    target: StaticString, B: Int, FULL_B: Int, PRE_B: Int
+](
+    mut src: Tensor, mut dst: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """The PREFIX rows of a batch-major `[B, FULL_B]` scratch slab.
+
+    ⚠ The complement of `suffix_tail`, and the two must stay complementary:
+    together they are the whole slab, and a gradient that lands in neither is
+    silently dropped while a gradient counted in both is doubled.
+    """
+    comptime if target == "cpu":
+        dst.ensure(B * PRE_B)
+        for b in range(B):
+            for j in range(PRE_B):
+                dst.data[b * PRE_B + j] = src.data[b * FULL_B + j]
+    else:
+        var c = ctx.value()
+        dst.ensure_gpu(c, B * PRE_B)
+        c.enqueue_function[_prefix_kernel[B, FULL_B, PRE_B]](
+            src.lt["gpu", Layout.row_major(B, FULL_B)](),
+            dst.lt["gpu", Layout.row_major(B, PRE_B)](),
+            grid_dim=(B * PRE_B + TPB - 1) // TPB,
             block_dim=TPB,
         )

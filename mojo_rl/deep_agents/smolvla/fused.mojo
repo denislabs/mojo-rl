@@ -54,7 +54,9 @@ from .text import (
 from .kv_cache import SmolVLAKVCache
 from .expert import SmolVLAExpert
 from .block_attention import BlockCrossAttention
-from .grad_ops import accum_into, copy_into, suffix_tail
+from .grad_ops import (
+    accum_into, copy_into, suffix_tail, prefix_head,
+)
 
 
 struct SmolVLAPrefill[
@@ -280,6 +282,31 @@ struct SmolVLAPrefill[
 
         tower.norm.forward[target, TOK](
             TensorRefs[1](self.pool[Self.X]), out, ctx
+        )
+
+
+
+def _store_cache_grad[
+    target: StaticString, LAYER_N: Int
+](
+    layer: Int, mut src: Tensor, mut dst: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Write one layer's `[B*P*KVW]` cache gradient into its slot.
+
+    ⚠ WRITE, not accumulate. Each layer contributes to its own slot only, and
+    an accumulate here would silently sum across the ten denoising steps of an
+    inference-shaped call.
+    """
+    var off = layer * LAYER_N
+    comptime if target == "cpu":
+        for i in range(LAYER_N):
+            dst.data[off + i] = src.data[i]
+    else:
+        var c = ctx.value()
+        c.enqueue_copy(
+            dst.dev.value().create_sub_buffer[DT](off, LAYER_N),
+            src.dev.value().create_sub_buffer[DT](0, LAYER_N),
         )
 
 
@@ -718,6 +745,8 @@ struct SmolVLADenoise[
         ],
         mut grad_out: Tensor,
         mut grad_x: Tensor,
+        mut grad_cache_k: Tensor,
+        mut grad_cache_v: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """Reverse of `step`, over the tape `step[RECORD=True]` left behind.
@@ -731,12 +760,20 @@ struct SmolVLADenoise[
         observation's activations and returns a finite, plausible, wrong
         gradient.
 
-        ⚠ **dL/d(cached prefix K/V) is COMPUTED AND DISCARDED**, in `GKP` and
-        `GVP`. It is the whole gradient path to the VLM and therefore to
-        `state_proj`, which the shipped config trains. Under
-        `train_state_proj = False` it is dead, and this driver implements that
-        regime. Wiring it up is the last stage of V2, and the slots are named
-        so that the omission is visible here rather than inferred.
+        `grad_cache_k` / `grad_cache_v` receive dL/d(the cached prefix K/V),
+        laid out exactly like the cache itself — `[LAYERS * B * P * KVW]`.
+        That is the whole gradient path into the VLM and therefore into
+        `state_proj`. A caller running `train_state_proj = False` passes a
+        scratch tensor and ignores it.
+
+        ⚠ **Each layer contributes to its OWN cache slot and no other**, so
+        these are written, not accumulated. A SELF layer's contribution is the
+        PREFIX ROWS of the scratch gradient (`prefix_head`, the complement of
+        the `suffix_tail` that carries the expert's own K/V); a CROSS layer's
+        is what its `[320, 320]` projections push back. The two halves of a
+        self layer's scratch must go to exactly one destination each — a
+        gradient counted in both is doubled, one counted in neither is
+        silently dropped.
         """
         comptime assert Self.RECORD, (
             "SmolVLADenoise.backward needs RECORD=True — the non-recording"
@@ -750,6 +787,18 @@ struct SmolVLADenoise[
         comptime CN = Self.B * Self.FFN
         comptime KVN_S = Self.B * Self.KVN_S
         comptime KVN_P = Self.B * Self.KVN_P
+        comptime CACHE_LAYER = Self.B * Self.P * Self.KVW
+
+        comptime if target == "cpu":
+            grad_cache_k.ensure(Self.LAYERS * CACHE_LAYER)
+            grad_cache_v.ensure(Self.LAYERS * CACHE_LAYER)
+        else:
+            grad_cache_k.ensure_gpu(
+                ctx.value(), Self.LAYERS * CACHE_LAYER
+            )
+            grad_cache_v.ensure_gpu(
+                ctx.value(), Self.LAYERS * CACHE_LAYER
+            )
 
         # out = norm(pools[LAST][X])
         expert.norm.vjp[target, TOK_S](
@@ -887,6 +936,21 @@ struct SmolVLADenoise[
                     target, Self.B, Self.FULL * Self.KVW,
                     Self.P * Self.KVW, Self.S * Self.KVW,
                 ](self.g[Self.GSV], self.g[Self.GVS], ctx)
+                # ⚠ The OTHER half of the same slab: the prefix rows are the
+                # VLM's gradient. Extracted here so the two halves of GSK/GSV
+                # are each consumed exactly once.
+                prefix_head[
+                    target, Self.B, Self.FULL * Self.KVW, Self.P * Self.KVW
+                ](self.g[Self.GSK], self.g[Self.GKP], ctx)
+                prefix_head[
+                    target, Self.B, Self.FULL * Self.KVW, Self.P * Self.KVW
+                ](self.g[Self.GSV], self.g[Self.GVP], ctx)
+                _store_cache_grad[target, CACHE_LAYER](
+                    i, self.g[Self.GKP], grad_cache_k, ctx
+                )
+                _store_cache_grad[target, CACHE_LAYER](
+                    i, self.g[Self.GVP], grad_cache_v, ctx
+                )
                 self.rope_k_self.vjp[target, Self.B](
                     TensorRefs[1](PK[Self.KS]), self.g[Self.GKRS],
                     TensorRefs[1](self.g[Self.GKS]), ctx,
@@ -943,6 +1007,12 @@ struct SmolVLADenoise[
                 L.v.vjp[target, TOK_P](
                     TensorRefs[1](PK[Self.VP]), self.g[Self.GVSP],
                     TensorRefs[1](self.g[Self.GVP]), ctx,
+                )
+                _store_cache_grad[target, CACHE_LAYER](
+                    i, self.g[Self.GKP], grad_cache_k, ctx
+                )
+                _store_cache_grad[target, CACHE_LAYER](
+                    i, self.g[Self.GVP], grad_cache_v, ctx
                 )
                 self.rope_q_cross.vjp[target, Self.B](
                     TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],

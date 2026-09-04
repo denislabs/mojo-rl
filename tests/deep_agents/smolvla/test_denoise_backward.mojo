@@ -303,6 +303,48 @@ def _richardson(d1: Float64, d2: Float64) -> Float64:
     return (4.0 * d2 - d1) / 3.0
 
 
+def _fd_cache(
+    which: Int, t: Int, mut den: Den, mut e: Expert, mut c: Cache,
+    mut x: Tensor, ref g: List[Float64], mut out: Tensor,
+) raises -> Float64:
+    """Richardson central difference of the loss in one CACHED K or V slot.
+
+    ⚠ The cache is written by the prefill and read by every denoising step, so
+    perturbing it directly is how the expert's gradient INTO the VLM is
+    measured without a prefill in the loop.
+    """
+    var keep: Scalar[DT]
+    if which == 0:
+        keep = c.k.data[t]
+    else:
+        keep = c.v.data[t]
+
+    var vals = List[Float64]()
+    var hs = List[Float64]()
+    hs.append(Float64(FD_HW))
+    hs.append(Float64(FD_HW2))
+    for i in range(2):
+        var h = hs[i]
+        if which == 0:
+            c.k.data[t] = Scalar[DT](Float64(keep) + h)
+        else:
+            c.v.data[t] = Scalar[DT](Float64(keep) + h)
+        var ap = Float64(c.k.data[t]) if which == 0 else Float64(c.v.data[t])
+        var lp = _loss(den, e, c, x, g, out)
+        if which == 0:
+            c.k.data[t] = Scalar[DT](Float64(keep) - h)
+        else:
+            c.v.data[t] = Scalar[DT](Float64(keep) - h)
+        var am = Float64(c.k.data[t]) if which == 0 else Float64(c.v.data[t])
+        var lm = _loss(den, e, c, x, g, out)
+        vals.append((lp - lm) / (ap - am))
+    if which == 0:
+        c.k.data[t] = keep
+    else:
+        c.v.data[t] = keep
+    return _richardson(vals[0], vals[1])
+
+
 def _fd_weight(
     which: Int, t: Int, mut den: Den, mut e: Expert, mut c: Cache,
     mut x: Tensor, ref g: List[Float64], mut out: Tensor,
@@ -451,7 +493,9 @@ def main() raises:
     for i in range(XN):
         grad_out.data[i] = Scalar[DT](g[i])
     var grad_x = Tensor.alloc(XN)
-    den.backward["cpu"](e, c, grad_out, grad_x, None)
+    var gck = Tensor.alloc(L * B * P * KVW)
+    var gcv = Tensor.alloc(L * B * P * KVW)
+    den.backward["cpu"](e, c, grad_out, grad_x, gck, gcv, None)
     print("  [1] L =", l0, " backward ran")
 
     # Snapshot every probed gradient BEFORE the finite differences re-run the
@@ -528,6 +572,60 @@ def main() raises:
         total.rel_norm() < NORM_BAND, "the weight gradients disagree in norm"
     )
 
+    # ── [7] dL/d(the cached prefix K/V) — stage 7's whole path ───────────
+    # ⚠ This is the gradient that leaves the expert and enters the FROZEN VLM,
+    # and through it `state_proj`, which the shipped config trains. Under
+    # `train_state_proj = False` nothing consumes it, so it is exactly the
+    # kind of output that can be wrong for a long time without anyone
+    # noticing — which is why it is gated the moment it exists rather than
+    # when it is first used.
+    #
+    # A self layer's contribution is the PREFIX ROWS of its scratch gradient
+    # and a cross layer's is what its [320,320] projections push back. Those
+    # are different code paths reaching the same slab, and the fixture has one
+    # of each.
+    comptime CACHE_LAYER = B * P * KVW
+    var fdk = List[Float64]()
+    var fdv = List[Float64]()
+    for l in range(L):
+        for t in range(CACHE_LAYER):
+            fdk.append(_fd_cache(0, l * CACHE_LAYER + t, den, e, c, x, g, out))
+            fdv.append(_fd_cache(1, l * CACHE_LAYER + t, den, e, c, x, g, out))
+    var ck = Cmp()
+    ck.set_group(fdk)
+    var cvv = Cmp()
+    cvv.set_group(fdv)
+    var nzk = 0
+    for l in range(L):
+        for t in range(CACHE_LAYER):
+            var idx = l * CACHE_LAYER + t
+            ck.add(Float64(gck.data[idx]), fdk[idx], idx)
+            cvv.add(Float64(gcv.data[idx]), fdv[idx], idx)
+            if gck.data[idx] != Scalar[DT](0):
+                nzk += 1
+    print("  [7] dL/d(cache K): compared", ck.n, " ||err||/||fd||",
+          ck.rel_norm(), " | dL/d(cache V):", cvv.n, " ",
+          cvv.rel_norm())
+    assert_equal(
+        ck.n, L * CACHE_LAYER, "every cached K slot must be probed"
+    )
+    assert_true(
+        ck.rel_norm() < NORM_BAND,
+        "dL/d(cache K) disagrees with a central difference — the gradient"
+        " into the frozen VLM is wrong",
+    )
+    assert_true(
+        cvv.rel_norm() < NORM_BAND, "dL/d(cache V) disagrees"
+    )
+    # ⚠ and it must not be all zero, which would agree with nothing having
+    # been probed.
+    print("      nonzero dL/d(cache K) slots:", nzk, "of", L * CACHE_LAYER)
+    assert_true(
+        nzk * 2 > L * CACHE_LAYER,
+        "most of dL/d(cache K) is zero — the denoise backward is not writing"
+        " it",
+    )
+
     # ── [5] the GPU path, which is where training will actually run ──────
     # ⚠ Legs [2]-[4] are CPU-only — finite differences need hundreds of cheap
     # forwards. So everything above says nothing whatever about the kernels in
@@ -593,9 +691,15 @@ def main() raises:
 
     var gxg = Tensor.alloc(XN)
     gxg.upload(d)
-    deng.backward["gpu"](eg, cg, gog, gxg, Optional(d))
+    var gckg = Tensor.alloc(L * B * P * KVW)
+    var gcvg = Tensor.alloc(L * B * P * KVW)
+    gckg.upload(d)
+    gcvg.upload(d)
+    deng.backward["gpu"](eg, cg, gog, gxg, gckg, gcvg, Optional(d))
     d.synchronize()
     gxg.download(d)
+    gckg.download(d)
+    gcvg.download(d)
 
     var gcmp = Cmp()
     gcmp.set_group(gx)
@@ -608,11 +712,20 @@ def main() raises:
             gcmp.add(Float64(_pgrad(which, t, eg)), snap[k1 + t],
                      XN + k1 + t)
         k1 += _psize(which)
+    # ⚠ including dL/d(cache), whose GPU path is `prefix_head`'s kernel and
+    # `_store_cache_grad`'s sub-buffer copy — neither of which legs [2]-[4]
+    # or [7] touch, since all of those are CPU.
+    for i in range(L * B * P * KVW):
+        gcmp.add(Float64(gckg.data[i]), Float64(gck.data[i]),
+                 XN + total.n + i)
+        gcmp.add(Float64(gcvg.data[i]), Float64(gcv.data[i]),
+                 XN + total.n + L * B * P * KVW + i)
     print("  [6] GPU backward vs CPU: compared", gcmp.n, " ||err||/||fd||",
           gcmp.rel_norm(), " outside band", gcmp.bad, " worst rel",
           gcmp.worst)
     assert_equal(
-        gcmp.n, XN + total.n, "the GPU leg must compare every component"
+        gcmp.n, XN + total.n + 2 * L * B * P * KVW,
+        "the GPU leg must compare every component, cache gradient included",
     )
     assert_true(
         gcmp.rel_norm() < 1.0e-4,
