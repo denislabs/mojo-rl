@@ -27,6 +27,14 @@ tests/deep_agents/smolvla/test_prefill.mojo
 # Step 6 — the static-mask attention the denoising step needs, gated against the
 # torch-validated CrossAttention on the unmasked case.
 tests/deep_agents/smolvla/test_block_attention.mojo
+
+# V2 — that leaf's BACKWARD, against central differences of the definition in
+# Float64. Every one of the 1,472 input components is probed, not a sample,
+# because a wrong attention gradient is finite, correctly shaped and silent:
+# it shows up as a fine-tune that learns worse, months later. The file records
+# four measured ablations, including one that dV alone would have missed.
+tests/deep_agents/smolvla/test_block_attention_vjp.mojo
+
 # Step 6 — one denoising step and then ten, over a prefilled cache. Asserts the
 # cache is bit-identical after ten steps and that repeated steps do not drift:
 # the crop bug does not crash, it quietly changes the chunk.
