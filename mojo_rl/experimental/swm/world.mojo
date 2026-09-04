@@ -42,8 +42,14 @@ trait SwmWorld(Copyable, Movable):
         (action, place) and the world knows which actions exist."""
         ...
 
-    def true_landmark(self) -> InlineArray[Scalar[Self.ELEM], 2]:
-        """ORACLE: the transported part, unmixed and noiseless."""
+    def true_landmark(self) -> List[Scalar[Self.ELEM]]:
+        """ORACLE: the transported part, unmixed and noiseless.
+
+        A LIST, not a fixed array: the frame's dimension is a property of the
+        world (2 on E1 and the Klein grid, `FRAME_DIM` on the N-dimensional
+        ring), and a trait cannot carry it in a return type without an
+        associated Int. Its length must equal the trainer's `D`.
+        """
         ...
 
     def nuisance_at(self, cell: Int) -> List[Scalar[Self.ELEM]]:

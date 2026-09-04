@@ -236,9 +236,9 @@ struct PendulumSwm[
     def place_label(self) -> Int:
         return self.place_id()
 
-    def true_landmark(self) -> InlineArray[Scalar[Self.dtype], 2]:
+    def true_landmark(self) -> List[Scalar[Self.dtype]]:
         """`(cos theta, sin theta)` — the exactly transported part."""
-        var out = InlineArray[Scalar[Self.dtype], 2](fill=0)
+        var out = List[Scalar[Self.dtype]](length=2, fill=0)
         out[0] = Scalar[Self.dtype](cos(self.theta))
         out[1] = Scalar[Self.dtype](sin(self.theta))
         return out^

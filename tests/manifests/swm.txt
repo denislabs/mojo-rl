@@ -249,3 +249,14 @@ tests/experimental/swm/test_swmh_global_symmetry.mojo
 # and the control caught it. Built with a frame per cell instead, which
 # telescopes exactly. <1s.
 tests/experimental/swm/test_gauge_coincidence_dim.mojo
+# G31 — PHASE 12, a LEARNED 4-dimensional frame. G30 showed on planted
+# transports that gauge coincidence is a 2D artefact; this asks whether a
+# learned wide frame is still a frame, and whether the payoff survives
+# training. Both worlds on the same binary at d = 2 and d = 4: the Z/2 class
+# comes out 4/4 and 4/4 with zero false obstructions at BOTH widths, and gauge
+# coincidence among false closures collapses 51.5% -> 0.4% with every true
+# closure still accepted (144/144). The PRICE is real and gated: on the same
+# data the wider frame is a looser frame — landmark R^2 0.989 -> 0.841, texture
+# leak 0.054 -> 0.105, anisotropy 0.752 -> 0.468. Whether a longer schedule
+# closes that is untested. ~4 min.
+tests/experimental/swm/test_swmh_wide_frame.mojo

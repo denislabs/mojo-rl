@@ -457,9 +457,9 @@ struct MobiusRing[
 
     # -- oracles: GATES ONLY, never visible to an encoder ---------------------
 
-    def true_landmark(self) -> InlineArray[Scalar[Self.dtype], 2]:
+    def true_landmark(self) -> List[Scalar[Self.dtype]]:
         """`frame @ w` — the transported part, unmixed and noiseless."""
-        var out = InlineArray[Scalar[Self.dtype], 2](fill=0)
+        var out = List[Scalar[Self.dtype]](length=2, fill=0)
         for i in range(2):
             var s = Scalar[Self.dtype](0)
             for j in range(2):

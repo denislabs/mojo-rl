@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–11 complete, 28 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
+**Status: Phases 0–12 complete, 29 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -65,6 +65,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `cscg.mojo` (Phase 8) | Clone-Structured Cognitive Graph by EM — the P5 baseline, gates only |
 | `graph_planner.mojo` (Phase 8) | breadth-first search over `(clone, u)` — planning on a learned graph in the double cover |
 | `envs/pendulum_swm.mojo` (Phase 9) | Pendulum: a PHYSICAL world with an exact `SO(2)` action, velocity bin as the bottleneck |
+| `envs/mobius_ring_nd.mojo` (Phase 12) | E1 with the fibre widened: landmark in `R^d`, transports in `O(d)`, frames per cell |
 
 ## What was learned (Phase 0–1)
 
@@ -660,6 +661,50 @@ by summing them, which is an **abelian** trick. In `O(D>2)` the
 Baker-Campbell-Hausdorff residue left 0/36 true closures accepted, and the
 control caught it. Built with a frame per cell instead, which telescopes
 exactly, as the flat Klein bundle does.
+
+## What was learned (Phase 12 — a learned 4-dimensional frame, G31)
+
+G30 showed on *planted* transports that gauge coincidence is a two-dimensional
+artefact. That says nothing about whether a *learned* wide frame is still a
+frame: everything the method rests on was established at `d = 2`, and a wider
+fibre has more room to collapse into and six times the transport parameters on
+the same data. Both widths, both worlds, one binary:
+
+| d | `det H` Möbius | orientable | false obstructions | landmark R² | texture leak | anisotropy |
+|---|---|---|---|---|---|---|
+| 2 | 4/4 | 4/4 | 0 | 0.989 | 0.054 | 0.752 |
+| 4 | 4/4 | 4/4 | 0 | **0.841** | **0.105** | **0.468** |
+
+**The class survives and the payoff is real**: gauge coincidence among false
+closures collapses from **51.5 % to 0.4 %**, with every true closure still
+accepted (144/144 at both widths — the control that stops a falling rate
+meaning the test rejects everything). Phase 7's "irreducible" residue is
+bought away by a learned frame, not only by planted geometry.
+
+**The price is real too, and gated.** On the same data the wider frame is a
+measurably looser frame: landmark R² 0.989 → 0.841, texture leakage 0.054 →
+0.105, anisotropy 0.752 → 0.468. Whether a longer schedule or more data closes
+that gap is untested.
+
+**A measurement bug this found, worth recording.** `_explained_variance` was
+written with a two-dimensional regressor, reading `us[t*2]` and `us[t*2+1]`
+regardless of `d`. Correct at the only width that then existed; at `d = 4` it
+reads *interleaved* coordinates and reported a landmark R² of **0.017** for a
+frame channel that was in fact carrying the landmark. Taken at face value it
+would have been recorded as hypothesis 4.0 failing at width — a false
+negative that agreed with a plausible prior. Rewritten over `d` dimensions, it
+is bit-identical at `d = 2` (0.9829045415714871 before and after), which is
+what makes the rewrite trustworthy. Same defect shape as every other
+one-dimension rule reused at another in this tree.
+
+## Open questions after Phase 12
+
+1. **Compose the global-symmetry refutation into a map** (Phase 11): align the
+   per-slot mixture components with the commuting-square constraint. The
+   detection is done; the bookkeeping is not.
+2. **Does the width price close with budget?** The `d = 4` split is looser on
+   the same schedule. Untested.
+3. **Curved bundles**, and the deferred engineering (GPU, float32 `nn`).
 
 ## Open questions after Phase 11
 

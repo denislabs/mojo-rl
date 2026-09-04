@@ -62,6 +62,7 @@ from .mlp import Mlp
 from .transport import TransportTable
 from .content import ContentChannel
 from .place_graph import PlaceGraph, Edge
+from .sheaf_laplacian import DenseSym, eigenvalues_ascending
 from .procrustes import PairBatch
 from .envs.mobius_ring import MobiusRing, MobiusConfig, ACTION_FORWARD
 from .world import SwmWorld
@@ -278,6 +279,7 @@ struct SwmPhase3[
     CONTENT_DIM: Int,
     dtype: DType = DType.float64,
     N_ACTIONS: Int = 2,
+    D: Int = 2,
 ]:
     # N_ACTIONS is last, AFTER dtype, so that every Phase 3-8 call site
     # (`SwmPhase3[12, 6, 16, 32, 8, DT]`) keeps binding its sixth argument to
@@ -285,7 +287,6 @@ struct SwmPhase3[
     # Int at a dozen sites.
     """Encoder + transport table trained on the Mobius corridor."""
 
-    comptime D: Int = 2
     comptime LAT: Int = Self.D + Self.CONTENT_DIM
     comptime EncoderT = Mlp[Self.OBS_DIM, Self.HID, Self.LAT, Self.dtype]
     comptime EnvT = MobiusRing[
@@ -531,8 +532,8 @@ struct SwmPhase3[
                 var lat = List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
                 model.enc.forward(o, hid, lat)
                 var lm_raw = env.true_landmark()
-                var lm = InlineArray[Scalar[Self.dtype], 2](fill=0)
-                for i in range(2):
+                var lm = List[Scalar[Self.dtype]](length=len(lm_raw), fill=0)
+                for i in range(len(lm_raw)):
                     lm[i] = lm_raw[i].cast[Self.dtype]()
                 var nu = Self._own_obs[W](env.nuisance_at(env.place_id()))
                 for i in range(Self.D):
@@ -540,8 +541,8 @@ struct SwmPhase3[
                 places.append(env.place_id())
                 for i in range(Self.CONTENT_DIM):
                     hs.append(Float64(lat[Self.D + i]))
-                lms.append(Float64(lm[0]))
-                lms.append(Float64(lm[1]))
+                for i in range(len(lm)):
+                    lms.append(Float64(lm[i]))
                 for k in range(Self.NUISANCE_DIM):
                     nus.append(Float64(nu[k]))
                 if t > 0:
@@ -628,29 +629,35 @@ struct SwmPhase3[
                     / Float64(Self.N_CELLS)
                 )
 
-        # Global decorrelation: keeps the two frame dimensions from becoming
-        # the same direction, which is rank-one collapse in disguise.
-        var m0 = Float64(0)
-        var m1 = Float64(0)
+        # Global decorrelation over EVERY pair of frame dimensions: keeps two
+        # of them from becoming the same direction, which is rank-one collapse
+        # in disguise. Written over pairs rather than for (0, 1) so it follows
+        # `D` (Phase 12); at D = 2 it is the same single term as before.
+        comptime DD = Self.D
+        var mu = List[Float64](length=DD, fill=0)
         for t in range(n):
-            m0 += Float64(lat_all[t][0])
-            m1 += Float64(lat_all[t][1])
-        m0 /= Float64(n)
-        m1 /= Float64(n)
-        var cov01 = Float64(0)
-        for t in range(n):
-            cov01 += (Float64(lat_all[t][0]) - m0) * (Float64(lat_all[t][1]) - m1)
-        var d = Float64(n - 1)
-        cov01 /= d
-        for t in range(n):
-            var c0 = Float64(lat_all[t][0]) - m0
-            var c1 = Float64(lat_all[t][1]) - m1
-            dlat_all[t][0] += Scalar[Self.dtype](
-                cfg.cov_weight * 2.0 * cov01 * c1 / d
-            )
-            dlat_all[t][1] += Scalar[Self.dtype](
-                cfg.cov_weight * 2.0 * cov01 * c0 / d
-            )
+            for i in range(DD):
+                mu[i] += Float64(lat_all[t][i])
+        for i in range(DD):
+            mu[i] /= Float64(n)
+        var dn = Float64(n - 1)
+        for a in range(DD):
+            for b in range(a + 1, DD):
+                var cov = Float64(0)
+                for t in range(n):
+                    cov += (Float64(lat_all[t][a]) - mu[a]) * (
+                        Float64(lat_all[t][b]) - mu[b]
+                    )
+                cov /= dn
+                for t in range(n):
+                    var ca = Float64(lat_all[t][a]) - mu[a]
+                    var cb = Float64(lat_all[t][b]) - mu[b]
+                    dlat_all[t][a] += Scalar[Self.dtype](
+                        cfg.cov_weight * 2.0 * cov * cb / dn
+                    )
+                    dlat_all[t][b] += Scalar[Self.dtype](
+                        cfg.cov_weight * 2.0 * cov * ca / dn
+                    )
 
     @staticmethod
     def encode_rollouts(
@@ -756,8 +763,8 @@ struct SwmPhase3[
                 parities.append(env.lap_parity())
                 for i in range(Self.CONTENT_DIM):
                     hs.append(Float64(lat[Self.D + i]))
-                lms.append(Float64(lm[0]))
-                lms.append(Float64(lm[1]))
+                for i in range(len(lm)):
+                    lms.append(Float64(lm[i]))
                 for k in range(Self.NUISANCE_DIM):
                     nus.append(Float64(nu[k]))
                 if t > 0:
@@ -884,8 +891,9 @@ struct SwmPhase3[
         constraint is vacuous and the orientation bit, hence `det H`, is decided
         by noise. A `det H` read under that condition is INVALID, not negative.
         """
+        comptime DD = Self.D
         var counts = List[Float64](length=64, fill=0)
-        var mean = List[Float64](length=64 * 2, fill=0)
+        var mean = List[Float64](length=64 * DD, fill=0)
         var maxp = 0
         for t in range(n):
             var p = places[t]
@@ -894,66 +902,62 @@ struct SwmPhase3[
             if p > maxp:
                 maxp = p
             counts[p] += 1.0
-            mean[p * 2] += us[t * 2]
-            mean[p * 2 + 1] += us[t * 2 + 1]
+            for i in range(DD):
+                mean[p * DD + i] += us[t * DD + i]
         for p in range(maxp + 1):
             if counts[p] > 0:
-                mean[p * 2] /= counts[p]
-                mean[p * 2 + 1] /= counts[p]
-        var acc = List[Float64](length=64 * 2, fill=0)
+                for i in range(DD):
+                    mean[p * DD + i] /= counts[p]
+        var acc = List[Float64](length=64 * DD, fill=0)
         for t in range(n):
             var p = places[t]
             if p >= 64:
                 continue
-            var a = us[t * 2] - mean[p * 2]
-            var b = us[t * 2 + 1] - mean[p * 2 + 1]
-            acc[p * 2] += a * a
-            acc[p * 2 + 1] += b * b
+            for i in range(DD):
+                var a = us[t * DD + i] - mean[p * DD + i]
+                acc[p * DD + i] += a * a
         var total = Float64(0)
         var seen = 0
         for p in range(maxp + 1):
             if counts[p] < 2:
                 continue
-            total += sqrt(acc[p * 2] / (counts[p] - 1.0))
-            total += sqrt(acc[p * 2 + 1] / (counts[p] - 1.0))
-            seen += 2
+            for i in range(DD):
+                total += sqrt(acc[p * DD + i] / (counts[p] - 1.0))
+            seen += DD
         if seen == 0:
             return 0.0
         return total / Float64(seen)
 
     @staticmethod
-    def _anisotropy(us: List[Float64], n: Int) -> Float64:
-        """`sqrt(lambda_min/lambda_max)` of cov(u). 1 = isotropic, 0 = collapsed."""
+    def _anisotropy(us: List[Float64], n: Int) raises -> Float64:
+        """`sqrt(lambda_min/lambda_max)` of cov(u), in any dimension.
+
+        Jacobi on the DxD covariance rather than the closed 2x2 form, so the
+        collapse detector follows `D` (Phase 12). 1 = isotropic, 0 = collapsed.
+        """
+        comptime DD = Self.D
         if n < 2:
             return 0.0
-        var m0 = Float64(0)
-        var m1 = Float64(0)
+        var mean = List[Float64](length=DD, fill=0)
         for t in range(n):
-            m0 += us[t * 2]
-            m1 += us[t * 2 + 1]
-        m0 /= Float64(n)
-        m1 /= Float64(n)
-        var c00 = Float64(0)
-        var c01 = Float64(0)
-        var c11 = Float64(0)
+            for i in range(DD):
+                mean[i] += us[t * DD + i]
+        for i in range(DD):
+            mean[i] /= Float64(n)
+        var cov = DenseSym[DType.float64](DD)
         for t in range(n):
-            var a = us[t * 2] - m0
-            var b = us[t * 2 + 1] - m1
-            c00 += a * a
-            c01 += a * b
-            c11 += b * b
-        var d = Float64(n - 1)
-        c00 /= d
-        c01 /= d
-        c11 /= d
-        var tr = c00 + c11
-        var det = c00 * c11 - c01 * c01
-        var disc = tr * tr / 4.0 - det
-        if disc < 0:
-            disc = 0
-        var root = sqrt(disc)
-        var l_max = tr / 2.0 + root
-        var l_min = tr / 2.0 - root
+            for i in range(DD):
+                var a = us[t * DD + i] - mean[i]
+                for j in range(DD):
+                    var b = us[t * DD + j] - mean[j]
+                    cov.data[i * DD + j] = cov.data[i * DD + j] + Scalar[
+                        DType.float64
+                    ](a * b)
+        for i in range(DD * DD):
+            cov.data[i] = cov.data[i] / Scalar[DType.float64](Float64(n - 1))
+        var ev = eigenvalues_ascending[DType.float64](cov)
+        var l_min = ev[0]
+        var l_max = ev[DD - 1]
         if l_max <= 1e-300 or l_min <= 0:
             return 0.0
         return sqrt(l_min / l_max)
@@ -961,73 +965,68 @@ struct SwmPhase3[
     @staticmethod
     def _explained_variance(
         us: List[Float64], ys: List[Float64], n: Int, y_dim: Int
-    ) -> Float64:
+    ) raises -> Float64:
         """R^2 of the best LINEAR map from `u` to `y`, over all `y` dimensions.
 
         Linear on purpose: the question is whether the frame channel CONTAINS
         the landmark direction, not whether some further network could dig it
         out of an entangled code.
+
+        The regressor is `Self.D`-dimensional. An earlier version read
+        `us[t*2]` and `us[t*2+1]` regardless of `D` — correct at the only width
+        that then existed, and silently reading INTERLEAVED coordinates at any
+        other. At `D = 4` it reported a landmark R^2 of 0.017 for a frame
+        channel that was in fact carrying the landmark, which would have been
+        recorded as hypothesis 4.0 failing at width. The defect shape this
+        codebase produces most: a rule written for one dimension, reused at
+        another.
         """
-        if n < 3:
+        comptime DD = Self.D
+        if n < DD + 2:
             return 0.0
-        # Normal equations for [u, 1] -> y, per output dimension.
-        var s00 = Float64(0)
-        var s01 = Float64(0)
-        var s11 = Float64(0)
-        var s0 = Float64(0)
-        var s1 = Float64(0)
-        var sn = Float64(n)
+        var a = SqMat[DD + 1, DType.float64]()
         for t in range(n):
-            var a = us[t * 2]
-            var b = us[t * 2 + 1]
-            s00 += a * a
-            s01 += a * b
-            s11 += b * b
-            s0 += a
-            s1 += b
+            for i in range(DD):
+                var ui = us[t * DD + i]
+                for j in range(DD):
+                    a[i, j] = a[i, j] + Scalar[DType.float64](
+                        ui * us[t * DD + j]
+                    )
+                a[i, DD] = a[i, DD] + Scalar[DType.float64](ui)
+                a[DD, i] = a[DD, i] + Scalar[DType.float64](ui)
+            a[DD, DD] = a[DD, DD] + Scalar[DType.float64](1.0)
+        for i in range(DD + 1):
+            a[i, i] = a[i, i] + Scalar[DType.float64](1e-12)
+        var ainv = a.inverse()
+
         var total_ss = Float64(0)
         var resid_ss = Float64(0)
         for k in range(y_dim):
-            var ya = Float64(0)
-            var yb = Float64(0)
+            var rhs = List[Float64](length=DD + 1, fill=0)
             var ysum = Float64(0)
             for t in range(n):
                 var y = ys[t * y_dim + k]
-                ya += us[t * 2] * y
-                yb += us[t * 2 + 1] * y
+                for i in range(DD):
+                    rhs[i] += us[t * DD + i] * y
+                rhs[DD] += y
                 ysum += y
-            # Solve the 3x3 system by elimination on the normal equations.
-            var a11 = s00
-            var a12 = s01
-            var a13 = s0
-            var a22 = s11
-            var a23 = s1
-            var a33 = sn
-            var det3 = (
-                a11 * (a22 * a33 - a23 * a23)
-                - a12 * (a12 * a33 - a23 * a13)
-                + a13 * (a12 * a23 - a22 * a13)
-            )
-            if abs(det3) < 1e-18:
-                continue
-            var i11 = (a22 * a33 - a23 * a23) / det3
-            var i12 = -(a12 * a33 - a23 * a13) / det3
-            var i13 = (a12 * a23 - a22 * a13) / det3
-            var i22 = (a11 * a33 - a13 * a13) / det3
-            var i23 = -(a11 * a23 - a12 * a13) / det3
-            var i33 = (a11 * a22 - a12 * a12) / det3
-            var w0 = i11 * ya + i12 * yb + i13 * ysum
-            var w1 = i12 * ya + i22 * yb + i23 * ysum
-            var w2 = i13 * ya + i23 * yb + i33 * ysum
-            var ymean = ysum / sn
+            var coef = List[Float64](length=DD + 1, fill=0)
+            for i in range(DD + 1):
+                var acc = Float64(0)
+                for j in range(DD + 1):
+                    acc += Float64(ainv[i, j]) * rhs[j]
+                coef[i] = acc
+            var ymean = ysum / Float64(n)
             for t in range(n):
                 var y = ys[t * y_dim + k]
-                var pred = w0 * us[t * 2] + w1 * us[t * 2 + 1] + w2
-                var e = y - pred
-                resid_ss += e * e
-                var c = y - ymean
-                total_ss += c * c
-        if total_ss <= 1e-300:
+                var pred = coef[DD]
+                for i in range(DD):
+                    pred += coef[i] * us[t * DD + i]
+                resid_ss += (y - pred) * (y - pred)
+                total_ss += (y - ymean) * (y - ymean)
+        if total_ss < 1e-18:
             return 0.0
         var r2 = 1.0 - resid_ss / total_ss
-        return 0.0 if r2 < 0 else r2
+        if r2 < 0:
+            return 0.0
+        return r2
