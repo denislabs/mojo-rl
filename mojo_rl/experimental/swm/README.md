@@ -1,11 +1,12 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phase 3 largely complete — P1 answered.** With learned encoders on
+**Status: Phases 0–3 complete — P1 and P2 answered.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
 (R² ≥ 0.983) and rejecting the texture (R² ≤ 0.009). Hypothesis 4.0 holds on
-E1, and the v1 cocycle loss is measured to be destructive or inert (G8).
+E1 — and survives a **nonlinear** observation model up to 16 % saturation
+(G6b). The v1 cocycle loss is measured to be destructive or inert (G8).
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -144,6 +145,24 @@ than A, odd/even compressed to 1.8×). A stronger refutation of the constant
 sheaf, not a weaker one — so the gate asserts the B-vs-A gap and *reports* the
 parity ratio instead of asserting the prototype's number.
 
+**The result survives observation nonlinearity, and fails gracefully past it.**
+G6 alone uses a linear mixing, where the split hypothesis 4.0 asks for exists
+exactly — the friendliest observation model, and a real bound on what G6 means.
+With `obs = tanh(gain · mix @ latent)`:
+
+| gain | saturated | Möbius | orientable | false obstr. | worst landmark R² |
+|---|---|---|---|---|---|
+| 0.5 | 0 % | 8/8 | 8/8 | 0 | 0.988 |
+| 1.0 | 1.8 % | 8/8 | 8/8 | 0 | 0.971 |
+| 2.0 | 16.1 % | 8/8 | 8/8 | 0 | 0.933 |
+| 4.0 | 38.6 % | 7/8 | 8/8 | 0 | 0.449 |
+
+The breaking point tracks **saturation**, not nonlinearity: at gain 4 two fifths
+of the coordinates are pinned at ±1, destroying the landmark rather than
+entangling it. And the asymmetry that makes the observable usable — even where
+the frame channel *cannot* recover the landmark, there are **zero false
+obstructions**. The method loses the signal rather than inventing one.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -153,12 +172,20 @@ code review. No GPU: the design's edge-parallel kernel accumulates into vertex
 gradients with `atomic_add`, a shape that has already produced a silent
 miscompute in this repo, so CPU numbers get frozen as the reference first.
 
+## What is still not established
+
+Place recognition is an oracle throughout. On E1 it is confounded with the
+effect being measured: after an odd lap the same place looks *mirrored*, so a
+naive encoding similarity would miss exactly the identifications that create the
+informative cycle. A learned, frame-invariant recogniser is Phase 6, and nothing
+measured here speaks to it.
+
 ## Next
 
-Phase 4: descent-based inference, GNC confidence weights, and the classification
-table — and with them G9 (fault classification), which this plan originally
-listed under Phase 3 in error, since it depends on machinery that lives in
-Phase 4's `observables.mojo`.
+Phase 4: descent-based Dirichlet inference, GNC confidence weights, and the
+classification table — and with them G9 (fault classification), which the plan
+originally listed under Phase 3 in error, since it depends on machinery that
+lives in Phase 4's `observables.mojo`.
 
 A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
 landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and

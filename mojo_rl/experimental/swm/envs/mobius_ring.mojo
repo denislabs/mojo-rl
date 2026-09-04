@@ -37,7 +37,7 @@ under test must never read them.
 """
 
 from std.collections import InlineArray
-from std.math import abs, cos, sin, sqrt
+from std.math import abs, cos, sin, sqrt, tanh
 
 from ..so_d import SqMat
 from ..rng import Rng
@@ -55,14 +55,37 @@ struct MobiusConfig(Copyable, ImplicitlyCopyable, Movable):
     var obs_noise: Float64
     var max_turn: Float64
     """Per-edge frame rotation is drawn from [-max_turn, +max_turn]."""
+    var obs_gain: Float64
+    """Pre-nonlinearity gain. Ignored when `nonlinear_obs` is False."""
+    var nonlinear_obs: Bool
+    """`obs = tanh(gain * mix @ latent) + noise` instead of a linear mixing.
+
+    A linear mixing leaves the landmark subspace linearly recoverable, so
+    hypothesis 4.0's "separable" holds EXACTLY there and P1 is answered under
+    the friendliest possible observation model. With the squash, recovering the
+    frame requires inverting a nonlinearity that has entangled landmark with
+    texture, which is the version of the question worth having an answer to.
+    """
 
     @staticmethod
     def default_mobius(world_seed: UInt64 = 20260904) -> Self:
-        return Self(True, world_seed, 0.02, 0.6)
+        return Self(True, world_seed, 0.02, 0.6, 1.0, False)
 
     @staticmethod
     def default_orientable(world_seed: UInt64 = 20260904) -> Self:
-        return Self(False, world_seed, 0.02, 0.6)
+        return Self(False, world_seed, 0.02, 0.6, 1.0, False)
+
+    @staticmethod
+    def nonlinear_mobius(
+        gain: Float64, world_seed: UInt64 = 20260904
+    ) -> Self:
+        return Self(True, world_seed, 0.02, 0.6, gain, True)
+
+    @staticmethod
+    def nonlinear_orientable(
+        gain: Float64, world_seed: UInt64 = 20260904
+    ) -> Self:
+        return Self(False, world_seed, 0.02, 0.6, gain, True)
 
 
 struct MobiusRing[
@@ -246,6 +269,10 @@ struct MobiusRing[
             var s = Scalar[Self.dtype](0)
             for c in range(Self.LATENT_DIM):
                 s += self.mix[r * Self.LATENT_DIM + c] * latent[c]
+            if self.cfg.nonlinear_obs:
+                s = Scalar[Self.dtype](
+                    tanh(self.cfg.obs_gain * Float64(s))
+                )
             obs[r] = s + Scalar[Self.dtype](
                 self.rng.normal() * self.cfg.obs_noise
             )
