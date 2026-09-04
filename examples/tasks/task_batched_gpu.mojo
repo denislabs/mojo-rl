@@ -113,6 +113,12 @@ def main() raises:
         env.reset_batch[N_ENVS](ctx, SEED)
         env.d.qpos.download(ctx)
         env.d.site_xpos.download(ctx)
+        # ⚠ SYNC BEFORE READING `.data`. `download` ENQUEUES a copy; the host
+        # array is not valid until the stream drains. Reading it straight away
+        # is a stale read, not a crash — the region frames would come from
+        # whatever the buffer held before the reset, and every lane would be
+        # sampled around the wrong site.
+        ctx.synchronize()
 
         # ── per lane: its task's tape, and its sampled placements ─────────
         var frames = List[RegionFrame]()
@@ -168,7 +174,24 @@ def main() raises:
         env.d.xpos.download(ctx)
         env.d.xquat.download(ctx)
         env.d.site_xpos.download(ctx)
-        var rew = env.reward_ptr()
+        ctx.synchronize()
+
+        # ⚠⚠ `reward_ptr()` IS A **DEVICE** POINTER ON THIS ENV.
+        # `Phyics3dBatchedEnv._reward` is a `DeviceBuffer[DT]`
+        # (`phyics3d_batched_env.mojo:266`) and `reward_ptr` hands back
+        # `mptr(self._reward.unsafe_ptr())`. Dereferencing it on the host is a
+        # segfault, not a wrong number — which is exactly what the first 5090
+        # run did, crashing after the sampler with a bare libc backtrace.
+        #
+        # ⚠ THE ABI IS THE TRAP. `BatchedEnv.reward_ptr` is documented as
+        # something a driver reads "in place", and the CPU-backed
+        # implementations in `training/batched_env.mojo` return a pointer into
+        # a host `List`. Same signature, two residencies; only this one needs
+        # a copy. A host caller must never assume which it has.
+        var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+        ctx.enqueue_copy(rew_h, env._reward)
+        ctx.synchronize()
+        var rew = rew_h.unsafe_ptr()
 
         var mismatch = 0
         var a_true = 0
