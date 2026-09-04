@@ -118,6 +118,7 @@ comptime AIn = Linear[ADIM, EW]
 comptime TIn = Linear[2 * EW, EW]
 comptime TOut = Linear[EW, EW]
 comptime AOut = Linear[EW, ADIM]
+comptime SProj = Linear[32, 960]
 
 comptime N_GROUPS = 9
 
@@ -205,6 +206,10 @@ def main() raises:
     var ti = TIn.make["cpu", Deterministic]()
     var to = TOut.make["cpu", Deterministic]()
     var ao = AOut.make["cpu", Deterministic]()
+    # ⚠ Present but FROZEN: TRAIN_STATE_PROJ defaults to False, so the walks
+    # skip it. It is still a parameter of both so that turning the regime on
+    # is a type change rather than a new call site.
+    var sp = SProj.make["cpu", Deterministic]()
 
     var kp = Tensor.alloc(PKV)
     var vp = Tensor.alloc(PKV)
@@ -247,7 +252,7 @@ def main() raises:
     var last = 0.0
     for s in range(STEPS):
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e, ai, ti, to, ao, None
+            e, ai, ti, to, ao, sp, None
         )
         var loss = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None)
         if s == 0:
@@ -256,7 +261,7 @@ def main() raises:
         if s % 30 == 0:
             print("      step", s, " loss", loss)
         adam_step_trainables["cpu", L, EW, EFF, W, KVW, ADIM](
-            opt, e, ai, ti, to, ao, None
+            opt, e, ai, ti, to, ao, sp, None
         )
     print("  [1] loss", first, "->", last, "  ratio",
           last / first)
@@ -349,7 +354,7 @@ def main() raises:
     var l0 = 0.0
     for s in range(20):
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e2, ai2, ti2, to2, ao2, None
+            e2, ai2, ti2, to2, ao2, sp, None
         )
         var loss = st2.run["cpu", P](
             e2, c2, den2, ai2, ti2, to2, ao2, x_t, u_t, valid, N_VALID,
@@ -359,7 +364,7 @@ def main() raises:
             f0 = loss
         l0 = loss
         adam_step_trainables["cpu", L, EW, EFF, W, KVW, ADIM](
-            opt0, e2, ai2, ti2, to2, ao2, None
+            opt0, e2, ai2, ti2, to2, ao2, sp, None
         )
     print("  [3] control at lr=0:", f0, "->", l0, " (must not move)")
     assert_true(
@@ -405,7 +410,7 @@ def main() raises:
             if _ggrad(g, t, e3, ai3, ti3, to3, ao3) != Scalar[DT](0):
                 live += 1
     zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-        e3, ai3, ti3, to3, ao3, None
+        e3, ai3, ti3, to3, ao3, sp, None
     )
     var left = 0
     var probed = 0
@@ -445,6 +450,7 @@ def main() raises:
     var tig = TIn.make["gpu", Deterministic](Optional(d))
     var tog = TOut.make["gpu", Deterministic](Optional(d))
     var aog = AOut.make["gpu", Deterministic](Optional(d))
+    var spg = SProj.make["gpu", Deterministic](Optional(d))
     for l in range(L):
         for i in range(PKV):
             kp.data[i] = Scalar[DT](((i * 31 + l * 7) % 13) - 6) * 0.11
@@ -488,22 +494,22 @@ def main() raises:
     var lc = 0.0
     for _ in range(10):
         zero_trainable_grads["gpu", L, EW, EFF, W, KVW, ADIM](
-            eg, aig, tig, tog, aog, Optional(d)
+            eg, aig, tig, tog, aog, spg, Optional(d)
         )
         lg = stg.run["gpu", P](
             eg, cg, deng, aig, tig, tog, aog, xg, ug, validg, N_VALID,
             Optional(d)
         )
         adam_step_trainables["gpu", L, EW, EFF, W, KVW, ADIM](
-            og, eg, aig, tig, tog, aog, Optional(d)
+            og, eg, aig, tig, tog, aog, spg, Optional(d)
         )
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e4, ai4, ti4, to4, ao4, None
+            e4, ai4, ti4, to4, ao4, sp, None
         )
         lc = st4.run["cpu", P](e4, c4, den4, ai4, ti4, to4, ao4, x_t, u_t,
                                valid, N_VALID, None)
         adam_step_trainables["cpu", L, EW, EFF, W, KVW, ADIM](
-            oc, e4, ai4, ti4, to4, ao4, None
+            oc, e4, ai4, ti4, to4, ao4, sp, None
         )
         var rel = abs(lg - lc) / lc
         if rel > worst_rel:

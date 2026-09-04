@@ -79,3 +79,10 @@ tests/deep_agents/smolvla/test_store_observation.mojo
 # Carries three measured ablations, including the two-source accumulation at
 # KR that leaves state_proj with 79% of a gradient.
 tests/deep_agents/smolvla/test_prefill_backward.mojo
+
+# V2 stage 7 — state_proj, the one trainable weight UPSTREAM of the frozen
+# tower. Its gradient arrives only after loss -> expert -> dL/d(cached K/V) ->
+# all sixteen VLM layers -> the prefix embeddings, with no VLM weight trained
+# anywhere along it. 256 weights against central differences of that whole
+# chain, plus the property that rows 6..31 (the state padding) can never move.
+tests/deep_agents/smolvla/test_state_proj_grad.mojo
