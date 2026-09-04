@@ -16,7 +16,11 @@ base=mojo_rl/envs/robots/assets/so_arm101.xml
 horizon=300
 control_freq=20
 
-slot=table:static:mojo_rl/tasks/assets/props/fixture.xml
+# ⚠ THE FIXTURE CARRIES ITS POSE. A static slot has no joint, so where it is
+# composed is where it stays — parking it would weld the table 50 m up and
+# take the region on its surface with it. 0.25 m out along +x is within the
+# SO-101's reach; z 0.30 puts the 1 cm-thick slab's top face at 0.31.
+slot=table:static:mojo_rl/tasks/assets/props/fixture.xml:0.25,0.0,0.30
 slot=brick:free:mojo_rl/tasks/assets/props/cube.xml
 slot=cube_a:free:mojo_rl/tasks/assets/props/cube.xml
 slot=cube_b:free:mojo_rl/tasks/assets/props/cube.xml

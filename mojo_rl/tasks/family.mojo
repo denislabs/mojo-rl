@@ -194,10 +194,21 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
         # identity and the key for state remap across a rebuild. `place()`
         # would invent `cube1_`; a family needs `brick_`, because that is what
         # a `.task` writes in `active=` and `goal=`.
-        var p = park_pos(f, i)
-        d.instances.append(
-            Instance(key, s.name + "_", p[0], p[1], p[2])
-        )
+        #
+        # ⚠⚠ A STATIC SLOT IS COMPOSED WHERE IT LIVES; ONLY A FREE ONE IS
+        # PARKED. Parking is BY POSE, and a static slot has no joint — so
+        # composing a fixture at the park pose welds it there forever, and the
+        # region attached to its site goes with it. `spec.SlotSpec` records
+        # what that looked like the first time.
+        var px = s.px
+        var py = s.py
+        var pz = s.pz
+        if not s.has_pose:
+            var p = park_pos(f, i)
+            px = p[0]
+            py = p[1]
+            pz = p[2]
+        d.instances.append(Instance(key, s.name + "_", px, py, pz))
 
     return d.to_mjcf(f.name)
 

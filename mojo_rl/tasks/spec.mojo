@@ -78,19 +78,62 @@ def slot_kind_name(k: Int) -> String:
 
 
 struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
-    """`slot=<name>:<kind>:<asset>` — one instantiable object in the family."""
+    """`slot=<name>:<kind>:<asset>[:x,y,z]` — one object in the family.
+
+    ⚠⚠ THE POSE IS FOR STATIC SLOTS AND IS REQUIRED ON THEM. A `static` slot
+    has NO JOINT, so it cannot be moved after composition — parking is by
+    pose, and a body with no dofs has no pose to rewrite. Composing a fixture
+    at the park pose therefore welds it 50 m in the air FOREVER, with the
+    region attached to its site up there and the sampler dutifully placing
+    props into the sky.
+
+    That is not hypothetical: it is what the first `so101_tabletop` family
+    did, and nothing caught it because every gate up to P2c CONSTRUCTED
+    geometry rather than simulating it. `table_fixture xpos=[10 0 50]`,
+    `jntnum=0`.
+
+    ⚠ AND A `free` SLOT MUST NOT CARRY ONE. Its compose-time pose is always
+    the park pose and its episode pose comes from the sampler, so a pose here
+    would be silently ignored — refused instead.
+    """
 
     var name: String
     var kind: Int
     var asset: String
+    var has_pose: Bool
+    var px: Float64
+    var py: Float64
+    var pz: Float64
 
     def __init__(out self, name: String, kind: Int, asset: String):
         self.name = name
         self.kind = kind
         self.asset = asset
+        self.has_pose = False
+        self.px = 0.0
+        self.py = 0.0
+        self.pz = 0.0
+
+    def __init__(
+        out self, name: String, kind: Int, asset: String,
+        px: Float64, py: Float64, pz: Float64,
+    ):
+        self.name = name
+        self.kind = kind
+        self.asset = asset
+        self.has_pose = True
+        self.px = px
+        self.py = py
+        self.pz = pz
 
     def describe(self) -> String:
-        return self.name + ":" + slot_kind_name(self.kind) + ":" + self.asset
+        var s = self.name + ":" + slot_kind_name(self.kind) + ":" + self.asset
+        if self.has_pose:
+            s += (
+                ":" + String(self.px) + "," + String(self.py)
+                + "," + String(self.pz)
+            )
+        return s^
 
 
 struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
@@ -337,19 +380,55 @@ def _unknown_key(key: String, lineno: Int, what: String, known: String) raises:
 
 
 def parse_slot(spec: String) raises -> SlotSpec:
-    """`<name>:<kind>:<asset>`."""
+    """`<name>:<kind>:<asset>[:x,y,z]`."""
     var parts = split_on(spec, String(":"))
-    if len(parts) != 3:
+    if len(parts) != 3 and len(parts) != 4:
         raise Error(
             "tasks: malformed slot '" + spec + "' — expected"
-            " '<name>:<kind>:<asset>', e.g. 'brick:free:props/brick.xml'"
+            " '<name>:<kind>:<asset>' or '<name>:<kind>:<asset>:x,y,z',"
+            " e.g. 'brick:free:props/brick.xml' or"
+            " 'table:static:props/table.xml:0.25,0,0.3'"
         )
     var name = String(String(parts[0]).strip())
     var kind = slot_kind_from_name(String(String(parts[1]).strip()))
     var asset = String(String(parts[2]).strip())
     if name.byte_length() == 0 or asset.byte_length() == 0:
         raise Error("tasks: slot has an empty name or asset: '" + spec + "'")
-    return SlotSpec(name^, kind, asset^)
+
+    if len(parts) == 3:
+        # ⚠ A STATIC SLOT WITHOUT A POSE IS REFUSED, not defaulted to the
+        # origin. The origin is inside the robot's base, so a defaulted
+        # fixture would intersect the arm — and the failure would be a scene
+        # that loads, simulates, and is wrong. See SlotSpec's header for the
+        # 50-m-in-the-air version of the same mistake.
+        if kind == SLOT_STATIC:
+            raise Error(
+                "tasks: static slot '" + name + "' has no pose. A static slot"
+                " has NO JOINT, so it cannot be moved after composition —"
+                " where it is composed is where it stays. Write"
+                " 'slot=" + name + ":static:" + asset + ":x,y,z'."
+            )
+        return SlotSpec(name^, kind, asset^)
+
+    if kind == SLOT_FREE:
+        raise Error(
+            "tasks: free slot '" + name + "' carries a pose. A free slot is"
+            " composed at the family's park pose and placed by the SAMPLER at"
+            " reset, so a pose here would be silently ignored. Drop it, or"
+            " make the slot static."
+        )
+    var n = split_on(String(String(parts[3]).strip()), String(","))
+    if len(n) != 3:
+        raise Error(
+            "tasks: slot '" + name + "' pose needs three numbers 'x,y,z', got"
+            " '" + String(parts[3]) + "'"
+        )
+    return SlotSpec(
+        name^, kind, asset^,
+        Float64(String(String(n[0]).strip())),
+        Float64(String(String(n[1]).strip())),
+        Float64(String(String(n[2]).strip())),
+    )
 
 
 def parse_region(spec: String) raises -> RegionSpec:

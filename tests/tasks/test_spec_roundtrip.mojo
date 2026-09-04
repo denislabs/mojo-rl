@@ -33,7 +33,7 @@ comptime FAMILY = String(
     "slot=brick:free:props/brick.xml\n"
     "slot=cube_a:free:props/cube.xml\n"
     "slot=box:free:props/box_small.xml\n"
-    "slot=table:static:props/table.xml\n"
+    "slot=table:static:props/table.xml:0.25,0.0,0.30\n"
     "\n"
     "park=10.0,0.0,50.0\n"
     "\n"
@@ -131,6 +131,12 @@ def main() raises:
     ta.check(
         f1.slots[3].kind == SLOT_STATIC, "the table parsed as STATIC"
     )
+    # ⚠ A STATIC SLOT CARRIES ITS OWN POSE, because it has no joint and so
+    # cannot be moved after composition. Parking one welds it wherever the
+    # park pose is — 50 m up, in the first version of this family, with the
+    # region on its surface and the sampler placing props into the sky.
+    ta.check(f1.slots[3].has_pose and f1.slots[3].pz == 0.30,
+             "the static slot keeps its composed pose")
     ta.check(f1.regions[0].has_rect, "region with a rectangle keeps it")
     ta.check(not f1.regions[1].has_rect, "region without one is the site extent")
     ta.check(f1.regions[0].x_min == -0.1, "a NEGATIVE rect bound survives")
@@ -185,6 +191,18 @@ def main() raises:
         String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
                "slot=a:free:x.xml\nslot=a:free:y.xml\n"),
         "a DUPLICATE slot name — two objects under one key", is_family=True,
+    )
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "slot=t:static:x.xml\n"),
+        "a STATIC slot with NO POSE — it would be welded at the park pose",
+        is_family=True,
+    )
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "slot=b:free:x.xml:0.1,0.2,0.3\n"),
+        "a FREE slot WITH a pose — it would be silently ignored",
+        is_family=True,
     )
     ta.refuses(
         String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"

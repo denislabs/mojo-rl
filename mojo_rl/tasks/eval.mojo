@@ -164,7 +164,10 @@ def eval_goal(
 
     for i in range(n):
         ref t = g.terms[i]
-        var r = False
+        # ⚠ NO INITIALISER: every branch below assigns, and the final `else`
+        # raises. A `= False` default would make an op this switch forgot
+        # evaluate as "goal not met" instead of failing loudly.
+        var r: Bool
 
         if t.op == OP_AND:
             r = val[t.a] and val[t.b]

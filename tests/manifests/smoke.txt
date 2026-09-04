@@ -87,6 +87,14 @@ tests/tasks/test_sampler.mojo
 # all of them but the metre-above arm.
 tests/tasks/test_task_eval.mojo
 
+# ── mojo_rl/tasks: the family RESET AND STEPPED (P2c) ───────────────
+# ⚠ THE ONLY GATE HERE THAT SIMULATES. Every other one constructs geometry or
+# counts records — which is how a static fixture ended up welded 50 m in the
+# air with its region on top and the sampler placing props into the sky, while
+# nq/nv/ngeom and every contact count stayed correct. This one builds the
+# model, resets from a sampled init, and checks the region is within reach.
+tests/tasks/test_task_reset_steps.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

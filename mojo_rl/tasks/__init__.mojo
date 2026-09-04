@@ -37,3 +37,7 @@ from .eval import (
     eval_goal, region_sites,
     pred_in_rect, pred_near, pred_above, pred_upright,
 )
+from .reset import (
+    SlotAddress, free_slot_addresses, reset_slots,
+    write_free_pose, write_free_vel_zero,
+)
