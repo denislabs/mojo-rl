@@ -91,3 +91,14 @@ tests/experimental/swm/test_swmh_faults.mojo
 # truth, and is a NO-OP on an unambiguous one — the leg that stops the churn
 # metric being gamed by a latch that simply never moves. <1s.
 tests/experimental/swm/test_swmh_latch.mojo
+# G13 + G14 — PHASE 5, planning through the seam. Goal-conditioned so the task
+# is GAUGE-FREE ("reach a state that looks like this" needs no name for
+# "left"). PARITY accuracy is the headline, not raw goal success: parity is
+# exactly what the double cover buys, and a parity-blind model can only guess
+# it. Planning is exhaustive over monotone walks rather than CEM, to separate
+# MODEL error from SEARCH error — the CEM step penalty is a path-length prior
+# that trades near goals against far ones, which is a property of the search.
+# G14: applying the monodromy twice computes H^2 = I and drives parity BELOW
+# chance while leaving cell tracking intact — asymmetric damage is the
+# signature. ~6s.
+tests/experimental/swm/test_swmh_planner.mojo

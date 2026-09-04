@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–4 complete — P1, P2 and P4 answered.** With learned encoders on
+**Status: Phases 0–5 complete — P1, P2, P4 answered; the planner works.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -9,7 +9,8 @@ E1 — and survives a **nonlinear** observation model up to 16 % saturation
 (G6b). The v1 cocycle loss is measured to be destructive or inert (G8).
 Inference-by-descent, the confidence weights and the classification table land
 with Phase 4, and the fault confusion matrix is clean: 40/40 in every cell,
-**zero false obstructions**.
+**zero false obstructions**. The planner gets the lap parity right **95.8 %** of
+the time where parity-blind baselines sit at chance.
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -51,6 +52,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `ablations.mojo` | the v1 arms (translations; free/orthogonal morphisms + cocycle) — **gates only** |
 | `sheaf_inference.mojo` | Dirichlet-energy descent over the frame channel + an exact solve to gate it |
 | `observables.mojo` | pre-consensus residual, GNC confidence, the §1.2 classification table, cross-cycle confirmation, the verdict latch |
+| `planner.mojo` | rollouts in edge coordinates, CEM + an exhaustive monotone planner, trust penalty |
 
 ## What was learned (Phase 0–1)
 
@@ -211,6 +213,44 @@ nominal edge at 0.25 and leaves nothing to distinguish "fine" from "doubtful"
 median-residual edge at 0.98 and is kept — which is also why the prototype's own
 weights sat at a uniform 0.82: a fixed `c̄` with no schedule.
 
+**The planner's claim is PARITY, not raw goal success.** The task is
+goal-conditioned, which makes it gauge-free: the encoder learns some basis, so
+"the landmark appears on the left" is a direction the planner cannot name, but
+"reach a state that looks like this" is well posed in any gauge. Over 3 training
+seeds × 40 episodes:
+
+| model | parity correct | cell | goal |
+|---|---|---|---|
+| SWM (orthogonal) | **115/120 = 95.8 %** | 99 | 95 |
+| translation (constant sheaf) | 58/120 = 48.3 % (chance) | 42 | 25 |
+| place lookup (no double cover) | 78/120 = 65.0 % | 12 | 3 |
+| SWM + monodromy applied twice | **35/120 = 29.2 %** | 48 | 23 |
+
+Parity is what the double cover buys and a parity-blind model can only guess it,
+so it is the headline; cell accuracy is reported beside it and is *not* the
+claim. Of SWM's failures, **9 in 10 are the right parity in the wrong cell** —
+the frame alone is a weak place code (adjacent cells differ by ~0.3 rad; the
+frame identifies the goal in ~93–95 % of episodes against ~98 % for frame +
+content). That residue is the concrete argument for the content channel, not a
+failure of the frame channel at its own job.
+
+The monodromy-twice ablation lands **below chance** (29.2 %), which is the tell:
+`H² = I` predicts the un-reflected frame, so it does not guess the parity — it
+systematically inverts it, while cell tracking largely survives (48 vs 23).
+
+**Planning is exhaustive over monotone walks, not CEM, and that was a
+measurement.** On a ring, forward `k ∈ [0, 2N)` reaches every double-cover state
+exactly once, so the optimum is a scan of `4N` rollouts. The CEM planner's step
+penalty turned out to be a path-length prior that trades near goals against far
+ones (penalty 0 → 14/14 far and 16/26 near; penalty 0.01 → 11/14 and 22/26).
+Those are properties of the search, and a gate on the world model should not be
+reading them.
+
+**Frame prediction error does not grow with rollout length** — flat at ~0.11
+from 1 to 24 steps, and lower at 24 (two laps, where `H² = I` lets errors
+cancel). Orthogonal transports rotate error rather than amplify it, so long
+imagined rollouts stay usable. I had assumed the opposite and measured it.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -228,14 +268,19 @@ naive encoding similarity would miss exactly the identifications that create the
 informative cycle. A learned, frame-invariant recogniser is Phase 6, and nothing
 measured here speaks to it.
 
-## Next
+## Next (Phase 6, unstarted)
 
-Phase 5: the planner in edge coordinates (CEM/MPPI, `u ← R_e u` with the content
-block alongside), a trust penalty on low-confidence edges, an intrinsic reward
-for closing unconfirmed cycles, and the E1 parity task against a translation
-baseline and a recurrent one. Note G14 in advance: the planner must **not** apply
-the monodromy twice — the edge transports already carry the reflection at the
-seam.
+The PCN content channel wired beside the frame channel — which the Phase 5
+numbers now give a concrete reason for, since SWM's residual failures are
+cell-level and the content channel is what resolves cells. Then: a learned,
+frame-invariant place recogniser (the acknowledged weak link, still an oracle);
+the 2D Klein bottle; the GPU port, once the CPU numbers are frozen as the
+reference; and CSCG with the P5 sample-efficiency comparison.
+
+**Not claimed anywhere in Phases 0–5:** a recurrent baseline. An RSSM or GRU can
+learn the parity bit, so that comparison is about sample efficiency at a matched
+budget — a study rather than a gate. What is claimed is structural: a model that
+cannot *represent* the seam cannot get the parity, whatever its capacity.
 
 A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
 landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and
