@@ -147,22 +147,52 @@ struct SmolVLABatchSampler[
         mut actions: Tensor,
         mut valid: Tensor,
         mut tasks: List[Int],
+        mut rows: List[Int],
+        mut raw_state: List[Float32],
+        lo: Int = 0,
+        hi: Int = -1,
     ) raises -> Int:
-        """Draw `B` rows. Returns `n_valid`, the count of in-episode steps.
+        """Draw `B` rows from `[lo, hi)`. Returns the in-episode step count.
 
-        ⚠ Every row is a legal anchor, including the last of an episode — the
-        reference samples over all frames and pads. Restricting to rows with
-        `CHUNK` steps left would silently drop the ends of every episode,
-        which is where the interesting part of a manipulation task is.
+        `rows` receives the drawn anchors and `raw_state` the UNNORMALISED
+        pose, because `SmolVLAPolicy.build_prefix` normalises its own — asking
+        this to hand over a normalised state as well as a raw one would be the
+        same rule in two places, and the policy's is the one the checkpoint
+        was fit with.
+
+        ⚠ `hi = -1` means the whole store. A caller holding out episodes gives
+        a range; this deliberately knows nothing about splits, because a
+        sampler that owned the split would be the only thing that could check
+        it.
+
+        ⚠ Every row in the range is a legal anchor, including the last of an
+        episode — the reference samples over all frames and pads. Restricting
+        to rows with `CHUNK` steps left would silently drop the ends of every
+        episode, which is where the interesting part of a manipulation task
+        is.
         """
         state.ensure(Self.SN)
         actions.ensure(Self.AN)
         valid.ensure(Self.VN)
         tasks.clear()
+        rows.clear()
+        raw_state.clear()
+
+        var top = hi if hi >= 0 else self.store.n_rows()
+        if lo < 0 or top > self.store.n_rows() or lo >= top:
+            raise Error(
+                "SmolVLABatchSampler.sample: bad row range [" + String(lo)
+                + ", " + String(top) + ") over " + String(self.store.n_rows())
+                + " rows"
+            )
+        var span = top - lo
 
         var n_valid = 0
         for b in range(Self.B):
-            var g = Int(_splitmix64(self.rng) % UInt64(self.store.n_rows()))
+            var g = lo + Int(_splitmix64(self.rng) % UInt64(span))
+            rows.append(g)
+            for j in range(Self.SDIM):
+                raw_state.append(Float32(self.qpos[g * Self.SDIM + j]))
             var ep = self.store.episodes.episode_of(g)
             var ep_end = self.store.episodes.end_of(ep)
             tasks.append(Int(self.task_index[g]))

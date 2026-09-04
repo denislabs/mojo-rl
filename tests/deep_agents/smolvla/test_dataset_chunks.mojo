@@ -151,13 +151,15 @@ def main() raises:
     var acts = Tensor.alloc(B * CHUNK * PAD)
     var valid = Tensor.alloc(B * CHUNK)
     var tasks = List[Int]()
+    var rows = List[Int]()
+    var rawst = List[Float32]()
 
     var drawn = 0
     var padded_seen = 0
     var mask_wrong = 0
     var padcol_nonzero = 0
     for _ in range(200):
-        var nv = sm.sample(state, acts, valid, tasks)
+        var nv = sm.sample(state, acts, valid, tasks, rows, rawst)
         assert_equal(len(tasks), B, "one task index per batch element")
         var counted = 0
         for i in range(B * CHUNK):
@@ -206,7 +208,7 @@ def main() raises:
     var zero_would_differ = 0
     var worst_gap = Scalar[DT](0)
     for _ in range(4000):
-        var nv = sm.sample(state, acts, valid, tasks)
+        var nv = sm.sample(state, acts, valid, tasks, rows, rawst)
         _ = nv
         for b in range(B):
             # recover the anchor from the first action value: 100*row + 1
@@ -265,6 +267,52 @@ def main() raises:
         tails, ROWS,
         "some row was never drawn as an anchor — the sampler cannot reach"
         " part of the dataset",
+    )
+
+    # ── [5] the row range, which is what a train/val split rests on ──────
+    # ⚠ A sampler that ignored `lo`/`hi` would draw held-out frames into the
+    # training set, and the held-out loss would then be measuring
+    # memorisation. Nothing downstream can see that: the curve still falls.
+    var lo = L0
+    var hi = L0 + L1
+    var out_of_range = 0
+    var in_range = 0
+    var rows2 = List[Int]()
+    var raw2 = List[Float32]()
+    for _ in range(300):
+        var nv2 = sm.sample(state, acts, valid, tasks, rows2, raw2, lo, hi)
+        _ = nv2
+        for b in range(B):
+            in_range += 1
+            if rows2[b] < lo or rows2[b] >= hi:
+                out_of_range += 1
+    print("  [5] range [", lo, ",", hi, "): drew", in_range, " outside",
+          out_of_range)
+    assert_true(
+        out_of_range == 0,
+        "the sampler drew a row outside the range it was given — a held-out"
+        " episode would be trained on",
+    )
+    # and `rows` must actually name the row the data came from
+    var row_mismatch = 0
+    var checked_rows = 0
+    for _ in range(200):
+        var nv3 = sm.sample(state, acts, valid, tasks, rows2, raw2)
+        _ = nv3
+        for b in range(B):
+            checked_rows += 1
+            # action[row][0] is 100*row + 1
+            var want = Scalar[DT](100 * rows2[b] + 1)
+            if acts.data[b * CHUNK * PAD] != want:
+                row_mismatch += 1
+            # raw_state[row][0] is 10*row + 1
+            if raw2[b * SDIM] != Float32(10 * rows2[b] + 1):
+                row_mismatch += 1
+    print("      `rows` vs the drawn data: compared", 2 * checked_rows,
+          " mismatched", row_mismatch)
+    assert_true(
+        row_mismatch == 0,
+        "`rows` does not name the row the actions and state came from",
     )
 
     remove(path)

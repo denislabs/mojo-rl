@@ -36,7 +36,7 @@ from .vision import (
 )
 from .text import (
     SMOLLM_DIM, SMOLLM_KV_W, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, SMOLLM_LAYERS,
-    SMOLLM_FF, SmolVLMTextLayers,
+    SMOLLM_FF, SMOLLM_HEADS, SMOLLM_THETA, SmolVLMTextLayers,
 )
 from .heads import SMOLVLA_CONNECTOR_IN, SMOLVLA_EXPERT_W, SMOLVLA_ACTION_DIM
 from .expert import SmolVLAExpert, EXPERT_FF
@@ -171,6 +171,11 @@ struct SmolVLAActionSampler[
     STEPS: Int = 10,
     B: Int = 1,
     LAYERS: Int = SMOLLM_LAYERS,
+    # ⚠ Carried only so the sampler accepts a RECORDING denoise driver. The
+    # ten Euler steps are the same computation either way — recording changes
+    # where a layer writes, never what it computes — so a policy built for
+    # training can still be asked for an action.
+    REC: Bool = False,
 ](Movable):
     """The ten-step Euler loop, with `embed_suffix` and `action_out` inside it.
 
@@ -252,7 +257,11 @@ struct SmolVLAActionSampler[
             Self.LAYERS, P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
             Self.B,
         ],
-        mut denoise: SmolVLADenoise[P, Self.CHUNK, Self.B, Self.LAYERS],
+        mut denoise: SmolVLADenoise[
+            P, Self.CHUNK, Self.B, Self.LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF,
+            SMOLLM_DIM, SMOLLM_HEADS, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
+            SMOLLM_THETA, 2, SMOLLM_KV_W, Self.REC,
+        ],
         mut action_in: Linear[Self.ADIM, Self.EW],
         mut time_mlp_in: Linear[2 * Self.EW, Self.EW],
         mut time_mlp_out: Linear[Self.EW, Self.EW],
@@ -548,6 +557,12 @@ struct SmolVLAPolicy[
     B: Int = 1,
     LAYERS: Int = SMOLLM_LAYERS,
     VIS_LAYERS: Int = SIGLIP_LAYERS,
+    # V2. False is inference: one scratch pool per driver, nothing kept. True
+    # makes both drivers record their per-layer activations so `backward` can
+    # walk them. It costs ~320 MB of tape at the published depths and changes
+    # no arithmetic — `test_denoise_tape.mojo` demands the outputs be
+    # bit-identical either way.
+    RECORD: Bool = False,
 ](Movable):
     """Every component of SmolVLA in one object: pixels and a pose in, joint
     angles out.
@@ -610,11 +625,19 @@ struct SmolVLAPolicy[
     comptime Cache = SmolVLAKVCache[
         Self.L, Self.P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, Self.B
     ]
-    comptime Pre = SmolVLAPrefill[Self.P, Self.CHUNK, Self.B, Self.LAYERS]
-    comptime Den = SmolVLADenoise[Self.P, Self.CHUNK, Self.B, Self.LAYERS]
+    comptime Pre = SmolVLAPrefill[
+        Self.P, Self.CHUNK, Self.B, Self.LAYERS, SMOLLM_DIM, SMOLLM_FF,
+        SMOLLM_HEADS, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, SMOLLM_THETA,
+        Self.RECORD,
+    ]
+    comptime Den = SmolVLADenoise[
+        Self.P, Self.CHUNK, Self.B, Self.LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF,
+        SMOLLM_DIM, SMOLLM_HEADS, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
+        SMOLLM_THETA, 2, SMOLLM_KV_W, Self.RECORD,
+    ]
     comptime Sam = SmolVLAActionSampler[
         Self.CHUNK, SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W, Self.STEPS, Self.B,
-        Self.LAYERS,
+        Self.LAYERS, Self.RECORD,
     ]
     comptime Prefix = SmolVLAPrefixEmbed[
         Self.N_CAM, Self.N_LANG, Self.B, SMOLLM_DIM, Self.IMG_TOK,
