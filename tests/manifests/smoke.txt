@@ -113,6 +113,14 @@ tests/tasks/test_task_tape.mojo
 # test would pass that.
 tests/tasks/test_tape_gpu_parity.mojo
 
+# ── data: the manifest's task table, BYTE-EXACT ─────────────────────
+# ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
+# `parse_manifest` strips every value, so the two things that break it are a
+# LINE BREAK and EDGE WHITESPACE — and a per-byte `chr` corrupts anything
+# non-ASCII. A gate that only round-tripped "Grab the green cube" passes on an
+# escaper that handles none of them.
+tests/data/test_manifest_tasks.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

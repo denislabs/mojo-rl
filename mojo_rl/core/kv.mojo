@@ -22,18 +22,29 @@ recorded shape. The one field that is legitimately human text — a task's
 
 
 def split_on(s: String, sep: String) -> List[String]:
-    """Every field of `s` between single-byte `sep`. Empty fields are kept."""
+
+    """Every field of `s` between single-byte `sep`. Empty fields are kept.
+
+    ⚠⚠ BYTES, NOT `chr` PER BYTE. `cur += chr(Int(bytes[i]))` is the obvious
+    spelling and it CORRUPTS any value above 127: `chr` yields the CODEPOINT
+    of that byte value, which re-encodes as two bytes, so "日本語" comes back
+    as mojibake. This reader carried that bug for as long as it has existed —
+    every non-ASCII value in every manifest read back wrong — and it surfaced
+    only when a byte-exact task string was finally put through it.
+    """
     var out = List[String]()
-    var cur = String()
+    var cur = List[UInt8]()
     var bytes = s.as_bytes()
     var sb = sep.as_bytes()[0]
     for i in range(len(bytes)):
         if bytes[i] == sb:
-            out.append(cur^)
-            cur = String()
+            cur.append(0)
+            out.append(String(unsafe_from_utf8_ptr=cur.unsafe_ptr()))
+            cur = List[UInt8]()
         else:
-            cur += chr(Int(bytes[i]))
-    out.append(cur^)
+            cur.append(bytes[i])
+    cur.append(0)
+    out.append(String(unsafe_from_utf8_ptr=cur.unsafe_ptr()))
     return out^
 
 
@@ -44,6 +55,14 @@ def split_once(s: String, sep: String) -> List[String]:
     `language=Put the brick in the box, then stop` has no `=`, but a region's
     `region=table:site:table_surface:-0.1,-0.15,0.1,0.15` is split on `:` by a
     caller that must not lose the negative numbers to a greedy split.
+
+
+    ⚠⚠ BYTES, NOT `chr` PER BYTE. `cur += chr(Int(bytes[i]))` is the obvious
+    spelling and it CORRUPTS any value above 127: `chr` yields the CODEPOINT
+    of that byte value, which re-encodes as two bytes, so "日本語" comes back
+    as mojibake. This reader carried that bug for as long as it has existed —
+    every non-ASCII value in every manifest read back wrong — and it surfaced
+    only when a byte-exact task string was finally put through it.
     """
     var out = List[String]()
     var bytes = s.as_bytes()
@@ -55,14 +74,16 @@ def split_once(s: String, sep: String) -> List[String]:
             break
     if cut < 0:
         return out^
-    var head = String()
+    var head = List[UInt8]()
     for i in range(cut):
-        head += chr(Int(bytes[i]))
-    var tail = String()
+        head.append(bytes[i])
+    head.append(0)
+    var tail = List[UInt8]()
     for i in range(cut + 1, len(bytes)):
-        tail += chr(Int(bytes[i]))
-    out.append(head^)
-    out.append(tail^)
+        tail.append(bytes[i])
+    tail.append(0)
+    out.append(String(unsafe_from_utf8_ptr=head.unsafe_ptr()))
+    out.append(String(unsafe_from_utf8_ptr=tail.unsafe_ptr()))
     return out^
 
 
