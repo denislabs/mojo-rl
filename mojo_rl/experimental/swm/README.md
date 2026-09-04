@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–10 complete, 26 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
+**Status: Phases 0–11 complete, 28 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -613,15 +613,63 @@ construction. The constraint is what makes the class **exact** rather than
 usually right, and G8 measured where the other road ends (`det` −1.00 → −0.02
 under a cocycle loss).
 
-## Open questions after Phase 10
+## What was learned (Phase 11 — the two residues, both answered)
 
-1. **Global symmetry** (from Phase 8): a quotient with no successor conflict is
-   a consistent world to the graph; only the frame transports disagree, and the
-   encoder co-adapts. Whether the transport residual *vector* is bimodal on a
-   merged entry is unmeasured and is the only lead.
-2. **Gauge coincidence** (Phase 7): present in any dimension, governed by the
-   frames' angular spread against the tolerance. A second transported channel
-   would shrink it geometrically; not built.
+**A global symmetry is refutable, by the transports rather than the graph
+(G29).** Under `(x, y) ~ (x + W/2, y)` the label graph has *zero* successor
+conflicts: the quotient is a consistent world and every discrete check passes.
+The residual norm cannot help either, and now for a stated reason rather than
+a measurement — under a compromise fit `R`, place `a`'s residual is
+`(R_a − R)u` and place `b`'s is `(R_b − R)u`, both **linear in `u`**, hence
+zero-mean and equal in magnitude. Clustering residual vectors is provably
+hopeless; the two places obey different linear *relations*, so the signal is in
+the joint `(u, ε)` and reading it needs a mixture over **maps**:
+
+| | residual drop | assignment purity vs true place |
+|---|---|---|
+| globally aliased | **0.52** | **0.92** |
+| no aliasing (control) | 0.22 | — |
+
+The control is what makes it a measurement: a second transport always fits
+better, so the question is whether it fits *much* better where there really are
+two places. **Recorded gap**: detection is not yet a map. Component indices are
+arbitrary per `(label, action)` slot, so per-slot splits do not compose (27
+clones at 0.75 purity, 14 still merged). Aligning them needs the flat bundle's
+commuting-square constraint, `R_y(next_x) R_x(p) = R_x(next_y) R_y(p)`, and
+that is not built.
+
+**Gauge coincidence shrinks with the FIBRE's dimension (G30).** G19 refuted the
+base dimension as a remedy. The fibre is a different matter: in `O(2)` a
+holonomy is one angle and a walk returns near the identity often; in `O(D)` it
+wanders a `D(D−1)/2`-dimensional group. Planted ring, every non-returning walk
+enumerated as a candidate false closure, tolerance scaled as `√D` because
+`‖H − I‖_F` of a random element does:
+
+| D | false closures within tolerance of `{I, M}` | true closures accepted |
+|---|---|---|
+| 2 | 59 % | 36/36 |
+| 3 | 9 % | 36/36 |
+| 4 | **0 %** | 36/36 |
+| 6 | **0 %** | 36/36 |
+
+So the residue Phase 7 recorded as irreducible is a two-dimensional artefact:
+a four-dimensional frame removes it. The true-closure column is the control
+that stops a falling rate from meaning "the test rejects everything" — and it
+earned its place, because the first version of this gate cancelled generators
+by summing them, which is an **abelian** trick. In `O(D>2)` the
+Baker-Campbell-Hausdorff residue left 0/36 true closures accepted, and the
+control caught it. Built with a frame per cell instead, which telescopes
+exactly, as the flat Klein bundle does.
+
+## Open questions after Phase 11
+
+1. **Compose the global-symmetry refutation into a map**: align the per-slot
+   mixture components with the commuting-square constraint. The detection is
+   done; the bookkeeping is not.
+2. **A higher-dimensional frame end to end.** G30 is geometry on planted
+   transports. Whether a learned `D = 4` frame keeps its landmark R² and its
+   `Z/2` class on E1 is untested, and it is the cheap way to buy the residue
+   away.
 3. **Curved bundles**, and the deferred engineering (GPU, float32 `nn`).
 
 ## Open questions after Phase 8

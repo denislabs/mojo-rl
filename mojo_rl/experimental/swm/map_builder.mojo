@@ -30,6 +30,7 @@ from std.math import sqrt
 from .so_d import SqMat
 from .procrustes import PairBatch, procrustes_o_d
 from .place_graph import PlaceGraph, Edge
+from .rng import Rng
 
 
 struct WalkRecord(Copyable, Movable):
@@ -388,3 +389,154 @@ def count_reversing(g: PlaceGraph[2, DType.float64]) raises -> Int:
         if g.holonomy_det(cyc[i]) < 0:
             n += 1
     return n
+
+
+@fieldwise_init
+struct MixtureFit(Copyable, Movable):
+    """Result of splitting one `(label, action)` slot into `K` transports."""
+
+    var assign: List[Int]
+    var res_1: Float64
+    """Mean residual of the single best transport over all pairs."""
+    var res_k: Float64
+    """...and of the `K`-component fit. The DROP is the signal."""
+    var n_pairs: Int
+    var counts: List[Int]
+
+
+def fit_transport_mixture[
+    D: Int, dtype: DType = DType.float64
+](
+    xs: List[Float64],
+    ys: List[Float64],
+    k: Int,
+    seed: UInt64,
+    rounds: Int = 25,
+    restarts: Int = 4,
+) raises -> MixtureFit:
+    """Split observed transitions into `k` transports by alternating fit and
+    assignment — k-means over `O(D)` maps rather than over points.
+
+    This is the last lead on the GLOBAL-SYMMETRY ambiguity (Phase 8): when a
+    texture symmetry merges two places, the label graph has NO successor
+    conflict — the quotient is a consistent world — so nothing discrete can
+    refute it. Only the frame transports disagree, and G18 measured that the
+    residual NORM is not bimodal (worst pair ratio 1.01).
+
+    The norm cannot be bimodal, and that is not a limitation of the
+    measurement: the residual of place `a` under a compromise fit `R` is
+    `(R_a - R) u`, LINEAR in `u`, so both places' residuals are zero-mean
+    ellipses and neither their means nor their magnitudes separate. The signal
+    is in the JOINT `(u, epsilon)` — the two places obey different linear
+    relations — which is exactly what a mixture over MAPS reads and a mixture
+    over points cannot.
+
+    Restarts because the objective is non-convex; the best final residual wins.
+    """
+    var n = len(xs) // D
+    var best = MixtureFit(List[Int](), 0.0, 0.0, n, List[Int]())
+    var best_res = 1e300
+    var rng = Rng(seed)
+
+    # one-component reference
+    var one = PairBatch[D, dtype]()
+    for t in range(n):
+        var xa = InlineArray[Scalar[dtype], D](fill=0)
+        var ya = InlineArray[Scalar[dtype], D](fill=0)
+        for i in range(D):
+            xa[i] = Scalar[dtype](xs[t * D + i])
+            ya[i] = Scalar[dtype](ys[t * D + i])
+        one.push(xa, ya)
+    var r1 = procrustes_o_d[D, dtype](one)
+    var res1 = Float64(0)
+    for t in range(n):
+        var d = Float64(0)
+        for i in range(D):
+            var p = Float64(0)
+            for j in range(D):
+                p += Float64(r1[i, j]) * xs[t * D + j]
+            d += (p - ys[t * D + i]) * (p - ys[t * D + i])
+        res1 += sqrt(d)
+    res1 /= Float64(n)
+
+    for _ in range(restarts):
+        var assign = List[Int](length=n, fill=0)
+        for t in range(n):
+            assign[t] = Int(rng.uniform() * Float64(k)) % k
+        var res_k = 1e300
+        for _ in range(rounds):
+            # fit each component
+            var rs = List[SqMat[D, dtype]]()
+            for c in range(k):
+                var b = PairBatch[D, dtype]()
+                for t in range(n):
+                    if assign[t] != c:
+                        continue
+                    var xa = InlineArray[Scalar[dtype], D](fill=0)
+                    var ya = InlineArray[Scalar[dtype], D](fill=0)
+                    for i in range(D):
+                        xa[i] = Scalar[dtype](xs[t * D + i])
+                        ya[i] = Scalar[dtype](ys[t * D + i])
+                    b.push(xa, ya)
+                if b.count() < D + 1:
+                    rs.append(r1.copy())
+                else:
+                    rs.append(procrustes_o_d[D, dtype](b))
+            # reassign
+            var total = Float64(0)
+            for t in range(n):
+                var bd = 1e300
+                var ba = 0
+                for c in range(k):
+                    var d = Float64(0)
+                    for i in range(D):
+                        var p = Float64(0)
+                        for j in range(D):
+                            p += Float64(rs[c][i, j]) * xs[t * D + j]
+                        d += (p - ys[t * D + i]) * (p - ys[t * D + i])
+                    d = sqrt(d)
+                    if d < bd:
+                        bd = d
+                        ba = c
+                assign[t] = ba
+                total += bd
+            res_k = total / Float64(n)
+        if res_k < best_res:
+            best_res = res_k
+            var counts = List[Int](length=k, fill=0)
+            for t in range(n):
+                counts[assign[t]] += 1
+            best = MixtureFit(assign.copy(), res1, res_k, n, counts^)
+    return best^
+
+
+def assignment_purity(assign: List[Int], truth: List[Int], k: Int) -> Float64:
+    """Fraction of pairs in the majority true class of their component."""
+    var vals = List[Int]()
+    for t in range(len(truth)):
+        var seen = False
+        for v in range(len(vals)):
+            if vals[v] == truth[t]:
+                seen = True
+                break
+        if not seen:
+            vals.append(truth[t])
+    var nt = len(vals)
+    if nt == 0 or len(assign) == 0:
+        return 0.0
+    var tab = List[Int](length=k * nt, fill=0)
+    for t in range(len(assign)):
+        var ti = 0
+        for v in range(nt):
+            if vals[v] == truth[t]:
+                ti = v
+                break
+        tab[assign[t] * nt + ti] += 1
+    var good = 0
+    for c in range(k):
+        var best = 0
+        for v in range(nt):
+            if tab[c * nt + v] > best:
+                best = tab[c * nt + v]
+        good += best
+    return Float64(good) / Float64(len(assign))

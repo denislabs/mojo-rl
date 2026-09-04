@@ -107,3 +107,4 @@ from .cscg import Cscg, dense_labels
 from .graph_planner import GraphPlan, plan_double_cover, nearest_centroid, clone_centroids
 from .envs.pendulum_swm import PendulumSwm, PendulumSwmConfig
 from .ablations import fit_free_lsq, orthogonality_defect
+from .map_builder import MixtureFit, fit_transport_mixture, assignment_purity

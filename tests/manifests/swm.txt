@@ -224,3 +224,28 @@ tests/experimental/swm/test_pendulum_transfer.mojo
 # det sign still carries the Z/2 class (4/4, 4/4) but |det| erodes to 0.85 —
 # the constraint is what makes the class exact rather than usually right. ~90s.
 tests/experimental/swm/test_swmh_matched_control.mojo
+# G29 — PHASE 11, refuting a GLOBAL symmetry, which the graph provably cannot.
+# Under (x,y) ~ (x+W/2,y) the label graph has ZERO successor conflicts: the
+# quotient is a consistent world. The residual NORM cannot help either, and
+# not for want of measuring — under a compromise fit both places' residuals
+# are (R_a - R)u and (R_b - R)u, LINEAR in u, hence zero-mean and equal in
+# magnitude. The signal is in the joint (u, eps), so it needs a mixture over
+# MAPS: k-means whose centres are O(2) transports. Result: residual drop 0.52
+# and assignment purity 0.92 against the true place, vs a drop of 0.22 on a
+# world with nothing to split (the control that stops a richer model from
+# always "finding" two places). RECORDED GAP: detection is not yet a map —
+# component indices are arbitrary per slot, so per-slot splits do not compose
+# (27 clones at 0.75 purity); the fix is the flat bundle's commuting-square
+# constraint and it is not built. ~2 min.
+tests/experimental/swm/test_swmh_global_symmetry.mojo
+# G30 — PHASE 11, gauge coincidence against the FIBRE's dimension. G19 refuted
+# the base dimension as a remedy; this measures the fibre, and needs no
+# learning. Planted O(D) ring, every non-returning walk enumerated as a
+# candidate false closure: 59% land within tolerance of {I, M} at D=2, 9% at
+# D=3, 0% at D=4 and D=6, while every TRUE closure is still accepted (36/36 at
+# every D — the control that stops a falling rate meaning "rejects
+# everything"). The first version summed generators to cancel, which is an
+# ABELIAN trick: in O(D>2) the BCH residue left 0/36 true closures accepted,
+# and the control caught it. Built with a frame per cell instead, which
+# telescopes exactly. <1s.
+tests/experimental/swm/test_gauge_coincidence_dim.mojo
