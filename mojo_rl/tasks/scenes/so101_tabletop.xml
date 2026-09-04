@@ -10,7 +10,7 @@
     <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
       <attach model="so_arm101" prefix="robot_"/>
     </frame>
-    <frame pos="0.25 0.0 0.3" quat="1.0 0.0 0.0 0.0">
+    <frame pos="0.25 0.0 0.01" quat="1.0 0.0 0.0 0.0">
       <attach model="fixture" prefix="table_"/>
     </frame>
     <frame pos="10.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">

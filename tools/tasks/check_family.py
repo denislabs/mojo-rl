@@ -98,6 +98,84 @@ def main() -> int:
         print("  FAIL: the composed family does not carry every slot")
         return 1
 
+    # ── ⚠⚠ A STATIC FIXTURE MUST BE SUPPORTED ────────────────────────────
+    # This family has now had its table wrong TWICE, and neither time did a
+    # count, a contact check or a reachability analysis notice:
+    #
+    #   1. parked at z=50 with the region on its surface (a static slot has no
+    #      joint, so parking welds it there forever);
+    #   2. floating at z=0.30 — a 30x30x2 cm plate in the MIDDLE of the arm's
+    #      workspace, held up by nothing. The gripper SITE could reach the
+    #      props on it (10.8 mm from a sampled pose), so reachability said
+    #      yes, while the arm had to reach over a slab it collides with and
+    #      could equally pass under.
+    #
+    # A static fixture floating in mid-air is a modelling error whatever its
+    # height. Nothing holds it up, so the scene depicts something impossible.
+    # The check is cheap: its lowest geom must sit on the floor plane.
+    print("  static fixtures:")
+    floating = 0
+    for name, kind, _asset, *rest in [
+        (s[0], s[1], s[2], *s[3:]) for s in fam_d["slots"]
+    ]:
+        if kind != "static":
+            continue
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, f"{name}_fixture")
+        if b < 0:
+            # the body is <prefix><asset body name>; find it by prefix
+            b = next(
+                (i for i in range(m.nbody)
+                 if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, i) or "")
+                 .startswith(name + "_")),
+                -1,
+            )
+        if b < 0:
+            print(f"    {name}: NO BODY — scene stale?")
+            floating += 1
+            continue
+        zs = [d.geom_xpos[gi][2] - m.geom_size[gi][2]
+              for gi in range(m.ngeom) if m.geom_bodyid[gi] == b]
+        bottom = min(zs) if zs else None
+        ok = bottom is not None and abs(bottom) < 0.011
+        print(f"    {name}: bottom face z = {bottom:+.3f}"
+              f"   {'rests on the floor' if ok else 'FLOATING'}")
+        if not ok:
+            floating += 1
+    if floating:
+        print("  FAIL: a static fixture is held up by nothing. A static slot"
+              " has no joint, so this is where it stays — see the pose note in"
+              " the .family.")
+        bad += 1
+
+    # ── the region is somewhere the arm can actually work ─────────────────
+    # ⚠ REACHABILITY IS NECESSARY, NOT SUFFICIENT — the floating table passed
+    # this. Kept because it catches the other half: a region placed outside
+    # the arm's envelope entirely, which reads as a policy that never learns.
+    grip = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "robot_gripperframe")
+    if grip >= 0:
+        import numpy as np
+        rng = np.random.default_rng(0)
+        lo, hi = m.jnt_range[:6, 0], m.jnt_range[:6, 1]
+        pts = []
+        dd = mujoco.MjData(m)
+        for _ in range(4000):
+            dd.qpos[:6] = rng.uniform(lo, hi)
+            mujoco.mj_forward(m, dd)
+            pts.append(dd.site_xpos[grip].copy())
+        pts = np.array(pts)
+        print("  region reachability (4k sampled arm poses):")
+        for i in range(m.nsite):
+            nm = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_SITE, i) or ""
+            if not nm.endswith("_surface"):
+                continue
+            tgt = d.site_xpos[i].copy()
+            tgt[2] += 0.02          # a prop resting on it
+            mm = np.linalg.norm(pts - tgt, axis=1).min() * 1000
+            print(f"    {nm}: nearest gripper pose {mm:.1f} mm")
+            if mm > 50.0:
+                print("    FAIL: outside the arm's reachable envelope")
+                bad += 1
+
     # ⚠ THE TREE COUNT IS THE COST MODEL, and it is why this file prints it.
     # Every free slot is its own kinematic tree, which is exactly the
     # structure the block-diagonal solver work exploits

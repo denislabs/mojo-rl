@@ -107,9 +107,17 @@ def main() raises:
     var ts = rsites[0]
     print("  region 'table_top' site at (", sp[ts * 3], ",",
           sp[ts * 3 + 1], ",", sp[ts * 3 + 2], ")")
-    # ⚠ THE ARM'S REACH IS ~0.35 m. A region beyond it is a task no policy can
-    # do, and the failure looks like a training problem rather than a scene
-    # one. This is the assertion the 50-m table would have failed.
+    # ⚠ A COARSE BOUND, AND IT IS NOT THE REAL CHECK. It catches a region
+    # flung out of the workspace — the 50-m table — and nothing subtler. It
+    # did NOT catch the table floating at z=0.30, because the gripper site
+    # could reach the props on it while the arm had to work around a slab
+    # held up by nothing.
+    #
+    # The real checks are MuJoCo-side, in `tools/tasks/check_family.py`: a
+    # static fixture must REST ON SOMETHING, and each region must be within a
+    # sampled reachable envelope. Both are asserted there because both need
+    # 4k forward-kinematics solves and a geom-extent walk, which belong with
+    # the oracle rather than here.
     var rx = sp[ts * 3]
     var ry = sp[ts * 3 + 1]
     var rz = sp[ts * 3 + 2]

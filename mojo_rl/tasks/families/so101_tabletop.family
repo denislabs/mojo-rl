@@ -18,9 +18,23 @@ control_freq=20
 
 # ⚠ THE FIXTURE CARRIES ITS POSE. A static slot has no joint, so where it is
 # composed is where it stays — parking it would weld the table 50 m up and
-# take the region on its surface with it. 0.25 m out along +x is within the
-# SO-101's reach; z 0.30 puts the 1 cm-thick slab's top face at 0.31.
-slot=table:static:mojo_rl/tasks/assets/props/fixture.xml:0.25,0.0,0.30
+# take the region on its surface with it.
+#
+# ⚠⚠ z 0.01, NOT 0.30 — A LOW PLATFORM ON THE FLOOR, NOT A SHELF AT CHEST
+# HEIGHT. The 1 cm half-thickness puts the bottom face on the floor plane and
+# the top at z 0.02, so props rest at 0.04.
+#
+# The first version used 0.30 and it was wrong in a way reachability analysis
+# alone does NOT catch: the gripper SITE can reach (0.25, 0, 0.33) — measured,
+# 10.8 mm from a sampled pose — but the slab is a 30x30x2 cm plate floating in
+# the MIDDLE of the arm's workspace. The arm has to reach over it, its links
+# collide with it on most approach paths, and because nothing holds it up the
+# arm can also pass UNDER it. "Can the end effector be at that point" and "can
+# the arm work there" are different questions, and only the second one matters.
+#
+# ⚠ SO-101 IS A DESK ARM BOLTED TO A SURFACE. Its base is at z 0 and the work
+# surface belongs at z 0 too — the props go beside it, not above it.
+slot=table:static:mojo_rl/tasks/assets/props/fixture.xml:0.25,0.0,0.01
 slot=brick:free:mojo_rl/tasks/assets/props/cube.xml
 slot=cube_a:free:mojo_rl/tasks/assets/props/cube.xml
 slot=cube_b:free:mojo_rl/tasks/assets/props/cube.xml
