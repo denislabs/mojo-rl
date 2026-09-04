@@ -1,5 +1,22 @@
 """Evaluating a bound goal — P2c.
 
+## ⚠⚠ THE PREDICATES ARE GENERIC OVER DTYPE, AND METAL IS WHY
+
+They used to take `Float64`. **A GPU kernel cannot call that**: Metal has no
+double, and an `f64` multiply-add inside a kernel is an LLVM-IR verification
+failure, not a slow path — the same wall `so101_park_config`'s repark loop hit.
+Parameterising on `T` lets the host call them at float64 and the reward kernel
+at `DT` (float32) from ONE definition, which is the only way "the device leg
+calls the same predicates" is true rather than aspirational.
+
+⚠ THE BANDS BELOW ARE COMPTIME `Float64` AND ARE CONVERTED AT THE CALL SITE.
+`Scalar[T](IN_HALF_HEIGHT)` folds at compile time, so no f64 reaches a kernel.
+
+⚠ PARITY BETWEEN THE LEGS IS STILL EXACT, and not by luck: both legs read the
+SAME float32 state out of `Data`, and a comparison is a comparison. What would
+break it is one leg computing in f64 from f32 inputs while the other stays in
+f32 — so the CPU parity leg must widen nothing the device does not.
+
 ## ⚠⚠ THE FACTORING IS THE POINT: SCALAR PREDICATES, HOST DRIVER
 
 Every predicate below is a `def` over **plain scalars** — `pred_in(px, py, pz,
@@ -56,11 +73,11 @@ comptime ON_MAX_DZ: Float64 = 0.08
 
 
 @always_inline
-def pred_in_rect(
-    px: Float64, py: Float64, pz: Float64,
-    sx: Float64, sy: Float64, sz: Float64,
-    x_min: Float64, y_min: Float64, x_max: Float64, y_max: Float64,
-    dz_min: Float64, dz_max: Float64,
+def pred_in_rect[T: DType = DType.float64](
+    px: Scalar[T], py: Scalar[T], pz: Scalar[T],
+    sx: Scalar[T], sy: Scalar[T], sz: Scalar[T],
+    x_min: Scalar[T], y_min: Scalar[T], x_max: Scalar[T], y_max: Scalar[T],
+    dz_min: Scalar[T], dz_max: Scalar[T],
 ) -> Bool:
     """Is point `p` inside the rectangle around site `s`, within a z band?
 
@@ -78,10 +95,10 @@ def pred_in_rect(
 
 
 @always_inline
-def pred_near(
-    ax: Float64, ay: Float64, az: Float64,
-    bx: Float64, by: Float64, bz: Float64,
-    d: Float64,
+def pred_near[T: DType = DType.float64](
+    ax: Scalar[T], ay: Scalar[T], az: Scalar[T],
+    bx: Scalar[T], by: Scalar[T], bz: Scalar[T],
+    d: Scalar[T],
 ) -> Bool:
     """⚠ COMPARED SQUARED. A `sqrt` per term per lane per step buys nothing,
     and the two forms agree exactly for a non-negative `d`."""
@@ -92,7 +109,9 @@ def pred_near(
 
 
 @always_inline
-def pred_above(az: Float64, bz: Float64, margin: Float64) -> Bool:
+def pred_above[T: DType = DType.float64](
+    az: Scalar[T], bz: Scalar[T], margin: Scalar[T]
+) -> Bool:
     """Higher than `b` by at least `margin` metres.
 
     ⚠ NO XY TEST, matching LIBERO's own `Above` — "the brick is above the
@@ -108,8 +127,10 @@ def pred_above(az: Float64, bz: Float64, margin: Float64) -> Bool:
 
 
 @always_inline
-def pred_upright(qw: Float64, qx: Float64, qy: Float64, qz: Float64,
-                 tol: Float64) -> Bool:
+def pred_upright[T: DType = DType.float64](
+    qw: Scalar[T], qx: Scalar[T], qy: Scalar[T], qz: Scalar[T],
+    tol: Scalar[T],
+) -> Bool:
     """Is the body's local +z still pointing along world +z, within `tol`?
 
     ⚠ `R[2][2] = 1 - 2(x^2 + y^2)` — the third diagonal of the rotation
@@ -119,10 +140,10 @@ def pred_upright(qw: Float64, qx: Float64, qy: Float64, qz: Float64,
 
     `tol` is in cosine units: 0 demands exact, 1 accepts a right angle.
     """
-    var c = 1.0 - 2.0 * (qx * qx + qy * qy)
+    var c = Scalar[T](1) - Scalar[T](2) * (qx * qx + qy * qy)
     _ = qw
     _ = qz
-    return c >= 1.0 - tol
+    return c >= Scalar[T](1) - tol
 
 
 def region_sites(f: FamilySpec, site_names: List[String]) raises -> List[Int]:

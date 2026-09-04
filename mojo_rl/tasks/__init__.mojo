@@ -41,6 +41,11 @@ from .eval import (
 from .tape import (
     encode_goal, eval_tape, TAPE_WORDS, TERM_WORDS, MAX_TAPE_TERMS,
 )
+from .gpu_eval import (
+    eval_tape_gpu, region_table_words,
+    CUR_IDX_REGION_SITE, CUR_IDX_REGION_X0, CUR_IDX_REGION_Y0,
+    CUR_IDX_REGION_X1, CUR_IDX_REGION_Y1, MAX_CURRICULUM_REGIONS,
+)
 from .reset import (
     SlotAddress, free_slot_addresses, reset_slots,
     write_free_pose, write_free_vel_zero,

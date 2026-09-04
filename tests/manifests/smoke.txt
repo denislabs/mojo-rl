@@ -102,6 +102,17 @@ tests/tasks/test_task_reset_steps.mojo
 # that the agreement means something.
 tests/tasks/test_task_tape.mojo
 
+# ── mojo_rl/tasks: the KERNEL loop vs the HOST loop (P3b) ───────────
+# ⚠ RUNS ON THE CPU AT float64 ON PURPOSE. `eval_tape_gpu` is generic over
+# dtype and origin, so the LOOP can be gated anywhere — separately from the
+# device-vs-host DTYPE question. A disagreement here is an indexing bug; one
+# in P3c's GPU gate is a rounding one, and keeping them apart is what makes
+# either diagnosable.
+# ⚠ TWO LANES CARRY DIFFERENT TASKS. ABLATED: making the loop read lane 0's
+# tape regardless of `env` drops it to 35 of 50 agreements. A single-lane
+# test would pass that.
+tests/tasks/test_tape_gpu_parity.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
