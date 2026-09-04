@@ -45,3 +45,13 @@ tests/deep_agents/smolvla/test_sample_actions.mojo
 # Step 7 — prefix assembly: the segments land where the mask expects, and only
 # image+language carry the sqrt(960) scale (the state must not).
 tests/deep_agents/smolvla/test_prefix_embed.mojo
+
+# The assembled policy: every component in one object, raw frames + a pose to
+# a chunk of joint angles. Gates the WIRING, which no component gate can see —
+# `P` derived once and handed to the cache and all three masks, the dataset
+# scale applied per dimension (checked by doubling only action_std, since
+# "the values look big" does not decide), and above all that the KV cache
+# belongs to ONE observation: a new scene must give a new chunk, and a
+# repeated one must reproduce exactly. Seeded weights, no download.
+# ⚠ ~4 min, nearly all compile — one instantiation of all 44 layers.
+tests/deep_agents/smolvla/test_policy.mojo

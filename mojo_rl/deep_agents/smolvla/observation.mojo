@@ -85,7 +85,12 @@ def fill_camera_images[
         for i in range(TOTAL):
             images.data[i] = Scalar[DT](scratch[i])
     else:
-        images.ensure_host(ctx.value(), TOTAL)
+        # ⚠ `ensure`, NOT `ensure_host`. `ensure_host` allocates the PINNED
+        # STAGING buffer that `upload` copies THROUGH; it leaves `data` empty,
+        # so writing `data[i]` afterwards indexes an empty list. `upload` calls
+        # `ensure_host` itself — the host-visible slab a caller fills is
+        # `data`, and `ensure` is what sizes it.
+        images.ensure(TOTAL)
         for i in range(TOTAL):
             images.data[i] = Scalar[DT](scratch[i])
         images.upload(ctx.value())

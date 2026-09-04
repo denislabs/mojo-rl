@@ -33,13 +33,50 @@ from .vision import (
 )
 from .text import (
     SMOLLM_DIM, SMOLLM_KV_W, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, SMOLLM_LAYERS,
+    SMOLLM_FF, SmolVLMTextLayers,
 )
 from .heads import SMOLVLA_CONNECTOR_IN, SMOLVLA_EXPERT_W, SMOLVLA_ACTION_DIM
 from .expert import SmolVLAExpert, EXPERT_FF
 from .kv_cache import SmolVLAKVCache
-from .fused import SmolVLADenoise
+from .fused import SmolVLADenoise, SmolVLAPrefill
 from .flow import EulerSchedule, token_concat
 from .embed import sinusoidal_time_embedding, embed_language_tokens
+from .heads import SMOLVLA_STATE_DIM, SmolVLATokenEmbed
+from .attn_mask import att_2d_mask, att_2d_mask_square, smolvla_ar
+from .normalize import SmolVLAStats, normalize_state, unnormalize_action
+from .names import (
+    vision_name_map, text_name_map, expert_name_map, misc_name_map,
+)
+from mojo_rl.io.safetensors import SafeTensors
+from mojo_rl.nn.core.torch_names import LoadTorchNamed
+
+
+def _claimed_every_entry(
+    what: String, filled: Int, entries: Int, skipped_by_design: Int = 0
+) raises:
+    """Every entry of the map was claimed by exactly one parameter.
+
+    ⚠ This is the direction `report` cannot see. `report` raises when a
+    PARAMETER has no map entry (`unmapped`) — the topology moved. The mirror
+    failure is a map ENTRY that no parameter ever claimed, because the walk
+    never emitted that name: the weight stays at its initialiser, the load
+    reports success, and the policy runs and emits finite, plausible actions
+    computed partly from noise. `Tokenwise` emitting `connector.0.weight`
+    where the map says `connector.weight` is exactly this shape, and it is how
+    that bug was found.
+
+    ⚠ The expectation comes from the MAP, not from a number written here. A
+    hardcoded 197 has to be edited whenever the map changes, and the edit that
+    makes the gate pass again is the edit that stops it gating."""
+    var want = entries - skipped_by_design
+    if filled != want:
+        raise Error(
+            what + ": filled " + String(filled) + " of the map's "
+            + String(entries) + " entries (" + String(skipped_by_design)
+            + " skipped by design, so " + String(want) + " expected) — the"
+            " unclaimed ones kept their initialisation, and nothing"
+            " downstream can tell"
+        )
 
 
 def copy_into[
@@ -355,3 +392,345 @@ struct SmolVLAPrefixEmbed[
                 "SmolVLAPrefixEmbed: wrote " + String(off) + " of "
                 + String(Self.OUT_N) + " — the segment widths do not sum to P*W"
             )
+
+
+struct SmolVLAPolicy[
+    N_CAM: Int,
+    N_LANG: Int,
+    CHUNK: Int = 50,
+    STEPS: Int = 10,
+    B: Int = 1,
+](Movable):
+    """Every component of SmolVLA in one object: pixels and a pose in, joint
+    angles out.
+
+    The pieces have all existed and all been gated separately. What did not
+    exist is the thing that owns them together, and that is where the errors
+    a component gate cannot see live: a mask built for one `P` and a prefix
+    built for another, a chunk unnormalised with the state's statistics, a
+    cache prefilled once and reused across two different observations.
+
+        raw frames  -> resize_with_pad -> SigLIP -> shuffle -> connector ─┐
+        instruction -> pre-tokenised ids -> embedding ────────────────────┤-> prefix
+        raw qpos    -> (x-mean)/std -> pad 32 -> state_proj ──────────────┘
+                    -> prefill 16 layers -> KV cache
+                    -> 10 Euler steps through the expert
+                    -> action_out -> drop dims 6.. -> x*std+mean
+
+    ⚠ **`P` is computed here and nowhere else.** `N_CAM*64 + N_LANG + 1` feeds
+    the cache, the prefill mask, the denoise masks and the prefix buffer at
+    once. Every one of them is a plain integer parameter, so a component built
+    from a hand-written `P` that disagrees produces finite output with a mask
+    describing a different sequence. Deriving it once is the only defence.
+
+    ⚠ **`lm_head` is deliberately NOT owned.** SmolVLA never generates text --
+    the VLM contributes a KV cache, not tokens -- and the head is
+    `[49280, 960]`, 47.3 M parameters, 189 MB. The name map still claims it so
+    the 500/500 coverage gate stays honest; this object simply does not
+    instantiate it, and `load` reports the count it expects rather than letting
+    the omission be silent.
+
+    ⚠ **The cache belongs to ONE observation.** `select_action` refills it every
+    call. Prefilling once and sampling repeatedly would run the expert against a
+    stale scene: no error, no NaN, just a policy acting on what it saw before.
+    """
+
+    comptime IMG_TOK: Int = 64
+    comptime P: Int = Self.N_CAM * Self.IMG_TOK + Self.N_LANG + 1
+    comptime W: Int = SMOLLM_DIM
+    comptime EW: Int = SMOLVLA_EXPERT_W
+    comptime L: Int = SMOLLM_LAYERS
+    comptime ADIM: Int = SMOLVLA_ACTION_DIM
+    comptime SDIM: Int = SMOLVLA_STATE_DIM
+    comptime VOCAB: Int = 49280
+
+    comptime Tower = SmolVLMTextLayers[
+        Self.L, Self.W, SMOLLM_FF, SMOLLM_KV_W
+    ]
+    comptime Expert = SmolVLAExpert[
+        Self.L, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM, SMOLLM_KV_W, 2
+    ]
+    comptime Cache = SmolVLAKVCache[
+        Self.L, Self.P, Self.CHUNK, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM, Self.B
+    ]
+    comptime Pre = SmolVLAPrefill[Self.P, Self.CHUNK, Self.B]
+    comptime Den = SmolVLADenoise[Self.P, Self.CHUNK, Self.B]
+    comptime Sam = SmolVLAActionSampler[
+        Self.CHUNK, SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W, Self.STEPS, Self.B
+    ]
+    comptime Prefix = SmolVLAPrefixEmbed[
+        Self.N_CAM, Self.N_LANG, Self.B, SMOLLM_DIM, Self.IMG_TOK
+    ]
+    comptime Conn = Tokenwise[
+        Self.IMG_TOK, Linear[SMOLVLA_CONNECTOR_IN, SMOLLM_DIM]
+    ]
+    comptime Embed = SmolVLATokenEmbed[Self.VOCAB, SMOLLM_DIM]
+
+    var vision: SigLIPVisionTower[]
+    var connector: Self.Conn
+    var embed: Self.Embed
+    var tower: Self.Tower
+    var expert: Self.Expert
+    var state_proj: Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM]
+    var action_in: Linear[SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W]
+    var time_mlp_in: Linear[2 * SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W]
+    var time_mlp_out: Linear[SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W]
+    var action_out: Linear[SMOLVLA_EXPERT_W, SMOLVLA_ACTION_DIM]
+
+    var cache: Self.Cache
+    var prefill: Self.Pre
+    var denoiser: Self.Den
+    var sampler: Self.Sam
+    var prefix: Self.Prefix
+    var stats: SmolVLAStats
+
+    var prefix_buf: Tensor
+    var prefill_out: Tensor
+    var state_buf: Tensor
+    var chunk_buf: Tensor
+
+    def __init__(out self):
+        comptime assert Self.N_CAM >= 1, "SmolVLAPolicy: need a camera"
+        comptime assert Self.N_LANG >= 1, "SmolVLAPolicy: need an instruction"
+        self.vision = SigLIPVisionTower[]()
+        self.connector = Self.Conn()
+        self.embed = Self.Embed()
+        self.tower = Self.Tower()
+        self.expert = Self.Expert()
+        self.state_proj = Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM]()
+        self.action_in = Linear[SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W]()
+        self.time_mlp_in = Linear[2 * SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W]()
+        self.time_mlp_out = Linear[SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W]()
+        self.action_out = Linear[SMOLVLA_EXPERT_W, SMOLVLA_ACTION_DIM]()
+        self.cache = Self.Cache()
+        self.prefill = Self.Pre()
+        self.denoiser = Self.Den()
+        self.sampler = Self.Sam()
+        self.prefix = Self.Prefix()
+        self.stats = SmolVLAStats()
+        self.prefix_buf = Tensor()
+        self.prefill_out = Tensor()
+        self.state_buf = Tensor()
+        self.chunk_buf = Tensor()
+
+    def __init__(out self, *, deinit move: Self):
+        self.vision = move.vision^
+        self.connector = move.connector^
+        self.embed = move.embed^
+        self.tower = move.tower^
+        self.expert = move.expert^
+        self.state_proj = move.state_proj^
+        self.action_in = move.action_in^
+        self.time_mlp_in = move.time_mlp_in^
+        self.time_mlp_out = move.time_mlp_out^
+        self.action_out = move.action_out^
+        self.cache = move.cache^
+        self.prefill = move.prefill^
+        self.denoiser = move.denoiser^
+        self.sampler = move.sampler^
+        self.prefix = move.prefix^
+        self.stats = move.stats^
+        self.prefix_buf = move.prefix_buf^
+        self.prefill_out = move.prefill_out^
+        self.state_buf = move.state_buf^
+        self.chunk_buf = move.chunk_buf^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer = Deterministic
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Build every component, with the three masks derived from one `P`.
+
+        `INIT` seeds the weights; `load` replaces them. A gate that never calls
+        `load` still runs, which is what lets the wiring be checked without a
+        907 MB download."""
+        var p = Self()
+        # ⚠ ONE `ar` per window, all from the same layout. `smolvla_ar`'s
+        # arguments are the segment lengths this object also uses to size the
+        # prefix buffer, so a disagreement is impossible rather than unlikely.
+        var img = Self.N_CAM * Self.IMG_TOK
+        var ar_pre = smolvla_ar(img, Self.N_LANG, 1, 0)
+        var ar_full = smolvla_ar(img, Self.N_LANG, 1, Self.CHUNK)
+        var mask_pre = att_2d_mask_square(ar_pre)
+        var mask_self = att_2d_mask(
+            ar_full, Self.P, Self.P + Self.CHUNK, 0, Self.P + Self.CHUNK
+        )
+        var mask_cross = att_2d_mask(
+            ar_full, Self.P, Self.P + Self.CHUNK, 0, Self.P
+        )
+
+        p.vision = SigLIPVisionTower[].make[target, INIT](ctx)
+        p.connector = Self.Conn.make[target, INIT](ctx)
+        p.embed = Self.Embed.make[target, INIT](ctx)
+        p.tower = Self.Tower.make[target, INIT](ctx)
+        p.expert = Self.Expert.make[target, INIT](ctx)
+        p.state_proj = Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM].make[
+            target, INIT
+        ](ctx)
+        p.action_in = Linear[SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W].make[
+            target, INIT
+        ](ctx)
+        p.time_mlp_in = Linear[
+            2 * SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W
+        ].make[target, INIT](ctx)
+        p.time_mlp_out = Linear[SMOLVLA_EXPERT_W, SMOLVLA_EXPERT_W].make[
+            target, INIT
+        ](ctx)
+        p.action_out = Linear[SMOLVLA_EXPERT_W, SMOLVLA_ACTION_DIM].make[
+            target, INIT
+        ](ctx)
+        p.cache = Self.Cache.make[target](ctx)
+        p.prefill = Self.Pre.make[target](mask_pre, ctx)
+        p.denoiser = Self.Den.make[target](mask_self, mask_cross, ctx)
+        p.sampler = Self.Sam.make[target](ctx)
+        p.prefix = Self.Prefix.make[target](ctx)
+        return p^
+
+    def load_stats(mut self, stats_json: String) raises:
+        """`<dataset>/meta/stats.json` — the fine-tune's own normalisation."""
+        self.stats = SmolVLAStats.from_stats_json(stats_json)
+
+    def load[
+        target: StaticString
+    ](
+        mut self, weights: String, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Fill every owned component from `model.safetensors`.
+
+        Four maps, four walks. The counts are ASSERTED rather than printed: a
+        map that quietly matched 140 of 145 tensors leaves five layers at their
+        initialiser, which is a policy that runs, produces finite actions, and
+        is wrong in a way no downstream check can attribute.
+        """
+        # ⚠ `report`, not `report_exhaustive`/`report_exact`: those two check
+        # coverage of the WHOLE FILE, which is right for a map that claims all
+        # 500 tensors and wrong for one component of four. Here the file-side
+        # question is answered once, by `test_checkpoint_coverage`; what each
+        # walk must answer is its own — nothing unmapped, nothing missing, and
+        # the count it was supposed to fill.
+        var vl = LoadTorchNamed[""](SafeTensors(weights), vision_name_map())
+        self.vision.for_each_param[target](vl, ctx)
+        vl.report(String("vision"))
+        _claimed_every_entry(
+            String("vision"), len(vl.loaded) + len(vl.zeroed),
+            len(vl.map.ours),
+        )
+
+        var tl = LoadTorchNamed[""](SafeTensors(weights), text_name_map())
+        self.tower.for_each_param[target](tl, ctx)
+        tl.report(String("text"))
+        _claimed_every_entry(
+            String("text"), len(tl.loaded) + len(tl.zeroed),
+            len(tl.map.ours),
+        )
+
+        var el = LoadTorchNamed[""](SafeTensors(weights), expert_name_map())
+        self.expert.for_each_param[target](el, ctx)
+        el.report(String("expert"))
+        _claimed_every_entry(
+            String("expert"), len(el.loaded) + len(el.zeroed),
+            len(el.map.ours),
+        )
+
+        # ⚠ The misc map addresses seven separate small modules by dotted
+        # prefix, so each is walked with the name the map uses. `lm_head` is
+        # absent on purpose — see the struct header — which is why this reports
+        # 12 of the map's 13 file-backed entries.
+        var ml = LoadTorchNamed[""](SafeTensors(weights), misc_name_map())
+        # ⚠ `.inner`, not the wrapper. `Tokenwise.for_each_param` appends its
+        # position, emitting `connector.0.weight`, while `misc_name_map` names
+        # `connector.weight` — the combinator is a compile-time detail of HOW
+        # the connector is applied per token, not part of the checkpoint's
+        # naming. Walking the wrapper leaves the connector at its initialiser
+        # and reports it as `unmapped`.
+        self.connector.inner.for_each_param[target](
+            ml, ctx, String("connector")
+        )
+        self.embed.for_each_param[target](ml, ctx, String("embed"))
+        self.state_proj.for_each_param[target](ml, ctx, String("state_proj"))
+        self.action_in.for_each_param[target](ml, ctx, String("action_in"))
+        self.action_out.for_each_param[target](ml, ctx, String("action_out"))
+        self.time_mlp_in.for_each_param[target](
+            ml, ctx, String("time_mlp_in")
+        )
+        self.time_mlp_out.for_each_param[target](
+            ml, ctx, String("time_mlp_out")
+        )
+        ml.report(String("heads"))
+        # ⚠ TWO entries skipped by design — `lm_head.weight` (file-backed) and
+        # `lm_head.bias` (TN_ZEROS). Naming the number is what keeps the
+        # omission a DECISION; without it, `lm_head` and any FUTURE component
+        # someone forgets to walk are indistinguishable.
+        _claimed_every_entry(
+            String("heads"), len(ml.loaded) + len(ml.zeroed),
+            len(ml.map.ours), 2,
+        )
+        print(
+            "  policy: "
+            + String(len(vl.loaded) + len(tl.loaded) + len(el.loaded)
+                     + len(ml.loaded))
+            + " tensors loaded (lm_head's 1 skipped by design)"
+        )
+
+    def select_action[
+        target: StaticString
+    ](
+        mut self,
+        mut images: Tensor,
+        ref lang_ids: List[Int],
+        ref raw_state: List[Float32],
+        mut noise: Tensor,
+        mut actions: List[Float32],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """One observation to `[CHUNK, action_dim]` in robot units.
+
+        `images` is `[N_CAM, 3*512*512]` in `[-1, 1]` (see
+        `smolvla/observation.mojo`); `raw_state` is the robot's own joint
+        values; `noise` is x_1, `[B, CHUNK*ADIM]`, supplied by the caller so the
+        RNG stays outside and a gate can pin it.
+        """
+        if self.stats.state_dim() == 0:
+            raise Error(
+                "SmolVLAPolicy: no stats — call load_stats() before"
+                " select_action, or the state goes in unnormalised"
+            )
+
+        # ── state: normalise, pad to 32 ──────────────────────────────────
+        var st = List[Float32]()
+        normalize_state(self.stats, raw_state, st, Self.SDIM)
+        # ⚠ `ensure` on both paths: it sizes `data`, the host slab. The GPU
+        # path differs only by the `upload` after the writes.
+        self.state_buf.ensure(Self.B * Self.SDIM)
+        for i in range(Self.SDIM):
+            self.state_buf.data[i] = Scalar[DT](st[i])
+        comptime if target != "cpu":
+            self.state_buf.upload(ctx.value())
+
+        # ── prefix, then prefill ─────────────────────────────────────────
+        self.prefix.run[target, Self.VOCAB, SMOLVLA_CONNECTOR_IN, Self.SDIM](
+            self.vision, self.connector, self.embed.weight.val,
+            self.state_proj, images, lang_ids, self.state_buf,
+            self.prefix_buf, ctx,
+        )
+        # ⚠ Refilled EVERY call. A cache carried across observations is a
+        # policy acting on the previous scene, silently.
+        self.cache.reset()
+        self.prefill.run[target](
+            self.tower, self.cache, self.prefix_buf, self.prefill_out, ctx
+        )
+
+        # ── ten Euler steps ──────────────────────────────────────────────
+        self.sampler.sample[target, Self.P](
+            self.expert, self.cache, self.denoiser, self.action_in,
+            self.time_mlp_in, self.time_mlp_out, self.action_out,
+            noise, self.chunk_buf, ctx,
+        )
+        comptime if target != "cpu":
+            self.chunk_buf.download(ctx.value())
+
+        # ── back to robot units, padded dims dropped ─────────────────────
+        var flat = List[Float32]()
+        for i in range(Self.B * Self.CHUNK * Self.ADIM):
+            flat.append(Float32(self.chunk_buf.data[i]))
+        unnormalize_action(self.stats, flat, Self.CHUNK, actions, Self.ADIM)

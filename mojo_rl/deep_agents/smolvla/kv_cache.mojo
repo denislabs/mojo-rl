@@ -170,6 +170,20 @@ struct SmolVLAKVCache[
                 " plausible, so this would not have shown up as a NaN."
             )
 
+    def reset(mut self):
+        """Mark every layer unwritten, before prefilling a new observation.
+
+        ⚠ This does NOT clear the bytes, and does not need to: a prefill
+        overwrites every slab. What it buys is that a SKIPPED prefill becomes
+        LOUD. Without it, an observation whose prefill silently failed would
+        denoise against the previous scene's cache -- finite, plausible
+        actions computed from what the robot saw a tick ago, which is the one
+        failure in this file that no value check can see. With it, the first
+        unfilled read raises and names the layer.
+        """
+        for i in range(Self.LAYERS):
+            self.filled[i] = False
+
     def n_filled(self) -> Int:
         var n = 0
         for i in range(Self.LAYERS):

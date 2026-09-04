@@ -16,3 +16,10 @@ tests/deep_agents/smolvla/test_load_real_weights.mojo
 # on CPU and 1.6e-03 on Metal, so a GPU tolerance loose enough to pass would be
 # loose enough to hide a real bug.
 tests/deep_agents/smolvla/test_parity_vs_hf.mojo
+
+# `SmolVLAPolicy.load` against the published checkpoint: every map entry
+# claimed by exactly one parameter (the direction `report` cannot see — an
+# entry no walk emitted leaves that weight at its initialiser and still
+# reports success), `lm_head`'s two entries skipped and only those two, and
+# the values landing in the modules the policy actually reads.
+tests/deep_agents/smolvla/test_policy_load.mojo
