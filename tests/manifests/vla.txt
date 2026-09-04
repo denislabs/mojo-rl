@@ -45,3 +45,12 @@ tests/deep_agents/smolvla/test_embed.mojo
 # newline `NewLineTaskProcessorStep` appends survived, and that two
 # instructions of different lengths raise rather than silently picking one.
 tests/deep_agents/smolvla/test_tasks.mojo
+
+# V2 — the batch sampler at an episode boundary. `lerobot` CLAMPS the query
+# index (the chunk repeats the last real action) where `ACTDataset` pads with
+# a normalized zero, and for SmolVLA that choice is load-bearing: the chunk is
+# a network INPUT through x_t, not only a loss target, so a padded slot's
+# value changes the gradient on the VALID timesteps too. Builds its own
+# three-episode store; 80,000 chunk slots checked, and a leg asserting the
+# clamp is OBSERVABLY different from a zero-pad.
+tests/deep_agents/smolvla/test_dataset_chunks.mojo
