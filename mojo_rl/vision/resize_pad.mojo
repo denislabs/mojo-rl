@@ -230,3 +230,54 @@ def camera_frame_to_siglip(
     # ⚠ AFTER the pad, so the blank band lands at -1. See the header.
     for i in range(n):
         dst[off + i] = padded[i] * 2.0 - 1.0
+
+
+def store_frame_to_siglip(
+    frame: List[Scalar[DType.uint8]],
+    src_w: Int,
+    src_h: Int,
+    mut dst: List[Float32],
+    off: Int,
+    size: Int = SIGLIP_INPUT,
+) raises:
+    """One STORED frame to the `3*512*512` block SigLIP expects, at `off`.
+
+    ⚠ **`frame` is CHW, and `camera_frame_to_siglip`'s is HWC.** That is the
+    whole reason this exists as a separate entry point rather than a flag: the
+    store writes `[3, H, W]` planes (`import_lerobot_v3`) and a camera hands
+    over interleaved `[H, W, 3]`. Feeding one to the other does not fail, does
+    not raise, and does not even look obviously wrong — a plane read as
+    interleaved is a recognisable image with its colours and geometry
+    scrambled in a way that survives a thumbnail.
+    
+    There is no `swap_rb`. The store is RGB by construction: the importer
+    decodes with ffmpeg to rgb24. A camera needs the flag because OpenCV
+    hands back BGR.
+
+    Everything after the layout — the 2-tap bilinear, the LEFT/TOP pad, the
+    `*2-1` applied AFTER the pad so the blank band lands at -1 — is
+    `resize_with_pad_chw` and is shared with the camera path. One filter, two
+    front doors.
+    """
+    var px = src_w * src_h
+    if len(frame) < px * 3:
+        raise Error(
+            "store_frame_to_siglip: frame holds "
+            + String(len(frame))
+            + " bytes, needs "
+            + String(px * 3)
+        )
+    var n = 3 * size * size
+    if len(dst) < off + n:
+        dst.resize(off + n, 0.0)
+
+    # Already planar: only the uint8 -> [0,1] cast is needed.
+    var chw = List[Float32](unsafe_uninit_length=px * 3)
+    for i in range(px * 3):
+        chw[i] = Float32(Int(frame[i])) / 255.0
+
+    var padded = List[Float32]()
+    resize_with_pad_chw(chw, 3, src_h, src_w, padded, size, size, 0.0)
+
+    for i in range(n):
+        dst[off + i] = padded[i] * 2.0 - 1.0

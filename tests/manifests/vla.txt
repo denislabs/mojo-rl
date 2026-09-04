@@ -54,3 +54,12 @@ tests/deep_agents/smolvla/test_tasks.mojo
 # three-episode store; 80,000 chunk slots checked, and a leg asserting the
 # clamp is OBSERVABLY different from a zero-pad.
 tests/deep_agents/smolvla/test_dataset_chunks.mojo
+
+# V2 — the two SigLIP front doors. Training reads the store's PLANAR uint8
+# [N_CAM, 3, H, W]; deployment reads a camera's INTERLEAVED BGR [H, W, 3].
+# Handing one to the other raises nothing and gives a recognisable, scrambled
+# image. Bit-exact agreement for the same physical frame at the SO-101's own
+# 640x480, plus a leg proving the layouts are NOT interchangeable and one
+# pinning the pad to the TOP (resize_with_pad) rather than centred
+# (resize_with_pad_torch, the other lerobot function).
+tests/deep_agents/smolvla/test_store_vs_camera_frame.mojo
