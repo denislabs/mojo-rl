@@ -54,6 +54,21 @@ examples/tasks/libero_survey.mojo
 examples/tasks/task_eval_frozen.mojo
 examples/tasks/task_batched_gpu.mojo
 
+# ⚠⚠ THE FIRST POLICY THIS LAYER HAS EVER CARRIED. SAC on
+# `so101_reach_clear`; every P1-P5 number before it was a harness number.
+#   pixi run -e nvidia mojo run -I . examples/tasks/sac_task_reach_gpu.mojo
+# ⚠ The reward is sparse and the episode TERMINATES on success, so a return
+# is 0 or 1 and `mean_return()` IS the success rate — no band table.
+# ⚠ IT REFUSES A TASK WITH AN ACTIVE FREE SLOT, and that refusal is the
+# finding: nothing places a free slot on the GPU reset path, so an active
+# prop starts every episode at its PARK pose 50 m up and falls through the
+# whole horizon with its qpos and qvel in the observation. The HOST places
+# them (`sampler` + `reset.reset_slots`), which is why eval and the viewer
+# are fine. Until `init_qpos_gpu` places them, `so101_reach_brick`,
+# `so101_lift_brick` and `so101_gather_bricks` are authorable, evaluable and
+# NOT trainable.
+examples/tasks/sac_task_reach_gpu.mojo
+
 # GPU device code — local-only probes (see note above):
 # examples/bipedal_walker_gpu_demo.mojo
 # examples/bipedal_walker_cpu_gpu_compare.mojo

@@ -110,6 +110,37 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # that moved per episode would make the contact set vary run to run.
     comptime USES_MOCAP: Bool = True
 
+    # ⚠⚠ THE ACTION IS [-1, 1] PER JOINT, mapped affinely onto each
+    # actuator's own `ctrlrange`. This defaulted to False — raw control values,
+    # clamped — for every commit up to the first training run, and the six
+    # ranges it would have been clamping against are
+    #
+    #     shoulder_pan  +-1.9199    wrist_flex  +-1.6581
+    #     shoulder_lift +-1.7453    wrist_roll  -2.7438 .. 2.8412
+    #     elbow_flex    +-1.6900    gripper     -0.1745 .. 1.7453
+    #
+    # `Phyics3dEnvConfig.NORMALIZED_ACTIONS` carries the measurement that
+    # settled this on the SAME ROBOT: with one scalar `ACTION_SCALE = 2.0`
+    # against that spread, the trained policy commanded an out-of-range pose
+    # on 24% to 100% of control steps, `elbow_flex` sat at the tanh rail 49%
+    # of the time, and the gripper — asymmetric against a symmetric +-2.0 —
+    # was out of range on EVERY step. Past the clamp the gradient is zero, and
+    # three successive reward shapes produced the same shaking arm before
+    # anyone looked at the clamp.
+    #
+    # ⚠ SO `action_scale` MUST BE 1.0 in every script that builds an agent for
+    # this family. A scale of 2.0 maps [-2, 2] onto the range and puts the
+    # useful band back inside the rails — undoing the fix while still looking
+    # configured.
+    #
+    # ⚠ AND "DO NOTHING" IS NO LONGER A ZERO ACTION. Zero maps to the CENTRE
+    # of each ctrlrange, which for the gripper is 0.785 rad — half open. The
+    # zero-action drivers (`examples/tasks/task_eval_frozen.mojo`,
+    # `task_batched_gpu.mojo`) therefore command a pose rather than no torque;
+    # they are gating determinism and per-lane goal routing, both of which
+    # hold under any fixed action, but their printed numbers move.
+    comptime NORMALIZED_ACTIONS: Bool = True
+
     # ⚠⚠ NONZERO OR THE ARM'S 30 COLLISION MESHES SILENTLY STOP COLLIDING.
     # 0 is not a size hint — both narrow phases gate their mesh branch on
     # `NMESH_VERTS > 0` and emit no contact otherwise.
@@ -302,10 +333,26 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
 
     @staticmethod
     def get_reset_noise() -> Float64:
-        # ⚠ ZERO. Every lane's variation comes from the SAMPLER, seeded by
-        # (seed, lane); joint noise on top would add a second, uncontrolled
-        # source and make a lane's state depend on two streams.
-        return 0.0
+        # ⚠⚠ THIS WAS 0.0, AND 0.0 MADE EVERY LANE THE SAME PROBLEM. The
+        # reasoning was sound as far as it went — "every lane's variation comes
+        # from the SAMPLER, seeded by (seed, lane); joint noise on top would
+        # add a second source" — and it is wrong for any task whose GOAL does
+        # not depend on a placement. `so101_reach_brick` asks the gripper to
+        # reach a FIXED region: the brick's sampled pose enters the
+        # observation and nothing else, so with zero joint noise all N lanes
+        # start in the identical arm pose, every episode, and "the task" is one
+        # open-loop trajectory rather than a distribution.
+        #
+        # ⚠ THE DETERMINISM ARGUMENT SURVIVES. Both streams are seeded — the
+        # sampler from `(seed, lane)` and this from `reset_batch`'s seed — so
+        # two runs at one seed still agree bit for bit, which is what P4's
+        # frozen-init-table gate actually asserts. What zero bought was not
+        # reproducibility but the absence of a second source, and the cost of
+        # that was a degenerate start distribution.
+        #
+        # ⚠ 0.05 rad is the value `SoArm101ReachConfig` uses on the SAME
+        # robot, so the two reach tasks perturb their starts comparably.
+        return 0.05
 
     # === GPU: pre-step ===
     @always_inline

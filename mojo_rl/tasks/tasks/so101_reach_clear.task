@@ -1,0 +1,46 @@
+# REACH, CLEAR TABLE — the first task in this family that can actually TRAIN.
+#
+# The same goal as `so101_reach_brick`. The difference is one line: NO FREE
+# SLOT IS ACTIVE, so the family's three props stay parked instead of being
+# placed on the table.
+#
+# ## ⚠⚠ WHY THAT DIFFERENCE EXISTS, AND WHAT IT IS HIDING
+#
+# A free slot that is ACTIVE has to be PLACED at every episode reset, and on
+# the GPU training path nothing places it. `_reset_env_lane` restores the
+# composed scene's `qpos0`, which for a free slot is its PARK pose — 50 m up —
+# and only INACTIVE slots are pinned there afterwards by
+# `So101TabletopConfig.pre_step_full_gpu` (Gap D). An active prop therefore
+# starts every training episode in the sky and FALLS for the whole horizon,
+# with its qpos and qvel in the observation the policy is learning from.
+#
+# The host DOES place them — `tasks/sampler.sample_placements` +
+# `tasks/reset.reset_slots` — which is why the eval and viewer paths work and
+# why this was invisible until something tried to train. Closing it means
+# device-side placement in `init_qpos_gpu`, and that needs a per-lane channel
+# saying which region each free slot inits into (the tape carries the GOAL's
+# regions, not the INIT's). Until then `so101_reach_brick`, `so101_lift_brick`
+# and `so101_gather_bricks` are authorable, evaluable and NOT trainable.
+#
+# ⚠ SO THIS FILE IS A SMOKE TASK, NOT A BENCHMARK. It validates the stack —
+# observation, sparse reward, success termination, the SAC wiring and the
+# per-task rate — on the one task shape that needs no placement. Its start
+# distribution is the arm's reset noise alone (0.05 rad per joint), which is
+# real but narrow. Do not read a high success rate here as "the family is
+# solved".
+schema_version=1
+task=so101_reach_clear
+family=so101_tabletop
+language=Move the gripper over the table
+
+# ⚠ IDENTICAL TO `so101_reach_brick`'s, deliberately — the two differ ONLY in
+# what is on the table, so a rate measured here and a rate measured there are
+# comparable once placement lands.
+goal=AtRegion(robot_gripperframe, table_top)
+
+# ⚠⚠ ONE ACTIVE SLOT, AND IT IS THE STATIC ONE. `validate_task_against_family`
+# requires an `init=` for every active FREE slot and there are none here, so
+# this file has no `init=` at all — which is also what makes it trainable.
+# The table is a fixture: it carries its pose in the `.family` and needs no
+# placement, and the goal's region sits on its surface.
+active=table

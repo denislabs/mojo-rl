@@ -321,6 +321,7 @@ def main() raises:
     print("--- 5. every shipped task, non-trivial at reset ---")
     var task_files = List[String]()
     task_files.append(String("so101_reach_brick"))
+    task_files.append(String("so101_reach_clear"))
     task_files.append(String("so101_lift_brick"))
     task_files.append(String("so101_gather_bricks"))
     task_files.append(String("so101_settle_brick"))
