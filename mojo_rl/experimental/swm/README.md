@@ -545,7 +545,7 @@ choice to make, and the oracle's separation of those frames (`|F₀w − F₁w|�
 episodes. A goal whose landmark lies along the reflection axis has no parity
 a frame can carry.
 
-## What was learned (Phase 9 — the transfer test, and a matched control)
+## What was learned (Phase 9 — the transfer test, G27)
 
 Pendulum is the first world here not built for the method. It contains an
 exact `SO(2)` action — `(cos θ, sin θ)` is carried by `R(θ̇′ dt)`, gated to
@@ -613,7 +613,7 @@ construction. The constraint is what makes the class **exact** rather than
 usually right, and G8 measured where the other road ends (`det` −1.00 → −0.02
 under a cocycle loss).
 
-## What was learned (Phase 11 — the two residues, both answered)
+## What was learned (Phase 11 — the two residues, G29 and G30)
 
 **A global symmetry is refutable, by the transports rather than the graph
 (G29).** Under `(x, y) ~ (x + W/2, y)` the label graph has *zero* successor
