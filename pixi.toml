@@ -194,8 +194,8 @@ test-act-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/act-gpu.txt", 
 test-vla = { cmd = "bash scripts/run_tests.sh tests/manifests/vla.txt", description = "SmolVLA structural gates (name-map coverage; no weights, no network)" }
 test-vla-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-gpu.txt", description = "SmolVLA GPU smokes (vision tower forward/vjp at real shapes)" }
 test-vla-weights = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-weights.txt", description = "SmolVLA gates needing the published weights (~907 MB download, cached)" }
-test-vla-image = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-image.txt", description = "SmolVLA camera preprocessing vs torch (needs test-vla-ref; no weights)" }
-test-vla-ref = { cmd = "pixi run -e act-ref python tools/vla/dump_smolvla_reference.py --out /tmp/vla_ref && pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img", description = "Dump the SmolVLM reference activations + image preprocessing for the SmolVLA gates" }
+test-vla-ref = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-ref.txt", description = "SmolVLA gates needing a reference dump, not the weights (run dump-vla-ref first)" }
+dump-vla-ref = { cmd = "pixi run -e act-ref python tools/vla/dump_smolvla_reference.py --out /tmp/vla_ref && pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img && pixi run -e act-ref python tools/vla/dump_smolvla_norm_reference.py --out /tmp/vla_norm", description = "Dump the SmolVLM activations, image preprocessing and normalisation references" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
 # VALUE in an asset needs no regeneration; adding or removing an element does,

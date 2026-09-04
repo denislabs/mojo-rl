@@ -1,8 +1,8 @@
-# SmolVLA image preprocessing — `pixi run test-vla-image`
+# SmolVLA gates needing a reference dump but NOT the weights — `pixi run test-vla-ref`
 #
-# Needs the torch dump but NOT the 907 MB weights:
-#   pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img
-# (`pixi run test-vla-ref` produces this and the activation dump together.)
+# Produce the dumps first:
+#   pixi run dump-vla-ref
+# None of these download the 907 MB checkpoint.
 #
 # Separate from `vla.txt` because that manifest promises gates that need
 # neither the network nor a reference dump, and separate from
@@ -14,3 +14,9 @@
 # feeds the repo's OTHER resize (`pil_bilinear_u8`, correct, and the wrong
 # filter here) through the same comparison and asserts it is REJECTED.
 tests/deep_agents/smolvla/test_image_preprocess.mojo
+
+# The state/action boundary against the RECORDING's own `meta/stats.json`:
+# our JSON read vs Python's, `(x-mean)/(std+eps)`, the padded dims landing at
+# exactly 0, and the inverse DROPPING dims 6..31 rather than turning them into
+# believable angles for joints that do not exist.
+tests/deep_agents/smolvla/test_normalize.mojo

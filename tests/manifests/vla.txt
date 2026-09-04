@@ -39,3 +39,9 @@ tests/deep_agents/smolvla/test_attn_mask.mojo
 # Step 7 — prefix/suffix assembly pieces: the sinusoidal time embedding against
 # a numpy transcription of openpi's, and the language gather's sqrt(DIM) scale.
 tests/deep_agents/smolvla/test_embed.mojo
+
+# The pre-tokenised instruction table, checked in beside the manifest. Pins
+# N_LANG=6 for this recording (so P = 2*64+6+1 = 135), that the trailing
+# newline `NewLineTaskProcessorStep` appends survived, and that two
+# instructions of different lengths raise rather than silently picking one.
+tests/deep_agents/smolvla/test_tasks.mojo

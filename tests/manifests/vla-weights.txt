@@ -11,7 +11,7 @@
 tests/deep_agents/smolvla/test_load_real_weights.mojo
 
 # Numerical parity against HuggingFace's OWN SmolVLM. Needs the reference dump:
-#   pixi run -e act-ref python tools/vla/dump_smolvla_reference.py --out /tmp/vla_ref
+#   pixi run dump-vla-ref
 # Runs on CPU deliberately — see the file header: the same layer gives 9.5e-07
 # on CPU and 1.6e-03 on Metal, so a GPU tolerance loose enough to pass would be
 # loose enough to hide a real bug.
