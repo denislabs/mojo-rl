@@ -52,6 +52,12 @@ from .spec import FamilySpec
 comptime OP_IN: Int = 0
 comptime OP_ON: Int = 1
 comptime OP_NEAR: Int = 2
+# ⚠ `Above(a, b, margin)` — THREE ARGUMENTS, AND THE MARGIN IS WHY. Comparing
+# body ORIGINS alone made `Above(brick, table)` TRUE AT RESET: a brick resting
+# on a table's top face is already above the table's origin, so the "lift"
+# task was satisfied before the arm moved. Found by the viewer's `--check`,
+# not by a test — every gate had only ever asked whether `Above` fired, never
+# whether the TASK it expressed was non-trivial.
 comptime OP_ABOVE: Int = 3
 comptime OP_UPRIGHT: Int = 4
 comptime OP_OPEN: Int = 5
@@ -132,7 +138,7 @@ def op_name(op: Int) -> String:
 
 def op_arity(op: Int) -> Int:
     """How many arguments the predicate takes, INCLUDING its numeric one."""
-    if op == OP_NEAR:
+    if op == OP_NEAR or op == OP_ABOVE:
         return 3
     if op == OP_GRASPED or op == OP_NOT:
         return 1
@@ -160,7 +166,9 @@ def op_takes_number(op: Int) -> Bool:
     `Open(joint, frac)` have two, the last numeric. Getting this table wrong
     reads a distance as a body name and raises with a confusing message.
     """
-    return op == OP_NEAR or op == OP_UPRIGHT or op == OP_OPEN
+    return (
+        op == OP_NEAR or op == OP_UPRIGHT or op == OP_OPEN or op == OP_ABOVE
+    )
 
 
 # ── the parsed, still-symbolic tree ────────────────────────────────────────

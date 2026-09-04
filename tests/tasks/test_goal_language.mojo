@@ -85,8 +85,8 @@ def main() raises:
                 ordered = False
     ta.check(ordered, "every child index is LESS than its parent's")
 
-    var g3 = parse_goal(String("Not(Above(brick, cube_a))"))
-    ta.check(g3.describe() == "Not(Above(brick, cube_a))", "Not is unary")
+    var g3 = parse_goal(String("Not(Above(brick, cube_a, 0.05))"))
+    ta.check(g3.describe() == "Not(Above(brick, cube_a, 0.05))", "Not is unary")
 
     # ── 2. refusals ───────────────────────────────────────────────────────
     print("--- refusals ---")

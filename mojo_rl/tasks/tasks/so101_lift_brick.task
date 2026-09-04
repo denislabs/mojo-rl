@@ -10,7 +10,11 @@ task=so101_lift_brick
 family=so101_tabletop
 language=Pick up the brick
 
-goal=Above(brick, table)
+# ⚠ THE 0.06 MARGIN IS THE TASK. `Above(brick, table)` with no margin is TRUE
+# AT RESET — a brick resting on the table's top face is already above the
+# table BODY's origin. 6 cm clears the 1 cm slab and the 2 cm prop with room
+# to be unambiguous.
+goal=Above(brick, table, 0.06)
 
 active=table
 active=brick

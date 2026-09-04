@@ -177,9 +177,9 @@ def main() raises:
         "gather: a prop in XY but a metre ABOVE the surface -> False",
     )
 
-    # lift: Above(brick, table)
+    # lift: Above(brick, table, 0.06)
     var g_lift = bind_goal(
-        parse_goal(String("Above(brick, table)")),
+        parse_goal(String("Above(brick, table, 0.06)")),
         f, fmd.body_names, fmd.site_names,
     )
     ta.check(

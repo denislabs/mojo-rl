@@ -92,11 +92,19 @@ def pred_near(
 
 
 @always_inline
-def pred_above(az: Float64, bz: Float64) -> Bool:
-    """Strictly higher. ⚠ NO XY TEST, matching LIBERO's own `Above` — "the
-    brick is above the table" is about height, and adding a footprint test
-    here would silently change what every existing goal means."""
-    return az > bz
+def pred_above(az: Float64, bz: Float64, margin: Float64) -> Bool:
+    """Higher than `b` by at least `margin` metres.
+
+    ⚠ NO XY TEST, matching LIBERO's own `Above` — "the brick is above the
+    table" is about height, and adding a footprint test would silently change
+    what every existing goal means.
+
+    ⚠⚠ THE MARGIN IS NOT A REFINEMENT, IT IS WHAT MAKES THE GOAL MEAN
+    ANYTHING. Body ORIGINS are what these are: a prop resting on a table's top
+    face already sits above the table body's origin, so `margin = 0` makes
+    "lift the brick" true before the arm moves.
+    """
+    return az - bz >= margin
 
 
 @always_inline
@@ -182,7 +190,9 @@ def eval_goal(
                 t.param,
             )
         elif t.op == OP_ABOVE:
-            r = pred_above(xpos[t.a * 3 + 2], xpos[t.b * 3 + 2])
+            r = pred_above(
+                xpos[t.a * 3 + 2], xpos[t.b * 3 + 2], t.param
+            )
         elif t.op == OP_UPRIGHT:
             # ⚠⚠ `Data.xquat` IS (x, y, z, w) — W IS LAST. Verified against
             # five independent consumers (`sensors/touch.mojo:146`,

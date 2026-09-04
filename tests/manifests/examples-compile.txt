@@ -29,6 +29,14 @@ examples/solve_mountaincar.mojo
 examples/solve_pendulum.mojo
 examples/solve_taxi.mojo
 
+# ── the task-layer viewer ────────────────────────────────────────────
+# ⚠ COMPILE-PROBED HERE, not run: it opens an SDL3 window. Its HEADLESS half
+# is runnable and is the better smoke —
+#   pixi run mojo run -I . examples/tasks/task_viewer.mojo <task> --check
+# which loads the family, builds the model, resets from a sampled init,
+# evaluates the goal and steps once, with no display.
+examples/tasks/task_viewer.mojo
+
 # GPU device code — local-only probes (see note above):
 # examples/bipedal_walker_gpu_demo.mojo
 # examples/bipedal_walker_cpu_gpu_compare.mojo
