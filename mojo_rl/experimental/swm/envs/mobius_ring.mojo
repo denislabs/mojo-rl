@@ -41,6 +41,7 @@ from std.math import abs, cos, sin, sqrt, tanh
 
 from ..so_d import SqMat
 from ..rng import Rng
+from ..world import SwmWorld
 
 comptime ACTION_FORWARD: Int = 0
 comptime ACTION_BACKWARD: Int = 1
@@ -152,7 +153,7 @@ struct MobiusRing[
     NUISANCE_DIM: Int,
     OBS_DIM: Int,
     dtype: DType = DType.float64,
-](Copyable, Movable):
+](SwmWorld):
     """Ring world with a transported landmark and a non-transported texture.
 
     `OBS_DIM` is deliberately larger than `2 + NUISANCE_DIM`: the observation is
@@ -161,6 +162,7 @@ struct MobiusRing[
 
     comptime LATENT_DIM: Int = 2 + Self.NUISANCE_DIM
     comptime SEAM_EDGE: Int = Self.N_CELLS - 1
+    comptime ELEM: DType = Self.dtype
 
     var cfg: MobiusConfig
     var edge_rot: List[SqMat[2, Self.dtype]]
@@ -293,7 +295,10 @@ struct MobiusRing[
 
     # -- episode --------------------------------------------------------------
 
-    def reset(mut self, episode_seed: UInt64, start_cell: Int = 0) raises:
+    def reset(mut self, episode_seed: UInt64) raises:
+        self.reset_at(episode_seed, 0)
+
+    def reset_at(mut self, episode_seed: UInt64, start_cell: Int) raises:
         """Fresh landmark direction and frame. The frame starts at identity.
 
         `w` varies per episode because the per-edge transport has to be
@@ -363,6 +368,10 @@ struct MobiusRing[
                 )
             obs[r] = s + Scalar[Self.dtype](self.rng.normal() * sigma)
         return obs^
+
+    def explore_action(mut self) -> Int:
+        """E1 walks forward: on a ring that visits every double-cover state."""
+        return ACTION_FORWARD
 
     def frame_at(self, cell: Int, parity: Int) -> SqMat[2, Self.dtype]:
         """The frame reached by walking forward `cell` steps, `parity` laps in.
@@ -460,6 +469,10 @@ struct MobiusRing[
 
     def place_id(self) -> Int:
         """Oracle place identity (v2 §4.1). Learned recognition is a later phase."""
+        return self.cell
+
+    def place_label(self) -> Int:
+        """The ring keeps label merging in the trainer (`n_labels` modulus)."""
         return self.cell
 
     def lap_parity(self) -> Int:

@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–7 complete.** With learned encoders on
+**Status: Phases 0–8 complete.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -59,6 +59,10 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `observables.mojo` (Phase 7) | root-gauge PCM composition, the bootstrapped Z/2 maximal clique, `classify_cycle` with `dim ker(H − I)` |
 | `planner.mojo` (Phase 7) | `plan_exhaustive_with_place_code`: the content channel as a per-cell lookup along the rollout |
 | `envs/klein_grid.mojo` (`flat=True`) | the seam as a deck transformation: a FLAT non-orientable bundle, holonomy group `{I, M}` |
+| `world.mojo` (Phase 8) | the `SwmWorld` trait: what a world supplies for the one training loop |
+| `envs/klein_grid.mojo` `KleinWorld` (Phase 8) | the 2D bundle with an observation model (landmark + texture, aliasing modes) |
+| `map_builder.mojo` (Phase 8) | online labels from the content channel, successor conflicts, context splitting, per-clone transports |
+| `cscg.mojo` (Phase 8) | Clone-Structured Cognitive Graph by EM — the P5 baseline, gates only |
 
 ## What was learned (Phase 0–1)
 
@@ -473,16 +477,55 @@ now returns that dimension beside the class (O(3) reflection fixes a plane,
 `−I` fixes nothing, both `det = −1`; det-only classification files them
 identically, shown).
 
-## Open questions after Phase 7
+## What was learned (Phase 8 — a map with no oracle in it)
 
-1. **Label splitting needs a signal, and the residual norm is not it** (G18 C:
-   worst pair ratio 1.01). The graph's successor conflicts are (G19 C), for
-   local aliasing. For a global symmetry there is nothing to split: the
-   quotient is a consistent world, and only the frame transports disagree.
-   That is CSCG's clone count read from the graph rather than from EM, and it
-   is not built.
-2. **Curved bundles.** The Z/2 clique assumes flatness. A frame bundle over a
-   physical world is flat; 6b's is not. Whether learned transports on a
-   physical 2D world come out flat enough for the clique is unmeasured.
-3. Deferred as before: the GPU port, the float32 `nn` port, CSCG and P5, E2.
+**One training loop, two worlds (G23).** The loop now runs over the
+`SwmWorld` trait; the ring's gates pass through it unchanged. On the flat
+Klein world with learned encoders the transports reproduce the planted Z/2
+class on **31/31** fundamental cycles in every seed (5 reversing), the torus
+reads 0, landmark R² ≥ 0.98, texture R² ≤ 0.003, content cell accuracy 1.0.
+Phase 3's result holds in 2D with two actions.
+
+**The graph resolves local aliasing, and repairs a weak labeller (G24).**
+With the content channel labelling visits online (29 labels for 30 cells, the
+aliased pair merged), the merged label and no other shows a successor
+conflict; splitting by context gives **30 clones at purity 1.0**, and the
+clone graph with re-fitted transports reads **5 reversing cycles** — the
+planted number, with no oracle anywhere from encoding onward. On the
+orientable twin the content channel is a weaker place code (G18) and the
+labeller under-segments to 26 labels; the same rule recovers 30 clones at
+purity 1.0 with 0 reversing. A global symmetry gives 15 labels, 0 conflicts
+and nothing to split: the quotient is a consistent world, and its holonomy
+reading (1 reversing of 16) is not the truth's (5 of 31) — the frame
+disagreement G18 measured, now as a reading.
+
+**P5 is not confirmed (G25).** A CSCG learned by EM on the same label and
+action sequences is level with the context rule: aliasing resolved at 121
+visits (both over-split there), the exact 30-clone map at 242 visits, both.
+What separates them is stability: a fixed-budget EM keeps
+splitting places into extra pure clones as data grows (30 → 39 → 46 → 56
+while purity stays 1.0), the context rule is pinned at 30 because a label
+with one context is never split. The frame channel needs 484 visits for
+enough pairs per edge to read all 5 reversing cycles.
+
+| visits | SWM clones | CSCG clones | aliasing resolved | exact map |
+|---|---|---|---|---|
+| 121 | 34 | 35 | both, over-split | neither |
+| 242 | 30 | 30 | both | both |
+| 484 | 30 | 39 | both | SWM only |
+| 1936 | 30 | 56 | both | SWM only |
+
+## Open questions after Phase 8
+
+1. **Global symmetry is a genuine ambiguity.** Nothing in the graph refutes a
+   quotient; only the frame transports disagree, and G18 showed the encoder
+   co-adapts rather than flags. Whether a *transport residual vector* (not its
+   norm) is bimodal on merged entries is unmeasured and is the only lead.
+2. **CSCG with a merge step.** The fragmentation G25 records is what a
+   fixed-budget EM does without pruning; the published method prunes by
+   usage, which would not merge pure duplicates either. A fair extension is
+   context-based merging on CSCG's side, and then the comparison is between
+   two graph rules.
+3. **Curved bundles** and the deferred items (GPU, float32 `nn` port, E2)
+   as before.
 

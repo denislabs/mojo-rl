@@ -171,3 +171,22 @@ tests/experimental/swm/test_swmh_replan.mojo
 # fixes nothing, both det = -1 OBSTRUCTIONs that det-only classification cannot
 # tell apart (shown). <1s.
 tests/experimental/swm/test_fixed_subspace_classify.mojo
+# G23 — PHASE 8a, learned encoders on the 2D bundle. The training loop is now
+# written once over the SwmWorld trait (ring and grid both conform). On the
+# flat Klein world the learned transports reproduce the planted Z/2 class on
+# 31/31 fundamental cycles in every seed (5 reversing), the flat torus reads
+# 0 reversing, landmark R^2 >= 0.98, content cell accuracy 1.0. ~2 min.
+tests/experimental/swm/test_klein_learned.mojo
+# G24 — PHASE 8b, a map with no oracle in it. Online labels from the content
+# channel, successor conflicts on exactly the merged labels, clones by
+# context splitting (30 clones, purity 1.0, 5 reversing on the clone graph
+# with re-fitted transports). The orientable twin's labeller UNDER-segments
+# (26 labels) and the graph rule repairs it. A GLOBAL symmetry: 15 labels, 0
+# conflicts, nothing to split — a consistent quotient, recorded. ~1.5 min.
+tests/experimental/swm/test_klein_map_builder.mojo
+# G25 — PHASE 8c, the P5 comparison against a CSCG learned by EM on the SAME
+# label and action sequences. NOT confirmed: level — aliasing resolved at 121
+# visits, the exact map at 242, for both. What separates them is stability — fixed-budget EM fragments places
+# into extra pure clones as data grows (30 -> 56) while the context rule stays
+# at 30. Recorded and gated. ~1 min.
+tests/experimental/swm/test_cscg_comparison.mojo

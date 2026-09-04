@@ -64,6 +64,8 @@ from .content import ContentChannel
 from .place_graph import PlaceGraph, Edge
 from .procrustes import PairBatch
 from .envs.mobius_ring import MobiusRing, MobiusConfig, ACTION_FORWARD
+from .world import SwmWorld
+from .map_builder import WalkRecord
 
 
 @fieldwise_init
@@ -255,6 +257,19 @@ struct EncodedRollouts[dtype: DType = DType.float64](Copyable, Movable):
         self.n_frames = move.n_frames
 
 
+@fieldwise_init
+struct WorldStats(Copyable, ImplicitlyCopyable, Movable):
+    """Validity diagnostics of a trained model on a world (see `Phase3Result`
+    for what each one guards against)."""
+
+    var transport_residual: Float64
+    var u_anisotropy: Float64
+    var landmark_r2: Float64
+    var nuisance_r2: Float64
+    var within_place_std: Float64
+    var content_cell_acc: Float64
+
+
 struct SwmPhase3[
     N_CELLS: Int,
     NUISANCE_DIM: Int,
@@ -287,8 +302,28 @@ struct SwmPhase3[
     def train(
         env_cfg: MobiusConfig, cfg: Phase3Config
     ) raises -> Self.ModelT:
-        var rng = Rng(cfg.seed)
         var env = Self.EnvT(env_cfg)
+        var n_labels = Self.N_CELLS
+        if cfg.place_labels_from_texture and env_cfg.texture_alias > 1:
+            n_labels = Self.N_CELLS // env_cfg.texture_alias
+            if n_labels < 1:
+                n_labels = 1
+        return Self.train_world(env, cfg, n_labels)
+
+    @staticmethod
+    def train_world[
+        W: SwmWorld
+    ](mut env: W, cfg: Phase3Config, n_labels: Int) raises -> Self.ModelT:
+        """The training loop, over any `SwmWorld` (Phase 8 made it generic).
+
+        Places are `env.place_id() % n_labels`: the oracle cell when
+        `n_labels == N_CELLS`, a merged label otherwise (G18 leg C). Actions
+        come from the world's own exploration policy and are RECORDED, because
+        the transport table and the content transition are both indexed by
+        the action taken.
+        """
+        comptime assert W.ELEM == Self.dtype, "world and trainer dtype differ"
+        var rng = Rng(cfg.seed)
         var enc = Self.EncoderT(rng)
         var table = Self.TableT(
             flip_margin=cfg.flip_margin,
@@ -299,11 +334,6 @@ struct SwmPhase3[
 
         var steps = cfg.laps * Self.N_CELLS
         var n_frames = steps + 1
-        var n_labels = Self.N_CELLS
-        if cfg.place_labels_from_texture and env_cfg.texture_alias > 1:
-            n_labels = Self.N_CELLS // env_cfg.texture_alias
-            if n_labels < 1:
-                n_labels = 1
 
         for epoch in range(cfg.epochs):
             var allow_flip = epoch >= cfg.warmup_epochs
@@ -320,6 +350,7 @@ struct SwmPhase3[
                 var lat_all = List[List[Scalar[Self.dtype]]]()
                 var dlat_all = List[List[Scalar[Self.dtype]]]()
                 var place_all = List[Int]()
+                var act_all = List[Int]()
                 var is_last = List[Bool]()
 
                 for b in range(batch):
@@ -327,7 +358,7 @@ struct SwmPhase3[
                         cfg.seed ^ UInt64(epoch * 100000 + (ep + b) * 131 + 1)
                     )
                     for t in range(n_frames):
-                        var o = env.observation()
+                        var o = Self._own_obs[W](env.observation())
                         var hid = List[Scalar[Self.dtype]](
                             length=Self.HID, fill=0
                         )
@@ -341,10 +372,13 @@ struct SwmPhase3[
                         dlat_all.append(
                             List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
                         )
-                        place_all.append(env.place_id() % n_labels)
+                        place_all.append(env.place_label() % n_labels)
                         is_last.append(t == steps)
+                        var a = -1
                         if t < steps:
-                            env.step(ACTION_FORWARD)
+                            a = env.explore_action()
+                            env.step(a)
+                        act_all.append(a)
 
                 var n_all = len(lat_all)
                 var scale = Scalar[Self.dtype](1.0 / Float64(batch * steps))
@@ -357,7 +391,7 @@ struct SwmPhase3[
                         u_src[i] = lat_all[t][i]
                         u_dst[i] = lat_all[t + 1][i]
                     var d_src = table.observe(
-                        ACTION_FORWARD,
+                        act_all[t],
                         place_all[t],
                         u_src,
                         u_dst,
@@ -389,7 +423,7 @@ struct SwmPhase3[
                                 h_dst[i] = lat_all[t + 1][Self.D + i]
                             _ = content.transition(
                                 h_src,
-                                ACTION_FORWARD,
+                                act_all[t],
                                 h_dst,
                                 dlat_all[t],
                                 Self.D,
@@ -407,6 +441,126 @@ struct SwmPhase3[
                 ep += batch
 
         return Self.ModelT(enc^, table^, content^, use_content)
+
+    @staticmethod
+    def record_walks[
+        W: SwmWorld
+    ](
+        mut env: W,
+        model: Self.ModelT,
+        episodes: Int,
+        steps: Int,
+        seed: UInt64,
+    ) raises -> WalkRecord:
+        """Encode `episodes` walks of `steps` steps under the world's own
+        exploration policy, keeping the true place beside each visit for
+        scoring only (Phase 8 map building)."""
+        comptime assert W.ELEM == Self.dtype, "world and trainer dtype differ"
+        var rec = WalkRecord(Self.CONTENT_DIM)
+        for ep in range(episodes):
+            env.reset(seed + UInt64(ep))
+            for t in range(steps + 1):
+                var o = Self._own_obs[W](env.observation())
+                var hid = List[Scalar[Self.dtype]](length=Self.HID, fill=0)
+                var lat = List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
+                model.enc.forward(o, hid, lat)
+                var lf = List[Float64](length=Self.LAT, fill=0)
+                for i in range(Self.LAT):
+                    lf[i] = Float64(lat[i])
+                var a = -1
+                if t < steps:
+                    a = env.explore_action()
+                rec.push(lf, Self.D, a, env.place_id())
+                if a >= 0:
+                    env.step(a)
+        return rec^
+
+    @staticmethod
+    def _own_obs[
+        W: SwmWorld
+    ](src: List[Scalar[W.ELEM]]) -> List[Scalar[Self.dtype]]:
+        """Element-wise cast into the trainer's dtype. `rebind` would need an
+        implicit List copy; the dtypes are asserted equal anyway."""
+        var out = List[Scalar[Self.dtype]](length=len(src), fill=0)
+        for i in range(len(src)):
+            out[i] = src[i].cast[Self.dtype]()
+        return out^
+
+    @staticmethod
+    def validity_stats[
+        W: SwmWorld
+    ](
+        mut env: W,
+        model: Self.ModelT,
+        cfg: Phase3Config,
+        n_episodes: Int = 16,
+    ) raises -> WorldStats:
+        """The validity diagnostics G6 reads, on any world: transport residual
+        (on the actions actually taken), anisotropy, landmark and nuisance
+        R^2, within-place std, content cell accuracy. Holonomies are the
+        caller's business — they depend on the world's graph."""
+        comptime assert W.ELEM == Self.dtype, "world and trainer dtype differ"
+        var steps = cfg.laps * Self.N_CELLS
+        var n_frames = steps + 1
+        var us = List[Float64]()
+        var lms = List[Float64]()
+        var nus = List[Float64]()
+        var places = List[Int]()
+        var hs = List[Float64]()
+        var resid = Float64(0)
+        var n_trans = 0
+        for ep in range(n_episodes):
+            env.reset(cfg.seed ^ UInt64(0xE7A1_0000 + ep))
+            var prev_u = List[Scalar[Self.dtype]](length=Self.D, fill=0)
+            var prev_place = 0
+            var prev_a = 0
+            for t in range(n_frames):
+                var o = Self._own_obs[W](env.observation())
+                var hid = List[Scalar[Self.dtype]](length=Self.HID, fill=0)
+                var lat = List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
+                model.enc.forward(o, hid, lat)
+                var lm_raw = env.true_landmark()
+                var lm = InlineArray[Scalar[Self.dtype], 2](fill=0)
+                for i in range(2):
+                    lm[i] = lm_raw[i].cast[Self.dtype]()
+                var nu = Self._own_obs[W](env.nuisance_at(env.place_id()))
+                for i in range(Self.D):
+                    us.append(Float64(lat[i]))
+                places.append(env.place_id())
+                for i in range(Self.CONTENT_DIM):
+                    hs.append(Float64(lat[Self.D + i]))
+                lms.append(Float64(lm[0]))
+                lms.append(Float64(lm[1]))
+                for k in range(Self.NUISANCE_DIM):
+                    nus.append(Float64(nu[k]))
+                if t > 0:
+                    var r = model.table.transport_for(prev_a, prev_place)
+                    for i in range(Self.D):
+                        var pred = Scalar[Self.dtype](0)
+                        for j in range(Self.D):
+                            pred += r[i, j] * prev_u[j]
+                        var e = Float64(pred - lat[i])
+                        resid += e * e
+                    n_trans += 1
+                for i in range(Self.D):
+                    prev_u[i] = lat[i]
+                prev_place = env.place_id()
+                if t < steps:
+                    prev_a = env.explore_action()
+                    env.step(prev_a)
+        if n_trans > 0:
+            resid /= Float64(n_trans)
+        var n_pts = len(us) // Self.D
+        return WorldStats(
+            resid,
+            Self._anisotropy(us, n_pts),
+            Self._explained_variance(us, lms, n_pts, Self.D),
+            Self._explained_variance(us, nus, n_pts, Self.NUISANCE_DIM),
+            Self._within_place_std(us, places, n_pts),
+            Self._centroid_accuracy[Self.CONTENT_DIM](
+                hs, places, n_pts, Self.N_CELLS, False
+            ),
+        )
 
     @staticmethod
     def _place_variance_grad(
