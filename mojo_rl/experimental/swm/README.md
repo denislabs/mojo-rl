@@ -5,7 +5,7 @@ observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
 (R² ≥ 0.983) and rejecting the texture (R² ≤ 0.009). Hypothesis 4.0 holds on
-E1. Remaining in Phase 3: the G8 ablations.
+E1, and the v1 cocycle loss is measured to be destructive or inert (G8).
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -44,6 +44,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `mlp.mojo` | 2-layer MLP, hand-written grads + Adam, float64 (see below) |
 | `transport.mojo` | per-(action, place) O(D) transports, both components carried, orientation bit |
 | `swm_trainer.mojo` | Phase 3 training loop and the observables it reads |
+| `ablations.mojo` | the v1 arms (translations; free/orthogonal morphisms + cocycle) — **gates only** |
 
 ## What was learned (Phase 0–1)
 
@@ -123,6 +124,26 @@ reflection act like the identity and reads `+1` for reasons unrelated to the
 world. That is a 1e-12-scale distinction, and the networks here are 16→32→10.
 Porting to `nn` is graduation work.
 
+**The cocycle loss is inert on the topological class, and it is exact.**
+`L = ‖H − I‖²_F = 4 − 2 tr H`; on the `det = −1` component every `H` is a
+reflection, so `tr H = 0` and `L = 4` identically. Measured: raw gradient
+**13.86**, tangent projection **6.7e-16**. The control that makes that a
+measurement rather than an artefact is a *continuously frustrated* orientable
+ring (`det = +1`, `H ≠ I`), where the tangent gradient is **7.61** — sixteen
+orders of magnitude apart. With free morphisms the same term is destructive
+instead: `det H` runs −1.00 → −0.47 → −0.14 → −0.02 as λ grows, the minimum
+singular value shrinks 1.0 → 0.64, and the local residual rises 8×.
+
+**The prototype's 7–10× parity gap does not transfer, for an exact reason.** In
+the oracle-frame prototype the observations are centred, so model B's fitted
+translations are exactly zero: it predicts "nothing moves", which is *right*
+after an even number of laps and wrong after an odd one — a clean parity ratio
+with B nearly matching A at even `k`. A learned frame carries an offset, so the
+translations are non-zero, accumulate, and B fails at *every* lap (10–27× worse
+than A, odd/even compressed to 1.8×). A stronger refutation of the constant
+sheaf, not a weaker one — so the gate asserts the B-vs-A gap and *reports* the
+parity ratio instead of asserting the prototype's number.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -134,11 +155,10 @@ miscompute in this repo, so CPU numbers get frozen as the reference first.
 
 ## Next
 
-G8, the ablations (translation baseline; free morphisms + cocycle loss; and
-orthogonal morphisms + cocycle loss, which should be measurably inert). Then
-the Phase 3→4 boundary: G9 (fault classification) needs GNC weights and the
-classification table, which live in Phase 4's `observables.mojo` — this plan
-originally listed it under Phase 3, which was an error in the plan.
+Phase 4: descent-based inference, GNC confidence weights, and the classification
+table — and with them G9 (fault classification), which this plan originally
+listed under Phase 3 in error, since it depends on machinery that lives in
+Phase 4's `observables.mojo`.
 
 A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
 landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and

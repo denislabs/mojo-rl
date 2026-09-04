@@ -61,6 +61,7 @@ from .rng import Rng
 from .mlp import Mlp
 from .transport import TransportTable
 from .place_graph import PlaceGraph, Edge
+from .procrustes import PairBatch
 from .envs.mobius_ring import MobiusRing, MobiusConfig, ACTION_FORWARD
 
 
@@ -116,6 +117,77 @@ struct Phase3Result(Copyable, ImplicitlyCopyable, Movable):
     decided by noise and `det H` is a coin flip — INVALID, not negative."""
 
 
+struct TrainedModel[
+    OBS_DIM: Int,
+    HID: Int,
+    LAT: Int,
+    D: Int,
+    N_ACTIONS: Int,
+    N_PLACES: Int,
+    dtype: DType = DType.float64,
+](Copyable, Movable):
+    """A trained encoder plus its transport table, so gates can reuse both."""
+
+    var enc: Mlp[Self.OBS_DIM, Self.HID, Self.LAT, Self.dtype]
+    var table: TransportTable[Self.D, Self.N_ACTIONS, Self.N_PLACES, Self.dtype]
+
+    def __init__(
+        out self,
+        var enc: Mlp[Self.OBS_DIM, Self.HID, Self.LAT, Self.dtype],
+        var table: TransportTable[
+            Self.D, Self.N_ACTIONS, Self.N_PLACES, Self.dtype
+        ],
+    ):
+        self.enc = enc^
+        self.table = table^
+
+    def __init__(out self, *, copy: Self):
+        self.enc = copy.enc.copy()
+        self.table = copy.table.copy()
+
+    def __init__(out self, *, deinit move: Self):
+        self.enc = move.enc^
+        self.table = move.table^
+
+
+struct EncodedRollouts[dtype: DType = DType.float64](Copyable, Movable):
+    """Frame-channel encodings of held-out episodes, laid out for the ablations.
+
+    `batches[e]` holds the observed (u_src, u_dst) pairs of edge `e`; `seq_u`
+    holds whole trajectories so a loop-closure error can be computed the way
+    the numpy oracle computes it.
+    """
+
+    var batches: List[PairBatch[2, Self.dtype]]
+    var seq_u: List[Scalar[Self.dtype]]
+    var n_episodes: Int
+    var n_frames: Int
+
+    def __init__(
+        out self,
+        var batches: List[PairBatch[2, Self.dtype]],
+        var seq_u: List[Scalar[Self.dtype]],
+        n_episodes: Int,
+        n_frames: Int,
+    ):
+        self.batches = batches^
+        self.seq_u = seq_u^
+        self.n_episodes = n_episodes
+        self.n_frames = n_frames
+
+    def __init__(out self, *, copy: Self):
+        self.batches = copy.batches.copy()
+        self.seq_u = copy.seq_u.copy()
+        self.n_episodes = copy.n_episodes
+        self.n_frames = copy.n_frames
+
+    def __init__(out self, *, deinit move: Self):
+        self.batches = move.batches^
+        self.seq_u = move.seq_u^
+        self.n_episodes = move.n_episodes
+        self.n_frames = move.n_frames
+
+
 struct SwmPhase3[
     N_CELLS: Int,
     NUISANCE_DIM: Int,
@@ -133,9 +205,21 @@ struct SwmPhase3[
         Self.N_CELLS, Self.NUISANCE_DIM, Self.OBS_DIM, Self.dtype
     ]
     comptime TableT = TransportTable[Self.D, 2, Self.N_CELLS, Self.dtype]
+    comptime ModelT = TrainedModel[
+        Self.OBS_DIM, Self.HID, Self.LAT, Self.D, 2, Self.N_CELLS, Self.dtype
+    ]
 
     @staticmethod
     def run(env_cfg: MobiusConfig, cfg: Phase3Config) raises -> Phase3Result:
+        var model = Self.train(env_cfg, cfg)
+        var env = Self.EnvT(env_cfg)
+        var steps = cfg.laps * Self.N_CELLS
+        return Self._evaluate(env, model.enc, model.table, cfg, steps, steps + 1)
+
+    @staticmethod
+    def train(
+        env_cfg: MobiusConfig, cfg: Phase3Config
+    ) raises -> Self.ModelT:
         var rng = Rng(cfg.seed)
         var env = Self.EnvT(env_cfg)
         var enc = Self.EncoderT(rng)
@@ -216,7 +300,7 @@ struct SwmPhase3[
                 enc.adam_step(cfg.lr_encoder)
                 ep += batch
 
-        return Self._evaluate(env, enc, table, cfg, steps, n_frames)
+        return Self.ModelT(enc^, table^)
 
     @staticmethod
     def _place_variance_grad(
@@ -296,6 +380,59 @@ struct SwmPhase3[
             dlat_all[t][1] += Scalar[Self.dtype](
                 cfg.cov_weight * 2.0 * cov01 * c0 / d
             )
+
+    @staticmethod
+    def encode_rollouts(
+        model: Self.ModelT,
+        env_cfg: MobiusConfig,
+        cfg: Phase3Config,
+        n_episodes: Int,
+        seed_salt: UInt64 = 0xAB1A_7000,
+    ) raises -> EncodedRollouts[Self.dtype]:
+        """Encode held-out episodes into frame-channel pairs and trajectories.
+
+        The ablations of `ablations.mojo` are fitted on THESE, i.e. on the same
+        learned representations model A uses, so the comparison isolates the
+        transport model. That is also what the numpy prototype does — it fits
+        every arm to one fixed set of observations.
+        """
+        var env = Self.EnvT(env_cfg)
+        var steps = cfg.laps * Self.N_CELLS
+        var n_frames = steps + 1
+        var batches = List[PairBatch[2, Self.dtype]]()
+        for _ in range(Self.N_CELLS):
+            batches.append(PairBatch[2, Self.dtype]())
+        var seq_u = List[Scalar[Self.dtype]](
+            length=n_episodes * n_frames * 2, fill=0
+        )
+
+        for ep in range(n_episodes):
+            env.reset(cfg.seed ^ (seed_salt + UInt64(ep)))
+            var prev = List[Scalar[Self.dtype]](length=Self.D, fill=0)
+            var prev_place = 0
+            for t in range(n_frames):
+                var o = env.observation()
+                var hid = List[Scalar[Self.dtype]](length=Self.HID, fill=0)
+                var lat = List[Scalar[Self.dtype]](length=Self.LAT, fill=0)
+                model.enc.forward(o, hid, lat)
+                for i in range(Self.D):
+                    seq_u[(ep * n_frames + t) * 2 + i] = lat[i]
+                if t > 0:
+                    var x = InlineArray[Scalar[Self.dtype], 2](fill=0)
+                    var y = InlineArray[Scalar[Self.dtype], 2](fill=0)
+                    for i in range(Self.D):
+                        x[i] = prev[i]
+                        y[i] = lat[i]
+                    batches[prev_place].push(x, y)
+                for i in range(Self.D):
+                    prev[i] = lat[i]
+                prev_place = env.place_id()
+                if t < steps:
+                    env.step(ACTION_FORWARD)
+
+        return EncodedRollouts[Self.dtype](
+            batches^, seq_u^, n_episodes, n_frames
+        )
 
     @staticmethod
     def _evaluate(

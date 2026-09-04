@@ -51,3 +51,11 @@ tests/experimental/swm/test_swmh_e1_det_h.mojo
 # obstruction is unreachable, 0/8. Records an honest NEGATIVE on a mechanism
 # this plan proposed: margin + min-count hysteresis is INERT on E1. ~21s.
 tests/experimental/swm/test_swmh_bit_stability.mojo
+# G8 — the v1 ablations (P2). The inert half is EXACT algebra, not a trend:
+# L = 4 - 2 tr H is constant on the det = -1 component, so the cocycle loss has
+# exactly zero TANGENT gradient there (measured 6.7e-16 against a raw gradient
+# of 13.9), while a continuously frustrated orientable ring gives a tangent
+# gradient of 7.6 — the control that makes the zero a measurement. Then the
+# arms on learned encodings: free morphisms collapse (det H -1 -> -0.02), and
+# orthogonal ones are bit-identical to plain Procrustes. ~5s.
+tests/experimental/swm/test_swmh_ablations.mojo
