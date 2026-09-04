@@ -341,9 +341,22 @@ comptime NEWTON_COOP_DIV: Int = 1
 # under-report it; shared memory has no cache below it, so pass two costs what
 # pass one did.
 #
+# ⚠⚠ 5-8 ARE THE SETUP, WHICH THE MIN_ITER SWEEP MEASURED AT 94.8% OF NEWTON.
+# The loop (terms 1-4) is 5.2%; 1-4 together account for 11% of newton, so the
+# setup is where the rest is. These four are the parts of it that can be run
+# again without changing the answer. The FIFTH part — the `for j in
+# range(NJOINT)` row builder — cannot: it ACCUMULATES `num_edges`, and making it
+# idempotent means restructuring 300 lines. It is measured BY SUBTRACTION, the
+# same way the 89% was found: whatever the setup total is minus terms 5-8.
+#
 #   0 = off (production)     3 = the `d_j` reduction inside _chol_factor_coop
 #   1 = the gradient loop    4 = the Mv/search read-back loop
 #   2 = the per-block solve
+#   --- setup (once per solve, not per iteration) ---
+#   5 = the workspace init + edge zeroing   (runs for all MC slots even at nc=0)
+#   6 = the contact normal/friction precompute
+#   7 = the `M_sh` cooperative load          (NV^2 read from global)
+#   8 = `Ma = M*qacc` + f_smooth             (tid-0, sum(bn^2) after PN2e)
 comptime NEWTON_SERIAL_PROBE: Int = 0
 comptime SERIAL_PROBE_REPEAT: Int = 10
 
@@ -3464,6 +3477,24 @@ def _newton_blocked_fields_kernel[
 
     # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
     if valid_env:
+        comptime if NEWTON_SERIAL_PROBE == 5:
+            # Pure stores of constants; the real pass below rewrites every one.
+            for _r in range(SERIAL_PROBE_REPEAT - 1):
+                _init_common_normal_ws[
+                    DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
+                if contact_tid < MC:
+                    var p_ck: Scalar[DTYPE] = 0
+                    for e in range(NE_ZERO):
+                        for d in range(NV):
+                            var a = ws_Jt_idx + e * MC * NV + contact_tid * NV + d
+                            solver[env, a] = 0
+                            p_ck += rebind[Scalar[DTYPE]](solver[env, a])
+                    # ⚠ NOT `ctrl_sh` — the shared arrays are not declared
+                    # until ~250 lines below, so this site consumes into a
+                    # `solver` slot the real pass rewrites regardless. The
+                    # branch is unreachable; it only has to be UNPROVABLY so.
+                    if p_ck == _probe_sentinel[DTYPE]():
+                        solver[env, ws_Jt_idx] = Scalar[DTYPE](0)
         _init_common_normal_ws[
             DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
         if contact_tid < MC:
@@ -3537,6 +3568,25 @@ def _newton_blocked_fields_kernel[
 
     # === PARALLEL PHASE 1: each thread precomputes one contact's normal data ==
     if valid_env:
+        comptime if NEWTON_SERIAL_PROBE == 6:
+            # Both are pure functions of contacts/qvel/cdof/m_inv into the
+            # solver workspace; the real passes below rewrite the same slots.
+            # ⚠ The friction half keeps its `contact_tid < nc` CALL-SITE guard —
+            # it has no internal one, unlike the normal half.
+            for _r in range(SERIAL_PROBE_REPEAT - 1):
+                _precompute_contact_normal[
+                    DTYPE, V_SIZE](
+                    env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
+                    mmeta, body_invweight0, cdof, m_inv, qacc_constrained, solver,
+                    K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
+                    si_power,
+                )
+                if contact_tid < nc:
+                    _precompute_contact_friction[
+                        DTYPE, V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
+                        env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
+                        mmeta, cdof, solver, B_damp, impratio, K_spring,
+                    )
         _precompute_contact_normal[
             DTYPE, V_SIZE](
             env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
@@ -3857,6 +3907,18 @@ def _newton_blocked_fields_kernel[
 
     # === COOPERATIVE LOAD: M into shared ===
     if valid_env:
+        comptime if NEWTON_SERIAL_PROBE == 7:
+            # `NV^2` scalars read from GLOBAL every solve — the one setup term
+            # that grows quadratically in nv. Pure copy; the real pass rewrites
+            # every slot.
+            for _r in range(SERIAL_PROBE_REPEAT - 1):
+                var p_ck: Scalar[DTYPE] = 0
+                for k in range(tid, NV * NV, COOP):
+                    var v = rebind[Scalar[DTYPE]](M[env, k])
+                    M_sh[k] = v
+                    p_ck += v
+                if p_ck == _probe_sentinel[DTYPE]():
+                    ctrl_sh[2] = Scalar[DTYPE](0)
         for k in range(tid, NV * NV, COOP):
             M_sh[k] = rebind[Scalar[DTYPE]](M[env, k])
 
@@ -4339,6 +4401,20 @@ def _newton_blocked_fields_kernel[
         # both of the ones out here in the setup, which between them cost more
         # than several iterations. `range(tid, ..., THREADS)` made the others
         # easy to spot; a bare `for i in range(NV)` under `tid == 0` did not.
+        comptime if NEWTON_SERIAL_PROBE == 8:
+            # `Ma` is reset to 0 at the top of each row, so the accumulation is
+            # idempotent and the real pass below recomputes it identically.
+            for _r in range(SERIAL_PROBE_REPEAT - 1):
+                for i in range(NV):
+                    Ma[i] = Scalar[DTYPE](0)
+                    var j0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                    var j1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                    if j1 <= j0:
+                        j0 = 0
+                        j1 = NV
+                    for j in range(j0, j1):
+                        Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
+                    f_smooth[i] = Ma[i]
         for i in range(NV):
             Ma[i] = Scalar[DTYPE](0)
             var j0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
