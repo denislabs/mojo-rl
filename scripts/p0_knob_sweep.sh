@@ -10,10 +10,10 @@
 #   KNOB=NEWTON_MIN_ITER VALUES="0 20 100 180" \
 #       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
 #
-#   # F3 step 2 — OCCUPANCY. Threads per block = MAX_CONTACTS * MULT, so
-#   # 16/32/64/128 at MC=16. Bit-exact at every value; lives in je_budget.mojo:
+#   # F3 step 2 — OCCUPANCY. Threads per block = max(MAX_CONTACTS, FLOOR).
+#   # Bit-exact at every value; lives in je_budget.mojo:
 #   KNOB_SRC=mojo_rl/physics3d/solver/je_budget.mojo \
-#   KNOB=NEWTON_THREADS_MULT VALUES="1 2 4 8" \
+#   KNOB=NEWTON_THREADS_FLOOR VALUES="16 32 64 128" \
 #       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
 #
 # This is one script rather than one per knob on purpose: the sed/restore/

@@ -70,8 +70,37 @@ from std.sys.info import size_of
 # ~80 KB. If that spills hard enough it cancels the occupancy win, and the sweep
 # will show it as a curve that turns over rather than one that keeps improving.
 #
-# 1 = production. Sweep 1/2/4/8 (16/32/64/128 threads at MC=16).
-comptime NEWTON_THREADS_MULT: Int = 1
+# MEASURED, k=13 park scene (NV=84, MC=16), newton excess over k=0, controls
+# flat at 1.000-1.001 across all four legs:
+#
+#     threads  occupancy   newton excess   speedup   env-steps/s
+#        16      0.78%       20.258 ms      1.000       30,026
+#        32      1.56%       18.720         1.082       31,433
+#        64      3.12%       16.281         1.244       33,861   <- best
+#       128      6.25%       17.303         1.171       32,719   <- turns over
+#
+# ⚠⚠ AND THE TURNOVER IS THE LOCAL-MEMORY TAX THIS SWEEP EXISTED TO FIND. At
+# k=0 128 threads is 0.70x — 43% SLOWER — where there is no work to amortise
+# the ~5 KB/thread of per-thread `Scratch` (645 KB/block at 128 vs 80 KB at
+# 16). The tax scales with THREADS * NV, so it bites hardest on wide models,
+# which are exactly the ones the extra warps were bought for.
+#
+# Decomposing against `NEWTON_COOP_DIV`'s 2.25 ms of divisible work: at 64
+# threads work-division explains 1.688 ms of the 3.977 saved and the residual
+# 2.289 is occupancy. That residual is BIGGER than the mechanism COOP_DIV
+# priced, which is why reopening F3 on the occupancy argument was right and why
+# its 2.25 ms ceiling was never the whole story.
+#
+# ⚠ A FLOOR, NOT A MULTIPLIER, and that is a deliberate change from what was
+# swept. A `4x` multiplier reproduces 64 threads at MC=16 but would give 128 at
+# `so101_tabletop`'s MC=32 — squarely in the regressing region. An absolute
+# floor gives every model the thread count that was actually measured good, and
+# never more.
+#
+# ⚠ ONLY MC=16 / NV=84 WAS SWEPT. 64 is the measured optimum there and a
+# defensible default elsewhere because it is LOWER than a multiplier would give;
+# it is not known to be optimal for another shape.
+comptime NEWTON_THREADS_FLOOR: Int = 64
 
 
 def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
@@ -94,9 +123,10 @@ def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
     edits 2,000 lines apart.
 
     ⚠ NEVER LESS THAN `MAX_CONTACTS` — see the note on the contact phases above
-    — so the multiplier only ever scales UP, and a value below 1 is clamped.
+    — so the floor only ever raises the count, never lowers it.
     """
-    return _max_one[MAX_CONTACTS]() * _max_one[NEWTON_THREADS_MULT]()
+    comptime MC = _max_one[MAX_CONTACTS]()
+    return MC if MC > NEWTON_THREADS_FLOOR else NEWTON_THREADS_FLOOR
 
 
 # ⚠⚠ THE PER-BLOCK SHARED LIMIT THE BLOCKED KERNEL IS COMPILED AGAINST, and it
