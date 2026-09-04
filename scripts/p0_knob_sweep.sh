@@ -20,6 +20,10 @@
 # fingerprint logic is the part that must not drift between sweeps, and it was
 # already copied once.
 #
+#   # Where in the SETUP is the time? (WRONG ANSWER — timing only):
+#   KNOB=NEWTON_STOP_AFTER VALUES="0 1 2 3 4" \
+#       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
+#
 # ⚠⚠ THE MAGNITUDE IS THE NON-VACUITY CHECK, and it differs per knob. For
 # SERIAL_PROBE at REPEAT=10 a term worth 5% of newton must move newton ~45%; a
 # term inside the noise floor (~1.7% here for kernels over 1 ms/step) has either

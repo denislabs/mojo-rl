@@ -413,6 +413,38 @@ comptime NEWTON_MIN_ITER: Int = 0
 # solve serialises the block. Read the counts, then turn it off and re-time.
 comptime NEWTON_ITER_REPORT: Bool = False
 
+# ⚠⚠ STAGE BISECT OF THE SETUP. The MIN_ITER sweep put the Newton LOOP at 5.2%
+# of newton and the per-solve SETUP at 94.8%; the repeat probe then accounted
+# for only ~8.6% of it and left ~19 ms/step at k=13 unlocated. Repetition cannot
+# find the rest, and the reason is on record: three of those four terms touch
+# GLOBAL memory, where repeating a term measures its WARM cost and under-reports
+# it. So this is a different instrument — cumulative timing by early return.
+#
+#   1 = after the workspace init + edge zeroing
+#   2 = after the contact normal/friction precompute
+#   3 = after the cooperative M_sh / Je loads   (i.e. before the tid-0 setup)
+#   4 = after the whole tid-0 setup             (i.e. before the Newton loop)
+#
+# `t(4) - t(3)` is the 660-line tid-0 serial block, `t(3) - t(2)` the
+# cooperative loads, and so on. `t(4)` should land near the ~20 ms/step the
+# MIN_ITER sweep attributes to setup — **that agreement is the instrument's own
+# validity check**, and if it fails the bisect is measuring something else.
+#
+# ⚠ WHY AN EARLY RETURN IS SAFE HERE, WHEN CAPPING ITERATIONS WAS NOT. On entry
+# `qacc_constrained` already holds the SMOOTH (unconstrained) acceleration —
+# the tid-0 setup reads it as `qacc`/`qacc_smooth` at the top. Returning early
+# therefore leaves exactly the answer the kernel itself writes when `nefc == 0`,
+# which it documents as a no-op rather than an approximation. The sim runs on
+# with no constraint forces: WRONG, but stable and bounded, not divergent.
+#
+# ⚠ THE CONTROLS ARE THE OTHER CHECK. If `collision` moves between stages the
+# workload has changed and the whole comparison is void — an unconstrained sim
+# is still a DIFFERENT sim, and only its stability is being relied on here.
+#
+# ⚠ Every return is comptime-selected and unconditional, so all threads take it
+# together and no `barrier()` is left half-reached. Timing instrument only.
+comptime NEWTON_STOP_AFTER: Int = 0
+
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
 # dead-store elimination is entitled to delete the whole thing — and the probe
@@ -3536,6 +3568,9 @@ def _newton_blocked_fields_kernel[
                         env, ws_Jt_idx + e * MC * NV + contact_tid * NV + d
                     ] = 0
 
+    comptime if NEWTON_STOP_AFTER == 1:
+        return
+
     # === Read metadata (all threads; legacy `dt` read dropped — unused) ===
     var nc = 0
     var K_spring: Scalar[DTYPE] = 0
@@ -3817,6 +3852,9 @@ def _newton_blocked_fields_kernel[
     # Sized to 1 when spilling so the threadgroup allocation disappears.
     comptime JE_SH_ELEMS = _JE_ELEMS if JE_IN_SHARED else 1
 
+    comptime if NEWTON_STOP_AFTER == 2:
+        return
+
     # === SHARED memory (per-block == per-env) ===
     var M_sh = LayoutTensor[
         DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
@@ -3973,6 +4011,9 @@ def _newton_blocked_fields_kernel[
                 )
 
     barrier()
+
+    comptime if NEWTON_STOP_AFTER == 3:
+        return
 
     # === THREAD 0: joint-limit edge detection + initial setup ===
     var qacc = Scratch[Scalar[DTYPE], V_SIZE](
@@ -4594,6 +4635,8 @@ def _newton_blocked_fields_kernel[
 
     # Make num_edges + force_sh visible to all threads.
     barrier()
+    comptime if NEWTON_STOP_AFTER == 4:
+        return
     var num_edges_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
 
     # === Newton iterations — ALL threads execute the loop ===
