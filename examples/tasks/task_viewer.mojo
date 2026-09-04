@@ -1,12 +1,29 @@
 """Watch a `.task` run — the task layer, on screen.
 
+    pixi run build-imgui                                          # ONCE
     pixi run mojo run -I . examples/tasks/task_viewer.mojo
-    pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_lift_brick
-    pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_gather_bricks 7
+    pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_lift_brick 7
+    pixi run mojo run -I . examples/tasks/task_viewer.mojo <task> --check
 
-argv is the TASK NAME and an optional SEED. Both pick DATA, not code: the same
-binary runs every task in `mojo_rl/tasks/tasks/`, which is the claim the whole
-layer exists to make. Add a `.task` file and it is selectable with no rebuild.
+argv only picks which task opens FIRST; **every task is in the sidebar** and
+switching is instant. Both argv arguments pick DATA, not code: the same binary
+runs every task in `mojo_rl/tasks/tasks/`, which is the claim the whole layer
+exists to make.
+
+⚠⚠ A TASK SWITCH DOES NOT REBUILD THE MODEL, and that is the fixed scene
+budget paying off in the one place you can watch it. Every task in a family
+instantiates every slot, so `nq`/`nv`/`ngeom` are constant across the list —
+switching reloads a `.task`, rebinds a goal, and resets. `manipulation`'s
+viewer has to tear the renderer down for its switch because each of its tasks
+is a different MODEL; this one does not.
+
+⚠⚠ IT OPENS ON THE FREE CAMERA. `so_arm101.xml` ships exactly one camera —
+`wrist_cam`, bolted to the wrist — and the renderer opens on `active_camera
+= 0`, so without `request_free_camera()` you look down the gripper at whatever
+the gripper faces, and dragging cannot fix it: a body-attached camera is
+re-aimed EVERY frame, so the mouse fights the model and loses.
+`sac_so_arm101_reach_policy_viewer.mojo` records the same trap on the same
+asset.
 
 ⚠ RUN THIS ON THE LAPTOP, not a headless box — it opens an SDL3 window and
 blocks on it. CPU physics on purpose: one env at 60 Hz needs no GPU.
@@ -51,6 +68,10 @@ from mojo_rl.physics3d.parser.render_fields import build_render_fields
 from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
+from mojo_rl.render.imgui import (
+    imgui_shim_available, ig_begin_panel, ig_end, ig_text, ig_text_colored,
+    ig_separator_text, ig_selectable, ig_button, ig_spacing,
+)
 from mojo_rl.physics3d.studio.stepping import StudioRk4Pyr
 
 from mojo_rl.tasks.spec import (
@@ -81,6 +102,27 @@ comptime TASK_DIR = "mojo_rl/tasks/tasks/"
 # set it to 1 and read the error, which quotes the number it needs.
 comptime NMESH_VERTS = 26198
 comptime MAX_CONTACTS = 32
+comptime SIDEBAR_W: Float32 = 300.0
+
+
+def task_names() -> List[String]:
+    """Every `.task` the sidebar offers.
+
+    ⚠ A FUNCTION, NOT A COMPTIME ARRAY — `Array[String, N]` is not
+    `ImplicitlyCopyable`, so a comptime table cannot be indexed at runtime and
+    the error names materialisation rather than the lookup
+    (`studio/scene.mojo`'s `_prop_mjcf_type` records the same trap).
+
+    ⚠ THE LIST IS THE ONLY THING THAT KNOWS ABOUT TASKS AT COMPILE TIME, and
+    it holds NAMES. Everything downstream reads the `.task` file, so adding an
+    entry here plus a file is the whole cost of a new task — no new type, no
+    new config, no rebuild of anything but this list.
+    """
+    var out = List[String]()
+    out.append(String("so101_reach_brick"))
+    out.append(String("so101_lift_brick"))
+    out.append(String("so101_gather_bricks"))
+    return out^
 
 
 def main() raises:
@@ -108,10 +150,20 @@ def main() raises:
     print("=" * 68)
     print("task viewer —", task_name, " seed", run_seed)
     print("=" * 68)
+    if not check_only and not imgui_shim_available():
+        print("  ⚠ no Dear ImGui shim — the sidebar will be absent and the")
+        print("    task fixed to argv. Build it once with:")
+        print("       pixi run build-imgui")
+        print("    (the window still opens; only the picker is missing)")
 
     # ── the task layer: all data, no code ─────────────────────────────────
     var f = load_family(String(FAMILY))
-    var t = load_task(String(TASK_DIR) + task_name + ".task")
+    var names = task_names()
+    var cur = 0
+    for i in range(len(names)):
+        if names[i] == task_name:
+            cur = i
+    var t = load_task(String(TASK_DIR) + names[cur] + ".task")
     validate_task_against_family(t, f)
     print("  family :", f.name, "|", len(f.slots), "slots,",
           f.n_free_slots(), "free")
@@ -209,10 +261,27 @@ def main() raises:
     var renderer = ModelRenderer[RfOnlyModelDef](
         width=1280, height=800, visual_radius_scale=1.0,
         show_velocity=False,
-        title=String("task viewer — ") + task_name,
+        title=String("task viewer — ") + f.name,
         adopt_rf=Optional(rf.copy()),
     )
     renderer.init(None)
+
+    # ⚠⚠ FREE CAMERA, AND IT IS NOT A PREFERENCE. `so_arm101.xml` ships exactly
+    # one camera — `wrist_cam`, bolted to the wrist — and the renderer opens on
+    # `active_camera = 0`, so without this you look down the gripper at
+    # whatever the gripper faces. Dragging cannot fix it: a body-attached
+    # camera is re-aimed EVERY frame in `render`, so the mouse fights the model
+    # and loses. `sac_so_arm101_reach_policy_viewer.mojo` documents the same
+    # trap for the same asset.
+    renderer.request_free_camera()
+
+    var have_ui = renderer.imgui_init()
+    if have_ui:
+        renderer.set_ui_sidebar_width(Int(SIDEBAR_W))
+        renderer.set_show_hud(False)
+    else:
+        print("  (no ImGui shim — `pixi run build-imgui` for the sidebar;")
+        print("   the task is fixed to argv without it)")
 
     var positions = List[Vec3]()
     var quats = List[Quat]()
@@ -220,6 +289,8 @@ def main() raises:
     var step = 0
     var last_goal = False
     var lane = 0
+    var held = 0          # frames the goal has held, for the readout
+    var paused = False
 
     while renderer.is_open():
         if renderer.check_quit():
@@ -236,9 +307,9 @@ def main() raises:
             # is the whole reason regions are site-relative.
             var frames = List[RegionFrame]()
             for i in range(len(f.regions)):
-                var s = rsites[i]
+                var si = rsites[i]
                 frames.append(
-                    RegionFrame(sp[s * 3], sp[s * 3 + 1], sp[s * 3 + 2])
+                    RegionFrame(sp[si * 3], sp[si * 3 + 1], sp[si * 3 + 2])
                 )
             var radii = List[Float64]()
             for _ in range(len(f.slots)):
@@ -261,14 +332,14 @@ def main() raises:
                 d.qvel.data[i] = Scalar[DT](qvel[i])
             forward_kinematics["cpu", DT, DynDims, 1](d, m)
             episode += 1
-            print("  ep", episode, "lane", lane, "— placed", rep.accepted,
-                  "in", rep.attempts, "draws")
             last_goal = False
+            held = 0
 
         # ⚠ ZERO DRIVE. See the header: the reset is the subject, and an arm
         # sweeping through the scene knocks the props over within a second.
-        integ.step["cpu"](d, m)
-        step += 1
+        if not paused:
+            integ.step["cpu"](d, m)
+            step += 1
 
         # ── the goal, every frame ─────────────────────────────────────────
         var xb = List[Float64]()
@@ -281,9 +352,65 @@ def main() raises:
         for i in range(ns * 3):
             sp2.append(Float64(d.site_xpos.data[i]))
         var holds = eval_goal(g, f, xb, xq, sp2, rsites)
+        if holds:
+            held += 1
         if holds != last_goal:
-            print("    step", step, "goal ->", holds)
+            print("    ep", episode, "step", step, "goal ->", holds)
             last_goal = holds
+
+        # ── the sidebar ───────────────────────────────────────────────────
+        var want_task = cur
+        var want_reset = False
+        if have_ui:
+            renderer.imgui_new_frame()
+            ig_begin_panel(
+                String("tasks"), 0.0, 0.0, SIDEBAR_W,
+                Float32(renderer.renderer.height),
+            )
+            ig_separator_text(String("family"))
+            ig_text(f.name + "  (" + String(len(f.slots)) + " slots, "
+                    + String(f.n_free_slots()) + " free)")
+            ig_text(String("nq ") + String(nq) + "   nv " + String(nv)
+                    + "   nbody " + String(nb))
+
+            # ⚠⚠ THIS LIST IS THE WHOLE CLAIM. Every entry is a `.task` FILE;
+            # switching reloads data and rebinds a goal. The MODEL is not
+            # rebuilt, because the family's scene budget is fixed — which is
+            # exactly why a switch is instant here and a `manipulation` task
+            # switch has to tear the renderer down.
+            ig_separator_text(String("task  (data, no rebuild)"))
+            for i in range(len(names)):
+                if ig_selectable(names[i], i == cur):
+                    want_task = i
+            ig_spacing()
+            ig_text(String("says: ") + t.language)
+            ig_text(String("goal: ") + t.goal)
+
+            ig_separator_text(String("goal"))
+            if holds:
+                ig_text_colored(
+                    String("HOLDS  (") + String(held) + " frames)",
+                    0.3, 0.9, 0.4,
+                )
+            else:
+                ig_text_colored(String("not met"), 0.9, 0.5, 0.3)
+            # ⚠ THE READOUT SAYS SATISFIABLE AND WIRED, NOT SOLVED. Nothing
+            # drives the arm here; a goal that is False for a whole episode is
+            # the expected state of `reach` and `lift`.
+            ig_text(String("⚠ zero drive — nothing is solving this"))
+
+            ig_separator_text(String("episode"))
+            ig_text(String("ep ") + String(episode) + "   step "
+                    + String(step) + " / " + String(f.horizon))
+            ig_text(String("seed ") + String(run_seed) + "   lane "
+                    + String(lane))
+            if ig_button(String("reset (next lane)"), -1.0):
+                want_reset = True
+            if ig_button(String("pause / run"), -1.0):
+                paused = not paused
+            if ig_button(String("free camera"), -1.0):
+                renderer.request_free_camera()
+            ig_end()
 
         # ── draw ──────────────────────────────────────────────────────────
         positions.clear()
@@ -305,9 +432,29 @@ def main() raises:
             ))
         renderer.render(positions, quats)
 
-        # A new lane each episode, so consecutive resets show the DISTRIBUTION
-        # rather than one draw — the sampler is seeded by (seed, lane).
-        if step >= f.horizon:
+        # ⚠⚠ THE SWITCH HAPPENS AFTER `render`, NEVER BEFORE. `imgui_new_frame`
+        # opened an ImGui frame that only `render` closes; doing work that can
+        # raise between them leaves that frame open and the NEXT `NewFrame`
+        # asserts. `physics_studio` and `viewer_core` both document the same
+        # constraint, and it is why the model swap there is at the loop's end.
+        if want_task != cur:
+            cur = want_task
+            t = load_task(String(TASK_DIR) + names[cur] + ".task")
+            validate_task_against_family(t, f)
+            g = bind_goal(
+                parse_goal(t.goal), f, fmd.body_names, fmd.site_names
+            )
+            require_tier_a(g, t.name)
+            print("  -> task:", t.name, "|", t.goal)
+            step = 0
+            lane += 1
+        elif want_reset:
+            step = 0
+            lane += 1
+        elif step >= f.horizon:
+            # A new lane each episode, so consecutive resets show the
+            # DISTRIBUTION rather than one draw — the sampler is seeded by
+            # (seed, lane).
             step = 0
             lane += 1
 
