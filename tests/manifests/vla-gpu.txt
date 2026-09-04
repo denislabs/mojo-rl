@@ -89,3 +89,12 @@ tests/deep_agents/smolvla/test_denoise_backward.mojo
 # reference, and the property that matters most — the 26 padded action columns
 # get EXACTLY zero gradient, with a control proving the real ones do not.
 tests/deep_agents/smolvla/test_flow_loss.mojo
+
+# V2 — one whole training step: loss -> action_out -> the expert's sixteen
+# layers -> the time MLP -> action_in, with every head gradient against
+# Richardson central differences of the step itself (318 components,
+# 3.0e-05 norm-relative) and then against the GPU (2.5e-07). Gates the SEAMS
+# between the two drivers, which is where a chain like this actually breaks.
+# Carries four measured ablations, including one that was invisible until the
+# GPU leg existed.
+tests/deep_agents/smolvla/test_train_step.mojo

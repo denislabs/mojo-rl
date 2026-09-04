@@ -107,7 +107,7 @@ def _euler_step_kernel[
 
 
 def _token_concat_kernel[
-    BATCH: Int, SEQ: Int, DA: Int, DB: Int
+    BATCH: Int, SEQ: Int, DA: Int, DB: Int, B_STRIDE: Int
 ](
     a: LayoutTensor[DT, Layout.row_major(BATCH, SEQ * DA), MutAnyOrigin],
     b: LayoutTensor[DT, Layout.row_major(DB), MutAnyOrigin],
@@ -127,14 +127,17 @@ def _token_concat_kernel[
         )
     else:
         # `b` is ONE vector shared by every token — the reference's
-        # `time_emb[:, None, :].expand_as(action_emb)`.
+        # `time_emb[:, None, :].expand_as(action_emb)`. B_STRIDE = 0 shares it
+        # across the batch too (inference: one timestep per query); B_STRIDE =
+        # DB gives each sample its own (training: `time` is [B]).
         dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
-            b.ptr[unsafe_offset = d - DA]
+            b.ptr[unsafe_offset = bi * B_STRIDE + d - DA]
         )
 
 
 def token_concat[
-    target: StaticString, BATCH: Int, SEQ: Int, DA: Int, DB: Int
+    target: StaticString, BATCH: Int, SEQ: Int, DA: Int, DB: Int,
+    B_STRIDE: Int = 0,
 ](
     mut a: Tensor, mut b: Tensor, mut dst: Tensor,
     ctx: Optional[DeviceContext] = None,
@@ -143,6 +146,13 @@ def token_concat[
 
     `b` is a single `DB`-vector broadcast to every token — the time embedding,
     which does not vary along the chunk.
+
+    ⚠ `B_STRIDE` says whether it also broadcasts across the BATCH. Inference
+    denoises one query at a shared timestep, so `b` is `[DB]` and the stride is
+    0. Training samples `t` PER SAMPLE (`time[:, None, None]`), so `b` is
+    `[BATCH, DB]` and the stride is `DB`. One index expression, not two
+    routines: the alternative is this layout rule written twice, which is the
+    defect this codebase produces most often.
     """
     comptime D = DA + DB
     comptime N = BATCH * SEQ * D
@@ -155,15 +165,78 @@ def token_concat[
                 for d in range(DA):
                     dst.data[o + d] = a.data[ai + d]
                 for d in range(DB):
-                    dst.data[o + DA + d] = b.data[d]
+                    dst.data[o + DA + d] = b.data[bi * B_STRIDE + d]
     else:
         var c = ctx.value()
         dst.ensure_gpu(c, N)
         comptime nb = (N + TPB - 1) // TPB
-        c.enqueue_function[_token_concat_kernel[BATCH, SEQ, DA, DB]](
+        c.enqueue_function[
+            _token_concat_kernel[BATCH, SEQ, DA, DB, B_STRIDE]
+        ](
             a.lt["gpu", Layout.row_major(BATCH, SEQ * DA)](),
             b.lt["gpu", Layout.row_major(DB)](),
             dst.lt["gpu", Layout.row_major(BATCH, SEQ * D)](),
+            grid_dim=nb,
+            block_dim=TPB,
+        )
+
+
+def _token_split_a_kernel[
+    BATCH: Int, SEQ: Int, DA: Int, DB: Int
+](
+    src: LayoutTensor[
+        DT, Layout.row_major(BATCH, SEQ * (DA + DB)), MutAnyOrigin
+    ],
+    dst: LayoutTensor[DT, Layout.row_major(BATCH, SEQ * DA), MutAnyOrigin],
+):
+    comptime D = DA + DB
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * SEQ * DA:
+        return
+    var d = idx % DA
+    var r = idx // DA
+    var t = r % SEQ
+    var bi = r // SEQ
+    dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+        src.ptr[unsafe_offset = bi * (SEQ * D) + t * D + d]
+    )
+
+
+def token_split_a[
+    target: StaticString, BATCH: Int, SEQ: Int, DA: Int, DB: Int
+](
+    mut src: Tensor, mut dst: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """`token_concat`'s adjoint, for the `a` operand only.
+
+    Concatenation is a gather, so its backward is a scatter — but only the
+    first `DA` columns of each token go anywhere. The `b` half's gradient
+    would be the sum over tokens (and, at `B_STRIDE = 0`, over the batch), and
+    it is DELIBERATELY not computed: `b` is the sinusoidal time embedding,
+    which is a fixed function of a sampled scalar and owns no parameter. There
+    is nothing for that gradient to reach.
+
+    ⚠ Lives beside `token_concat` on purpose. The layout rule — `[a_t ‖ b]`
+    per token, not `[all a ‖ all b]` — is stated once here and inverted once
+    here, so the two cannot drift apart in different files.
+    """
+    comptime D = DA + DB
+    comptime N = BATCH * SEQ * DA
+    comptime if target == "cpu":
+        dst.ensure(N)
+        for bi in range(BATCH):
+            for t in range(SEQ):
+                var o = bi * (SEQ * D) + t * D
+                var ai = bi * (SEQ * DA) + t * DA
+                for d in range(DA):
+                    dst.data[ai + d] = src.data[o + d]
+    else:
+        var c = ctx.value()
+        dst.ensure_gpu(c, N)
+        comptime nb = (N + TPB - 1) // TPB
+        c.enqueue_function[_token_split_a_kernel[BATCH, SEQ, DA, DB]](
+            src.lt["gpu", Layout.row_major(BATCH, SEQ * D)](),
+            dst.lt["gpu", Layout.row_major(BATCH, SEQ * DA)](),
             grid_dim=nb,
             block_dim=TPB,
         )
