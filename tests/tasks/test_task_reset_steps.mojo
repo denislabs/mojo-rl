@@ -184,6 +184,62 @@ def main() raises:
     # `ON_MAX_DZ` disagree, which is a real defect and not a tuning matter.
     ta.check(holds, "the gather goal HOLDS at reset (sampler agrees with On)")
 
+    # ── 3b. ⚠⚠ THE QUATERNION CONVENTIONS, ON REAL DATA ──────────────────
+    #
+    # TWO DIFFERENT ORDERS LIVE IN THE SAME SYSTEM and this is the only place
+    # that pins both:
+    #
+    #   a free joint's `qpos`  is (x, y, z,  w, x, y, z)  -- W FIRST
+    #   `Data.xquat`           is (x, y, z, w)            -- W LAST
+    #
+    # `eval_goal` read `xquat` as w-first for one commit. The P2c gate could
+    # not see it because that gate CONSTRUCTS the array, under the same
+    # assumption the evaluator made — so the two agreed and both were wrong.
+    # It surfaced from reading the studio's render code. This arm evaluates
+    # against a Data the physics filled, so it cannot drift back.
+    print("--- quaternion conventions, against a real Data ---")
+    var g_up = bind_goal(
+        parse_goal(String("Upright(brick, 0.05)")),
+        f, fmd.body_names, fmd.site_names,
+    )
+    ta.check(
+        eval_goal(g_up, f, xb, xq, sp2, rsites),
+        "a freshly placed brick IS upright (identity written by reset)",
+    )
+
+    # Tip it 90 degrees about x, IN qpos (w-first), and re-run FK.
+    var ba = addrs[1].qadr          # slot 1 is `brick`
+    d.qpos.data[ba + 3] = Scalar[DT](0.7071067811865476)   # qw
+    d.qpos.data[ba + 4] = Scalar[DT](0.7071067811865476)   # qx
+    d.qpos.data[ba + 5] = Scalar[DT](0.0)
+    d.qpos.data[ba + 6] = Scalar[DT](0.0)
+    forward_kinematics["cpu", DT, DynDims, 1](d, m)
+    var xq2 = List[Float64]()
+    for i in range(nb * 4):
+        xq2.append(Float64(d.xquat.data[i]))
+    var xb2 = List[Float64]()
+    for i in range(nb * 3):
+        xb2.append(Float64(d.xpos.data[i]))
+    var sp3 = List[Float64]()
+    for i in range(ns * 3):
+        sp3.append(Float64(d.site_xpos.data[i]))
+    print("    brick xquat after a 90-deg qpos tip: (",
+          xq2[brick * 4], ",", xq2[brick * 4 + 1], ",",
+          xq2[brick * 4 + 2], ",", xq2[brick * 4 + 3], ")")
+    # ⚠ THE LAYOUT ASSERTION. w-first in qpos, w-LAST in xquat: a 90-degree
+    # turn about x must come back with the SAME value in slots 0 and 3 and
+    # zeros between. Reading either convention the other way puts 0.707 in a
+    # different slot and this fails by inspection.
+    ta.check(
+        xq2[brick * 4 + 0] > 0.70 and xq2[brick * 4 + 3] > 0.70
+        and xq2[brick * 4 + 1] < 1e-9 and xq2[brick * 4 + 2] < 1e-9,
+        "qpos is W-FIRST and Data.xquat is W-LAST",
+    )
+    ta.check(
+        not eval_goal(g_up, f, xb2, xq2, sp3, rsites),
+        "a brick tipped 90 degrees is NOT upright, on real Data",
+    )
+
     # ── 4. reset is idempotent in (seed, lane) ────────────────────────────
     for i in range(nq):
         d.qpos.data[i] = Scalar[DT](0.0)

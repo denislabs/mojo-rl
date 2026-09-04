@@ -71,10 +71,14 @@ def fresh_state(nb: Int, ns: Int) -> List[List[Float64]]:
         xp.append(0.0)
     var xq = List[Float64]()
     for _ in range(nb):
+        # ⚠ (x, y, z, w) — W LAST, matching `Data.xquat`. This array used to
+        # be built (w,x,y,z), which agreed with a bug in `eval_goal` and hid
+        # it: a gate that constructs its input under the implementation's
+        # assumption cannot test that assumption.
+        xq.append(0.0)
+        xq.append(0.0)
+        xq.append(0.0)
         xq.append(1.0)
-        xq.append(0.0)
-        xq.append(0.0)
-        xq.append(0.0)
     var sp = List[Float64]()
     for _ in range(ns * 3):
         sp.append(0.0)
@@ -215,11 +219,11 @@ def main() raises:
         eval_goal(g_up, f, st[0], st[1], st[2], rsites),
         "upright: an identity quaternion IS upright",
     )
-    # 90 degrees about x -> local +z points along world -y
-    st[1][brick * 4] = 0.7071067811865476
-    st[1][brick * 4 + 1] = 0.7071067811865476
+    # 90 degrees about x -> local +z points along world -y. (x,y,z,w).
+    st[1][brick * 4 + 0] = 0.7071067811865476
+    st[1][brick * 4 + 1] = 0.0
     st[1][brick * 4 + 2] = 0.0
-    st[1][brick * 4 + 3] = 0.0
+    st[1][brick * 4 + 3] = 0.7071067811865476
     ta.check(
         not eval_goal(g_up, f, st[0], st[1], st[2], rsites),
         "upright: tipped 90 degrees is NOT",

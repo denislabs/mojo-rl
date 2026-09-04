@@ -184,9 +184,25 @@ def eval_goal(
         elif t.op == OP_ABOVE:
             r = pred_above(xpos[t.a * 3 + 2], xpos[t.b * 3 + 2])
         elif t.op == OP_UPRIGHT:
+            # ⚠⚠ `Data.xquat` IS (x, y, z, w) — W IS LAST. Verified against
+            # five independent consumers (`sensors/touch.mojo:146`,
+            # `dynamics/tendon.mojo:122`, `pose_transmission.mojo:479`,
+            # `fluid_forces.mojo:146`, and the studio's draw), every one of
+            # which reads `[b*4 + 3]` as w.
+            #
+            # ⚠ THIS WAS WRONG FOR A COMMIT, and the gate could not see it:
+            # `test_task_eval` CONSTRUCTED the quaternion array under the same
+            # (w,x,y,z) assumption the evaluator made, so the two agreed and
+            # both were wrong — `_a_gate_that_shares_its_reference_
+            # implementation_is_blind`. It surfaced from reading the studio's
+            # render code, not from a test. `test_task_reset_steps` now
+            # evaluates Upright against a REAL `Data.xquat` so it cannot
+            # drift back.
             r = pred_upright(
-                xquat[t.a * 4], xquat[t.a * 4 + 1],
-                xquat[t.a * 4 + 2], xquat[t.a * 4 + 3],
+                xquat[t.a * 4 + 3],
+                xquat[t.a * 4 + 0],
+                xquat[t.a * 4 + 1],
+                xquat[t.a * 4 + 2],
                 t.param,
             )
         elif t.op == OP_IN or t.op == OP_ON or t.op == OP_AT_REGION:
