@@ -78,6 +78,16 @@ struct DecoderMLP[W: Int, FF: Int](Movable):
         self.up.for_each_param[target](v, ctx, join_name(prefix, String("up")))
         self.down.for_each_param[target](v, ctx, join_name(prefix, String("down")))
 
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        """⚠ The SAME three children as `walk`, in the same order. A component
+        that is walked but not zeroed accumulates across steps forever; one
+        that is zeroed but not walked never trains. Neither raises."""
+        self.gate.zero_grad[target](ctx)
+        self.up.zero_grad[target](ctx)
+        self.down.zero_grad[target](ctx)
+
 
 struct DecoderLayerWeights[
     W: Int, FF: Int, QW: Int, KVW: Int, KV_IN: Int
@@ -143,4 +153,14 @@ struct DecoderLayerWeights[
         )
         self.mlp.walk[target](vis, ctx, join_name(prefix, String("mlp")))
 
-
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        """⚠ The SAME seven children as `walk`. See `DecoderMLP.zero_grad`."""
+        self.input_layernorm.zero_grad[target](ctx)
+        self.q.zero_grad[target](ctx)
+        self.k.zero_grad[target](ctx)
+        self.v.zero_grad[target](ctx)
+        self.o.zero_grad[target](ctx)
+        self.post_attention_layernorm.zero_grad[target](ctx)
+        self.mlp.zero_grad[target](ctx)

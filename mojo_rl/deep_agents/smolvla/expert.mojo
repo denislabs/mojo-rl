@@ -142,3 +142,20 @@ struct SmolVLAExpert[
         self.norm.for_each_param[target](
             vis, ctx, join_name(prefix, String("norm"))
         )
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        """Every expert layer plus the final norm.
+
+        ⚠ Walks `LAYERS` entries by TRUE layer index, exactly as
+        `for_each_param` does, rather than the two lists' own lengths. Walking
+        `self_layers` and `cross_layers` directly would give the same set here
+        and would drift the moment the alternation changes.
+        """
+        for i in range(Self.LAYERS):
+            if Self.is_self_layer(i):
+                self.self_layers[i // Self.SELF_EVERY].zero_grad[target](ctx)
+            else:
+                self.cross_layers[i // Self.SELF_EVERY].zero_grad[target](ctx)
+        self.norm.zero_grad[target](ctx)

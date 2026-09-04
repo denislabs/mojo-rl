@@ -98,3 +98,11 @@ tests/deep_agents/smolvla/test_flow_loss.mojo
 # Carries four measured ablations, including one that was invisible until the
 # GPU leg existed.
 tests/deep_agents/smolvla/test_train_step.mojo
+
+# V2 — the first gate that asks for a RESULT rather than a derivative: 120
+# Adam steps over one frozen batch, loss 0.938 -> 0.00080 (1,167x). Plus the
+# three checks a loss curve cannot make — every parameter group actually
+# moved (a run that skips action_in entirely reaches the SAME loss),
+# zero_trainable_grads really zeroes all of them, and a control at lr=0 that
+# must not move at all. Leg [6] runs the loop on GPU (1e-06 per step).
+tests/deep_agents/smolvla/test_finetune_overfit.mojo
