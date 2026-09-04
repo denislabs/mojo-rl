@@ -72,3 +72,4 @@ from .planner import (
     PLAN_BACKWARD,
 )
 from .content import ContentChannel
+from .so_d import fixed_subspace_dim

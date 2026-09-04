@@ -327,3 +327,58 @@ def householder[
         for j in range(D):
             m[i, j] = m[i, j] - f * v[i] * v[j]
     return m^
+
+
+def fixed_subspace_dim[
+    D: Int, dtype: DType = DType.float64
+](h: SqMat[D, dtype], tol: Float64 = 1e-8) -> Int:
+    """`dim ker(H - I)`: how many latent directions admit a global frame.
+
+    This is the reading the design doc asks for in dimensions above two
+    (§2). In 2D a reflection fixes a line, so `det H = -1` implies a
+    one-dimensional fixed subspace and the two readings agree. In 3D they come
+    apart: `H = -I` has `det = -1` and NO fixed vector at all. So `det H` is the
+    Z/2 class and `dim ker(H - I)` is the finer statement of WHICH directions
+    survive; a method that only ever reads the determinant is under-reporting
+    above 2D.
+
+    Rank by Gaussian elimination with partial pivoting; the dimension is
+    `D - rank`.
+    """
+    var a = (h - SqMat[D, dtype].identity()).data.copy()
+    var scale = Float64(0)
+    for i in range(D * D):
+        var v = abs(Float64(a[i]))
+        if v > scale:
+            scale = v
+    if scale < tol:
+        return D
+    var rank = 0
+    var row = 0
+    for col in range(D):
+        var piv = -1
+        var best = tol * scale
+        for r in range(row, D):
+            var v = abs(Float64(a[r * D + col]))
+            if v > best:
+                best = v
+                piv = r
+        if piv < 0:
+            continue
+        if piv != row:
+            for j in range(D):
+                var t = a[row * D + j]
+                a[row * D + j] = a[piv * D + j]
+                a[piv * D + j] = t
+        var d = a[row * D + col]
+        for r in range(row + 1, D):
+            var f = a[r * D + col] / d
+            if f == 0:
+                continue
+            for j in range(col, D):
+                a[r * D + j] -= f * a[row * D + j]
+        rank += 1
+        row += 1
+        if row == D:
+            break
+    return D - rank

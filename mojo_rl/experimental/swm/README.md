@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–5 complete; Phase 6a (content channel) done.** With learned encoders on
+**Status: Phases 0–5 complete; Phase 6a (content) and 6b (multi-cycle) done.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -54,6 +54,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `observables.mojo` | pre-consensus residual, GNC confidence, the §1.2 classification table, cross-cycle confirmation, the verdict latch |
 | `planner.mojo` | rollouts in edge coordinates, CEM + an exhaustive monotone planner, trust penalty |
 | `content.mojo` | the content channel: decoder (anchors both channels) + a free nonlinear transition |
+| `envs/klein_grid.mojo` | a non-orientable O(2) bundle over a torus grid — many cycles, one reversing |
 
 ## What was learned (Phase 0–1)
 
@@ -288,6 +289,29 @@ have identical marginals. Parity is decodable only *relative* to a reference,
 which is exactly why the Phase 5 task is goal-conditioned and where the real
 parity number lives (95.8% vs 48.3%).
 
+**Many cycles at once, and the reading `det H` misses.** Every gate before 6b
+read exactly one holonomy, because a ring has one cycle. A torus grid with a
+reflecting x-seam gives 31 fundamental cycles — 5 orientation-reversing, 8
+non-trivial rotations (loops crossing the seam twice at different frames), 18
+trivial — and the `Z/2` class of **all 31** survives Procrustes recovery from
+noisy observations. It is also the first real exercise of
+`confirm_by_independent_cycles`, previously gated only on synthetic edge lists:
+4 edge-disjoint pairs of non-trivial cycles exist here, which is the situation
+the rule was written for.
+
+And it pins the reading the determinant under-reports above two dimensions —
+the design doc's own example:
+
+| | `det H` | `dim ker(H − I)` |
+|---|---|---|
+| O(2) reflection | −1 | 1 (fixes a line) |
+| O(3) reflection | −1 | 2 (fixes a plane) |
+| O(3) `H = −I` | −1 | **0 (fixes nothing)** |
+
+Same class, different fixed subspace. In 2D the two readings agree; above 2D
+they come apart, so a method that only reads the determinant is answering a
+coarser question than the one asked.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -307,7 +331,7 @@ measured here speaks to it.
 
 ## Next (Phase 6, in progress)
 
-6a (content channel) is done. Next: the 2D Klein bottle, then a learned,
+6a (content channel) and 6b (multi-cycle) are done. Next: a learned,
 frame-invariant place recogniser (the acknowledged weak link, still an oracle).
 Deferred as before: the GPU port (engineering only), and CSCG with the P5
 sample-efficiency comparison.

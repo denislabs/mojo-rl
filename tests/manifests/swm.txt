@@ -113,3 +113,13 @@ tests/experimental/swm/test_swmh_planner.mojo
 # trustworthy after a long imagined rollout. The negative is GATED so it cannot
 # silently reverse. ~18s.
 tests/experimental/swm/test_swmh_content.mojo
+# G16 — PHASE 6b, many cycles at once. Every earlier gate read exactly ONE
+# holonomy because a ring has one cycle. A torus grid with a reflecting x-seam
+# (a non-orientable O(2) bundle, w1 != 0 — the structure that makes a Klein
+# bottle non-orientable) gives 31 fundamental cycles: 5 orientation-reversing,
+# 8 non-trivial rotations, 18 trivial. First real exercise of
+# confirm_by_independent_cycles, which was previously gated only on synthetic
+# edge lists — 4 edge-disjoint pairs exist here. Also gates dim ker(H - I),
+# which det H under-reports above 2D: the doc's own example, O(3) H = -I has
+# det -1 and fixes NOTHING, while an O(3) reflection fixes a plane. ~4s.
+tests/experimental/swm/test_klein_multicycle.mojo

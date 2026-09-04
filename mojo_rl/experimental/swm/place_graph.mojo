@@ -243,3 +243,46 @@ struct PlaceGraph[D: Int, dtype: DType = DType.float64](Copyable, Movable):
 
     def holonomy_dist_to_identity(self, e: Int) raises -> Float64:
         return Float64(self.holonomy(e).dist_to_identity())
+
+    def cycle_edge_set(self, e: Int) raises -> List[Int]:
+        """Every edge of the fundamental cycle created by non-tree edge `e`.
+
+        The non-tree edge plus the symmetric difference of the two tree paths to
+        the root — i.e. the path through their lowest common ancestor. Needed by
+        the cross-confirmation rule, which asks whether two cycles are EDGE
+        DISJOINT: a single biased edge can explain any number of overlapping
+        cycles but not two that share nothing.
+        """
+        if not self.tree_valid:
+            raise Error("cycle_edge_set: call rebuild_gauge() first")
+        var ed = self.edges[e]
+        var seen = List[Int]()
+        var depth_a = List[Int]()
+        var p = ed.src
+        while self.parent_edge[p] >= 0:
+            depth_a.append(self.parent_edge[p])
+            p = self.parent[p]
+        var depth_b = List[Int]()
+        p = ed.dst
+        while self.parent_edge[p] >= 0:
+            depth_b.append(self.parent_edge[p])
+            p = self.parent[p]
+        # Symmetric difference: shared ancestry cancels.
+        for i in range(len(depth_a)):
+            var shared = False
+            for j in range(len(depth_b)):
+                if depth_a[i] == depth_b[j]:
+                    shared = True
+                    break
+            if not shared:
+                seen.append(depth_a[i])
+        for j in range(len(depth_b)):
+            var shared = False
+            for i in range(len(depth_a)):
+                if depth_b[j] == depth_a[i]:
+                    shared = True
+                    break
+            if not shared:
+                seen.append(depth_b[j])
+        seen.append(e)
+        return seen^
