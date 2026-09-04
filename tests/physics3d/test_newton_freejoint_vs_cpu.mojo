@@ -39,6 +39,7 @@ from mojo_rl.physics3d.fields import (
     Dims,
  DimsLike,)
 from mojo_rl.physics3d.model.model_def import ModelDefLike
+from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel,
@@ -227,6 +228,9 @@ def _validate[
     # its per-block code could only be gated on the 5090. Calling
     # `solve_newton_blocked` directly closes it — Metal runs the same kernel.
     FORCE_BLOCKED: Bool = False,
+    # Mesh-collision capacity. 0 for the hand-written fixtures; a real robot
+    # model needs its hull vertices or `init_fields` raises.
+    NMESH_VERTS: Int = 0,
 ](
     ctx: DeviceContext,
     name: String,
@@ -258,7 +262,7 @@ def _validate[
         nequality=NEQ,
         ntendon=NTEN,
         nexclude=NEXCL,
-        nmesh_verts=0,
+        nmesh_verts=NMESH_VERTS,
     ]
     print("--- ", name, " (NV=", NV, ") gentle floor contact ---")
     # Offset-free build straight from the compile-time model spec — no slab,
@@ -379,6 +383,16 @@ def main() raises:
     all_ok = _validate[ThreeTreesModel, FORCE_BLOCKED=True](
         ctx, "ThreeTrees/blocked", 0.0, min_trees=3
     ) and all_ok
+
+    # ── ⚠ AN INDEPENDENTLY-AUTHORED MULTI-TREE MODEL, and that is the point.
+    # ThreeTrees is mine, so it can only fail in ways I thought to build into
+    # it. This one comes from the task layer: 4 trees, real contacts against 30
+    # collision MESHES rather than box-on-box, and `max_contacts = 32` where
+    # ThreeTrees is 8 and the park scenes are 16 — so `ME = 4*MC + 2*NJOINT +
+    # NV` moves on both axes at once.
+    all_ok = _validate[
+        So101TabletopModel, FORCE_BLOCKED=True, NMESH_VERTS=30000
+    ](ctx, "SO101Tabletop/blocked", 0.0, min_trees=2) and all_ok
 
     # ── Humanoid (free joint, NV=23) — the production blocked model ─────────
     # On NVIDIA this exercises the exact blocked kernel humanoid training uses.

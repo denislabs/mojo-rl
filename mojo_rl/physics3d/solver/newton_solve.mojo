@@ -3508,14 +3508,22 @@ def _newton_blocked_fields_kernel[
         # ENV's workspace rather than faulting.
         #
         # ⚠ HONEST LIMIT OF THE EVIDENCE: it is restored because it is correct
-        # and free, NOT because a test proved it necessary. Removing it at
-        # `THREADS = 2*MC` and again at `8*MC` left the blocked golden
-        # fingerprint BIT-IDENTICAL on every model available — at these contact
-        # counts the overrun lands in slots the producer rewrites or nothing
-        # reads. So the negative control does NOT fire, and a future reader
-        # should not take this guard's presence as evidence that it does.
-        # What IS verified: the kernel is bit-identical at 1x, 2x and 8x
-        # `MAX_CONTACTS` threads WITH the guards in place.
+        # and free, NOT because a test proved it necessary. **The negative
+        # control has now failed to fire on FOUR models.** Removing it left
+        # every result BIT-IDENTICAL at `THREADS = 2*MC` and `8*MC` on
+        # Walker2d and ThreeTrees, and again at `4*MC` on SO101Tabletop —
+        # which was chosen precisely to break it: 4 trees, 64 contacts against
+        # 30 collision MESHES, and `MAX_CONTACTS = 32` where ThreeTrees is 8,
+        # so `ME` moves on both axes at once. At every contact count reachable
+        # here the overrun lands in slots the producer rewrites or nothing
+        # reads.
+        #
+        # So a future reader must NOT take this guard's presence as evidence
+        # that it fires, and must not delete it on the grounds that a test
+        # passes without it — that is exactly the reasoning at `:755` that
+        # removed it the first time. What IS verified: the kernel is
+        # bit-identical at 1x, 2x, 4x and 8x `MAX_CONTACTS` threads WITH the
+        # guards in place, which is the property F3 step 2 depends on.
         if contact_tid < MC:
             _init_common_normal_ws[
                 DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
