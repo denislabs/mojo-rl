@@ -13,9 +13,32 @@ Then SmolVLA's own layout, checked against the claims its source states in
 comments: image and language must NOT see state or actions; the action chunk
 must be causal within itself.
 
-Finally the three windows must agree with the square mask they slice, since the
+Then the three windows must agree with the square mask they slice, since the
 prefill and denoising masks are separately derived and drifting apart is exactly
 how one of them ends up right and the other quietly wrong.
+
+Finally — and this is the leg V2 rests on — the prefix must be CLOSED to the
+suffix. `lerobot`'s training forward is a different mode from its inference
+forward: one joint `[P+S, P+S]` pass with no cache, versus a prefill and a
+denoising step. They compute the same thing only if no prefix token attends to
+an action token, and that is a property of this mask and nothing else. If it
+holds, V2 needs no new forward driver at all; if it ever stopped holding, the
+inference path would still run, still produce plausible chunks, and quietly
+stop being the model we are training.
+
+⚠ Under most mutations of the mask rule legs [1]-[3] fire first, so leg [6] is
+rarely the one that speaks. MEASURED, over the two `ar` variants `smolvla_ar`'s
+own docstring calls out, on a 8-image/1-state/5-action layout:
+
+    shipped, actions [1]*c        45 quadrant entries, 0 open
+    actions [1] + [0]*(c-1)       45 quadrant entries, 0 open
+    actions [0]*c                 45 quadrant entries, 5 open
+
+Only the third opens it, and it opens exactly the STATE row — image and
+language sit at cumsum 0 and stay closed regardless, while state at 1 becomes
+mutual with an action span that opens no block. So the property this leg
+guards is narrower than it looks: it is the state token, and the pi-0-style
+single bidirectional chunk does NOT threaten it.
 
 Run:
   pixi run mojo run -I . tests/deep_agents/smolvla/test_attn_mask.mojo
@@ -149,6 +172,36 @@ def main() raises:
     assert_equal(len(self_m), (n - PFX) * n, "self window size")
     assert_equal(len(cross_m), (n - PFX) * PFX, "cross window size")
     assert_true(wbad == 0, "a windowed mask disagrees with the square one")
+
+    # ── 6. the prefix cannot see the suffix — what lets V2 reuse V1 ──────
+    # ⚠ This quadrant is why the TRAINING forward is not a new driver.
+    #
+    # `modeling_smolvla.forward` (the loss path) runs mode 1: both streams
+    # concatenated, `use_cache=False`, one `[P+S, P+S]` attention per layer.
+    # Inference runs modes 2+3: prefill into a cache, then a denoising step
+    # reading it. Those are the same computation ONLY IF no prefix query
+    # attends to a suffix key — otherwise the prefix's output would depend on
+    # the action tokens, the cache would be a function of the noise, and the
+    # two decompositions would silently diverge.
+    #
+    # Leg [5] compares the SUFFIX rows. This one is about the PREFIX rows,
+    # which no window in this file covers: it is the quadrant the inference
+    # path never materialises precisely because it is assumed empty.
+    var quad = 0
+    var leak = 0
+    for i in range(PFX):
+        for j in range(PFX, n):
+            quad += 1
+            if _allow(m, n, i, j):
+                leak += 1
+    print("   [6] prefix -> suffix    : compared", quad, " open", leak,
+          " (must be 0)")
+    assert_equal(quad, PFX * (n - PFX), "the whole quadrant must be probed")
+    assert_true(
+        leak == 0,
+        "a prefix token attends to an action token: the training forward no"
+        " longer decomposes into prefill + one denoising step",
+    )
 
     print()
     print("PASSED")
