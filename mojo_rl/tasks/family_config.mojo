@@ -87,6 +87,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from .gpu_eval import eval_tape_gpu
 from .obs import (
     slot_active, write_free_slot_obs, write_free_slot_obs_host,
+    FREE_JOINT_NV,
 )
 from .so101_tabletop_xml import (
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS,
@@ -167,6 +168,25 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     comptime FREE_DADR_0: Int = 6
     comptime FREE_DADR_1: Int = 12
     comptime FREE_DADR_2: Int = 18
+
+    # ── THE PARK POSE, the second thing this type restates ────────────────
+    #
+    # `tasks/family.park_pos` is `(park_x + slot*PARK_SPACING, park_y,
+    # park_z)`, read from the `.family`'s `park=` line. All family constants,
+    # so a comptime type can hold them — and `test_active_mask` asserts each
+    # against `park_pos(f, si)` on the loaded family, the same way it asserts
+    # the address table.
+    #
+    # ⚠⚠ I SAID THIS NEEDED A NEW OPERAND AND IT DID NOT. The P3d note claimed
+    # the repark was blocked because `pre_step_gpu` "has no way to learn WHERE
+    # a slot parks" and that reaching it meant putting the pose in
+    # `curriculum` and widening a signature across fourteen configs. The pose
+    # is a FAMILY CONSTANT, exactly like `FREE_QADR_*` above, and restating it
+    # here costs one gate assertion. Only `qvel` actually needed a wider hook.
+    comptime PARK_X: Float64 = 10.0
+    comptime PARK_Y: Float64 = 0.0
+    comptime PARK_Z: Float64 = 50.0
+    comptime PARK_SPACING: Float64 = 0.5
 
     comptime OBS_MASK_BASE: Int = (
         So101TabletopModel.NQ + So101TabletopModel.NV
@@ -303,10 +323,95 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         ],
         env: Int,
     ):
-        # ⚠ NOT THE REPARK. See the module header: pinning a parked slot needs
-        # a per-lane ACTIVE MASK, and all twelve TASK_PARAM words are the tape.
-        # ⚠⚠ AND IT MUST NOT TOUCH `meta` — the tape lives there.
+        # ⚠ THE REPARK IS IN `pre_step_full_gpu` BELOW, which is the same hook
+        # plus `qvel`. Nothing here, and in particular NOTHING THAT TOUCHES
+        # `meta` — the tape and the active mask live there.
         pass
+
+    # === GPU: pre-step, with qvel — Gap D's repark ===
+    @always_inline
+    @staticmethod
+    def pre_step_full_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Pin every INACTIVE free slot at its park pose, every step.
+
+        `TASK_LAYER_IMPLEMENTATION.md` Gap D. Gravity is a `Model` field
+        shared by the batch, so a parked body FALLS — `reset.reset_slots`
+        zeroing its velocity at reset stops the fall compounding across
+        episodes and does not stop the fall.
+
+        ⚠⚠ THE POSE **AND** THE VELOCITY, AND POSE-ONLY IS HALF A FIX. Writing
+        `qpos` back each step pins where the body IS while the integrator
+        keeps adding `g*dt` to where it is GOING: the position looks parked
+        and `qvel` grows without bound — 11.8 m/s by the end of a 300-step
+        horizon. It never becomes a NaN and it never moves the arm (a parked
+        slot is its own kinematic tree), so nothing would have caught it; it
+        is simply not what "parked" should mean. Zeroing both makes a parked
+        slot's state CONSTANT, which is checkable.
+
+        ⚠ AN ACTIVE SLOT IS NOT TOUCHED. This runs before physics on every
+        step, so a stray write here would pin the props the task is about —
+        and the reward would read a scene that never moves while the arm
+        pushed at it. `test_active_mask` asserts the active slots' words are
+        BIT-IDENTICAL across the call.
+
+        ⚠ AND IT MUST NOT TOUCH `meta`. The tape and the active mask live
+        there, and this hook also runs at the END of `_reset_env_lane` — a
+        write here would land after `init_qpos_gpu` and before the first step.
+        """
+        var mask = rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_ACTIVE])
+        comptime for j in range(Self.N_FREE_SLOTS):
+            comptime si = (
+                Self.FREE_SLOT_IDX_0 if j == 0
+                else (Self.FREE_SLOT_IDX_1 if j == 1 else Self.FREE_SLOT_IDX_2)
+            )
+            comptime qa = (
+                Self.FREE_QADR_0 if j == 0
+                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
+            )
+            comptime da = (
+                Self.FREE_DADR_0 if j == 0
+                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
+            )
+            # ⚠ FOLDED AT COMPILE TIME. `si` is a comptime index, so the park
+            # pose is three constants in the kernel and not an arithmetic
+            # chain — and no `Float64` reaches the device, which Metal has no
+            # instruction for.
+            comptime px = Scalar[DTYPE](
+                Self.PARK_X + Float64(si) * Self.PARK_SPACING
+            )
+            comptime py = Scalar[DTYPE](Self.PARK_Y)
+            comptime pz = Scalar[DTYPE](Self.PARK_Z)
+            if not slot_active[DTYPE](mask, si):
+                # ⚠ THE QUATERNION IS IDENTITY AND W COMES FIRST IN `qpos`.
+                # `reset.write_free_pose` writes the same seven words; the
+                # trap it records — that `(0,0,0,0)` is a DEGENERATE rotation
+                # forward kinematics turns into a NaN pose — applies here on
+                # every step rather than once.
+                qpos[env, qa + 0] = px
+                qpos[env, qa + 1] = py
+                qpos[env, qa + 2] = pz
+                qpos[env, qa + 3] = Scalar[DTYPE](1)
+                qpos[env, qa + 4] = Scalar[DTYPE](0)
+                qpos[env, qa + 5] = Scalar[DTYPE](0)
+                qpos[env, qa + 6] = Scalar[DTYPE](0)
+                comptime for k in range(FREE_JOINT_NV):
+                    qvel[env, da + k] = Scalar[DTYPE](0)
 
     # === GPU: the observation — full state, plus §3.4's active mask ===
     @always_inline

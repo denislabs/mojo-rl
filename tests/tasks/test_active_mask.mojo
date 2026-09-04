@@ -40,7 +40,20 @@ reason as `test_tape_gpu_parity`.
    other, with no error anywhere. They are compared to each other, never each
    to a description.
 
-6. ⚠ **ANTI-VACUITY.** `qpos` and `qvel` are seeded with values that are
+6. **THE REPARK PINS EXACTLY THE INACTIVE SLOTS** (Gap D). Pose AND velocity,
+   every step, and an ACTIVE slot's words bit-identical across the call — a
+   stray write there would freeze the props the task is about while the arm
+   pushed at them, and the reward would read a scene that never moves.
+
+7. ⚠⚠ **THE WIDE PRE-STEP HOOK STILL REACHES A NARROW OVERRIDE.** Gap D added
+   `pre_step_full_gpu` (a second hook, `qvel` included) and rewired the env to
+   call ONLY it — so all fourteen configs that override `pre_step_gpu` now
+   depend on the trait's default forward. The gate calls the WIDE hook on
+   `HalfCheetahConfig`, which overrides only the narrow one, and asserts its
+   write lands. A broken forward is otherwise silent: the hook stashes a
+   value nothing reads until the reward, and the reward just gets stale.
+
+8. ⚠ **ANTI-VACUITY.** `qpos` and `qvel` are seeded with values that are
    nowhere zero, and the gate prints how many words it copied against how many
    it zeroed. "Every inactive word is zero" is also true of an all-zero
    observation, and an all-zero observation is what a hook that returned
@@ -59,12 +72,14 @@ from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
-from mojo_rl.tasks.family import scene_path
+from mojo_rl.tasks.family import scene_path, park_pos
 from mojo_rl.tasks.active import active_mask, mask_slots, MASK_SLOT_LIMIT
 from mojo_rl.tasks.obs import slot_active, FREE_JOINT_NQ, FREE_JOINT_NV
 from mojo_rl.physics3d.fields import Data, DynDims
 from mojo_rl.tasks.reset import free_slot_addresses
 from mojo_rl.tasks.family_config import So101TabletopConfig
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from mojo_rl.physics3d.gpu.constants import META_IDX_PREV_X
 from mojo_rl.tasks.so101_tabletop_xml import (
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS, SO101_TABLETOP_OBS_DIM,
 )
@@ -440,6 +455,144 @@ def main() raises:
     ta.check(
         cpu_words == BATCH * OD,
         "both hooks produced " + String(OD) + "-wide observations",
+    )
+
+    # ── 6. Gap D: the repark pins the inactive slots, every step ──────────
+    print()
+    print("--- 6. the repark (Gap D) ---")
+    # ⚠ THE PARK CONSTANTS THE CONFIG RESTATES, against the loaded family.
+    # Same drift risk and same closure as the address table above.
+    var park_ok = True
+    for j in range(NFREE):
+        var si = free_idx[j]
+        var want = park_pos(f, si)
+        var gx = CFG.PARK_X + Float64(si) * CFG.PARK_SPACING
+        if gx != want[0] or CFG.PARK_Y != want[1] or CFG.PARK_Z != want[2]:
+            park_ok = False
+        print("    slot", si, f.slots[si].name, "parks at (", want[0], ",",
+              want[1], ",", want[2], ") | config (", gx, ",", CFG.PARK_Y,
+              ",", CFG.PARK_Z, ")")
+    ta.check(park_ok, "the restated park pose matches `park_pos` on the family")
+
+    # Lane 0 = gather (cube_b inactive), lane 1 = reach (cube_a and cube_b
+    # inactive). Poison every free slot's state so a pin is visible and a
+    # NON-pin is too.
+    for e in range(BATCH):
+        for i in range(NQ):
+            qpos.data[e * NQ + i] = Scalar[DTYPE](-3333.0)
+        for i in range(NV):
+            qvel.data[e * NV + i] = Scalar[DTYPE](-4444.0)
+
+    for e in range(BATCH):
+        CFG.pre_step_full_gpu[DTYPE, BATCH, NQ, NV](
+            qpos.lt["cpu", L_QPOS](), qvel.lt["cpu", L_QVEL](),
+            meta.lt["cpu", L_META](), e,
+        )
+
+    var pinned = 0
+    var untouched = 0
+    var repark_ok = True
+    for e in range(BATCH):
+        for j in range(NFREE):
+            var si = free_idx[j]
+            var qa = addrs[si].qadr
+            var da = addrs[si].dadr
+            var nm = f.slots[si].name
+            var on = tg.is_active(nm) if e == 0 else tr.is_active(nm)
+            if on:
+                # ⚠⚠ AN ACTIVE SLOT MUST BE BIT-IDENTICAL — still the poison.
+                untouched += 1
+                for k in range(FREE_JOINT_NQ):
+                    if Float64(qpos.data[e * NQ + qa + k]) != -3333.0:
+                        repark_ok = False
+                for k in range(FREE_JOINT_NV):
+                    if Float64(qvel.data[e * NV + da + k]) != -4444.0:
+                        repark_ok = False
+            else:
+                pinned += 1
+                var pk = park_pos(f, si)
+                if (
+                    Float64(qpos.data[e * NQ + qa + 0]) != pk[0]
+                    or Float64(qpos.data[e * NQ + qa + 1]) != pk[1]
+                    or Float64(qpos.data[e * NQ + qa + 2]) != pk[2]
+                ):
+                    repark_ok = False
+                # ⚠ THE QUATERNION, W FIRST. `(0,0,0,0)` is degenerate and FK
+                # turns it into a NaN pose — the trap `write_free_pose`
+                # records, here on every step instead of once.
+                if Float64(qpos.data[e * NQ + qa + 3]) != 1.0:
+                    repark_ok = False
+                for k in range(4, FREE_JOINT_NQ):
+                    if Float64(qpos.data[e * NQ + qa + k]) != 0.0:
+                        repark_ok = False
+                # ⚠ AND THE VELOCITY. Pose-only leaves `qvel` growing at g*dt
+                # forever while the position looks parked.
+                for k in range(FREE_JOINT_NV):
+                    if Float64(qvel.data[e * NV + da + k]) != 0.0:
+                        repark_ok = False
+    print("    ", pinned, "slot-lanes pinned,", untouched,
+          "left bit-identical")
+    ta.check(repark_ok,
+             "every INACTIVE slot is at its park pose with zero velocity, and"
+             " every ACTIVE one is untouched")
+    # ⚠ ANTI-VACUITY BOTH WAYS: with nothing inactive there is no pin to get
+    # wrong, and with nothing active a hook that pinned EVERYTHING passes.
+    ta.check(pinned > 0 and untouched > 0,
+             "the sweep exercised both an inactive slot and an active one")
+
+    # ⚠ THE ARM IS NOT A SLOT AND MUST NOT BE TOUCHED. `qpos[0..5]` are the
+    # six hinges; a repark that walked the wrong address space would land in
+    # them and freeze the robot, which reads as a policy that cannot move.
+    var arm_ok = True
+    for e in range(BATCH):
+        for k in range(6):
+            if Float64(qpos.data[e * NQ + k]) != -3333.0:
+                arm_ok = False
+    ta.check(arm_ok, "the arm's own six qpos words are untouched")
+
+    # ── 7. the default forward, on a config that never heard of it ────────
+    print()
+    print("--- 7. a NARROW override is still reached through the wide hook ---")
+    # ⚠ A REAL CONFIG, NOT A FIXTURE. `HalfCheetahConfig.pre_step_gpu` stashes
+    # `qpos[env, 0]` into `META_IDX_PREV_X` and overrides nothing else; it is
+    # one of the fourteen that would go silently uncalled if the forward
+    # broke. Its own gates need a GPU, so this is the cheapest place that can
+    # notice.
+    comptime L_HQ = Layout.row_major(BATCH, 4)
+    comptime L_HV = Layout.row_major(BATCH, 3)
+    var hq = TensorImpl[DTYPE].alloc(BATCH * 4)
+    var hv = TensorImpl[DTYPE].alloc(BATCH * 3)
+    var hm = TensorImpl[DTYPE].alloc(BATCH * METADATA_SIZE)
+    for e in range(BATCH):
+        for i in range(4):
+            hq.data[e * 4 + i] = Scalar[DTYPE](70.0 + Float64(e))
+        for i in range(3):
+            hv.data[e * 3 + i] = Scalar[DTYPE](0)
+        for i in range(METADATA_SIZE):
+            hm.data[e * METADATA_SIZE + i] = Scalar[DTYPE](-1234.0)
+    for e in range(BATCH):
+        HalfCheetahConfig.pre_step_full_gpu[DTYPE, BATCH, 4, 3](
+            hq.lt["cpu", L_HQ](), hv.lt["cpu", L_HV](),
+            hm.lt["cpu", L_META](), e,
+        )
+    var fwd_ok = True
+    for e in range(BATCH):
+        var got = Float64(hm.data[e * METADATA_SIZE + META_IDX_PREV_X])
+        print("     lane", e, "META_IDX_PREV_X =", got, "(want",
+              70.0 + Float64(e), ")")
+        if got != 70.0 + Float64(e):
+            fwd_ok = False
+    ta.check(
+        fwd_ok,
+        "HalfCheetahConfig's narrow pre_step_gpu ran through"
+        " pre_step_full_gpu's default forward",
+    )
+    # ⚠ ANTI-VACUITY: the two lanes get DIFFERENT values, so a forward that
+    # ran once and wrote lane 0's answer everywhere is visible.
+    ta.check(
+        hm.data[0 * METADATA_SIZE + META_IDX_PREV_X]
+        != hm.data[1 * METADATA_SIZE + META_IDX_PREV_X],
+        "and per lane, not once for the batch",
     )
 
     print()

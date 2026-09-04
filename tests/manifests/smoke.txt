@@ -123,6 +123,15 @@ tests/tasks/test_tape_gpu_parity.mojo
 # one. ABLATED three ways — lane-0 mask for every lane (3 of 16 fail, and the
 # negative leg is the only check that sees it), flag-without-zeroing (2), and
 # a drifted address table (3).
+# ⚠ ALSO GATES GAP D (the per-step repark) and, with it, a TRAIT CHANGE: the
+# env now calls only `pre_step_full_gpu`, so the fourteen configs that override
+# the narrow `pre_step_gpu` depend on its default forward. The gate calls the
+# WIDE hook on `HalfCheetahConfig` and asserts its META_IDX_PREV_X write lands
+# per lane — a broken forward is otherwise silent, because the stashed value
+# is not read until the reward and the reward merely goes stale. ABLATED:
+# pose-without-velocity (1 of 24), pinning every slot (1), skipping the
+# quaternion (1), dropping the forward (2 — and only the HalfCheetah leg sees
+# it).
 tests/tasks/test_active_mask.mojo
 
 # ── mojo_rl/tasks: frozen init states — freeze, load, REFUSE (P4a) ──

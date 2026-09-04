@@ -30,6 +30,15 @@ preserves it (`gpu/constants.mojo:164`) — and the region table into
 ⚠ NEITHER NEEDED A NEW KERNEL OPERAND. Gap E scoped this as two; both channels
 already existed and were unused.
 
+## AND GAP D — A PARKED SLOT THAT STAYS PARKED
+
+`So101TabletopConfig.pre_step_full_gpu` pins every inactive free slot at its
+park pose, pose and velocity, before every step. `tests/tasks/
+test_active_mask.mojo` gates the arithmetic of one call; what only a stepped
+batch can say is whether it holds after real physics, and that is the check at
+the end of this file. Gravity is a `Model` field shared by the batch, so
+before Gap D a parked body fell 7.06 m over a full horizon.
+
 ## AND THE ACTIVE MASK, IN THE OBSERVATION
 
 `meta[env, META_IDX_TASK_ACTIVE]` carries which slots this lane is running
@@ -340,5 +349,68 @@ def main() raises:
             )
         print("  ok: every lane's active words are the mask the host wrote,"
               " and BOTH values occur")
+
+        # ── Gap D: a parked slot did not move ─────────────────────────────
+        #
+        # ⚠ THE ONE THING ONLY A STEPPED BATCH CAN SAY. `test_active_mask`
+        # gates the repark's arithmetic on one call; this is whether it holds
+        # after real physics — gravity is a `Model` field shared by the batch,
+        # so before Gap D a parked body FELL, 7.06 m over a full horizon.
+        env.d.qpos.download(ctx)
+        env.d.qvel.download(ctx)
+        ctx.synchronize()
+        comptime CB_SLOT = So101TabletopConfig.FREE_SLOT_IDX_2
+        comptime CB_QADR = So101TabletopConfig.FREE_QADR_2
+        comptime CB_DADR = So101TabletopConfig.FREE_DADR_2
+        var pk_z = f.park_z
+        var moved = 0
+        var spun = 0
+        var max_dz = 0.0
+        for e in range(N_ENVS):
+            # ⚠ `cube_b` IS PARKED IN ALL THREE SHIPPED TASKS, which is why it
+            # is the one checked. `brick` and `cube_a` are active here and
+            # MUST have moved — that is the anti-vacuity leg below.
+            var z = Float64(env.d.qpos.data[e * NQ + CB_QADR + 2])
+            var dz = z - pk_z
+            if dz < 0.0:
+                dz = -dz
+            if dz > max_dz:
+                max_dz = dz
+            if dz != 0.0:
+                moved += 1
+            for k in range(6):
+                if Float64(env.d.qvel.data[e * NV + CB_DADR + k]) != 0.0:
+                    spun += 1
+                    break
+        print()
+        print("  parked cube_b after", STEPS, "steps: max |dz| =", max_dz,
+              "m,", moved, "lanes moved,", spun, "lanes carry velocity")
+        if moved != 0 or spun != 0:
+            raise Error(
+                "P3/Gap D: " + String(moved) + " lanes' parked cube_b left"
+                " z=" + String(pk_z) + " and " + String(spun) + " carry"
+                " velocity. `pre_step_full_gpu` pins it EVERY step; if this"
+                " fires, either the env stopped calling the wide pre-step"
+                " hook or the active mask says cube_b is active."
+            )
+        # ⚠⚠ ANTI-VACUITY, AND IT IS THE WHOLE CHECK. "Nothing moved" is also
+        # true of a batch that never stepped, of a scene with no gravity, and
+        # of a repark that pinned EVERY slot. An ACTIVE prop must have moved.
+        comptime BR_QADR = So101TabletopConfig.FREE_QADR_0
+        var active_moved = 0
+        for e in range(N_ENVS):
+            if Float64(env.d.qpos.data[e * NQ + BR_QADR + 2]) != Float64(
+                env.d.qpos.data[e * NQ + CB_QADR + 2]
+            ):
+                active_moved += 1
+        if active_moved == 0:
+            raise Error(
+                "P3/Gap D: the ACTIVE brick sits at the parked slot's height"
+                " in every lane, so 'the parked one did not move' says"
+                " nothing — either the repark pinned everything, or the batch"
+                " never stepped."
+            )
+        print("  ok: the parked slot is EXACTLY at its park pose with zero"
+              " velocity, while", active_moved, "lanes' active brick is not")
         print()
         print("=== PASS ===")

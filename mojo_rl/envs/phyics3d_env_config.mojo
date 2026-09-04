@@ -655,9 +655,57 @@ trait Phyics3dEnvConfig:
 
         Write to meta[env, META_IDX_PREV_X] to persist a value for use in
         compute_reward_and_done_gpu.
+
+        ⚠ NO `qvel`. Override `pre_step_full_gpu` below if you need it — this
+        signature is implemented by fourteen configs and is not worth widening
+        for the one that does.
         """
         # Default: nothing to stash between steps.
         pass
+
+    # === GPU inline: the pre-step hook, WITH qvel ===
+    @always_inline
+    @staticmethod
+    def pre_step_full_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """`pre_step_gpu` plus `qvel` — the hook a state REWRITE needs.
+
+        A SECOND HOOK for the same arithmetic reason `custom_extract_obs_ray_
+        gpu` is a second hook: fourteen configs implement `pre_step_gpu`, and
+        widening that signature would edit all fourteen to give one of them
+        one more argument. This DEFAULTS TO FORWARDING, so a config that only
+        stashes a scalar is untouched and unaware.
+
+        ⚠⚠ THE ENV CALLS **ONLY THIS ONE**. That is what makes the forward
+        safe: a config overriding the narrow hook is still reached, exactly
+        once, through the default below. Calling both would give a config that
+        overrode `pre_step_gpu` two invocations per step — and for a hook
+        whose whole job is to stash the PREVIOUS value, being called twice is
+        silently wrong rather than loud.
+
+        Override THIS one to pin, clamp or zero part of the state before
+        physics. `tasks/family_config.So101TabletopConfig` is the first: it
+        re-parks the free slots a task did not activate, which needs `qpos`
+        for the pose AND `qvel` to stop the body accumulating the velocity the
+        integrator keeps giving it.
+        """
+        Self.pre_step_gpu[DTYPE, BATCH_SIZE, NQ](qpos, meta, env)
+        _ = qvel
 
     # === GPU inline: Unified reward + termination (per-field tensors; G5) ===
     @always_inline

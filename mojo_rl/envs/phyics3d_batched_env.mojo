@@ -1369,6 +1369,9 @@ struct Phyics3dBatchedEnv[
             qpos: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
             ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
             meta: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, METADATA_SIZE),
@@ -1378,12 +1381,18 @@ struct Phyics3dBatchedEnv[
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
                 return
-            Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](
-                qpos, meta, env
+            # ⚠ THE WIDE HOOK, WHICH DEFAULTS TO FORWARDING to `pre_step_gpu`
+            # — see `Phyics3dEnvConfig`. Calling the narrow one here too would
+            # give a config that overrode it TWO invocations per step, and a
+            # hook whose job is to stash the previous value is silently wrong
+            # when called twice. Same shape as the two obs hooks below.
+            Self.CONFIG.pre_step_full_gpu[DT, Self.N_ENVS, Self.NQ, Self.NV](
+                qpos, qvel, meta, env
             )
 
         c.enqueue_function[pre_step_kernel](
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -1886,7 +1895,9 @@ struct Phyics3dBatchedEnv[
         Self.CONFIG.init_act_gpu[DT, Self.N_ENVS, Self.NA_F](act, env, seed)
 
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
-        Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
+        Self.CONFIG.pre_step_full_gpu[DT, Self.N_ENVS, Self.NQ, Self.NV](
+            qpos, qvel, meta, env
+        )
 
     # ── pointer accessors ─────────────────────────────────────────────
 
