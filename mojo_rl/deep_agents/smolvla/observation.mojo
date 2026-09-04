@@ -27,7 +27,9 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.vision.resize_pad import camera_frame_to_siglip, SIGLIP_INPUT
+from mojo_rl.vision.resize_pad import (
+    camera_frame_to_siglip, store_frame_to_siglip, SIGLIP_INPUT,
+)
 
 
 def fill_camera_images[
@@ -97,4 +99,69 @@ def fill_camera_images[
         # buffer and synchronises TWICE on every call — by design, it is the
         # resize path — and this runs once per control tick on a 6.3 MB
         # tensor. Measured at 127 ms per tick before this change.
+        images.upload_resident(ctx.value())
+
+
+def fill_store_images[
+    target: StaticString, N_CAM: Int, SIZE: Int = SIGLIP_INPUT
+](
+    ref row: List[Scalar[DType.uint8]],
+    src_w: Int,
+    src_h: Int,
+    mut images: Tensor,
+    mut scratch: List[Float32],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """The TRAINING counterpart of `fill_camera_images`, from one store row.
+
+    `row` is the store's `images` column for a single frame: uint8
+    `[N_CAM, 3, src_h, src_w]`, PLANAR and RGB. Every camera in a store shares
+    one resolution — the column has a single shape — which is the one thing
+    that differs from the camera path, where each reader brings its own.
+
+    ⚠ **The same camera ORDER rule applies, and here it is the store's column
+    order.** `import_lerobot_v3` writes cameras in `info.cameras` order and
+    that is the order the fine-tune learns; a deployment that opens its
+    readers in a different order gets a policy that looks trained and behaves
+    wrongly, with nothing to compare against at runtime.
+
+    ⚠ There is no `swap_rb`. See `store_frame_to_siglip` — the store is RGB by
+    construction.
+    """
+    comptime assert N_CAM >= 1, "fill_store_images: need a camera"
+    comptime BLOCK: Int = 3 * SIZE * SIZE
+    comptime TOTAL: Int = N_CAM * BLOCK
+
+    var per_cam = 3 * src_w * src_h
+    if len(row) != N_CAM * per_cam:
+        raise Error(
+            "fill_store_images: row holds "
+            + String(len(row))
+            + " bytes, expected "
+            + String(N_CAM)
+            + " cameras x 3 x "
+            + String(src_h)
+            + " x "
+            + String(src_w)
+            + " = "
+            + String(N_CAM * per_cam)
+        )
+    if len(scratch) < TOTAL:
+        scratch.resize(TOTAL, 0.0)
+
+    var one = List[Scalar[DType.uint8]](unsafe_uninit_length=per_cam)
+    for cam in range(N_CAM):
+        var base = cam * per_cam
+        for i in range(per_cam):
+            one[i] = row[base + i]
+        store_frame_to_siglip(one, src_w, src_h, scratch, cam * BLOCK, SIZE)
+
+    comptime if target == "cpu":
+        images.ensure(TOTAL)
+        for i in range(TOTAL):
+            images.data[i] = Scalar[DT](scratch[i])
+    else:
+        images.ensure(TOTAL)
+        for i in range(TOTAL):
+            images.data[i] = Scalar[DT](scratch[i])
         images.upload_resident(ctx.value())

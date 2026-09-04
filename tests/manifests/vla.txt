@@ -63,3 +63,10 @@ tests/deep_agents/smolvla/test_dataset_chunks.mojo
 # pinning the pad to the TOP (resize_with_pad) rather than centred
 # (resize_with_pad_torch, the other lerobot function).
 tests/deep_agents/smolvla/test_store_vs_camera_frame.mojo
+
+# V2 — the ASSEMBLY around those two doors: N_CAM blocks laid back to back in
+# an order that is part of the checkpoint. A store row and the equivalent
+# camera frames must fill the same observation, block for block, and a
+# camera SWAP must be detectable — nothing else about a swap is observable at
+# runtime, no shape change and no error, only the policy behaving wrongly.
+tests/deep_agents/smolvla/test_store_observation.mojo
