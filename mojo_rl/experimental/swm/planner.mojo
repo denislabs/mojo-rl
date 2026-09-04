@@ -32,6 +32,7 @@ from std.math import abs, sqrt
 
 from .so_d import SqMat
 from .rng import Rng
+from .content import ContentChannel
 
 comptime MODEL_ORTHOGONAL: Int = 0
 comptime MODEL_TRANSLATION: Int = 1
@@ -367,3 +368,65 @@ def plan[
             # Keep it off the boundary so later iterations can still explore.
             probs[k] = 0.1 + 0.8 * (acc / Float64(n_elite))
     return Plan(best_seq^, best_arrival, best_score)
+
+
+def plan_exhaustive_with_content[
+    N_CELLS: Int,
+    OBS_DIM: Int,
+    LAT: Int,
+    HID: Int,
+    CONTENT_DIM: Int,
+    N_ACTIONS: Int,
+    dtype: DType = DType.float64,
+](
+    mut model: FrameModel[N_CELLS, dtype],
+    content: ContentChannel[OBS_DIM, LAT, HID, CONTENT_DIM, N_ACTIONS, dtype],
+    u0: List[Float64],
+    h0: List[Scalar[dtype]],
+    cell0: Int,
+    u_goal: List[Float64],
+    h_goal: List[Scalar[dtype]],
+    cfg: PlannerConfig,
+    content_weight: Float64 = 1.0,
+) -> Plan:
+    """The same monotone scan, matching on BOTH channels.
+
+    The frame is transported by the orthogonal connection; the content is rolled
+    by its own learned transition. They answer different questions — Phase 5
+    measured that the frame gets the PARITY right and misses the CELL (9 of 10
+    failures were right-parity/wrong-cell), which is what the content channel is
+    for. Matching on the pair is the design's actual proposal rather than the
+    frame-only approximation Phase 5 had to use.
+    """
+    var best_score = 1e300
+    var best_dir = PLAN_FORWARD
+    var best_k = 0
+    for direction in range(2):
+        var u = u0.copy()
+        var h = h0.copy()
+        var cell = cell0
+        var cost = Float64(0)
+        var d0 = _dist2(u, u_goal)
+        for i in range(CONTENT_DIM):
+            var e = Float64(h[i] - h_goal[i])
+            d0 += content_weight * e * e
+        if d0 < best_score:
+            best_score = d0
+            best_dir = direction
+            best_k = 0
+        for k in range(2 * N_CELLS):
+            var e_idx = model.edge_of(cell, direction)
+            cost += cfg.trust_lambda * (1.0 - model.edge_w[e_idx])
+            u = model.step(u, cell, direction)
+            h = content.predict_next(h, direction)
+            cell = model.next_cell(cell, direction)
+            var d = _dist2(u, u_goal) + cost
+            for i in range(CONTENT_DIM):
+                var e = Float64(h[i] - h_goal[i])
+                d += content_weight * e * e
+            if d < best_score:
+                best_score = d
+                best_dir = direction
+                best_k = k + 1
+    var actions = List[Int](length=best_k, fill=best_dir)
+    return Plan(actions^, best_k, best_score)

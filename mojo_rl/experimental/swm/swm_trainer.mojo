@@ -60,6 +60,7 @@ from .so_d import SqMat
 from .rng import Rng
 from .mlp import Mlp
 from .transport import TransportTable
+from .content import ContentChannel
 from .place_graph import PlaceGraph, Edge
 from .procrustes import PairBatch
 from .envs.mobius_ring import MobiusRing, MobiusConfig, ACTION_FORWARD
@@ -85,6 +86,10 @@ struct Phase3Config(Copyable, ImplicitlyCopyable, Movable):
     mode, not a tuning detail."""
     var var_weight: Float64
     var cov_weight: Float64
+    var recon_weight: Float64
+    """Anchors both channels. 0 disables the content channel entirely, which is
+    the Phase 3-5 configuration and stays available as an ablation."""
+    var content_weight: Float64
     var seed: UInt64
     var flip_margin: Float64
     """Relative margin the losing branch must beat the incumbent by. 0 = a bare
@@ -93,7 +98,14 @@ struct Phase3Config(Copyable, ImplicitlyCopyable, Movable):
 
     @staticmethod
     def default() -> Self:
-        return Self(80, 24, 8, 3, 0.004, 0.05, 20, 1.0, 1.0, 20260904, 0.25, 64)
+        return Self(80, 24, 8, 3, 0.004, 0.05, 20, 1.0, 1.0, 0.0, 0.0, 20260904, 0.25, 64)
+
+    @staticmethod
+    def with_content() -> Self:
+        var c = Self.default()
+        c.recon_weight = 0.05
+        c.content_weight = 0.5
+        return c^
 
 
 @fieldwise_init
@@ -115,6 +127,29 @@ struct Phase3Result(Copyable, ImplicitlyCopyable, Movable):
     """Mean std of `u` at a FIXED place. Near 0 means the encoder found the
     degenerate place-indexed-constant solution, where the orientation bit is
     decided by noise and `det H` is a coin flip — INVALID, not negative."""
+    var content_cell_acc: Float64
+    """Nearest-centroid cell accuracy from the CONTENT channel alone. High means
+    `h` is doing the localisation the frame channel is bad at."""
+    var content_parity_acc: Float64
+    """Within-place parity accuracy from the CONTENT channel, absolute.
+
+    Both this and `frame_parity_acc` come out at ~0.67, and they are SUPPOSED
+    to be indistinguishable, because the parity is not a property of a single
+    frame at all:
+
+        u(c, 1) = A F_{c,0} H w   and   u(c, 0) = A F_{c,0} w
+
+    `H` is orthogonal and `w` is uniform on the circle, so `H w` is uniform too
+    and the two parity classes have IDENTICAL marginal distributions. No
+    classifier can separate them from one observation, in either channel. ~0.67
+    is what a nearest-centroid classifier extracts from finite-sample noise.
+
+    Parity is decodable only RELATIVE to a reference — which is exactly why the
+    Phase 5 task is goal-conditioned, and where the real parity number lives
+    (95.8 % vs 48.3 % for a parity-blind model)."""
+    var frame_parity_acc: Float64
+    """The same measurement on `u`. Must MATCH `content_parity_acc`: see above —
+    a gap either way would mean the marginal-identity argument is wrong."""
 
 
 struct TrainedModel[
@@ -128,8 +163,20 @@ struct TrainedModel[
 ](Copyable, Movable):
     """A trained encoder plus its transport table, so gates can reuse both."""
 
+    comptime CONTENT_DIM: Int = Self.LAT - Self.D
+    comptime ContentT = ContentChannel[
+        Self.OBS_DIM,
+        Self.LAT,
+        Self.HID,
+        Self.CONTENT_DIM,
+        Self.N_ACTIONS,
+        Self.dtype,
+    ]
+
     var enc: Mlp[Self.OBS_DIM, Self.HID, Self.LAT, Self.dtype]
     var table: TransportTable[Self.D, Self.N_ACTIONS, Self.N_PLACES, Self.dtype]
+    var content: Self.ContentT
+    var has_content: Bool
 
     def __init__(
         out self,
@@ -137,17 +184,25 @@ struct TrainedModel[
         var table: TransportTable[
             Self.D, Self.N_ACTIONS, Self.N_PLACES, Self.dtype
         ],
+        var content: Self.ContentT,
+        has_content: Bool,
     ):
         self.enc = enc^
         self.table = table^
+        self.content = content^
+        self.has_content = has_content
 
     def __init__(out self, *, copy: Self):
         self.enc = copy.enc.copy()
         self.table = copy.table.copy()
+        self.content = copy.content.copy()
+        self.has_content = copy.has_content
 
     def __init__(out self, *, deinit move: Self):
         self.enc = move.enc^
         self.table = move.table^
+        self.content = move.content^
+        self.has_content = move.has_content
 
 
 struct EncodedRollouts[dtype: DType = DType.float64](Copyable, Movable):
@@ -227,6 +282,8 @@ struct SwmPhase3[
             flip_margin=cfg.flip_margin,
             min_observations=cfg.min_observations,
         )
+        var content = Self.ModelT.ContentT(rng)
+        var use_content = cfg.recon_weight > 0.0 or cfg.content_weight > 0.0
 
         var steps = cfg.laps * Self.N_CELLS
         var n_frames = steps + 1
@@ -239,6 +296,7 @@ struct SwmPhase3[
                 if ep + batch > cfg.episodes_per_epoch:
                     batch = cfg.episodes_per_epoch - ep
                 enc.zero_grad()
+                content.zero_grad()
 
                 var obs_all = List[List[Scalar[Self.dtype]]]()
                 var hid_all = List[List[Scalar[Self.dtype]]]()
@@ -292,15 +350,46 @@ struct SwmPhase3[
                     for i in range(Self.D):
                         dlat_all[t][i] += d_src[i] * scale
 
+                if use_content:
+                    var n_frames_total = Float64(len(lat_all))
+                    for t in range(n_all):
+                        if cfg.recon_weight > 0.0:
+                            _ = content.reconstruction(
+                                lat_all[t],
+                                obs_all[t],
+                                dlat_all[t],
+                                cfg.recon_weight / n_frames_total,
+                            )
+                        if cfg.content_weight > 0.0 and not is_last[t]:
+                            var h_src = List[Scalar[Self.dtype]](
+                                length=Self.CONTENT_DIM, fill=0
+                            )
+                            var h_dst = List[Scalar[Self.dtype]](
+                                length=Self.CONTENT_DIM, fill=0
+                            )
+                            for i in range(Self.CONTENT_DIM):
+                                h_src[i] = lat_all[t][Self.D + i]
+                                h_dst[i] = lat_all[t + 1][Self.D + i]
+                            _ = content.transition(
+                                h_src,
+                                ACTION_FORWARD,
+                                h_dst,
+                                dlat_all[t],
+                                Self.D,
+                                cfg.content_weight / n_frames_total,
+                            )
+
                 Self._place_variance_grad(lat_all, place_all, dlat_all, cfg)
 
                 var dx = List[Scalar[Self.dtype]](length=Self.OBS_DIM, fill=0)
                 for t in range(n_all):
                     enc.backward(obs_all[t], hid_all[t], dlat_all[t], dx)
                 enc.adam_step(cfg.lr_encoder)
+                if use_content:
+                    content.adam_step(cfg.lr_encoder)
                 ep += batch
 
-        return Self.ModelT(enc^, table^)
+        return Self.ModelT(enc^, table^, content^, use_content)
 
     @staticmethod
     def _place_variance_grad(
@@ -463,6 +552,8 @@ struct SwmPhase3[
         var lms = List[Float64]()
         var nus = List[Float64]()
         var places = List[Int]()
+        var hs = List[Float64]()
+        var parities = List[Int]()
         var resid = Float64(0)
         var n_trans = 0
         comptime EVAL_EPISODES = 16
@@ -480,6 +571,9 @@ struct SwmPhase3[
                 for i in range(Self.D):
                     us.append(Float64(lat[i]))
                 places.append(env.place_id())
+                parities.append(env.lap_parity())
+                for i in range(Self.CONTENT_DIM):
+                    hs.append(Float64(lat[Self.D + i]))
                 lms.append(Float64(lm[0]))
                 lms.append(Float64(lm[1]))
                 for k in range(Self.NUISANCE_DIM):
@@ -512,7 +606,93 @@ struct SwmPhase3[
             Self._explained_variance(us, lms, n_pts, Self.D),
             Self._explained_variance(us, nus, n_pts, Self.NUISANCE_DIM),
             Self._within_place_std(us, places, n_pts),
+            Self._centroid_accuracy[Self.CONTENT_DIM](
+                hs, places, n_pts, Self.N_CELLS, False
+            ),
+            Self._centroid_accuracy[Self.CONTENT_DIM](
+                hs, places, n_pts, Self.N_CELLS, True, parities
+            ),
+            Self._centroid_accuracy[Self.D](
+                us, places, n_pts, Self.N_CELLS, True, parities
+            ),
         )
+
+    @staticmethod
+    def _centroid_accuracy[DIM: Int](
+        hs: List[Float64],
+        places: List[Int],
+        n: Int,
+        n_places: Int,
+        within_place_parity: Bool,
+        parities: List[Int] = List[Int](),
+    ) -> Float64:
+        """Nearest-centroid accuracy from the CONTENT channel.
+
+        Two modes. Cell mode asks whether `h` localises. Parity mode asks, WITHIN
+        each place, whether `h` separates the two lap parities — and that one is
+        supposed to come out at CHANCE. The content channel is recurrent, so it
+        COULD carry the parity across the seam; it has no reason to, because the
+        texture it reconstructs is identical at both parities. Whether it does is
+        the sharpest test of whether the frame/content split does real work: if
+        `h` learned the parity, the frame channel would be redundant.
+        """
+        var d = DIM
+        if n < 4 or d == 0:
+            return 0.0
+        var n_groups = n_places * 2 if within_place_parity else n_places
+        var cent = List[Float64](length=n_groups * d, fill=0)
+        var cnt = List[Float64](length=n_groups, fill=0)
+        for t in range(n):
+            var g = places[t]
+            if within_place_parity:
+                g = places[t] * 2 + parities[t]
+            cnt[g] += 1.0
+            for i in range(d):
+                cent[g * d + i] += hs[t * d + i]
+        for g in range(n_groups):
+            if cnt[g] > 0:
+                for i in range(d):
+                    cent[g * d + i] /= cnt[g]
+        var correct = 0
+        var total = 0
+        for t in range(n):
+            var best = -1
+            var best_d = 1e300
+            if within_place_parity:
+                var p = places[t]
+                for par in range(2):
+                    var g = p * 2 + par
+                    if cnt[g] < 1:
+                        continue
+                    var dd = Float64(0)
+                    for i in range(d):
+                        var e = hs[t * d + i] - cent[g * d + i]
+                        dd += e * e
+                    if dd < best_d:
+                        best_d = dd
+                        best = par
+                if best < 0:
+                    continue
+                total += 1
+                if best == parities[t]:
+                    correct += 1
+            else:
+                for g in range(n_groups):
+                    if cnt[g] < 1:
+                        continue
+                    var dd = Float64(0)
+                    for i in range(d):
+                        var e = hs[t * d + i] - cent[g * d + i]
+                        dd += e * e
+                    if dd < best_d:
+                        best_d = dd
+                        best = g
+                total += 1
+                if best == places[t]:
+                    correct += 1
+        if total == 0:
+            return 0.0
+        return Float64(correct) / Float64(total)
 
     @staticmethod
     def _within_place_std(us: List[Float64], places: List[Int], n: Int) -> Float64:

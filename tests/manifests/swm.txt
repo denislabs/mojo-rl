@@ -102,3 +102,14 @@ tests/experimental/swm/test_swmh_latch.mojo
 # chance while leaving cell tracking intact — asymmetric damage is the
 # signature. ~6s.
 tests/experimental/swm/test_swmh_planner.mojo
+# G15 — PHASE 6a, the content channel. Answers the deficit G13 measured (9/10
+# planner failures were right-parity/wrong-cell). It localises (cell accuracy
+# 0.55 -> 0.998) and does NOT contaminate the frame (nuisance R^2 stays ~0.005,
+# det H = -1 survives). But rolled forward it HURTS planning, and the reason is
+# measured: the frame rollout is FLAT (0.092 -> 0.107 over 12 steps, because an
+# isometry rotates error instead of amplifying it) while the content rollout
+# DRIFTS 11x (0.41 -> 4.40). The orthogonal constraint is usually justified by
+# what it does for the holonomy; this says it also buys the only channel still
+# trustworthy after a long imagined rollout. The negative is GATED so it cannot
+# silently reverse. ~18s.
+tests/experimental/swm/test_swmh_content.mojo

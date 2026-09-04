@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–5 complete — P1, P2, P4 answered; the planner works.** With learned encoders on
+**Status: Phases 0–5 complete; Phase 6a (content channel) done.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -53,6 +53,7 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `sheaf_inference.mojo` | Dirichlet-energy descent over the frame channel + an exact solve to gate it |
 | `observables.mojo` | pre-consensus residual, GNC confidence, the §1.2 classification table, cross-cycle confirmation, the verdict latch |
 | `planner.mojo` | rollouts in edge coordinates, CEM + an exhaustive monotone planner, trust penalty |
+| `content.mojo` | the content channel: decoder (anchors both channels) + a free nonlinear transition |
 
 ## What was learned (Phase 0–1)
 
@@ -251,6 +252,42 @@ from 1 to 24 steps, and lower at 24 (two laps, where `H² = I` lets errors
 cancel). Orthogonal transports rotate error rather than amplify it, so long
 imagined rollouts stay usable. I had assumed the opposite and measured it.
 
+**The content channel localises, but must not be rolled far — and that is the
+best evidence for the design's asymmetry.** Phase 5's deficit was cell-level, so
+Phase 6a added the content channel. It works at its own job (nearest-centroid
+cell accuracy from `h` alone: 0.55 untrained → **0.998** trained) and does not
+contaminate the frame (nuisance R² stays ~0.005, landmark R² 0.987, `det H = −1`
+with one reflected edge still 3/3). But matching on `(u, h)` **hurts** the
+planner, monotonically in how much the content is trusted (weight 0 / 0.05 / 1.0
+→ cell 96 / 77 / 75 of 120).
+
+The reason is measured, not guessed:
+
+| rollout steps | frame error | content error |
+|---|---|---|
+| 1 | 0.092 | 0.405 |
+| 6 | 0.117 | 1.709 |
+| 12 | 0.107 | **4.398** |
+
+The frame is flat because its transition is an **isometry** — an orthogonal map
+rotates error instead of amplifying it — while a free nonlinear transition
+drifts 11× over twelve steps. The orthogonal constraint is normally justified by
+what it does for the holonomy (it makes `det H` an invariant); this says it also
+buys the only channel still trustworthy after a long imagined rollout. So the
+content channel's value is localisation *from an observation*, not imagination,
+and using it well means observing at the arrival state and re-planning — a
+control-loop change rather than a world-model one. Phase 5 plans open-loop on
+purpose, to keep the model under test, so the negative result is recorded and
+gated rather than engineered around.
+
+**Parity is provably not decodable from a single frame.** Both channels score
+~0.67 on absolute within-place parity classification, and they are *supposed*
+to be indistinguishable: `u(c,1) = A F_{c,0} H w`, and since `H` is orthogonal
+and `w` is uniform on the circle, `Hw` is uniform too — the two parity classes
+have identical marginals. Parity is decodable only *relative* to a reference,
+which is exactly why the Phase 5 task is goal-conditioned and where the real
+parity number lives (95.8% vs 48.3%).
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -268,14 +305,12 @@ naive encoding similarity would miss exactly the identifications that create the
 informative cycle. A learned, frame-invariant recogniser is Phase 6, and nothing
 measured here speaks to it.
 
-## Next (Phase 6, unstarted)
+## Next (Phase 6, in progress)
 
-The PCN content channel wired beside the frame channel — which the Phase 5
-numbers now give a concrete reason for, since SWM's residual failures are
-cell-level and the content channel is what resolves cells. Then: a learned,
-frame-invariant place recogniser (the acknowledged weak link, still an oracle);
-the 2D Klein bottle; the GPU port, once the CPU numbers are frozen as the
-reference; and CSCG with the P5 sample-efficiency comparison.
+6a (content channel) is done. Next: the 2D Klein bottle, then a learned,
+frame-invariant place recogniser (the acknowledged weak link, still an oracle).
+Deferred as before: the GPU port (engineering only), and CSCG with the P5
+sample-efficiency comparison.
 
 **Not claimed anywhere in Phases 0–5:** a recurrent baseline. An RSSM or GRU can
 learn the parity bit, so that comparison is about sample efficiency at a matched
