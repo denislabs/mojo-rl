@@ -166,3 +166,52 @@ def kernel_dimension(eigs: List[Float64], tol: Float64 = 1e-8) -> Int:
         if abs(eigs[i]) <= tol:
             k += 1
     return k
+
+
+def dense_solve[
+    dtype: DType = DType.float64
+](a: DenseSym[dtype], b: List[Float64]) raises -> List[Float64]:
+    """Solve `A x = b` by Gauss-Jordan with partial pivoting.
+
+    Used only to give the iterative inference something exact to be checked
+    against (G10). Nothing on an execution path forms this matrix.
+    """
+    var n = a.n
+    if len(b) != n:
+        raise Error("dense_solve: size mismatch")
+    var m = List[Float64](length=n * n, fill=0)
+    for i in range(n * n):
+        m[i] = Float64(a.data[i])
+    var x = b.copy()
+    for col in range(n):
+        var piv = col
+        var best = abs(m[col * n + col])
+        for r in range(col + 1, n):
+            var v = abs(m[r * n + col])
+            if v > best:
+                best = v
+                piv = r
+        if best < 1e-300:
+            raise Error("dense_solve: singular system")
+        if piv != col:
+            for j in range(n):
+                var t = m[col * n + j]
+                m[col * n + j] = m[piv * n + j]
+                m[piv * n + j] = t
+            var tb = x[col]
+            x[col] = x[piv]
+            x[piv] = tb
+        var d = m[col * n + col]
+        for j in range(n):
+            m[col * n + j] /= d
+        x[col] /= d
+        for r in range(n):
+            if r == col:
+                continue
+            var f = m[r * n + col]
+            if f == 0:
+                continue
+            for j in range(n):
+                m[r * n + j] -= f * m[col * n + j]
+            x[r] -= f * x[col]
+    return x^

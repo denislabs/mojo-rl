@@ -1,12 +1,15 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–3 complete — P1 and P2 answered.** With learned encoders on
+**Status: Phases 0–4 complete — P1, P2 and P4 answered.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
 (R² ≥ 0.983) and rejecting the texture (R² ≤ 0.009). Hypothesis 4.0 holds on
 E1 — and survives a **nonlinear** observation model up to 16 % saturation
 (G6b). The v1 cocycle loss is measured to be destructive or inert (G8).
+Inference-by-descent, the confidence weights and the classification table land
+with Phase 4, and the fault confusion matrix is clean: 40/40 in every cell,
+**zero false obstructions**.
 
 - Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
@@ -46,6 +49,8 @@ destructive — it crushes the frustrated dimension. So: read, never optimize.
 | `transport.mojo` | per-(action, place) O(D) transports, both components carried, orientation bit |
 | `swm_trainer.mojo` | Phase 3 training loop and the observables it reads |
 | `ablations.mojo` | the v1 arms (translations; free/orthogonal morphisms + cocycle) — **gates only** |
+| `sheaf_inference.mojo` | Dirichlet-energy descent over the frame channel + an exact solve to gate it |
+| `observables.mojo` | pre-consensus residual, GNC confidence, the §1.2 classification table, cross-cycle confirmation, the verdict latch |
 
 ## What was learned (Phase 0–1)
 
@@ -163,6 +168,49 @@ entangling it. And the asymmetry that makes the observable usable — even where
 the frame channel *cannot* recover the landmark, there are **zero false
 obstructions**. The method loses the signal rather than inventing one.
 
+**The removal rule is necessary, and it is measured as a 2×2.** The doc asserts
+that an identification whose cycle carries a non-trivial holonomy must be taken
+out of the energy — it is a monodromy, not a constraint. Inferred-frame
+anisotropy at the revisited place:
+
+| β (anchor weight) | Möbius +ID | Möbius −ID | orientable +ID | orientable −ID |
+|---|---|---|---|---|
+| 0.02 | **0.092** | 0.943 | 0.943 | 0.943 |
+| 0.10 | 0.157 | 0.944 | 0.943 | 0.944 |
+| 1.00 | 0.456 | 0.945 | 0.944 | 0.945 |
+| 5.00 | 0.756 | 0.946 | 0.945 | 0.946 |
+
+Only one cell moves. Adding a *consistent* identification on the orientable twin
+changes nothing, so the collapse comes from the contradiction and not from
+adding a constraint. The β dependence is §4.4's mechanism visible: weak anchors
+let the disagreement spread into the frame (a 10× loss of anisotropy — the frame
+driven into the cycle's one-dimensional fixed subspace), strong anchors deposit
+it on the identification edge instead. Either way the residual must be read
+*before* consensus, which is why `observables` never reads it after.
+
+**The fault classification defends an asymmetry, not a rate.** An obstruction is
+a fact to record and hand to the planner; a broken sensor is an edge to
+down-weight; a constant bias is *neither* — it produces a perfectly coherent
+continuous holonomy that one cycle cannot tell from real curvature, so it must
+come out UNDECIDED and must **never** be filed as an obstruction. 40 trials each:
+
+| world | NOMINAL | ABERRANT | OBSTRUCTION | UNDECIDED | mean ‖H−I‖ | w[faulty edge] |
+|---|---|---|---|---|---|---|
+| Möbius | 0 | 0 | **40** | 0 | 2.000 | 0.98 |
+| noisy edge | 0 | **40** | 0 | 0 | 0.040 | **0.010** |
+| biased edge | 0 | 0 | 0 | **40** | 0.424 | 0.98 |
+| clean | **40** | 0 | 0 | 0 | 0.007 | 0.98 |
+
+Zero false obstructions, and zero Möbius obstructions explained away as aberrant
+edges. The biased world's 0.424 matches the prototype's 0.430.
+
+**The GNC threshold is the inlier scale, not the typical residual.** Geman–McClure
+gives `w = 0.25` exactly at `r = c̄`, so setting `c̄` to the median scores every
+nominal edge at 0.25 and leaves nothing to distinguish "fine" from "doubtful"
+(measured, before it was fixed). The prototype's `10 × median` puts a
+median-residual edge at 0.98 and is kept — which is also why the prototype's own
+weights sat at a uniform 0.82: a fixed `c̄` with no schedule.
+
 ## What is deliberately absent
 
 No cocycle loss (only as ablations C/C′ in a later gate). No spectral observable
@@ -182,10 +230,12 @@ measured here speaks to it.
 
 ## Next
 
-Phase 4: descent-based Dirichlet inference, GNC confidence weights, and the
-classification table — and with them G9 (fault classification), which the plan
-originally listed under Phase 3 in error, since it depends on machinery that
-lives in Phase 4's `observables.mojo`.
+Phase 5: the planner in edge coordinates (CEM/MPPI, `u ← R_e u` with the content
+block alongside), a trust penalty on low-confidence edges, an intrinsic reward
+for closing unconfirmed cycles, and the E1 parity task against a translation
+baseline and a recurrent one. Note G14 in advance: the planner must **not** apply
+the monodromy twice — the edge transports already carry the reflection at the
+seam.
 
 A caveat on how far G6 reaches. E1's observation is a *linear* mixing of
 landmark and texture, so the split hypothesis 4.0 asks for genuinely exists and

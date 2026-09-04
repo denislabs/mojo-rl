@@ -69,3 +69,25 @@ tests/experimental/swm/test_swmh_bit_stability.mojo
 # arms on learned encodings: free morphisms collapse (det H -1 -> -0.02), and
 # orthogonal ones are bit-identical to plain Procrustes. ~5s.
 tests/experimental/swm/test_swmh_ablations.mojo
+# G10 + G11 — PHASE 4. G10 pins that inference is descent: monotone energy, and
+# the iterate lands on a dense solve of the stationary equations to 1e-12.
+# G11 is the one that earns its place — it MEASURES the claim that a non-trivial
+# identification must be removed from the energy, as a 2x2 in which only one
+# cell may move. Mobius with the contradictory identification collapses the
+# frame toward the cycle's 1-D fixed subspace (anisotropy 0.09 at weak anchors);
+# the orientable twin with a CONSISTENT identification does not move at all, so
+# the collapse is caused by the contradiction and not by adding a constraint.
+# The beta dependence is the doc's §4.4 mechanism made visible. ~5s.
+tests/experimental/swm/test_sheaf_inference.mojo
+# G9 — the fault confusion matrix, with counts (P4 / E3). Defends the asymmetry
+# the whole method rests on: an obstruction is a fact to RECORD, a broken sensor
+# is an edge to DOWN-WEIGHT, and a constant BIAS is neither — it must come out
+# UNDECIDED and must NEVER be filed as an obstruction (zero tolerance, not a
+# rate). 40 trials x 4 worlds, 40/40 in every cell. ~5s.
+tests/experimental/swm/test_swmh_faults.mojo
+# G12 — the classification loop is closed (verdict -> in_energy -> what is
+# learned -> holonomy -> verdict), so a bare threshold chatters. The latch cuts
+# churn 141 -> 29 on a boundary-hovering stream while still settling on the
+# truth, and is a NO-OP on an unambiguous one — the leg that stops the churn
+# metric being gamed by a latch that simply never moves. <1s.
+tests/experimental/swm/test_swmh_latch.mojo

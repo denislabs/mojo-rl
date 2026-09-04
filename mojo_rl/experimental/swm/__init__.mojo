@@ -35,3 +35,26 @@ from .reference_io import (
     ref_vector,
     ref_count,
 )
+from .sheaf_inference import (
+    InferenceConfig,
+    frame_energy,
+    frame_gradient,
+    infer_frames,
+    solve_frames_exact,
+    frame_covariance_anisotropy,
+)
+from .observables import (
+    gnc_weight,
+    gnc_weights,
+    GncSchedule,
+    estimate_c_bar,
+    classify,
+    class_name,
+    ClassificationLatch,
+    confirm_by_independent_cycles,
+    CLASS_NOMINAL,
+    CLASS_ABERRANT,
+    CLASS_OBSTRUCTION,
+    CLASS_UNDECIDED,
+    CLASS_CURVATURE_CONFIRMED,
+)
