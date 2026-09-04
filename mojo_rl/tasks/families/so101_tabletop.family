@@ -46,3 +46,26 @@ park=10.0,0.0,50.0
 # as `surface` in fixture.xml is `table_surface` once the `table` slot
 # instantiates it. Naming the raw asset site here would resolve to nothing.
 region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10
+
+# ⚠⚠ TWO MORE REGIONS, AND THEY EXIST FOR `init=` ONLY — SEE THE NEXT WARNING.
+# They are the two lateral thirds of the same surface, disjoint by an 8 cm
+# gutter: y in [0.04, 0.12] and y in [-0.12, -0.04], both x in [-0.10, 0.10].
+# +y is the robot's LEFT (x forward, y left, z up).
+#
+# The 0.12 stops 1 cm short of the slab's 0.15 half-width, so a 2 cm cube
+# CENTRED at the edge of the rect still rests fully on the table rather than
+# teetering off it. The gutter is what makes `so101_gather_bricks` a task: two
+# props drawn from opposite strips start at LEAST 0.08 apart, so a goal of
+# `Near(..., 0.06)` is FALSE at reset for every draw, not merely for most.
+#
+# ⚠⚠ A GOAL MAY NAME ONLY REGION 0 — `table_top`. The device evaluator reads
+# ONE region table out of `curriculum[0, 0..4]` (`gpu_eval.mojo`:
+# MODEL_CURRICULUM_SIZE is 8 and a region costs 5 words) and it reads it
+# UNCONDITIONALLY: a term's region index never indexes anything on device. So
+# `On(brick, table_left)` would evaluate against `table_top`'s rectangle on the
+# GPU and against `table_left`'s on the CPU — a silent disagreement in the
+# reward. `gpu_eval.require_gpu_regions` refuses that goal instead; these two
+# regions are reachable from `init=`, which is sampled on the HOST and never
+# consults the device table.
+region=table_left:site:table_surface:-0.10,0.04,0.10,0.12
+region=table_right:site:table_surface:-0.10,-0.12,0.10,-0.04

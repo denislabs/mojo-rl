@@ -29,10 +29,17 @@ failure, not a slow path. Every constant is `Scalar[DTYPE](...)` of a comptime
   region belongs to the FAMILY, not to a task. Already an operand, and unused
   by anything else in this tree.
 
-⚠ ONE REGION. `MODEL_CURRICULUM_SIZE` is 8 and a region costs 5 words
-(site id + rect), so the family may declare one until that table needs more
-room. `region_table_words` asserts it rather than silently reading garbage for
-region 1 — which would resolve to a real site and a real rectangle, both wrong.
+⚠⚠ ONE REGION, AND THE TERM'S REGION INDEX IS IGNORED ON DEVICE. The table
+below is read ONCE per lane, before the tape loop, and every `In`/`On`/
+`AtRegion` term uses it whatever its `b` says. `MODEL_CURRICULUM_SIZE` is 8
+and a region costs 5 words (site id + rect), so exactly one fits.
+
+A family may still DECLARE more — `so101_tabletop` declares three — because
+`init=` is sampled on the HOST and never consults this table. What must not
+happen is a GOAL naming region 1: it would read region 0's rectangle here and
+region 1's in `eval.eval_goal`, so the GPU and CPU rewards would disagree with
+no error anywhere. `require_gpu_regions` refuses that goal; it is the region
+counterpart of `predicates.require_tier_a` and is called in the same place.
 """
 
 from layout import Layout, LayoutTensor
@@ -41,6 +48,7 @@ from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
 )
 from .predicates import (
+    BoundGoal,
     OP_IN, OP_ON, OP_NEAR, OP_ABOVE, OP_UPRIGHT, OP_AT_REGION,
     OP_AND, OP_OR, OP_NOT,
 )
@@ -201,3 +209,43 @@ def eval_tape_gpu[
                 v2 = r
             last = r
     return last
+
+
+def require_gpu_regions(g: BoundGoal, task_name: String) raises:
+    """⚠⚠ THE ONE-REGION RULE, MADE REAL. Call it beside `require_tier_a`.
+
+    `eval_tape_gpu` reads the region table ONCE, from `curriculum[0, 0..4]`,
+    and reads it UNCONDITIONALLY: a term's `b` is its region index on the CPU
+    path and indexes NOTHING on device. So a goal naming region 1 evaluates
+    against region 0's site and rectangle on the GPU while `eval.eval_goal`
+    uses region 1's on the host — the two disagree in the REWARD, which is
+    where a disagreement is least visible and most expensive.
+
+    ⚠ THIS IS NOT HYPOTHETICAL AND IT IS WHY THE CHECK EXISTS. `so101_tabletop`
+    declares three regions: `table_top` for goals, and `table_left`/
+    `table_right` so `so101_gather_bricks` can start its two props apart. Those
+    two are reachable from `init=`, which the HOST samples, and unreachable
+    from `goal=`, which the device evaluates. Nothing in the file format says
+    so — this does.
+
+    The fix, when a family genuinely needs two goal regions, is to widen
+    `MODEL_CURRICULUM_SIZE` and index the table by the term's `b`. Both halves,
+    or neither: widening the table without indexing it changes nothing, and
+    indexing a table that is one region wide reads past it.
+    """
+    for i in range(len(g.terms)):
+        ref t = g.terms[i]
+        if t.op != OP_IN and t.op != OP_ON and t.op != OP_AT_REGION:
+            continue
+        if t.b >= MAX_CURRICULUM_REGIONS:
+            raise Error(
+                "task '" + task_name + "': goal names region index "
+                + String(t.b) + ", but the device region table holds "
+                + String(MAX_CURRICULUM_REGIONS) + " (curriculum is "
+                + String(MODEL_CURRICULUM_SIZE) + " words and a region costs "
+                + String(REGION_WORDS) + "). The device evaluator would read"
+                " region 0's rectangle for it and the host evaluator would"
+                " read the right one, so the GPU and CPU rewards would"
+                " disagree silently. Regions past the first are usable from"
+                " `init=` — sampled on the host — but not from `goal=`."
+            )

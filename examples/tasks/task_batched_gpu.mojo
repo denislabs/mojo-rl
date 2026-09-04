@@ -22,7 +22,7 @@ and cannot launch, so an Apple run proves only that it builds.
 
 ## HOW A LANE GETS ITS TASK
 
-Even lanes run `gather`, odd lanes run `lift`. The tape is written into
+Even lanes run `settle`, odd lanes run `lift`. The tape is written into
 `meta[env, META_IDX_TASK_PARAM_0 .. _11]` once, before the loop — reset
 preserves it (`gpu/constants.mojo:164`) — and the region table into
 `curriculum[0, 0..4]`, which is shared because a region belongs to the FAMILY.
@@ -43,8 +43,8 @@ before Gap D a parked body fell 7.06 m over a full horizon.
 
 `meta[env, META_IDX_TASK_ACTIVE]` carries which slots this lane is running
 (§3.4), and `So101TabletopConfig.custom_extract_obs_gpu` turns it into the
-observation's last `N_FREE_SLOTS` words. The two tasks here have DIFFERENT
-active sets — `gather` runs `cube_a`, `lift` does too, so a third task would
+observation's last `N_FREE_SLOTS` words. The two tasks here have the SAME
+active set — `settle` runs `cube_a`, `lift` does too, so a third task would
 be needed to separate them on that axis; what separates them here is the mask
 WORD, which is read per lane from `meta`.
 
@@ -73,7 +73,7 @@ from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
 from mojo_rl.tasks.eval import eval_goal, region_sites, region_rects
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words
+from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
 from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
 from mojo_rl.tasks.active import active_mask
@@ -103,7 +103,14 @@ def main() raises:
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
 
-    var ta = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
+    # ⚠⚠ `settle`, NOT `gather`, AND THE NEGATIVE LEG BELOW IS WHY. That leg
+    # demands the two task groups score DIFFERENTLY, so one of them has to be
+    # TRUE under the untrained (zero-torque) policy this file runs. `gather`
+    # used to be that lane by accident — its goal held at reset — and fixing it
+    # to be a real task would have left both groups at 0 and made the leg
+    # vacuous. `so101_settle_brick.task` is that lane on purpose and says so in
+    # its own header.
+    var ta = load_task("mojo_rl/tasks/tasks/so101_settle_brick.task")
     var tb = load_task("mojo_rl/tasks/tasks/so101_lift_brick.task")
     validate_task_against_family(ta, f)
     validate_task_against_family(tb, f)
@@ -111,6 +118,13 @@ def main() raises:
     var gb = bind_goal(parse_goal(tb.goal), f, fmd.body_names, fmd.site_names)
     require_tier_a(ga, ta.name)
     require_tier_a(gb, tb.name)
+    # ⚠ THE REGION COUNTERPART OF `require_tier_a`. The device reads ONE
+    # region table and ignores a term's region index; this family declares
+    # three regions (two of them for `init=` only), so a goal that named one
+    # of the other two would disagree with the CPU leg below — silently, and
+    # in the reward. See `gpu_eval.require_gpu_regions`.
+    require_gpu_regions(ga, ta.name)
+    require_gpu_regions(gb, tb.name)
     var tpa = encode_goal(ga)
     var tpb = encode_goal(gb)
     var mka = active_mask(ta, f)
@@ -293,7 +307,7 @@ def main() raises:
         # is what the CPU gate cannot exercise, and it is the half that would
         # break if the reset ever started zeroing `meta`.
         #
-        # ⚠⚠ THESE TWO TASKS SHARE AN ACTIVE SET — `gather` and `lift` both
+        # ⚠⚠ THESE TWO TASKS SHARE AN ACTIVE SET — `settle` and `lift` both
         # run table/brick/cube_a — so the mask does NOT vary by lane here and
         # this cannot catch a hook that reads lane 0's word for everyone.
         # `test_active_mask` runs `reach` beside `gather` for exactly that, at

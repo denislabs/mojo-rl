@@ -169,6 +169,22 @@ tests/tasks/test_eval_report.mojo
 # SKIPS LOUDLY without the tree: 130/130 parse, 8/130 goals translate.
 tests/tasks/test_bddl.mojo
 
+# ── mojo_rl/tasks: is `reach` REACHABLE, and by how much ────────────
+# ⚠⚠ THE GATE NO OTHER TASK GATE CAN BE. Everything else here asks whether a
+# goal EVALUATES; this asks whether a policy could ever MEET it — the fraction
+# of the arm's configuration space inside `AtRegion(robot_gripperframe,
+# table_top)`, over 4096 uniform draws. A satisfiable-but-tiny target set and
+# a healthy one look identical to every other check, and the difference is a
+# task that trains against one that gives a flat curve read as an agent bug.
+# Measured: 3.2% of uniform poses; the floor it asserts is 0.5%.
+# ⚠ IT FOUND THE ANGLE-UNIT DEFECT. Before the composed scene restated
+# `<compiler angle="radian">` the hit rate was 0 and the arm's travel was
+# +-1.9 DEGREES — with nbody, njnt, nq, nv, ngeom and every contact count
+# correct. `test_family_compose_vs_mujoco` now holds that half open directly.
+# ABLATED: with the angle line removed the sweep's envelope collapses to
+# 0.07 m and the hit rate goes to 0 (the span control fires first).
+examples/tasks/task_reachability.mojo
+
 # ── data: the manifest's task table, BYTE-EXACT ─────────────────────
 # ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
 # `parse_manifest` strips every value, so the two things that break it are a

@@ -165,6 +165,16 @@ def main() raises:
                     hxp[b * 3] = 0.25
                     hxp[b * 3 + 1] = 0.0
                     hxp[b * 3 + 2] = 0.01
+            # ⚠ `cube_a` PINNED — lane 0's goal is `Near(brick, cube_a)`, a
+            # RELATIVE predicate, and the loop above puts every body at the
+            # same swept point. Left unpinned it is constant TRUE at distance
+            # zero and the FLIP check below reports 25 of 25. Same fix, same
+            # reason, as `tests/tasks/test_task_tape.mojo`.
+            for b in range(nb):
+                if String(fmd.body_names[b]).startswith("cube_a_"):
+                    hxp[b * 3] = 0.25
+                    hxp[b * 3 + 1] = 0.0
+                    hxp[b * 3 + 2] = 0.04
             for si in range(ns):
                 if String(fmd.site_names[si]) == "robot_gripperframe":
                     hsp[si * 3] = px

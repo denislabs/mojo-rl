@@ -134,6 +134,128 @@ def main() raises:
         )
     print("  ok: every slot is in the composed model")
 
+    # ── ⚠⚠ ATTACHING A MODEL MUST NOT CHANGE ITS NUMBERS ──────────────────
+    #
+    # Every check above this line counts RECORDS. They all passed while the
+    # arm's joint limits in the composed scene were 57.3x too tight: the
+    # composed host declared no `<compiler angle>`, MuJoCo's default for that
+    # is DEGREE, and so a `angle="radian"` asset spliced into it had every
+    # range reinterpreted. `robot_shoulder_pan` came out +-0.0335 rad — the
+    # arm could move +-1.9 DEGREES — and nbody, njnt, nq, nv and ngeom were
+    # all exactly right.
+    #
+    # ⚠⚠ AND THE MuJoCo HALF OF THIS GATE COULD NOT SEE IT EITHER, WHICH IS
+    # THE PART WORTH REMEMBERING. `tools/tasks/check_family.py` samples a
+    # reachable envelope from `m.jnt_range[:6]` — MuJoCo's OWN ranges, read
+    # from the same file. It was therefore sweeping the CORRECT limits and
+    # reporting a healthy envelope for a model our runtime could barely move.
+    # An oracle only crosses implementations on the quantities it actually
+    # compares, and this one was never compared.
+    #
+    # So: a joint's range in the composed scene must equal its range in the
+    # asset it came from, parsed standalone. That is a statement about the
+    # SPLICE and needs no oracle — and the standalone parse is independently
+    # pinned to MuJoCo, whose numbers agree with the asset's text.
+    var comp_j = 0
+    var range_bad = 0
+    var range_checked = 0
+
+    # base first, then each slot in declaration order — the same order the
+    # count arithmetic above already depends on.
+    var srcs = List[String]()
+    srcs.append(String(f.base))
+    for i in range(len(f.slots)):
+        srcs.append(String(f.slots[i].asset))
+    for si in range(len(srcs)):
+        var a2 = parse_model_runtime(srcs[si])
+        for j in range(len(a2.joints)):
+            if comp_j >= len(fmd.joints):
+                break
+            ref cj = fmd.joints[comp_j]
+            ref aj = a2.joints[j]
+            range_checked += 1
+            var dlo = cj.range_min - aj.range_min
+            var dhi = cj.range_max - aj.range_max
+            if dlo < 0.0:
+                dlo = -dlo
+            if dhi < 0.0:
+                dhi = -dhi
+            if cj.is_limited != aj.is_limited or dlo > 1e-12 or dhi > 1e-12:
+                range_bad += 1
+                print("  FAIL: joint", comp_j, "range [", cj.range_min, ",",
+                      cj.range_max, "] but", srcs[si], "declares [",
+                      aj.range_min, ",", aj.range_max, "]")
+            comp_j += 1
+
+    # ⚠ ANTI-VACUITY. "0 mismatches" is also what a loop that compared nothing
+    # reports, and this one indexes two lists whose lengths could drift apart.
+    # The arm alone has six limited hinges, so a healthy run compares at least
+    # that many.
+    if range_checked < 6:
+        raise Error(
+            "family compose: compared only " + String(range_checked)
+            + " joint ranges. The base's six hinges alone should appear, so"
+            " this loop is not walking the joints it thinks it is."
+        )
+    if range_bad != 0:
+        raise Error(
+            "family compose: " + String(range_bad) + " of "
+            + String(range_checked) + " joint ranges CHANGED when the asset"
+            " was attached. The usual cause is the angle unit: MuJoCo reads a"
+            " host with no <compiler angle> as DEGREE, so a radian asset"
+            " spliced into it has every range divided by 57.3. The composed"
+            " scene must restate the base's angle —"
+            " `tasks/family.compose_family` does, and"
+            " `tools/tasks/gen_family_scene.mojo` must have been re-run since."
+        )
+    print("  ok:", range_checked,
+          "joint ranges survive the attach unchanged (angle unit intact)")
+
+    # ⚠ AND THE ACTUATOR `ctrlrange`, WHICH IS THE ONE THE POLICY TOUCHES.
+    # `Phyics3dEnvConfig.NORMALIZED_ACTIONS` maps a [-1, 1] action affinely
+    # onto each actuator's ctrlrange, so a ctrlrange scaled by 1/57.3 would
+    # confine the arm to 1/57.3 of its travel with the agent none the wiser —
+    # a policy that trains, converges, and cannot reach anything. The joint
+    # ranges above and these are separate arrays and were separately wrong.
+    var comp_a = 0
+    var ctrl_bad = 0
+    var ctrl_checked = 0
+    for si in range(len(srcs)):
+        var a3 = parse_model_runtime(srcs[si])
+        for k in range(len(a3.actuators)):
+            if comp_a >= len(fmd.actuators):
+                break
+            ref ca = fmd.actuators[comp_a]
+            ref aa = a3.actuators[k]
+            ctrl_checked += 1
+            var clo = ca.ctrl_min - aa.ctrl_min
+            var chi = ca.ctrl_max - aa.ctrl_max
+            if clo < 0.0:
+                clo = -clo
+            if chi < 0.0:
+                chi = -chi
+            if ca.is_ctrl_limited != aa.is_ctrl_limited \
+                    or clo > 1e-12 or chi > 1e-12:
+                ctrl_bad += 1
+                print("  FAIL: actuator", comp_a, "ctrlrange [", ca.ctrl_min,
+                      ",", ca.ctrl_max, "] but", srcs[si], "declares [",
+                      aa.ctrl_min, ",", aa.ctrl_max, "]")
+            comp_a += 1
+    if ctrl_checked < 6:
+        raise Error(
+            "family compose: compared only " + String(ctrl_checked)
+            + " actuator ctrlranges. The arm alone has six, so this loop is"
+            " not walking the actuators it thinks it is."
+        )
+    if ctrl_bad != 0:
+        raise Error(
+            "family compose: " + String(ctrl_bad) + " of "
+            + String(ctrl_checked) + " actuator ctrlranges CHANGED when the"
+            " asset was attached. Same cause as the joint ranges above — see"
+            " that error."
+        )
+    print("  ok:", ctrl_checked, "actuator ctrlranges survive the attach")
+
     # ⚠ THE BUDGET IS CONSTANT — that is what makes a family one
     # monomorphisation. Free slots contribute 6 dofs each and static ones
     # contribute NONE, which is the whole reason `static` exists.

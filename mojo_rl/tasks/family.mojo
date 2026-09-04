@@ -47,6 +47,7 @@ absent. `PARK_SPACING` is 25x a 2 cm prop's half-extent.
 """
 
 from mojo_rl.physics3d.studio.scene import SceneDoc, Instance, scene_from_base
+from mojo_rl.physics3d.parser.expander import compiler_attr
 from .spec import FamilySpec, SLOT_FREE, SLOT_STATIC
 
 
@@ -162,6 +163,34 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
     # Calling it with "" rather than writing the floor by hand is what keeps
     # this file free of MJCF text (§7).
     var d = scene_from_base(String(""), floor=True)
+
+    # ⚠⚠ THE HOST MUST RESTATE THE BASE'S ANGLE UNIT, AND OMITTING IT FROZE
+    # THE ARM. MuJoCo's default for `<compiler angle>` is **degree**, so a
+    # composed scene that declares no `<compiler>` reads every attached
+    # `angle="radian"` asset in degrees. `so101_tabletop.xml` was written that
+    # way and our parser gave `robot_shoulder_pan` a range of +-0.0335 rad
+    # where MuJoCo 3.10 gives +-1.9199 — a factor of 57.3, i.e. the arm could
+    # move +-1.9 DEGREES. Nothing caught it: `nq`, `nv`, `ngeom` and every
+    # contact count were right, the scene rendered, the props settled, and no
+    # gate had ever asked whether the arm could REACH anything.
+    #
+    # ⚠ AND THE EXPANDER'S GUARD CANNOT CATCH IT EITHER, BY CONSTRUCTION. It
+    # refuses a sub-model whose angle differs from the host's, but only when
+    # BOTH are present — an ABSENT host angle reads as "no opinion" there and
+    # as "degree" in MuJoCo. Stating it here closes the case for composed
+    # families; the general fix belongs in the guard.
+    #
+    # ⚠ READ FROM THE BASE, NOT HARDCODED. `radian` is right for this tree's
+    # robots and wrong for an asset that ships in degrees; the composer's job
+    # is to agree with what it attaches, which the expander then enforces for
+    # every other slot.
+    var base_xml_text: String
+    with open(f.base, "r") as bf:
+        base_xml_text = bf.read()
+    var base_angle = compiler_attr(base_xml_text, "angle")
+    if base_angle.byte_length() > 0:
+        d.base_xml = String('  <compiler angle="') + base_angle + '"/>'
+
     var base_key = _asset_key(f.base)
     d.add_asset(base_key, _relative_to(f.base, scene_dir))
     d.instances.append(Instance(base_key, BASE_PREFIX, 0.0, 0.0, 0.0))

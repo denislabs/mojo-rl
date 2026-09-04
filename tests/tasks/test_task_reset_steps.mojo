@@ -190,10 +190,38 @@ def main() raises:
         sp2.append(Float64(d.site_xpos.data[i]))
     var holds = eval_goal(g, f, xb, xq, sp2, rsites)
     print("  goal", t.goal, "at reset ->", holds)
-    # ⚠ `gather` asks for both props ON the table, and the sampler puts them
-    # there — so this must hold AT RESET. If it does not, the sampler's z and
-    # `ON_MAX_DZ` disagree, which is a real defect and not a tuning matter.
-    ta.check(holds, "the gather goal HOLDS at reset (sampler agrees with On)")
+
+    # ⚠⚠ TWO ASSERTIONS WHERE THERE USED TO BE ONE, AND THEY ASK DIFFERENT
+    # QUESTIONS. This line read
+    #
+    #     ta.check(holds, "the gather goal HOLDS at reset")
+    #
+    # for five commits. It was pinning something real — the sampler's z
+    # against `ON_MAX_DZ` — but it was pinning it THROUGH the task's goal, and
+    # so it also silently certified that `gather` was solved before the arm
+    # moved. A gate cannot be asked to notice that the thing it asserts is a
+    # defect. So the pin now goes through the INIT region, which is what it was
+    # ever about, and the task's own goal is asserted FALSE beside it.
+
+    # (a) the pin: the sampler's z and `On`'s band agree. `gather` starts its
+    # brick in `table_left`, so THAT is the containment this state proves.
+    var g_init = bind_goal(
+        parse_goal(String("On(brick, table_left)")),
+        f, fmd.body_names, fmd.site_names,
+    )
+    ta.check(
+        eval_goal(g_init, f, xb, xq, sp2, rsites),
+        "a sampled prop is ON its init region at reset (sampler z agrees with"
+        " ON_MIN_DZ/ON_MAX_DZ)",
+    )
+
+    # (b) the anti-degeneracy check, on this task and then on every shipped
+    # one below.
+    ta.check(
+        not holds,
+        "the gather goal is FALSE at reset (a task solved by doing nothing"
+        " teaches nothing)",
+    )
 
     # ── 3b. ⚠⚠ THE QUATERNION CONVENTIONS, ON REAL DATA ──────────────────
     #
@@ -271,6 +299,87 @@ def main() raises:
             if qpos2[addrs[i].qadr + k] != qpos[addrs[i].qadr + k]:
                 same = False
     ta.check(same, "reset is IDEMPOTENT for the same (seed, lane)")
+
+    # ── 5. ⚠⚠ NO SHIPPED TASK IS SOLVED AT RESET ──────────────────────────
+    #
+    # The general form of check (b) above, run over EVERY `.task` this family
+    # ships and over several lanes each, because a task can be degenerate for
+    # some draws and not others — which is worse than being degenerate for all
+    # of them, since it reports as a policy that mysteriously starts above
+    # zero and the number moves with the seed.
+    #
+    # ⚠ `so101_settle_brick` IS EXEMPT AND IT IS THE ONLY ONE. Its goal holds
+    # at reset ON PURPOSE — it is the probe two GPU gates need a true lane for,
+    # and its own header says so. Exempting it BY NAME rather than skipping
+    # any task that happens to fail is the difference between a documented
+    # exception and a gate that quietly tolerates the next `gather`.
+    #
+    # ⚠ AND THE EXEMPTION IS ASSERTED IN BOTH DIRECTIONS. If `settle` ever
+    # stopped holding at reset, the two gates that borrow it would go vacuous
+    # and nothing else here would notice.
+    print()
+    print("--- 5. every shipped task, non-trivial at reset ---")
+    var task_files = List[String]()
+    task_files.append(String("so101_reach_brick"))
+    task_files.append(String("so101_lift_brick"))
+    task_files.append(String("so101_gather_bricks"))
+    task_files.append(String("so101_settle_brick"))
+
+    for ti in range(len(task_files)):
+        var tk = load_task(
+            "mojo_rl/tasks/tasks/" + task_files[ti] + ".task"
+        )
+        validate_task_against_family(tk, f)
+        var gk = bind_goal(
+            parse_goal(tk.goal), f, fmd.body_names, fmd.site_names
+        )
+        var is_probe = tk.name == "so101_settle_brick"
+        var n_true = 0
+        comptime N_LANES = 8
+        for lane in range(N_LANES):
+            # a fresh state per lane: home qpos, then this lane's placements
+            for i in range(nq):
+                d.qpos.data[i] = Scalar[DT](0.0)
+            for i in range(nv):
+                d.qvel.data[i] = Scalar[DT](0.0)
+            var qk = List[Float64]()
+            for i in range(nq):
+                qk.append(Float64(d.qpos.data[i]))
+            var vk = List[Float64]()
+            for _ in range(nv):
+                vk.append(0.0)
+            var repk = SampleReport()
+            var pk2 = sample_placements(
+                tk, f, frames, radii, UInt64(11), lane, repk
+            )
+            reset_slots(tk, f, pk2, addrs, qk, vk)
+            for i in range(nq):
+                d.qpos.data[i] = Scalar[DT](qk[i])
+            forward_kinematics["cpu", DT, DynDims, 1](d, m)
+            var xbk = List[Float64]()
+            for i in range(nb * 3):
+                xbk.append(Float64(d.xpos.data[i]))
+            var xqk = List[Float64]()
+            for i in range(nb * 4):
+                xqk.append(Float64(d.xquat.data[i]))
+            var spk = List[Float64]()
+            for i in range(ns * 3):
+                spk.append(Float64(d.site_xpos.data[i]))
+            if eval_goal(gk, f, xbk, xqk, spk, rsites):
+                n_true += 1
+        print("     ", tk.name, ":", n_true, "/", N_LANES,
+              "lanes already solved at reset  |", tk.goal)
+        if is_probe:
+            ta.check(
+                n_true == N_LANES,
+                "the PROBE `" + tk.name + "` holds at reset on every lane"
+                " (two GPU gates need a true lane; see its header)",
+            )
+        else:
+            ta.check(
+                n_true == 0,
+                "`" + tk.name + "` is UNSOLVED at reset on every lane",
+            )
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

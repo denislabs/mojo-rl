@@ -50,6 +50,7 @@ def _task_names() -> List[String]:
     o.append(String("so101_reach_brick"))
     o.append(String("so101_lift_brick"))
     o.append(String("so101_gather_bricks"))
+    o.append(String("so101_settle_brick"))
     return o^
 
 
@@ -127,6 +128,21 @@ def main() raises:
                         xp[b * 3] = 0.25
                         xp[b * 3 + 1] = 0.0
                         xp[b * 3 + 2] = 0.01
+                # ⚠⚠ `cube_a` IS PINNED, AND A RELATIVE PREDICATE IS WHY.
+                # The loop above puts EVERY body at the swept point, which is
+                # fine for the goals that compare a body to a REGION or to the
+                # table — and makes `Near(brick, cube_a, 0.06)` a constant
+                # TRUE, distance zero, in all 25 states. `gather` then
+                # contributed 25 agreements and tested nothing, which the
+                # flip check below caught the moment the task stopped being a
+                # region predicate. Pinning the second prop makes the
+                # separation vary with the sweep exactly as the other goals'
+                # quantities do.
+                for b in range(nb):
+                    if String(fmd.body_names[b]).startswith("cube_a_"):
+                        xp[b * 3] = 0.25
+                        xp[b * 3 + 1] = 0.0
+                        xp[b * 3 + 2] = 0.04
                 # the gripper site follows the sweep too, for AtRegion
                 for si in range(ns):
                     if String(fmd.site_names[si]) == "robot_gripperframe":

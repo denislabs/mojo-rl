@@ -190,8 +190,14 @@ def main() raises:
                "active=table\nactive=brick\nactive=cube_a\n"
                "init=brick@table_top\ninit=cube_a@table_top\n")
     )
+    # ⚠ ONE FRAME PER REGION, IN FAMILY ORDER — `sample_placements` raises
+    # otherwise, because it indexes `frames` by family region index. The
+    # family declares three (`table_top` plus the two lateral init strips) and
+    # they all sit on the SAME site, so one position serves for all of them
+    # here; the rects differ and the rects live on the family, not the frame.
     var rfr = List[RegionFrame]()
-    rfr.append(RegionFrame(0.25, 0.0, 0.31))  # roughly where a table site sits
+    for _ in range(len(real.regions)):
+        rfr.append(RegionFrame(0.25, 0.0, 0.31))  # roughly a table site
     var rrad = List[Float64]()
     for _ in range(len(real.slots)):
         rrad.append(R)

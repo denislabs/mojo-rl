@@ -1,0 +1,44 @@
+# SETTLE — the brick stays where it was put. ⚠⚠ THIS IS A PROBE, NOT A TASK.
+#
+# ⚠⚠ ITS GOAL HOLDS AT RESET, DELIBERATELY, AND NOTHING SHOULD BE TRAINED ON
+# IT. A policy scores 100% here by doing nothing; that is the point.
+#
+# ## WHY A DELIBERATELY TRIVIAL TASK IS WORTH A FILE
+#
+# Two gates need a lane whose goal is TRUE under an untrained policy, and both
+# were silently borrowing `so101_gather_bricks` for it before that task was
+# fixed to be non-trivial:
+#
+#   * `examples/tasks/task_batched_gpu.mojo` — its NEGATIVE leg demands the two
+#     task groups score DIFFERENTLY, because a tape misindexed by lane makes
+#     every lane run one goal and the CPU-vs-GPU parity check agrees with
+#     itself. With two tasks that both score 0 the leg proves nothing.
+#   * `examples/tasks/task_eval_frozen.mojo` — its A-vs-C control removes the
+#     table and demands the OUTCOMES change. Only a "the prop rests on the
+#     table" goal responds to that: without the table the brick falls to the
+#     floor and `On(brick, table_top)` flips to False.
+#
+# Borrowing a real task for that role is what let `gather` stay degenerate for
+# five commits. Naming the probe makes the dependency visible and lets the
+# tasks beside it be tasks.
+#
+# ⚠ `On`, NOT `Above`. `Above(brick, table, m)` is true for a brick in mid-air
+# and would NOT flip when the table is deleted until the brick fell past the
+# table's origin. `On` carries the rectangle AND the z band, so removing the
+# fixture flips it within a few steps — which is what the control measures.
+schema_version=1
+task=so101_settle_brick
+family=so101_tabletop
+language=Keep the brick on the table
+
+goal=On(brick, table_top)
+
+# ⚠ THE SAME ACTIVE SET AS `so101_lift_brick`, on purpose. The batched example
+# pairs the two, and its note about the mask NOT varying between them is only
+# true if they agree here.
+active=table
+active=brick
+active=cube_a
+
+init=brick@table_top
+init=cube_a@table_top

@@ -436,6 +436,36 @@ def _compiler_attr(xml: String, attr: String) -> String:
     return _trim(_extract_attr(String(xml[byte = t : e + 1]), attr))
 
 
+def _default_angle(a: String) -> String:
+    """`<compiler angle>` with MuJoCo's default filled in.
+
+    ⚠ THE DEFAULT IS `degree`, NOT `radian`, and that asymmetry is the whole
+    reason this exists — every robot asset in this tree declares `radian`
+    explicitly, so a composed host that declares nothing disagrees with all of
+    them while looking neutral.
+    """
+    return String("degree") if a.byte_length() == 0 else a
+
+
+def compiler_attr(xml: String, attr: String) -> String:
+    """`_compiler_attr` under a public name, for callers that COMPOSE MJCF.
+
+    ⚠ A COMPOSER NEEDS THIS, AND THE ABSENCE OF IT COST A FAMILY ITS ARM.
+    `tasks/family.compose_family` writes a host scene that `<attach>`es assets;
+    if the host declares no `<compiler angle>` MuJoCo reads it as DEGREE, and
+    the guard in `_expand_attach_models` below skips its check entirely because
+    the host's attribute is empty. `so101_tabletop.xml` was written that way:
+    every joint range in a `angle="radian"` arm came back 57x too tight and the
+    arm could move +-1.9 degrees. So a composer must be able to READ the base's
+    angle and RESTATE it on the scene it writes, and that needs this reader —
+    not a second one spelled slightly differently in another package.
+
+    A wrapper rather than a rename because this file is shared: renaming a
+    symbol another session may be editing is how in-flight work gets swept.
+    """
+    return _compiler_attr(xml, attr)
+
+
 def _read(path: String) raises -> String:
     var f = open(path, "r")
     var t = f.read()
@@ -601,15 +631,27 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         # every joint range and euler in it: a 90 becomes 90 radians. MuJoCo
         # cannot hit this because it compiles each model separately and
         # attaches the RESULT; a text splice can, so it has to refuse.
-        var sub_angle = _compiler_attr(sub, "angle")
-        var host_angle = _compiler_attr(xml, "angle")
-        if sub_angle.byte_length() > 0 and host_angle.byte_length() > 0 \
-                and sub_angle != host_angle:
+        #
+        # ⚠⚠ AN ABSENT `angle` IS NOT "NO OPINION", IT IS `degree`. This
+        # comparison required BOTH sides to be present for one commit, and a
+        # host with no `<compiler>` therefore skipped the check entirely —
+        # while MuJoCo read that same host as DEGREE and our splice then
+        # reinterpreted every radian in the sub-model. `so101_tabletop.xml`
+        # was exactly that file: `robot_shoulder_pan` came out +-0.0335 rad
+        # instead of +-1.9199, the arm could move +-1.9 DEGREES, and nbody /
+        # njnt / nq / nv / ngeom were all correct. Defaulting both sides is
+        # what makes the absent case comparable at all.
+        var sub_angle = _default_angle(_compiler_attr(sub, "angle"))
+        var host_angle = _default_angle(_compiler_attr(xml, "angle"))
+        if sub_angle != host_angle:
             raise Error(
                 "physics3d: attached model '" + mdl + "' uses <compiler"
                 " angle='" + sub_angle + "'> while the scene uses '"
                 + host_angle + "'. A text splice would read its angles in the"
                 " scene's units. Convert the asset, or set both to the same."
+                " ⚠ An absent <compiler angle> counts as 'degree' — MuJoCo's"
+                " default — so a scene that attaches radian assets must SAY"
+                " angle='radian'."
             )
         # ⚠ `meshdir` / `assetdir` FOLD INTO THE REBASE, and must: after the
         # splice the HOST's compiler applies, so a sub-model whose paths are

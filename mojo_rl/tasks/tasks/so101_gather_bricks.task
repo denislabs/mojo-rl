@@ -1,18 +1,40 @@
-# GATHER — both props on the table's zone, upright.
+# GATHER — the two blocks pushed together.
 #
 # ⚠ THE SAME FAMILY, THE SAME BINARY, A DIFFERENT GOAL AND A DIFFERENT ACTIVE
 # SET. That is the claim the task layer exists to make: this file and the two
 # beside it produce three different tasks with no .mojo touched between them.
+#
+# ⚠⚠ THIS TASK'S GOAL USED TO HOLD AT RESET. It was
+# `And(On(brick, table_top), On(cube_a, table_top))` with both props sampled
+# INTO `table_top` — so the sampler satisfied the goal before the arm moved,
+# and a policy could score 100% by doing nothing. `test_task_reset_steps`
+# ASSERTED that it held, which is how it survived: the gate read the coincidence
+# as a feature (the sampler's z agreeing with `ON_MAX_DZ`) and never asked the
+# separate question of whether the TASK was non-trivial. Both questions are
+# asked now, and `so101_settle_brick.task` carries the first one on purpose.
 schema_version=1
 task=so101_gather_bricks
 family=so101_tabletop
-language=Put both blocks on the table
+language=Push the two blocks together
 
-goal=And(On(brick, table_top), On(cube_a, table_top))
+# ⚠⚠ 0.06 IS BELOW THE SAMPLER'S GUARANTEED SEPARATION, AND THAT IS THE WHOLE
+# DESIGN OF THIS TASK. `table_left` and `table_right` are disjoint strips with
+# an 8 cm gutter between them, so two props drawn one from each start at least
+# 0.08 apart — FOR EVERY DRAW, not for most of them. A margin that merely
+# held on average would make the task degenerate on a fraction of lanes and
+# report as a policy that mysteriously starts above zero.
+#
+# ⚠ AND IT IS ABOVE WHAT THE GEOMETRY ALLOWS. Two 4 cm cubes resting face to
+# face have centres 0.04 apart, so 0.06 is reachable with room to spare rather
+# than asking for interpenetration.
+#
+# ⚠ `Near` NAMES NO REGION, which is why this task can use `table_left` and
+# `table_right` at all — see the family's note on the one-region device table.
+goal=Near(brick, cube_a, 0.06)
 
 active=table
 active=brick
 active=cube_a
 
-init=brick@table_top
-init=cube_a@table_top
+init=brick@table_left
+init=cube_a@table_right

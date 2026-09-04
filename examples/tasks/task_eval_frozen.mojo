@@ -34,12 +34,12 @@ cheap and deterministic, and the claim being gated is about the HARNESS — that
 an init table makes two runs comparable — not about a policy's quality.
 
 ⚠ THE STATE COMPARISON IS THE PRIMARY CLAIM — final `qpos`, bit for bit —
-because it holds whatever the policy is. `gather` holds from its first step
-under zero actions and `lift` never does, so a family whose goals ignored
+because it holds whatever the policy is. `settle` holds from its first step
+under zero actions and `reach` never does, so a family whose goals ignored
 placement would report identical rates from completely different states.
 
 ⚠⚠ BUT THE OUTCOMES DO MOVE HERE, AND I EXPECTED THEY WOULD NOT. Measured on
-a 5090: A vs C differ on **128 of 256 lanes** — every `gather` lane. Without
+a 5090: A vs C differ on **128 of 256 lanes** — every `settle` lane. Without
 the table the props sit at the composed scene's XML defaults rather than on
 the table, so `On(brick, table_top)` is False. The A-vs-C outcome difference
 is therefore ASSERTED, not printed: it is a second control, independent of
@@ -88,7 +88,7 @@ from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
 from mojo_rl.tasks.eval import region_sites, region_rects
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words
+from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.sampler import RegionFrame, SampleReport
 from mojo_rl.tasks.reset import free_slot_addresses
 from mojo_rl.tasks.init_table import (
@@ -169,7 +169,7 @@ def run_eval(
     for _ in range(N_ENVS):
         solved.append(False)
     # ⚠⚠ `_reward`, **NOT** `_done`. This read `_done` first and every lane
-    # came back False — including `gather`, which `test_task_reset_steps`
+    # came back False — including `settle`, whose goal `test_task_reset_steps`
     # proves holds AT RESET. `Phyics3dBatchedEnv` takes
     # `TERMINATE_ON_UNHEALTHY` as a comptime parameter DEFAULTING TO FALSE,
     # and `phyics3d_batched_env.mojo:1161` then does
@@ -216,7 +216,13 @@ def main() raises:
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
 
-    var tg = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
+    # ⚠⚠ `settle`, NOT `gather`. Both controls below need a lane whose goal is
+    # TRUE under this file's zero-action policy: `any_solved` would otherwise
+    # be 0 (the failure this file already recorded once) and the A-vs-C
+    # OUTCOME control has nothing to flip. `gather` used to fill that role by
+    # accident — its goal held at reset — and is now a real task that scores 0
+    # here. `so101_settle_brick.task` is the probe, on purpose.
+    var tg = load_task("mojo_rl/tasks/tasks/so101_settle_brick.task")
     var tr = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
     validate_task_against_family(tg, f)
     validate_task_against_family(tr, f)
@@ -224,6 +230,11 @@ def main() raises:
     var gr = bind_goal(parse_goal(tr.goal), f, fmd.body_names, fmd.site_names)
     require_tier_a(gg, tg.name)
     require_tier_a(gr, tr.name)
+    # ⚠ ONE region table on device, and a term's region index is ignored
+    # there — see `gpu_eval.require_gpu_regions`. This family declares three
+    # regions and two of them are for `init=` only.
+    require_gpu_regions(gg, tg.name)
+    require_gpu_regions(gr, tr.name)
     var tape_g = encode_goal(gg)
     var tape_r = encode_goal(gr)
     print("  task 0:", tg.name, "|", tg.goal)
@@ -380,7 +391,7 @@ def main() raises:
             raise Error(
                 "P4: NO lane met its goal in run A, so every agreement below"
                 " is an agreement between two constant-False vectors."
-                " `gather` holds AT RESET (tests/tasks/test_task_reset_steps"
+                " `settle` holds AT RESET (tests/tasks/test_task_reset_steps"
                 " asserts it), so zero successes means the success SIGNAL is"
                 " not being read — check that the loop reads `_reward` and"
                 " not `_done`: `TERMINATE_ON_UNHEALTHY` defaults to False and"
@@ -401,7 +412,7 @@ def main() raises:
         # ⚠ ASSERTED SINCE THE 2026-09-04 RUN. This was a printed note while I
         # expected it might legitimately be zero — under zero actions I
         # reasoned the goals would not depend on placement. MEASURED: 128 of
-        # 256, i.e. every `gather` lane. Without the table the props sit at
+        # 256, i.e. every `settle` lane. Without the table the props sit at
         # the composed scene's XML defaults rather than on the table, so
         # `On(brick, table_top)` is False; with it, True. So the table changes
         # the OUTCOME and not merely the state, and this is a second control

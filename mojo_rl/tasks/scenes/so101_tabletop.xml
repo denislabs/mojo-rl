@@ -1,4 +1,5 @@
 <mujoco model="so101_tabletop">
+  <compiler angle="radian"/>
   <asset>
     <model name="so_arm101" file="../../envs/robots/assets/so_arm101.xml"/>
     <model name="fixture" file="../assets/props/fixture.xml"/>
