@@ -540,3 +540,161 @@ def assignment_purity(assign: List[Int], truth: List[Int], k: Int) -> Float64:
                 best = tab[c * nt + v]
         good += best
     return Float64(good) / Float64(len(assign))
+
+
+def align_transport_tags(
+    labels: List[Int],
+    actions: List[Int],
+    tags: List[Int],
+    n_actions: Int,
+    rounds: Int = 6,
+) -> List[Int]:
+    """Compose per-slot transport splits into one consistent place id.
+
+    `tags[t]` is the mixture component of visit `t`'s OUTGOING transition
+    within its `(label, action)` slot, or `-1` where that slot was not split.
+    Those tags separate the two places sharing a label, but the component
+    indices of `(l, +x)` and `(l, +y)` have no reason to agree, which is why
+    G29's per-label split did not compose.
+
+    **Union-find is the wrong tool here, and that was measured.** The tags are
+    ~92 % pure, and a union-find is MONOTONE: one false merge is permanent, so
+    an 8 % error rate collapses every label back into one block (measured: 15
+    clones, purity unchanged from the quotient). Composition has to average the
+    noise rather than take its transitive closure.
+
+    So: majority voting. Each label picks a REFERENCE action — the one with
+    the most tagged visits — and its tag becomes the relative place id. A
+    transition table `(label, rel, action) -> rel'` is then voted from the
+    visits where both ends are already known, and used to fill in the visits
+    that took a non-reference action. Every step is a majority over hundreds of
+    visits, so an 8 % tag error changes no verdict.
+    """
+    var n = len(labels)
+    var n_lab = count_labels(labels)
+
+    # reference action per label: the one with the most tagged visits
+    var tagged_count = List[Int](length=n_lab * n_actions, fill=0)
+    for t in range(n):
+        if actions[t] >= 0 and tags[t] >= 0:
+            tagged_count[labels[t] * n_actions + actions[t]] += 1
+    var ref_action = List[Int](length=n_lab, fill=-1)
+    for l in range(n_lab):
+        var best = 0
+        for a in range(n_actions):
+            if tagged_count[l * n_actions + a] > best:
+                best = tagged_count[l * n_actions + a]
+                ref_action[l] = a
+
+    var rel = List[Int](length=n, fill=-1)
+    for t in range(n):
+        if (
+            actions[t] >= 0
+            and tags[t] >= 0
+            and actions[t] == ref_action[labels[t]]
+        ):
+            rel[t] = tags[t]
+
+    for _ in range(rounds):
+        # vote the forward table (label, rel, action) -> rel'
+        var votes = List[Int](length=n_lab * 2 * n_actions * 2, fill=0)
+        for t in range(n - 1):
+            if actions[t] < 0 or rel[t] < 0 or rel[t + 1] < 0:
+                continue
+            var key = ((labels[t] * 2 + rel[t]) * n_actions + actions[t]) * 2
+            votes[key + rel[t + 1]] += 1
+        var nxt = List[Int](length=n_lab * 2 * n_actions, fill=-1)
+        for l in range(n_lab):
+            for r in range(2):
+                for a in range(n_actions):
+                    var k = (l * 2 + r) * n_actions + a
+                    var v0 = votes[k * 2]
+                    var v1 = votes[k * 2 + 1]
+                    if v0 == 0 and v1 == 0:
+                        continue
+                    nxt[k] = 0 if v0 >= v1 else 1
+
+        var changed = False
+        # forward fill
+        for t in range(1, n):
+            if rel[t] >= 0 or actions[t - 1] < 0 or rel[t - 1] < 0:
+                continue
+            var k = (
+                (labels[t - 1] * 2 + rel[t - 1]) * n_actions + actions[t - 1]
+            )
+            if nxt[k] >= 0:
+                rel[t] = nxt[k]
+                changed = True
+        # backward fill: the dynamics is injective, so the predecessor of a
+        # known place under a known action is determined too
+        for t in range(n - 2, -1, -1):
+            if rel[t] >= 0 or actions[t] < 0 or rel[t + 1] < 0:
+                continue
+            var found = -1
+            for r in range(2):
+                var k = (labels[t] * 2 + r) * n_actions + actions[t]
+                if nxt[k] == rel[t + 1]:
+                    if found >= 0:
+                        found = -1
+                        break
+                    found = r
+            if found >= 0:
+                rel[t] = found
+                changed = True
+        if not changed:
+            break
+
+    var out = List[Int](length=n, fill=0)
+    for t in range(n):
+        out[t] = labels[t] * 2 + (rel[t] if rel[t] >= 0 else 0)
+    # renumber densely
+    var seen = List[Int]()
+    var dense = List[Int](length=n, fill=0)
+    for t in range(n):
+        var idx = -1
+        for k in range(len(seen)):
+            if seen[k] == out[t]:
+                idx = k
+                break
+        if idx < 0:
+            seen.append(out[t])
+            idx = len(seen) - 1
+        dense[t] = idx
+    return dense^
+
+
+def transport_tags(
+    rec: WalkRecord,
+    labels: List[Int],
+    n_actions: Int,
+    seed: UInt64,
+    min_pairs: Int = 40,
+    min_drop: Float64 = 0.25,
+) raises -> List[Int]:
+    """Per-visit mixture component of its outgoing transition, `-1` when the
+    slot has too few pairs or the second transport buys too little."""
+    var n = rec.size()
+    var out = List[Int](length=n, fill=-1)
+    var n_lab = count_labels(labels)
+    for l in range(n_lab):
+        for a in range(n_actions):
+            var idx = List[Int]()
+            var xs = List[Float64]()
+            var ys = List[Float64]()
+            for t in range(n - 1):
+                if labels[t] != l or rec.action[t] != a:
+                    continue
+                idx.append(t)
+                for i in range(2):
+                    xs.append(rec.u[t * 2 + i])
+                    ys.append(rec.u[(t + 1) * 2 + i])
+            if len(idx) < min_pairs:
+                continue
+            var f = fit_transport_mixture[2, DType.float64](
+                xs, ys, 2, seed + UInt64(l * 17 + a)
+            )
+            if 1.0 - f.res_k / f.res_1 < min_drop:
+                continue
+            for j in range(len(idx)):
+                out[idx[j]] = f.assign[j]
+    return out^

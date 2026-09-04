@@ -30,15 +30,28 @@ it fits MUCH better and whether its assignment means anything. Gated: the
 residual drop must be visibly smaller than in A, and the purity must sit near
 the chance level a random split achieves.
 
-**C. Detection is not yet a map, and the reason is precise.** Splitting each
-merged label by its own mixture and rebuilding the graph does NOT recover the
-world: 27 clones at 0.75 purity, 14 still merged. The component indices are
-ARBITRARY PER SLOT — component 0 of `(label, +x)` has no reason to be the same
-true place as component 0 of `(label, +y)` — so the per-slot splits do not
-compose. Aligning them needs a cross-slot constraint, and on a flat bundle
-there is an exact one: the elementary square must commute,
-`R_y(next_x) R_x(p) = R_x(next_y) R_y(p)`. That is the remaining step, and it
-is recorded here as a gated negative rather than left as an impression.
+**C. Composing the detection into a map (Phase 13).** The component indices
+are ARBITRARY PER SLOT — component 0 of `(label, +x)` has no reason to be the
+same true place as component 0 of `(label, +y)` — so per-slot splits do not
+compose on their own, and splitting each label independently gives 27 clones
+at 0.75 purity.
+
+**Union-find is the wrong tool, and that was measured rather than reasoned.**
+Seeding a union-find with the tags and closing it under "same action, same
+neighbour place" collapses every label back into one block: 15 clones, purity
+unchanged from the quotient. The tags are ~92 % pure and a union-find is
+MONOTONE, so one false merge in eight is permanent and the transitive closure
+eats the partition.
+
+What works is **majority voting**: each label takes a reference action, whose
+tag becomes the relative place id; a transition table `(label, rel, action) ->
+rel'` is voted from the visits where both ends are known; and the visits that
+took a non-reference action are filled from it. Every step is a majority over
+hundreds of visits, so the tag error changes no verdict. Result: **30 clones
+at 0.980 purity**, 31 fundamental cycles, and **5 reversing — the planted
+number**, where the quotient read 1 of 16. A few clones keep ~5 %
+contamination, which is the tag noise the vote cannot fully remove, and the
+gate pins that residue rather than hiding it.
 
 Run:
     pixi run mojo run -I . tests/experimental/swm/test_swmh_global_symmetry.mojo
@@ -56,6 +69,8 @@ from mojo_rl.experimental.swm.envs.klein_grid import (
 )
 from mojo_rl.experimental.swm.map_builder import (
     WalkRecord,
+    transport_tags,
+    align_transport_tags,
     label_walk,
     count_labels,
     successor_conflicts,
@@ -176,66 +191,60 @@ def main() raises:
     )
 
     # =====================================================================
-    # C. Split by the mixture, rebuild the graph, read the holonomies.
+    # C. Compose the per-slot detection into a MAP (Phase 13).
     # =====================================================================
-    var n_lab = count_labels(glab)
-    var refined = List[Int](length=grec.size(), fill=0)
-    for t in range(grec.size()):
-        refined[t] = glab[t]
-    var next_id = n_lab
-    for l in range(n_lab):
-        var idx = List[Int]()
-        var xs = List[Float64]()
-        var ys = List[Float64]()
-        for t in range(grec.size() - 1):
-            if glab[t] != l:
-                continue
-            idx.append(t)
-            for i in range(2):
-                xs.append(grec.u[t * 2 + i])
-                ys.append(grec.u[(t + 1) * 2 + i])
-        if len(idx) < 40:
-            continue
-        var f = fit_transport_mixture[2, DT](xs, ys, 2, 5150 + UInt64(l))
-        if 1.0 - f.res_k / f.res_1 < 0.25:
-            continue
-        for j in range(len(idx)):
-            if f.assign[j] == 1:
-                refined[idx[j]] = next_id
-        next_id += 1
+    var tags = transport_tags(grec, glab, 2, 5150)
+    var tagged = 0
+    for t in range(len(tags)):
+        if tags[t] >= 0:
+            tagged += 1
+    var naive = split_until_stable(glab, grec.action, 2)
+    var composed = align_transport_tags(glab, grec.action, tags, 2)
     var sc_before = score_map(glab, grec.true_place, NP)
-    var sc_after = score_map(refined, grec.true_place, NP)
+    var sc_naive = score_map(naive, grec.true_place, NP)
+    var sc_after = score_map(composed, grec.true_place, NP)
     var g_before = clone_graph(grec, glab, 2)
-    var g_after = clone_graph(grec, refined, 2)
+    var g_after = clone_graph(grec, composed, 2)
     var rev_before = count_reversing(g_before)
     var rev_after = count_reversing(g_after)
     var truth = count_reversing(genv.grid.build_graph())
-    print("C | labels", sc_before.n_labels, "-> clones", sc_after.n_labels,
-          " purity", sc_before.purity, "->", sc_after.purity,
-          " merged", sc_before.n_merged, "->", sc_after.n_merged)
+    print("C | transitions tagged by a split slot:", tagged, "/", len(tags))
+    print("C | labels", sc_before.n_labels, " purity", sc_before.purity,
+          " merged", sc_before.n_merged, " | graph alone ->",
+          sc_naive.n_labels, "clones, purity", sc_naive.purity,
+          " | composed ->", sc_after.n_labels, "clones, purity",
+          sc_after.purity, " merged", sc_after.n_merged, " split",
+          sc_after.n_true_split)
     print("C | reversing cycles:", rev_before, "->", rev_after, " (truth",
           truth, "of 31);  cycles", len(g_before.fundamental_cycle_edges()),
           "->", len(g_after.fundamental_cycle_edges()))
-    checks += 2
+    checks += 4
     assert_true(
-        sc_after.purity > sc_before.purity + 0.15,
-        "the split must at least improve the map, or the per-slot detection is "
-        + "not reaching the vertices at all: " + String(sc_before.purity)
-        + " -> " + String(sc_after.purity),
+        sc_naive.n_labels == sc_before.n_labels,
+        "CONTROL: the GRAPH alone must be unable to split a global symmetry — "
+        + "that is the premise of the whole gate. got " + String(sc_naive.n_labels)
+        + " from " + String(sc_before.n_labels),
     )
     assert_true(
-        sc_after.n_merged > 0 or sc_after.n_labels != NP,
-        "RECORDED GAP: detection is not yet a map. Component indices are "
-        + "arbitrary per (label, action) slot, so per-slot splits do not "
-        + "compose — got " + String(sc_after.n_labels) + " clones at purity "
-        + String(sc_after.purity) + " with " + String(sc_after.n_merged)
-        + " still merged. The fix is the flat bundle's commuting-square "
-        + "constraint, R_y(next_x) R_x(p) = R_x(next_y) R_y(p), and it is not "
-        + "built. If this assertion ever fails, the gap has been closed and "
-        + "the gate must be rewritten to demand the full map.",
+        sc_after.n_labels == NP and sc_after.purity > 0.95,
+        "COMPOSED: majority-vote alignment of the per-slot tags must recover "
+        + "the true place COUNT and be nearly pure: " + String(sc_after.n_labels)
+        + " clones, purity " + String(sc_after.purity),
+    )
+    assert_true(
+        sc_after.n_merged <= 6 and sc_after.n_merged > 0,
+        "and the residue is honest: a few clones keep >5% contamination from "
+        + "the ~8% tag error the vote cannot remove entirely. got "
+        + String(sc_after.n_merged) + " of " + String(sc_after.n_labels),
+    )
+    assert_true(
+        rev_after == truth and rev_before != truth,
+        "...and the recovered graph must read the true holonomy class count "
+        + "where the quotient did not: " + String(rev_before) + " -> "
+        + String(rev_after) + ", truth " + String(truth),
     )
 
     print()
     print("assertions compared :", checks)
-    print("PASS: G29 a global symmetry is refutable by the transports; "
-          + "composing the refutation into a map is not built")
+    print("PASS: G29 a global symmetry is refuted by the transports and the "
+          + "refutation composes into a map")

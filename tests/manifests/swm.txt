@@ -260,3 +260,13 @@ tests/experimental/swm/test_gauge_coincidence_dim.mojo
 # leak 0.054 -> 0.105, anisotropy 0.752 -> 0.468. Whether a longer schedule
 # closes that is untested. ~4 min.
 tests/experimental/swm/test_swmh_wide_frame.mojo
+# G32 — PHASE 13, is the wide frame's looser split a DATA problem? Phase 12
+# recorded d=4 as a trade-off; this scales the budget and finds it was
+# UNDER-TRAINING, not incapacity: 85% of the landmark gap closes by 4x epochs
+# (R^2 0.891 -> 0.975 against the d=2 reference's 0.989) and the texture leak
+# ends up BETTER than the narrow frame's (0.014 vs 0.054). Which is what the
+# parameter count suggested — d(d-1)/2 per transport entry, 1 at d=2 and 6 at
+# d=4. So width is close to free given data, and the recommendation is to take
+# the wider frame: the gauge-coincidence residue goes with it. Anisotropy is
+# NOT monotone in budget and is gated as a floor, not a trend. ~6 min.
+tests/experimental/swm/test_swmh_width_budget.mojo

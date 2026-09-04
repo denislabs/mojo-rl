@@ -1,6 +1,6 @@
 # `swm/` — Sheaf World Model with holonomy as an observable (SWM-H)
 
-**Status: Phases 0–12 complete, 29 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
+**Status: Phases 0–13 complete, 30 gates; the end-to-end task (G26) reaches a parity-dependent goal on a learned map with no oracle in the loop.** With learned encoders on
 observations that mix a transported landmark with non-transported texture,
 `det H = −1` on Möbius and `+1` on the orientable twin in **24/24 seeds each,
 zero false obstructions**, with the frame channel carrying the landmark
@@ -697,14 +697,52 @@ is bit-identical at `d = 2` (0.9829045415714871 before and after), which is
 what makes the rewrite trustworthy. Same defect shape as every other
 one-dimension rule reused at another in this tree.
 
-## Open questions after Phase 12
+## What was learned (Phase 13 — both remaining items closed)
 
-1. **Compose the global-symmetry refutation into a map** (Phase 11): align the
-   per-slot mixture components with the commuting-square constraint. The
-   detection is done; the bookkeeping is not.
-2. **Does the width price close with budget?** The `d = 4` split is looser on
-   the same schedule. Untested.
-3. **Curved bundles**, and the deferred engineering (GPU, float32 `nn`).
+**The wide frame was under-trained, not incapable (G32).** Phase 12 recorded
+`d = 4` as a trade-off. Scaling the budget shows it is a data question:
+
+| d | epochs | landmark R² | texture leak | anisotropy |
+|---|---|---|---|---|
+| 2 | 1× | 0.989 | 0.054 | 0.813 |
+| 4 | 1× | 0.891 | 0.059 | 0.680 |
+| 4 | 2× | 0.923 | 0.029 | 0.600 |
+| 4 | 4× | **0.975** | **0.014** | 0.684 |
+
+85 % of the landmark gap closes by 4×, and the texture leak ends up *better*
+than the narrow frame's. That is what the parameter count already suggested —
+`d(d−1)/2` per transport entry, 1 at `d = 2` and 6 at `d = 4`. **So width is
+close to free given data, and the recommendation is to take the wider frame:
+the gauge-coincidence residue goes with it.** Anisotropy is not monotone in
+budget and is gated as a floor rather than a trend.
+
+**The global-symmetry refutation composes into a map (G29 leg C).** The
+per-slot component indices are arbitrary, so the splits do not compose on
+their own. **Union-find is the wrong tool, and that was measured rather than
+reasoned**: the tags are ~92 % pure and a union-find is monotone, so one false
+merge in eight is permanent and every label collapses back into one block (15
+clones, purity unchanged from the quotient). Majority voting works instead — a
+reference action per label, a voted transition table `(label, rel, action) →
+rel'`, then fill the visits that took a non-reference action. Every step is a
+majority over hundreds of visits, so the tag error changes no verdict:
+
+| | clones | purity | cycles | reversing |
+|---|---|---|---|---|
+| quotient (graph alone) | 15 | 0.533 | 16 | 1 |
+| composed | **30** | **0.980** | **31** | **5** = truth |
+
+A few clones keep ~5 % contamination, the residue the vote cannot remove, and
+the gate pins it rather than hiding it.
+
+## Open questions after Phase 13
+
+1. **Scoping**: does any world of interest have a non-trivial holonomy? Every
+   positive result here is on a world built to have one, plus Pendulum, which
+   has none. That is the question that decides whether this is a method or a
+   characterised curiosity, and it is a scoping exercise rather than an
+   experiment.
+2. **Curved bundles** with learned transports, and the deferred engineering
+   (GPU, float32 `nn`).
 
 ## Open questions after Phase 11
 
