@@ -233,7 +233,6 @@ def newton_shared_elems[
         De/bias_e/force/kind_e/
         R_e/floss_e/state_e/
         Jv_e/jar                  9 * ME
-        ls_c0_sh                  1 * ME              (line-search hoist)
         search/Mv/qacc/qfrc       4 * max(1, NV)
         ctrl_sh                   3
 
@@ -250,8 +249,7 @@ def newton_shared_elems[
                 NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
             ]() if JE_IN_SHARED else 1
         )
-        # 9 row arrays + `ls_c0_sh` (the line-search alpha=0 cost hoist)
-        + 10
+        + 9
         * je_edge_rows[
             NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
         ]()

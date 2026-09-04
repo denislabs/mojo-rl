@@ -3945,21 +3945,6 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
-    # ⚠ THE LINE SEARCH'S alpha=0 REFERENCE COST, HOISTED. `_bl_peval` used to
-    # recompute `scalar_row_state(kd, jar[e], ...)` and its cost on EVERY call,
-    # for every edge — and both depend only on `e_idx`, not on `alpha`, so with
-    # a 50-point line search that is ~50x redundant work on ONE thread. The
-    # bisect put the line search at ~54% of newton, the largest single term in
-    # the kernel, so this is where its per-point cost actually goes.
-    #
-    # SHARED and not a per-thread `Scratch` on purpose: only tid 0 touches it,
-    # but a `Scratch` is reserved by EVERY thread, and at 64 threads local
-    # memory is the resource that made 128 threads regress. One copy per block
-    # costs `ME` scalars instead of `64 * ME`.
-    var ls_c0_sh = LayoutTensor[
-        DTYPE, Layout.row_major(ME), MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
-    ].stack_allocation()
     var search_sh = LayoutTensor[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
@@ -4919,25 +4904,6 @@ def _newton_blocked_fields_kernel[
             if lsiter_rt > 0 and lsiter_rt < ls_budget:
                 ls_budget = lsiter_rt
 
-            # ⚠ ONCE PER NEWTON ITERATION, NOT ONCE PER LINE-SEARCH POINT.
-            # `jar` and `Jv_e` are final here and neither moves during the
-            # search, so the alpha=0 reference state and its cost are constants
-            # of the whole search. Same values, same expressions, same order as
-            # the inline version they replace — the accumulation in `_bl_peval`
-            # still subtracts PER EDGE, so this is bit-identical rather than a
-            # re-association of the sum (which would not be).
-            for e_idx in range(num_edges_b):
-                var h_kd = Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx]))
-                var h_Rd = rebind[Scalar[DTYPE]](R_e_sh[e_idx])
-                var h_fd = rebind[Scalar[DTYPE]](floss_e_sh[e_idx])
-                var h_Dd = rebind[Scalar[DTYPE]](De_sh[e_idx])
-                var h_st0 = scalar_row_state[DTYPE](
-                    h_kd, jar[e_idx], h_Rd, h_fd
-                )
-                ls_c0_sh[e_idx] = scalar_row_cost[DTYPE](
-                    h_st0, jar[e_idx], h_Dd, h_Rd, h_fd
-                )
-
             # `PrimalEval` (engine_solver.c:1511): the SHIFTED line cost
             # `cost(a) - cost(0)` and BOTH derivatives in one pass, rows
             # RE-CLASSIFIED at the trial point. Mirrors `peval` in
@@ -4962,16 +4928,14 @@ def _newton_blocked_fields_kernel[
                     var Dd = rebind[Scalar[DTYPE]](De_sh[e_idx])
                     var jt = jar[e_idx] + a * Jv_e[e_idx]
                     var st = scalar_row_state[DTYPE](kd, jt, Rd, fd)
-                    # ⚠ THE alpha=0 REFERENCE IS STILL RE-DERIVED FROM `jar`,
-                    # not read from `state_e_sh` — it is just derived ONCE per
-                    # Newton iteration now (see `ls_c0_sh` above) instead of
-                    # once per line-search point. `PrimalEval` evaluates the
-                    # line at `Jaref + alpha*Jv` for alpha=0 like any other
-                    # alpha, and the stored state is one Newton move stale.
-                    c += (
-                        scalar_row_cost[DTYPE](st, jt, Dd, Rd, fd)
-                        - rebind[Scalar[DTYPE]](ls_c0_sh[e_idx])
-                    )
+                    # ⚠ THE alpha=0 REFERENCE IS RE-DERIVED FROM `jar`, not
+                    # read from `state_e_sh`. `PrimalEval` evaluates the line
+                    # at `Jaref + alpha*Jv` for alpha=0 like any other alpha,
+                    # and the stored state is one Newton move stale.
+                    var st0 = scalar_row_state[DTYPE](kd, jar[e_idx], Rd, fd)
+                    c += scalar_row_cost[DTYPE](
+                        st, jt, Dd, Rd, fd
+                    ) - scalar_row_cost[DTYPE](st0, jar[e_idx], Dd, Rd, fd)
                     d0 += (
                         -scalar_row_force[DTYPE](st, jt, Dd, fd) * Jv_e[e_idx]
                     )

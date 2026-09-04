@@ -24,10 +24,10 @@ before any of this code existed.
 
 ⚠ THOSE FOUR NUMBERS PREDATE PN2c, which added `seg0_sh`/`seg1_sh` — `2 * NV`
 scalars — and F3b, which added `grad_sh` — `1 * NV`. So the expectation is
-`recorded + 12*NV + 4*ME` bytes, and the test spells the delta out rather than
-folding it in: if someone adds another shared array, this arm fails and names
-the size, instead of the model failing to compile later. (It did exactly that
-for `grad_sh`, and again for `ls_c0_sh`.)
+`recorded + 12*NV` bytes, and the test spells the delta out rather than folding
+it in: if someone adds another shared array, this arm fails and names the size,
+instead of the model failing to compile later. (It did exactly that for
+`grad_sh`.)
 
 Run: pixi run mojo run -I . tests/physics3d/test_newton_shared_budget.mojo
 """
@@ -77,25 +77,16 @@ def main() raises:
     # ── A: the formula reproduces ptxas, to the byte ─────────────────────
     # (k, nv, njoint, the bytes ptxas reported BEFORE PN2c's two seg arrays)
     print("--- A: vs the four byte counts ptxas printed ---")
-    # Everything added since the four `ptxas` numbers were recorded, spelled
-    # out rather than folded in, so the NEXT array to arrive fails this arm and
-    # names its size instead of failing `ptxas` later. It did exactly that for
-    # `grad_sh` and again for `ls_c0_sh`.
-    #
-    #   PN2c   seg0_sh + seg1_sh   2 * NV
-    #   F3b    grad_sh             1 * NV   -> 12 * NV bytes
-    #   LS     ls_c0_sh            1 * ME   ->  4 * ME bytes
-    #
-    # ⚠ THE `ME` LITERALS PIN `je_edge_rows` TOO, which is deliberate: they are
-    # `2*(CONDIM-1)*MC + 2*NJOINT + NV` at each model (MC=16, CONDIM=3), so a
-    # silent change to the row-count formula now fails here as well.
-    var seg_delta_42 = 12 * 42 + 4 * 130
-    var seg_delta_60 = 12 * 60 + 4 * 154
-    var seg_delta_66 = 12 * 66 + 4 * 162
-    var seg_delta_78 = 12 * 78 + 4 * 178
+    # PN2c's seg0/seg1 (2*NV) plus F3b's grad_sh (1*NV) = 3*NV scalars =
+    # 12*NV bytes. Spelled out, not folded in, so the NEXT array to arrive
+    # fails this arm and names its size instead of failing `ptxas` later.
+    var seg_delta_42 = 12 * 42
+    var seg_delta_60 = 12 * 60
+    var seg_delta_66 = 12 * 66
+    var seg_delta_78 = 12 * 78
     t.truth(_bytes[42, 12]() == 48372 + seg_delta_42,
             String("k=6  nv=42: ", _bytes[42, 12](), " == 48372 + ",
-                   seg_delta_42, " (ptxas + PN2c + grad_sh + ls_c0_sh)"))
+                   seg_delta_42, " (ptxas + PN2c's 2*NV + F3b's grad_sh)"))
     t.truth(_bytes[60, 15]() == 86676 + seg_delta_60,
             String("k=9  nv=60: ", _bytes[60, 15](), " == 86676 + ",
                    seg_delta_60))
