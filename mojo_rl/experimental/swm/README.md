@@ -12,7 +12,7 @@ with Phase 4, and the fault confusion matrix is clean: 40/40 in every cell,
 **zero false obstructions**. The planner gets the lap parity right **95.8 %** of
 the time where parity-blind baselines sit at chance.
 
-- Design: [`docs/SHEAF_WORLD_MODELS_V2.md`](../../../docs/SHEAF_WORLD_MODELS_V2.md)
+- Design, as measured through Phase 8: [`docs/SHEAF_WORLD_MODELS_V3.md`](../../../docs/SHEAF_WORLD_MODELS_V3.md) (v2, French, is the original specification and is superseded)
 - Plan, phases, gate definitions: [`docs/SWM_IMPLEMENTATION_PLAN.md`](../../../docs/SWM_IMPLEMENTATION_PLAN.md)
 - Gates: `pixi run test-swm`
 
