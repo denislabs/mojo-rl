@@ -33,13 +33,17 @@ Nothing is trained on this family yet. A do-nothing baseline keeps the loop
 cheap and deterministic, and the claim being gated is about the HARNESS — that
 an init table makes two runs comparable — not about a policy's quality.
 
-⚠⚠ SO THE SUCCESS RATE ALONE CANNOT CARRY THE GATE. Under zero actions the
-props barely move, so `gather` holds from its first step and `lift` never
-does: two tables would report the same rates while starting from completely
-different states. A rate comparison would therefore pass on a harness that
-ignored the table. **The state comparison is what has teeth here** — final
-`qpos`, bit for bit — and the rates are reported beside it. When a policy
-exists, the rates gain teeth on their own and this note stops applying.
+⚠ THE STATE COMPARISON IS THE PRIMARY CLAIM — final `qpos`, bit for bit —
+because it holds whatever the policy is. `gather` holds from its first step
+under zero actions and `lift` never does, so a family whose goals ignored
+placement would report identical rates from completely different states.
+
+⚠⚠ BUT THE OUTCOMES DO MOVE HERE, AND I EXPECTED THEY WOULD NOT. Measured on
+a 5090: A vs C differ on **128 of 256 lanes** — every `gather` lane. Without
+the table the props sit at the composed scene's XML defaults rather than on
+the table, so `On(brick, table_top)` is False. The A-vs-C outcome difference
+is therefore ASSERTED, not printed: it is a second control, independent of
+the `qpos` one.
 
 ## ⚠⚠ THE SUCCESS SIGNAL IS `_reward`, NOT `_done`
 
@@ -394,15 +398,25 @@ def main() raises:
             )
         print("  ok: and their per-lane outcomes agree, lane for lane")
 
-        # ⚠ REPORTED, NOT ASSERTED. See the header: under zero actions the
-        # goals are not init-sensitive, so A and C may well score the same
-        # while starting from different states. Saying which happened is more
-        # useful than a check that cannot fail.
+        # ⚠ ASSERTED SINCE THE 2026-09-04 RUN. This was a printed note while I
+        # expected it might legitimately be zero — under zero actions I
+        # reasoned the goals would not depend on placement. MEASURED: 128 of
+        # 256, i.e. every `gather` lane. Without the table the props sit at
+        # the composed scene's XML defaults rather than on the table, so
+        # `On(brick, table_top)` is False; with it, True. So the table changes
+        # the OUTCOME and not merely the state, and this is a second control
+        # independent of the qpos comparison.
         var lane_diff = ra.n_differing_lanes(rc)
-        print("  note: A vs C differ on", lane_diff, "of", N_ENVS,
-              "lanes' OUTCOMES —", "the goals are init-sensitive under this"
-              " policy" if lane_diff > 0 else "the goals are NOT"
-              " init-sensitive under zero actions, which the header expects")
+        print("  A vs C differ on", lane_diff, "of", N_ENVS, "lanes' OUTCOMES")
+        if lane_diff == 0:
+            raise Error(
+                "P4: A and C scored identically on every lane, though they"
+                " start from different states. Either the goals of this"
+                " family do not depend on placement at all — legitimate, and"
+                " then this check should be relaxed FOR THAT FAMILY with the"
+                " reason written down — or the table is not reaching the"
+                " lanes it is supposed to."
+            )
 
         # ── what the monitor gets ─────────────────────────────────────────
         var logger = CsvLogger(String(CSV))
