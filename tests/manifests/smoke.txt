@@ -185,6 +185,35 @@ tests/tasks/test_bddl.mojo
 # 0.07 m and the hit rate goes to 0 (the span control fires first).
 examples/tasks/task_reachability.mojo
 
+# ── mojo_rl/tasks: the DEVICE sampler against the HOST one ──────────────
+# ⚠⚠ TWO IMPLEMENTATIONS OF ONE DISTRIBUTION. `sampler.sample_placements`
+# places props on the host (eval, viewer, init table); `So101TabletopConfig.
+# init_qpos_gpu` places them per lane at every GPU reset, because a reset in a
+# training run happens between kernel launches. If they disagree, a policy
+# trains on scenes the eval never shows it and nothing else looks wrong.
+# Compares every coordinate over 4 tasks x 8 lanes, and checks the config's
+# RESTATED region table against the .family + FK.
+# ABLATED: drawing Philox on the free-slot ordinal instead of the FAMILY SLOT
+# INDEX (the trap the hook's comment names) fails 168 of 168 coordinates.
+tests/tasks/test_device_placement.mojo
+
+# ── mojo_rl/tasks: is a task solved by a CONSTANT action ────────────────
+# ⚠⚠ THE DEGENERACY `test_task_reset_steps` CANNOT SEE. That gate asserts a
+# goal is false AT RESET and every task passes it; `so101_reach_brick` passed
+# it and an UNTRAINED greedy actor then met it on 64 of 64 episodes. A
+# constant action is what an untrained policy emits, so whatever it achieves
+# is the floor every curve starts from.
+# Records each task's category and fails when one MOVES between them:
+#   lift, gather        NEVER met  (real tasks)
+#   reach, reach_clear  SWEPT THROUGH — a constant +0.3 meets AtRegion for 77
+#                       consecutive steps, ending at step 97 of 300. An
+#                       instantaneous predicate over a CONTROLLED end effector
+#                       asks "did the gripper ever pass through here".
+#   settle              ALWAYS (the probe, by design)
+# ⚠ It prints the longest RUN, not the hit count: a count cannot tell a sweep
+# from an arrival, and only one of those is a task.
+examples/tasks/task_null_action.mojo
+
 # ── data: the manifest's task table, BYTE-EXACT ─────────────────────
 # ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
 # `parse_manifest` strips every value, so the two things that break it are a

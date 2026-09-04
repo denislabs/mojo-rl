@@ -50,7 +50,7 @@ cliff of 28. `meta` is already per-lane and already an operand of
 word of `METADATA_SIZE` and no signature anywhere.
 """
 
-from .spec import FamilySpec, TaskSpec
+from .spec import FamilySpec, TaskSpec, SLOT_FREE
 from .obs import slot_active, write_free_slot_obs, FREE_JOINT_NQ, FREE_JOINT_NV
 
 
@@ -107,4 +107,39 @@ def mask_slots(mask: Float64, nslots: Int) -> List[Bool]:
     var m = Int(mask)
     for i in range(nslots):
         out.append(((m >> i) & 1) == 1)
+    return out^
+
+
+# ── the per-free-slot init region words ────────────────────────────────────
+
+def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
+    """One word per FREE slot: the region its `init=` names, or -1.
+
+    ⚠⚠ INDEXED BY FREE-SLOT ORDINAL, NOT BY FAMILY SLOT INDEX. The `meta`
+    words are `META_IDX_INIT_REGION_0..2` and there are `N_FREE_SLOTS` of
+    them, while the family's slot 0 here is a static fixture — so the returned
+    list is `[brick, cube_a, cube_b]`, not `[table, brick, cube_a, cube_b]`.
+    The active MASK is the other convention (bit per FAMILY slot, so the
+    fixture owns bit 0), and the two disagree on purpose: the mask describes
+    the scene and this describes the reset, which only free slots take part in.
+
+    ⚠ `-1` FOR A SLOT WITH NO `init=`, which includes every inactive slot.
+    Region 0 would be a real, wrong placement; -1 is a value the device can
+    branch on. `constants.INIT_REGION_NONE` is that number.
+
+    ⚠ THE VALUE IS A FAMILY REGION INDEX, so it indexes the same table
+    `region_rects` and `region_half_heights` produce — and it is the index the
+    DEVICE resolves against its restated copy of that table. A task naming a
+    region the family does not declare is refused by
+    `validate_task_against_family` long before here.
+    """
+    var out = List[Float64]()
+    for i in range(len(f.slots)):
+        if f.slots[i].kind != SLOT_FREE:
+            continue
+        var ri = -1
+        for k in range(len(t.inits)):
+            if t.inits[k].slot == f.slots[i].name:
+                ri = f.region_index(t.inits[k].region)
+        out.append(Float64(ri))
     return out^

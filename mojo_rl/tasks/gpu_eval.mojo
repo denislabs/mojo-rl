@@ -54,7 +54,7 @@ from .predicates import (
 )
 from .eval import (
     pred_in_rect, pred_near, pred_above, pred_upright,
-    IN_HALF_HEIGHT, ON_MIN_DZ, ON_MAX_DZ,
+    ON_MIN_DZ, ON_MAX_DZ,
 )
 from .tape import MAX_TAPE_TERMS, TERM_WORDS
 
@@ -65,12 +65,18 @@ comptime CUR_IDX_REGION_X0: Int = 1
 comptime CUR_IDX_REGION_Y0: Int = 2
 comptime CUR_IDX_REGION_X1: Int = 3
 comptime CUR_IDX_REGION_Y1: Int = 4
-comptime REGION_WORDS: Int = 5
+# ⚠ THE Z HALF-BAND, WORD 5. `RegionSpec.half_height`, carried per region so
+# `In`/`AtRegion` on device use the region's own volume rather than
+# `eval.IN_HALF_HEIGHT`. Six words of the eight still leaves room for exactly
+# one region — the table did not get narrower, see MAX_CURRICULUM_REGIONS.
+comptime CUR_IDX_REGION_H: Int = 5
+comptime REGION_WORDS: Int = 6
 comptime MAX_CURRICULUM_REGIONS: Int = MODEL_CURRICULUM_SIZE // REGION_WORDS
 
 
 def region_table_words(
-    site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64
+    site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
+    half_height: Float64,
 ) raises -> List[Float64]:
     """The `curriculum` words for a one-region family. Host-side.
 
@@ -89,6 +95,20 @@ def region_table_words(
     out[CUR_IDX_REGION_Y0] = y0
     out[CUR_IDX_REGION_X1] = x1
     out[CUR_IDX_REGION_Y1] = y1
+    # ⚠⚠ REQUIRED, NOT DEFAULTED HERE. A defaulted argument would let a caller
+    # that never heard of `half_height` keep compiling and silently ship the
+    # 0.12 fallback to device while the HOST evaluator used the region's real
+    # band — the CPU and GPU rewards would then disagree on exactly the
+    # regions the field was added for. `region_half_heights(f)[i]` is the
+    # value; the compiler now insists it be passed.
+    if half_height <= 0.0:
+        raise Error(
+            "tasks: region half-height " + String(half_height) + " accepts no"
+            " point. `pred_in_rect` would return False on device for every"
+            " state, which reads as an unlearnable task rather than a bad"
+            " number. `spec.parse_region` refuses this too."
+        )
+    out[CUR_IDX_REGION_H] = half_height
     return out^
 
 
@@ -124,6 +144,7 @@ def eval_tape_gpu[
     var ry0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y0])
     var rx1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X1])
     var ry1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y1])
+    var rh = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_H])
 
     # ⚠ `comptime for`: MAX_TAPE_TERMS is 3 and the body branches on an op
     # code, so unrolling keeps every index a constant. A runtime loop here
@@ -188,8 +209,12 @@ def eval_tape_gpu[
                     px = rebind[Scalar[DTYPE]](xpos[env, a * 3])
                     py = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1])
                     pz = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
-                var dz_min = Scalar[DTYPE](-IN_HALF_HEIGHT)
-                var dz_max = Scalar[DTYPE](IN_HALF_HEIGHT)
+                # ⚠ THE REGION'S OWN BAND, from `curriculum`, matching
+                # `eval.eval_goal`'s `reg.half_height`. `IN_HALF_HEIGHT` is no
+                # longer read here at all: it survives as the DEFAULT the host
+                # writes into the table, one place instead of two.
+                var dz_min = -rh
+                var dz_max = rh
                 if op == OP_ON:
                     dz_min = Scalar[DTYPE](ON_MIN_DZ)
                     dz_max = Scalar[DTYPE](ON_MAX_DZ)

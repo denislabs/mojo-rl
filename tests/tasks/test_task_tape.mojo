@@ -23,7 +23,9 @@ Run: pixi run mojo run -I . tests/tasks/test_task_tape.mojo
 from mojo_rl.tasks.spec import load_family, load_task
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import eval_goal, region_sites, region_rects
+from mojo_rl.tasks.eval import (
+    eval_goal, region_sites, region_rects, region_half_heights,
+)
 from mojo_rl.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
@@ -71,7 +73,13 @@ def main() raises:
     var r_y0 = List[Float64]()
     var r_x1 = List[Float64]()
     var r_y1 = List[Float64]()
+    # ⚠ THE PER-REGION Z BAND, which used to be `eval.IN_HALF_HEIGHT` inside
+    # both evaluators. Built here so the host tape reader gets exactly what
+    # `region_table_words` writes for the device.
+    var r_h = List[Float64]()
+    var rheights = region_half_heights(f)
     for i in range(len(f.regions)):
+        r_h.append(rheights[i])
         r_site.append(rsites[i])
         r_x0.append(rects[i][0])
         r_y0.append(rects[i][1])
@@ -152,7 +160,7 @@ def main() raises:
 
                 var host = eval_goal(g, f, xp, xq, sp, rsites)
                 var dev = eval_tape(
-                    tape, 0, xp, xq, sp, r_site, r_x0, r_y0, r_x1, r_y1
+                    tape, 0, xp, xq, sp, r_site, r_x0, r_y0, r_x1, r_y1, r_h
                 )
                 total += 1
                 t_n += 1

@@ -55,10 +55,17 @@ from .predicates import (
 )
 
 
-# ⚠ THE Z BAND FOR CONTAINMENT — see the module header. A region has no height
-# in the spec, so `In` accepts anything within this much of the site's plane.
-# 12 cm is "a prop sitting in a bin", chosen to be larger than any prop this
-# tree ships and smaller than the arm's reach.
+# ⚠⚠ THE FALLBACK Z BAND, AND IT IS NO LONGER THE ONLY ONE. A region now
+# CARRIES a `half_height` (`spec.RegionSpec`), and this is what one gets when
+# the `.family` does not say — `DEFAULT_REGION_HALF_HEIGHT`, restated there
+# because `spec` cannot import this module without a cycle.
+#
+# ⚠ IT STAYS 0.12 ON PURPOSE. Changing the default would silently retune every
+# region in every family that never asked for a band; the point of the field is
+# that a task which NEEDS a real volume says so. What 0.12 costs when nobody
+# says so is on the record: against a 0.20 x 0.20 rect it is a 0.0096 m^3 box
+# in the middle of the arm's workspace, and an UNTRAINED greedy actor met
+# `AtRegion(robot_gripperframe, table_top)` on 64 of 64 episodes.
 comptime IN_HALF_HEIGHT: Float64 = 0.12
 
 # `On` is one-sided: resting ON a surface means ABOVE it, within a prop's
@@ -189,6 +196,26 @@ def region_rects(f: FamilySpec) -> List[List[Float64]]:
     return out^
 
 
+def region_half_heights(f: FamilySpec) -> List[Float64]:
+    """The z half-band per region, in family order — the device's copy.
+
+    ⚠ A SEPARATE FUNCTION AND NOT A FIFTH ELEMENT OF `region_rects`. Every
+    caller of that unpacks `rects[i][0..3]` positionally, and a list that is
+    sometimes four long and sometimes five is the kind of change that reads
+    correctly at every call site and is wrong at one of them.
+
+    ⚠ THE NO-RECTANGLE CASE STILL HAS A BAND. A rect-less region degenerates
+    to the site's own extent in XY (`region_rects` renders that as +-0.02) and
+    its z band is untouched by that — `has_rect` and `has_height` are
+    independent, and defaulting one from the other would silently give a
+    site-extent region a 2 cm z band it never asked for.
+    """
+    var out = List[Float64]()
+    for i in range(len(f.regions)):
+        out.append(f.regions[i].half_height)
+    return out^
+
+
 # ── the host driver ───────────────────────────────────────────────────────
 
 
@@ -279,8 +306,12 @@ def eval_goal(
                 px = xpos[t.a * 3]
                 py = xpos[t.a * 3 + 1]
                 pz = xpos[t.a * 3 + 2]
-            var dz_min = -IN_HALF_HEIGHT
-            var dz_max = IN_HALF_HEIGHT
+            # ⚠ THE REGION'S OWN BAND, NOT THE CONSTANT. `reg.half_height`
+            # is `DEFAULT_REGION_HALF_HEIGHT` unless the `.family` said
+            # otherwise, so this is identical for every region that does not
+            # state one — and is the whole fix for the ones that do.
+            var dz_min = -reg.half_height
+            var dz_max = reg.half_height
             if t.op == OP_ON:
                 dz_min = ON_MIN_DZ
                 dz_max = ON_MAX_DZ

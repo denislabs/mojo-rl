@@ -54,35 +54,36 @@ placement. See its header for what that costs.
    the default makes every reading before the window fills a blend of real
    returns and sentinels and reads as a broken reward.
 
-## ⚠⚠ MEASURED FIRST, AND THE TASK IS TRIVIAL — READ THIS BEFORE THE CURVE
+## ⚠⚠ THE MEASURED BASELINES — READ THESE BEFORE ANY CURVE
 
-    uniform random actions, 68 episodes      success 0.27
-    GREEDY, UNTRAINED actor, 64 episodes     success 1.00
+Per task, 20k env-steps at N_ENVS=64 with `--warmup >= --steps` (uniform
+random) and the driver's greedy eval on an UNTRAINED actor:
 
-An untrained actor scores ONE. `tanh(0)` is 0, a zero action under
-`NORMALIZED_ACTIONS` is the CENTRE of every joint's ctrlrange, and that pose
-puts the gripper inside the goal region. So the constant null action solves
-`AtRegion(robot_gripperframe, table_top)` and there is nothing here for SAC to
-learn.
+    task                  random   untrained greedy   constant action
+    so101_lift_brick        0.00        0.00           never met
+    so101_gather_bricks     0.00        0.00           never met
+    so101_reach_clear       0.25        1.00           SWEPT THROUGH
+    so101_settle_brick      1.00        1.00           met at every step
 
-⚠ THE CAUSE IS `eval.IN_HALF_HEIGHT`, WHICH IS A GUESS BY ITS OWN ADMISSION.
-A region carries an XY rectangle and NO HEIGHT (`spec.mojo`), so `In` and
-`AtRegion` supply a z band themselves: +-0.12 m, chosen as "a prop sitting in
-a bin". Against a 0.20 x 0.20 rect that is a 0.0096 m^3 box sitting in the
-middle of the arm's workspace — the gripper is inside it anywhere over the
-table between 10 cm below the surface and 14 cm above. `eval.mojo`'s own
-header names the fix: *"when a task needs a real containment volume, the fix
-is a `height=` on the region, not a tuned constant here."*
+⚠ `reach` IS NOT A REACHING TASK AND THAT IS WHY THE DEFAULT IS `lift`.
+`examples/tasks/task_null_action.mojo` measures it: a CONSTANT action of +0.3
+meets `AtRegion(robot_gripperframe, table_top)` on 77 consecutive steps, and
+the run ENDS at step 97 of 300 — the arm sweeps the gripper across the region
+on its way somewhere else. An instantaneous predicate over a CONTROLLED end
+effector, with a per-step reward and first-hit termination, asks "did the
+gripper ever pass through here". A predicate over an OBJECT's pose does not
+have that failure: a sweep does not lift a brick.
 
-⚠⚠ SO A RATE FROM THIS FILE IS NOT EVIDENCE OF LEARNING UNTIL THAT LANDS, and
-the reset-time gate in `tests/tasks/test_task_reset_steps.mojo` cannot see it:
-the goal IS false at reset (0 of 8 lanes) and becomes true one step later,
-when the arm moves to mid-range. "Solved at reset" and "solved by the null
-action" are different degeneracies and only the first was gated.
+⚠ `settle` IS THE PROBE and scores 1.00 by construction — its goal holds at
+reset. Two GPU gates need a true lane; see its own header. Training it is
+meaningless and its 20032 episodes in 20k steps (one per step, because
+success terminates) is what a correctly wired success-termination looks like.
 
-The number this file exists to produce is therefore the BASELINE PAIR above,
-and it is produced by `--warmup >= --steps` (uniform random) and by the
-untrained greedy eval that runs before any gradient step reaches the actor.
+⚠⚠ SO A FLOOR OF 0.00 IS WHAT `lift` AND `gather` ACTUALLY HAVE, and any
+sustained rate above it is learning. They are also SPARSE and HARD: `lift`
+needs a grasp before it pays anything. A flat curve on them is an honest RL
+result, not a broken harness — which is a claim this file can now make,
+because the harness is measured.
 
 ## ⚠ THE RETURN *IS* THE SUCCESS RATE, WHICH IS WHY THIS IS READABLE AT ALL
 
@@ -116,7 +117,7 @@ from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
-    MODEL_CURRICULUM_SIZE,
+    META_IDX_INIT_REGION_0, MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
@@ -127,14 +128,27 @@ from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.family_config import So101TabletopConfig
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.eval import region_sites, region_rects
+from mojo_rl.tasks.eval import (
+    region_sites, region_rects, region_half_heights,
+)
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
-from mojo_rl.tasks.active import active_mask
+from mojo_rl.tasks.active import active_mask, init_region_words
 
 
 comptime N_ENVS = 64
-comptime TASK = "mojo_rl/tasks/tasks/so101_reach_clear.task"
+# ⚠⚠ `lift`, NOT `reach`. `reach` and `reach_clear` are both
+# `AtRegion(robot_gripperframe, table_top)` and
+# `examples/tasks/task_null_action.mojo` measured what that is worth: a
+# CONSTANT action of +0.3 meets it on 76 consecutive steps, and the longest
+# run ends at step 96 of 300 — the arm SWEEPS the gripper across the region on
+# its way somewhere else. An instantaneous predicate over a controlled end
+# effector plus first-hit termination asks "did the gripper ever pass through
+# here", which most large joint motions satisfy without aiming.
+#
+# A predicate over an OBJECT's pose is not that shape: a sweep does not lift a
+# brick. `--task` takes any of them.
+comptime DEFAULT_TASK = "so101_lift_brick"
 comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
 
 # ⚠⚠ `TERMINATE_ON_UNHEALTHY=True` — see the header. This is the flag, and it
@@ -157,11 +171,11 @@ comptime DIAG_EVERY = 2_000
 comptime CHECKPOINT_EVERY = 50_000
 comptime EVAL_EVERY = 25_000
 
-# ⚠ MEASURED ON THIS FILE, NOT ASSUMED — see the header's baseline pair. They
-# are constants rather than a second run because a verdict that has to be
-# re-measured to be read is a verdict nobody reads.
-comptime RANDOM_BASELINE = 0.27
-comptime UNTRAINED_GREEDY = 1.00
+# ⚠ MEASURED, NOT ASSUMED — the header carries the whole table. These two are
+# the DEFAULT task's, because a verdict that has to be looked up to be read is
+# a verdict nobody reads.
+comptime RANDOM_BASELINE = 0.00
+comptime UNTRAINED_GREEDY = 0.00
 comptime CHECKPOINT_PATH = "sac_task_reach.ckpt"
 comptime CSV = "/tmp/mojo_rl_sac_task_reach.csv"
 
@@ -193,6 +207,7 @@ def main() raises:
     var num_steps = NUM_STEPS
     var warmup = WARMUP_STEPS
     var eval_every = EVAL_EVERY
+    var task_name = String(DEFAULT_TASK)
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -202,18 +217,21 @@ def main() raises:
             warmup = Int(String(args[i + 1]))
         elif a == "--eval-every" and i + 1 < len(args):
             eval_every = Int(String(args[i + 1]))
+        elif a == "--task" and i + 1 < len(args):
+            task_name = String(args[i + 1])
 
     print("=" * 72)
-    print("SAC on the task family — so101_reach_clear (GPU)")
+    print("SAC on the task family —", task_name, "(GPU)")
     print("=" * 72)
 
     # ── the task, on the host ─────────────────────────────────────────────
     var f = load_family(FAMILY)
-    var t = load_task(TASK)
+    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
     validate_task_against_family(t, f)
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
+    var rheights = region_half_heights(f)
 
     var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
     require_tier_a(g, t.name)
@@ -234,22 +252,18 @@ def main() raises:
     # rather than trained around — see the header. The failure is not a crash:
     # it is a policy learning from an observation with a prop falling through
     # it, and the curve looks like a hard task.
+    # ⚠ THE REFUSAL THAT USED TO BE HERE IS GONE, AND THE INIT WORDS ARE WHY.
+    # This file refused any task activating a FREE slot, because nothing
+    # placed one at a GPU reset and a prop would start every episode 50 m up
+    # and fall. `So101TabletopConfig.init_qpos_gpu` now samples them per lane
+    # from `META_IDX_INIT_REGION_*`, gated against the host sampler coordinate
+    # for coordinate by `tests/tasks/test_device_placement.mojo`.
+    var iw = init_region_words(t, f)
     var n_active_free = 0
-    for i in range(len(t.active)):
-        var si = f.slot_index(t.active[i])
-        if si >= 0 and f.slots[si].kind == SLOT_FREE:
+    for j in range(len(iw)):
+        if iw[j] >= 0.0:
             n_active_free += 1
-    if n_active_free != 0:
-        raise Error(
-            "sac task reach: task '" + t.name + "' activates "
-            + String(n_active_free) + " FREE slot(s), and nothing places them"
-            " on the GPU reset path — `_reset_env_lane` restores the park pose"
-            " and only INACTIVE slots are pinned there. Every episode would"
-            " begin with a prop 50 m up, falling, with its qpos and qvel in"
-            " the observation. Train `so101_reach_clear` until device-side"
-            " placement exists."
-        )
-    print("  ok: no active free slot — nothing needs placing at reset")
+    print("  free slots placed at reset:", n_active_free, "of", len(iw))
 
     with DeviceContext() as ctx:
         var logger = CsvLogger(CSV)
@@ -285,8 +299,12 @@ def main() raises:
         # runs the SAME task here, so there is no per-lane variation to
         # maintain — a multi-task run would still write these once, with
         # different words per lane.
+        # ⚠ THE HALF-HEIGHT IS THE FIFTH NUMBER AND IT IS REQUIRED. Without
+        # it the device would use `IN_HALF_HEIGHT` while `eval.eval_goal` used
+        # the region's own band — a CPU/GPU disagreement inside the reward.
         var cw = region_table_words(
-            rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3]
+            rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+            rheights[0],
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])
@@ -298,6 +316,15 @@ def main() raises:
                     = Scalar[DT](tape[w])
             env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_ACTIVE] = \
                 Scalar[DT](mask)
+            # ⚠⚠ THE INIT WORDS SURVIVE EVERY RESET, which is the whole point:
+            # `_reset_env_lane` writes only META_IDX_STEP_COUNT, so writing
+            # these once before the loop makes EVERY later reset place the
+            # props. A driver that wrote them per episode would be doing the
+            # host round-trip this exists to remove.
+            for j in range(len(iw)):
+                env.d.meta.data[
+                    e * METADATA_SIZE + META_IDX_INIT_REGION_0 + j
+                ] = Scalar[DT](iw[j])
         env.d.meta.upload(ctx)
 
         # ── a SECOND env, for greedy eval ─────────────────────────────────
@@ -321,6 +348,10 @@ def main() raises:
                 ] = Scalar[DT](tape[w])
             eval_env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_ACTIVE] = \
                 Scalar[DT](mask)
+            for j in range(len(iw)):
+                eval_env.d.meta.data[
+                    e * METADATA_SIZE + META_IDX_INIT_REGION_0 + j
+                ] = Scalar[DT](iw[j])
         eval_env.d.meta.upload(ctx)
         print("  ok: region table, tape and active mask uploaded to BOTH envs")
 
@@ -389,18 +420,12 @@ def main() raises:
         # 0.27 and the UNTRAINED greedy actor scores 1.00 (see the header).
         # Printing "moved off zero" here would have reported a trivial task as
         # a trained one.
-        print("  random-action baseline    :", RANDOM_BASELINE,
-              "(measured, 68 episodes)")
-        print("  UNTRAINED greedy baseline :", UNTRAINED_GREEDY,
-              "(measured, 64 episodes)")
-        if UNTRAINED_GREEDY >= 0.99:
-            print()
-            print("  ⚠⚠ NOTHING TO LEARN. The null action already solves this")
-            print("  goal, so no rate from this run is evidence of learning.")
-            print("  `AtRegion`'s z band is `eval.IN_HALF_HEIGHT` = 0.12 m, a")
-            print("  documented guess; the region needs a `height=`. Fix the")
-            print("  TASK before reading the curve — see this file's header.")
-        elif rate <= RANDOM_BASELINE:
+        print("  baselines for", DEFAULT_TASK, "— random", RANDOM_BASELINE,
+              " untrained greedy", UNTRAINED_GREEDY)
+        if task_name != DEFAULT_TASK:
+            print("  ⚠ RUNNING", task_name, "— the baselines above are the")
+            print("  DEFAULT task's. See this file's header for the table.")
+        if rate <= RANDOM_BASELINE:
             print("  FLAT — the rate did not beat the random baseline.")
         else:
             print("  the rate BEAT the random baseline:", rate)

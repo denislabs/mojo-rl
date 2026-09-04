@@ -122,9 +122,10 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 19
+comptime METADATA_SIZE: Int = 22
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
-`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME` and `META_IDX_TASK_ACTIVE`.
+`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE` and
+`META_IDX_INIT_REGION_0..2`.
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
 five-entry orders — `desired_order` and `initial_order`, the second because its
@@ -244,6 +245,40 @@ comptime META_IDX_SIM_TIME: Int = 17
 # active", which is a legible state, not a safe default — a lane whose mask was
 # never written observes every prop as absent while the physics moves them.
 comptime META_IDX_TASK_ACTIVE: Int = 18
+
+# ── WHICH REGION EACH FREE SLOT STARTS IN — one word per free slot ─────────
+#
+# ⚠⚠ THE RESET NEEDED THIS AND HAD NO WAY TO SAY IT. `init_qpos_gpu` runs per
+# lane at reset and is the only place a prop can be PLACED on the GPU path,
+# but it was handed no way to learn WHERE: the twelve `TASK_PARAM` words are
+# the goal tape and `TASK_ACTIVE` is the mask. So no active free slot was ever
+# placed, `_reset_env_lane` restored the composed scene's `qpos0` — the PARK
+# pose, 50 m up — and only INACTIVE slots were pinned there afterwards by
+# `pre_step_full_gpu`. An ACTIVE prop therefore began every training episode
+# in the sky and fell through the whole horizon with its qpos and qvel in the
+# observation. The HOST placed props all along (`tasks/sampler` +
+# `tasks/reset`), which is why every eval and the viewer looked right and
+# nothing saw it until something tried to TRAIN.
+#
+# ⚠ A REGION INDEX, NOT A POSE. A pose per slot is 7 words each and freezes
+# the episode's layout on the host; an index is one word and lets the DEVICE
+# draw, which is what makes 1024 lanes cheap and what `tasks/sampler.mojo` was
+# written to be callable from.
+#
+# ⚠ `-1` MEANS "NOT PLACED" and is what an inactive slot carries. It is a
+# distinguishable value rather than region 0, because "no init" and "init into
+# the first region" are different statements and the second is a real, wrong
+# placement.
+#
+# ⚠ THREE, MATCHING `So101TabletopConfig.N_FREE_SLOTS`. A family with more
+# free slots needs more words here — the ceiling is the same 13-slot compile
+# ceiling the slot table already lives under.
+comptime META_IDX_INIT_REGION_0: Int = 19
+comptime META_IDX_INIT_REGION_1: Int = 20
+comptime META_IDX_INIT_REGION_2: Int = 21
+
+comptime INIT_REGION_NONE: Float64 = -1.0
+"""What `META_IDX_INIT_REGION_*` holds for a slot with no `init=`."""
 
 
 # =============================================================================

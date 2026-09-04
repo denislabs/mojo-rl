@@ -50,7 +50,7 @@ from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_fam
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.predicates import parse_goal, bind_goal
 from mojo_rl.tasks.eval import (
-    eval_goal, region_sites, region_rects, IN_HALF_HEIGHT,
+    eval_goal, region_sites, region_rects, region_half_heights,
 )
 from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
@@ -82,6 +82,7 @@ def main() raises:
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
+    var rheights = region_half_heights(f)
     var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
 
     var dims = dims_from_flat(
@@ -138,12 +139,17 @@ def main() raises:
     var by0 = sy + rects[0][1]
     var bx1 = sx + rects[0][2]
     var by1 = sy + rects[0][3]
-    var bz0 = sz - IN_HALF_HEIGHT
-    var bz1 = sz + IN_HALF_HEIGHT
+    # ⚠ THE REGION'S OWN BAND, not `IN_HALF_HEIGHT`. This file exists to say
+    # how big the acceptance volume is, so reading a constant here instead of
+    # the region's `half_height` would report the wrong volume for exactly the
+    # regions the field was added for.
+    var bz0 = sz - rheights[0]
+    var bz1 = sz + rheights[0]
     print()
     print("  goal:", t.goal)
     print("  AtRegion box: x [", bx0, ",", bx1, "]  y [", by0, ",", by1,
           "]  z [", bz0, ",", bz1, "]")
+    print("  region half-height:", rheights[0], "m")
     print("  box volume:", (bx1 - bx0) * (by1 - by0) * (bz1 - bz0), "m^3")
 
     # ── the sweep ─────────────────────────────────────────────────────────

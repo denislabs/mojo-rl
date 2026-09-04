@@ -197,12 +197,18 @@ def main() raises:
         parse_goal(String("AtRegion(robot_gripperframe, table_top)")),
         f, fmd.body_names, fmd.site_names,
     )
+    # ⚠ 0.33, NOT 0.36 — WITHIN THE REGION'S OWN HALF-HEIGHT. The site is at
+    # z 0.31 and `table_top` now declares `half_height=0.03`, so the band is
+    # [0.28, 0.34]. This read 0.36 while `In`/`AtRegion` used the 0.12
+    # fallback for every region, and it is the assertion that broke when the
+    # family started stating a real band — correctly, and in the direction
+    # that says the band is being read.
     st[2][grip * 3] = 0.26
     st[2][grip * 3 + 1] = 0.01
-    st[2][grip * 3 + 2] = 0.36
+    st[2][grip * 3 + 2] = 0.33
     ta.check(
         eval_goal(g_reach, f, st[0], st[1], st[2], rsites),
-        "reach: the gripper SITE over the zone -> True",
+        "reach: the gripper SITE inside the zone's own band -> True",
     )
     st[2][grip * 3] = 0.90
     ta.check(

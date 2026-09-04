@@ -136,8 +136,17 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
         return s^
 
 
+# ⚠⚠ THE DEFAULT HALF-HEIGHT OF A REGION, AND IT IS A GUESS BY ADMISSION.
+# `eval.IN_HALF_HEIGHT` carried this alone until a region could state its own:
+# 12 cm, chosen as "a prop sitting in a bin", applied by `In` and `AtRegion` to
+# every region in the tree. It is restated here rather than imported because
+# `eval` imports THIS module and the cycle would not close; `tests/tasks/
+# test_goal_language.mojo` asserts the two agree.
+comptime DEFAULT_REGION_HALF_HEIGHT: Float64 = 0.12
+
+
 struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
-    """`region=<name>:site:<site>[:xmin,ymin,xmax,ymax]` — a placement area.
+    """`region=<name>:site:<site>[:xmin,ymin,xmax,ymax[:half_height]]`.
 
     ⚠ RELATIVE TO A SITE, WHICH IS WHY IT TRAVELS. A region attached to a
     movable slot's site moves with that slot, so "in the box" stays true after
@@ -145,6 +154,26 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     piece that makes a symbolic goal land on real geometry.
 
     With no rectangle the region IS the site's own extent.
+
+    ## ⚠⚠ THE HALF-HEIGHT, AND WHY IT IS A FIELD AND NOT A CONSTANT
+
+    A region used to carry an XY rectangle and nothing vertical, so `In` and
+    `AtRegion` supplied a z band from `eval.IN_HALF_HEIGHT` — +-0.12 m for
+    every region in every family. `eval.mojo`'s own header said what to do
+    about it: *"when a task needs a real containment volume, the fix is a
+    `height=` on the region, not a tuned constant here."*
+
+    It cost a task to make that concrete. `so101_reach_brick` asks the gripper
+    to be `AtRegion(table_top)`, and +-0.12 against a 0.20 x 0.20 rect is a
+    0.0096 m^3 box sitting in the middle of the arm's workspace: an UNTRAINED
+    greedy actor solved it 64 times out of 64, because a zero action under
+    `NORMALIZED_ACTIONS` is the centre of every joint's ctrlrange and that pose
+    is inside the box. The task was not hard, it was not even a task.
+
+    ⚠ THE HALF-HEIGHT IS A HALF-HEIGHT, NOT A HEIGHT. The band is
+    `[site_z - h, site_z + h]`, centred on the site, because a region's site
+    sits ON the surface it describes and containment is wanted on both sides
+    of it — `On` is the one-sided predicate and it has its own band.
     """
 
     var name: String
@@ -154,6 +183,13 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     var y_min: Float64
     var x_max: Float64
     var y_max: Float64
+    var half_height: Float64
+    """The z band `In`/`AtRegion` accept, either side of the site."""
+    var has_height: Bool
+    """Whether the `.family` SAID so. ⚠ NOT DERIVABLE FROM THE VALUE — a
+    region that explicitly asks for 0.12 and one that defaulted to it are the
+    same number and different statements, and `describe()` must round-trip
+    which one it was or `test_spec_roundtrip` silently rewrites the file."""
 
     def __init__(out self, name: String, site: String):
         self.name = name
@@ -163,6 +199,8 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
         self.y_min = 0.0
         self.x_max = 0.0
         self.y_max = 0.0
+        self.half_height = DEFAULT_REGION_HALF_HEIGHT
+        self.has_height = False
 
     def __init__(
         out self, name: String, site: String,
@@ -175,6 +213,23 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
         self.y_min = y_min
         self.x_max = x_max
         self.y_max = y_max
+        self.half_height = DEFAULT_REGION_HALF_HEIGHT
+        self.has_height = False
+
+    def __init__(
+        out self, name: String, site: String,
+        x_min: Float64, y_min: Float64, x_max: Float64, y_max: Float64,
+        half_height: Float64,
+    ):
+        self.name = name
+        self.site = site
+        self.has_rect = True
+        self.x_min = x_min
+        self.y_min = y_min
+        self.x_max = x_max
+        self.y_max = y_max
+        self.half_height = half_height
+        self.has_height = True
 
     def describe(self) -> String:
         var s = self.name + ":site:" + self.site
@@ -183,6 +238,8 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
                 ":" + String(self.x_min) + "," + String(self.y_min)
                 + "," + String(self.x_max) + "," + String(self.y_max)
             )
+            if self.has_height:
+                s += ":" + String(self.half_height)
         return s^
 
 
@@ -432,17 +489,19 @@ def parse_slot(spec: String) raises -> SlotSpec:
 
 
 def parse_region(spec: String) raises -> RegionSpec:
-    """`<name>:site:<site>[:xmin,ymin,xmax,ymax]`.
+    """`<name>:site:<site>[:xmin,ymin,xmax,ymax[:half_height]]`.
 
     ⚠ `site` IS SPELLED OUT rather than assumed, so that a later target kind
     (a body, a geom) is an added token and not a format change. Anything else
     raises today instead of being silently read as a site.
     """
     var parts = split_on(spec, String(":"))
-    if len(parts) != 3 and len(parts) != 4:
+    if len(parts) < 3 or len(parts) > 5:
         raise Error(
             "tasks: malformed region '" + spec + "' — expected"
-            " '<name>:site:<site>' or '<name>:site:<site>:xmin,ymin,xmax,ymax'"
+            " '<name>:site:<site>', '<name>:site:<site>:xmin,ymin,xmax,ymax'"
+            " or that with a fifth field, the half-height:"
+            " '<name>:site:<site>:xmin,ymin,xmax,ymax:0.03'"
         )
     var name = String(String(parts[0]).strip())
     var kind = String(String(parts[1]).strip())
@@ -476,7 +535,27 @@ def parse_region(spec: String) raises -> RegionSpec:
             "tasks: region '" + name + "' has an empty or reversed rectangle"
             " (xmin,ymin must be < xmax,ymax): '" + spec + "'"
         )
-    return RegionSpec(name^, site^, x0, y0, x1, y1)
+    if len(parts) == 4:
+        return RegionSpec(name^, site^, x0, y0, x1, y1)
+
+    # ⚠ A FIFTH FIELD WITHOUT A RECTANGLE IS UNREACHABLE — `len(parts) == 5`
+    # implies parts[3] was the rect, which the block above already parsed. A
+    # height on a rect-less region would have nothing to be the height OF: the
+    # region is then the site's own extent and `eval` renders that as a token
+    # radius, not a volume this could size.
+    var hh = Float64(String(String(parts[4]).strip()))
+    # ⚠⚠ A ZERO OR NEGATIVE BAND ACCEPTS NOTHING, and nothing about that reads
+    # as an error downstream: `pred_in_rect` simply returns False for every
+    # state, the goal is never met, and the run looks like a task the policy
+    # cannot solve. Refused here, where the number is.
+    if hh <= 0.0:
+        raise Error(
+            "tasks: region '" + name + "' has half-height " + String(hh)
+            + ", which accepts no point at all. `pred_in_rect` would return"
+            " False for every state and the task would read as unlearnable"
+            " rather than as malformed."
+        )
+    return RegionSpec(name^, site^, x0, y0, x1, y1, hh)
 
 
 def parse_init(spec: String) raises -> InitSpec:
@@ -683,6 +762,37 @@ def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
                 " in EVERY episode — an identical placement every time, which"
                 " reads as a policy that memorised one layout."
             )
+
+    # ⚠⚠ `init=` LINES MUST BE IN FAMILY SLOT ORDER, AND THAT IS A PARITY
+    # REQUIREMENT, NOT TIDINESS. Two samplers draw these placements: the HOST's
+    # `sampler.sample_placements`, which walks `t.inits` in TASK ORDER and
+    # rejects each draw against the ones already placed, and the DEVICE's
+    # `init_qpos_gpu`, which walks the FREE SLOT TABLE because a per-lane
+    # region index is all `meta` can carry. Rejection is order-dependent by
+    # construction — `sampler.mojo` says so — so if the two orders differ the
+    # two samplers produce DIFFERENT scenes from the same `(seed, lane)`, and
+    # the eval path and the training path silently diverge on placement while
+    # every other number agrees.
+    #
+    # Requiring the file to be sorted makes the two orders identical by
+    # construction, which is cheaper and more checkable than teaching the
+    # device the task's ordering (three more `meta` words, and a second thing
+    # to keep in step).
+    var prev_si = -1
+    for i in range(len(t.inits)):
+        var si2 = f.slot_index(t.inits[i].slot)
+        if si2 <= prev_si:
+            raise Error(
+                "task '" + t.name + "': init= lines must be in FAMILY SLOT"
+                " ORDER, and '" + t.inits[i].slot + "' (slot " + String(si2)
+                + ") follows slot " + String(prev_si) + ". The host sampler"
+                " walks this list and the device sampler walks the slot table;"
+                " rejection sampling is order-dependent, so a different order"
+                " gives the two DIFFERENT scenes from one (seed, lane) — the"
+                " eval and the training run would then disagree about where"
+                " the props are, and nothing else would look wrong."
+            )
+        prev_si = si2
 
 
 def load_family(path: String) raises -> FamilySpec:

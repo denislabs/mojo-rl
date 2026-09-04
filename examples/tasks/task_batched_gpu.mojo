@@ -71,7 +71,9 @@ from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.family_config import So101TabletopConfig
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.eval import eval_goal, region_sites, region_rects
+from mojo_rl.tasks.eval import (
+    eval_goal, region_sites, region_rects, region_half_heights,
+)
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
@@ -102,6 +104,7 @@ def main() raises:
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
+    var rheights = region_half_heights(f)
 
     # ⚠⚠ `settle`, NOT `gather`, AND THE NEGATIVE LEG BELOW IS WHY. That leg
     # demands the two task groups score DIFFERENTLY, so one of them has to be
@@ -145,8 +148,12 @@ def main() raises:
         var env = EnvT(ctx)
 
         # ── the region table, once ────────────────────────────────────────
+        # ⚠ THE HALF-HEIGHT IS THE FIFTH NUMBER AND IT IS REQUIRED. Without
+        # it the device would use `IN_HALF_HEIGHT` while `eval.eval_goal` used
+        # the region's own band — a CPU/GPU disagreement inside the reward.
         var cw = region_table_words(
-            rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3]
+            rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+            rheights[0],
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])

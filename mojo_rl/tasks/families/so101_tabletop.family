@@ -45,7 +45,25 @@ park=10.0,0.0,50.0
 # `<attach prefix=>` renames every element of the asset, so the site declared
 # as `surface` in fixture.xml is `table_surface` once the `table` slot
 # instantiates it. Naming the raw asset site here would resolve to nothing.
-region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10
+# ⚠⚠ THE FIFTH FIELD IS THE Z HALF-BAND, AND IT IS THE DIFFERENCE BETWEEN A
+# TASK AND A FORMALITY. Without it a region gets `spec.
+# DEFAULT_REGION_HALF_HEIGHT` = 0.12 m, and `AtRegion(robot_gripperframe,
+# table_top)` was then a 0.20 x 0.20 x 0.24 box — 0.0096 m^3 — sitting in the
+# middle of the arm's workspace. Measured: uniform random actions solved it on
+# 27% of episodes and an UNTRAINED GREEDY actor on 100%, because `tanh(0)` is
+# 0, a zero action under `NORMALIZED_ACTIONS` is the CENTRE of every joint's
+# ctrlrange, and that pose is inside the box.
+#
+# ⚠ 0.03 IS CHOSEN FROM A SWEEP, NOT FROM TASTE. `task_reachability.mojo`
+# measures the fraction of uniform arm poses inside the region:
+#
+#     half-height   0.02     0.03     0.05     0.08     0.12 (default)
+#     hit rate      0.71%    1.03%    1.76%    2.34%    3.20%
+#
+# 0.03 keeps the target set comfortably above the 0.5% floor a sparse reward
+# needs while forcing the gripper down to within 3 cm of the surface — the arm
+# has to descend, not merely be somewhere over the table.
+region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10:0.03
 
 # ⚠⚠ TWO MORE REGIONS, AND THEY EXIST FOR `init=` ONLY — SEE THE NEXT WARNING.
 # They are the two lateral thirds of the same surface, disjoint by an 8 cm

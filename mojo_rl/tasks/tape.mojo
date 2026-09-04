@@ -47,7 +47,7 @@ from .predicates import (
 )
 from .eval import (
     pred_in_rect, pred_near, pred_above, pred_upright,
-    IN_HALF_HEIGHT, ON_MIN_DZ, ON_MAX_DZ,
+    ON_MIN_DZ, ON_MAX_DZ,
 )
 
 
@@ -100,6 +100,7 @@ def eval_tape(
     reg_site: List[Int],
     reg_xmin: List[Float64], reg_ymin: List[Float64],
     reg_xmax: List[Float64], reg_ymax: List[Float64],
+    reg_h: List[Float64],
 ) -> Bool:
     """Evaluate the tape at `tape[base : base + TAPE_WORDS]`.
 
@@ -107,6 +108,10 @@ def eval_tape(
     POST-ORDER — every child index is lower than its parent's, asserted in
     `test_goal_language`. A parent reading a later term would read a slot this
     loop has not written, and on device that is uninitialised memory.
+
+    ⚠ `reg_h` IS PER REGION AND REQUIRED. It used to be `eval.IN_HALF_HEIGHT`,
+    one constant for every region in every family — see `spec.RegionSpec` for
+    what that cost `so101_reach_brick`.
 
     ⚠ `base` EXISTS SO A KERNEL CAN PASS `env * METADATA_SIZE +
     META_IDX_TASK_PARAM_0` and read its own lane's tape out of the shared
@@ -168,8 +173,12 @@ def eval_tape(
                 px = xpos[a * 3]
                 py = xpos[a * 3 + 1]
                 pz = xpos[a * 3 + 2]
-            var dz_min = -IN_HALF_HEIGHT
-            var dz_max = IN_HALF_HEIGHT
+            # ⚠ THE REGION'S OWN BAND — `eval.region_half_heights(f)[b]`,
+            # matching `eval.eval_goal` and `gpu_eval.eval_tape_gpu`. Three
+            # readers of one quantity now, which is why it is a per-region
+            # ARRAY here and not the constant it used to be.
+            var dz_min = -reg_h[b]
+            var dz_max = reg_h[b]
             if op == OP_ON:
                 dz_min = ON_MIN_DZ
                 dz_max = ON_MAX_DZ

@@ -32,7 +32,9 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.tasks.spec import load_family, load_task
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import region_sites, region_rects
+from mojo_rl.tasks.eval import (
+    region_sites, region_rects, region_half_heights,
+)
 from mojo_rl.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import eval_tape_gpu, region_table_words
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
@@ -104,7 +106,13 @@ def main() raises:
     var r_y0 = List[Float64]()
     var r_x1 = List[Float64]()
     var r_y1 = List[Float64]()
+    # ⚠ THE PER-REGION Z BAND, which used to be `eval.IN_HALF_HEIGHT` inside
+    # both evaluators. Built here so the host tape reader gets exactly what
+    # `region_table_words` writes for the device.
+    var r_h = List[Float64]()
+    var rheights = region_half_heights(f)
     for i in range(len(f.regions)):
+        r_h.append(rheights[i])
         r_site.append(rsites[i])
         r_x0.append(rects[i][0])
         r_y0.append(rects[i][1])
@@ -119,7 +127,8 @@ def main() raises:
     for i in range(BATCH * METADATA_SIZE):
         meta.data[i] = Scalar[DTYPE](0)
     var cw = region_table_words(
-        rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3]
+        rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+        rheights[0],
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         cur.data[i] = Scalar[DTYPE](cw[i])
@@ -194,8 +203,12 @@ def main() raises:
             var qv = xquat.lt["cpu", Layout.row_major(BATCH, NB * 4)]()
             var sv = sxp.lt["cpu", Layout.row_major(BATCH, NS * 3)]()
 
-            var h0 = eval_tape(tp0, 0, hxp, hxq, hsp, r_site, r_x0, r_y0, r_x1, r_y1)
-            var h1 = eval_tape(tp1, 0, hxp, hxq, hsp, r_site, r_x0, r_y0, r_x1, r_y1)
+            var h0 = eval_tape(
+                tp0, 0, hxp, hxq, hsp, r_site, r_x0, r_y0, r_x1, r_y1, r_h
+            )
+            var h1 = eval_tape(
+                tp1, 0, hxp, hxq, hsp, r_site, r_x0, r_y0, r_x1, r_y1, r_h
+            )
             var d0 = eval_tape_gpu[DTYPE, BATCH, NB, NS * 3](
                 mv, cv, xv, qv, sv, 0
             )

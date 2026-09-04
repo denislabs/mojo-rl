@@ -69,6 +69,12 @@ anywhere.
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
+# ⚠ THE SAME GENERATOR THE HOST SAMPLER USES, and it must be. `sampler.
+# _uniform01` is counter-based Philox precisely so a draw is a pure function
+# of (seed, lane, axis, attempt) and the two implementations can be compared
+# element for element — a stateful stream would make the device's draw depend
+# on how many attempts the other lanes needed.
+from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
@@ -79,6 +85,9 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_PREV_X,
     META_IDX_TASK_ACTIVE,
+    META_IDX_INIT_REGION_0,
+    META_IDX_INIT_REGION_1,
+    META_IDX_INIT_REGION_2,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
@@ -218,6 +227,65 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     comptime PARK_Y: Float64 = 0.0
     comptime PARK_Z: Float64 = 50.0
     comptime PARK_SPACING: Float64 = 0.5
+
+    # ── THE REGION TABLE, the third thing this type restates ──────────────
+    #
+    # ⚠⚠ RESTATED BECAUSE `init_qpos_gpu` IS NOT HANDED `curriculum` OR
+    # `site_xpos`. It gets `qpos`, `qvel`, the MODEL records and `meta`, and
+    # it runs BEFORE forward kinematics — so the site a region hangs off has
+    # no world position it could read. Every region in this family hangs off
+    # `table_surface`, which belongs to a STATIC fixture: its world pose is a
+    # family constant, and a constant is what a comptime type can hold.
+    #
+    # ⚠ THE SAME STATUS AS `FREE_QADR_*` AND `PARK_*` ABOVE — restated, and
+    # CHECKED. `tests/tasks/test_device_placement.mojo` loads the `.family`,
+    # runs FK on the composed scene, and asserts every number below against
+    # `region_sites` + `region_rects`. A drift is a failing gate.
+    #
+    # ⚠ ONE SITE FOR ALL THREE REGIONS, which is true of this family and not
+    # of families in general — a family whose regions sit on different
+    # fixtures needs one triple each.
+    #
+    # Region order is FAMILY ORDER, which is what `META_IDX_INIT_REGION_*`
+    # holds and what `region_rects` returns:
+    #
+    #   0  table_top     -0.10,-0.10, 0.10, 0.10
+    #   1  table_left    -0.10, 0.04, 0.10, 0.12
+    #   2  table_right   -0.10,-0.12, 0.10,-0.04
+    comptime N_REGIONS: Int = 3
+    comptime REGION_SITE_X: Float64 = 0.25
+    comptime REGION_SITE_Y: Float64 = 0.0
+    comptime REGION_SITE_Z: Float64 = 0.02
+    comptime REGION_X0_0: Float64 = -0.10
+    comptime REGION_Y0_0: Float64 = -0.10
+    comptime REGION_X1_0: Float64 = 0.10
+    comptime REGION_Y1_0: Float64 = 0.10
+    comptime REGION_X0_1: Float64 = -0.10
+    comptime REGION_Y0_1: Float64 = 0.04
+    comptime REGION_X1_1: Float64 = 0.10
+    comptime REGION_Y1_1: Float64 = 0.12
+    comptime REGION_X0_2: Float64 = -0.10
+    comptime REGION_Y0_2: Float64 = -0.12
+    comptime REGION_X1_2: Float64 = 0.10
+    comptime REGION_Y1_2: Float64 = -0.04
+
+    # ⚠ THE SLOT RADIUS THE SAMPLER REJECTS ON, and the height it rests at.
+    # Every free slot in this family is `assets/props/cube.xml`, a 2 cm
+    # half-size box, so one constant serves all three. `sampler.
+    # sample_placements` takes it as `radii[si]` and uses it for BOTH the
+    # pairwise clash test and the resting height (`z = site_z + radius`), so a
+    # per-asset table would have to feed both.
+    comptime SLOT_RADIUS: Float64 = 0.02
+
+    # ⚠⚠ MATCHES `sampler.MAX_PLACE_ATTEMPTS` AND `sampler.PLACEMENT_SALT`,
+    # and BOTH must, or the device and the host draw different numbers from
+    # the same (seed, lane) — the eval would then place props somewhere the
+    # training run never saw, with every other number agreeing. Restated
+    # rather than imported because these end up inside a kernel body, and
+    # gated by the parity test, which is the only thing that makes a
+    # restatement safe.
+    comptime MAX_PLACE_ATTEMPTS: Int = 64
+    comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
 
     comptime OBS_MASK_BASE: Int = (
         So101TabletopModel.NQ + So101TabletopModel.NV
@@ -792,16 +860,163 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         env: Int,
         seed: Int,
     ):
-        # ⚠ NOTHING. The episode's poses are written by the HOST before the
-        # step loop — `tasks/reset.reset_slots` places the active slots where
-        # the sampler put them and parks the rest, and `tasks/tape` writes the
-        # goal into `meta`. Doing it here instead would mean reimplementing
-        # the sampler as device code, which `sampler.mojo` is SHAPED for but
-        # which is not needed until resets happen mid-run.
+        # ⚠⚠ THIS USED TO BE `pass`, AND THAT IS WHY NOTHING COULD TRAIN.
+        # The note here said the host writes the poses before the step loop —
+        # true of the eval and viewer paths, and false of every RESET after
+        # the first. `_reset_env_lane` restores the composed scene's `qpos0`,
+        # which for a free slot is its PARK pose 50 m up, and only INACTIVE
+        # slots are pinned there afterwards by `pre_step_full_gpu`. So an
+        # ACTIVE prop began every episode after the first in the sky and fell
+        # through the whole horizon with its qpos and qvel in the observation.
+        # Nothing raised; the curve just looked like a hard task.
         #
-        # ⚠⚠ AND THE TAPE MUST SURVIVE THIS. It does: `_reset_env_lane` writes
-        # META_IDX_STEP_COUNT and leaves the rest (`gpu/constants.mojo:164`),
-        # and this hook deliberately writes nothing to `meta` either. A hook
-        # that zeroed `meta` here would blank every lane's goal at the first
-        # reset and every reward would read 0 — a flat curve, not a crash.
-        pass
+        # ⚠ `sampler.sample_placements` IS THE SPEC THIS IMPLEMENTS, and it
+        # was written to be implementable here — pure geometry, counter-based
+        # Philox, no `Data`, no `Model`. `tests/tasks/test_device_placement.
+        # mojo` runs both on the same `(seed, lane)` and demands identical
+        # poses, because two implementations of one distribution is exactly
+        # the drift that file exists to prevent.
+        #
+        # ⚠⚠ AND THE TAPE MUST SURVIVE THIS. `_reset_env_lane` writes
+        # META_IDX_STEP_COUNT and leaves the rest (`gpu/constants.mojo`), and
+        # this hook writes only `qpos`/`qvel` — never `meta`. A hook that
+        # zeroed `meta` here would blank every lane's goal at the first reset
+        # and every reward would read 0: a flat curve, not a crash.
+        var placed_x = InlineArray[Scalar[DTYPE], Self.N_FREE_SLOTS](
+            fill=Scalar[DTYPE](0)
+        )
+        var placed_y = InlineArray[Scalar[DTYPE], Self.N_FREE_SLOTS](
+            fill=Scalar[DTYPE](0)
+        )
+        var n_placed = 0
+
+        comptime for j in range(Self.N_FREE_SLOTS):
+            comptime qa = (
+                Self.FREE_QADR_0 if j == 0
+                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
+            )
+            comptime da = (
+                Self.FREE_DADR_0 if j == 0
+                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
+            )
+            comptime mw = (
+                META_IDX_INIT_REGION_0 if j == 0
+                else (
+                    META_IDX_INIT_REGION_1 if j == 1
+                    else META_IDX_INIT_REGION_2
+                )
+            )
+            var ri = Int(rebind[Scalar[DTYPE]](meta[env, mw]))
+            # ⚠ `-1` IS "NO init=", INCLUDING EVERY INACTIVE SLOT. Left where
+            # `qpos0` put it, which is the park pose, which is where
+            # `pre_step_full_gpu` pins it every step anyway. Treating -1 as
+            # region 0 would place an inactive prop on the table, visible in
+            # nothing but the contact count.
+            if ri >= 0:
+                # the region rectangle, resolved from the restated table
+                var rx0 = Scalar[DTYPE](Self.REGION_X0_0)
+                var ry0 = Scalar[DTYPE](Self.REGION_Y0_0)
+                var rx1 = Scalar[DTYPE](Self.REGION_X1_0)
+                var ry1 = Scalar[DTYPE](Self.REGION_Y1_0)
+                if ri == 1:
+                    rx0 = Scalar[DTYPE](Self.REGION_X0_1)
+                    ry0 = Scalar[DTYPE](Self.REGION_Y0_1)
+                    rx1 = Scalar[DTYPE](Self.REGION_X1_1)
+                    ry1 = Scalar[DTYPE](Self.REGION_Y1_1)
+                elif ri == 2:
+                    rx0 = Scalar[DTYPE](Self.REGION_X0_2)
+                    ry0 = Scalar[DTYPE](Self.REGION_Y0_2)
+                    rx1 = Scalar[DTYPE](Self.REGION_X1_2)
+                    ry1 = Scalar[DTYPE](Self.REGION_Y1_2)
+
+                # ⚠⚠ THE DRAW COORDINATES ARE `sampler._uniform01`'s, VERBATIM:
+                # subsequence `(lane << 16) | axis`, offset `attempt`, seed
+                # `seed ^ PLACEMENT_SALT`, and axis `si * 2 (+ 1)` where `si`
+                # is the FAMILY SLOT INDEX — not the free-slot ordinal `j`.
+                # Using `j` here would draw a different stream for every slot
+                # after the first and the parity test would fail on slot 1.
+                comptime si = (
+                    Self.FREE_SLOT_IDX_0 if j == 0
+                    else (
+                        Self.FREE_SLOT_IDX_1 if j == 1
+                        else Self.FREE_SLOT_IDX_2
+                    )
+                )
+                var ax = Scalar[DTYPE](0)
+                var ay = Scalar[DTYPE](0)
+                var accepted = False
+                for attempt in range(Self.MAX_PLACE_ATTEMPTS):
+                    var ru = PhiloxRandom(
+                        seed=UInt64(seed) ^ Self.PLACEMENT_SALT,
+                        subsequence=(UInt64(env) << 16) | UInt64(si * 2),
+                        offset=UInt64(attempt),
+                    )
+                    var rv = PhiloxRandom(
+                        seed=UInt64(seed) ^ Self.PLACEMENT_SALT,
+                        subsequence=(UInt64(env) << 16) | UInt64(si * 2 + 1),
+                        offset=UInt64(attempt),
+                    )
+                    var u = Scalar[DTYPE](Float64(ru.step_uniform()[0]))
+                    var v = Scalar[DTYPE](Float64(rv.step_uniform()[0]))
+                    var cx = Scalar[DTYPE](Self.REGION_SITE_X) + rx0 + u * (
+                        rx1 - rx0
+                    )
+                    var cy = Scalar[DTYPE](Self.REGION_SITE_Y) + ry0 + v * (
+                        ry1 - ry0
+                    )
+                    # ⚠ REJECTED AGAINST THE SLOTS ALREADY PLACED, IN ORDER.
+                    # The host does the same and `spec.
+                    # validate_task_against_family` forces `init=` lines into
+                    # family slot order so the two walks coincide — rejection
+                    # is order-dependent and a different order is a different
+                    # scene from the same seed.
+                    var clash = False
+                    for k in range(Self.N_FREE_SLOTS):
+                        if k >= n_placed:
+                            break
+                        var dx = placed_x[k] - cx
+                        var dy = placed_y[k] - cy
+                        comptime rr = Scalar[DTYPE](
+                            Self.SLOT_RADIUS + Self.SLOT_RADIUS
+                        )
+                        if dx * dx + dy * dy < rr * rr:
+                            clash = True
+                    if not clash:
+                        ax = cx
+                        ay = cy
+                        accepted = True
+                        break
+
+                # ⚠⚠ EXHAUSTION LEAVES THE SLOT PARKED, AND THE HOST RAISES.
+                # A kernel cannot raise, so the two cannot agree on the
+                # failure mode — and of the two available here, parking is the
+                # one that is VISIBLE: the prop is 50 m away, every goal that
+                # names it is false, and the lane scores 0 forever. Returning
+                # the last (overlapping) draw would instead have the solver
+                # eject the props on step 1, which reads as a policy that
+                # cannot learn. The host's raise is the real diagnostic and it
+                # fires on the same region for the same reason.
+                if accepted:
+                    qpos[env, qa + 0] = ax
+                    qpos[env, qa + 1] = ay
+                    qpos[env, qa + 2] = Scalar[DTYPE](
+                        Self.REGION_SITE_Z + Self.SLOT_RADIUS
+                    )
+                    # ⚠ W-FIRST IN `qpos`. `Data.xquat` is w-LAST and this
+                    # file reads that convention elsewhere; a free joint's
+                    # seven words are (x, y, z, w, x, y, z).
+                    qpos[env, qa + 3] = Scalar[DTYPE](1)
+                    qpos[env, qa + 4] = Scalar[DTYPE](0)
+                    qpos[env, qa + 5] = Scalar[DTYPE](0)
+                    qpos[env, qa + 6] = Scalar[DTYPE](0)
+                    comptime for k in range(FREE_JOINT_NV):
+                        qvel[env, da + k] = Scalar[DTYPE](0)
+                    placed_x[n_placed] = ax
+                    placed_y[n_placed] = ay
+                    n_placed += 1
+
+        _ = joints
+        _ = mocap_pos
+        _ = mocap_quat
+        _ = bodies
+        _ = geoms
