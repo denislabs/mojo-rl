@@ -1,0 +1,26 @@
+# The first task family — SO-ARM101 on a tabletop.
+#
+# ⚠ THE SLOT TABLE IS THE BUDGET. Every task in this family instantiates every
+# slot below, active or not, so nq/nv/ngeom are CONSTANT across the family and
+# the GPU leg stays one monomorphisation (TASK_LAYER_PLAN.md §3.1).
+#
+# ⚠ THREE FREE SLOTS, NOT SIX. Measured on an RTX 5090 at 1024 lanes
+# (TASK_LAYER_IMPLEMENTATION.md §1.0): three free slots cost 1.51x the bare
+# arm, six cost 2.74x, and thirteen is the compile ceiling. The table is a
+# FIXTURE and costs nothing — it carries no free joint, so it adds no dofs and
+# pays none of the solver's superlinear term. Widen with fixtures freely; add
+# a free slot only when a task needs to MOVE the thing.
+schema_version=1
+family=so101_tabletop
+base=mojo_rl/envs/robots/assets/so_arm101.xml
+horizon=300
+control_freq=20
+
+slot=table:static:mojo_rl/tasks/assets/props/fixture.xml
+slot=brick:free:mojo_rl/tasks/assets/props/cube.xml
+slot=cube_a:free:mojo_rl/tasks/assets/props/cube.xml
+slot=cube_b:free:mojo_rl/tasks/assets/props/cube.xml
+
+park=10.0,0.0,50.0
+
+region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10

@@ -205,6 +205,8 @@ gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate m
 gen-dims-check = { cmd = "python tools/gen_model_dims.py --check", description = "Fail if any generated *_dims.mojo is stale (CI)" }
 gen-park-scenes = { cmd = "python tools/tasks/gen_park_scenes.py", description = "Regenerate the P0 parked-slot scenes + pose module" }
 gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (CI)" }
+gen-family-scenes = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo", description = "Compose every .family into mojo_rl/tasks/scenes/" }
+gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo --check", description = "Fail if a composed family scene is stale (CI)" }
 format = { cmd = "mojo format -l 80 ." }
 # Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
 # Clones ImGui into third_party/ on first run, then rebuilds only when stale.

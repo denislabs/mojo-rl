@@ -1,0 +1,20 @@
+<mujoco model="fixture">
+  <!-- A STATIC PROP — what a family's `static` slot instantiates.
+
+       ⚠⚠ NO FREE JOINT, AND THAT IS THE ENTIRE POINT. A `static` slot adds a
+       body and a geom and NO DOFS, so it pays none of the solver's
+       superlinear term in `nv`. Measured (`TASK_LAYER_IMPLEMENTATION.md`
+       §1.0): six FREE slots cost 2.74x the bare arm and thirteen is the
+       compile ceiling, while a fixture costs neither. Fixtures — a table, a
+       shelf, a bin — are how a family stays wide without getting slow.
+
+       ⚠ A STATIC BODY STILL COLLIDES. It is welded to the world, not
+       disabled, so it holds objects up. That is what a fixture is for. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="fixture">
+      <geom name="geom" type="box" size="0.15 0.15 0.01" density="800"
+            rgba="0.55 0.45 0.35 1"/>
+    </body>
+  </worldbody>
+</mujoco>

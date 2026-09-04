@@ -1,0 +1,23 @@
+<mujoco model="cube">
+  <!-- A FREE-JOINTED PROP — the thing a family's `free` slot instantiates.
+
+       ⚠ `angle="radian"` MATCHES THE ROBOT ASSETS ON PURPOSE. `expander.mojo`
+       RAISES when an attached model's `<compiler angle>` differs from the
+       host's, because a text splice would read this file's numbers in the
+       host's units — a 90 would become 90 radians. It refuses rather than
+       silently reinterpreting, so the fix is to agree, here.
+
+       ⚠ NO `<inertial>`. MuJoCo derives mass and inertia from the geom's
+       shape and density when a body declares none, and so does our builder
+       (`model/inertia_from_geom.mojo`). Writing our own would be a SECOND
+       implementation of that derivation, checkable against MuJoCo only by
+       accident. See `studio/scene.mojo`'s Prop for the same rule. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="cube">
+      <freejoint name="free"/>
+      <geom name="geom" type="box" size="0.02 0.02 0.02" density="500"
+            rgba="0.2 0.6 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>

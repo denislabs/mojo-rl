@@ -1,0 +1,26 @@
+<mujoco model="so101_tabletop">
+  <asset>
+    <model name="so_arm101" file="../../envs/robots/assets/so_arm101.xml"/>
+    <model name="fixture" file="../assets/props/fixture.xml"/>
+    <model name="cube" file="../assets/props/cube.xml"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="so_arm101" prefix="robot_"/>
+    </frame>
+    <frame pos="10.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="fixture" prefix="table_"/>
+    </frame>
+    <frame pos="10.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="cube" prefix="brick_"/>
+    </frame>
+    <frame pos="11.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="cube" prefix="cube_a_"/>
+    </frame>
+    <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="cube" prefix="cube_b_"/>
+    </frame>
+  </worldbody>
+</mujoco>

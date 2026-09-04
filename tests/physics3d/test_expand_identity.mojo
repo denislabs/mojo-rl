@@ -101,6 +101,40 @@ def _read(path: String) raises -> String:
         return f.read()
 
 
+def _has_real_tag(text: String, marker: String) -> Bool:
+    """Does `text` contain `marker` as a REAL element name?
+
+    ⚠ MIRRORS `xml_parser._find_tag`'s RULE, and must: the character after the
+    name has to end it, or `<frame` matches `<framepos`, which is a SENSOR and
+    appears in fourteen shipped assets. A naive `find` here would classify all
+    of them as composing scenes and invert this gate.
+    """
+    var n = text.byte_length()
+    var mlen = marker.byte_length()
+    var pos = 0
+    while pos < n:
+        var t = text.find(marker, pos)
+        if t == -1:
+            return False
+        var after = t + mlen
+        if after >= n:
+            return True
+        var c = String(text[byte = after : after + 1])
+        if c == " " or c == ">" or c == "/" or c == "\n" or c == "\t":
+            return True
+        pos = after
+    return False
+
+
+def _composes(text: String) -> Bool:
+    """Does this document use MJCF composition at all?"""
+    return (
+        _has_real_tag(text, String("<attach"))
+        or _has_real_tag(text, String("<frame"))
+        or _has_real_tag(text, String("<include"))
+    )
+
+
 def _dirname(path: String) -> String:
     """MuJoCo's asset-resolution base: the directory of the model file."""
     var cut = path.rfind("/")
@@ -114,25 +148,51 @@ def main() raises:
     var models = List[String]()
     _walk(ASSET_ROOT, models)
 
-    var compared = 0
+    # ⚠⚠ TWO CLASSES, AND THE SPLIT IS THE POINT SINCE THE TASK LAYER LANDED.
+    # `mojo_rl/tasks/scenes/*.xml` are COMPOSED family scenes — they are full
+    # of `<attach>` by construction, and expansion MUST change them. Asserting
+    # blanket identity would have made adding the first family a red gate, and
+    # the tempting "fix" is to exclude the directory, which would stop testing
+    # exactly the files the expander exists for.
+    #
+    # So each file is classified and BOTH claims are asserted: a flat document
+    # is unchanged, a composing one is NOT. That is strictly stronger than the
+    # original blanket claim and it stays true as families multiply.
+    var flat = 0
+    var composed = 0
     var differing = 0
+    var inert = 0
     var first_bad = String("")
+    var first_inert = String("")
     for i in range(len(models)):
         var path = models[i]
         var raw = _read(path)
         var expanded = expand_mjcf(raw, _dirname(path))
-        compared += 1
-        if expanded != raw:
-            differing += 1
-            if first_bad == "":
-                first_bad = path
-                print("  DIFFERS:", path)
-                print("    raw     ", raw.byte_length(), "bytes")
-                print("    expanded", expanded.byte_length(), "bytes")
+        if _composes(raw):
+            composed += 1
+            if expanded == raw:
+                inert += 1
+                if first_inert == "":
+                    first_inert = path
+                    print("  UNEXPANDED:", path, "(", raw.byte_length(), "b )")
+        else:
+            flat += 1
+            if expanded != raw:
+                differing += 1
+                if first_bad == "":
+                    first_bad = path
+                    print("  DIFFERS:", path)
+                    print("    raw     ", raw.byte_length(), "bytes")
+                    print("    expanded", expanded.byte_length(), "bytes")
+    var compared = flat + composed
 
     # ⚠ BOTH NUMBERS, ALWAYS. "0 differing" out of 0 compared is the failure
     # this line exists to make impossible to misread as a pass.
-    print("--- compared", compared, "shipped models,", differing, "differ ---")
+    print(
+        "--- compared", compared, "shipped models:", flat, "flat (",
+        differing, "wrongly changed ),", composed, "composing (",
+        inert, "wrongly unchanged ) ---"
+    )
 
     if compared < MIN_MODELS:
         raise Error(
@@ -156,7 +216,17 @@ def main() raises:
             + " against MuJoCo), or the expander now matches something it"
             + " should not — `<framepos>` is a SENSOR, not a `<frame>`."
         )
-    print("  OK: expansion changes no shipped model")
+    # ⚠ THE SECOND CLAIM. A composing scene that came back byte-identical
+    # means the expander did not fire on it — the P1a regression, and the
+    # exact failure `runtime_load.mojo`'s header records as silent.
+    if inert != 0:
+        raise Error(
+            "expand identity: " + String(inert) + " COMPOSING model(s) came"
+            " back unchanged, first '" + first_inert + "'. The expander did"
+            " not fire on a document that uses <attach>/<frame>/<include> —"
+            " that model is loading as a fraction of itself, silently."
+        )
+    print("  OK: every flat model is unchanged, every composing one expanded")
 
     # ── half 2: the positive control — it is awake ────────────────────────
     # Without this, `return xml` passes half 1 on every model in the tree.

@@ -56,6 +56,15 @@ tests/physics3d/test_expand_identity.mojo
 # path alone would pass while accepting all of them.
 tests/tasks/test_spec_roundtrip.mojo
 
+# ── mojo_rl/tasks: a .family composes to a scene MuJoCo loads (P1c) ──
+# ⚠ THE MOJO HALF ONLY. The ORACLE half is `pixi run python
+# tools/tasks/check_family.py`, which loads the same file through MuJoCo and
+# sums every asset independently — it never reads our parser's answer, so the
+# two can only agree by both being right. Run it when the family changes.
+# ⚠ Also a STALENESS check: it fails if the .family composes to something
+# other than the checked-in scene. `pixi run gen-family-scenes` fixes that.
+tests/tasks/test_family_compose_vs_mujoco.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
