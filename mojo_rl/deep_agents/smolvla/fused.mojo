@@ -54,6 +54,7 @@ from .text import (
 from .kv_cache import SmolVLAKVCache
 from .expert import SmolVLAExpert
 from .block_attention import BlockCrossAttention
+from .grad_ops import accum_into, copy_into, suffix_tail
 
 
 struct SmolVLAPrefill[
@@ -400,8 +401,14 @@ struct SmolVLADenoise[
     # free of the extra slab AND of the copy below — the residual keeps
     # writing straight into X. One call site, one destination expression.
     comptime XO: Int = Self.N_BASE if Self.RECORD else Self.X
+    # ⚠ Same reason as XO, for the SECOND layernorm's output. The forward
+    # writes both norms into `H`, so without this split the tape would hold
+    # the MLP norm's output where the attention norm's belonged, and every
+    # q/k/v weight gradient in all sixteen layers would be formed against the
+    # wrong input — finite, plausible, wrong.
+    comptime H2: Int = Self.N_BASE + 1 if Self.RECORD else Self.H
     comptime N_SLOTS: Int = (
-        Self.N_BASE + 1 if Self.RECORD else Self.N_BASE
+        Self.N_BASE + 2 if Self.RECORD else Self.N_BASE
     )
     # Pack `l` holds layer `l`'s activations, and pack LAYERS the value the
     # final norm consumes. Off, the list is one pack and every layer reuses
@@ -410,6 +417,45 @@ struct SmolVLADenoise[
     comptime LAST: Int = Self.LAYERS if Self.RECORD else 0
 
     var pools: List[TensorPack[Self.N_SLOTS]]
+
+    # ── the backward's own scratch ───────────────────────────────────────
+    # ONE pack, reused by every layer — unlike `pools`, a backward consumes
+    # each layer's gradients before reaching the next, so nothing here has to
+    # survive an iteration. The slot count is large because `Module.vjp`
+    # ASSIGNS its grad_inputs: an activation with three consumers needs three
+    # destinations and an explicit sum, not one shared slab that would
+    # silently keep only the last writer.
+    comptime GXO = 0        # running dL/d(layer output)   [B, S*EW]
+    comptime GX2 = 1
+    comptime GDOWN = 2
+    comptime GGLU = 3       # [B, S*EFF]
+    comptime GCAT = 4       # [B, 2*S*EFF]
+    comptime GUP = 5
+    comptime GGATE = 6
+    comptime GHA = 7        # the contributions to dH, summed by hand
+    comptime GHB = 8
+    comptime GHC = 9
+    comptime GAO = 10
+    comptime GATT = 11      # [B, S*W]
+    comptime GQR = 12
+    comptime GQ = 13
+    comptime GKXF = 14      # [B, FULL*W]    self
+    comptime GVXF = 15
+    comptime GKXP = 16      # [B, P*W]       cross
+    comptime GVXP = 17
+    comptime GSK = 18       # [B, FULL*KVW]
+    comptime GSV = 19
+    comptime GKRS = 20      # [B, S*KVW]
+    comptime GKS = 21
+    comptime GVS = 22
+    comptime GKSP = 23      # [B, P*KVW]     cross
+    comptime GVSP = 24
+    comptime GKP = 25       # dL/d(cached prefix K) — see `backward`
+    comptime GVP = 26
+    comptime GRC = 27       # SwiGLU cache-refill scratch, see `backward`
+    comptime G_SLOTS = 28
+
+    var g: TensorPack[Self.G_SLOTS]
 
     def __init__(out self):
         self.rope_q_self = Self.RoPEQSelf()
@@ -427,6 +473,7 @@ struct SmolVLADenoise[
         self.pools = List[TensorPack[Self.N_SLOTS]]()
         for _ in range(Self.N_POOLS):
             self.pools.append(TensorPack[Self.N_SLOTS]())
+        self.g = TensorPack[Self.G_SLOTS]()
 
     def __init__(out self, *, deinit move: Self):
         self.rope_q_self = move.rope_q_self^
@@ -442,6 +489,7 @@ struct SmolVLADenoise[
         self.glu_cat = move.glu_cat^
         self.res = move.res^
         self.pools = move.pools^
+        self.g = move.g^
 
     @staticmethod
     def make[
@@ -593,24 +641,24 @@ struct SmolVLADenoise[
             if is_self:
                 ref L = expert.self_layers[li]
                 L.post_attention_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.X2]), PK[Self.H], ctx
+                    TensorRefs[1](PK[Self.X2]), PK[Self.H2], ctx
                 )
                 L.mlp.gate.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.H]), PK[Self.GATE], ctx
+                    TensorRefs[1](PK[Self.H2]), PK[Self.GATE], ctx
                 )
                 L.mlp.up.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.H]), PK[Self.UP], ctx
+                    TensorRefs[1](PK[Self.H2]), PK[Self.UP], ctx
                 )
             else:
                 ref L = expert.cross_layers[li]
                 L.post_attention_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.X2]), PK[Self.H], ctx
+                    TensorRefs[1](PK[Self.X2]), PK[Self.H2], ctx
                 )
                 L.mlp.gate.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.H]), PK[Self.GATE], ctx
+                    TensorRefs[1](PK[Self.H2]), PK[Self.GATE], ctx
                 )
                 L.mlp.up.forward[target, TOK_S](
-                    TensorRefs[1](PK[Self.H]), PK[Self.UP], ctx
+                    TensorRefs[1](PK[Self.H2]), PK[Self.UP], ctx
                 )
             self.glu_cat.forward[target, Self.B](
                 TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
@@ -657,3 +705,268 @@ struct SmolVLADenoise[
         expert.norm.forward[target, TOK_S](
             TensorRefs[1](self.pools[Self.LAST][Self.X]), out, ctx
         )
+
+    def backward[
+        target: StaticString
+    ](
+        mut self,
+        mut expert: SmolVLAExpert[
+            Self.LAYERS, Self.EW, Self.EFF, Self.W, Self.KVW, Self.SELF_EVERY
+        ],
+        mut cache: SmolVLAKVCache[
+            Self.LAYERS, Self.P, Self.S, Self.N_KV, Self.HD, Self.B
+        ],
+        mut grad_out: Tensor,
+        mut grad_x: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Reverse of `step`, over the tape `step[RECORD=True]` left behind.
+
+        Accumulates into every expert `Param.grd` (the `nn` convention — the
+        caller zeroes) and writes `grad_x`, dL/d(suffix embeddings), which the
+        action projections need.
+
+        ⚠ **Call `step` with the SAME instance first.** The tape is this
+        object's `pools`. A `backward` on a stale tape reads a previous
+        observation's activations and returns a finite, plausible, wrong
+        gradient.
+
+        ⚠ **dL/d(cached prefix K/V) is COMPUTED AND DISCARDED**, in `GKP` and
+        `GVP`. It is the whole gradient path to the VLM and therefore to
+        `state_proj`, which the shipped config trains. Under
+        `train_state_proj = False` it is dead, and this driver implements that
+        regime. Wiring it up is the last stage of V2, and the slots are named
+        so that the omission is visible here rather than inferred.
+        """
+        comptime assert Self.RECORD, (
+            "SmolVLADenoise.backward needs RECORD=True — the non-recording"
+            " driver keeps one pool and its tape is the last layer's"
+            " activations sixteen times over"
+        )
+        comptime TOK_S = Self.B * Self.S
+        comptime TOK_P = Self.B * Self.P
+        comptime XN = Self.B * Self.XN
+        comptime QN = Self.B * Self.QN
+        comptime CN = Self.B * Self.FFN
+        comptime KVN_S = Self.B * Self.KVN_S
+        comptime KVN_P = Self.B * Self.KVN_P
+
+        # out = norm(pools[LAST][X])
+        expert.norm.vjp[target, TOK_S](
+            TensorRefs[1](self.pools[Self.LAST][Self.X]),
+            grad_out,
+            TensorRefs[1](self.g[Self.GXO]),
+            ctx,
+        )
+
+        for ridx in range(Self.LAYERS):
+            var i = Self.LAYERS - 1 - ridx
+            var is_self = (i % Self.SELF_EVERY) == 0
+            var li = i // Self.SELF_EVERY
+            ref PK = self.pools[i]
+
+            # ── MLP branch, reversed ─────────────────────────────────────
+            # XO = X2 + DOWN
+            self.res.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.X2], PK[Self.DOWN]),
+                self.g[Self.GXO],
+                TensorRefs[2](self.g[Self.GX2], self.g[Self.GDOWN]),
+                ctx,
+            )
+            if is_self:
+                expert.self_layers[li].mlp.down.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.GLU]), self.g[Self.GDOWN],
+                    TensorRefs[1](self.g[Self.GGLU]), ctx,
+                )
+            else:
+                expert.cross_layers[li].mlp.down.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.GLU]), self.g[Self.GDOWN],
+                    TensorRefs[1](self.g[Self.GGLU]), ctx,
+                )
+
+            # ⚠ SwiGLU is OUTPUT-CACHING and there is ONE instance for all
+            # sixteen layers, so by now `self.glu`'s cache holds layer 15's
+            # values and its `vjp` — which ignores `forward_input` entirely —
+            # would differentiate every layer at layer 15's point. Re-running
+            # the forward on this layer's CAT refills the cache with this
+            # layer's values. The output goes to scratch, NOT back over the
+            # tape, so the tape stays the forward's own record.
+            self.glu.forward[target, Self.B](
+                TensorRefs[1](PK[Self.CAT]), self.g[Self.GRC], ctx
+            )
+            self.glu.vjp[target, Self.B](
+                TensorRefs[1](PK[Self.CAT]), self.g[Self.GGLU],
+                TensorRefs[1](self.g[Self.GCAT]), ctx,
+            )
+            self.glu_cat.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
+                self.g[Self.GCAT],
+                TensorRefs[2](self.g[Self.GUP], self.g[Self.GGATE]),
+                ctx,
+            )
+            if is_self:
+                ref L = expert.self_layers[li]
+                L.mlp.up.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H2]), self.g[Self.GUP],
+                    TensorRefs[1](self.g[Self.GHA]), ctx,
+                )
+                L.mlp.gate.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H2]), self.g[Self.GGATE],
+                    TensorRefs[1](self.g[Self.GHB]), ctx,
+                )
+            else:
+                ref L = expert.cross_layers[li]
+                L.mlp.up.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H2]), self.g[Self.GUP],
+                    TensorRefs[1](self.g[Self.GHA]), ctx,
+                )
+                L.mlp.gate.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H2]), self.g[Self.GGATE],
+                    TensorRefs[1](self.g[Self.GHB]), ctx,
+                )
+            # dH2 = up's + gate's — both read H2, so both contribute.
+            accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
+            if is_self:
+                expert.self_layers[li].post_attention_layernorm.vjp[
+                    target, TOK_S
+                ](
+                    TensorRefs[1](PK[Self.X2]), self.g[Self.GHA],
+                    TensorRefs[1](self.g[Self.GHC]), ctx,
+                )
+            else:
+                expert.cross_layers[li].post_attention_layernorm.vjp[
+                    target, TOK_S
+                ](
+                    TensorRefs[1](PK[Self.X2]), self.g[Self.GHA],
+                    TensorRefs[1](self.g[Self.GHC]), ctx,
+                )
+            # X2 feeds the residual AND the norm.
+            accum_into[target, XN](self.g[Self.GX2], self.g[Self.GHC], ctx)
+
+            # ── attention branch, reversed ───────────────────────────────
+            # X2 = X + AO
+            self.res.vjp[target, Self.B](
+                TensorRefs[2](PK[Self.X], PK[Self.AO]),
+                self.g[Self.GX2],
+                TensorRefs[2](self.g[Self.GHC], self.g[Self.GAO]),
+                ctx,
+            )
+            if is_self:
+                ref L = expert.self_layers[li]
+                L.o.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.ATT]), self.g[Self.GAO],
+                    TensorRefs[1](self.g[Self.GATT]), ctx,
+                )
+                self.attn_self.vjp[target, Self.B](
+                    PK[Self.QR], PK[Self.KXF], PK[Self.VXF],
+                    self.g[Self.GATT],
+                    self.g[Self.GQR], self.g[Self.GKXF], self.g[Self.GVXF],
+                    ctx,
+                )
+                # ⚠ Rebuild this layer's [prefix; suffix] from the tape. The
+                # cache's own scratch holds the LAST self layer's, and the
+                # repeat's `vjp` takes a forward input.
+                cache.build_scratch[target](
+                    i, PK[Self.KRS], PK[Self.VS], ctx
+                )
+                self.rep_full_k.vjp[target, Self.B](
+                    TensorRefs[1](cache.sk), self.g[Self.GKXF],
+                    TensorRefs[1](self.g[Self.GSK]), ctx,
+                )
+                self.rep_full_v.vjp[target, Self.B](
+                    TensorRefs[1](cache.sv), self.g[Self.GVXF],
+                    TensorRefs[1](self.g[Self.GSV]), ctx,
+                )
+                # The prefix rows of GSK/GSV are dL/d(cached K/V) — the VLM's
+                # gradient, discarded in this regime. Take the suffix rows.
+                suffix_tail[
+                    target, Self.B, Self.FULL * Self.KVW,
+                    Self.P * Self.KVW, Self.S * Self.KVW,
+                ](self.g[Self.GSK], self.g[Self.GKRS], ctx)
+                suffix_tail[
+                    target, Self.B, Self.FULL * Self.KVW,
+                    Self.P * Self.KVW, Self.S * Self.KVW,
+                ](self.g[Self.GSV], self.g[Self.GVS], ctx)
+                self.rope_k_self.vjp[target, Self.B](
+                    TensorRefs[1](PK[Self.KS]), self.g[Self.GKRS],
+                    TensorRefs[1](self.g[Self.GKS]), ctx,
+                )
+                self.rope_q_self.vjp[target, Self.B](
+                    TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],
+                    TensorRefs[1](self.g[Self.GQ]), ctx,
+                )
+                L.q.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H]), self.g[Self.GQ],
+                    TensorRefs[1](self.g[Self.GHA]), ctx,
+                )
+                L.k.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H]), self.g[Self.GKS],
+                    TensorRefs[1](self.g[Self.GHB]), ctx,
+                )
+                L.v.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H]), self.g[Self.GVS],
+                    TensorRefs[1](self.g[Self.GXO]), ctx,
+                )
+                # dH = q's + k's + v's — H feeds all three.
+                accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
+                accum_into[target, XN](self.g[Self.GHA], self.g[Self.GXO], ctx)
+                L.input_layernorm.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.X]), self.g[Self.GHA],
+                    TensorRefs[1](self.g[Self.GHB]), ctx,
+                )
+            else:
+                ref L = expert.cross_layers[li]
+                L.o.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.ATT]), self.g[Self.GAO],
+                    TensorRefs[1](self.g[Self.GATT]), ctx,
+                )
+                self.attn_cross.vjp[target, Self.B](
+                    PK[Self.QR], PK[Self.KXP], PK[Self.VXP],
+                    self.g[Self.GATT],
+                    self.g[Self.GQR], self.g[Self.GKXP], self.g[Self.GVXP],
+                    ctx,
+                )
+                self.rep_pre_k.vjp[target, Self.B](
+                    TensorRefs[1](PK[Self.KS]), self.g[Self.GKXP],
+                    TensorRefs[1](self.g[Self.GKSP]), ctx,
+                )
+                self.rep_pre_v.vjp[target, Self.B](
+                    TensorRefs[1](PK[Self.VS]), self.g[Self.GVXP],
+                    TensorRefs[1](self.g[Self.GVSP]), ctx,
+                )
+                # dL/d(cached prefix K/V). Formed because `Linear.vjp` needs a
+                # destination, then dropped — see this method's docstring.
+                L.k.vjp[target, TOK_P](
+                    TensorRefs[1](PK[Self.KP]), self.g[Self.GKSP],
+                    TensorRefs[1](self.g[Self.GKP]), ctx,
+                )
+                L.v.vjp[target, TOK_P](
+                    TensorRefs[1](PK[Self.VP]), self.g[Self.GVSP],
+                    TensorRefs[1](self.g[Self.GVP]), ctx,
+                )
+                self.rope_q_cross.vjp[target, Self.B](
+                    TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],
+                    TensorRefs[1](self.g[Self.GQ]), ctx,
+                )
+                # ⚠ A cross layer's H feeds q ONLY: k and v come from the
+                # cache, not from this stream. No sum here, and adding one
+                # would double-count nothing — it would add a stale slab.
+                L.q.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.H]), self.g[Self.GQ],
+                    TensorRefs[1](self.g[Self.GHA]), ctx,
+                )
+                L.input_layernorm.vjp[target, TOK_S](
+                    TensorRefs[1](PK[Self.X]), self.g[Self.GHA],
+                    TensorRefs[1](self.g[Self.GHB]), ctx,
+                )
+
+            # X feeds the residual AND the first norm. This is the next
+            # (earlier) layer's dL/d(output).
+            accum_into[target, XN](self.g[Self.GHC], self.g[Self.GHB], ctx)
+            copy_into[target, XN](self.g[Self.GXO], self.g[Self.GHC], ctx)
+
+        copy_into[target, XN](grad_x, self.g[Self.GXO], ctx)
+        _ = CN
+        _ = QN
+        _ = KVN_S
+        _ = KVN_P
