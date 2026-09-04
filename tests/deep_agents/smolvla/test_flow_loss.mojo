@@ -19,6 +19,16 @@ converges, and ends up somewhere else:
      `u_t = noise - 0 = noise`: unpredictable by construction. The network
      would spend a large share of its gradient budget failing to fit noise,
      and the loss curve would look plausible the whole time.
+  4. **The loss covering timesteps past the end of an episode.** A chunk near
+     an episode boundary is not short — `dataset_reader` CLAMPS the query
+     index, so its tail is the last real action repeated, and `action_is_pad`
+     marks it. Training on that teaches the model that every episode ends by
+     holding still. ⚠ And masking the timesteps without ALSO removing them
+     from the denominator is the subtler half: the loss is then scaled by the
+     fraction of valid steps, which varies with how close the sample sits to a
+     boundary, so the effective learning rate varies per batch. Leg [6] checks
+     both, and checks that the two denominators give visibly different answers
+     so it can tell them apart.
 
 Each is gated by a property that only the right version has, and leg [1]
 additionally REJECTS the uniform sampler rather than merely accepting the beta
@@ -54,7 +64,9 @@ comptime N_DRAW = 200000
 comptime CDF_BAND = 0.006
 
 
-def _ref_loss(mut vt: Tensor, mut ut: Tensor) -> Float64:
+def _ref_loss(
+    mut vt: Tensor, mut ut: Tensor, mut valid: Tensor, n_valid: Int
+) -> Float64:
     """The loss straight from the definition, in Float64.
 
     ⚠ The finite differences below differentiate THIS, not `mean_err`. A first
@@ -69,10 +81,23 @@ def _ref_loss(mut vt: Tensor, mut ut: Tensor) -> Float64:
     """
     var acc = 0.0
     for i in range(TOT):
-        if i % ADIM < ADIM_REAL:
+        if i % ADIM < ADIM_REAL and valid.data[i // ADIM] != Scalar[DT](0):
             var e = Float64(vt.data[i]) - Float64(ut.data[i])
             acc += e * e
-    return acc / Float64(B * CHUNK * ADIM_REAL)
+    return acc / Float64(n_valid * ADIM_REAL)
+
+
+def _ref_loss_n(
+    mut vt: Tensor, mut ut: Tensor, mut valid: Tensor, n_valid: Int
+) -> Float64:
+    """`_ref_loss` with an explicit valid count — leg [6] uses a mask whose
+    count is not `B*CHUNK`."""
+    var acc = 0.0
+    for i in range(TOT):
+        if i % ADIM < ADIM_REAL and valid.data[i // ADIM] != Scalar[DT](0):
+            var e = Float64(vt.data[i]) - Float64(ut.data[i])
+            acc += e * e
+    return acc / Float64(n_valid * ADIM_REAL)
 
 
 def _cdf_gap(ref draws: List[Float64], q: Float64) -> Float64:
@@ -220,13 +245,19 @@ def main() raises:
     for b in range(B):
         times.data[b] = Scalar[DT](0.4)
     build_xt_ut["cpu", B, ROW](noise, acts, times, xt, ut, None)
+    # every timestep inside its episode, for legs [3] and [4]
+    var valid = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        valid.data[i] = Scalar[DT](1.0)
+    comptime N_VALID = B * CHUNK
     var gv = Tensor.alloc(TOT)
     var err = Tensor.alloc(TOT)
-    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, gv, err, None)
-    var loss = mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, None)
+    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
+    var loss = mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, N_VALID, None)
 
     # `mean_err` against the definition, before anything is differenced.
-    var lref = _ref_loss(vt, ut)
+    var lref = _ref_loss(vt, ut, valid, N_VALID)
     print("  [3] mean_err", loss, " vs the definition", lref, " diff",
           abs(loss - lref))
     assert_true(
@@ -249,10 +280,10 @@ def main() raises:
         # artefact of the reference and not of the gradient.
         vt.data[i] = Scalar[DT](Float64(keep) + H)
         var ap = Float64(vt.data[i])
-        var lp = _ref_loss(vt, ut)
+        var lp = _ref_loss(vt, ut, valid, N_VALID)
         vt.data[i] = Scalar[DT](Float64(keep) - H)
         var am = Float64(vt.data[i])
-        var lm = _ref_loss(vt, ut)
+        var lm = _ref_loss(vt, ut, valid, N_VALID)
         vt.data[i] = keep
         var fd = (lp - lm) / (ap - am)
         var d = abs(Float64(gv.data[i]) - fd)
@@ -277,11 +308,13 @@ def main() raises:
             # and the LOSS must not move when a padded prediction moves
             var keep = vt.data[i]
             vt.data[i] = keep + Scalar[DT](100.0)
-            flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, gv, err, None)
-            if mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, None) != loss:
+            flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
+            if mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, N_VALID, None) != loss:
                 padmoves += 1
             vt.data[i] = keep
-    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, gv, err, None)
+    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
     print("  [4] padded columns:", padded, "of", TOT, " nonzero grad", padnz,
           " loss moved by a +100 kick", padmoves)
     assert_equal(
@@ -303,17 +336,88 @@ def main() raises:
             reals += 1
             var keep = vt.data[i]
             vt.data[i] = keep + Scalar[DT](1.0)
-            flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, gv, err, None)
-            if mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, None) != loss:
+            flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
+            if mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, N_VALID, None) != loss:
                 realmoves += 1
             vt.data[i] = keep
-    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, gv, err, None)
+    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
     print("      control: real columns", reals, " loss moved", realmoves,
           "(must be all of them)")
     assert_true(
         realmoves == reals,
         "a REAL action column does not affect the loss — leg [4] is vacuous",
     )
+
+    # ── [6] the per-TIMESTEP mask, which is a different axis from [4] ────
+    # A chunk sampled near the end of an episode is not short: `dataset_reader`
+    # CLAMPS the query index, so its tail holds the last real action repeated
+    # and `action_is_pad` marks it. Two things have to happen, and only doing
+    # the first is the subtle failure — the loss would then be scaled by the
+    # fraction of valid steps, which varies with how close the sample sits to
+    # an episode boundary and so silently varies the effective learning rate.
+    var pv = Tensor.alloc(B * CHUNK)
+    var n_pv = 0
+    for i in range(B * CHUNK):
+        # last timestep of each batch element is past the episode end
+        var ok = (i % CHUNK) != CHUNK - 1
+        pv.data[i] = Scalar[DT](1.0) if ok else Scalar[DT](0.0)
+        if ok:
+            n_pv += 1
+    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, pv, gv, err, n_pv,
+                                               None)
+    var mloss = mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, n_pv, None)
+
+    var mgz = 0
+    var mgnz = 0
+    var vgz = 0
+    for i in range(TOT):
+        var bt = i // ADIM
+        var d = i % ADIM
+        if pv.data[bt] == Scalar[DT](0):
+            if gv.data[i] != Scalar[DT](0):
+                mgnz += 1
+            else:
+                mgz += 1
+        elif d < ADIM_REAL and gv.data[i] == Scalar[DT](0):
+            vgz += 1
+    print("  [6] masked timesteps:", B, "of", B * CHUNK, " grad zero", mgz,
+          " grad NONZERO", mgnz, " | valid-real slots left at zero", vgz)
+    assert_equal(
+        mgz + mgnz, B * ADIM, "every masked slot must be probed"
+    )
+    assert_true(
+        mgnz == 0,
+        "a padded TIMESTEP has a nonzero gradient — the model is being"
+        " trained on the last real action repeated past the episode end",
+    )
+    assert_true(
+        vgz == 0, "a valid slot lost its gradient — leg [6] is vacuous"
+    )
+
+    # the denominator really is n_valid, not B*CHUNK: against the definition
+    var mref = _ref_loss_n(vt, ut, pv, n_pv)
+    print("      loss with", n_pv, "valid steps:", mloss, " vs the"
+          " definition", mref, " diff", abs(mloss - mref))
+    assert_true(
+        abs(mloss - mref) < 1.0e-5,
+        "the masked loss is not the mean over VALID (step, real column) terms",
+    )
+    # ⚠ and it must NOT equal the same sum over the full denominator, or the
+    # `num_valid` half of the reference's rule is untested.
+    var wrong_den = mref * Float64(n_pv) / Float64(B * CHUNK)
+    print("      the same numerator over B*CHUNK would give", wrong_den,
+          "— must differ")
+    assert_true(
+        abs(mloss - wrong_den) > 1.0e-6,
+        "dividing by n_valid and by B*CHUNK give the same answer here, so"
+        " this leg cannot tell them apart",
+    )
+
+    # restore the all-valid gradients leg [5] compares against
+    flow_mse["cpu", B, CHUNK, ADIM, ADIM_REAL](vt, ut, valid, gv, err,
+                                               N_VALID, None)
 
     # ── [5] GPU parity ───────────────────────────────────────────────────
     var c = DeviceContext()
@@ -340,9 +444,14 @@ def main() raises:
     var gerr = Tensor.alloc(TOT)
     ggv.upload(c)
     gerr.upload(c)
-    flow_mse["gpu", B, CHUNK, ADIM, ADIM_REAL](gvt, gut, ggv, gerr,
-                                               Optional(c))
-    var gloss = mean_err["gpu", B, CHUNK, ADIM, ADIM_REAL](gerr, Optional(c))
+    var gvalid = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        gvalid.data[i] = Scalar[DT](1.0)
+    gvalid.upload(c)
+    flow_mse["gpu", B, CHUNK, ADIM, ADIM_REAL](gvt, gut, gvalid, ggv, gerr,
+                                               N_VALID, Optional(c))
+    var gloss = mean_err["gpu", B, CHUNK, ADIM, ADIM_REAL](gerr, N_VALID,
+                                                           Optional(c))
     c.synchronize()
     gxt.download(c)
     gut.download(c)

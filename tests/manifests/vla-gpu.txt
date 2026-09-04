@@ -87,7 +87,10 @@ tests/deep_agents/smolvla/test_denoise_backward.mojo
 # x^1.5, and a uniform draw REJECTED by 25x the band), both endpoints of the
 # interpolant exactly, dL/dv against central differences of a Float64
 # reference, and the property that matters most — the 26 padded action columns
-# get EXACTLY zero gradient, with a control proving the real ones do not.
+# get EXACTLY zero gradient, with a control proving the real ones do not,
+# and the same for timesteps past the end of an episode — including that
+# they leave the DENOMINATOR too, which is the half that silently varies
+# the effective learning rate with distance from an episode boundary.
 tests/deep_agents/smolvla/test_flow_loss.mojo
 
 # V2 — one whole training step: loss -> action_out -> the expert's sixteen

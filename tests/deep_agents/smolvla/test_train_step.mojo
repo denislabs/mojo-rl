@@ -309,10 +309,15 @@ def main() raises:
     var x_t = Tensor.alloc(XN)
     var u_t = Tensor.alloc(XN)
     build_xt_ut["cpu", B, CHUNK * ADIM](noise, acts, times_t, x_t, u_t, None)
+    # Every timestep inside its episode — this fixture has no episode edge.
+    var valid = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        valid.data[i] = Scalar[DT](1.0)
+    comptime N_VALID = B * CHUNK
     st.set_times["cpu"](tl, None)
 
     # ── [1] one step ─────────────────────────────────────────────────────
-    var l0 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, None)
+    var l0 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None)
     print("  [1] loss", l0)
     assert_true(l0 > 0.0, "a zero loss means the step did not run")
 
@@ -337,20 +342,20 @@ def main() raises:
             var keep = _pget(which, t, ai, ti, to, ao)
             _pset(which, t, Scalar[DT](Float64(keep) + FD_H), ai, ti, to, ao)
             var ap = Float64(_pget(which, t, ai, ti, to, ao))
-            var lp = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t,
-                                      None)
+            var lp = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid,
+                                      N_VALID, None)
             _pset(which, t, Scalar[DT](Float64(keep) - FD_H), ai, ti, to, ao)
             var am = Float64(_pget(which, t, ai, ti, to, ao))
-            var lm = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t,
-                                      None)
+            var lm = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid,
+                                      N_VALID, None)
             _pset(which, t, Scalar[DT](Float64(keep) + FD_H2), ai, ti, to, ao)
             var ap2 = Float64(_pget(which, t, ai, ti, to, ao))
-            var lp2 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t,
-                                       None)
+            var lp2 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid,
+                                       N_VALID, None)
             _pset(which, t, Scalar[DT](Float64(keep) - FD_H2), ai, ti, to, ao)
             var am2 = Float64(_pget(which, t, ai, ti, to, ao))
-            var lm2 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t,
-                                       None)
+            var lm2 = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid,
+                                       N_VALID, None)
             _pset(which, t, keep, ai, ti, to, ao)
             var d1 = (lp - lm) / (ap - am)
             var d2 = (lp2 - lm2) / (ap2 - am2)
@@ -422,9 +427,13 @@ def main() raises:
         ug.data[i] = u_t.data[i]
     xg.upload(d)
     ug.upload(d)
+    var validg = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        validg.data[i] = Scalar[DT](1.0)
+    validg.upload(d)
     stg.set_times["gpu"](tl, Optional(d))
-    var lg = stg.run["gpu", P](eg, cg, deng, aig, tig, tog, aog, xg, ug,
-                               Optional(d))
+    var lg = stg.run["gpu", P](eg, cg, deng, aig, tig, tog, aog, xg, ug, validg,
+                               N_VALID, Optional(d))
     d.synchronize()
     print("  [4] GPU loss", lg, " vs CPU", l0, " diff", abs(lg - l0))
     assert_true(

@@ -232,6 +232,11 @@ def main() raises:
     var x_t = Tensor.alloc(XN)
     var u_t = Tensor.alloc(XN)
     build_xt_ut["cpu", B, CHUNK * ADIM](noise, acts, times_t, x_t, u_t, None)
+    # Every timestep inside its episode — this fixture has no episode edge.
+    var valid = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        valid.data[i] = Scalar[DT](1.0)
+    comptime N_VALID = B * CHUNK
     st.set_times["cpu"](tl, None)
 
     var before = _snapshot(e, ai, ti, to, ao)
@@ -244,7 +249,7 @@ def main() raises:
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
             e, ai, ti, to, ao, None
         )
-        var loss = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, None)
+        var loss = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None)
         if s == 0:
             first = loss
         last = loss
@@ -347,7 +352,8 @@ def main() raises:
             e2, ai2, ti2, to2, ao2, None
         )
         var loss = st2.run["cpu", P](
-            e2, c2, den2, ai2, ti2, to2, ao2, x_t, u_t, None
+            e2, c2, den2, ai2, ti2, to2, ao2, x_t, u_t, valid, N_VALID,
+            None
         )
         if s == 0:
             f0 = loss
@@ -391,7 +397,7 @@ def main() raises:
             vp.data[i] = Scalar[DT](((i * 17 + l * 5) % 11) - 5) * 0.09
         c3.write_prefix["cpu"](l, kp, vp)
     st3.set_times["cpu"](tl, None)
-    _ = st3.run["cpu", P](e3, c3, den3, ai3, ti3, to3, ao3, x_t, u_t, None)
+    _ = st3.run["cpu", P](e3, c3, den3, ai3, ti3, to3, ao3, x_t, u_t, valid, N_VALID, None)
 
     var live = 0
     for g in range(N_GROUPS):
@@ -453,6 +459,10 @@ def main() raises:
         ug.data[i] = u_t.data[i]
     xg.upload(d)
     ug.upload(d)
+    var validg = Tensor.alloc(B * CHUNK)
+    for i in range(B * CHUNK):
+        validg.data[i] = Scalar[DT](1.0)
+    validg.upload(d)
     stg.set_times["gpu"](tl, Optional(d))
 
     # the CPU reference for the SAME ten steps, from a fresh network
@@ -481,7 +491,8 @@ def main() raises:
             eg, aig, tig, tog, aog, Optional(d)
         )
         lg = stg.run["gpu", P](
-            eg, cg, deng, aig, tig, tog, aog, xg, ug, Optional(d)
+            eg, cg, deng, aig, tig, tog, aog, xg, ug, validg, N_VALID,
+            Optional(d)
         )
         adam_step_trainables["gpu", L, EW, EFF, W, KVW, ADIM](
             og, eg, aig, tig, tog, aog, Optional(d)
@@ -490,7 +501,7 @@ def main() raises:
             e4, ai4, ti4, to4, ao4, None
         )
         lc = st4.run["cpu", P](e4, c4, den4, ai4, ti4, to4, ao4, x_t, u_t,
-                               None)
+                               valid, N_VALID, None)
         adam_step_trainables["cpu", L, EW, EFF, W, KVW, ADIM](
             oc, e4, ai4, ti4, to4, ao4, None
         )

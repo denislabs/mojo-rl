@@ -180,9 +180,17 @@ struct SmolVLATrainStep[
         mut action_out: Linear[Self.EW, Self.ADIM],
         mut x_t: Tensor,
         mut u_t: Tensor,
+        mut valid: Tensor,
+        n_valid: Int,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Float64:
         """One step. Returns the loss; call `set_times` first.
+
+        `valid` is `[B, CHUNK]` and `n_valid` its count of 1s — the timesteps
+        that are inside their episode. A chunk sampled near an episode's end
+        has its tail CLAMPED to the last real action by the dataset, and
+        training on that teaches the model that episodes end by holding
+        still.
 
         ⚠ Returning the loss SYNCHRONISES — `mean_err` brings the per-element
         errors back to the host. That is one drain per training step, which is
@@ -222,8 +230,8 @@ struct SmolVLATrainStep[
         flow_mse[
             target, Self.B, Self.CHUNK, Self.ADIM, Self.ADIM_REAL
         ](
-            self.pool[Self.V], u_t, self.pool[Self.GV], self.pool[Self.ERR],
-            ctx,
+            self.pool[Self.V], u_t, valid, self.pool[Self.GV],
+            self.pool[Self.ERR], n_valid, ctx,
         )
 
         # ── backward ─────────────────────────────────────────────────────
@@ -262,4 +270,4 @@ struct SmolVLATrainStep[
 
         return mean_err[
             target, Self.B, Self.CHUNK, Self.ADIM, Self.ADIM_REAL
-        ](self.pool[Self.ERR], ctx)
+        ](self.pool[Self.ERR], n_valid, ctx)

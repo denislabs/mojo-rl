@@ -32,6 +32,22 @@ contributes gradient. The padded columns must receive EXACTLY zero.
 ⚠ **`x_t` still spans all 32 columns**, because `action_in_proj` takes 32. Only
 the LOSS is truncated. Truncating `x_t` too would change the network's input.
 
+⚠ **And the loss is masked per TIMESTEP as well as per column.** A chunk that
+runs off the end of its episode is not short — `dataset_reader` CLAMPS the
+query index, so those slots hold the last real action repeated, and marks them
+in `action_is_pad`. Training on them teaches the model that every episode ends
+by holding still. The reference zeroes those timesteps AND removes them from
+the denominator (`losses.sum() / num_valid`); doing only the first would leave
+the loss scaled by the fraction of valid steps, which changes the effective
+learning rate with how close the sample sits to an episode boundary.
+
+`valid` is `[B, CHUNK]`, 1.0 or 0.0, and `n_valid` is the count of 1s. The
+caller builds both because the caller is what knows where the episode ended.
+
+⚠ Where the reference does `num_valid.clamp_min(1)`, this RAISES. A batch with
+no valid timestep at all is a broken sampler, and a loss quietly divided by 1
+is a number that looks like a loss.
+
 ## The time distribution
 
 `Beta(alpha, 1)` has density `alpha * x^(alpha-1)` and therefore CDF `x^alpha`,
@@ -154,20 +170,26 @@ def build_xt_ut[
 # ── the loss ─────────────────────────────────────────────────────────────
 
 
-def _mse_kernel[B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int, N: Int](
+def _mse_kernel[B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int](
     v_t: LayoutTensor[DT, Layout.row_major(B, CHUNK * ADIM), MutAnyOrigin],
     u_t: LayoutTensor[DT, Layout.row_major(B, CHUNK * ADIM), MutAnyOrigin],
+    valid: LayoutTensor[DT, Layout.row_major(B, CHUNK), MutAnyOrigin],
     grad_v: LayoutTensor[DT, Layout.row_major(B, CHUNK * ADIM), MutAnyOrigin],
     err: LayoutTensor[DT, Layout.row_major(B, CHUNK * ADIM), MutAnyOrigin],
+    two_over_n: Scalar[DT],
 ):
     var i = Int(global_idx.x)
     if i >= B * CHUNK * ADIM:
         return
     var d = i % ADIM
-    if d >= ADIM_REAL:
-        # ⚠ A padded column. EXACTLY zero, not a small number: `actions` is 0
-        # there, so u_t is the raw noise and any gradient at all is training
-        # the network to predict noise.
+    var bt = i // ADIM
+    # ⚠ A padded column, or a timestep past the end of its episode. EXACTLY
+    # zero, not a small number: for a padded column `actions` is 0 so u_t is
+    # raw noise, and for a padded timestep the action is the last real one
+    # repeated.
+    if d >= ADIM_REAL or rebind[Scalar[DT]](
+        valid.ptr[unsafe_offset=bt]
+    ) == Scalar[DT](0):
         grad_v.ptr[unsafe_offset=i] = Scalar[DT](0)
         err.ptr[unsafe_offset=i] = Scalar[DT](0)
         return
@@ -175,16 +197,18 @@ def _mse_kernel[B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int, N: Int](
         u_t.ptr[unsafe_offset=i]
     )
     err.ptr[unsafe_offset=i] = e * e
-    grad_v.ptr[unsafe_offset=i] = Scalar[DT](2.0 / Float64(N)) * e
+    grad_v.ptr[unsafe_offset=i] = two_over_n * e
 
 
 def flow_mse[
     target: StaticString, B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int
 ](
-    mut v_t: Tensor, mut u_t: Tensor, mut grad_v: Tensor, mut err: Tensor,
-    ctx: Optional[DeviceContext] = None,
+    mut v_t: Tensor, mut u_t: Tensor, mut valid: Tensor, mut grad_v: Tensor,
+    mut err: Tensor, n_valid: Int, ctx: Optional[DeviceContext] = None,
 ) raises:
     """Writes `grad_v` = dL/d(v_t) and `err` = the per-element squared errors.
+
+    `valid` is `[B, CHUNK]` (1.0 / 0.0) and `n_valid` counts its 1s.
 
     ⚠ Split from the scalar so a training step can skip the reduction: reading
     the loss means bringing `err` back to the host, and that is a full pipeline
@@ -194,31 +218,45 @@ def flow_mse[
         "flow_mse: ADIM_REAL is the robot's real action width and cannot"
         " exceed the padded ADIM"
     )
-    comptime N = B * CHUNK * ADIM_REAL
     comptime TOT = B * CHUNK * ADIM
+    if n_valid <= 0:
+        raise Error(
+            "flow_mse: n_valid is 0 — every timestep in the batch is padding."
+            " The reference clamps this to 1 and returns a number; that number"
+            " is not a loss, so this raises instead."
+        )
+    if n_valid > B * CHUNK:
+        raise Error(
+            "flow_mse: n_valid " + String(n_valid) + " exceeds B*CHUNK "
+            + String(B * CHUNK)
+        )
+    var two_over_n = Scalar[DT](2.0 / Float64(n_valid * ADIM_REAL))
     comptime if target == "cpu":
         grad_v.ensure(TOT)
         err.ensure(TOT)
         for i in range(TOT):
             var d = i % ADIM
-            if d >= ADIM_REAL:
+            var bt = i // ADIM
+            if d >= ADIM_REAL or valid.data[bt] == Scalar[DT](0):
                 grad_v.data[i] = Scalar[DT](0)
                 err.data[i] = Scalar[DT](0)
             else:
                 var e = v_t.data[i] - u_t.data[i]
                 err.data[i] = e * e
-                grad_v.data[i] = Scalar[DT](2.0 / Float64(N)) * e
+                grad_v.data[i] = two_over_n * e
     else:
         var c = ctx.value()
         grad_v.ensure_gpu(c, TOT)
         err.ensure_gpu(c, TOT)
         c.enqueue_function[
-            _mse_kernel[B, CHUNK, ADIM, ADIM_REAL, N]
+            _mse_kernel[B, CHUNK, ADIM, ADIM_REAL]
         ](
             v_t.lt["gpu", Layout.row_major(B, CHUNK * ADIM)](),
             u_t.lt["gpu", Layout.row_major(B, CHUNK * ADIM)](),
+            valid.lt["gpu", Layout.row_major(B, CHUNK)](),
             grad_v.lt["gpu", Layout.row_major(B, CHUNK * ADIM)](),
             err.lt["gpu", Layout.row_major(B, CHUNK * ADIM)](),
+            two_over_n,
             grid_dim=(TOT + TPB - 1) // TPB,
             block_dim=TPB,
         )
@@ -226,19 +264,23 @@ def flow_mse[
 
 def mean_err[
     target: StaticString, B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int
-](mut err: Tensor, ctx: Optional[DeviceContext] = None) raises -> Float64:
+](
+    mut err: Tensor, n_valid: Int, ctx: Optional[DeviceContext] = None
+) raises -> Float64:
     """The scalar loss. ⚠ SYNCHRONISES on GPU — call it when you want to log.
 
-    Divides by `B*CHUNK*ADIM_REAL`, the count of terms that are NOT structurally
-    zero, matching `losses[:, :, :real].mean()`. Dividing by the padded total
-    would report a loss 6/32 of the truth and, worse, make runs at different
-    `ADIM` incomparable.
+    Divides by `n_valid * ADIM_REAL`, the count of terms that are not
+    structurally zero, matching `losses.sum() / num_valid`. Dividing by the
+    padded total would report a loss scaled by the fraction of real columns
+    and real timesteps — which varies per batch, so two batches' losses would
+    not be comparable and neither would two runs.
     """
     comptime TOT = B * CHUNK * ADIM
-    comptime N = B * CHUNK * ADIM_REAL
+    if n_valid <= 0:
+        raise Error("mean_err: n_valid is 0")
     comptime if target != "cpu":
         err.download(ctx.value())
     var acc = 0.0
     for i in range(TOT):
         acc += Float64(err.data[i])
-    return acc / Float64(N)
+    return acc / Float64(n_valid * ADIM_REAL)
