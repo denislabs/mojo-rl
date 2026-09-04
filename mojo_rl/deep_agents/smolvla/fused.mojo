@@ -299,6 +299,10 @@ struct SmolVLADenoise[
     # the same value written another way, so every container in the loop must
     # name the SAME comptime expression. `SMOLLM_KV_W` is that one definition.
     KVW: Int = SMOLLM_KV_W,
+    # V2. False is V1's driver, unchanged: one scratch pool, reused by all
+    # sixteen layers, nothing kept. True keeps a pool PER LAYER, so the
+    # activations a backward pass needs survive the forward that made them.
+    RECORD: Bool = False,
 ](Movable):
     """One denoising step: the 50-token action suffix through the 16 expert
     layers, reading the prefix K/V the prefill left behind.
@@ -389,9 +393,23 @@ struct SmolVLADenoise[
     comptime CAT = 18
     comptime GLU = 19
     comptime DOWN = 20
-    comptime N_SLOTS = 21
+    comptime N_BASE = 21
+    # ⚠ Not a slot of its own when RECORD is off: the layer's output slot IS
+    # its input slot, which is what V1 does today (the second residual writes
+    # over X). Aliasing them costs the recording nothing and keeps inference
+    # free of the extra slab AND of the copy below — the residual keeps
+    # writing straight into X. One call site, one destination expression.
+    comptime XO: Int = Self.N_BASE if Self.RECORD else Self.X
+    comptime N_SLOTS: Int = (
+        Self.N_BASE + 1 if Self.RECORD else Self.N_BASE
+    )
+    # Pack `l` holds layer `l`'s activations, and pack LAYERS the value the
+    # final norm consumes. Off, the list is one pack and every layer reuses
+    # it — byte-for-byte V1.
+    comptime N_POOLS: Int = Self.LAYERS + 1 if Self.RECORD else 1
+    comptime LAST: Int = Self.LAYERS if Self.RECORD else 0
 
-    var pool: TensorPack[Self.N_SLOTS]
+    var pools: List[TensorPack[Self.N_SLOTS]]
 
     def __init__(out self):
         self.rope_q_self = Self.RoPEQSelf()
@@ -406,7 +424,9 @@ struct SmolVLADenoise[
         self.glu = Self.Glu()
         self.glu_cat = Self.GluCat()
         self.res = Self.Res()
-        self.pool = TensorPack[Self.N_SLOTS]()
+        self.pools = List[TensorPack[Self.N_SLOTS]]()
+        for _ in range(Self.N_POOLS):
+            self.pools.append(TensorPack[Self.N_SLOTS]())
 
     def __init__(out self, *, deinit move: Self):
         self.rope_q_self = move.rope_q_self^
@@ -421,7 +441,7 @@ struct SmolVLADenoise[
         self.glu = move.glu^
         self.glu_cat = move.glu_cat^
         self.res = move.res^
-        self.pool = move.pool^
+        self.pools = move.pools^
 
     @staticmethod
     def make[
@@ -468,146 +488,172 @@ struct SmolVLADenoise[
         comptime XN = Self.B * Self.XN
 
         comptime if target == "cpu":
-            self.pool[Self.X].ensure(XN)
+            self.pools[0][Self.X].ensure(XN)
             for i in range(XN):
-                self.pool[Self.X].data[i] = x.data[i]
+                self.pools[0][Self.X].data[i] = x.data[i]
         else:
             var c = ctx.value()
-            self.pool[Self.X].ensure_gpu(c, XN)
+            self.pools[0][Self.X].ensure_gpu(c, XN)
             c.enqueue_copy(
-                self.pool[Self.X].dev.value().create_sub_buffer[DT](0, XN),
+                self.pools[0][Self.X].dev.value().create_sub_buffer[DT](0, XN),
                 x.dev.value().create_sub_buffer[DT](0, XN),
             )
 
         for i in range(Self.LAYERS):
             var is_self = (i % Self.SELF_EVERY) == 0
             var li = i // Self.SELF_EVERY
+            # ⚠ ONE borrow of `pools`, held for the whole layer body. Taking a
+            # second (`self.pools[pi + 1]`) alongside it is two mutable borrows
+            # of the same list and Mojo rejects it — which is why the hand-off
+            # below goes through raw pointers / sub-buffers instead.
+            var pi = i if Self.RECORD else 0
+            ref PK = self.pools[pi]
 
             # ── attention branch ─────────────────────────────────────────
             if is_self:
                 ref L = expert.self_layers[li]
                 L.input_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.X]), self.pool[Self.H], ctx
+                    TensorRefs[1](PK[Self.X]), PK[Self.H], ctx
                 )
                 L.q.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.Q], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.Q], ctx
                 )
                 L.k.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.KS], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.KS], ctx
                 )
                 L.v.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.VS], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.VS], ctx
                 )
                 # absolute positions: the suffix sits after the prefix
                 self.rope_q_self.forward[target, Self.B](
-                    TensorRefs[1](self.pool[Self.Q]), self.pool[Self.QR], ctx
+                    TensorRefs[1](PK[Self.Q]), PK[Self.QR], ctx
                 )
                 self.rope_k_self.forward[target, Self.B](
-                    TensorRefs[1](self.pool[Self.KS]), self.pool[Self.KRS], ctx
+                    TensorRefs[1](PK[Self.KS]), PK[Self.KRS], ctx
                 )
                 # [prefix; suffix] into SCRATCH — the cache is not touched.
                 cache.build_scratch[target](
-                    i, self.pool[Self.KRS], self.pool[Self.VS], ctx
+                    i, PK[Self.KRS], PK[Self.VS], ctx
                 )
                 self.rep_full_k.forward[target, Self.B](
-                    TensorRefs[1](cache.sk), self.pool[Self.KXF], ctx
+                    TensorRefs[1](cache.sk), PK[Self.KXF], ctx
                 )
                 self.rep_full_v.forward[target, Self.B](
-                    TensorRefs[1](cache.sv), self.pool[Self.VXF], ctx
+                    TensorRefs[1](cache.sv), PK[Self.VXF], ctx
                 )
                 self.attn_self.forward[target, Self.B](
-                    self.pool[Self.QR], self.pool[Self.KXF],
-                    self.pool[Self.VXF], self.pool[Self.ATT], ctx,
+                    PK[Self.QR], PK[Self.KXF],
+                    PK[Self.VXF], PK[Self.ATT], ctx,
                 )
                 L.o.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.ATT]), self.pool[Self.AO], ctx
+                    TensorRefs[1](PK[Self.ATT]), PK[Self.AO], ctx
                 )
             else:
                 ref L = expert.cross_layers[li]
                 L.input_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.X]), self.pool[Self.H], ctx
+                    TensorRefs[1](PK[Self.X]), PK[Self.H], ctx
                 )
                 L.q.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.Q], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.Q], ctx
                 )
                 # ⚠ re-based to 0, unlike the self layers
                 self.rope_q_cross.forward[target, Self.B](
-                    TensorRefs[1](self.pool[Self.Q]), self.pool[Self.QR], ctx
+                    TensorRefs[1](PK[Self.Q]), PK[Self.QR], ctx
                 )
                 # k/v are the VLM's CACHED prefix K/V through [320,320] projs
                 cache.read_layer_into[target](
-                    i, self.pool[Self.KP], self.pool[Self.VP], ctx
+                    i, PK[Self.KP], PK[Self.VP], ctx
                 )
                 L.k.forward[target, TOK_P](
-                    TensorRefs[1](self.pool[Self.KP]), self.pool[Self.KS], ctx
+                    TensorRefs[1](PK[Self.KP]), PK[Self.KS], ctx
                 )
                 L.v.forward[target, TOK_P](
-                    TensorRefs[1](self.pool[Self.VP]), self.pool[Self.VS], ctx
+                    TensorRefs[1](PK[Self.VP]), PK[Self.VS], ctx
                 )
                 self.rep_pre_k.forward[target, Self.B](
-                    TensorRefs[1](self.pool[Self.KS]), self.pool[Self.KXP], ctx
+                    TensorRefs[1](PK[Self.KS]), PK[Self.KXP], ctx
                 )
                 self.rep_pre_v.forward[target, Self.B](
-                    TensorRefs[1](self.pool[Self.VS]), self.pool[Self.VXP], ctx
+                    TensorRefs[1](PK[Self.VS]), PK[Self.VXP], ctx
                 )
                 self.attn_cross.forward[target, Self.B](
-                    self.pool[Self.QR], self.pool[Self.KXP],
-                    self.pool[Self.VXP], self.pool[Self.ATT], ctx,
+                    PK[Self.QR], PK[Self.KXP],
+                    PK[Self.VXP], PK[Self.ATT], ctx,
                 )
                 L.o.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.ATT]), self.pool[Self.AO], ctx
+                    TensorRefs[1](PK[Self.ATT]), PK[Self.AO], ctx
                 )
 
             self.res.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.X], self.pool[Self.AO]),
-                self.pool[Self.X2], ctx,
+                TensorRefs[2](PK[Self.X], PK[Self.AO]),
+                PK[Self.X2], ctx,
             )
 
             # ── MLP branch (identical for both kinds) ────────────────────
             if is_self:
                 ref L = expert.self_layers[li]
                 L.post_attention_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.X2]), self.pool[Self.H], ctx
+                    TensorRefs[1](PK[Self.X2]), PK[Self.H], ctx
                 )
                 L.mlp.gate.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.GATE], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.GATE], ctx
                 )
                 L.mlp.up.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.UP], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.UP], ctx
                 )
             else:
                 ref L = expert.cross_layers[li]
                 L.post_attention_layernorm.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.X2]), self.pool[Self.H], ctx
+                    TensorRefs[1](PK[Self.X2]), PK[Self.H], ctx
                 )
                 L.mlp.gate.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.GATE], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.GATE], ctx
                 )
                 L.mlp.up.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.H]), self.pool[Self.UP], ctx
+                    TensorRefs[1](PK[Self.H]), PK[Self.UP], ctx
                 )
             self.glu_cat.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.UP], self.pool[Self.GATE]),
-                self.pool[Self.CAT], ctx,
+                TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
+                PK[Self.CAT], ctx,
             )
             self.glu.forward[target, Self.B](
-                TensorRefs[1](self.pool[Self.CAT]), self.pool[Self.GLU], ctx
+                TensorRefs[1](PK[Self.CAT]), PK[Self.GLU], ctx
             )
             if is_self:
                 expert.self_layers[li].mlp.down.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.GLU]), self.pool[Self.DOWN],
+                    TensorRefs[1](PK[Self.GLU]), PK[Self.DOWN],
                     ctx,
                 )
             else:
                 expert.cross_layers[li].mlp.down.forward[target, TOK_S](
-                    TensorRefs[1](self.pool[Self.GLU]), self.pool[Self.DOWN],
+                    TensorRefs[1](PK[Self.GLU]), PK[Self.DOWN],
                     ctx,
                 )
             self.res.forward[target, Self.B](
-                TensorRefs[2](self.pool[Self.X2], self.pool[Self.DOWN]),
-                self.pool[Self.X], ctx,
+                TensorRefs[2](PK[Self.X2], PK[Self.DOWN]),
+                PK[Self.XO], ctx,
             )
 
+            # Hand the running activation to the next layer's pack. Comptime-
+            # dead when RECORD is off, where XO IS X and there is nowhere to
+            # hand it to — V1 pays neither the slab nor the copy.
+            comptime if Self.RECORD:
+                var pn = i + 1
+                comptime if target == "cpu":
+                    self.pools[pn][Self.X].ensure(XN)
+                    var dst = self.pools[pn][Self.X].data.unsafe_ptr()
+                    var src = self.pools[pi][Self.XO].data.unsafe_ptr()
+                    for t in range(XN):
+                        dst[unsafe_offset=t] = src[unsafe_offset=t]
+                else:
+                    var c2 = ctx.value()
+                    self.pools[pn][Self.X].ensure_gpu(c2, XN)
+                    var sb = self.pools[pi][Self.XO].dev.value(
+                    ).create_sub_buffer[DT](0, XN)
+                    var db = self.pools[pn][Self.X].dev.value(
+                    ).create_sub_buffer[DT](0, XN)
+                    c2.enqueue_copy(db, sb)
+
         expert.norm.forward[target, TOK_S](
-            TensorRefs[1](self.pool[Self.X]), out, ctx
+            TensorRefs[1](self.pools[Self.LAST][Self.X]), out, ctx
         )

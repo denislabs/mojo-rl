@@ -40,6 +40,13 @@ tests/deep_agents/smolvla/test_block_attention_vjp.mojo
 # the crop bug does not crash, it quietly changes the chunk.
 tests/deep_agents/smolvla/test_denoise.mojo
 
+# V2 — the same driver with RECORD on: one pool per layer instead of one pool.
+# Demands the output be BIT-identical to the non-recording run (the tape must
+# be a passive observer) and, separately, that the tape is not empty — a
+# recording that saved nothing would pass the first check perfectly. Carries a
+# measured ablation that does exactly that.
+tests/deep_agents/smolvla/test_denoise_tape.mojo
+
 # Step 7 — the flow-matching Euler schedule, pinned analytically: with a constant
 # velocity the integral is exactly -c, which catches a flipped dt, a wrong step
 # count and a wrong magnitude at once. Plus the per-token concat.
