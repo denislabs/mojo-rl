@@ -1935,7 +1935,20 @@ def _detect_contacts_env[
         var sa_type = Int(
             rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_TYPE])
         )
+        # A geom with contype and conaffinity both zero collides with nothing
+        # (`filterBitmask`, engine_collision_driver.c:535): skip it before the
+        # pair loop, as the SAP sweep does (`broadphase_sap.mojo`, same rule).
+        if (
+            Int(rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_CONTYPE])) == 0
+            and Int(rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_CONAFFINITY])) == 0
+        ):
+            continue
         for sb in range(sa + 1, ngeom):
+            if (
+                Int(rebind[Scalar[DTYPE]](geoms[sb, GEOM_IDX_CONTYPE])) == 0
+                and Int(rebind[Scalar[DTYPE]](geoms[sb, GEOM_IDX_CONAFFINITY])) == 0
+            ):
+                continue
             if num_contacts >= max_contacts:
                 # ⚠ ORDERED BEFORE THE EARLY EXIT TOO — see the SAP twin.
                 sort_contacts_mujoco_order[DTYPE](

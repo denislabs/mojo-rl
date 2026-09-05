@@ -1,6 +1,11 @@
 """MuJoCo per-phase cost + work counts — the reference side of PERFORMANCE.md.
 
-    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup]
+    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup] [pose] [ctrl]
+
+`pose` is a file written by `benchmarks/physics3d_cpu/harness.mojo`'s
+`write_pose` (the task reset our side starts from; the `TASK_POSE` rows of
+`scripts/physics3d_cpu_vs_mujoco.sh`), applied after the reset so both sides
+step the same scene.
 
 Answers: of MuJoCo's step, how much is collision (broad / mid / narrow) vs
 constraint build vs solve vs dynamics, and how much WORK it does getting there
@@ -30,11 +35,30 @@ N = int(sys.argv[2]) if len(sys.argv) > 2 else 20000
 KEY = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 
 m = mujoco.MjModel.from_xml_path(XML)
+# The pose file's BODY records place the jointless bodies the task reset moved
+# (the bricks); like `physics3d_cpu_vs_mujoco.py`, that goes into the MODEL
+# before the data exists.
+POSE = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
+_pose = None
+if POSE is not None:
+    sys.path.insert(0, "benchmarks")
+    from physics3d_cpu_vs_mujoco_pose import load_pose, apply_pose
+    _pose = load_pose(POSE)
+    for b, p, q in _pose["bodies"]:
+        if 0 < b < m.nbody and m.body_jntnum[b] == 0:
+            m.body_pos[b] = p
+            m.body_quat[b] = q
 d = mujoco.MjData(m)
 if KEY is not None:
     mujoco.mj_resetDataKeyframe(m, d, m.key(KEY).id)
 else:
     mujoco.mj_resetData(m, d)
+if _pose is not None:
+    apply_pose(m, d, _pose)
+# `ctrl` on every actuator (the twin scripts step with 0.1 so the arm moves;
+# the default here stays 0 so the §10 numbers are reproducible).
+CTRL = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
+d.ctrl[:] = CTRL
 
 print(f"model  nq={m.nq} nv={m.nv} nbody={m.nbody} ngeom={m.ngeom} "
       f"nmesh={m.nmesh} nmeshvert={m.nmeshvert}")

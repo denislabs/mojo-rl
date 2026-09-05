@@ -22,6 +22,7 @@ NGEOM >= SAP_THRESHOLD dispatches to SAP, else to `detect_contacts`.
 The fields integrators are NOT rewired to auto here (SAP emission ORDER
 differs from O(N^2), which would shift existing bit-exact gates)."""
 
+from std.time import perf_counter_ns
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
@@ -194,6 +195,15 @@ from .contact_detection import (
 comptime SAP_THRESHOLD: Int = 16
 
 comptime SAP_TPB: Int = 64
+
+# ⚠ A STAGE PROBE FOR THE CPU NARROW PHASE, off and free by default (the twin
+# of `newton_solve._CPU_PROBE` / `euler._EULER_PROBE`). On, every call of
+# `_detect_contacts_sap_env` prints one `[cprobe]` line: nanoseconds before
+# the pair loop (`broad`), the pair loop's own overhead (`other`: filters,
+# AABB and bounding-sphere rejects), then `<kind> ns calls` per narrow-phase
+# routine. Every timer block sits at the indentation of the statement it
+# wraps and holds only timer lines (PERFORMANCE.md §13.16).
+comptime _COLL_PROBE: Bool = False
 
 
 def _aabb_half_extents[
@@ -439,6 +449,40 @@ def _detect_contacts_sap_env[
     var nbody = dims.get_nbody()
     var njoint = dims.get_njoint()
     var max_contacts = dims.get_max_contacts()
+    # `_COLL_PROBE` accumulators (compiled out when the flag is False).
+    var _c_t0: Int = 0
+    var _c_start: Int = 0
+    var _c_loop0: Int = 0
+    var _c_ppair: Int = 0
+    var _n_ppair: Int = 0
+    var _c_pparm: Int = 0
+    var _n_pparm: Int = 0
+    var _n_pairs: Int = 0
+    var _n_aabb: Int = 0
+    var _c_pcyl: Int = 0
+    var _n_pcyl: Int = 0
+    var _c_pbox: Int = 0
+    var _n_pbox: Int = 0
+    var _c_pmesh: Int = 0
+    var _n_pmesh: Int = 0
+    var _c_hf: Int = 0
+    var _n_hf: Int = 0
+    var _c_ss: Int = 0
+    var _n_ss: Int = 0
+    var _c_cc: Int = 0
+    var _n_cc: Int = 0
+    var _c_cb: Int = 0
+    var _n_cb: Int = 0
+    var _c_bb: Int = 0
+    var _n_bb: Int = 0
+    var _c_gjk: Int = 0
+    var _n_gjk: Int = 0
+    var _c_mcn: Int = 0
+    var _n_mcn: Int = 0
+    var _c_mccd: Int = 0
+    var _n_mccd: Int = 0
+    comptime if _COLL_PROBE:
+        _c_start = Int(perf_counter_ns())
     var ngeom = dims.get_ngeom()
     var nexclude = dims.get_nexclude()
     var nmesh_verts = dims.get_nmesh_verts()
@@ -904,6 +948,8 @@ def _detect_contacts_sap_env[
                 # See `_plane_cylinder_contacts` in contact_detection.mojo;
                 # shared with the naive path so the two cannot drift, which
                 # is exactly how the ellipsoid branch below went missing.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _plane_cylinder_contacts[DTYPE, BATCH](
                     env,
                     gj_body,
@@ -925,6 +971,9 @@ def _detect_contacts_sap_env[
                     num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_pcyl += Int(perf_counter_ns()) - _c_t0
+                    _n_pcyl += 1
 
             elif gj_type == GEOM_ELLIPSOID:
                 # ⚠ ADDED 2026-08-03. This branch did not exist, and
@@ -1002,6 +1051,8 @@ def _detect_contacts_sap_env[
                 # Up to FOUR corners, not one — see `_plane_box_contacts` and
                 # task #42. ⚠ This path writes -1 for the world body where
                 # `detect_contacts` writes 0, hence the explicit argument.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _plane_box_contacts[DTYPE](
                     env,
                     gj_body,
@@ -1022,6 +1073,9 @@ def _detect_contacts_sap_env[
                     num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_pbox += Int(perf_counter_ns()) - _c_t0
+                    _n_pbox += 1
 
             elif gj_type == GEOM_MESH:
                 # Plane-mesh. Was a verbatim copy of the O(N^2) path's vertex
@@ -1037,6 +1091,8 @@ def _detect_contacts_sap_env[
                 # are gated bit-exactly elsewhere, so they are passed as
                 # parameters rather than quietly aligned with the other path.
                 comptime if may_exist[D.NMESH_VERTS]():
+                    comptime if _COLL_PROBE:
+                        _c_t0 = Int(perf_counter_ns())
                     _plane_mesh_contacts[
                         DTYPE,
                         -1, True, False](
@@ -1063,6 +1119,9 @@ def _detect_contacts_sap_env[
                         num_contacts,
                         cgp,
                     )
+                    comptime if _COLL_PROBE:
+                        _c_pmesh += Int(perf_counter_ns()) - _c_t0
+                        _n_pmesh += 1
 
             _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
@@ -1077,9 +1136,26 @@ def _detect_contacts_sap_env[
     var sap_n = 0
     for g in range(ngeom):
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
-        if gt != GEOM_PLANE:
-            sap_idx[sap_n] = g
-            sap_n += 1
+        if gt == GEOM_PLANE:
+            continue
+        # ⚠ A GEOM THAT CANNOT COLLIDE NEVER ENTERS THE SWEEP. MuJoCo's
+        # broadphase walks only bodies that `canCollide`
+        # (engine_collision_driver.c:320) and `filterBitmask` (:535) rejects a
+        # pair unless `contype_1 & conaffinity_2 || contype_2 & conaffinity_1`;
+        # a geom with both words zero fails against EVERY partner. We used to
+        # sweep all of them and reject each pair after the AABB test, the
+        # predefined-pair lookup and the body filter: on reassemble3 (267
+        # geoms, 120 collidable) that was 10,600 sweep iterations and 2,100
+        # AABB-passing pairs per step for 79 real candidates, 180 µs of a
+        # 200 µs collision phase (PERFORMANCE.md §13.18). Exact: no contact
+        # can come from such a geom, so the contact set and its order are
+        # untouched.
+        var g_ct = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONTYPE]))
+        var g_ca = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONAFFINITY]))
+        if g_ct == 0 and g_ca == 0:
+            continue
+        sap_idx[sap_n] = g
+        sap_n += 1
 
     # 4b. Insertion sort by aabb_min_x.
     for i in range(1, sap_n):
@@ -1098,6 +1174,8 @@ def _detect_contacts_sap_env[
     # cosmetic one — see the canonicalisation inside the `j` loop. Only the
     # AABB tests and the `break` may read `si`/`sj`; everything downstream of
     # them reads `gi`/`gj`.
+    comptime if _COLL_PROBE:
+        _c_loop0 = Int(perf_counter_ns())
     for i in range(sap_n):
         var si = sap_idx[i]
         var si_max_x = aabb_max_x[si]
@@ -1118,6 +1196,8 @@ def _detect_contacts_sap_env[
                     num_contacts
                 )
                 return
+            comptime if _COLL_PROBE:
+                _n_pairs += 1
             var sj = sap_idx[j]
 
             if aabb_min_x[sj] > si_max_x:
@@ -1133,6 +1213,8 @@ def _detect_contacts_sap_env[
                 or aabb_min_z[si] > aabb_max_z[sj]
             ):
                 continue
+            comptime if _COLL_PROBE:
+                _n_aabb += 1
 
             # ── THE PAIR IN MuJoCo'S ORDER — `pushPairArena` ──────────────
             #
@@ -1224,9 +1306,14 @@ def _detect_contacts_sap_env[
             # where they are built: MuJoCo collides predefined pairs outside
             # the broadphase entirely, so a pair must not be prunable by a
             # bound that ignores its margin.
+            comptime if _COLL_PROBE:
+                _c_t0 = Int(perf_counter_ns())
             var ipair = find_predefined_pair[DTYPE](
                 gi, gj, dims, pairs, mmeta
             )
+            comptime if _COLL_PROBE:
+                _c_ppair += Int(perf_counter_ns()) - _c_t0
+                _n_ppair += 1
             if ipair < 0:
                 # MuJoCo's body-pair filter — weld, weld-parent and exclude.
                 # See `pair_body_filtered`; shared with the O(N^2) loop and
@@ -1342,6 +1429,8 @@ def _detect_contacts_sap_env[
             # with `detect_contacts` so the two paths cannot drift, which is
             # exactly how the SAP ellipsoid branch went missing. A predefined
             # pair supplies its own parameters instead, unmixed.
+            comptime if _COLL_PROBE:
+                _c_t0 = Int(perf_counter_ns())
             var _mx = pair_params[DTYPE](
                 ipair, pairs
             ) if ipair >= 0 else mix_contact_params[DTYPE](
@@ -1370,6 +1459,9 @@ def _detect_contacts_sap_env[
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
             )
+            comptime if _COLL_PROBE:
+                _c_pparm += Int(perf_counter_ns()) - _c_t0
+                _n_pparm += 1
             var cdim = Int(_mx[0])
             var cf = _mx[1]
             var cfs = _mx[2]
@@ -1451,6 +1543,8 @@ def _detect_contacts_sap_env[
                 # branch in this loop. The normal's sign carries the
                 # difference instead; see `_hfield_contacts`.
                 var nsg = Scalar[DTYPE](-1) if hf_is_i else Scalar[DTYPE](1)
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _ = _hfield_contacts[DTYPE](
                     env, gi_body, gj_body, hid,
                     pi_x if hf_is_i else pj_x,
@@ -1486,15 +1580,23 @@ def _detect_contacts_sap_env[
                     dims, contacts, ws, num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_hf += Int(perf_counter_ns()) - _c_t0
+                    _n_hf += 1
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
 
             if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = sphere_sphere[DTYPE](
                     pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
                 )
+                comptime if _COLL_PROBE:
+                    _c_ss += Int(perf_counter_ns()) - _c_t0
+                    _n_ss += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1553,6 +1655,8 @@ def _detect_contacts_sap_env[
                 # (`feedback_sap_path_missing_a_whole_geom_type`). Parallel
                 # capsules are a two-point manifold; see
                 # `_capsule_capsule_contacts`, which writes its own records.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _ = _capsule_capsule_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
@@ -1561,6 +1665,9 @@ def _detect_contacts_sap_env[
                     dims, contacts, num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cc += Int(perf_counter_ns()) - _c_t0
+                    _n_cc += 1
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
@@ -1616,6 +1723,8 @@ def _detect_contacts_sap_env[
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
                 # A capsule along a box face is a two-point manifold — see
                 # `_capsule_box_contacts`, which writes its own records.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
@@ -1625,11 +1734,16 @@ def _detect_contacts_sap_env[
                     dims, contacts, num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cb += Int(perf_counter_ns()) - _c_t0
+                    _n_cb += 1
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
@@ -1639,6 +1753,9 @@ def _detect_contacts_sap_env[
                     dims, contacts, num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cb += Int(perf_counter_ns()) - _c_t0
+                    _n_cb += 1
                 _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
@@ -1648,6 +1765,8 @@ def _detect_contacts_sap_env[
                 # `_box_box_contacts`. It writes its own records and this
                 # branch is done; only a SEPARATED pair (code -1) falls through
                 # to `box_box`, which then rejects it too.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var code = _box_box_contacts[DTYPE](
                     env,
                     gi_body,
@@ -1664,6 +1783,9 @@ def _detect_contacts_sap_env[
                     num_contacts,
                     cgp,
                 )
+                comptime if _COLL_PROBE:
+                    _c_bb += Int(perf_counter_ns()) - _c_t0
+                    _n_bb += 1
                 if code >= 0:
                     _fill_pair_solparams[DTYPE](
                         env, _n0, num_contacts, _mx, contacts
@@ -1863,6 +1985,8 @@ def _detect_contacts_sap_env[
                         fill=Scalar[DTYPE](0)
                     )
                     var wf_ok = 0
+                    comptime if _COLL_PROBE:
+                        _c_t0 = Int(perf_counter_ns())
                     var result = gjk_epa_witness[DTYPE](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -1880,6 +2004,9 @@ def _detect_contacts_sap_env[
                         # witness sits inside that branch.
                         cm,
                     )
+                    comptime if _COLL_PROBE:
+                        _c_gjk += Int(perf_counter_ns()) - _c_t0
+                        _n_gjk += 1
                     dist = result[0]
                     cx = result[1]
                     cy = result[2]
@@ -1929,6 +2056,8 @@ def _detect_contacts_sap_env[
                         # OTHER order and had to be re-swapped to match. With
                         # the pair canonicalised where it is named, that
                         # predicate is always false and the re-swap is gone.
+                        comptime if _COLL_PROBE:
+                            _c_t0 = Int(perf_counter_ns())
                         var mcn = native_multicontact_contacts[
                             DTYPE](
                             env, body_a, body_b,
@@ -1947,6 +2076,9 @@ def _detect_contacts_sap_env[
                             contacts, ws, env, num_contacts,
                             cgp,
                         )
+                        comptime if _COLL_PROBE:
+                            _c_mcn += Int(perf_counter_ns()) - _c_t0
+                            _n_mcn += 1
                         # The manifold REPLACES the single point.
                         if mcn > 0:
                             _fill_pair_solparams[
@@ -2027,6 +2159,8 @@ def _detect_contacts_sap_env[
                 if not multiccd_off and multi_ccd_pair_supported(
                     gi_type, gj_type
                 ):
+                    comptime if _COLL_PROBE:
+                        _c_t0 = Int(perf_counter_ns())
                     _ = multi_ccd_extra_contacts[
                         DTYPE](
                         env, body_a, body_b, mccd_first,
@@ -2049,11 +2183,18 @@ def _detect_contacts_sap_env[
                         ccd_tol, ccd_iter, cm,
                         cgp,
                     )
+                    comptime if _COLL_PROBE:
+                        _c_mccd += Int(perf_counter_ns()) - _c_t0
+                        _n_mccd += 1
 
             _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
 
+    comptime if _COLL_PROBE:
+        var _c_end = Int(perf_counter_ns())
+        var _c_sum = _c_pcyl + _c_pbox + _c_pmesh + _c_hf + _c_ss + _c_cc + _c_cb + _c_bb + _c_gjk + _c_mcn + _c_mccd
+        print("[cprobe]", "broad", _c_loop0 - _c_start, 0, "other", _c_end - _c_loop0 - _c_sum, 0, "pairs", 0, _n_pairs, "aabb", 0, _n_aabb, "ppair", _c_ppair, _n_ppair, "pparm", _c_pparm, _n_pparm, "pcyl", _c_pcyl, _n_pcyl, "pbox", _c_pbox, _n_pbox, "pmesh", _c_pmesh, _n_pmesh, "hf", _c_hf, _n_hf, "ss", _c_ss, _n_ss, "cc", _c_cc, _n_cc, "cb", _c_cb, _n_cb, "bb", _c_bb, _n_bb, "gjk", _c_gjk, _n_gjk, "mcn", _c_mcn, _n_mcn, "mccd", _c_mccd, _n_mccd)
     # ── MuJoCo's contact ORDER (`bfsort`, engine_collision_driver.c:1683) ──
     # The sweep above emits in AABB order and runs PLANES in a separate phase
     # before it; MuJoCo runs body pair by body pair in SORTED signature order.
