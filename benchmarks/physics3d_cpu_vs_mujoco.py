@@ -24,22 +24,35 @@ import time
 import numpy as np
 import mujoco
 
+
+sys.path.insert(0, "benchmarks")
+from physics3d_cpu_vs_mujoco_pose import load_pose, apply_pose  # noqa: E402
+
 name = sys.argv[1]
 xml = sys.argv[2]
 warmup = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
 steps = int(sys.argv[4]) if len(sys.argv) > 4 else 20000
 rounds = int(sys.argv[5]) if len(sys.argv) > 5 else 1
+# Optional 6th arg: a pose file written by the Mojo harness's `TASK_POSE`
+# rows (`QPOS`, `QVEL`, `BODY id pos quat` lines). Body poses are applied to
+# JOINTLESS bodies only — that is how a task reset moves a welded prop.
+pose = load_pose(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None
 COUNT_STEPS = 2000
 
 m = mujoco.MjModel.from_xml_path(xml)
 m.vis.global_.bvactive = 0
+if pose is not None:
+    for b, p, q in pose["bodies"]:
+        if 0 < b < m.nbody and m.body_jntnum[b] == 0:
+            m.body_pos[b] = p
+            m.body_quat[b] = q
 d = mujoco.MjData(m)
 
 # `rounds` > 1 repeats the whole protocol from `mj_resetData` and reports the
 # MIN -- a round is a reset, not a continuation (see the Mojo harness).
 us = float("inf")
 for _ in range(rounds):
-    mujoco.mj_resetData(m, d)
+    apply_pose(m, d, pose)
     d.ctrl[:] = 0.1
     mujoco.mj_step(m, d, warmup)
 

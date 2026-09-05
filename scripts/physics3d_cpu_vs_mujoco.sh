@@ -32,7 +32,8 @@ case "$(command -v mojo)" in
 esac
 [ -f pixi.toml ] || { echo "!! run from the repo root"; exit 1; }
 
-# group:name:xml[:warmup:steps:rounds]
+# group:name:xml[:warmup:steps:rounds[:pose]]   pose=1: ours starts from the
+# task reset and writes it to $OUT/<name>.pose; the twin reads it.
 #
 # ⚠ THE PARK ROWS CARRY THEIR OWN HORIZON. Their props fall from z = 50 m and
 # the first lands at step 1596 (MuJoCo, ctrl = 0.1); past that the scene is a
@@ -54,8 +55,8 @@ MODELS=(
   contact:sawyer_reach:mojo_rl/envs/metaworld/assets/sawyer_reach.xml
   contact:dog_stand:mojo_rl/envs/dm_control/assets/dog_stand_walk.xml
   contact:humanoid_cmu:mojo_rl/envs/dm_control/assets/humanoid_cmu.xml
-  contact:reassemble3:mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml:200:2000:1
-  contact:reassemble5:mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml:200:2000:1
+  contact:reassemble3:mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml:200:2000:1:1
+  contact:reassemble5:mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml:200:2000:1:1
 )
 
 if [ "$SKIP_BUILD" = 0 ]; then
@@ -72,12 +73,13 @@ RES="$OUT/results.txt"
 : > "$RES"
 for r in $(seq "$ROUNDS"); do
   for entry in "${MODELS[@]}"; do
-    IFS=: read -r g name xml w st rd <<< "$entry"
+    IFS=: read -r g name xml w st rd pose <<< "$entry"
     case " $MODEL_GROUPS " in *" $g "*) ;; *) continue ;; esac
     w=${w:-$WARMUP}; st=${st:-$STEPS}; rd=${rd:-1}
+    pf=""; [ "${pose:-0}" = 1 ] && pf="$OUT/$name.pose"
     echo "-- round $r  $name"
-    "$OUT/bench_$g" "$name" "$w" "$st" "$rd" | grep '^RESULT' | tee -a "$RES"
-    python benchmarks/physics3d_cpu_vs_mujoco.py "$name" "$xml" "$w" "$st" "$rd" \
+    "$OUT/bench_$g" "$name" "$w" "$st" "$rd" "$pf" | grep '^RESULT' | tee -a "$RES"
+    python benchmarks/physics3d_cpu_vs_mujoco.py "$name" "$xml" "$w" "$st" "$rd" "$pf" \
       | grep '^RESULT' | tee -a "$RES"
   done
 done

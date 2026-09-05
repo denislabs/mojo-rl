@@ -33,7 +33,9 @@ integrator by hand here would be measuring a configuration nothing ships.
 from std.time import perf_counter_ns
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_NUM_CONTACTS, MODEL_BODY_SIZE, BODY_IDX_POS_X, BODY_IDX_QUAT_X,
+)
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 
@@ -71,10 +73,54 @@ def _one_step[
         env.integ_rk4.step["cpu"](env.d, env.mf)
 
 
+def write_pose[
+    MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig, DT: DType
+](env: Phyics3dEnv[MODEL, CONFIG, DT, False], path: String) raises:
+    """Dump the state the env's reset built, for the MuJoCo twin's `--pose`.
+
+    `QPOS`/`QVEL` lines, then one `BODY id px py pz qw qx qy qz` line per body
+    (our record stores the quaternion x y z w; MuJoCo wants w x y z). The
+    twin applies the body poses to JOINTLESS bodies only — a task reset that
+    moves a welded prop moves it through the MODEL, not through `qpos`
+    (dm_control's reassemble does exactly that with its fixed brick).
+    """
+    var f = open(path, "w")
+    var q = String("QPOS")
+    for i in range(MODEL.NQ):
+        q += " " + String(Float64(env.d.qpos.data[i]))
+    f.write(q + "\n")
+    var v = String("QVEL")
+    for i in range(MODEL.NV):
+        v += " " + String(Float64(env.d.qvel.data[i]))
+    f.write(v + "\n")
+    for b in range(MODEL.NBODY):
+        var o = b * MODEL_BODY_SIZE
+        var line = String("BODY ") + String(b)
+        for k in range(3):
+            line += " " + String(Float64(env.mf.bodies.data[o + BODY_IDX_POS_X + k]))
+        line += " " + String(Float64(env.mf.bodies.data[o + BODY_IDX_QUAT_X + 3]))
+        for k in range(3):
+            line += " " + String(Float64(env.mf.bodies.data[o + BODY_IDX_QUAT_X + k]))
+        f.write(line + "\n")
+    f.close()
+
+
 def bench[
-    MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig, DT: DType, EULER: Bool
-](name: String, warmup: Int, steps: Int, rounds: Int = 1) raises:
+    MODEL: ModelDefLike,
+    CONFIG: Phyics3dEnvConfig,
+    DT: DType,
+    EULER: Bool,
+    TASK_POSE: Bool = False,
+](
+    name: String, warmup: Int, steps: Int, rounds: Int = 1, pose_file: String = ""
+) raises:
     """`rounds` > 1 repeats the WHOLE protocol from qpos0 and reports the MIN.
+
+    ⚠ `TASK_POSE`: start from the env's OWN reset instead of qpos0. The
+    reassemble scenes are posed by their task — from `mj_resetData` all three
+    bricks sit at the origin INSIDE each other, MuJoCo finds 28 contacts
+    between coincident hulls and ours finds none, and the two runs diverge at
+    step 0 (§13.11). The reset's state is written to `pose_file` for the twin.
 
     ⚠ A ROUND IS A RESET, NOT A CONTINUATION. The park scenes drop their props
     from z = 50 m and the first one lands at step 1596; a horizon past that
@@ -92,13 +138,21 @@ def bench[
     var best_us = Float64(1e30)
     var ncon_sum = 0.0
     var n_count = min(steps, COUNT_STEPS)
-    for _ in range(rounds):
-        # The twin does `mj_resetData`: qpos0, zero velocity, zero warmstart.
-        for i in range(MODEL.NQ):
-            env.d.qpos.data[i] = env.sf.qpos0.data[i]
-        for i in range(MODEL.NV):
-            env.d.qvel.data[i] = Scalar[DT](0)
-            env.d.qacc_warmstart.data[i] = Scalar[DT](0)
+    for r in range(rounds):
+        comptime if TASK_POSE:
+            if r > 0:
+                _ = env.reset()
+            for i in range(MODEL.NV):
+                env.d.qacc_warmstart.data[i] = Scalar[DT](0)
+            if r == 0 and pose_file != "":
+                write_pose(env, pose_file)
+        else:
+            # The twin does `mj_resetData`: qpos0, zero velocity, zero warmstart.
+            for i in range(MODEL.NQ):
+                env.d.qpos.data[i] = env.sf.qpos0.data[i]
+            for i in range(MODEL.NV):
+                env.d.qvel.data[i] = Scalar[DT](0)
+                env.d.qacc_warmstart.data[i] = Scalar[DT](0)
 
         for _ in range(warmup):
             _one_step[MODEL, CONFIG, DT, EULER](env, actions)

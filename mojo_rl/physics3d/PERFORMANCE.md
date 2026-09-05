@@ -1360,3 +1360,53 @@ as 63 tree solves would be ~4× fewer hops than 79 columns), the reassemble
 contact count (68 / 127 to MuJoCo's 93 / 232 — fidelity, and why the 0.54× is
 not like-for-like), and porting the tree order to the GPU legs, which would
 retire the dense trio and the `LDLᵀ`/`LᵀDL` split.
+
+### 13.11 The reassemble contact-count gap was the PROTOCOL, not the engine
+
+§13.6 flagged ours at 68 / 127 contacts against MuJoCo's 93 / 232 on the
+reassemble scenes and kept the caveat on every ratio since. A per-step diff of
+the contact sets as body pairs (`benchmarks/physics3d_cpu/contact_probe.mojo`,
+`physics3d_contact_probe.py`, `physics3d_contact_diff.py`) settled it in one
+run:
+
+* **The sets differ at step 0, and the state differs by 0.5 after one 2 ms
+  step** — not drift, an initial-state problem.
+* From `mj_resetData` every brick's free joint is at `qpos0 = 0`, so **all
+  three bricks sit at the origin INSIDE each other and inside the welded one**.
+  MuJoCo reports 28 contacts between each pair of coincident hulls and pushes
+  them apart violently; our GJK/EPA reports NONE for coincident identical
+  meshes (a zero-measure degenerate case the task never produces) and the two
+  runs part company at step 0. Every contact-count and ratio number for these
+  two rows before this section compared two different scenes.
+* The task poses the scene through its reset — the free bricks through
+  `qpos`, the welded brick through the MODEL (`body_pos`), which is why
+  `sf.qpos0` cannot pose it. The harness now has `TASK_POSE`: the reassemble
+  rows keep the env's own reset and write it (`QPOS`, `QVEL`, and the jointless
+  bodies' poses) to a file the MuJoCo twin applies.
+
+From the task pose, float64, ctrl = 0.1 on both sides:
+
+| | step 0 | mean over the run | pairs that differ |
+|---|---|---|---|
+| reassemble3, 3000 steps | 48 / 48, identical sets | ours 54.7, MuJoCo 51.9 | stud multiplicity on `duplo2x4/~duplo2x4_2/` (+3 ours) and `_2/~_4/` (+1 MuJoCo) |
+| reassemble5, 2000 steps | 96 / 96, identical sets | ours 105.3, MuJoCo 116.4 | the same four stacked pairs, MuJoCo ~10% more stud contacts |
+
+The per-dof state after ONE step from the task pose agrees to 2e-9 on every
+arm dof and to 2e-7 on the free bricks' quaternions — the remaining fidelity
+thread is the multi-contact manifold on the interlocking studs (how many
+contact points a stud/tube pair yields), not which pairs collide.
+
+**The bench rows, re-measured from the task pose** (this is the sweep's
+protocol for these two rows from now on; `scripts/physics3d_cpu_vs_mujoco.sh`
+passes the pose file):
+
+| model | nv | ours µs | MuJoCo µs | ratio | ncon ours / mj | mj nefc | mj niter |
+|---|---|---|---|---|---|---|---|
+| reassemble3 | 21 | 399 | 219 | **1.82×** | 54.3 / 51.6 | 164 | 6.0 |
+| reassemble5 | 33 | 1053 | 645 | **1.63×** | 109.4 / 116.7 | 359 | 6.0 |
+
+⚠ These REPLACE §13.7–§13.10's 0.54–1.43× for the reassemble rows. Those were
+not wrong measurements; they were measurements of a scene with the bricks
+inside each other, which is cheaper for us (no stud contacts) and dearer for
+MuJoCo (28 coincident-hull contacts per pair). MuJoCo's own step on the posed
+scene is 219 / 645 µs, not 489 / 2440.
