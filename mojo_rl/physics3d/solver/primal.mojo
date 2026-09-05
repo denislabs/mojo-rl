@@ -33,7 +33,12 @@ from ..constraints.scalar_rows import (
 
 @always_inline
 def pyramidal_edge_forces[
-    DTYPE: DType, E_CAP: Int, V_CAP: Int
+    DTYPE: DType,
+    E_CAP: Int,
+    V_CAP: Int,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+    SPARSE: Bool = False,
 ](
     num_edges: Int,
     Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
@@ -48,6 +53,8 @@ def pyramidal_edge_forces[
     mut state_e: Scratch[Int, E_CAP],
     mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
     nv: Int,
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
 ):
     """Primal row forces given the current qacc.
 
@@ -62,13 +69,27 @@ def pyramidal_edge_forces[
     `V_CAP`. The array is sized `E_CAP * V_CAP`, and on the static leg the cap
     and the stride are the same integer, which is why a mix-up here survives
     every gate in the tree; see `tests/physics3d/test_cholesky_both_legs.mojo`.
-    Writes jar/force/state_e (per-row) and qfrc (per-dof)."""
+    Writes jar/force/state_e (per-row) and qfrc (per-dof).
+
+    ⚠ `SPARSE`: walk only each row's NONZERO dofs, listed in
+    `je_ix[e*nv + 0 .. je_n[e])`. A contact row is nonzero on the two bodies'
+    ancestor chains only — a dozen of humanoid_CMU's 62 dofs — and a limit or
+    friction row on ONE. Every term this skips has `Je == 0` exactly, and
+    adding an exact zero product changes no accumulator, so the sparse walk
+    is BIT-IDENTICAL to the dense one; `PERFORMANCE.md` §13 measured the
+    dense walks at most of a 62-dof step. Off (the default), the lists are
+    unused and the loops are the dense originals, byte for byte."""
     for i in range(nv):
         qfrc[i] = Scalar[DTYPE](0)
     for e_idx in range(num_edges):
         jar[e_idx] = bias_e[e_idx]
-        for i in range(nv):
-            jar[e_idx] += Je[e_idx * nv + i] * qacc[i]
+        comptime if SPARSE:
+            for a in range(je_n[e_idx]):
+                var i = je_ix[e_idx * nv + a]
+                jar[e_idx] += Je[e_idx * nv + i] * qacc[i]
+        else:
+            for i in range(nv):
+                jar[e_idx] += Je[e_idx * nv + i] * qacc[i]
         var st = scalar_row_state[DTYPE](
             kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
         )
@@ -76,8 +97,13 @@ def pyramidal_edge_forces[
         force[e_idx] = scalar_row_force[DTYPE](
             st, jar[e_idx], De[e_idx], floss_e[e_idx]
         )
-        for i in range(nv):
-            qfrc[i] += Je[e_idx * nv + i] * force[e_idx]
+        comptime if SPARSE:
+            for a in range(je_n[e_idx]):
+                var i = je_ix[e_idx * nv + a]
+                qfrc[i] += Je[e_idx * nv + i] * force[e_idx]
+        else:
+            for i in range(nv):
+                qfrc[i] += Je[e_idx * nv + i] * force[e_idx]
 
 
 @always_inline
@@ -87,6 +113,9 @@ def pyramidal_linesearch[
     V_CAP: Int,
     LINESEARCH_ITER: Int,
     PRIMAL_MINVAL: Float64,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+    SPARSE: Bool = False,
 ](
     num_edges: Int,
     Je: Scratch[Scalar[DTYPE], E_CAP * V_CAP],
@@ -102,6 +131,10 @@ def pyramidal_linesearch[
     qacc_smooth: Scratch[Scalar[DTYPE], V_CAP],
     jar: Scratch[Scalar[DTYPE], E_CAP],
     nv: Int,
+    # Row sparsity lists, read only under `SPARSE` — see
+    # `pyramidal_edge_forces`.
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
     # `<option ls_iterations>`. ⚠ THE COMPTIME `LINESEARCH_ITER` IS THE CEILING
     # A `range()` NEEDS, NOT THE BUDGET — a model asking for fewer iterations
     # (apollo asks for 10, so101 for 20) must get them. A non-positive value
@@ -185,8 +218,13 @@ def pyramidal_linesearch[
     )
     for e_idx in range(num_edges):
         Jv_e[e_idx] = Scalar[DTYPE](0)
-        for i in range(nv):
-            Jv_e[e_idx] += Je[e_idx * nv + i] * search[i]
+        comptime if SPARSE:
+            for a in range(je_n[e_idx]):
+                var i = je_ix[e_idx * nv + a]
+                Jv_e[e_idx] += Je[e_idx * nv + i] * search[i]
+        else:
+            for i in range(nv):
+                Jv_e[e_idx] += Je[e_idx * nv + i] * search[i]
 
     var gauss_a: Scalar[DTYPE] = 0
     var gauss_b: Scalar[DTYPE] = 0

@@ -88,6 +88,38 @@ def build_dof_segments[
     given ONE index returns a ROW rather than an element, which is a mismatch
     this tree has already paid for once (`fields/model.mojo`'s `L_CAM` note).
     """
+    return build_dof_segments_p[
+        DTYPE, T_AS=T_AS, J_AS=J_AS, S_AS=S_AS
+    ](nv, ntree, num_edges, trees.ptr, Je.ptr, seg_start.ptr, seg_end.ptr)
+
+
+@always_inline
+def build_dof_segments_p[
+    TO: MutOrigin,
+    JO: MutOrigin,
+    SO: MutOrigin,
+    EO: MutOrigin, //,
+    DTYPE: DType,
+    T_AS: AddressSpace = AddressSpace.GENERIC,
+    J_AS: AddressSpace = AddressSpace.GENERIC,
+    S_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    nv: Int,
+    ntree: Int,
+    num_edges: Int,
+    trees: Pointer[Scalar[DTYPE], TO, address_space=T_AS],
+    Je: Pointer[Scalar[DTYPE], JO, address_space=J_AS],
+    seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
+    seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
+) -> Int:
+    """Pointer form of `build_dof_segments` — THE body; the `LayoutTensor`
+    spelling above owns no arithmetic and delegates here.
+
+    It exists so the per-env CPU solver, whose rows live in a `Scratch`, can
+    share the one implementation with the blocked kernel, whose rows live in
+    threadgroup memory — the same split `chol_solve_seg` / `chol_solve_seg_p`
+    already makes, for the same reason: a rule written twice drifts.
+    """
 
     @parameter
     @always_inline

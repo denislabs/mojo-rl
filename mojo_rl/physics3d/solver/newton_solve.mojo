@@ -83,7 +83,7 @@ from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
     chol_solve_seg_p,
 )
-from .newton_blocks import build_dof_segments
+from .newton_blocks import build_dof_segments, build_dof_segments_p
 
 # MuJoCo's `mjMINVAL`; see `cholesky.mojo` on why `1e-10` was not the
 # reference's number for this guard.
@@ -808,6 +808,15 @@ def _newton_solve_env[
     L_SOLVER: Layout,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
+    # ⚠ CPU ONLY (the per-env dispatcher passes True). Under it the PYRAMIDAL
+    # path walks each row's nonzero dofs and factors `H` per kinematic-tree
+    # segment — the arithmetic the blocked GPU kernel got in PN2a-e, and that
+    # this function never did: `PERFORMANCE.md` §13 measured the dense walks
+    # at 60-75% of every step past 20 dofs. Bit-exact by the exact-zero
+    # argument in `cholesky.chol_factor_seg`. Off, the body is byte-identical
+    # to what every GPU leg compiles today, which is why the GPU legs keep
+    # the default rather than take a per-thread index list they cannot afford.
+    TREE_AWARE: Bool = False,
 ](
     env: Int,
     dims: D,
@@ -1603,6 +1612,42 @@ def _newton_solve_env[
                 )
                 num_edges += 1
 
+        # ── TREE_AWARE: the rows' nonzero dofs and the tree segments ───────
+        # Both are derived from the FINISHED row list, so this sits after the
+        # last row builder and before anything reads `Je`. `je_ix[e*nv + a]`,
+        # `a < je_n[e]`, lists row `e`'s nonzero dofs; `seg0[i]`/`seg1[i]` is
+        # the half-open dof range of the tree segment holding dof `i`
+        # (`newton_blocks.build_dof_segments`). Off, both are one-element
+        # placeholders so the GPU legs' frames do not grow.
+        comptime N_CAP = E_CAP if TREE_AWARE else 1
+        comptime IX_CAP = E_CAP * V_CAP if TREE_AWARE else 1
+        var je_n = Scratch[Int, N_CAP](me if TREE_AWARE else 1, fill=0)
+        var je_ix = Scratch[Int, IX_CAP](me * nv if TREE_AWARE else 1, fill=0)
+        var seg0 = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
+        var seg1 = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](nv))
+        comptime if TREE_AWARE:
+            for e_idx in range(num_edges):
+                var n_e = 0
+                for i in range(nv):
+                    if Je[e_idx * nv + i] != Scalar[DTYPE](0):
+                        je_ix[e_idx * nv + n_e] = i
+                        n_e += 1
+                je_n[e_idx] = n_e
+            _ = build_dof_segments_p[DTYPE](
+                nv,
+                Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])),
+                num_edges,
+                trees.ptr,
+                Je.unsafe_ptr(),
+                seg0.unsafe_ptr(),
+                seg1.unsafe_ptr(),
+            )
+            # The blocked kernel's guard, kept for the same reason: a segment
+            # end at or below its start would never advance the walk below.
+            for i in range(nv):
+                if Int(seg1[i]) <= i:
+                    seg1[i] = Scalar[DTYPE](nv)
+
         # Initialize qacc from workspace (qacc_smooth set by stage kernel)
         var qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         var qacc_smooth = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -1621,8 +1666,14 @@ def _newton_solve_env[
             qacc_smooth[i] = q_i
         for i in range(nv):
             Ma[i] = Scalar[DTYPE](0)
-            for j in range(nv):
-                Ma[i] += M_local[i * nv + j] * qacc[j]
+            # `M` couples a dof only with its tree, and a segment is a union
+            # of trees, so the entries outside `[seg0, seg1)` are exact zeros.
+            comptime if TREE_AWARE:
+                for j in range(Int(seg0[i]), Int(seg1[i])):
+                    Ma[i] += M_local[i * nv + j] * qacc[j]
+            else:
+                for j in range(nv):
+                    Ma[i] += M_local[i * nv + j] * qacc[j]
         # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
         # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
         var f_smooth = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -1675,9 +1726,11 @@ def _newton_solve_env[
 
         # Initial jar + force + qfrc
         var qfrc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
-        pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
+        pyramidal_edge_forces[
+                DTYPE, E_CAP, V_CAP, N_CAP, IX_CAP, SPARSE=TREE_AWARE
+            ](
             num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
-            qacc, jar, force, state_e, qfrc, nv,
+            qacc, jar, force, state_e, qfrc, nv, je_n, je_ix,
         )
 
         # ── warmstart(): START AT THE CHEAPER OF `qacc_warmstart` AND
@@ -1720,8 +1773,13 @@ def _newton_solve_env[
             var cost_w: Scalar[DTYPE] = 0
             for e_idx in range(num_edges):
                 var jar_w = bias_e[e_idx]
-                for i in range(nv):
-                    jar_w += Je[e_idx * nv + i] * qacc_w[i]
+                comptime if TREE_AWARE:
+                    for a in range(je_n[e_idx]):
+                        var i = je_ix[e_idx * nv + a]
+                        jar_w += Je[e_idx * nv + i] * qacc_w[i]
+                else:
+                    for i in range(nv):
+                        jar_w += Je[e_idx * nv + i] * qacc_w[i]
                 var st_w = scalar_row_state[DTYPE](
                     kind_e[e_idx], jar_w, R_e[e_idx], floss_e[e_idx]
                 )
@@ -1730,8 +1788,12 @@ def _newton_solve_env[
                 )
             for i in range(nv):
                 var s_i: Scalar[DTYPE] = 0
-                for j in range(nv):
-                    s_i += M_local[i * nv + j] * qacc_w[j]
+                comptime if TREE_AWARE:
+                    for j in range(Int(seg0[i]), Int(seg1[i])):
+                        s_i += M_local[i * nv + j] * qacc_w[j]
+                else:
+                    for j in range(nv):
+                        s_i += M_local[i * nv + j] * qacc_w[j]
                 Ma[i] = s_i
                 cost_w += (
                     Scalar[DTYPE](0.5)
@@ -1741,9 +1803,11 @@ def _newton_solve_env[
             if cost_w <= cost_s:
                 for i in range(nv):
                     qacc[i] = qacc_w[i]
-                pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
+                pyramidal_edge_forces[
+                DTYPE, E_CAP, V_CAP, N_CAP, IX_CAP, SPARSE=TREE_AWARE
+            ](
                     num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
-                    qacc, jar, force, state_e, qfrc, nv,
+                    qacc, jar, force, state_e, qfrc, nv, je_n, je_ix,
                 )
             else:
                 for i in range(nv):
@@ -1800,31 +1864,84 @@ def _newton_solve_env[
                     H[i * nv + j] = M_local[i * nv + j]
             for e_idx in range(num_edges):
                 if state_e[e_idx] == SROW_QUADRATIC:
-                    for i in range(nv):
-                        for j in range(nv):
-                            H[i * nv + j] += (
-                                De[e_idx]
-                                * Je[e_idx * nv + i]
-                                * Je[e_idx * nv + j]
-                            )
+                    comptime if TREE_AWARE:
+                        # `(De * Je_i) * Je_j` is the dense expression's own
+                        # evaluation order, so hoisting the left factor is
+                        # the same arithmetic.
+                        var n_e = je_n[e_idx]
+                        for a in range(n_e):
+                            var i = je_ix[e_idx * nv + a]
+                            var dji = De[e_idx] * Je[e_idx * nv + i]
+                            for b in range(n_e):
+                                var j = je_ix[e_idx * nv + b]
+                                H[i * nv + j] += dji * Je[e_idx * nv + j]
+                    else:
+                        for i in range(nv):
+                            for j in range(nv):
+                                H[i * nv + j] += (
+                                    De[e_idx]
+                                    * Je[e_idx * nv + i]
+                                    * Je[e_idx * nv + j]
+                                )
 
             # Cholesky solve
-            var chol_ok = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
-            if not chol_ok:
-                for i in range(nv):
-                    H[i * nv + i] += Scalar[DTYPE](1e-6)
-                _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
-            chol_solve_inline[DTYPE, M_CAP, V_CAP](
-                L_chol, grad, search, nv
-            )
+            comptime if TREE_AWARE:
+                # One factorisation per tree segment into the same zeroed
+                # `L` — `chol_factor_inline` is exactly this over `[0, nv)`.
+                # A rank failure anywhere gets the dense path's remedy (the
+                # whole diagonal lifted, everything refactored), so the
+                # answer stays the dense one bit for bit.
+                for k in range(nv * nv):
+                    L_chol[k] = Scalar[DTYPE](0)
+                var chol_ok = True
+                var s0 = 0
+                while s0 < nv:
+                    var s1 = Int(seg1[s0])
+                    var ok_s = chol_factor_seg[DTYPE, M_CAP](
+                        H, L_chol, nv, s0, s1
+                    )
+                    chol_ok = chol_ok and ok_s
+                    s0 = s1
+                if not chol_ok:
+                    for i in range(nv):
+                        H[i * nv + i] += Scalar[DTYPE](1e-6)
+                    for k in range(nv * nv):
+                        L_chol[k] = Scalar[DTYPE](0)
+                    s0 = 0
+                    while s0 < nv:
+                        var s1 = Int(seg1[s0])
+                        _ = chol_factor_seg[DTYPE, M_CAP](
+                            H, L_chol, nv, s0, s1
+                        )
+                        s0 = s1
+                s0 = 0
+                while s0 < nv:
+                    var s1 = Int(seg1[s0])
+                    chol_solve_seg[DTYPE, M_CAP, V_CAP](
+                        L_chol, grad, search, nv, s0, s1
+                    )
+                    s0 = s1
+            else:
+                var chol_ok = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
+                if not chol_ok:
+                    for i in range(nv):
+                        H[i * nv + i] += Scalar[DTYPE](1e-6)
+                    _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
+                chol_solve_inline[DTYPE, M_CAP, V_CAP](
+                    L_chol, grad, search, nv
+                )
             for i in range(nv):
                 search[i] = -search[i]
 
             # Mv = M * search
             for i in range(nv):
                 Mv[i] = Scalar[DTYPE](0)
-                for j in range(nv):
-                    Mv[i] += M_local[i * nv + j] * search[j]
+                comptime if TREE_AWARE:
+                    for j in range(Int(seg0[i]), Int(seg1[i])):
+                        Mv[i] += M_local[i * nv + j] * search[j]
+                else:
+                    for j in range(nv):
+                        Mv[i] += M_local[i * nv + j] * search[j]
 
             # `PrimalSearch` (engine_solver.c:1692) — an ITERATED search, not
             # a single analytical step. ⚠ `gtol_scale` is
@@ -1833,11 +1950,11 @@ def _newton_solve_env[
             # convergence scale; the callee multiplies by `|search|`.
             var alpha = pyramidal_linesearch[
                 DTYPE, E_CAP, V_CAP, LINESEARCH_ITER,
-                PRIMAL_MINVAL_GPU
+                PRIMAL_MINVAL_GPU, N_CAP, IX_CAP, SPARSE=TREE_AWARE
             ](
                 num_edges, Je, De, kind_e, R_e, floss_e, search, Mv, Ma,
                 f_smooth, qacc, qacc_smooth, jar,
-                nv,
+                nv, je_n, je_ix,
                 lsiter_rt,
                 tol_rt * lstol_rt / scale,
             )
@@ -1879,9 +1996,11 @@ def _newton_solve_env[
                 Ma[i] += alpha * Mv[i]
 
             # Recompute jar, force, qfrc
-            pyramidal_edge_forces[DTYPE, E_CAP, V_CAP](
+            pyramidal_edge_forces[
+                DTYPE, E_CAP, V_CAP, N_CAP, IX_CAP, SPARSE=TREE_AWARE
+            ](
                 num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
-                qacc, jar, force, state_e, qfrc, nv,
+                qacc, jar, force, state_e, qfrc, nv, je_n, je_ix,
             )
 
             # Compute new cost and check improvement
@@ -3308,7 +3427,8 @@ def solve_newton[
                 DTYPE,
                 CONE_TYPE,
                 BATCH,
-                SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
+                SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER,
+                TREE_AWARE=True](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
                 cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
