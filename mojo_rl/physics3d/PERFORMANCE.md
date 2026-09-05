@@ -2079,3 +2079,48 @@ dog (1.19×, the pyramidal noslip now ~30 µs of a 268 µs step) and
 reassemble3 (1.19× against libccd MuJoCo, parity against native CCD). Both
 commits of this section landed after the 32-file gate manifest and the two
 Metal kernel gates passed on the new accessor.
+
+### 13.22 Why the small models beat MuJoCo — not the glue, not float32 (2026-09-05)
+
+Asked after §13.21's table put five rows at or below MuJoCo. Two easy
+explanations, both checked and both wrong; the real one is in MuJoCo's own
+timers.
+
+**Not the Python glue.** The twin (`physics3d_cpu_vs_mujoco.py`) times ONE
+`mj_step(m, d, nsteps)` call; the loop runs inside the C library and no
+interpreter is in the timed region. (A Python `for` around single steps would
+add ~0.3 µs a step — the script's header says so and avoids it.)
+
+**Not float32.** A float64 twin of `bench_gym` (`DT = DType.float64`, nothing
+else changed), interleaved with the float32 one, 1000 + 10000 steps:
+
+| model | ours f32 | ours f64 | MuJoCo (f64) |
+|---|---|---|---|
+| hopper | 11.0 | **9.7** | 15.9 |
+| ant | 30.0 | 29.1 | 35.9 |
+| humanoid | 71.8 | 73.1 | 81 |
+
+Same speed within noise, hopper slightly faster in float64. So the CPU path
+is nowhere bandwidth- or SIMD-width-bound in a way float32 helps, which fits
+§13.21 (the costs were the accessor and the accumulator chain, not the
+flops). Float32 is the GPU's choice; on the CPU it buys nothing.
+
+**It is MuJoCo's fixed per-forward setup, paid four times a step.** Its phase
+timers on hopper (`physics3d_mujoco_phases.py`, `bvactive=0`; 2 contacts, 11
+rows, 6 dofs, RK4 = 4 forwards per step, 15.9 µs):
+
+| phase | µs/step | note |
+|---|---|---|
+| `CONSTRAINT` | 4.67 | Newton at **0.23 iterations** on average — nearly all of it is setup: Hessian factor, row state, dual finish, warmstart |
+| `POS_MAKE` | 3.47 | 11 rows through the generic path: arena, per-row impedance/aref, sparse assembly, the `efc_*` arrays |
+| `COL_BROAD` | 1.14 | 5 geoms through the BVH machinery |
+| `POS_KINEMATICS` + `POS_INERTIA` | 1.93 | the arithmetic |
+| everything else | 4.7 | narrow phase, velocity, actuation, the rest |
+
+9.3 of 15.9 µs is setup on a system whose arithmetic is ~2 µs. Ant is the
+same shape (`CONSTRAINT` 14.5 at 0.09 iterations, `POS_MAKE` 5.3 of 35.9).
+Our engine has compile-time dimensions, fixed-capacity row storage, no
+arena, no sparse/dense dual dispatch and no per-row generic instantiation,
+so it has no comparable floor. The advantage is a constant, and it vanishes
+as `nv` grows and the arithmetic dominates — which is the table's pattern:
+we win at 6–23 dofs and MuJoCo still wins at 62 and 79.
