@@ -2670,6 +2670,13 @@ def gjk_epa[
     prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
+    # Forwarded to `gjk_epa_witness`. A caller whose ONLY use of the result
+    # is the `dist < margin` contact test passes its margin here; the GJK then
+    # stops as soon as a lower bound proves the pair at least that far apart
+    # (MuJoCo's `dist_cutoff = 0` on its margin-inflated shapes,
+    # engine_collision_convex.c:104). -1 keeps the full distance. After `prism`, which
+    # `hfield_convex` passes positionally.
+    dist_cutoff: Scalar[DTYPE] = Scalar[DTYPE](-1),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -2703,6 +2710,6 @@ def gjk_epa[
         wf1, wf2, wx, wf_ok,
         ws, wrow,
         ccd_tol, ccd_iter, ccd_margin,
-        Scalar[DTYPE](-1),
+        dist_cutoff,
         prism,
     )

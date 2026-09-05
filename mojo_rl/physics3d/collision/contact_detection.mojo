@@ -3309,6 +3309,7 @@ def _detect_contacts_env[
                     0, 0,
                     ws, env,
                     ccd_tol, ccd_iter, contact_margin,
+                    dist_cutoff=contact_margin,
                 )
                 dist = r[0]
                 cx = r[1]

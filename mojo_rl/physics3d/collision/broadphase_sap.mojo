@@ -453,6 +453,19 @@ def _detect_contacts_sap_env[
     var _c_t0: Int = 0
     var _c_start: Int = 0
     var _c_loop0: Int = 0
+    var _n_gjkhit: Int = 0
+    var _c_cas: Int = 0
+    var _n_cas: Int = 0
+    var _c_bs: Int = 0
+    var _n_bs: Int = 0
+    var _c_bbf: Int = 0
+    var _n_bbf: Int = 0
+    var _c_cys: Int = 0
+    var _n_cys: Int = 0
+    var _c_gjkp: Int = 0
+    var _n_gjkp: Int = 0
+    var _c_pbf: Int = 0
+    var _n_pbf: Int = 0
     var _c_ppair: Int = 0
     var _n_ppair: Int = 0
     var _c_pparm: Int = 0
@@ -1319,9 +1332,15 @@ def _detect_contacts_sap_env[
                 # See `pair_body_filtered`; shared with the O(N^2) loop and
                 # the plane loop above, which had no body filter at all
                 # (defect 24).
-                if pair_body_filtered[DTYPE](
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
+                var _pbf = pair_body_filtered[DTYPE](
                     gi_body, gj_body, bodies, mmeta, excludes
-                ):
+                )
+                comptime if _COLL_PROBE:
+                    _c_pbf += Int(perf_counter_ns()) - _c_t0
+                    _n_pbf += 1
+                if _pbf:
                     continue
                 var gj_contype = Int(
                     rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
@@ -1605,6 +1624,8 @@ def _detect_contacts_sap_env[
                 ny = r[5]
                 nz = r[6]
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_SPHERE:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = capsule_sphere[DTYPE](
                     pi_x,
                     pi_y,
@@ -1620,6 +1641,9 @@ def _detect_contacts_sap_env[
                     pj_z,
                     rj,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cas += Int(perf_counter_ns()) - _c_t0
+                    _n_cas += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1628,6 +1652,8 @@ def _detect_contacts_sap_env[
                 ny = r[5]
                 nz = r[6]
             elif gi_type == GEOM_SPHERE and gj_type == GEOM_CAPSULE:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = capsule_sphere[DTYPE](
                     pj_x,
                     pj_y,
@@ -1643,6 +1669,9 @@ def _detect_contacts_sap_env[
                     pi_z,
                     ri,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cas += Int(perf_counter_ns()) - _c_t0
+                    _n_cas += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1673,6 +1702,8 @@ def _detect_contacts_sap_env[
                 )
                 continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = box_sphere[DTYPE](
                     pi_x,
                     pi_y,
@@ -1689,6 +1720,9 @@ def _detect_contacts_sap_env[
                     pj_z,
                     rj,
                 )
+                comptime if _COLL_PROBE:
+                    _c_bs += Int(perf_counter_ns()) - _c_t0
+                    _n_bs += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1697,6 +1731,8 @@ def _detect_contacts_sap_env[
                 ny = r[5]
                 nz = r[6]
             elif gi_type == GEOM_SPHERE and gj_type == GEOM_BOX:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = box_sphere[DTYPE](
                     pj_x,
                     pj_y,
@@ -1713,6 +1749,9 @@ def _detect_contacts_sap_env[
                     pi_z,
                     ri,
                 )
+                comptime if _COLL_PROBE:
+                    _c_bs += Int(perf_counter_ns()) - _c_t0
+                    _n_bs += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1791,6 +1830,8 @@ def _detect_contacts_sap_env[
                         env, _n0, num_contacts, _mx, contacts
                     )
                     continue
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = box_box[DTYPE](
                     pi_x,
                     pi_y,
@@ -1813,6 +1854,9 @@ def _detect_contacts_sap_env[
                     hyj,
                     hzj,
                 )
+                comptime if _COLL_PROBE:
+                    _c_bbf += Int(perf_counter_ns()) - _c_t0
+                    _n_bbf += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1821,6 +1865,8 @@ def _detect_contacts_sap_env[
                 ny = r[5]
                 nz = r[6]
             elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = cylinder_sphere[DTYPE](
                     pi_x,
                     pi_y,
@@ -1836,6 +1882,9 @@ def _detect_contacts_sap_env[
                     pj_z,
                     rj,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cys += Int(perf_counter_ns()) - _c_t0
+                    _n_cys += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1844,6 +1893,8 @@ def _detect_contacts_sap_env[
                 ny = r[5]
                 nz = r[6]
             elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = cylinder_sphere[DTYPE](
                     pj_x,
                     pj_y,
@@ -1859,6 +1910,9 @@ def _detect_contacts_sap_env[
                     pi_z,
                     ri,
                 )
+                comptime if _COLL_PROBE:
+                    _c_cys += Int(perf_counter_ns()) - _c_t0
+                    _n_cys += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -1919,6 +1973,8 @@ def _detect_contacts_sap_env[
                 # One branch for both orderings: `cylinder_box` needed two
                 # because the primitive is asymmetric in its operands, but the
                 # convex query is symmetric and returns `gi -> gj` either way.
+                comptime if _COLL_PROBE:
+                    _c_t0 = Int(perf_counter_ns())
                 var r = gjk_epa[DTYPE](
                     gi_type,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -1930,7 +1986,13 @@ def _detect_contacts_sap_env[
                     0, 0,
                     ws, env,
                     ccd_tol, ccd_iter, cm,
+                    dist_cutoff=cm,
                 )
+                comptime if _COLL_PROBE:
+                    _c_gjkp += Int(perf_counter_ns()) - _c_t0
+                    _n_gjkp += 1
+                    if r[0] < cm:
+                        _n_gjkhit += 1
                 dist = r[0]
                 cx = r[1]
                 cy = r[2]
@@ -2193,8 +2255,8 @@ def _detect_contacts_sap_env[
 
     comptime if _COLL_PROBE:
         var _c_end = Int(perf_counter_ns())
-        var _c_sum = _c_pcyl + _c_pbox + _c_pmesh + _c_hf + _c_ss + _c_cc + _c_cb + _c_bb + _c_gjk + _c_mcn + _c_mccd
-        print("[cprobe]", "broad", _c_loop0 - _c_start, 0, "other", _c_end - _c_loop0 - _c_sum, 0, "pairs", 0, _n_pairs, "aabb", 0, _n_aabb, "ppair", _c_ppair, _n_ppair, "pparm", _c_pparm, _n_pparm, "pcyl", _c_pcyl, _n_pcyl, "pbox", _c_pbox, _n_pbox, "pmesh", _c_pmesh, _n_pmesh, "hf", _c_hf, _n_hf, "ss", _c_ss, _n_ss, "cc", _c_cc, _n_cc, "cb", _c_cb, _n_cb, "bb", _c_bb, _n_bb, "gjk", _c_gjk, _n_gjk, "mcn", _c_mcn, _n_mcn, "mccd", _c_mccd, _n_mccd)
+        var _c_sum = _c_pcyl + _c_pbox + _c_pmesh + _c_hf + _c_ss + _c_cc + _c_cb + _c_bb + _c_gjk + _c_mcn + _c_mccd + _c_cas + _c_bs + _c_bbf + _c_cys + _c_gjkp
+        print("[cprobe]", "broad", _c_loop0 - _c_start, 0, "other", _c_end - _c_loop0 - _c_sum, 0, "pairs", 0, _n_pairs, "aabb", 0, _n_aabb, "ppair", _c_ppair, _n_ppair, "pparm", _c_pparm, _n_pparm, "pbf", _c_pbf, _n_pbf, "pcyl", _c_pcyl, _n_pcyl, "pbox", _c_pbox, _n_pbox, "pmesh", _c_pmesh, _n_pmesh, "hf", _c_hf, _n_hf, "ss", _c_ss, _n_ss, "cc", _c_cc, _n_cc, "cb", _c_cb, _n_cb, "bb", _c_bb, _n_bb, "gjk", _c_gjk, _n_gjk, "mcn", _c_mcn, _n_mcn, "mccd", _c_mccd, _n_mccd, "cas", _c_cas, _n_cas, "bs", _c_bs, _n_bs, "bbf", _c_bbf, _n_bbf, "cys", _c_cys, _n_cys, "gjkp", _c_gjkp, _n_gjkp, "gjkhit", 0, _n_gjkhit)
     # ── MuJoCo's contact ORDER (`bfsort`, engine_collision_driver.c:1683) ──
     # The sweep above emits in AABB order and runs PLANES in a separate phase
     # before it; MuJoCo runs body pair by body pair in SORTED signature order.
