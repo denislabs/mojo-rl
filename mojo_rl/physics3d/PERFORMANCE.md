@@ -1281,3 +1281,82 @@ pass (~9 µs at k=9), the still-dense `compute_m_inv` (this model has
 `frictionloss` rows, no equalities, no noslip — the inverse is skipped; the
 remaining `nv`-sized passes are the Euler step's own), and the per-solve row
 scan that builds the sparsity lists.
+
+### 13.10 LANDED (2026-09-05): the tree-ordered LDL — MuJoCo's factorisation, on the CPU
+
+Dog's remaining `M⁻¹` (§13.8: it still forms the full inverse for noslip).
+Replacing it with per-row solves against OUR factor would not have helped:
+`_ldl_factor_env` eliminates forward, and on a kinematic tree that fills in
+between siblings, so `L` is dense within a tree, a solve is O(nv²), and 63
+rows of solves cost what the inverse costs. MuJoCo's win is the ORDER:
+`mj_factorI` (`engine_core_smooth.c:1973`) eliminates from the last dof
+backwards and gets `M = Lᵀ D L` with `L` on M's own sparsity — row `k`
+nonzero at `k`'s ancestors only, no fill — so `mj_solveLD` (`:2113`) is O(nC)
+and the inverse O(nv² · depth) instead of O(nv³).
+
+Three pieces:
+
+* **`Model.dof_parentid`**, MuJoCo's table, built in `fields_build` beside
+  `trees` from the dof→body map (dofs of one body chain in order, a body's
+  first dof hangs from the last dof of the nearest ancestor body with any).
+  Gated entry for entry against `m.dof_parentid` on the tree-block model
+  list: **28 models, 590 dofs, 0 differing**
+  (`test_dof_parentid_vs_mujoco`).
+* **`_ldl_factor_tree_env` / `_ldl_solve_tree_env` / `_m_inv_tree_env`**
+  (`dynamics/ldl.mojo`): the reference's three loops on our dense `[nv*nv]`
+  storage, walking the parent table (read into integers once per call — the
+  chain walk is the whole cost, and a float→int per hop was a third of it).
+  The CPU dispatchers select them when `MODEL_META_IDX_NTREE > 0` and keep
+  the dense trio otherwise and on every GPU leg.
+* ⚠ **A DIFFERENT CONVENTION IN THE SAME BUFFER.** `scratch.L` now holds
+  `LᵀDL`'s L on the CPU and `LDLᵀ`'s L on a GPU. A factor is only ever read
+  by the solve behind the same dispatcher, so nothing mixes — but a test
+  that compares `L` across the two would be comparing two matrices. The one
+  that did compare `L` across legs (`test_dispatchers_both_legs`) compares
+  two CPU legs and failed for a different reason: its record copier copied
+  `meta` (with `NTREE`) but neither topology table, so the dynamic arm
+  claimed a table of all roots. It copies both now.
+
+Not bit-exact against the dense trio (a different rounding of the same
+inverse) and gated as such: `dof_invweight0` / `body_invweight0` at qpos0
+against MuJoCo (`test_constraints_vs_mujoco`: 1e-16 on ant, 1e-14 on
+humanoid), `test_frictionless_contact_pyramidal` (8e-17), `test_noslip_vs_mujoco`
+(7e-17), `test_walker2d_contacts_vs_mujoco`, `test_humanoid_limits_fields_vs_mujoco`,
+`test_newton_warmstart_vs_mujoco`, `test_elliptic_condim46_vs_mujoco`,
+`test_reassemble_3_bricks_vs_dm_control` (1e-15), `test_rk4_newton_fields` and
+`test_cfrc_ext_batched_vs_cpu` (CPU vs GPU, the two factorisations against
+each other), `test_newton_both_legs`, `test_newton_solves_on_runtime_dims`,
+`test_ldl_blocked`, `test_dyn_dims_ldl`, `test_dispatchers_both_legs`.
+
+| model | nv | before µs | after µs | speedup | vs MuJoCo |
+|---|---|---|---|---|---|
+| dog_stand | 79 | 1126 | **722** | 1.56× | 13.0× at the start of the day → **3.1×** |
+| reassemble5 | 33 | 1531 | 1318 | 1.16× | 0.54× |
+| reassemble3 | 21 | 613 | 699 | (noise band; both 1.3–1.5×) | 1.43× |
+| humanoid_cmu | 62 | 254 | 249 | — | 3.57× |
+| everything ≤ 23 dofs | | | | ~1.0× | unchanged |
+
+Dog's profile after: Newton 49%, `compute_m_inv` 23% (≈170 µs for ~75k
+chain hops, ≈2 ns a hop — it is a pointer chase now, not arithmetic), Euler
+11%, `ldl_factor` under 2.4%.
+
+**The whole tree, start of the day → now** (three interleaved rounds each):
+
+| model | nv | before | after | speedup | vs MuJoCo |
+|---|---|---|---|---|---|
+| dog_stand | 79 | 3003 | 722 | 4.2× | 13.0× → 3.1× |
+| humanoid_cmu | 62 | 768 | 249 | 3.1× | 10.7× → 3.6× |
+| park_k9 | 60 | 94.3 | 27.4 | 3.4× | 10.7× → 3.1× |
+| reassemble5 | 33 | 7320 | 1318 | 5.6× | 3.0× → 0.54× |
+| reassemble3 | 21 | 4165 | 699 | 6.0× | 8.6× → 1.43× |
+| humanoid | 23 | 199 | 121 | 1.6× | 2.48× → 1.52× |
+| ant | 14 | 67.5 | 51.1 | 1.3× | 2.02× → 1.55× |
+| walker2d | 9 | 38.8 | 34.1 | 1.1× | 1.60× → 1.41× |
+
+**Left, on the after profiles:** humanoid_cmu's dense scalar Cholesky (half
+its solve; not bit-exact to vectorise, own gate batch), dog's inverse as a
+pointer chase (the reference does not form it at all — noslip's `M⁻¹Jᵀ`
+as 63 tree solves would be ~4× fewer hops than 79 columns), the reassemble
+contact count (68 / 127 to MuJoCo's 93 / 232 — fidelity, and why the 0.54× is
+not like-for-like), and porting the tree order to the GPU legs, which would
+retire the dense trio and the `LDLᵀ`/`LᵀDL` split.

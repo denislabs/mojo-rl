@@ -42,6 +42,7 @@ from ..gpu.constants import (
     MODEL_TREE_SIZE,
     TREE_IDX_DOF_ADR,
     TREE_IDX_DOF_NUM,
+    MODEL_META_IDX_NTREE,
 )
 
 
@@ -211,6 +212,200 @@ def _ldl_solve_env[
         x[env, i] = s
 
 
+# =============================================================================
+# The TREE-ORDERED LDL — MuJoCo's `mj_factorI` / `mj_solveLD`, CPU path
+# =============================================================================
+#
+# ⚠⚠ A DIFFERENT FACTORISATION FROM THE ONE ABOVE, IN THE SAME BUFFERS.
+# `_ldl_factor_env` eliminates forward and produces `M = L D Lᵀ`; on a
+# kinematic tree that FILLS IN between siblings (eliminating a root couples
+# every child), so `L` is dense within a tree and every solve is O(nv²) — and
+# `compute_m_inv`, nv such solves, is O(nv³): 48% of dog's step after
+# everything else was fixed (PERFORMANCE.md §13.10).
+#
+# MuJoCo eliminates from the LAST dof backwards (`engine_core_smooth.c:1973`)
+# and gets `M = Lᵀ D L` with `L` unit-lower on M's OWN sparsity: row `k` is
+# nonzero at `k`'s ancestors and nowhere else, no fill. Every solve is then
+# O(nC) (`:2113`) and the inverse O(nv² · depth). These three routines are
+# that algorithm, on our dense `[nv*nv]` storage, walking `Model.dof_parentid`
+# instead of a sparse index.
+#
+# ⚠ THE CPU DISPATCHERS BELOW SELECT THEM when `MODEL_META_IDX_NTREE > 0`
+# (the parser ran and the table is real) and keep the dense trio otherwise
+# and on every GPU leg. So `scratch.L` holds `Lᵀ D L`'s L on the CPU and
+# `L D Lᵀ`'s L on a GPU: a factor is only ever read by the solve that shares
+# its dispatcher, and a test that compares `L` ACROSS the two conventions is
+# comparing two different matrices. Compare solves.
+#
+# Numerically the two are different roundings of the same inverse; nothing
+# here is bit-exact against the dense trio, and the gates are MuJoCo's:
+# `dof_invweight0` at qpos0 (`test_constraints_vs_mujoco`, ~1e-15) and the
+# trajectory gates.
+
+
+@always_inline
+def _ldl_factor_tree_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    LM: Layout,
+    LNV: Layout,
+    LP: Layout,
+](
+    env: Int,
+    dims: DIMS,
+    M: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    dofp: LayoutTensor[DTYPE, LP, MutAnyOrigin],
+):
+    """`M = Lᵀ D L`, `mj_factorI` on dense storage. `L[env, k*nv + j]` for
+    `j` an ancestor of `k`; unit diagonal stored; everything else zero.
+
+    ⚠ THE PARENT TABLE IS READ INTO INTEGERS ONCE. The chain walk is the
+    whole cost of these routines — there is almost no arithmetic left — and a
+    float->int conversion on every hop was a large part of it."""
+    var nv = dims.get_nv()
+    comptime V_CAP = cap[DIMS.NV]()
+    var par = Scratch[Int, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
+        par[i] = Int(dofp[i])
+    for i in range(nv * nv):
+        L[env, i] = 0
+    for k in range(nv):
+        var rk = k * nv
+        L[env, rk + k] = M[env, rk + k]
+        var j = par[k]
+        while j >= 0:
+            L[env, rk + j] = M[env, rk + j]
+            j = par[j]
+    for k in range(nv - 1, -1, -1):
+        var rk = k * nv
+        var dk = L[env, rk + k]
+        var inv_d = L.element_type(0)
+        if dk > 1e-14 or dk < -1e-14:
+            inv_d = L.element_type(1) / dk
+        # Rows of k's ancestors: row_i -= (L[k,i] / d_k) * row_k over the
+        # columns row i owns (i's ancestors and i). Row k is still unscaled
+        # here, as in the reference.
+        var i = par[k]
+        while i >= 0:
+            var ri = i * nv
+            var coef = -(L[env, rk + i] * inv_d)
+            var j = i
+            while j >= 0:
+                L[env, ri + j] = L[env, ri + j] + coef * L[env, rk + j]
+                j = par[j]
+            i = par[i]
+        D[env, k] = dk
+        var j2 = par[k]
+        while j2 >= 0:
+            L[env, rk + j2] = L[env, rk + j2] * inv_d
+            j2 = par[j2]
+        L[env, rk + k] = 1
+
+
+@always_inline
+def _ldl_solve_tree_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    LM: Layout,
+    LNV: Layout,
+    LP: Layout,
+](
+    env: Int,
+    dims: DIMS,
+    L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    b: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    x: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    dofp: LayoutTensor[DTYPE, LP, MutAnyOrigin],
+):
+    """`x = (Lᵀ D L)⁻¹ b`, `mj_solveLD`: scatter up the tree, divide, gather."""
+    var nv = dims.get_nv()
+    comptime V_CAP = cap[DIMS.NV]()
+    var par = Scratch[Int, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
+        par[i] = Int(dofp[i])
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
+        y[i] = b[env, i]
+    for i in range(nv - 1, -1, -1):
+        var yi = y[i]
+        if yi != 0:
+            var ri = i * nv
+            var j = par[i]
+            while j >= 0:
+                y[j] = y[j] - L[env, ri + j] * yi
+                j = par[j]
+    for i in range(nv):
+        var d_i = D[env, i]
+        if d_i > 1e-14 or d_i < -1e-14:
+            y[i] = y[i] / d_i
+        else:
+            y[i] = 0
+    for i in range(nv):
+        var ri = i * nv
+        var s = y[i]
+        var j = par[i]
+        while j >= 0:
+            s = s - L[env, ri + j] * y[j]
+            j = par[j]
+        y[i] = s
+        x[env, i] = s
+
+
+@always_inline
+def _m_inv_tree_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    LM: Layout,
+    LNV: Layout,
+    LP: Layout,
+](
+    env: Int,
+    dims: DIMS,
+    L: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, LNV, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, LM, MutAnyOrigin],
+    dofp: LayoutTensor[DTYPE, LP, MutAnyOrigin],
+):
+    """Dense `M⁻¹`, one tree solve per column: O(nv² · depth) in all."""
+    var nv = dims.get_nv()
+    comptime V_CAP = cap[DIMS.NV]()
+    var par = Scratch[Int, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
+        par[i] = Int(dofp[i])
+    var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    for c in range(nv):
+        for i in range(nv):
+            y[i] = 0
+        y[c] = 1
+        # Only dofs at or below `c` can be nonzero after the scatter.
+        for i in range(c, -1, -1):
+            var yi = y[i]
+            if yi != 0:
+                var ri = i * nv
+                var j = par[i]
+                while j >= 0:
+                    y[j] = y[j] - L[env, ri + j] * yi
+                    j = par[j]
+        for i in range(nv):
+            var d_i = D[env, i]
+            if d_i > 1e-14 or d_i < -1e-14:
+                y[i] = y[i] / d_i
+            else:
+                y[i] = 0
+        for i in range(nv):
+            var ri = i * nv
+            var s = y[i]
+            var j = par[i]
+            while j >= 0:
+                s = s - L[env, ri + j] * y[j]
+                j = par[j]
+            y[i] = s
+            m_inv[env, ri + c] = s
+
+
 def _ldl_factor_fields_kernel[
     DTYPE: DType,
     NV: Int,
@@ -345,8 +540,17 @@ def ldl_factor[
         var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
+        # Tree-ordered when the parser built the table, dense otherwise —
+        # see the note above `_ldl_factor_tree_env`.
+        var use_tree = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+        var P_v = m.dof_parentid.lt_dyn["cpu", DYN1](
+            rl1(dm.get_nv() if dm.get_nv() > 0 else 1)
+        )
         for e in range(BATCH):
-            _ldl_factor_env(e, dm, M_v, L_v, D_v, T_v)
+            if use_tree:
+                _ldl_factor_tree_env(e, dm, M_v, L_v, D_v, P_v)
+            else:
+                _ldl_factor_env(e, dm, M_v, L_v, D_v, T_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV
@@ -393,8 +597,15 @@ def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
         var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
         var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
+        var use_tree = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+        var P_v = m.dof_parentid.lt_dyn["cpu", DYN1](
+            rl1(dm.get_nv() if dm.get_nv() > 0 else 1)
+        )
         for e in range(BATCH):
-            _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v, T_v)
+            if use_tree:
+                _ldl_solve_tree_env(e, dm, L_v, D_v, b_v, x_v, P_v)
+            else:
+                _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v, T_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
@@ -582,8 +793,15 @@ def compute_m_inv[
         var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         var T_v = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
+        var use_tree = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+        var P_v = m.dof_parentid.lt_dyn["cpu", DYN1](
+            rl1(dm.get_nv() if dm.get_nv() > 0 else 1)
+        )
         for e in range(BATCH):
-            _m_inv_env(e, dm, L_v, D_v, mi_v, T_v)
+            if use_tree:
+                _m_inv_tree_env(e, dm, L_v, D_v, mi_v, P_v)
+            else:
+                _m_inv_env(e, dm, L_v, D_v, mi_v, T_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = D.NV

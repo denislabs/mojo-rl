@@ -3017,6 +3017,31 @@ def build_model_fields_from_flat[
         d0 = d1
     mf.meta.data[MODEL_META_IDX_NTREE] = Scalar[DTYPE](ntree)
 
+    # ── `dof_parentid` (MuJoCo `m->dof_parentid`), from the dof->body map
+    # above. Dofs of one body chain in order — across that body's joints too —
+    # and a body's first dof hangs from the last dof of the nearest ancestor
+    # body that has any; a dof with no such ancestor is a root (-1). Gated
+    # entry for entry against MuJoCo in `test_dof_parentid_vs_mujoco`.
+    var _nbody_t = mf.dims.get_nbody()
+    var body_last_dof = List[Int](
+        length=_nbody_t if _nbody_t > 0 else 1, fill=-1
+    )
+    for d in range(_nv_t):
+        body_last_dof[dof_body_t[d]] = d
+    for d in range(_nv_t):
+        var b = dof_body_t[d]
+        var par = -1
+        if d > 0 and dof_body_t[d - 1] == b:
+            par = d - 1
+        else:
+            var pb = Int(mf.bodies.data[b * MODEL_BODY_SIZE + BODY_IDX_PARENT])
+            while pb > 0:
+                if body_last_dof[pb] >= 0:
+                    par = body_last_dof[pb]
+                    break
+                pb = Int(mf.bodies.data[pb * MODEL_BODY_SIZE + BODY_IDX_PARENT])
+        mf.dof_parentid.data[d] = Scalar[DTYPE](par)
+
 
 
 # =============================================================================

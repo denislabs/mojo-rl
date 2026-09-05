@@ -175,6 +175,20 @@ struct Model[
 
     Filled by `compute_invweight0`, which already forms M at qpos0 and must
     read the diagonal BEFORE `ldl_factor` overwrites it in place."""
+    var dof_parentid: TensorImpl[Self.DTYPE]  # [NV]
+    """MuJoCo's `dof_parentid`: the dof each dof hangs from, -1 for a root.
+
+    Within a body the dofs chain (dof `d`'s parent is `d-1` when both belong
+    to the same body, across joints too); the first dof of a body hangs from
+    the LAST dof of the nearest ancestor body that has one. Built by
+    `fields_build` beside `trees` and gated against MuJoCo's own table
+    (`test_dof_parentid_vs_mujoco`). It is what makes the tree-ordered LDL
+    (`dynamics/ldl.mojo`, `_ldl_factor_tree_env`) possible: L keeps M's own
+    sparsity — row `k` is nonzero at `k`'s ancestors only — so every solve is
+    O(nC) rather than O(nv^2). ⚠ `-1` everywhere means "no table" (a `Model`
+    built without the parser), and the dispatchers fall back to the dense
+    factorisation on `MODEL_META_IDX_NTREE == 0`, exactly as `_dof_block`
+    does for `trees`."""
     var trees: TensorImpl[Self.DTYPE]  # [NV, MODEL_TREE_SIZE]
     """The kinematic trees as `(dof_adr, dof_num, kind)` — M's diagonal blocks.
 
@@ -420,6 +434,11 @@ struct Model[
         # `MODEL_META_IDX_NTREE`'s default implies.
         for i in range(_at_least_one(dims.get_nv()) * MODEL_TREE_SIZE):
             self.trees.data[i] = Scalar[Self.DTYPE](0)
+        self.dof_parentid = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nv())
+        )
+        for i in range(_at_least_one(dims.get_nv())):
+            self.dof_parentid.data[i] = Scalar[Self.DTYPE](-1)
         self.dof_actdamp = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.actdamp_trn = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(dims.get_nact() * ACTDAMP_TRN_SIZE)
@@ -506,6 +525,7 @@ struct Model[
         self.dof_invweight0.upload(ctx)
         self.dof_M0.upload(ctx)
         self.trees.upload(ctx)
+        self.dof_parentid.upload(ctx)
         self.dof_actdamp.upload(ctx)
         self.actdamp_trn.upload(ctx)
         self.excludes.upload(ctx)

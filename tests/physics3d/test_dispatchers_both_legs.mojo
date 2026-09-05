@@ -156,6 +156,21 @@ def copy_model[
         n_meta = len(dst.meta.data)
     for i in range(n_meta):
         dst.meta.data[i] = src.meta.data[i]
+    # ⚠ THE TOPOLOGY TABLES TOO. `meta` carries `MODEL_META_IDX_NTREE`, and
+    # the LDL dispatchers read it as "the parser built `trees` and
+    # `dof_parentid`"; copying the flag without the tables handed the dynamic
+    # arm a claimed table of all-roots and a factorisation that believed it —
+    # `ldl_factor: L` failed here the day the tree-ordered LDL landed.
+    var n_trees = len(src.trees.data)
+    if len(dst.trees.data) < n_trees:
+        n_trees = len(dst.trees.data)
+    for i in range(n_trees):
+        dst.trees.data[i] = src.trees.data[i]
+    var n_dofp = len(src.dof_parentid.data)
+    if len(dst.dof_parentid.data) < n_dofp:
+        n_dofp = len(dst.dof_parentid.data)
+    for i in range(n_dofp):
+        dst.dof_parentid.data[i] = src.dof_parentid.data[i]
     var n_geoms = len(src.geoms.data)
     if len(dst.geoms.data) < n_geoms:
         n_geoms = len(dst.geoms.data)
