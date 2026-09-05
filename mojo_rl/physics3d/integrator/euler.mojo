@@ -32,6 +32,7 @@ from ..kinematics.forward_kinematics import (
 from ..dynamics.subtree_com import compute_subtree_com
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.mass_matrix import compute_mass_matrix
+from std.time import perf_counter_ns
 from ..fields.scratch import Scratch, cap
 from ..dynamics.ldl import (
     ldl_factor,
@@ -93,6 +94,15 @@ comptime EU_TPB: Int = 64
 
 
 # ── armature: M diagonal += armature (verbatim step_kernel 6b) ────────────
+
+# ⚠ A STAGE PROBE FOR THE CPU EULER STEP, off and free by default (the twin of
+# `newton_solve._CPU_PROBE`). On, `step["cpu"]` prints one `[eprobe]` line per
+# step with nanoseconds per stage: FK, body velocities, subtree COM, cdof,
+# CRBA, armature, LDL factor, M^-1, RNE, fnet assembly, LDL solve, writeback,
+# collision, the constraint solve, warm-start save, finalize. Fold with awk.
+comptime _EULER_PROBE: Bool = False
+
+
 @always_inline
 def _armature_env[
     DTYPE: DType,
@@ -680,11 +690,50 @@ struct EulerIntegrator[
             != Scalar[Self.DTYPE](0)
         )
 
+        var _e_fk: Int = 0
+        var _e_bodyvel: Int = 0
+        var _e_subtree: Int = 0
+        var _e_cdof: Int = 0
+        var _e_crba: Int = 0
+        var _e_armature: Int = 0
+        var _e_ldlf: Int = 0
+        var _e_minv: Int = 0
+        var _e_rne: Int = 0
+        var _e_fnet: Int = 0
+        var _e_ldls: Int = 0
+        var _e_wb: Int = 0
+        var _e_coll: Int = 0
+        var _e_newton: Int = 0
+        var _e_warm: Int = 0
+        var _e_fin: Int = 0
+        var _e_last: Int = 0
+        comptime if _EULER_PROBE:
+            _e_last = Int(perf_counter_ns())
         forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_fk += _e_now - _e_last
+            _e_last = _e_now
         compute_body_velocities[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_bodyvel += _e_now - _e_last
+            _e_last = _e_now
         compute_subtree_com[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_subtree += _e_now - _e_last
+            _e_last = _e_now
         compute_cdof[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_cdof += _e_now - _e_last
+            _e_last = _e_now
         compute_mass_matrix[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU, TREEWALK = Self.CRBA_TREEWALK](d, m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_crba += _e_now - _e_last
+            _e_last = _e_now
 
         comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
         comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
@@ -712,7 +761,15 @@ struct EulerIntegrator[
                 block_dim=(EU_TPB,),
             )
 
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_armature += _e_now - _e_last
+            _e_last = _e_now
         ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_ldlf += _e_now - _e_last
+            _e_last = _e_now
         # ⚠ `M^-1` IS FORMED ONLY FOR A READER. MuJoCo's Newton never builds
         # it: `mj_diagApprox` prices rows with the model-time `*_invweight0`,
         # and `mj_projectConstraint` solves against `qLD`, only for a dual
@@ -734,7 +791,15 @@ struct EulerIntegrator[
                 compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         else:
             compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_minv += _e_now - _e_last
+            _e_last = _e_now
         compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_rne += _e_now - _e_last
+            _e_last = _e_now
 
         comptime if target == "cpu":
             var dm = d.dims
@@ -774,7 +839,15 @@ struct EulerIntegrator[
         # `<body gravcomp>`.
         compute_gravcomp_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_fnet += _e_now - _e_last
+            _e_last = _e_now
         ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_ldls += _e_now - _e_last
+            _e_last = _e_now
 
         comptime if target == "cpu":
             var dm = d.dims
@@ -797,6 +870,10 @@ struct EulerIntegrator[
                 block_dim=(EU_TPB,),
             )
 
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_wb += _e_now - _e_last
+            _e_last = _e_now
         # Constraint seam (order matches the legacy PGS solver): contact
         # detection -> contact PGS -> joint limits, all updating
         # scratch.qacc_constrained. Equality/tendons join here later.
@@ -808,6 +885,10 @@ struct EulerIntegrator[
             # O(N^2) otherwise; same routing as the legacy step kernel's
             # detect_contacts_auto_gpu call).
             detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+            comptime if _EULER_PROBE:
+                var _e_now = Int(perf_counter_ns())
+                _e_coll += _e_now - _e_last
+                _e_last = _e_now
             comptime assert (
                 Self.SOLVER == "pgs"
                 or Self.SOLVER == "newton"
@@ -838,6 +919,10 @@ struct EulerIntegrator[
         # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
         # saves the CONSTRAINT SOLVER's acceleration, and anything the
         # integrator does to `qacc` afterwards never reaches `qacc_warmstart`.
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_newton += _e_now - _e_last
+            _e_last = _e_now
         save_qacc_warmstart[target, Self.DTYPE, BATCH=Self.BATCH](
             d, self.scratch, ctx
         )
@@ -847,6 +932,10 @@ struct EulerIntegrator[
         # solved contact forces, scratch.qacc_constrained) is valid at this
         # point and stale one line later — `_finalize_env` overwrites
         # d.qacc with the implicit-damping re-solve and moves qpos/qvel on.
+        comptime if _EULER_PROBE:
+            var _e_now = Int(perf_counter_ns())
+            _e_warm += _e_now - _e_last
+            _e_last = _e_now
         comptime if Self.RNE_POST:
             compute_rne_post[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
@@ -942,6 +1031,12 @@ struct EulerIntegrator[
                         D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, trees_v3,
                         eulerdamp_off,
                     )
+            comptime if _EULER_PROBE:
+                var _e_now = Int(perf_counter_ns())
+                _e_fin += _e_now - _e_last
+                _e_last = _e_now
+            comptime if _EULER_PROBE:
+                print("[eprobe]", "fk", _e_fk, "bodyvel", _e_bodyvel, "subtree", _e_subtree, "cdof", _e_cdof, "crba", _e_crba, "armature", _e_armature, "ldlf", _e_ldlf, "minv", _e_minv, "rne", _e_rne, "fnet", _e_fnet, "ldls", _e_ldls, "wb", _e_wb, "coll", _e_coll, "newton", _e_newton, "warm", _e_warm, "fin", _e_fin)
         else:
             ctx.value().enqueue_function[
                 _finalize_kernel[
