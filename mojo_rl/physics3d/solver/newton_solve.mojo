@@ -2027,10 +2027,11 @@ def _newton_solve_env[
                                 var dji = De[e_idx] * Je[e_idx * nv + i]
                                 for b in range(n_e):
                                     var j = je_ix[e_idx * nv + b]
-                                    H[i * nv + j] += dji * Je[e_idx * nv + j]
+                                    if j <= i:  # lower triangle only
+                                        H[i * nv + j] += dji * Je[e_idx * nv + j]
                         else:
                             for i in range(nv):
-                                for j in range(nv):
+                                for j in range(i + 1):  # lower triangle only
                                     H[i * nv + j] += (
                                         De[e_idx]
                                         * Je[e_idx * nv + i]
@@ -3452,7 +3453,7 @@ def _newton_solve_env[
                     var Ja = eq_J[e * nv + a]
                     if Ja == Scalar[DTYPE](0):
                         continue
-                    for b in range(nv):
+                    for b in range(a + 1):  # lower triangle, see elliptic_cone
                         H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
             ell_add_contact_hessian[
                 DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN,

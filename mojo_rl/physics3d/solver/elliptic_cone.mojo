@@ -418,9 +418,16 @@ def ell_add_contact_hessian[
                 var jki = Jn_c[kb + i] if k == 0 else Jt_c[kb + i]
                 if jki == ZERO:
                     continue
+                # ⚠ LOWER TRIANGLE ONLY. Every reader of `H` is a Cholesky
+                # (`chol_factor_inline` / `chol_factor_seg`) that reads
+                # `H[i, j]` for `j <= i` and nothing else; the block is
+                # symmetric, so the upper half was half the work for nobody
+                # (PERFORMANCE.md §13.19). Same rule in `newton_solve.mojo`'s
+                # equality rows and pyramidal outer products.
                 for b in range(n_c):
                     var j = _cn_dof[SPARSE](cn_ix, c, b, nv)
-                    H[i * nv + j] += jki * JH[k * nv + j]
+                    if j <= i:
+                        H[i * nv + j] += jki * JH[k * nv + j]
 
 
 @always_inline
