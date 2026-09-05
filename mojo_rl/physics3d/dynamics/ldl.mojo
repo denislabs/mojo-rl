@@ -20,6 +20,7 @@ nothing else is moving. See
 leaves the whole table zeroed — reads as NO BLOCKS. That case must fall back
 to a single whole-`nv` block, not to zero work."""
 
+from std.sys import simd_width_of
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
@@ -266,42 +267,65 @@ def _ldl_factor_tree_env[
     float->int conversion on every hop was a large part of it."""
     var nv = dims.get_nv()
     comptime V_CAP = cap[DIMS.NV]()
+    comptime A_CAP = V_CAP * V_CAP
     var par = Scratch[Int, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         par[i] = Int(dofp[i])
-    for i in range(nv * nv):
-        L[env, i] = 0
+    # ⚠ THE ANCESTOR LISTS ARE BUILT ONCE, THEN ITERATED AS ARRAYS. The
+    # factor's triple loop visits `Σ_k Σ_{i ∈ anc(k)} |anc(i)|` entries — ~8k
+    # on dog — and each hop of a `j = par[j]` walk is a dependent load the
+    # core cannot pipeline. `anc[k*nv + a]` (parent first, root last) is the
+    # same sequence the walk produced, so the arithmetic order, and the bits,
+    # are unchanged; `mj_factorI` iterates `rownnz`/`colind` arrays the same
+    # way. The slab is addressed through a raw pointer (PERFORMANCE.md
+    # §13.21: indexed access in element loops is the cost, not the flops).
+    var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
+    var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
     for k in range(nv):
-        var rk = k * nv
-        L[env, rk + k] = M[env, rk + k]
+        var n_a = 0
         var j = par[k]
         while j >= 0:
-            L[env, rk + j] = M[env, rk + j]
+            anc[k * nv + n_a] = j
+            n_a += 1
             j = par[j]
+        dep[k] = n_a
+    var nn = nv * nv
+    var Lp = L.ptr + env * nn
+    var Mp = M.ptr + env * nn
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var q = 0
+    while q + W <= nn:
+        Lp.store(q, SIMD[DTYPE, W](0))
+        q += W
+    while q < nn:
+        Lp[q] = 0
+        q += 1
+    for k in range(nv):
+        var rk = k * nv
+        Lp[rk + k] = Mp[rk + k]
+        for a in range(dep[k]):
+            var j = anc[rk + a]
+            Lp[rk + j] = Mp[rk + j]
     for k in range(nv - 1, -1, -1):
         var rk = k * nv
-        var dk = L[env, rk + k]
-        var inv_d = L.element_type(0)
+        var dk = Lp[rk + k]
+        var inv_d = Scalar[DTYPE](0)
         if dk > 1e-14 or dk < -1e-14:
-            inv_d = L.element_type(1) / dk
-        # Rows of k's ancestors: row_i -= (L[k,i] / d_k) * row_k over the
-        # columns row i owns (i's ancestors and i). Row k is still unscaled
-        # here, as in the reference.
-        var i = par[k]
-        while i >= 0:
+            inv_d = Scalar[DTYPE](1) / dk
+        for a in range(dep[k]):
+            var i = anc[rk + a]
             var ri = i * nv
-            var coef = -(L[env, rk + i] * inv_d)
-            var j = i
-            while j >= 0:
-                L[env, ri + j] = L[env, ri + j] + coef * L[env, rk + j]
-                j = par[j]
-            i = par[i]
+            var coef = -(Lp[rk + i] * inv_d)
+            # `{i} ∪ anc(i)`, in the walk's order: `i` first.
+            Lp[ri + i] = Lp[ri + i] + coef * Lp[rk + i]
+            for b in range(dep[i]):
+                var j = anc[ri + b]
+                Lp[ri + j] = Lp[ri + j] + coef * Lp[rk + j]
         D[env, k] = dk
-        var j2 = par[k]
-        while j2 >= 0:
-            L[env, rk + j2] = L[env, rk + j2] * inv_d
-            j2 = par[j2]
-        L[env, rk + k] = 1
+        for a in range(dep[k]):
+            var j2 = anc[rk + a]
+            Lp[rk + j2] = Lp[rk + j2] * inv_d
+        Lp[rk + k] = 1
 
 
 @always_inline
@@ -327,6 +351,7 @@ def _ldl_solve_tree_env[
     for i in range(nv):
         par[i] = Int(dofp[i])
     var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var Lp = L.ptr + env * nv * nv
     for i in range(nv):
         y[i] = b[env, i]
     for i in range(nv - 1, -1, -1):
@@ -335,7 +360,7 @@ def _ldl_solve_tree_env[
             var ri = i * nv
             var j = par[i]
             while j >= 0:
-                y[j] = y[j] - L[env, ri + j] * yi
+                y[j] = y[j] - Lp[ri + j] * yi
                 j = par[j]
     for i in range(nv):
         var d_i = D[env, i]
@@ -348,7 +373,7 @@ def _ldl_solve_tree_env[
         var s = y[i]
         var j = par[i]
         while j >= 0:
-            s = s - L[env, ri + j] * y[j]
+            s = s - Lp[ri + j] * y[j]
             j = par[j]
         y[i] = s
         x[env, i] = s
