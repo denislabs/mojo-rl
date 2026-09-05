@@ -1073,3 +1073,72 @@ binaries):
    three per iteration) — segment-restrict them as PN2d did for `L_sh`.
    Bit-exact, small.
 4. Collision on the arms (§12.1), unchanged at 2.6×.
+
+### 13.6 The stage probe: what is inside `solve_newton`, per model
+
+`sample` sees `_newton_solve_env` as one inlined body, so `_CPU_PROBE`
+(`solver/newton_solve.mojo`) now times its stages with `perf_counter_ns` and
+prints one `[probe]` line per solve; it is a comptime flag, off and free by
+default. Run with it on (build the bench binary, fold with `awk`):
+
+```
+    awk '/^\[probe\]/ {n++; for(i=3;i<=NF;i+=2) s[$i]+=$(i+1)} END {...}'   # §13.6 of the tree has the full one-liner
+```
+
+µs per SOLVE (one Euler step = one solve), after §13.5, M1 Pro, f32:
+
+| stage | humanoid_cmu | dog_stand | reassemble3 | reassemble5 | park_k9 |
+|---|---|---|---|---|---|
+| iterations / solve | 3.3 | 3.2 | **18.3** | **35.4** | 2.1 |
+| rows | 3.7 | 6.5 | 4.1 | 11.4 | 0.3 |
+| setup (`M_local`, `Ma`, warm start) | 31.8 (16%) | 48.9 | 27.5 | 80.8 | **6.2 (38%)** |
+| Hessian build | 27.9 (14%) | 32.2 | 25.5 | 84.5 | 3.4 (21%) |
+| Cholesky (+solve) | **99.8 (51%)** | 210 (22%) | 14.2 | 56.4 | 5.0 (31%) |
+| `M·s`, `J·s` | 16.2 | 27.2 | 165 (12%) | 865 (12%) | 0.7 |
+| line search | 8.2 | 9.5 | 184 (13%) | 633 (9%) | 0.2 |
+| post-step update | 9.1 | 9.0 | 214 (16%) | 1200 (17%) | 0.5 |
+| **H rebuild + refactor** (elliptic) | — | — | **536 (39%)** | **3284 (46%)** | — |
+| noslip | — | **617 (64%)** | 207 (15%) | 904 (13%) | — |
+| **solve total** | 197 | 961 | 1376 | 7119 | 16.3 |
+
+(MuJoCo, same scenes: 7.0 iterations on both reassemble scenes; whole
+CONSTRAINT phase 40 µs on humanoid_cmu, 79 + 81 on dog, 1972 + 592 on
+reassemble5.)
+
+**Four models, four different answers — which is why the probe was worth
+building before touching anything:**
+
+1. **humanoid_cmu is the dense Cholesky**: 100 µs of 197, one 62×62 factor
+   per iteration at ~1.3 GFLOP/s — scalar, `chol_factor_seg`'s inner dot
+   product does not vectorise (§7.1). One tree, so segments cannot help.
+   ⚠ MuJoCo's `jacobian="auto"` goes SPARSE at nv ≥ 60, so on this model
+   and dog the reference factors a sparse H; ours is dense on both.
+2. **dog is noslip**: 617 µs of 961 in `noslip_pyramidal`, against MuJoCo's
+   whole constraint + projection phases at 160 µs. That routine, not the
+   Newton loop, is dog's target; its own stages are not split yet.
+3. **The reassemble scenes are the ELLIPTIC path, and the first number is the
+   iteration count: 18 and 35 against MuJoCo's 7 on the same scenes.** Each
+   iteration rebuilds and refactors the cone Hessian (`cone_live` is true
+   whenever any contact sits in its cone zone), and the rebuild walks DENSE
+   contact Jacobians — `nefc × nv²`, 900 × 33² on reassemble5 — the same
+   shape §13.5-A removed from the pyramidal path. Two separate items: the
+   per-iteration cost (sparse rows, bit-exact, same recipe) and the
+   iteration count (a convergence question against the reference, not a
+   speed one). ⚠ The contact COUNT also differs: ours 69 / 125 to MuJoCo's
+   93 / 232 on average (both under our caps of 256 / 512), which is a
+   fidelity question outside this pass and is recorded in the table's flag.
+4. **park_k9 is the `nv²` copies now**: setup 38% + Hessian build 21% at
+   six rows are `M_local = M`, `H = M` and the zeroing of `L` — 3 × 3 600
+   entries per iteration on a scene whose arithmetic is now ~300 flops.
+   Bit-exact to segment-restrict (PN2d did it for `L_sh`).
+
+The two reassemble rows, added to the sweep (2000 timed steps × 3 rounds,
+`!! ncon differs` on both):
+
+| model | nv | ours µs | MuJoCo µs | ratio | ncon ours / mj | mj nefc | mj niter |
+|---|---|---|---|---|---|---|---|
+| reassemble3 | 21 | 4165 | 482 | **8.6×** | 69.2 / 93.3 | 293 | 7.0 |
+| reassemble5 | 33 | 7320 | 2427 | **3.0×** | 124.6 / 232.2 | 710 | 7.0 |
+
+Ours there is 81% `solve_newton` (elliptic), 6–11% `noslip_elliptic`, ~10%
+collision.

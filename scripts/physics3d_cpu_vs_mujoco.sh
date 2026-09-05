@@ -54,6 +54,8 @@ MODELS=(
   contact:sawyer_reach:mojo_rl/envs/metaworld/assets/sawyer_reach.xml
   contact:dog_stand:mojo_rl/envs/dm_control/assets/dog_stand_walk.xml
   contact:humanoid_cmu:mojo_rl/envs/dm_control/assets/humanoid_cmu.xml
+  contact:reassemble3:mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml:200:2000:1
+  contact:reassemble5:mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml:200:2000:1
 )
 
 if [ "$SKIP_BUILD" = 0 ]; then

@@ -68,6 +68,7 @@ The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 """
 
 from std.math import sqrt, pow, abs
+from std.time import perf_counter_ns
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
@@ -284,6 +285,16 @@ comptime _ELL_TRACE: Bool = False
 # returns a TINY alpha with `improvement` exactly 0.0 while the gradient
 # plateaus just above `tolerance`. No aggregate shows that.
 comptime _PYR_TRACE: Bool = False
+# ⚠ A STAGE PROBE FOR THE CPU SOLVER, off by default and free when off. With it
+# on, `_newton_solve_env` prints one `[probe]` line per solve for env 0 with the
+# nanoseconds each stage took — row build, setup, Hessian build, Cholesky,
+# `M*search` + `J*search`, line search, the post-step update, the elliptic
+# H rebuild, noslip — and the iteration count. `sample` cannot split this
+# function (it is one inlined body), and the record on GUESSING which stage
+# dominates it is two probes wrong out of three (BLOCK_DIAGONAL_MASS_MATRIX_
+# IMPLEMENTATION.md §2). Fold the lines with awk; PERFORMANCE.md §13.6 shows
+# how. CPU only: the GPU legs never see `perf_counter_ns`.
+comptime _CPU_PROBE: Bool = False
 
 # ⚠⚠ A PRICING KNOB, AND IT IS BIT-IDENTICAL AT EVERY VALUE — that is the only
 # reason it is safe to ship. It divides the STRIDE of the blocked kernel's
@@ -1229,6 +1240,19 @@ def _newton_solve_env[
             + 6 * nequality
         )
 
+        var _p_rows: Int = 0
+        var _p_setup: Int = 0
+        var _p_hbuild: Int = 0
+        var _p_chol: Int = 0
+        var _p_mv: Int = 0
+        var _p_ls: Int = 0
+        var _p_update: Int = 0
+        var _p_hrebuild: Int = 0
+        var _p_noslip: Int = 0
+        var _p_iters: Int = 0
+        var _p_last: Int = 0
+        comptime if _CPU_PROBE:
+            _p_last = Int(perf_counter_ns())
         # Cache edge data from PYRAMIDAL workspace layout
         var pyr_sc = ws_Jt_idx + NE * max_contacts * nv
         var Je = Scratch[Scalar[DTYPE], E_CAP * V_CAP](me * nv, uninitialized=Scalar[DTYPE](0))
@@ -1602,6 +1626,10 @@ def _newton_solve_env[
                 )
                 num_edges += 1
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_rows += _p_now - _p_last
+            _p_last = _p_now
         # ── TREE_AWARE: the rows' nonzero dofs and the tree segments ───────
         # Both are derived from the FINISHED row list, so this sits after the
         # last row builder and before anything reads `Je`. `je_ix[e*nv + a]`,
@@ -1803,6 +1831,10 @@ def _newton_solve_env[
                 for i in range(nv):
                     Ma[i] = f_smooth[i]
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_setup += _p_now - _p_last
+            _p_last = _p_now
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
             # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
@@ -1829,6 +1861,11 @@ def _newton_solve_env[
             # bound above is only the ceiling a `range()` needs.
             if iter_n >= niter_rt:
                 break
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_update += _p_now - _p_last
+                _p_last = _p_now
+                _p_iters += 1
             # Gradient
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(nv):
@@ -1874,6 +1911,10 @@ def _newton_solve_env[
                                     * Je[e_idx * nv + j]
                                 )
 
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_hbuild += _p_now - _p_last
+                _p_last = _p_now
             # Cholesky solve
             comptime if TREE_AWARE:
                 # One factorisation per tree segment into the same zeroed
@@ -1923,6 +1964,10 @@ def _newton_solve_env[
             for i in range(nv):
                 search[i] = -search[i]
 
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_chol += _p_now - _p_last
+                _p_last = _p_now
             # Mv = M * search
             for i in range(nv):
                 Mv[i] = Scalar[DTYPE](0)
@@ -1933,6 +1978,10 @@ def _newton_solve_env[
                     for j in range(nv):
                         Mv[i] += M_local[i * nv + j] * search[j]
 
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_mv += _p_now - _p_last
+                _p_last = _p_now
             # `PrimalSearch` (engine_solver.c:1692) — an ITERATED search, not
             # a single analytical step. ⚠ `gtol_scale` is
             # `opt.tolerance * opt.ls_tolerance / scale`, the product
@@ -1949,6 +1998,10 @@ def _newton_solve_env[
                 tol_rt * lstol_rt / scale,
             )
 
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_ls += _p_now - _p_last
+                _p_last = _p_now
             if alpha < Scalar[DTYPE](1e-10):
                 break
 
@@ -2023,6 +2076,10 @@ def _newton_solve_env[
                         force[e_idx] = old_force[e_idx]
                 break
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_update += _p_now - _p_last
+            _p_last = _p_now
         # ── mj_solNoSlip ───────────────────────────────────────────────────
         # A friction-only Gauss-Seidel sweep with the NORMAL forces frozen,
         # run after the primal solve. Off unless the model asks for it
@@ -2125,6 +2182,18 @@ def _newton_solve_env[
                 nv,
             )
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_noslip += _p_now - _p_last
+            _p_last = _p_now
+        comptime if _CPU_PROBE:
+            if env == 0:
+                print(
+                    "[probe] pyr rows", _p_rows, "setup", _p_setup,
+                    "hbuild", _p_hbuild, "chol", _p_chol, "mv", _p_mv,
+                    "ls", _p_ls, "update", _p_update, "hrebuild", _p_hrebuild,
+                    "noslip", _p_noslip, "iters", _p_iters,
+                )
         # Write qacc back
         for i in range(nv):
             qacc_constrained[env, i] = qacc[i]
@@ -2199,6 +2268,19 @@ def _newton_solve_env[
         return  # PYRAMIDAL path complete
 
     # === ELLIPTIC path ===
+    var _p_rows: Int = 0
+    var _p_setup: Int = 0
+    var _p_hbuild: Int = 0
+    var _p_chol: Int = 0
+    var _p_mv: Int = 0
+    var _p_ls: Int = 0
+    var _p_update: Int = 0
+    var _p_hrebuild: Int = 0
+    var _p_noslip: Int = 0
+    var _p_iters: Int = 0
+    var _p_last: Int = 0
+    comptime if _CPU_PROBE:
+        _p_last = Int(perf_counter_ns())
     # === Cache loop-invariant contact data into local InlineArrays ===
     # Jn, the NT tangent Jacobians, mu, D_n, per-row D and friction, dist,
     # pos_bias and per-row bias never change during Newton iterations — load
@@ -2401,6 +2483,10 @@ def _newton_solve_env[
             eq_kind[neq_rows] = SROW_EQ_BILATERAL
             neq_rows += 1
 
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_rows += _p_now - _p_last
+        _p_last = _p_now
     # === Step 2: Initialize local InlineArrays from workspace ===
     var H = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
     var L_chol = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
@@ -2617,6 +2703,10 @@ def _newton_solve_env[
             st_e, jar_e, eq_D[e], Scalar[DTYPE](0)
         )
 
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_setup += _p_now - _p_last
+        _p_last = _p_now
     # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
     # Scalar rows contribute D only on their own dof (J = sign*e_dof, so
     # J^T*J = e_dof*e_dof^T — the sign squares away).
@@ -2645,6 +2735,10 @@ def _newton_solve_env[
     )
 
     # Cholesky factorize H (with regularization on rank deficiency)
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_hbuild += _p_now - _p_last
+        _p_last = _p_now
     var chol_ok_gpu = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
     if not chol_ok_gpu:
         for i in range(nv):
@@ -2653,6 +2747,10 @@ def _newton_solve_env[
 
     # === Precompute qfrc_c = J^T * force (replaces per-iteration gradient workspace reads) ===
     # Updated after each force update instead of recomputing from workspace each gradient step.
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_chol += _p_now - _p_last
+        _p_last = _p_now
     var qfrc_c = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
     for i in range(nv):
         qfrc_c[i] = Scalar[DTYPE](0)
@@ -2670,6 +2768,10 @@ def _newton_solve_env[
         for d in range(nv):
             qfrc_c[d] += eq_J[e * nv + d] * eq_f[e]
 
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_setup += _p_now - _p_last
+        _p_last = _p_now
     # === Step 5: Newton iteration loop ===
     for _iter in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
@@ -2694,6 +2796,11 @@ def _newton_solve_env[
             break
         if _iter >= niter_rt:
             break
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_hrebuild += _p_now - _p_last
+            _p_last = _p_now
+            _p_iters += 1
         # Gradient = Ma - qfrc_sm - qfrc_c (pure InlineArray reads — no workspace access)
         var grad_norm_sq: Scalar[DTYPE] = 0
         for i in range(nv):
@@ -2721,6 +2828,10 @@ def _newton_solve_env[
         if not search_ok_gpu:
             break
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_chol += _p_now - _p_last
+            _p_last = _p_now
         # Mv = M_local * search (InlineArray reads only — no workspace access)
         for i in range(nv):
             var s: Scalar[DTYPE] = 0
@@ -2794,6 +2905,10 @@ def _newton_solve_env[
         if p0_d2 <= Scalar[DTYPE](0):
             p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_mv += _p_now - _p_last
+            _p_last = _p_now
         var alpha: Scalar[DTYPE] = 0
         if p0_d1 < Scalar[DTYPE](0):
             # Phase 1: initial Newton step
@@ -2985,6 +3100,10 @@ def _newton_solve_env[
         comptime if _ELL_TRACE:
             print("       alpha", alpha)
         # If alpha is negligible, stop
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_ls += _p_now - _p_last
+            _p_last = _p_now
         if alpha < Scalar[DTYPE](1e-12):
             break
 
@@ -3088,6 +3207,10 @@ def _newton_solve_env[
             if cs_arr[c] == ELL_CONE:
                 cone_live = True
                 break
+        comptime if _CPU_PROBE:
+            var _p_now = Int(perf_counter_ns())
+            _p_update += _p_now - _p_last
+            _p_last = _p_now
         if state_changed or cone_live:
             for k in range(nv * nv):
                 H[k] = M_local[k]
@@ -3134,6 +3257,10 @@ def _newton_solve_env[
     # `noslip.mojo`), and this is the dispatch the module's header calls the
     # caller's obligation. It sits inside the already-cone-split solve body,
     # so there is no runtime test to get wrong.
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_hrebuild += _p_now - _p_last
+        _p_last = _p_now
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
             DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
@@ -3168,6 +3295,18 @@ def _newton_solve_env[
             qfrc_c,
         )
 
+    comptime if _CPU_PROBE:
+        var _p_now = Int(perf_counter_ns())
+        _p_noslip += _p_now - _p_last
+        _p_last = _p_now
+    comptime if _CPU_PROBE:
+        if env == 0:
+            print(
+                "[probe] ell rows", _p_rows, "setup", _p_setup,
+                "hbuild", _p_hbuild, "chol", _p_chol, "mv", _p_mv,
+                "ls", _p_ls, "update", _p_update, "hrebuild", _p_hrebuild,
+                "noslip", _p_noslip, "iters", _p_iters,
+            )
     # Write solved qacc back to workspace
     for i in range(nv):
         qacc_constrained[env, i] = qacc[i]

@@ -1,11 +1,17 @@
 """Contact-rich models, CPU step vs MuJoCo — see `harness.mojo`.
 
     pixi run mojo build -I . -I benchmarks benchmarks/physics3d_cpu/bench_contact.mojo -o <bin>
-    <bin> <sawyer_reach|dog_stand|humanoid_cmu> [warmup] [steps] [rounds]
+    <bin> <sawyer_reach|dog_stand|humanoid_cmu|reassemble3|reassemble5> [warmup] [steps] [rounds]
 
-All three XMLs step with Euler in MuJoCo (Sawyer says so; dog and humanoid_CMU
-say nothing and get the default). These are the rows where the constraint
-solver, not collision, has a chance to be the gap.
+All five XMLs step with Euler in MuJoCo (Sawyer and the reassemble scenes say
+so; dog and humanoid_CMU say nothing and get the default). These are the rows
+where the constraint solver, not collision, has a chance to be the gap.
+
+The two `reassemble` scenes are dm_control manipulation's brick piles — a
+stack of 3 / 5 bricks in contact from step 1 (MuJoCo: 92 / 231 contacts on
+average, max 138 / 361), ELLIPTIC cone, `noslip_iterations=5`. They are the
+contact-dense end of the sweep, they take the elliptic Newton path, and they
+have a history of being both slow and unstable here.
 """
 
 from std.sys import argv
@@ -17,6 +23,10 @@ from mojo_rl.envs.dm_control.humanoid_cmu import (
     DMHumanoidCMUConfig,
     WALK_SPEED,
 )
+from mojo_rl.envs.dm_control.manipulation_reassemble3_def import Reassemble3Model
+from mojo_rl.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
+from mojo_rl.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
+from mojo_rl.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
 
 from physics3d_cpu.harness import bench
 
@@ -40,5 +50,9 @@ def main() raises:
         bench[DMHumanoidCMUModel, DMHumanoidCMUConfig[WALK_SPEED], DT, True](
             name, warmup, steps, rounds
         )
+    elif name == "reassemble3":
+        bench[Reassemble3Model, Reassemble3Config, DT, True](name, warmup, steps, rounds)
+    elif name == "reassemble5":
+        bench[Reassemble5Model, Reassemble5Config, DT, True](name, warmup, steps, rounds)
     else:
         print("unknown model:", name)
