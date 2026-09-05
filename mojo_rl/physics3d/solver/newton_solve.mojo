@@ -1366,11 +1366,15 @@ def _newton_solve_env[
             var dist_lo = pos - rmin
             if dist_lo < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](1)
-                var K_lim = rebind[Scalar[DTYPE]](
-                    m_inv[env, dof * nv + dof]
-                )
-                if K_lim < Scalar[DTYPE](1e-10):
-                    K_lim = Scalar[DTYPE](1e-10)
+# ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
+                # (engine_core_constraint.c:1720) prices a joint-limit row with
+                # `dof_invweight0`, a MODEL-TIME constant (:1880), and its
+                # `efc_D` is `1 / R` outright (:2259). This row used to read the
+                # per-step `M^-1` diagonal only to round-trip it —
+                # `1/(1/(K+R)) - K` — which reproduces R to a few ulp and
+                # nothing else, and was the last reason the integrator formed a
+                # dense `M^-1` under Newton at all (`PERFORMANCE.md` §13: 24-46%
+                # of every step past 20 dofs).
                 var pen = -dist_lo
                 var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
                 # Impedance
@@ -1402,8 +1406,6 @@ def _newton_solve_env[
                 if imp_lim < Scalar[DTYPE](1e-6):
                     imp_lim = Scalar[DTYPE](1e-6)
                 var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_lim < Scalar[DTYPE](1e-10):
-                    diag_lim = K_lim
                 var R_lim = (
                     (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
                 )
@@ -1413,13 +1415,7 @@ def _newton_solve_env[
                 for i in range(nv):
                     Je[num_edges * nv + i] = Scalar[DTYPE](0)
                 Je[num_edges * nv + dof] = sign
-                # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
-                # Same float32 rounding as primal_D(inv_K_imp, K)
-                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
-                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
-                if R_recov < Scalar[DTYPE](1e-14):
-                    R_recov = Scalar[DTYPE](1e-14)
-                De[num_edges] = Scalar[DTYPE](1) / R_recov
+                De[num_edges] = Scalar[DTYPE](1) / R_lim
                 bias_e[num_edges] = (
                     l_B_damp * v_lim - l_K_spring * imp_lim * pen
                 )
@@ -1429,11 +1425,15 @@ def _newton_solve_env[
             var dist_hi = rmax - pos
             if dist_hi < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](-1)
-                var K_lim = rebind[Scalar[DTYPE]](
-                    m_inv[env, dof * nv + dof]
-                )
-                if K_lim < Scalar[DTYPE](1e-10):
-                    K_lim = Scalar[DTYPE](1e-10)
+# ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
+                # (engine_core_constraint.c:1720) prices a joint-limit row with
+                # `dof_invweight0`, a MODEL-TIME constant (:1880), and its
+                # `efc_D` is `1 / R` outright (:2259). This row used to read the
+                # per-step `M^-1` diagonal only to round-trip it —
+                # `1/(1/(K+R)) - K` — which reproduces R to a few ulp and
+                # nothing else, and was the last reason the integrator formed a
+                # dense `M^-1` under Newton at all (`PERFORMANCE.md` §13: 24-46%
+                # of every step past 20 dofs).
                 var pen = -dist_hi
                 var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
                 var imp_lim: Scalar[DTYPE]
@@ -1464,8 +1464,6 @@ def _newton_solve_env[
                 if imp_lim < Scalar[DTYPE](1e-6):
                     imp_lim = Scalar[DTYPE](1e-6)
                 var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_lim < Scalar[DTYPE](1e-10):
-                    diag_lim = K_lim
                 var R_lim = (
                     (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
                 )
@@ -1474,13 +1472,7 @@ def _newton_solve_env[
                 for i in range(nv):
                     Je[num_edges * nv + i] = Scalar[DTYPE](0)
                 Je[num_edges * nv + dof] = sign
-                # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
-                # Same float32 rounding as primal_D(inv_K_imp, K)
-                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
-                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
-                if R_recov < Scalar[DTYPE](1e-14):
-                    R_recov = Scalar[DTYPE](1e-14)
-                De[num_edges] = Scalar[DTYPE](1) / R_recov
+                De[num_edges] = Scalar[DTYPE](1) / R_lim
                 bias_e[num_edges] = (
                     l_B_damp * v_lim - l_K_spring * imp_lim * pen
                 )
@@ -1591,12 +1583,10 @@ def _newton_solve_env[
                 if num_edges >= me:
                     break
                 var dof = dof_adr + k
-                var K_d = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
-                if K_d < Scalar[DTYPE](1e-10):
-                    K_d = Scalar[DTYPE](1e-10)
+                # `dof_invweight0`, as MuJoCo (engine_core_constraint.c:1876);
+                # the `diag(M^-1)` fallback this carried was dead on any model
+                # with a finite mass and is gone with the matrix.
                 var diag_f = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_f < Scalar[DTYPE](1e-10):
-                    diag_f = K_d
                 var R_f = (Scalar[DTYPE](1) - f_imp) / f_imp * diag_f
                 if R_f < Scalar[DTYPE](1e-14):
                     R_f = Scalar[DTYPE](1e-14)
@@ -4295,9 +4285,15 @@ def _newton_blocked_fields_kernel[
             var dist_lo = pos - rmin
             if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
                 var sign = Scalar[DTYPE](1)
-                var K_lim = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
-                if K_lim < Scalar[DTYPE](1e-10):
-                    K_lim = Scalar[DTYPE](1e-10)
+# ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
+                # (engine_core_constraint.c:1720) prices a joint-limit row with
+                # `dof_invweight0`, a MODEL-TIME constant (:1880), and its
+                # `efc_D` is `1 / R` outright (:2259). This row used to read the
+                # per-step `M^-1` diagonal only to round-trip it —
+                # `1/(1/(K+R)) - K` — which reproduces R to a few ulp and
+                # nothing else, and was the last reason the integrator formed a
+                # dense `M^-1` under Newton at all (`PERFORMANCE.md` §13: 24-46%
+                # of every step past 20 dofs).
                 var pen = -dist_lo
                 var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
                 var imp_lim: Scalar[DTYPE]
@@ -4328,8 +4324,6 @@ def _newton_blocked_fields_kernel[
                 if imp_lim < Scalar[DTYPE](1e-6):
                     imp_lim = Scalar[DTYPE](1e-6)
                 var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_lim < Scalar[DTYPE](1e-10):
-                    diag_lim = K_lim
                 var R_lim = (
                     (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
                 )
@@ -4338,11 +4332,7 @@ def _newton_blocked_fields_kernel[
                 for i in range(NV):
                     Je_sh[num_edges * NV + i] = Scalar[DTYPE](0)
                 Je_sh[num_edges * NV + dof] = sign
-                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
-                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
-                if R_recov < Scalar[DTYPE](1e-14):
-                    R_recov = Scalar[DTYPE](1e-14)
-                De_sh[num_edges] = Scalar[DTYPE](1) / R_recov
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_lim
                 bias_e_sh[num_edges] = (
                     l_B_damp * v_lim - l_K_spring * imp_lim * pen
                 )
@@ -4352,9 +4342,15 @@ def _newton_blocked_fields_kernel[
             var dist_hi = rmax - pos
             if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
                 var sign = Scalar[DTYPE](-1)
-                var K_lim = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
-                if K_lim < Scalar[DTYPE](1e-10):
-                    K_lim = Scalar[DTYPE](1e-10)
+# ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
+                # (engine_core_constraint.c:1720) prices a joint-limit row with
+                # `dof_invweight0`, a MODEL-TIME constant (:1880), and its
+                # `efc_D` is `1 / R` outright (:2259). This row used to read the
+                # per-step `M^-1` diagonal only to round-trip it —
+                # `1/(1/(K+R)) - K` — which reproduces R to a few ulp and
+                # nothing else, and was the last reason the integrator formed a
+                # dense `M^-1` under Newton at all (`PERFORMANCE.md` §13: 24-46%
+                # of every step past 20 dofs).
                 var pen = -dist_hi
                 var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
                 var imp_lim: Scalar[DTYPE]
@@ -4385,8 +4381,6 @@ def _newton_blocked_fields_kernel[
                 if imp_lim < Scalar[DTYPE](1e-6):
                     imp_lim = Scalar[DTYPE](1e-6)
                 var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_lim < Scalar[DTYPE](1e-10):
-                    diag_lim = K_lim
                 var R_lim = (
                     (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
                 )
@@ -4395,11 +4389,7 @@ def _newton_blocked_fields_kernel[
                 for i in range(NV):
                     Je_sh[num_edges * NV + i] = Scalar[DTYPE](0)
                 Je_sh[num_edges * NV + dof] = sign
-                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
-                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
-                if R_recov < Scalar[DTYPE](1e-14):
-                    R_recov = Scalar[DTYPE](1e-14)
-                De_sh[num_edges] = Scalar[DTYPE](1) / R_recov
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_lim
                 bias_e_sh[num_edges] = (
                     l_B_damp * v_lim - l_K_spring * imp_lim * pen
                 )
@@ -4537,12 +4527,10 @@ def _newton_blocked_fields_kernel[
                 if num_edges >= ME:
                     break
                 var dof = dof_adr + k
-                var K_d = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
-                if K_d < Scalar[DTYPE](1e-10):
-                    K_d = Scalar[DTYPE](1e-10)
+                # `dof_invweight0`, as MuJoCo (engine_core_constraint.c:1876);
+                # the `diag(M^-1)` fallback this carried was dead on any model
+                # with a finite mass and is gone with the matrix.
                 var diag_f = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-                if diag_f < Scalar[DTYPE](1e-10):
-                    diag_f = K_d
                 var R_f = (Scalar[DTYPE](1) - f_imp) / f_imp * diag_f
                 if R_f < Scalar[DTYPE](1e-14):
                     R_f = Scalar[DTYPE](1e-14)

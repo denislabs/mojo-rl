@@ -376,28 +376,20 @@ def build_scalar_rows[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
-            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
-            if K_diag < Scalar[DTYPE](1e-10):
-                K_diag = Scalar[DTYPE](1e-10)
+            # `dof_invweight0`, MuJoCo's `mj_diagApprox` for a dof row; the
+            # per-step `diag(M^-1)` this read is no longer formed under Newton
+            # (see the pyramidal builder in `solver/newton_solve.mojo`).
             var diag = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-            if diag < Scalar[DTYPE](1e-10):
-                diag = K_diag
             var R_lim = (Scalar[DTYPE](1) - imp) / imp * diag
             if R_lim < Scalar[DTYPE](1e-14):
                 R_lim = Scalar[DTYPE](1e-14)
-            # Same inv_K round-trip as the pyramidal builder, so the two paths
-            # agree bit-for-bit on a model that has limits and no friction.
-            var inv_K = Scalar[DTYPE](1) / (K_diag + R_lim)
-            var R_recov = Scalar[DTYPE](1) / inv_K - K_diag
-            if R_recov < Scalar[DTYPE](1e-14):
-                R_recov = Scalar[DTYPE](1e-14)
 
             var v = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
             sr_dof[n] = dof
             sr_kind[n] = SROW_LIMIT
             sr_sign[n] = sign
-            sr_R[n] = R_recov
-            sr_D[n] = Scalar[DTYPE](1) / R_recov
+            sr_R[n] = R_lim
+            sr_D[n] = Scalar[DTYPE](1) / R_lim
             sr_bias[n] = B_damp * v - K_spring * imp * pen
             sr_floss[n] = Scalar[DTYPE](0)
             n += 1
@@ -430,12 +422,10 @@ def build_scalar_rows[
             if n >= max_rows:
                 break
             var dof = dof_adr + k
-            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
-            if K_diag < Scalar[DTYPE](1e-10):
-                K_diag = Scalar[DTYPE](1e-10)
+            # `dof_invweight0`, MuJoCo's `mj_diagApprox` for a dof row; the
+            # per-step `diag(M^-1)` this read is no longer formed under Newton
+            # (see the pyramidal builder in `solver/newton_solve.mojo`).
             var diag = rebind[Scalar[DTYPE]](dof_invweight0[dof])
-            if diag < Scalar[DTYPE](1e-10):
-                diag = K_diag
             var R_f = (Scalar[DTYPE](1.0) - f_imp) / f_imp * diag
             if R_f < Scalar[DTYPE](1e-14):
                 R_f = Scalar[DTYPE](1e-14)

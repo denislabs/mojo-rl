@@ -9,6 +9,14 @@ entirely collision.** Nothing outside collision is worse than 1.7×, and forward
 kinematics is faster than MuJoCo's on two of the three models. §10 is that
 table; §10.1 splits the narrow phase into calls × cost per call.
 
+⚠⚠ **THAT SENTENCE WAS TRUE OF THREE SMALL ARMS AND IS FALSE OF THE TREE. §13
+(2026-09-04) sweeps fourteen models and finds the gap is the CONSTRAINT SOLVER
+and a dense `M⁻¹`, growing with `nv` to 10–13× on the 60–80-dof models, while
+collision is under 2% of those steps.** §1–§12 stand as the record of the
+collision work; §13 is the sweep, and **§13.5 is what landed on it the next
+day: humanoid_CMU 10.7× → 3.75×, the park scenes 10.7× → 3.8×, every row
+past 20 dofs 1.3–3× faster, two of the three changes bit-exact.**
+
 ⚠⚠ **BOTH SIDES OF THE COMPARISON WERE WRONG UNTIL 2026-08-14.** (a) Stock
 MuJoCo memsets its whole BVH-active array every step for the *visualiser*, and
 every ratio this project published included it — up to **45% of the
@@ -778,3 +786,290 @@ not be written that way.
    against a `ncon = 5` workload rather than a contact-free one.
 4. Nothing else. The mass matrix is fixed (§11), the broadphase sweep is
    0.91 µs, and kinematics is at or better than MuJoCo.
+
+---
+
+## 13. 2026-09-04 — fourteen models: the gap moved to the solver, and it grows with `nv`
+
+Re-measured against MuJoCo 3.10.0 on the M1 Pro, one physics step, same XML,
+same protocol on both sides (`scripts/physics3d_cpu_vs_mujoco.sh`; §13.4).
+Ours `float32` single env through `Phyics3dEnv`, MuJoCo `float64`, `bvactive=0`,
+MIN of 3 interleaved rounds, spread printed.
+
+| model | nv | integ | ours µs | MuJoCo µs | **ratio** | ncon ours/mj | nefc | mj niter |
+|---|---|---|---|---|---|---|---|---|
+| hopper | 6 | RK4 | 15.00 | 14.67 | **1.02×** | 2.00/2.00 | 11.0 | 0.23 |
+| half_cheetah | 9 | Euler | 6.28 | 4.65 | 1.35× | 2.00/2.00 | 8.0 | 1.00 |
+| walker2d | 9 | RK4 | 38.77 | 24.22 | 1.60× | 6.00/6.01 | 27.8 | 1.00 |
+| sawyer_reach | 15 | Euler | 25.18 | 15.22 | 1.65× | 5.00/5.00 | 30.0 | 1.00 |
+| so_arm101 | 6 | Euler | 11.59 | 6.49 | 1.79× | 0/0 | 6.0 | 1.00 |
+| so_arm101 **f64** | 6 | Euler | 11.85 | 6.43 | 1.84× | 0/0 | 6.0 | 1.00 |
+| park_k0 | 6 | Euler | 11.40 | 6.32 | 1.80× | 0/0 | 6.0 | 1.07 |
+| ant | 14 | RK4 | 67.50 | 33.38 | 2.02× | 3.00/3.00 | 20.0 | 0.09 |
+| humanoid | 23 | RK4 | 199.2 | 80.3 | 2.48× | 7.00/7.00 | 39.6 | 4.92 (PGS) |
+| park_k3 | 24 | Euler | 22.90 | 6.95 | 3.30× | 0/0 | 6.0 | 1.07 |
+| park_k6 | 42 | Euler | 47.99 | 7.76 | **6.18×** | 0/0 | 6.0 | 1.07 |
+| park_k9 | 60 | Euler | 94.33 | 8.81 | **10.71×** | 0/0 | 6.0 | 1.07 |
+| humanoid_cmu | 62 | Euler | 768.3 | 71.95 | **10.68×** | 13.67/13.67 | 77.8 | 1.75 |
+| dog_stand | 79 | Euler | 3003 | 231.4 | **12.98×** | 8.98/8.99 | 63.0 | 6.09 |
+
+Three things are visible before any profile:
+
+* **The ratio is a function of `nv`, not of the scene.** Six-dof models sit at
+  1.0–1.8×; every model past 40 dofs is 6–13×. The park sweep isolates it: the
+  scene is SO-ARM101 plus `k` free props in mid-air, **zero contacts, six
+  constraint rows at every k**, and ours goes 11.4 → 94.3 µs while MuJoCo goes
+  6.3 → 8.8. The excess over k=0 divided by `Δnv²` is 0.0355 / 0.0282 / 0.0284
+  — quadratic in the dofs, the same shape the GPU probe found
+  (`docs/BLOCK_DIAGONAL_MASS_MATRIX_PLAN.md` §1.1).
+* **The float is worth 2%.** `so_arm101` in `float64` is 1.84× against 1.79× in
+  `float32`. Whatever the gap is, it is not precision, and it is not Mojo-vs-C
+  either — hopper is at parity.
+* **SO-ARM101 is at 1.79×, down from 3.29× on 2026-08-14** (25.07 → 11.59 µs;
+  MuJoCo 7.63 → 6.49). The collision campaign of §1–§12 did land.
+
+### 13.1 Where the time goes — ours by `sample`, MuJoCo by its own timers
+
+Ours: `physics3d_sample_top.py` exclusive symbols scaled onto the table's µs.
+MuJoCo: `physics3d_mujoco_phases.py`, `bvactive=0`. Grouped as §10 did.
+
+| µs per step | park_k9 | humanoid_cmu | dog_stand | humanoid | ant | so_arm101 |
+|---|---|---|---|---|---|---|
+| **`solve_newton`** (ours) | **70.9** (75%) | **462** (60%) | **2046** (68%) | **127** (64%) | **38** (56%) | 1.2 (11%) |
+| MuJoCo CONSTRAINT (+PROJECT) | 1.5 | 40.1 | 78.9 (+80.6) | 27.4 (+18.9) | 13.6 | 0.95 |
+| **`compute_m_inv`** (ours) | 6.4 (7%) | **231** (30%) | **648** (22%) | **48** (24%) | 12 (18%) | 0.3 |
+| `ldl_factor` + `ldl_solve` (ours) | 0.5 | 24 | 74 | 4 | 1 | — |
+| MuJoCo POS_INERTIA (crb + factorM) | 0.3 | 5.2 | 7.6 | 3.8 | 2.0 | 0.19 |
+| collision (ours) | 8.6 | 8 | 93 | 4 | 4.2 | **8.2** (71%) |
+| MuJoCo POS_COLLISION | 4.2 | 7.7 | 24.1 | 10.6 | 5.5 | 3.1 |
+| MuJoCo POS_MAKE (rows) | 1.0 | 5.9 | 6.6 | 8.6 | 4.9 | 0.64 |
+
+(MuJoCo's `POS_PROJECT` is `mj_projectConstraint`: `AR = J M⁻¹ Jᵀ`, built
+only under a dual solver or `noslip_iterations > 0` — dog has `noslip=4`,
+humanoid.xml says `solver="PGS"`. ⚠ The humanoid row compares our Newton
+against MuJoCo's PGS at 4.9 iterations; every other row is Newton vs Newton.)
+
+**Two functions are the whole story past 20 dofs, and neither is collision.**
+
+1. **`solve_newton` — the CPU Newton, `_newton_solve_env`
+   (`solver/newton_solve.mojo:784–3103`) — is DENSE IN `nv`.** Three sites
+   call `chol_factor_inline(H, L_chol, nv)` on a full `nv×nv` Hessian
+   (`:1029`, `:1756`, `:2223`); `H` is built from an `nv×nv` `M_local` copy
+   (`:831`, `:1524`); seventy `range(nv)` loops. On park_k9 that is 70.9 µs
+   against MuJoCo's **1.5 µs** for six friction rows — **47×** — on a scene
+   where nine of the ten kinematic trees are 6×6 diagonal blocks.
+
+   ⚠ **The block-diagonal campaign never touched this function.** PN2a–e and
+   F3 (`docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md` §1) segmented the
+   GPU kernel `_newton_blocked_fields_kernel` (`:3394+`) — `build_dof_segments`
+   and the per-block Cholesky live there and only there (`:4451`, `:4784`).
+   The CPU function takes the `trees` operand (`:843`) and does not read it.
+   So the CPU path is the un-segmented twin of a kernel whose segmented
+   arithmetic is already written and gated bit-exact on the multi-tree arm
+   (`85bd3150`).
+
+   ⚠ But **blocks explain only the park rows.** humanoid_cmu and dog are ONE
+   tree each, so segmentation buys them nothing, and they are still 11×/26×
+   MuJoCo on this function at 1.75 / 6.1 solver iterations. That excess is
+   per-iteration cost — the `H` rebuild, the `M_local` copy, the line search
+   — and **it is not attributed inside `solve_newton` on CPU**; `sample`
+   sees one inlined 2 300-line function. The GPU bisect found the line search
+   at 54% of Newton and the tid-0 setup at 31% (implementation doc §2, "THE
+   ANSWER, FOR REAL"); the same serial probes (`NEWTON_SERIAL_PROBE`) are the
+   way to split this one before touching it.
+
+2. **`compute_m_inv` builds a full dense `M⁻¹` every step, and MuJoCo's Newton
+   never forms one.** 231 µs of humanoid_cmu's 768, 648 of dog's 3003, 48 of
+   humanoid's 199 — **24–30% of every big model** — for an `O(nv³)` product
+   whose MuJoCo counterpart is `mj_diagApprox`
+   (`engine_core_constraint.c:1720`): joint limits and dof friction read
+   **`dof_invweight0`**, a MODEL-TIME constant (`:1876`, `:1880`); contacts
+   read `body_invweight0`; `M⁻¹` appears only inside `mj_projectConstraint`
+   (`:3096`), as solves against the sparse `qLD`, and only when a dual solver
+   or noslip asks for `AR`.
+
+   Ours reads `m_inv[dof, dof]` for the limit and friction rows (`:1361`,
+   `:1424`, `:1585` — the friction row falls back to it only when
+   `dof_invweight0 < 1e-10`, the limit row reads it outright), hands the whole
+   matrix to the weld-equality rows (`w_MinvJ`, `:1536`), to `noslip`
+   (`:1962`), and to the CG / island-PGS solvers. ⚠ **Grep before replacing:
+   thirteen files consume `m_inv`** (`constraints/*`, `solver/*`, the three
+   integrators). The diagonal is `dof_invweight0` per MuJoCo — check the limit
+   row's gate first, since MuJoCo reads the constant where we read the exact
+   per-step diagonal; `w_MinvJ` and noslip are `ldl_solve` per row.
+
+   `_m_inv_env` (`dynamics/ldl.mojo:487`) is ONE body for both targets —
+   `compute_m_inv[target]` calls it on CPU and launches
+   `_m_inv_fields_kernel` around it on GPU — so removing it removes the GPU
+   kernel P2 block-restricted (implementation doc §1, "ldl ×1.41") as well.
+
+3. **Collision is the SO-ARM101 story and only that.** 8.2 of an 11.6 µs
+   step against MuJoCo's 3.1 — 2.6×, down from 5.8× (§10) — and the entire
+   5.1 µs gap on that model. §12.1's support-walk diagnosis stands; nothing
+   here changes it. On every model over 20 dofs collision is under 3%.
+
+### 13.2 What this says about the GPU blocked kernels
+
+The user's question was whether a CPU pass would feed the GPU work. Three ways
+it does, one way it does not:
+
+* **The CPU Newton is a replay of PN2a–e with no shared memory, no thread
+  count and no `Je` spill** — the same `build_dof_segments` table, the same
+  per-block Cholesky, and `test_ldl_blocked`-style byte comparison on every
+  single-tree model. It is the cheapest place to find out what the segmented
+  arithmetic is worth when nothing else is in the way, and the park rows give
+  it a clean `nv`-sweep control that the GPU probe never had (its k=0 was
+  launch-bound; here k=0 is 11.4 µs of real work).
+* **`compute_m_inv` is one function on both targets.** The GPU campaign spent
+  P2 making it `sum(bn³)` instead of `nv³`; the CPU numbers say the right size
+  is zero.
+* **A single-tree model is 11× MuJoCo on the solver with blocks fully
+  applied** (humanoid_cmu: one tree, 1.75 iterations). Whatever that is, the
+  blocked kernel has it too — the implementation doc's F3 tail (setup 31%,
+  line search 54%) is the same shape. Splitting `_newton_solve_env` with
+  serial probes is a CPU measurement that answers a GPU question.
+* What it does NOT feed: threadgroup budgets, `THREADS`, the `Je` spill
+  boundary. Those are GPU-only and the CPU says nothing about them.
+
+### 13.3 Ranked, with the number each is worth
+
+1. **Kill `compute_m_inv`** — 24–30% of every model past 20 dofs, one body
+   for both targets, and the reference says the matrix should not exist.
+   Gate: `dof_invweight0` vs our `m_inv` diagonal on the row it feeds, then
+   bit-exact trajectories on every shipped model. Risk: thirteen consumers.
+2. **Segment `_newton_solve_env`** — the park rows (70.9 µs at k=9 against
+   1.5) and every multi-object task scene; the arithmetic exists and is
+   gated. Risk: LOW, it is a CPU-gateable loop-bounds change.
+3. **Split `solve_newton` on a single tree** (humanoid_cmu) with serial probes
+   before optimising anything inside it. The record on guessing this
+   function's internals is two probes wrong out of three.
+4. The support walk on big hulls (§12.1) — unchanged, and only worth it on
+   the arms.
+
+### 13.4 How to reproduce, and the three things that went wrong doing it
+
+```bash
+pixi run bash scripts/physics3d_cpu_vs_mujoco.sh                 # build + 3 rounds + table
+ROUNDS=5 MODEL_GROUPS=so101 SKIP_BUILD=1 OUT=... pixi run bash scripts/physics3d_cpu_vs_mujoco.sh
+pixi run python benchmarks/physics3d_mujoco_phases.py <xml> 20000 "" 0 [warmup]
+<bin> <model> 200 60000 & sample $! 10 1 -f s.txt; python3 benchmarks/physics3d_sample_top.py s.txt
+```
+
+Ours: `benchmarks/physics3d_cpu/{harness,bench_gym,bench_so101,bench_contact}.mojo`
+— one integrator step (`apply_actions` + `integ.step["cpu"]`) through
+`Phyics3dEnv`, the production facade. MuJoCo: `benchmarks/physics3d_cpu_vs_mujoco.py`,
+timed as ONE `mj_step(m, d, nstep)` call so no interpreter is in the loop.
+Both: `mj_resetData` state, `ctrl = 0.1`, 2000 warmup, counters from their own
+loop, 20 000 timed steps. Three binaries, ~2 min each to build.
+
+* ⚠ **The park props FALL.** They are parked at `z = 50 m` and the first lands
+  at step 1596 (MuJoCo, `ctrl=0.1`). A 20 000-step horizon measured a contact
+  scene, and at k ≥ 6 our side pinned at **`MAX_CONTACTS = 16` while MuJoCo
+  counted 24 / 36** — the table's `!! ncon differs` flag is what caught it.
+  The park rows now run 100 + 700 + 700 steps × 8 in-process resets. Print
+  the work counters on both sides; a ratio without them is two problems.
+* ⚠ **`GROUPS` is a read-only bash builtin.** The first full sweep produced
+  zero rows and an empty table with no error. The variable is `MODEL_GROUPS`.
+* ⚠ **The integrator must come from the XML, not the config.**
+  `So101ParkProbeConfig` inherits `"rk4"` for a scene whose XML says nothing,
+  so MuJoCo steps it with Euler; the harness takes the integrator as a
+  parameter and both integrators live on the env.
+* The trajectories DIVERGE (ant's `qpos[0]` differs in the second digit after
+  20 000 steps) — chaotic, expected, and why the contact count and not the
+  state is the equivalence check. Hopper agrees to five digits.
+* half_cheetah's 138% spread is one inflated round of three
+  (`_a_sporadic_row_inflation_makes_an_n1_bench_undecidable`); the MIN is
+  the number.
+
+### 13.5 LANDED (2026-09-05): the two ranked items, and the after table
+
+Three changes, in the order §13.3 ranked them, each gated before the next.
+
+**A. The CPU Newton walks each row's nonzero dofs** (`solver/primal.mojo`,
+`SPARSE`; `_newton_solve_env` builds `je_n` / `je_ix` once the rows are
+final). The Hessian update `H += D·JᵀJ` was `num_edges × nv²` per iteration —
+78 × 62² on humanoid_CMU for rows that touch a dozen dofs — and is now
+`Σ nnz²`; `Jv`, the edge forces and the warm-start cost walk the same lists.
+**B. The CPU Newton factors `H` per kinematic-tree segment**
+(`build_dof_segments_p`, the pointer twin of the blocked kernel's builder;
+`chol_factor_seg` / `chol_solve_seg` per segment; `Ma`, `Mv` restricted to the
+segment). Both A and B sit behind `TREE_AWARE`, passed `True` by the CPU
+dispatcher only — the GPU legs compile the byte-identical dense body they
+always did, because a per-thread index list is a frame they cannot afford.
+**A + B are BIT-EXACT: all fourteen models print the same final-state
+checksum as the baseline binary** (`qsum` in the harness's `RESULT` line),
+by the exact-zero argument `cholesky.chol_factor_seg` documents.
+
+**C. The dense `M⁻¹` is no longer formed under Newton.** The joint-limit and
+tendon rows read `diag(M⁻¹)` / `J M⁻¹ Jᵀ` only to round-trip R
+(`1/(1/(K+R)) - K`); they now set `D = 1/R` outright, which is MuJoCo's
+`efc_D` (`engine_core_constraint.c:2259`) priced by `*_invweight0`
+(`mj_diagApprox`, `:1720`). With that, `compute_m_inv` is skipped in both
+integrators when `CONTACTS and SOLVER == "newton" and NOSLIP_ITER == 0` and
+the model has no equality constraints (`d.dims.get_nequality()`, a RUNTIME
+read so the studio's dynamic leg decides the same way). **C is not bit-exact
+and is not meant to be** — it moves D by the round-trip's rounding, toward
+the reference. Gated on 17 MuJoCo / parity tests (below).
+
+| model | nv | before | after | **speedup** | MuJoCo | ratio before → after |
+|---|---|---|---|---|---|---|
+| humanoid_cmu | 62 | 768.3 | **254.2** | **3.02×** | 67.8 | 10.7× → **3.75×** |
+| park_k9 | 60 | 94.3 | **33.3** | **2.83×** | 8.76 | 10.7× → **3.81×** |
+| park_k6 | 42 | 48.0 | 23.4 | 2.05× | 7.76 | 6.2× → 3.0× |
+| dog_stand | 79 | 3003 | 1937 | 1.55× | 225.7 | 13.0× → 8.6× |
+| humanoid | 23 | 199.2 | 119.6 | 1.67× | 77.4 | 2.48× → 1.55× |
+| ant | 14 | 67.5 | 51.3 | 1.32× | 32.4 | 2.02× → 1.58× |
+| park_k3 | 24 | 22.9 | 15.9 | 1.44× | 6.88 | 3.3× → 2.3× |
+| walker2d | 9 | 38.8 | 33.0 | 1.17× | 23.4 | 1.60× → 1.41× |
+| hopper / half_cheetah / sawyer / so_arm101 / park_k0 | ≤15 | | | 1.00–1.04× | | unchanged |
+
+(µs per physics step, MIN of 3 interleaved rounds, same protocol as §13;
+`scripts/physics3d_cpu_vs_mujoco.sh`. ⚠ The dog row was re-measured alone:
+the laptop slept mid-sweep and one round came back at 25× — the `spread`
+column is what caught it.)
+
+The park sweep's excess over k=0 is now **0.0149 / 0.0094 / 0.0076 per
+Δnv²** and FALLING — it is no longer quadratic in the dofs. What is left at
+k=9 (33.3 µs against so_arm101's 11.2) is the `nv²` copies the Newton still
+makes (`M_local`, `H = M`, the zeroing of `L`), the collision pass, and the
+Euler step's own `nv`-sized passes.
+
+**Which gates ran, all green:** `test_frictionless_contact_pyramidal`
+(8e-17), `test_impratio_pyramidal_vs_mujoco`, `test_humanoid_limits_fields_vs_mujoco`,
+`test_walker2d_contacts_vs_mujoco`, `test_friction_dof_rows_vs_mujoco`,
+`test_limit_solref_per_joint` (5.7e-14), `test_newton_warmstart_vs_mujoco`,
+`test_constraints_vs_mujoco`, `test_elliptic_condim46_vs_mujoco`,
+`test_rk4_newton_fields`, `test_equality_tendon_fields`,
+`test_newton_solve_fields`, `test_newton_float32_tracks_float64`,
+`test_newton_blocks`, `test_cholesky_segmented`,
+`test_newton_solves_on_runtime_dims`, `test_newton_no_constraint_rows`,
+`test_tree_blocks_vs_mujoco`, `test_newton_both_legs`.
+
+⚠⚠ **THE ONE THAT FAILED FIRST, AND WHY IT MATTERS.**
+`test_limit_solref_per_joint` came back with `|d qacc| = 153` on a 2-dof
+arm — its limit row had gone INERT (ours equalled the smooth acceleration
+for two different stiffnesses). Bisected by toggling: `TREE_AWARE=False`
+changed nothing; forcing `compute_m_inv` back on fixed it. The step it
+drives is `step["cpu", CONTACTS=False]`, and with `CONTACTS=False` the seam
+runs the STANDALONE `solve_limits` / `solve_friction` stages — Gauss-Seidel
+over `J M⁻¹ Jᵀ`, which read the inverse for real. The predicate now includes
+`CONTACTS`. The lesson is §5's: **enumerate the readers by the CODE PATH, not
+by the function list** — every `m_inv[` read in the Newton files was gone,
+and the reader was in a stage the Newton never calls.
+
+**What is left, re-ranked on the after profile** (`sample`, patched
+binaries):
+
+1. **dog_stand keeps its `M⁻¹`** (28% of 1.9 ms) because `noslip_iterations=4`
+   needs `M⁻¹ Jᵀ` per row. MuJoCo pays for the same thing (`POS_PROJECT`
+   80 µs of its 226). Ours could form `M⁻¹ Jᵀ` by `ldl_solve` per row instead
+   of the full inverse — `nrows × nv²` against `nv³`, about 2× on that term.
+2. **The dense Cholesky on a single tree** — humanoid_CMU and dog are one
+   tree each, so B buys them nothing there, and `chol_factor_seg`'s inner
+   dot product is scalar (Mojo does not autovectorise, §7.1). A SIMD dot
+   reassociates the sum and is therefore NOT bit-exact; it belongs in a
+   batch gated like C.
+3. **The `nv²` copies inside the Newton** (`M_local`, `H = M`, `L` zeroing,
+   three per iteration) — segment-restrict them as PN2d did for `L_sh`.
+   Bit-exact, small.
+4. Collision on the arms (§12.1), unchanged at 2.6×.

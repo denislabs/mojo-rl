@@ -617,7 +617,27 @@ struct EulerIntegrator[
             )
 
         ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
-        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        # ⚠ `M^-1` IS FORMED ONLY FOR A READER. MuJoCo's Newton never builds
+        # it: `mj_diagApprox` prices rows with the model-time `*_invweight0`,
+        # and `mj_projectConstraint` solves against `qLD`, only for a dual
+        # solver or noslip. Ours formed the full dense inverse every step —
+        # O(nv^3), measured at 24-46% of every step past 20 dofs
+        # (`PERFORMANCE.md` §13) — to feed a diagonal round-trip the row
+        # builders no longer do. What still reads it: PGS/CG/island (their
+        # whole `A R` machinery), `noslip_pyramidal` (M^-1 J^T per row), and
+        # the connect/weld equality rows (`w_MinvJ`). The first two are
+        # comptime facts; the last is a model count, read at RUNTIME so the
+        # studio's dynamic leg makes the same decision as the static one.
+        # ⚠ `CONTACTS` IS PART OF THE PREDICATE. With `CONTACTS=False` the seam
+        # below runs the standalone `solve_limits` / `solve_friction` stages,
+        # which are Gauss-Seidel over `J M^-1 J^T` and READ the inverse — the
+        # bisect that found this was `test_limit_solref_per_joint`, whose
+        # limit row went inert (153 of qacc) the moment the matrix was stale.
+        comptime if CONTACTS and Self.SOLVER == "newton" and Self.NOSLIP_ITER == 0:
+            if d.dims.get_nequality() > 0:
+                compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        else:
+            compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":

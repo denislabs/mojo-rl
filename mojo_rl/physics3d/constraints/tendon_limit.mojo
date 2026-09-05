@@ -255,16 +255,12 @@ def build_tendon_limit_rows[
             ten_vel += tJ[i] * rebind[Scalar[DTYPE]](qvel[env, i])
 
         # --- K = J M^-1 J^T at the CURRENT pose ----------------------------
-        var K_t = Scalar[DTYPE](0)
-        for a in range(nv):
-            if tJ[a] == Scalar[DTYPE](0):
-                continue
-            var acc = Scalar[DTYPE](0)
-            for b in range(nv):
-                acc += rebind[Scalar[DTYPE]](m_inv[env, a * nv + b]) * tJ[b]
-            K_t += tJ[a] * acc
-        if K_t < Scalar[DTYPE](1e-10):
-            K_t = Scalar[DTYPE](1e-10)
+        # ⚠ NO `K = J M^-1 J^T` HERE ANY MORE. MuJoCo prices a tendon row with
+        # `tendon_invweight0` (`mj_diagApprox`, engine_core_constraint.c:1720)
+        # and sets `efc_D = 1/R` outright (:2259). The M^-1 product this formed
+        # fed a round-trip of R — `1/(1/(K+R)) - K` — and nothing else, and it
+        # was one of the last readers keeping the integrator forming a dense
+        # `M^-1` under Newton (`PERFORMANCE.md` §13).
 
         var rmin = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_RANGE_MIN])
         var rmax = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_RANGE_MAX])
@@ -282,8 +278,6 @@ def build_tendon_limit_rows[
         var B_damp = Scalar[DTYPE](2) / (dmax * tc)
 
         var diag = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_INVWEIGHT0])
-        if diag < Scalar[DTYPE](1e-10):
-            diag = K_t
 
         # side = -1 (lower), +1 (upper); `sign` below is MuJoCo's -side, so
         # the row's Jacobian is `sign * ten_J`.
@@ -308,13 +302,7 @@ def build_tendon_limit_rows[
             for i in range(nv):
                 Je[num_edges * nv + i] = sign * tJ[i]
 
-            # Same inv_K round-trip the joint-limit rows use, so both kinds of
-            # limit land on bit-identical D for identical (K, R).
-            var inv_K = Scalar[DTYPE](1) / (K_t + R)
-            var R_recov = Scalar[DTYPE](1) / inv_K - K_t
-            if R_recov < Scalar[DTYPE](1e-14):
-                R_recov = Scalar[DTYPE](1e-14)
-            De[num_edges] = Scalar[DTYPE](1) / R_recov
+            De[num_edges] = Scalar[DTYPE](1) / R
             bias_e[num_edges] = B_damp * v_lim - K_spring * imp * pen
             num_edges += 1
 
@@ -503,21 +491,12 @@ def build_tendon_equality_rows[
                 qvel[env, i]
             )
 
-        # --- K = J M^-1 J^T at the CURRENT pose ----------------------------
-        var K_t = Scalar[DTYPE](0)
-        for a in range(nv):
-            var Ja = Je[num_edges * nv + a]
-            if Ja == Scalar[DTYPE](0):
-                continue
-            var acc = Scalar[DTYPE](0)
-            for b in range(nv):
-                acc += (
-                    rebind[Scalar[DTYPE]](m_inv[env, a * nv + b])
-                    * Je[num_edges * nv + b]
-                )
-            K_t += Ja * acc
-        if K_t < Scalar[DTYPE](1e-10):
-            K_t = Scalar[DTYPE](1e-10)
+        # ⚠ NO `K = J M^-1 J^T` HERE ANY MORE. MuJoCo prices a tendon row with
+        # `tendon_invweight0` (`mj_diagApprox`, engine_core_constraint.c:1720)
+        # and sets `efc_D = 1/R` outright (:2259). The M^-1 product this formed
+        # fed a round-trip of R — `1/(1/(K+R)) - K` — and nothing else, and it
+        # was one of the last readers keeping the integrator forming a dense
+        # `M^-1` under Newton (`PERFORMANCE.md` §13).
 
         # `pos` is SIGNED for a bilateral row — not a penetration depth. Only
         # the impedance lookup takes its magnitude.
@@ -543,20 +522,11 @@ def build_tendon_equality_rows[
         # over its joints (engine_core_constraint.c:1091). See
         # `_tendon_env`'s note for the bug that rule replaced.
         var diag = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_INVWEIGHT0])
-        if diag < Scalar[DTYPE](1e-10):
-            diag = K_t
         var R = (Scalar[DTYPE](1) - imp) / imp * diag
         if R < Scalar[DTYPE](1e-14):
             R = Scalar[DTYPE](1e-14)
 
-        # Same inv_K round-trip as the limit rows, so identical (K, R) gives
-        # bit-identical D across row kinds.
-        var inv_K = Scalar[DTYPE](1) / (K_t + R)
-        var R_recov = Scalar[DTYPE](1) / inv_K - K_t
-        if R_recov < Scalar[DTYPE](1e-14):
-            R_recov = Scalar[DTYPE](1e-14)
-
-        De[num_edges] = Scalar[DTYPE](1) / R_recov
+        De[num_edges] = Scalar[DTYPE](1) / R
         bias_e[num_edges] = B_damp * ten_vel + K_spring * imp * pos_err
         kind_e[num_edges] = SROW_EQ_BILATERAL
         num_edges += 1

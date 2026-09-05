@@ -516,7 +516,7 @@ struct RK4Integrator[
         self.cscratch.upload_all(ctx)
 
     def _stage_dynamics[
-        target: StaticString
+        target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
         mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
@@ -563,7 +563,25 @@ struct RK4Integrator[
             )
 
         ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
-        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        # ⚠ `M^-1` IS FORMED ONLY FOR A READER. MuJoCo's Newton never builds
+        # it: `mj_diagApprox` prices rows with the model-time `*_invweight0`,
+        # and `mj_projectConstraint` solves against `qLD`, only for a dual
+        # solver or noslip. Ours formed the full dense inverse every step —
+        # O(nv^3), measured at 24-46% of every step past 20 dofs
+        # (`PERFORMANCE.md` §13) — to feed a diagonal round-trip the row
+        # builders no longer do. What still reads it: PGS/CG/island (their
+        # whole `A R` machinery), `noslip_pyramidal` (M^-1 J^T per row), and
+        # the connect/weld equality rows (`w_MinvJ`). The first two are
+        # comptime facts; the last is a model count, read at RUNTIME so the
+        # studio's dynamic leg makes the same decision as the static one.
+        # ⚠ `CONTACTS` IS PART OF THE PREDICATE — see the Euler twin: the
+        # `CONTACTS=False` seam runs `solve_limits` / `solve_friction`, which
+        # read the inverse.
+        comptime if CONTACTS and Self.SOLVER == "newton" and Self.NOSLIP_ITER == 0:
+            if d.dims.get_nequality() > 0:
+                compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+        else:
+            compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
 
         # 9 + 9b. fnet = qfrc - bias - damping - stiffness - frictionloss
@@ -705,7 +723,7 @@ struct RK4Integrator[
 
         comptime for s in range(4):
             self._stage_setup[target, s](dt, d, m, ctx)
-            self._stage_dynamics[target](d, m, ctx)
+            self._stage_dynamics[target, CONTACTS](d, m, ctx)
             # Per-stage constraint solve (legacy: solver launch after every
             # stage kernel; corrects qacc_constrained before the next
             # stage's A[k] snapshot / the combine).
