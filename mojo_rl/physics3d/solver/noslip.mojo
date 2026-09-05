@@ -347,6 +347,29 @@ def _refresh_jar[
 
 
 @always_inline
+def _dot_a_row[
+    DTYPE: DType,
+    A_CAP: Int,
+    SW_CAP: Int,
+    ROW_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    A_mat: Scratch[Scalar[DTYPE], A_CAP],
+    s: Int,
+    ns: Int,
+    sw_ix: Scratch[Int, SW_CAP],
+    force: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
+) -> Scalar[DTYPE]:
+    """`A_S[s, :] . f_S` — MuJoCo's `residual` restricted to the swept rows
+    (the other rows' constant contribution is already in `b_S`), without the
+    `R f` subtraction our `A` never carried."""
+    var acc = Scalar[DTYPE](0)
+    var base = s * ns
+    for t in range(ns):
+        acc += A_mat[base + t] * force[unsafe_offset = sw_ix[t]]
+    return acc
+
+
+@always_inline
 def _cost_change[
     DTYPE: DType
 ](
@@ -398,6 +421,34 @@ def _axpy_self[
     while k < n:
         p[unsafe_offset = xo + k] = p[unsafe_offset = xo + k] + alpha * p[unsafe_offset = ao + k]
         k += 1
+
+
+@always_inline
+def _dot_self[
+    O: MutOrigin, //,
+    DTYPE: DType,
+](
+    p: Pointer[Scalar[DTYPE], O],
+    ao: Int,
+    bo: Int,
+    n: Int,
+) -> Scalar[DTYPE]:
+    """`Σ_k p[ao+k] · p[bo+k]`, `W` lanes at a time — two ranges of ONE
+    buffer, like `_axpy_self`. A scalar reduction is a serial chain of `n`
+    dependent adds (~4 cycles each); `W` partial sums cut that `W`-fold —
+    the `A_S` build stage of `noslip_pyramidal` went from 44 to 21 µs on dog
+    with this one change (§13.20)."""
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var acc = SIMD[DTYPE, W](0)
+    var k = 0
+    while k + W <= n:
+        acc += p.load[width=W](ao + k) * p.load[width=W](bo + k)
+        k += W
+    var r = acc.reduce_add()
+    while k < n:
+        r += p[unsafe_offset = ao + k] * p[unsafe_offset = bo + k]
+        k += 1
+    return r
 
 
 @always_inline
@@ -637,51 +688,188 @@ def noslip_pyramidal[
     so the in-sweep `qacc` updates cannot leave a residue.
     """
     comptime NE_PYR = 2 * (MAX_CONDIM - 1)
-
-    var mj_a = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
-    var mj_b = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
-    # `M^-1 J_e^T` for every row, once. `J` and `M` are loop-invariant across
-    # the sweeps, so this is the same value `_minv_jt` produced per use.
-    comptime MJ_CAP = E_CAP * V_CAP if CACHE else 1
-    var mj_cache = Scratch[Scalar[DTYPE], MJ_CAP](
-        num_edges * nv if CACHE else 1, uninitialized=Scalar[DTYPE](0)
-    )
-    comptime if CACHE:
-        comptime if TREE:
-            # Every row's `M⁻¹ J_eᵀ` in ONE tree solve (`_minv_apply_rows`):
-            # the rows of `Je` in, `mj_cache` out.
-            var mj_rows = Scratch[Scalar[DTYPE], MJ_CAP](
-                num_edges * nv, fill=Scalar[DTYPE](0)
-            )
-            var mj_work = Scratch[Scalar[DTYPE], MJ_CAP](
-                num_edges * nv, uninitialized=Scalar[DTYPE](0)
-            )
-            for e in range(num_edges):
-                comptime if SPARSE:
-                    for a in range(je_n[e]):
-                        var k = je_ix[e * nv + a]
-                        mj_rows[e * nv + k] = Je[unsafe_offset = e * nv + k]
-                else:
-                    for k in range(nv):
-                        mj_rows[e * nv + k] = Je[unsafe_offset = e * nv + k]
-            _minv_apply_rows[DTYPE, V_CAP, MJ_CAP](
-                env, nv, num_edges, m_inv, ldl_L, ldl_D, par, tree_ok,
-                mj_rows, mj_cache, mj_work,
-            )
-        else:
-            for e in range(num_edges):
-                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
-                    env, nv, m_inv, Je, e, mj_a, je_n, je_ix
-                )
-                for q in range(nv):
-                    mj_cache[e * nv + q] = mj_a[q]
-
     comptime ZERO = Scalar[DTYPE](0)
     comptime HALF = Scalar[DTYPE](0.5)
     comptime TWO = Scalar[DTYPE](2.0)
     comptime MINVAL = Scalar[DTYPE](_MINVAL)
     comptime DIAG_FLOOR = Scalar[DTYPE](_DIAG_FLOOR)
     comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
+
+    var mj_a = Scratch[Scalar[DTYPE], V_CAP](nv, fill=ZERO)
+    var mj_b = Scratch[Scalar[DTYPE], V_CAP](nv, fill=ZERO)
+
+    # ── The CPU path (`CACHE`): MuJoCo's shape, on the SWEPT rows only ────
+    #
+    # MuJoCo builds `efc_AR = J M⁻¹ Jᵀ + R` before `solNoSlip`
+    # (`mj_projectConstraint`) and the pass then only READS it: a residual is
+    # one row of `AR` against the current forces (`residual`), a block's `Ac`
+    # is four entries (`extractBlock`), and the sweep never touches `qacc`.
+    # The refreshing legs below (the GPU ones) instead recompute every row's
+    # `jar` after every pair — `E * nnz(J)` per pair.
+    #
+    # Two things make it cheaper than MuJoCo's own: (1) only the rows the
+    # sweep MOVES — dry-friction dofs and the friction edges of condim ≥ 3
+    # contacts — need `M⁻¹ Jᵀ`, an `A` row and a residual. On dog that is 36
+    # rows of 119: the limit and normal-direction rows carry forces the sweep
+    # never changes, so their whole contribution to every residual is a
+    # constant, `J_S M⁻¹ Jᵀ_¬S f_¬S`, folded into `b_S` through ONE extra
+    # `M⁻¹` apply (`qacc_ns = qacc_smooth + M⁻¹ Jᵀ_¬S f_¬S`, then
+    # `b_S = J_S qacc_ns + bias_S`). (2) `A_S` is symmetric and computed for
+    # the lower triangle only. PERFORMANCE.md §13.20 has the stage numbers:
+    # the all-rows `M⁻¹ Jᵀ` cache was 76 of the pass's ~130 µs on dog.
+    #
+    # ⚠ NOT BIT-EXACT against the refreshing legs — the same quantities in a
+    # different summation order — and gated against MuJoCo
+    # (`test_noslip_vs_mujoco`, `test_noslip_reaches_the_runtime_path`).
+    # ⚠ `jar` is LEFT AS IT WAS ON ENTRY under `CACHE`: no caller reads it
+    # after this routine (`_newton_solve_env` writes `qacc` and `force` back).
+    # ⚠ `A_S` is HEAP (`CAP = 0`): a cap of `E_CAP²` would be megabytes of
+    # stack on a model with a large contact budget; the live `ns²` is a few kB.
+    comptime SW_CAP = E_CAP if CACHE else 1
+    var sw_slot = Scratch[Int, SW_CAP](num_edges if CACHE else 1, fill=-1)
+    var sw_ix = Scratch[Int, SW_CAP](num_edges if CACHE else 1, uninitialized=0)
+    var ns = 0
+    comptime if CACHE:
+        # Slot order = sweep order: dry-friction rows, then the pyramid pairs.
+        for i in range(num_edges):
+            if Int(kind_e[unsafe_offset=i]) == SROW_FRICTION:
+                sw_slot[i] = ns
+                sw_ix[ns] = i
+                ns += 1
+        for c in range(nc):
+            var dim = Int(contacts[env, c * CONTACT_SIZE + CONTACT_IDX_CONDIM])
+            if dim < 3:
+                continue
+            var base = c * NE_PYR
+            for k in range(dim - 1):
+                var j1 = base + 2 * k + 1
+                if j1 >= num_edges:
+                    break
+                for j in range(j1 - 1, j1 + 1):
+                    if sw_slot[j] < 0:
+                        sw_slot[j] = ns
+                        sw_ix[ns] = j
+                        ns += 1
+
+    # `A_S = J_S M⁻¹ J_Sᵀ`, built MuJoCo's way (`mj_projectConstraint`:
+    # `mj_solveM2` then `mju_sqrMatTDSparse`). With `M = Lᵀ D L`,
+    # `A_S = Z_Sᵀ Z_S` for `Z_S = D^-½ L⁻ᵀ J_Sᵀ` — HALF a solve per row, and
+    # the half that stays SPARSE: pushing a row's entries up their dof
+    # ancestors never leaves the ancestor-closed support of a contact
+    # Jacobian, so it is O(chain²) per row instead of a dense fill, and no
+    # `M⁻¹ Jᵀ` cache exists at all (§13.20: that cache was 25 µs of the pass
+    # on dog and the `J · cache` products another 10). Lower triangle only,
+    # mirrored. `zj` holds `Z_S` row-major; on the dense fallback (a model
+    # with no kinematic tree) it holds `M⁻¹ J_Sᵀ` and `A_S[s, t] = J_t · zj[s]`.
+    comptime MJ_CAP = E_CAP * V_CAP if CACHE else 1
+    # Uninitialized, then the LIVE `ns * nv` zeroed by hand: `fill=` would
+    # memset the whole `E_CAP * V_CAP` slab (76 kB on dog) for 2k live floats.
+    var zj = Scratch[Scalar[DTYPE], MJ_CAP](
+        ns * nv if CACHE else 1, uninitialized=ZERO
+    )
+    comptime if CACHE:
+        for q in range(ns * nv):
+            zj[q] = ZERO
+    # `CAP = 0` is the HEAP leg — only on the CPU path. The GPU legs get a
+    # one-element static array they never read.
+    comptime A_CAP = 0 if CACHE else 1
+    var A_mat = Scratch[Scalar[DTYPE], A_CAP](
+        ns * ns if CACHE else 1, uninitialized=ZERO
+    )
+    var b_s = Scratch[Scalar[DTYPE], SW_CAP](ns if CACHE else 1, uninitialized=ZERO)
+    comptime if CACHE:
+        var tree_path = False
+        comptime if TREE:
+            tree_path = tree_ok
+        if tree_path:
+            var dis = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=ZERO)
+            for k in range(nv):
+                var d_k = rebind[Scalar[DTYPE]](ldl_D[env, k])
+                dis[k] = (
+                    Scalar[DTYPE](1) / sqrt(d_k)
+                    if d_k > Scalar[DTYPE](1e-14) else ZERO
+                )
+            for s in range(ns):
+                var e = sw_ix[s]
+                var zb = s * nv
+                comptime if SPARSE:
+                    for a in range(je_n[e]):
+                        var k = je_ix[e * nv + a]
+                        zj[zb + k] = Je[unsafe_offset = e * nv + k]
+                else:
+                    for k in range(nv):
+                        zj[zb + k] = Je[unsafe_offset = e * nv + k]
+                # `L⁻ᵀ`: for `i` descending, push `z_i` up its ancestors —
+                # the first half of `mj_solveLD`, on this row's support only.
+                for i in range(nv - 1, -1, -1):
+                    var yi = zj[zb + i]
+                    if yi != ZERO:
+                        var ri = i * nv
+                        var j = par[i]
+                        while j >= 0:
+                            zj[zb + j] = (
+                                zj[zb + j]
+                                - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * yi
+                            )
+                            j = par[j]
+                for k in range(nv):
+                    zj[zb + k] = zj[zb + k] * dis[k]
+            var zp = zj.unsafe_ptr()
+            for s in range(ns):
+                var zs = s * nv
+                for t in range(s + 1):
+                    var acc = _dot_self[DTYPE](zp, zs, t * nv, nv)
+                    A_mat[s * ns + t] = acc
+                    A_mat[t * ns + s] = acc
+        else:
+            for s in range(ns):
+                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                    env, nv, m_inv, Je, sw_ix[s], mj_a, je_n, je_ix
+                )
+                for q in range(nv):
+                    zj[s * nv + q] = mj_a[q]
+            for s in range(ns):
+                for t in range(s + 1):
+                    var g = sw_ix[t]
+                    var acc = ZERO
+                    comptime if SPARSE:
+                        for a in range(je_n[g]):
+                            var k = je_ix[g * nv + a]
+                            acc += Je[unsafe_offset = g * nv + k] * zj[s * nv + k]
+                    else:
+                        for k in range(nv):
+                            acc += Je[unsafe_offset = g * nv + k] * zj[s * nv + k]
+                    A_mat[s * ns + t] = acc
+                    A_mat[t * ns + s] = acc
+
+        # `b_S = J_S (qacc_smooth + M⁻¹ Jᵀ_¬S f_¬S) + bias_S`; `qfrc` is
+        # scratch here — `dualFinish` below rewrites it from zero.
+        for k in range(nv):
+            qfrc[k] = ZERO
+        for g in range(num_edges):
+            if sw_slot[g] >= 0:
+                continue
+            var f = force[unsafe_offset=g]
+            if f == ZERO:
+                continue
+            comptime if SPARSE:
+                for a in range(je_n[g]):
+                    var k = je_ix[g * nv + a]
+                    qfrc[k] += Je[unsafe_offset = g * nv + k] * f
+            else:
+                for k in range(nv):
+                    qfrc[k] += Je[unsafe_offset = g * nv + k] * f
+        _minv_apply[DTYPE, V_CAP, TREE=TREE](
+            env, nv, m_inv, ldl_L, ldl_D, par, tree_ok, qfrc, mj_a
+        )
+        for k in range(nv):
+            mj_a[k] += qacc_smooth[k]  # qacc_ns
+        for s in range(ns):
+            var e = sw_ix[s]
+            b_s[s] = (
+                _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, e, mj_a, nv, je_n, je_ix)
+                + bias_e[unsafe_offset=e]
+            )
 
     for it in range(max_iter):
         var improvement = ZERO
@@ -698,19 +886,25 @@ def noslip_pyramidal[
         for i in range(num_edges):
             if Int(kind_e[unsafe_offset=i]) != SROW_FRICTION:
                 continue
+            var a_ii = ZERO
+            var res = ZERO
             comptime if CACHE:
-                for q in range(nv):
-                    mj_a[q] = mj_cache[i * nv + q]
+                # `ARdiaginv` + `residual`: the diagonal and one row-dot.
+                var s_i = sw_slot[i]
+                a_ii = A_mat[s_i * ns + s_i]
+                res = b_s[s_i] + _dot_a_row[DTYPE, A_CAP, SW_CAP, ROW_AS](
+                    A_mat, s_i, ns, sw_ix, force
+                )
             else:
                 _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
                     env, nv, m_inv, Je, i, mj_a, je_n, je_ix
                 )
-            var a_ii = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, i, mj_a, nv, je_n, je_ix)
+                a_ii = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, i, mj_a, nv, je_n, je_ix)
+                res = jar[i]
             var arinv = Scalar[DTYPE](1.0) / (
                 a_ii if a_ii > MINVAL else MINVAL
             )
 
-            var res = jar[i]
             var old = force[unsafe_offset=i]
             var f = old - res * arinv
             var lim = floss_e[unsafe_offset=i]
@@ -722,11 +916,12 @@ def noslip_pyramidal[
             var d = f - old
             if d != ZERO:
                 force[unsafe_offset=i] = f
-                for k in range(nv):
-                    qacc[k] += d * mj_a[k]
-                _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS, SPARSE](
-                    num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
-                )
+                comptime if not CACHE:
+                    for k in range(nv):
+                        qacc[k] += d * mj_a[k]
+                    _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS, SPARSE](
+                        num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
+                    )
             # `0.5*d^2/ARinv` — and `1/ARinv` is `a_ii`, so no division here.
             improvement -= HALF * d * d * a_ii + d * res
 
@@ -742,40 +937,47 @@ def noslip_pyramidal[
                 if j1 >= num_edges:
                     break
 
+                var a00 = ZERO
+                var a01 = ZERO
+                var a10 = ZERO
+                var a11 = ZERO
+                var r0 = ZERO
+                var r1 = ZERO
                 comptime if CACHE:
-
-                    for q in range(nv):
-
-                        mj_a[q] = mj_cache[j0 * nv + q]
-
-                else:
-
-                    _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
-
-                        env, nv, m_inv, Je, j0, mj_a, je_n, je_ix
-
+                    # `extractBlock` + `residual`: four entries of `A` and two
+                    # row-dots against the current forces.
+                    var s0 = sw_slot[j0]
+                    var s1 = sw_slot[j1]
+                    a00 = A_mat[s0 * ns + s0]
+                    a01 = A_mat[s0 * ns + s1]
+                    a10 = A_mat[s1 * ns + s0]
+                    a11 = A_mat[s1 * ns + s1]
+                    r0 = b_s[s0] + _dot_a_row[DTYPE, A_CAP, SW_CAP, ROW_AS](
+                        A_mat, s0, ns, sw_ix, force
                     )
-                comptime if CACHE:
-                    for q in range(nv):
-                        mj_b[q] = mj_cache[j1 * nv + q]
+                    r1 = b_s[s1] + _dot_a_row[DTYPE, A_CAP, SW_CAP, ROW_AS](
+                        A_mat, s1, ns, sw_ix, force
+                    )
                 else:
+                    _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                        env, nv, m_inv, Je, j0, mj_a, je_n, je_ix
+                    )
                     _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
                         env, nv, m_inv, Je, j1, mj_b, je_n, je_ix
                     )
-
-                # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
-                # R is NOT part of it).
-                var a00 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_a, nv, je_n, je_ix)
-                var a01 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_b, nv, je_n, je_ix)
-                var a10 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_a, nv, je_n, je_ix)
-                var a11 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_b, nv, je_n, je_ix)
+                    # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
+                    # R is NOT part of it).
+                    a00 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_a, nv, je_n, je_ix)
+                    a01 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_b, nv, je_n, je_ix)
+                    a10 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_a, nv, je_n, je_ix)
+                    a11 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_b, nv, je_n, je_ix)
+                    r0 = jar[j0]
+                    r1 = jar[j1]
                 if a00 < DIAG_FLOOR:
                     a00 = DIAG_FLOOR
                 if a11 < DIAG_FLOOR:
                     a11 = DIAG_FLOOR
 
-                var r0 = jar[j0]
-                var r1 = jar[j1]
                 var old0 = force[unsafe_offset=j0]
                 var old1 = force[unsafe_offset=j1]
 
@@ -819,11 +1021,12 @@ def noslip_pyramidal[
                 if d0 != ZERO or d1 != ZERO:
                     force[unsafe_offset=j0] = f0
                     force[unsafe_offset=j1] = f1
-                    for q in range(nv):
-                        qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
-                    _refresh_jar[DTYPE, E_CAP, V_CAP, SPARSE=SPARSE](
-                        num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
-                    )
+                    comptime if not CACHE:
+                        for q in range(nv):
+                            qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
+                        _refresh_jar[DTYPE, E_CAP, V_CAP, SPARSE=SPARSE](
+                            num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
+                        )
                 improvement -= change
 
         improvement *= scale
