@@ -1685,8 +1685,20 @@ def _newton_solve_env[
         # Avoids ~2*NV² workspace (global) reads per iteration (Hessian build
         # + Mv = M*search). Mirrors the ELLIPTIC path's M_local optimization.
         var M_local = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
-        for k in range(nv * nv):
-            M_local[k] = rebind[Scalar[DTYPE]](M[env, k])
+        # ── THE THREE nv² COPIES (§13.6: 59% of park_k9's solve once the
+        # arithmetic was segmented). Under TREE_AWARE every reader of `M_local`
+        # (`Ma`, `Mv`, the warm-start cost, the `H` copy) is restricted to the
+        # dof's segment, so only the in-segment entries are ever read and only
+        # they are copied; the rest of the slab is never touched. `M` is exactly
+        # zero there anyway (CRBA writes within-tree pairs only), so nothing
+        # that WAS read has changed — bit-exact.
+        comptime if TREE_AWARE:
+            for i in range(nv):
+                for j in range(Int(seg0[i]), Int(seg1[i])):
+                    M_local[i * nv + j] = rebind[Scalar[DTYPE]](M[env, i * nv + j])
+        else:
+            for k in range(nv * nv):
+                M_local[k] = rebind[Scalar[DTYPE]](M[env, k])
 
         for i in range(nv):
             var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
@@ -1748,6 +1760,13 @@ def _newton_solve_env[
         var force = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
         var H = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
         var L_chol = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
+        # `L` is zeroed ONCE per solve under TREE_AWARE, not per factorisation:
+        # `chol_factor_seg` writes every in-segment lower entry it will read
+        # and neither it nor `chol_solve_seg` reads an off-segment or
+        # upper one, so a second zeroing changes no value anything reads.
+        comptime if TREE_AWARE:
+            for k in range(nv * nv):
+                L_chol[k] = Scalar[DTYPE](0)
         var grad = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         var search = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         var Mv = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -1896,9 +1915,17 @@ def _newton_solve_env[
                 break
 
             # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
-            for i in range(nv):
-                for j in range(nv):
-                    H[i * nv + j] = M_local[i * nv + j]
+            comptime if TREE_AWARE:
+                # In-segment entries only — the factorisation reads no other,
+                # and every row's `JᵀDJ` update below lands inside its
+                # segment by construction of the segments.
+                for i in range(nv):
+                    for j in range(Int(seg0[i]), Int(seg1[i])):
+                        H[i * nv + j] = M_local[i * nv + j]
+            else:
+                for i in range(nv):
+                    for j in range(nv):
+                        H[i * nv + j] = M_local[i * nv + j]
             for e_idx in range(num_edges):
                 if state_e[e_idx] == SROW_QUADRATIC:
                     comptime if TREE_AWARE:
@@ -1932,8 +1959,6 @@ def _newton_solve_env[
                 # A rank failure anywhere gets the dense path's remedy (the
                 # whole diagonal lifted, everything refactored), so the
                 # answer stays the dense one bit for bit.
-                for k in range(nv * nv):
-                    L_chol[k] = Scalar[DTYPE](0)
                 var chol_ok = True
                 var s0 = 0
                 while s0 < nv:
@@ -1946,8 +1971,6 @@ def _newton_solve_env[
                 if not chol_ok:
                     for i in range(nv):
                         H[i * nv + i] += Scalar[DTYPE](1e-6)
-                    for k in range(nv * nv):
-                        L_chol[k] = Scalar[DTYPE](0)
                     s0 = 0
                     while s0 < nv:
                         var s1 = Int(seg1[s0])

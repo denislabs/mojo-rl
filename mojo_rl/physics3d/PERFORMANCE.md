@@ -1255,3 +1255,29 @@ by `ldl_solve` per row would replace an `nv³` with `rows × nv²`), park_k9's
 three `nv²` copies per iteration (bit-exact), and the reassemble contact
 count (ours 68 / 129 to MuJoCo's 93 / 232 — a fidelity question, not a
 speed one, and the reason the 0.63× is not a like-for-like number).
+
+### 13.9 LANDED (2026-09-05): the three nv² copies — bit-exact
+
+Item 4 of §13.6 (park_k9's remaining 59%). Under `TREE_AWARE` the pyramidal
+Newton now copies only the in-segment entries of `M` into `M_local` and of
+`M_local` into `H` (every reader of either is already restricted to the dof's
+segment, and `M` is exactly zero elsewhere), and zeroes `L` once per solve
+instead of once per factorisation (`chol_factor_seg` writes every in-segment
+lower entry it will read, and nothing reads an off-segment or upper one).
+Nothing that was read has changed a bit: ten models — the four park scenes,
+SO-ARM101, walker2d, hopper, humanoid, ant, humanoid_cmu, dog — print their
+previous checksums.
+
+| model | nv | before µs | after µs | vs MuJoCo |
+|---|---|---|---|---|
+| park_k3 | 24 | 15.9 | 15.3 | 2.21× |
+| park_k6 | 42 | 23.4 | 20.8 | 2.67× |
+| park_k9 | 60 | 33.3 | **27.7** | 10.7× at the start of the day → **3.15×** |
+
+The park excess over k=0 is now 4.1 / 9.7 / 16.6 µs at k = 3 / 6 / 9 —
+**linear in the added dofs, ~0.3 µs per dof**, against a MuJoCo excess of
+0.6 / 1.5 / 2.5. What is left of it sits outside the Newton: the collision
+pass (~9 µs at k=9), the still-dense `compute_m_inv` (this model has
+`frictionloss` rows, no equalities, no noslip — the inverse is skipped; the
+remaining `nv`-sized passes are the Euler step's own), and the per-solve row
+scan that builds the sparsity lists.
