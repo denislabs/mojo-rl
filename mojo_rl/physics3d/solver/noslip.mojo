@@ -452,6 +452,53 @@ def _dot_self[
 
 
 @always_inline
+def _tree_solve_cols[
+    DTYPE: DType,
+    V_CAP: Int,
+    RV_CAP: Int,
+    L_M_INV: Layout,
+    L_D: Layout,
+](
+    env: Int,
+    nv: Int,
+    n: Int,
+    ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    par: Scratch[Int, V_CAP],
+    mut Wk: Scratch[Scalar[DTYPE], RV_CAP],
+):
+    """`mj_solveLD` on `n` vectors IN PLACE, column-major: `Wk[k*n + r]` is
+    dof `k` of vector `r`. The core of `_minv_apply_rows`, exposed so a
+    caller that can scatter its rows straight into this layout skips the
+    two transposes (`noslip_elliptic`'s cache build: 110 rows on
+    reassemble3, §13.21)."""
+    var wp = Wk.unsafe_ptr()
+    for i in range(nv - 1, -1, -1):
+        var ri = i * nv
+        var j = par[i]
+        while j >= 0:
+            _axpy_self[DTYPE](
+                wp, j * n, i * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
+            )
+            j = par[j]
+    for i in range(nv):
+        var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
+        var inv = Scalar[DTYPE](0)
+        if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
+            inv = Scalar[DTYPE](1) / d_i
+        for r in range(n):
+            Wk[i * n + r] = Wk[i * n + r] * inv
+    for i in range(nv):
+        var ri = i * nv
+        var j = par[i]
+        while j >= 0:
+            _axpy_self[DTYPE](
+                wp, i * n, j * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
+            )
+            j = par[j]
+
+
+@always_inline
 def _minv_apply_rows[
     DTYPE: DType,
     V_CAP: Int,
@@ -488,30 +535,7 @@ def _minv_apply_rows[
         for r in range(n):
             for k in range(nv):
                 Wk[k * n + r] = B[r * nv + k]
-        var wp = Wk.unsafe_ptr()
-        for i in range(nv - 1, -1, -1):
-            var ri = i * nv
-            var j = par[i]
-            while j >= 0:
-                _axpy_self[DTYPE](
-                    wp, j * n, i * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
-                )
-                j = par[j]
-        for i in range(nv):
-            var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
-            var inv = Scalar[DTYPE](0)
-            if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
-                inv = Scalar[DTYPE](1) / d_i
-            for r in range(n):
-                Wk[i * n + r] = Wk[i * n + r] * inv
-        for i in range(nv):
-            var ri = i * nv
-            var j = par[i]
-            while j >= 0:
-                _axpy_self[DTYPE](
-                    wp, i * n, j * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
-                )
-                j = par[j]
+        _tree_solve_cols[DTYPE, V_CAP, RV_CAP](env, nv, n, ldl_L, ldl_D, par, Wk)
         for r in range(n):
             for k in range(nv):
                 X[r * nv + k] = Wk[k * n + r]
@@ -1443,27 +1467,49 @@ def noslip_elliptic[
         nc * NT * nv if CACHE else 1, uninitialized=ZERO
     )
     comptime if CACHE:
+        var tree_path = False
         comptime if TREE:
-            # Every tangent row's `M⁻¹ J_tᵀ` in ONE tree solve
-            # (`_minv_apply_rows`): rows of `Jt_c` in, `minv_cache` out.
-            var jt_rows = Scratch[Scalar[DTYPE], MJC_CAP](nc * NT * nv, fill=ZERO)
+            tree_path = tree_ok
+        if tree_path:
+            # Every tangent row's `M⁻¹ J_tᵀ` in ONE tree solve. The rows'
+            # nonzeros are scattered STRAIGHT into the column-major work slab
+            # `_tree_solve_cols` wants (`Wk[k*n + r]`), so there is no
+            # row-major staging copy, no whole-cap memset and no input
+            # transpose (§13.21: the cache build was 17.5 µs of the pass on
+            # reassemble3, most of it those copies). Only the live `n * nv`
+            # is zeroed.
+            var n_r = nc * NT
             var jt_work = Scratch[Scalar[DTYPE], MJC_CAP](
-                nc * NT * nv, uninitialized=ZERO
+                n_r * nv, uninitialized=ZERO
             )
+            var wp = jt_work.unsafe_ptr()
+            var n_live = n_r * nv
+            comptime W = 2 * simd_width_of[DTYPE]()
+            var q = 0
+            while q + W <= n_live:
+                wp.store(q, SIMD[DTYPE, W](0))
+                q += W
+            while q < n_live:
+                wp[unsafe_offset=q] = ZERO
+                q += 1
             for c in range(nc):
                 for t in range(nt_c[c]):
-                    var r0 = (c * NT + t) * nv
+                    var r = c * NT + t
                     comptime if SPARSE:
                         for a in range(cn_n[c]):
                             var k = cn_ix[c * nv + a]
-                            jt_rows[r0 + k] = Jt_c[r0 + k]
+                            wp[unsafe_offset = k * n_r + r] = Jt_c[r * nv + k]
                     else:
                         for k in range(nv):
-                            jt_rows[r0 + k] = Jt_c[r0 + k]
-            _minv_apply_rows[DTYPE, V_CAP, MJC_CAP](
-                env, nv, nc * NT, m_inv, ldl_L, ldl_D, par, tree_ok,
-                jt_rows, minv_cache, jt_work,
+                            wp[unsafe_offset = k * n_r + r] = Jt_c[r * nv + k]
+            _tree_solve_cols[DTYPE, V_CAP, MJC_CAP](
+                env, nv, n_r, ldl_L, ldl_D, par, jt_work
             )
+            var mp = minv_cache.unsafe_ptr()
+            var wp2 = jt_work.unsafe_ptr()
+            for r in range(n_r):
+                for k in range(nv):
+                    mp[unsafe_offset = r * nv + k] = wp2[unsafe_offset = k * n_r + r]
         else:
             for c in range(nc):
                 for t in range(nt_c[c]):
@@ -1472,6 +1518,32 @@ def noslip_elliptic[
                     )
                     for q in range(nv):
                         minv_cache[(c * NT + t) * nv + q] = MinvJ[t * nv + q]
+
+    # Each contact's `Ac` block (`extractBlock`, flg_subR=1: `J_t M⁻¹ J_uᵀ`
+    # with the diagonal floored) is loop-invariant across the sweeps — it was
+    # rebuilt from `nt²` sparse dots on every contact of every iteration.
+    # Built once here under `CACHE`, straight from `minv_cache`.
+    comptime AC_CAP = MC_CAP * NT * NT if CACHE else 1
+    var ac_cache = Scratch[Scalar[DTYPE], AC_CAP](
+        nc * NT * NT if CACHE else 1, uninitialized=ZERO
+    )
+    comptime if CACHE:
+        for c in range(nc):
+            var nt = nt_c[c]
+            var cb = c * NT
+            for t in range(nt):
+                for u in range(nt):
+                    var acc = ZERO
+                    comptime if SPARSE:
+                        for a in range(cn_n[c]):
+                            var i = cn_ix[c * nv + a]
+                            acc += Jt_c[(cb + t) * nv + i] * minv_cache[(cb + u) * nv + i]
+                    else:
+                        for i in range(nv):
+                            acc += Jt_c[(cb + t) * nv + i] * minv_cache[(cb + u) * nv + i]
+                    if t == u and acc < DIAG_FLOOR:
+                        acc = DIAG_FLOOR
+                    ac_cache[c * NT * NT + t * NT + u] = acc
     # Friction-dof rows read a COLUMN of `M⁻¹` (`J = sign · e_dof`); under
     # `TREE` those columns are one bulk tree solve of unit vectors.
     comptime SC_CAP = S_CAP * V_CAP if TREE else 1
@@ -1600,24 +1672,26 @@ def noslip_elliptic[
                     for i in range(nv):
                         jv += Jt_c[(cb + t) * nv + i] * qacc[i]
                 jt_cur[t] = jv
-                comptime if CACHE:
-                    for q in range(nv):
-                        MinvJ[t * nv + q] = minv_cache[(cb + t) * nv + q]
-                else:
+                comptime if not CACHE:
                     _minv_dense[DTYPE, T_CAP, V_CAP, NT, SPARSE=SPARSE](
                         env, dims, m_inv, Jt_c, cb + t, MinvJ, t, cn_n, cn_ix, c
                     )
 
             # `Ac` = the AR submatrix with R subtracted off the diagonal and
             # the diagonal floored (`extractBlock`, flg_subR=1) — so R is not
-            # in it at all.
-            for t in range(nt):
-                for u in range(nt):
-                    Ac[t * NT + u] = _dot_dense[
-                        DTYPE, T_CAP, V_CAP, NT, SPARSE
-                    ](Jt_c, cb + t, MinvJ, u, nv, cn_n, cn_ix, c)
-                if Ac[t * NT + t] < DIAG_FLOOR:
-                    Ac[t * NT + t] = DIAG_FLOOR
+            # in it at all. Under `CACHE` it is read from `ac_cache`.
+            comptime if CACHE:
+                for t in range(nt):
+                    for u in range(nt):
+                        Ac[t * NT + u] = ac_cache[c * NT * NT + t * NT + u]
+            else:
+                for t in range(nt):
+                    for u in range(nt):
+                        Ac[t * NT + u] = _dot_dense[
+                            DTYPE, T_CAP, V_CAP, NT, SPARSE
+                        ](Jt_c, cb + t, MinvJ, u, nv, cn_n, cn_ix, c)
+                    if Ac[t * NT + t] < DIAG_FLOOR:
+                        Ac[t * NT + t] = DIAG_FLOOR
 
             # `bc = res - Ac * oldforce`
             for t in range(nt):
@@ -1671,8 +1745,13 @@ def noslip_elliptic[
                 for t in range(nt):
                     var dt = vf[t] - oldf[t]
                     ft_a[cb + t] = vf[t]
-                    for q in range(nv):
-                        qacc[q] += dt * MinvJ[t * nv + q]
+                    comptime if CACHE:
+                        var r0 = (cb + t) * nv
+                        for q in range(nv):
+                            qacc[q] += dt * minv_cache[r0 + q]
+                    else:
+                        for q in range(nv):
+                            qacc[q] += dt * MinvJ[t * nv + q]
                 # (full-system refresh removed — see sweep 1)
             improvement -= change
 
