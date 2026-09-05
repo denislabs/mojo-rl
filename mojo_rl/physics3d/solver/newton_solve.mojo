@@ -82,7 +82,7 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
-    chol_solve_seg_p, _dot_seg,
+    chol_solve_seg_p, _dot_seg, chol_update_seg,
 )
 from .newton_blocks import build_dof_segments, build_dof_segments_p
 
@@ -1870,6 +1870,12 @@ def _newton_solve_env[
             var _p_now = Int(perf_counter_ns())
             _p_setup += _p_now - _p_last
             _p_last = _p_now
+        # ── TREE_AWARE: the factor persists across iterations and is updated
+        # rank-1 per row that changes zone (see `chol_update_seg`); `H` is
+        # rebuilt only when a factor does not exist yet or an update lost rank.
+        var have_factor = False
+        var prev_state = Scratch[Int, N_CAP](me if TREE_AWARE else 1, uninitialized=0)
+        var upd = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
             # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
@@ -1921,82 +1927,121 @@ def _newton_solve_env[
                 break
 
             # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
+            #
+            # ── TREE_AWARE: FACTOR ONCE, THEN UPDATE. MuJoCo's loop
+            # (engine_solver.c:2120) keeps the factor and applies a rank-1
+            # update per row that entered or left the quadratic zone since
+            # the last iteration; it rebuilds only on rank loss. Every
+            # iteration of ours used to rebuild `H` and refactor it.
+            var need_full = True
             comptime if TREE_AWARE:
-                # In-segment entries only — the factorisation reads no other,
-                # and every row's `JᵀDJ` update below lands inside its
-                # segment by construction of the segments.
-                for i in range(nv):
-                    for j in range(Int(seg0[i]), Int(seg1[i])):
-                        H[i * nv + j] = M_local[i * nv + j]
-            else:
-                for i in range(nv):
-                    for j in range(nv):
-                        H[i * nv + j] = M_local[i * nv + j]
-            for e_idx in range(num_edges):
-                if state_e[e_idx] == SROW_QUADRATIC:
-                    comptime if TREE_AWARE:
-                        # `(De * Je_i) * Je_j` is the dense expression's own
-                        # evaluation order, so hoisting the left factor is
-                        # the same arithmetic.
+                need_full = not have_factor
+                if have_factor:
+                    for e_idx in range(num_edges):
+                        var was_q = prev_state[e_idx] == SROW_QUADRATIC
+                        var now_q = state_e[e_idx] == SROW_QUADRATIC
+                        if was_q == now_q:
+                            continue
                         var n_e = je_n[e_idx]
+                        if n_e == 0:
+                            continue
+                        # The row lives in ONE segment: that of its first dof.
+                        var i0 = je_ix[e_idx * nv]
+                        var u0 = Int(seg0[i0])
+                        var u1 = Int(seg1[i0])
+                        for i in range(u0, u1):
+                            upd[i] = Scalar[DTYPE](0)
+                        var sd = sqrt(De[e_idx])
                         for a in range(n_e):
                             var i = je_ix[e_idx * nv + a]
-                            var dji = De[e_idx] * Je[e_idx * nv + i]
-                            for b in range(n_e):
-                                var j = je_ix[e_idx * nv + b]
-                                H[i * nv + j] += dji * Je[e_idx * nv + j]
-                    else:
-                        for i in range(nv):
-                            for j in range(nv):
-                                H[i * nv + j] += (
-                                    De[e_idx]
-                                    * Je[e_idx * nv + i]
-                                    * Je[e_idx * nv + j]
-                                )
-
+                            upd[i] = sd * Je[e_idx * nv + i]
+                        var ok_u = chol_update_seg[DTYPE, M_CAP, V_CAP](
+                            L_chol, upd, nv, u0, u1, now_q
+                        )
+                        if not ok_u:
+                            need_full = True
+                            break
+            if need_full:
+                comptime if TREE_AWARE:
+                    # In-segment entries only — the factorisation reads no
+                    # other, and every row's `JᵀDJ` update below lands inside
+                    # its segment by construction of the segments.
+                    for i in range(nv):
+                        for j in range(Int(seg0[i]), Int(seg1[i])):
+                            H[i * nv + j] = M_local[i * nv + j]
+                else:
+                    for i in range(nv):
+                        for j in range(nv):
+                            H[i * nv + j] = M_local[i * nv + j]
+                for e_idx in range(num_edges):
+                    if state_e[e_idx] == SROW_QUADRATIC:
+                        comptime if TREE_AWARE:
+                            # `(De * Je_i) * Je_j` is the dense expression's
+                            # own evaluation order, so hoisting the left
+                            # factor is the same arithmetic.
+                            var n_e = je_n[e_idx]
+                            for a in range(n_e):
+                                var i = je_ix[e_idx * nv + a]
+                                var dji = De[e_idx] * Je[e_idx * nv + i]
+                                for b in range(n_e):
+                                    var j = je_ix[e_idx * nv + b]
+                                    H[i * nv + j] += dji * Je[e_idx * nv + j]
+                        else:
+                            for i in range(nv):
+                                for j in range(nv):
+                                    H[i * nv + j] += (
+                                        De[e_idx]
+                                        * Je[e_idx * nv + i]
+                                        * Je[e_idx * nv + j]
+                                    )
             comptime if _CPU_PROBE:
                 var _p_now = Int(perf_counter_ns())
                 _p_hbuild += _p_now - _p_last
                 _p_last = _p_now
-            # Cholesky solve
-            comptime if TREE_AWARE:
-                # One factorisation per tree segment into the same zeroed
-                # `L` — `chol_factor_inline` is exactly this over `[0, nv)`.
-                # A rank failure anywhere gets the dense path's remedy (the
-                # whole diagonal lifted, everything refactored), so the
-                # answer stays the dense one bit for bit.
-                var chol_ok = True
-                var s0 = 0
-                while s0 < nv:
-                    var s1 = Int(seg1[s0])
-                    var ok_s = chol_factor_seg[DTYPE, M_CAP, VEC=True](
-                        H, L_chol, nv, s0, s1
-                    )
-                    chol_ok = chol_ok and ok_s
-                    s0 = s1
-                if not chol_ok:
-                    for i in range(nv):
-                        H[i * nv + i] += Scalar[DTYPE](1e-6)
-                    s0 = 0
+
+            # Cholesky: factor (when needed), then solve.
+            if need_full:
+                comptime if TREE_AWARE:
+                    # One factorisation per tree segment into `L`. A rank
+                    # failure anywhere gets the dense path's remedy (the whole
+                    # diagonal lifted, everything refactored).
+                    var chol_ok = True
+                    var s0 = 0
                     while s0 < nv:
                         var s1 = Int(seg1[s0])
-                        _ = chol_factor_seg[DTYPE, M_CAP, VEC=True](
+                        var ok_s = chol_factor_seg[DTYPE, M_CAP, VEC=True](
                             H, L_chol, nv, s0, s1
                         )
+                        chol_ok = chol_ok and ok_s
                         s0 = s1
-                s0 = 0
+                    if not chol_ok:
+                        for i in range(nv):
+                            H[i * nv + i] += Scalar[DTYPE](1e-6)
+                        s0 = 0
+                        while s0 < nv:
+                            var s1 = Int(seg1[s0])
+                            _ = chol_factor_seg[DTYPE, M_CAP, VEC=True](
+                                H, L_chol, nv, s0, s1
+                            )
+                            s0 = s1
+                    have_factor = True
+                else:
+                    var chol_ok = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
+                    if not chol_ok:
+                        for i in range(nv):
+                            H[i * nv + i] += Scalar[DTYPE](1e-6)
+                        _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
+            comptime if TREE_AWARE:
+                var s0 = 0
                 while s0 < nv:
                     var s1 = Int(seg1[s0])
                     chol_solve_seg[DTYPE, M_CAP, V_CAP, VEC=True](
                         L_chol, grad, search, nv, s0, s1
                     )
                     s0 = s1
+                for e_idx in range(num_edges):
+                    prev_state[e_idx] = state_e[e_idx]
             else:
-                var chol_ok = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
-                if not chol_ok:
-                    for i in range(nv):
-                        H[i * nv + i] += Scalar[DTYPE](1e-6)
-                    _ = chol_factor_inline[DTYPE, M_CAP](H, L_chol, nv)
                 chol_solve_inline[DTYPE, M_CAP, V_CAP](
                     L_chol, grad, search, nv
                 )

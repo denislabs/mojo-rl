@@ -337,6 +337,61 @@ def chol_factor_seg[
 
 
 @always_inline
+def chol_update_seg[
+    DTYPE: DType,
+    M_CAP: Int,
+    V_CAP: Int,
+](
+    mut L: Scratch[Scalar[DTYPE], M_CAP],
+    mut x: Scratch[Scalar[DTYPE], V_CAP],
+    nv: Int,
+    s0: Int,
+    s1: Int,
+    plus: Bool,
+) -> Bool:
+    """Rank-1 update of a Cholesky factor in place over the segment `[s0, s1)`:
+    `L Lᵀ ± x xᵀ`, MuJoCo's `mju_cholUpdate` (engine_util_solve.c:96). `x` is
+    destroyed. Returns False if a diagonal fell below `mjMINVAL` — the caller
+    then recomputes `H` and refactors, as the reference does on rank loss.
+
+    WHY. `mj_solPrimal` factors the Hessian ONCE per solve and, after each
+    iteration, updates it with `J_i·√D_i` for every row that entered
+    (`+`) or left (`-`) the quadratic zone (engine_solver.c:2120). We were
+    rebuilding `H` and refactoring from scratch on every iteration — 3.3
+    factorisations of a 62x62 on humanoid_CMU where the reference does one
+    plus a handful of O(nv²) updates (PERFORMANCE.md §13.14, item 1).
+
+    ⚠ SEGMENT-RESTRICTED, AND THAT IS EXACT: a row's `x` is nonzero inside one
+    segment only, and `L` is zero across segments, so every skipped entry
+    would be `0 ± 0`.
+    """
+    var rank_ok = True
+    for k in range(s0, s1):
+        var xk = x[k]
+        if xk == Scalar[DTYPE](0):
+            continue
+        var Lkk = L[k * nv + k]
+        var tmp = Lkk * Lkk + (xk * xk if plus else -(xk * xk))
+        if tmp < Scalar[DTYPE](_MJMINVAL):
+            tmp = Scalar[DTYPE](_MJMINVAL)
+            rank_ok = False
+        var r = sqrt(tmp)
+        var c = r / Lkk
+        var cinv = Scalar[DTYPE](1) / c
+        var sc = xk / Lkk
+        L[k * nv + k] = r
+        if plus:
+            for i in range(k + 1, s1):
+                L[i * nv + k] = (L[i * nv + k] + sc * x[i]) * cinv
+        else:
+            for i in range(k + 1, s1):
+                L[i * nv + k] = (L[i * nv + k] - sc * x[i]) * cinv
+        for i in range(k + 1, s1):
+            x[i] = c * x[i] - sc * L[i * nv + k]
+    return rank_ok
+
+
+@always_inline
 def chol_solve_inline[
     DTYPE: DType,
     M_CAP: Int,
