@@ -1473,3 +1473,64 @@ way the TASK does (§13.11); diff contact SETS as body pairs before trusting a
 count; MuJoCo's `mjcontact.frame[:3]` is the negation of our stored normal;
 match contacts by position AND check the distance travels with the match — six
 pairs matched to 4 digits and had swapped distances.
+
+### 13.13 LANDED (2026-09-05): the Cholesky's inner product, `W` lanes wide
+
+§7.1 stands — Mojo does not autovectorise, and until today `physics3d` held no
+explicit SIMD. The §13.6 probe put half of humanoid_CMU's solve in
+`chol_factor_seg`, whose inner loop is a dot product of two contiguous rows of
+`L`, and §7.2's objection (gather, loop-carried, short) does not apply to it.
+
+`cholesky.mojo` gains `_dot_seg` / `_dot_rows` / `_axpy_seg` — explicit
+`load[width=W]` loops with a scalar tail, `W = 2 × simd_width_of[DTYPE]` — and
+a `VEC` flag on `chol_factor_seg`, `chol_solve_seg` and `chol_solve_seg_p`:
+the factor's `s = Σ L[i,k] L[j,k]` becomes one SIMD dot per entry, the
+solve's forward pass a dot of row `i` against `y`, and its backward pass is
+rewritten in AXPY form so it walks a row of `L` instead of gathering a column.
+The CPU pyramidal Newton's three matvecs (`Ma`, `Mv`, the warm-start cost)
+take the same dot over their segment. `VEC` is set by the CPU pyramidal
+Newton only; the GPU legs and the elliptic path compile the scalar loops.
+
+⚠ NOT BIT-EXACT — a `W`-wide accumulator reassociates the sum — and gated
+as such: `test_newton_float32_tracks_float64`, `test_frictionless_contact_pyramidal`
+(8e-17), `test_noslip_vs_mujoco` (1.5e-16), `test_walker2d_contacts_vs_mujoco`,
+`test_humanoid_limits_fields_vs_mujoco`, `test_newton_warmstart_vs_mujoco`,
+`test_impratio_pyramidal_vs_mujoco`, `test_cholesky_segmented`,
+`test_newton_both_legs`, `test_newton_solve_fields`, `test_rk4_newton_fields`.
+⚠ The exclusivity checker refuses the same mutable pointer in two arguments,
+which is why the factor's self-dot is a one-pointer, two-offset routine.
+
+| model | nv | before µs | after µs | speedup | vs MuJoCo |
+|---|---|---|---|---|---|
+| humanoid_cmu | 62 | 249 | **195** | 1.28× | 3.57× → **2.79×** |
+| dog_stand | 79 | 722 | **637** | 1.13× | 3.1× → **2.80×** |
+| humanoid | 23 | 121 | 96 | 1.26× | 1.52× → 1.22× |
+| ant | 14 | 51.1 | 42.6 | 1.20× | 1.55× → 1.31× |
+| walker2d | 9 | 34.1 | 29.2 | 1.17× | 1.41× → 1.21× |
+| hopper | 6 | 15.8 | 13.5 | 1.17× | 1.07× → **0.93×** |
+| park_k9 | 60 | 27.4 | 25.0 | 1.10× | 3.06× → 2.82× |
+| reassemble3 / 5, sawyer (elliptic) | | | | — | unchanged |
+
+(Three interleaved rounds; the reassemble rows from the task pose, §13.11.)
+
+**The day, start to finish**, every model past 20 dofs:
+
+| model | nv | 09-04 µs | now µs | speedup | vs MuJoCo, then → now |
+|---|---|---|---|---|---|
+| dog_stand | 79 | 3003 | 637 | 4.7× | 13.0× → 2.8× |
+| humanoid_cmu | 62 | 768 | 195 | 3.9× | 10.7× → 2.8× |
+| park_k9 | 60 | 94.3 | 25.0 | 3.8× | 10.7× → 2.8× |
+| reassemble5 | 33 | 7320 | 1059 | 6.9× | (degenerate pose) → 1.63× |
+| reassemble3 | 21 | 4165 | 399 | 10.4× | (degenerate pose) → 1.83× |
+| humanoid | 23 | 199 | 96 | 2.1× | 2.48× → 1.22× |
+| ant | 14 | 67.5 | 42.6 | 1.6× | 2.02× → 1.31× |
+| walker2d | 9 | 38.8 | 29.2 | 1.3× | 1.60× → 1.21× |
+| hopper | 6 | 15.0 | 13.5 | 1.1× | 1.02× → 0.93× |
+
+No model is now more than 2.8× MuJoCo on the CPU; hopper is faster.
+
+**Left:** the elliptic path could take `VEC` too (its Cholesky is ~1%, its
+`J·s` and `Jᵀf` walks are sparse gathers — little to gain); the remaining CPU
+excess on the big models is the Newton loop's per-iteration passes and noslip,
+both now segment- and sparsity-restricted; and everything GPU-side from §13.2
+and §13.10 still waits for NVIDIA hardware.

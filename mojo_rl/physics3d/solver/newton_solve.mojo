@@ -82,7 +82,7 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
-    chol_solve_seg_p,
+    chol_solve_seg_p, _dot_seg,
 )
 from .newton_blocks import build_dof_segments, build_dof_segments_p
 
@@ -1709,8 +1709,10 @@ def _newton_solve_env[
             # `M` couples a dof only with its tree, and a segment is a union
             # of trees, so the entries outside `[seg0, seg1)` are exact zeros.
             comptime if TREE_AWARE:
-                for j in range(Int(seg0[i]), Int(seg1[i])):
-                    Ma[i] += M_local[i * nv + j] * qacc[j]
+                Ma[i] = _dot_seg[DTYPE](
+                    M_local.unsafe_ptr(), i * nv + Int(seg0[i]),
+                    qacc.unsafe_ptr(), Int(seg0[i]), Int(seg1[i]) - Int(seg0[i]),
+                )
             else:
                 for j in range(nv):
                     Ma[i] += M_local[i * nv + j] * qacc[j]
@@ -1836,8 +1838,11 @@ def _newton_solve_env[
             for i in range(nv):
                 var s_i: Scalar[DTYPE] = 0
                 comptime if TREE_AWARE:
-                    for j in range(Int(seg0[i]), Int(seg1[i])):
-                        s_i += M_local[i * nv + j] * qacc_w[j]
+                    s_i = _dot_seg[DTYPE](
+                        M_local.unsafe_ptr(), i * nv + Int(seg0[i]),
+                        qacc_w.unsafe_ptr(), Int(seg0[i]),
+                        Int(seg1[i]) - Int(seg0[i]),
+                    )
                 else:
                     for j in range(nv):
                         s_i += M_local[i * nv + j] * qacc_w[j]
@@ -1963,7 +1968,7 @@ def _newton_solve_env[
                 var s0 = 0
                 while s0 < nv:
                     var s1 = Int(seg1[s0])
-                    var ok_s = chol_factor_seg[DTYPE, M_CAP](
+                    var ok_s = chol_factor_seg[DTYPE, M_CAP, VEC=True](
                         H, L_chol, nv, s0, s1
                     )
                     chol_ok = chol_ok and ok_s
@@ -1974,14 +1979,14 @@ def _newton_solve_env[
                     s0 = 0
                     while s0 < nv:
                         var s1 = Int(seg1[s0])
-                        _ = chol_factor_seg[DTYPE, M_CAP](
+                        _ = chol_factor_seg[DTYPE, M_CAP, VEC=True](
                             H, L_chol, nv, s0, s1
                         )
                         s0 = s1
                 s0 = 0
                 while s0 < nv:
                     var s1 = Int(seg1[s0])
-                    chol_solve_seg[DTYPE, M_CAP, V_CAP](
+                    chol_solve_seg[DTYPE, M_CAP, V_CAP, VEC=True](
                         L_chol, grad, search, nv, s0, s1
                     )
                     s0 = s1
@@ -2005,8 +2010,11 @@ def _newton_solve_env[
             for i in range(nv):
                 Mv[i] = Scalar[DTYPE](0)
                 comptime if TREE_AWARE:
-                    for j in range(Int(seg0[i]), Int(seg1[i])):
-                        Mv[i] += M_local[i * nv + j] * search[j]
+                    Mv[i] = _dot_seg[DTYPE](
+                        M_local.unsafe_ptr(), i * nv + Int(seg0[i]),
+                        search.unsafe_ptr(), Int(seg0[i]),
+                        Int(seg1[i]) - Int(seg0[i]),
+                    )
                 else:
                     for j in range(nv):
                         Mv[i] += M_local[i * nv + j] * search[j]

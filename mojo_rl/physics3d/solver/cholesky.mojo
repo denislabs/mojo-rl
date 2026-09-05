@@ -27,6 +27,7 @@ So NV became the runtime `nv` and the comptime parameters that remain
 """
 
 from std.math import sqrt
+from std.sys import simd_width_of
 from max.gpu.memory import AddressSpace
 from ..fields.scratch import Scratch
 
@@ -132,6 +133,101 @@ def chol_solve[
         x[i] = (y[i] - s) / L[i * nv + i]
 
 
+# =============================================================================
+# SIMD dot / axpy over contiguous rows — the CPU `VEC` path
+# =============================================================================
+#
+# ⚠ NOT BIT-EXACT AGAINST THE SCALAR LOOPS: a `W`-wide accumulator reassociates
+# the sum. Mojo does not autovectorise (PERFORMANCE.md §7.1), so this is the
+# only way the Cholesky's inner product — 51% of humanoid_CMU's solve, one
+# 62x62 factor per iteration at ~1.3 GFLOP/s scalar — gets wider than one
+# lane. `VEC` is off by default and set only by the CPU Newton; the GPU legs
+# compile the scalar loops they always did. Gated like every other numerics
+# change here: the MuJoCo trajectory gates and `test_newton_float32_tracks_float64`.
+
+
+@always_inline
+def _dot_seg[
+    AO: MutOrigin,
+    BO: MutOrigin, //,
+    DTYPE: DType,
+    A_AS: AddressSpace = AddressSpace.GENERIC,
+    B_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    a: Pointer[Scalar[DTYPE], AO, address_space=A_AS],
+    ao: Int,
+    b: Pointer[Scalar[DTYPE], BO, address_space=B_AS],
+    bo: Int,
+    n: Int,
+) -> Scalar[DTYPE]:
+    """`sum_k a[ao+k] * b[bo+k]`, `W` lanes at a time, scalar tail."""
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var acc = SIMD[DTYPE, W](0)
+    var k = 0
+    while k + W <= n:
+        acc += a.load[width=W](ao + k) * b.load[width=W](bo + k)
+        k += W
+    var s = acc.reduce_add()
+    while k < n:
+        s += a[ao + k] * b[bo + k]
+        k += 1
+    return s
+
+
+@always_inline
+def _dot_rows[
+    AO: MutOrigin, //,
+    DTYPE: DType,
+    A_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    a: Pointer[Scalar[DTYPE], AO, address_space=A_AS],
+    ao: Int,
+    bo: Int,
+    n: Int,
+) -> Scalar[DTYPE]:
+    """`_dot_seg` over two rows of ONE buffer. The exclusivity checker refuses
+    the same mutable pointer in two arguments, so the self-dot the Cholesky
+    needs (row i against row j of `L`) takes one pointer and two offsets."""
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var acc = SIMD[DTYPE, W](0)
+    var k = 0
+    while k + W <= n:
+        acc += a.load[width=W](ao + k) * a.load[width=W](bo + k)
+        k += W
+    var s = acc.reduce_add()
+    while k < n:
+        s += a[ao + k] * a[bo + k]
+        k += 1
+    return s
+
+
+@always_inline
+def _axpy_seg[
+    XO: MutOrigin,
+    AO: MutOrigin, //,
+    DTYPE: DType,
+    X_AS: AddressSpace = AddressSpace.GENERIC,
+    A_AS: AddressSpace = AddressSpace.GENERIC,
+](
+    x: Pointer[Scalar[DTYPE], XO, address_space=X_AS],
+    xo: Int,
+    a: Pointer[Scalar[DTYPE], AO, address_space=A_AS],
+    ao: Int,
+    alpha: Scalar[DTYPE],
+    n: Int,
+):
+    """`x[xo+k] += alpha * a[ao+k]` for `k < n`, `W` lanes at a time."""
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var av = SIMD[DTYPE, W](alpha)
+    var k = 0
+    while k + W <= n:
+        x.store(xo + k, x.load[width=W](xo + k) + av * a.load[width=W](ao + k))
+        k += W
+    while k < n:
+        x[xo + k] = x[xo + k] + alpha * a[ao + k]
+        k += 1
+
+
 @always_inline
 def chol_factor_inline[
     DTYPE: DType,
@@ -158,6 +254,7 @@ def chol_factor_inline[
 def chol_factor_seg[
     DTYPE: DType,
     M_CAP: Int,
+    VEC: Bool = False,
 ](
     H: Scratch[Scalar[DTYPE], M_CAP],
     mut L: Scratch[Scalar[DTYPE], M_CAP],
@@ -186,12 +283,17 @@ def chol_factor_seg[
     `chol_factor_inline` can delegate here and stay byte-for-byte what it was.
     """
     var rank_ok = True
+    var Lp = L.unsafe_ptr()
 
     for i in range(s0, s1):
         for j in range(s0, i + 1):
             var s: Scalar[DTYPE] = 0
-            for k in range(s0, j):
-                s += L[i * nv + k] * L[j * nv + k]
+            comptime if VEC:
+                # Rows i and j are contiguous over [s0, j): a SIMD dot.
+                s = _dot_rows[DTYPE](Lp, i * nv + s0, j * nv + s0, j - s0)
+            else:
+                for k in range(s0, j):
+                    s += L[i * nv + k] * L[j * nv + k]
             if i == j:
                 var diag = H[i * nv + i] - s
                 # ⚠⚠ THE THRESHOLD IS `mjMINVAL`, AND `1e-10` WAS OURS, NOT
@@ -264,6 +366,7 @@ def chol_solve_seg[
     DTYPE: DType,
     M_CAP: Int,
     V_CAP: Int,
+    VEC: Bool = False,
 ](
     # ⚠ `mut` ON `L` AND `b`, WHICH ARE READ-ONLY TO THE ALGORITHM. `Scratch`
     # hands out a pointer only through `unsafe_ptr[SO: MutOrigin](ref [SO]
@@ -282,7 +385,7 @@ def chol_solve_seg[
     tests) holds its operands as `Scratch`, so this spelling stays. It owns no
     arithmetic: it takes the three pointers and delegates.
     """
-    chol_solve_seg_p[DTYPE, V_CAP](
+    chol_solve_seg_p[DTYPE, V_CAP, VEC=VEC](
         L.unsafe_ptr(), b.unsafe_ptr(), x.unsafe_ptr(), nv, s0, s1
     )
 
@@ -301,6 +404,7 @@ def chol_solve_seg_p[
     L_AS: AddressSpace = AddressSpace.GENERIC,
     B_AS: AddressSpace = AddressSpace.GENERIC,
     X_AS: AddressSpace = AddressSpace.GENERIC,
+    VEC: Bool = False,
 ](
     L: Pointer[Scalar[DTYPE], LO, address_space=L_AS],
     b: Pointer[Scalar[DTYPE], BO, address_space=B_AS],
@@ -328,6 +432,23 @@ def chol_solve_seg_p[
     """
     # Forward substitution: L*y = b
     var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    comptime if VEC:
+        # Forward: row i of L against y, both contiguous over [s0, i).
+        var yp = y.unsafe_ptr()
+        for i in range(s0, s1):
+            var s = _dot_seg[DTYPE](L, i * nv + s0, yp, s0, i - s0)
+            y[i] = (b[i] - s) / L[i * nv + i]
+        # Backward, in AXPY form so the walk stays along rows: the scalar
+        # loop gathers a COLUMN of L (stride nv); here x[i] is finished first
+        # and then subtracted from every earlier entry along row i.
+        for i in range(s0, s1):
+            x[i] = y[i]
+        for i_rev in range(s1 - s0):
+            var i = s1 - 1 - i_rev
+            var xi = x[i] / L[i * nv + i]
+            x[i] = xi
+            _axpy_seg[DTYPE](x, s0, L, i * nv + s0, -xi, i - s0)
+        return
     for i in range(s0, s1):
         var s: Scalar[DTYPE] = 0
         for j in range(s0, i):
