@@ -1628,3 +1628,37 @@ Items 1–4 together are worth roughly 70–80 µs of humanoid_cmu's 208 and
 2.8× and 3.3× today — without a new factorisation kind. Item 5 is what the
 last 1.5× on the big single-tree models costs, and it is the one MuJoCo
 itself only turns on at 60 dofs.
+
+### 13.15 LANDED (2026-09-05): §13.14's items 5, 3 and 1
+
+Three commits, each gated before the next, each on the CPU path only.
+
+* **No per-solve zero-fill** (`d4…`, bit-exact, ten checksums identical):
+  `je_ix`, `cn_ix`, the noslip caches and the one-time `L` zeroing now use
+  `Scratch(uninitialized=)`; the pyramidal factor never read an entry it had
+  not written. park_k9 25.3 → 22.9, humanoid 99.8 → 94.2, ant 43 → 41.
+* **The Euler finalize on the tree-ordered LDL** (`95f0fc8e`): the one
+  caller of the forward LDL that §13.10 had not switched, plus `M·qacc` over
+  M's tree sparsity. Interleaved: humanoid_cmu 196 → 185, dog 594 → 536. The
+  gain is smaller than item 3's 29 µs estimate because the integrator's
+  self-time was NOT mostly that refactor — see §13.16.
+* **Factor once, update rank-1** (`bc50fd4f`): `chol_update_seg` is
+  `mju_cholUpdate` over one tree segment; the pyramidal loop keeps its factor
+  and updates it for the rows whose zone changed, rebuilding `H` only on rank
+  loss. humanoid_cmu 185 → 169, dog 535 → 516; the two-iteration models are
+  unchanged, since their second factorisation is exactly what this removes.
+
+| model | nv | §13.13 | now | vs MuJoCo |
+|---|---|---|---|---|
+| humanoid_cmu | 62 | 195 | **171** | 2.79× → **2.45×** |
+| dog_stand | 79 | 637 | **542** | 2.80× → **2.40×** |
+| park_k9 | 60 | 25.0 | 24.2 | 2.82× → 2.73× |
+| humanoid | 23 | 96 | 92 | 1.22× → 1.16× |
+| ant | 14 | 42.6 | 40.8 | 1.31× → 1.24× |
+| walker2d | 9 | 29.2 | 28.2 | 1.21× → 1.18× |
+| hopper | 6 | 13.5 | 13.2 | 0.93× → 0.90× |
+| reassemble3 / 5, sawyer (elliptic) | | | | 1.84× / 1.63× / 1.62×, unchanged |
+
+(Three interleaved rounds; `results_final2`.) Two days in: dog 3003 → 542,
+humanoid_cmu 768 → 171, park_k9 94 → 24; nothing past 20 dofs is more than
+2.45× MuJoCo, and the six-to-nine-dof models are at or under 1.2×.
