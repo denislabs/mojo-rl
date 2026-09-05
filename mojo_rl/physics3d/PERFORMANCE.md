@@ -1897,3 +1897,85 @@ change gained a third of what the stage numbers promised because those
 numbers carried the probe's cost. Hook every call site, subtract the
 timers, and quote stage numbers as a ceiling.
 
+### 13.20 LANDED (2026-09-05, night): the pyramidal noslip reads a precomputed `A` — dog −25%
+
+`d31f8dc0`. §13.19 left dog's noslip at 93 µs inside a 212 µs Newton, the
+largest single item on the board. A stage probe inside `noslip_pyramidal`
+(a `_NOSLIP_PROBE` flag kept out of the tree) split it, per solve, on dog's
+first 3000 steps (ns, probe-inflated — §13.19's caveat applies):
+
+| stage | before | swept rows | + `Z` Gram | + SIMD dot |
+|---|---|---|---|---|
+| `M⁻¹ Jᵀ` cache | 76 | 25 | 0 | 0 |
+| `A` / `b` build | (30, first attempt) | 10 | 44 | **21** |
+| sweep (4 iterations) | 14 | 3 | 3 | 3 |
+| `dualFinish` | 8 | 4 | 5 | 5 |
+| rows / swept rows / contacts | 119 / — / 8.7 | 119 / 27 / 8.7 | | |
+
+**What MuJoCo does.** `solNoSlip` never touches `qacc`. `mj_projectConstraint`
+builds `efc_AR = J M⁻¹ Jᵀ + R` once, and the sweep READS it: a residual is
+one row of `AR` against the current forces (`residual`, then `- R f`), a
+block's `Ac` is four entries (`extractBlock`), the diagonal is `ARdiaginv`.
+Ours recomputed `M⁻¹ Jᵀ` for every row, added `d · M⁻¹ Jᵀ` into `qacc` after
+every pair and refreshed every row's `jar` — `E · nnz(J)` per pair, four
+sweeps of 18 pairs on dog. And the cache it did build was for ALL 119 rows.
+
+**Three cuts, each measured in the table.**
+
+1. *Only the swept rows.* The pass moves dry-friction dof rows and the
+   friction edges of condim ≥ 3 contacts — 27 of dog's 119 rows. The limit
+   and normal-direction rows carry forces the sweep never changes, so their
+   whole contribution to every residual is a constant: `b_S = J_S (qacc_smooth
+   + M⁻¹ Jᵀ_¬S f_¬S) + bias_S`, ONE extra `M⁻¹` apply. Cache 76 → 25.
+2. *`A_S` as a Gram matrix.* MuJoCo builds `AR` with `mj_solveM2` (the half
+   solve `D^-½ L⁻ᵀ`) and `mju_sqrMatTDSparse`. With `M = Lᵀ D L`,
+   `A_S = Z_Sᵀ Z_S` for `Z_S = D^-½ L⁻ᵀ J_Sᵀ`; the `L⁻ᵀ` half pushes each dof
+   up its ancestors, which never leaves a contact row's ancestor-closed
+   support, so it is O(chain²) per row rather than a dense fill. No
+   `M⁻¹ Jᵀ` cache exists any more on this leg. Cache 25 → 0 — and the build
+   went UP, 10 → 44, because
+3. *the Gram's dots were scalar.* 378 dots of 79 floats, each a serial chain
+   of 79 dependent adds at ~4 cycles: 38 µs by arithmetic, 44 measured. A
+   `W`-lane dot with a single `reduce_add` at the end (`_dot_self`, the
+   twin of `_axpy_self`) took the stage to 21. ⚠ **Every scalar reduction
+   in this engine is latency-bound, not throughput-bound**; the same
+   arithmetic said the previous `J · cache` build (10 µs for 7k adds) was
+   the same shape. Anywhere a dot runs over more than ~16 elements, the
+   accumulator count is the cost.
+
+**Whole step, interleaved against the tree without this change:**
+
+| run | before | after |
+|---|---|---|
+| dog, 500 + 3000 steps | 310 | **232** (−25%) |
+| dog, 2000 + 6000 | 351 | **265** |
+| dog, 2000 + 20000 | 366 | 323 (new run: 9.5 contacts vs 9.0) |
+
+⚠ **The closed-loop bench cannot A/B a rounding-level change over a long
+run.** The two binaries agree on cost for ~6000 steps and then part: the
+sample profiler showed `solve_newton` at 49% in the new binary against 36%
+in the old with the noslip share halved, and a 2000-solve windowing of the
+Newton stage probe showed why — from window 3 on, the new run carries 10%
+more rows and every Newton stage scales with it, while windows 0–2 are
+identical stage for stage. The dog falls either way; where it lands is
+chaotic. Quote the matched-regime windows (or a short run), and window the
+probe before believing a whole-run number in either direction.
+
+⚠ **`A f + b` is not the Newton's `jar`.** The probe also compared the folded
+residual against the `jar` the primal solve left: 0.2% of `|jar|` apart on
+average, up to 0.7%. That is the primal solver's convergence slack — the
+identity `qacc = qacc_smooth + M⁻¹ Jᵀ f` holds only at the exact optimum —
+and it is exactly what MuJoCo's pass sees, since it too works from `f`, not
+from the Newton's `qacc`. The tree LDL, the two `M⁻¹` applies and this
+change are gated against MuJoCo (`test_noslip_vs_mujoco`,
+`test_noslip_reaches_the_runtime_path`, `test_noslip_elliptic_vs_mujoco`,
+`test_newton_both_legs`, `test_noslip_blocked_kernel` on Metal), not
+against the old checksum. The GPU legs keep the refreshing scheme.
+
+**What is left in the pass** (ns, probe-inflated): `A_S` build 21, of which
+the Gram ~4 by arithmetic — the rest is the `Z` half-solve's per-row zero
+scan and `LayoutTensor` indexing, and the `b_S` fold's one full solve;
+`dualFinish` 5; sweep 3. The elliptic pass (`noslip_elliptic`, reassemble3's
+56 µs) still refreshes `qacc` per contact and caches `M⁻¹ Jᵀ` for every
+tangential row through `_minv_apply_rows`; it is the same shape and the
+next item.
