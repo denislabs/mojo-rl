@@ -1,6 +1,6 @@
 """MuJoCo per-phase cost + work counts — the reference side of PERFORMANCE.md.
 
-    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup] [pose] [ctrl]
+    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup] [pose] [ctrl] [nativeccd]
 
 `pose` is a file written by `benchmarks/physics3d_cpu/harness.mojo`'s
 `write_pose` (the task reset our side starts from; the `TASK_POSE` rows of
@@ -59,6 +59,13 @@ if _pose is not None:
 # the default here stays 0 so the §10 numbers are reproducible).
 CTRL = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
 d.ctrl[:] = CTRL
+# `nativeccd=1` clears `mjDSBL_NATIVECCD` (the dm_control manipulation XMLs set
+# `nativeccd="disable"`, i.e. libccd's MPR with one contact per convex pair);
+# our narrow phase is the native GJK+EPA with multi-contact manifolds, so the
+# like-for-like reference is the native path.
+NATIVE = int(sys.argv[8]) if len(sys.argv) > 8 else 0
+if NATIVE:
+    m.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
 
 print(f"model  nq={m.nq} nv={m.nv} nbody={m.nbody} ngeom={m.ngeom} "
       f"nmesh={m.nmesh} nmeshvert={m.nmeshvert}")

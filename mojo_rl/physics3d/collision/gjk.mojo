@@ -8,6 +8,7 @@ vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 `mesh_verts[vert_adr + i, k]`. Same floats, same iteration order.
 """
 
+from std.time import perf_counter_ns
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
 from .ccd_workspace import (
@@ -114,6 +115,14 @@ comptime MJ_MINVAL: Float64 = 1e-15
 # contacts with the flag off, 16 with it on, 15 and 15 after the simplex moved
 # off the per-thread stack.
 comptime EPA_DBG: Bool = False
+
+
+# ⚠ A PHASE PROBE FOR `gjk_epa_witness`, off and free by default (the fourth of
+# the family: `_CPU_PROBE`, `_EULER_PROBE`, `_COLL_PROBE`). On, every call prints
+# one `[gprobe]` line: `sep` 1 for a separated exit, then nanoseconds and
+# iteration counts for the GJK loop, the polytope construction and the EPA
+# loop. Every timer block holds only timer lines (PERFORMANCE.md §13.16).
+comptime _GJK_PROBE: Bool = False
 
 
 @always_inline
@@ -1419,6 +1428,15 @@ def gjk_epa_witness[
     if _sh2:
         full_m2 = r2 + Scalar[DTYPE](0.5) * ccd_margin
     var shrunk = _sh1 or _sh2
+    var _g_t0: Int = 0
+    var _g_t1: Int = 0
+    var _g_t2: Int = 0
+    var _g_kg: Int = 0
+    var _g_ke: Int = 0
+    var _g_gap: Float64 = 0
+    var _g_upper: Float64 = 0
+    comptime if _GJK_PROBE:
+        _g_t0 = Int(perf_counter_ns())
 
     # ⚠ GJK'S SIMPLEX LIVES IN THE ROW, NOT ON THE STACK — see
     # `ccd_workspace.mojo`. It is zeroed here because `mjc_ccd` starts each
@@ -1497,6 +1515,8 @@ def gjk_epa_witness[
         # reached four vertices.
         var backup_gjk = True
         for k in range(GJK_MAX_ITERATIONS):
+            comptime if _GJK_PROBE:
+                _g_kg += 1
             var v_dot_v = vx * vx + vy * vy + vz * vz
             if v_dot_v < min_norm2:
                 break
@@ -1874,6 +1894,8 @@ def gjk_epa_witness[
     # reported SEPARATED where the reference would have run EPA on it — a lost
     # contact whenever GJK's own convergence floor sits above 1e-15, which at
     # float32 is always.
+    comptime if _GJK_PROBE:
+        _g_t1 = Int(perf_counter_ns())
     if dist > ccd_tol:
         # Separated
         # ⚠⚠ `lincomb(x1_k, lambda, n, ...)`, NOT A UNIFORM AVERAGE. This used
@@ -1912,6 +1934,8 @@ def gjk_epa_witness[
         # adds the margin back before storing it
         # (engine_collision_convex.c:115). With margin 0 the term vanishes and
         # every margin-free model is bit-identical.
+        comptime if _GJK_PROBE:
+            print("[gprobe]", "sep", 1, "gjk", _g_t1 - _g_t0, "kg", _g_kg, "poly", 0, "epa", 0, "ke", 0)
         return (dist + ccd_margin, cx, cy, cz, nx, ny, nz)
 
     # ===== EPA Phase =====
@@ -2379,6 +2403,8 @@ def gjk_epa_witness[
                         set_efi(ws, wrow, i, i)
                     nmap = 6
 
+    comptime if _GJK_PROBE:
+        _g_t2 = Int(perf_counter_ns())
     # ── epa() ─────────────────────────────────────────────────────────────
     var face = -1
     var pface = -1
@@ -2393,6 +2419,8 @@ def gjk_epa_witness[
 
     if ret == 0:
         for k in range(_epa_iters):
+            comptime if _GJK_PROBE:
+                _g_ke += 1
             pface = face
 
             # the face closest to the origin, over the CANDIDATE list
@@ -2464,6 +2492,9 @@ def gjk_epa_witness[
             if upper_k < upper:
                 upper = upper_k
                 upper2 = upper * upper
+            comptime if _GJK_PROBE:
+                _g_gap = Float64(upper - lower)
+                _g_upper = Float64(upper)
             if upper - lower < _epa_tol:
                 # `if (k == 0 && upper < lower - 1e-10) face = NULL;` —
                 # "terminate without contact when upper < lower on the first
@@ -2536,6 +2567,9 @@ def gjk_epa_witness[
                 break
 
     # ---- what the reference does with the face it ended on ------------------
+    comptime if _GJK_PROBE:
+        var _g_t3 = Int(perf_counter_ns())
+        print("[gprobe]", "sep", 0, "gjk", _g_t1 - _g_t0, "kg", _g_kg, "poly", _g_t2 - _g_t1, "epa", _g_t3 - _g_t2, "ke", _g_ke, "gap", _g_gap, "upper", _g_upper, "tol", Float64(_epa_tol))
     if face >= 0:
         var wit = epa_witness(ws, wrow, face)
         var i0 = ef(ws, wrow, face, 0)
