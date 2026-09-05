@@ -1641,8 +1641,11 @@ def _newton_solve_env[
         # placeholders so the GPU legs' frames do not grow.
         comptime N_CAP = E_CAP if TREE_AWARE else 1
         comptime IX_CAP = E_CAP * V_CAP if TREE_AWARE else 1
-        var je_n = Scratch[Int, N_CAP](me if TREE_AWARE else 1, fill=0)
-        var je_ix = Scratch[Int, IX_CAP](me * nv if TREE_AWARE else 1, fill=0)
+        # `uninitialized`, NOT `fill`: `fill=` memsets on the static leg, and
+        # `je_ix` is E_CAP x V_CAP Ints — ~118 kB on humanoid_CMU, zeroed on
+        # EVERY solve before this. Every entry read is written first.
+        var je_n = Scratch[Int, N_CAP](me if TREE_AWARE else 1, uninitialized=0)
+        var je_ix = Scratch[Int, IX_CAP](me * nv if TREE_AWARE else 1, uninitialized=0)
         # ⚠ SIZED BY THE FLAG, like the lists: the GPU legs share this body and
         # sit at Metal's per-thread stack limit on the big models, so two
         # `V_CAP` arrays they never read are two arrays too many.
@@ -1762,13 +1765,11 @@ def _newton_solve_env[
         var force = Scratch[Scalar[DTYPE], E_CAP](me, uninitialized=Scalar[DTYPE](0))
         var H = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
         var L_chol = Scratch[Scalar[DTYPE], M_CAP](nv * nv, uninitialized=Scalar[DTYPE](0))
-        # `L` is zeroed ONCE per solve under TREE_AWARE, not per factorisation:
-        # `chol_factor_seg` writes every in-segment lower entry it will read
-        # and neither it nor `chol_solve_seg` reads an off-segment or
-        # upper one, so a second zeroing changes no value anything reads.
-        comptime if TREE_AWARE:
-            for k in range(nv * nv):
-                L_chol[k] = Scalar[DTYPE](0)
+        # `L` is NOT zeroed under TREE_AWARE: `chol_factor_seg` writes every
+        # in-segment lower entry before anything reads it (row i's entries at
+        # columns < j are written at earlier j of the same row), and neither
+        # it nor `chol_solve_seg` reads an off-segment or upper entry. The
+        # dense path zeroes because `chol_factor_inline` factors [0, nv).
         var grad = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         var search = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         var Mv = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -2350,8 +2351,10 @@ def _newton_solve_env[
     # are one-element placeholders and `_cn_len` / `_cn_dof` are `nv` / `a`.
     comptime CN_CAP = MC_CAP if TREE_AWARE else 1
     comptime CIX_CAP = MC_CAP * V_CAP if TREE_AWARE else 1
-    var cn_n = Scratch[Int, CN_CAP](max_contacts if TREE_AWARE else 1, fill=0)
-    var cn_ix = Scratch[Int, CIX_CAP](max_contacts * nv if TREE_AWARE else 1, fill=0)
+    var cn_n = Scratch[Int, CN_CAP](max_contacts if TREE_AWARE else 1, uninitialized=0)
+    var cn_ix = Scratch[Int, CIX_CAP](
+        max_contacts * nv if TREE_AWARE else 1, uninitialized=0
+    )
     var mu_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
     var D_n_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
     var D_t_cache = Scratch[Scalar[DTYPE], T_CAP](max_contacts * NT, uninitialized=Scalar[DTYPE](0))

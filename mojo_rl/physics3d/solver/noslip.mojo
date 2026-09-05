@@ -470,7 +470,7 @@ def noslip_pyramidal[
     # the sweeps, so this is the same value `_minv_jt` produced per use.
     comptime MJ_CAP = E_CAP * V_CAP if CACHE else 1
     var mj_cache = Scratch[Scalar[DTYPE], MJ_CAP](
-        num_edges * nv if CACHE else 1, fill=Scalar[DTYPE](0)
+        num_edges * nv if CACHE else 1, uninitialized=Scalar[DTYPE](0)
     )
     comptime if CACHE:
         for e in range(num_edges):
@@ -1026,7 +1026,7 @@ def noslip_elliptic[
     # sweeps, the same value `_minv_dense` produced per use.
     comptime MJC_CAP = T_CAP * V_CAP if CACHE else 1
     var minv_cache = Scratch[Scalar[DTYPE], MJC_CAP](
-        nc * NT * nv if CACHE else 1, fill=ZERO
+        nc * NT * nv if CACHE else 1, uninitialized=ZERO
     )
     comptime if CACHE:
         for c in range(nc):
