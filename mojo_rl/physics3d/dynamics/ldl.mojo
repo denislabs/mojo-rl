@@ -282,21 +282,24 @@ def _ldl_factor_tree_env[
     # read is rebuilt from `Lc` at the end. Each element update is the same
     # single `a + coef·b`, so the result is identical up to the compiler's
     # multiply-add contraction (PERFORMANCE.md §13.23).
+    # Root-first ancestor lists in one ascending pass: a dof's list is its
+    # parent's list plus the parent, and a parent always has the smaller
+    # index — no chain walk, which at small `nv` (the RK4 gym models factor
+    # four times a step) was the visible cost of this routine.
     var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
     var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
     for k in range(nv):
-        var n_a = 0
-        var j = par[k]
-        while j >= 0:
-            n_a += 1
-            j = par[j]
-        dep[k] = n_a
-        j = par[k]
-        var a = n_a - 1
-        while j >= 0:
-            anc[k * nv + a] = j
-            a -= 1
-            j = par[j]
+        var pk = par[k]
+        if pk < 0:
+            dep[k] = 0
+        else:
+            var dp = dep[pk]
+            var rk = k * nv
+            var rp = pk * nv
+            for a in range(dp):
+                anc[rk + a] = anc[rp + a]
+            anc[rk + dp] = pk
+            dep[k] = dp + 1
     var nn = nv * nv
     var Lp = L.ptr + env * nn
     var Mp = M.ptr + env * nn
