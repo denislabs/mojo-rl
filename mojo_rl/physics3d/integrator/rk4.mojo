@@ -90,6 +90,7 @@ from ..fields import (
     rl2,
 )
 from ..gpu.constants import (
+    MODEL_META_IDX_NTREE,
     MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -577,8 +578,18 @@ struct RK4Integrator[
         # ⚠ `CONTACTS` IS PART OF THE PREDICATE — see the Euler twin: the
         # `CONTACTS=False` seam runs `solve_limits` / `solve_friction`, which
         # read the inverse.
-        comptime if CONTACTS and Self.SOLVER == "newton" and Self.NOSLIP_ITER == 0:
-            if d.dims.get_nequality() > 0:
+        comptime if CONTACTS and Self.SOLVER == "newton":
+            # The Newton reads `M^-1` for equality rows, and its noslip does
+            # unless the CPU tree path solves against the LDL factor instead
+            # (`noslip._minv_apply`; the predicate is the LDL dispatcher's).
+            var need_minv = d.dims.get_nequality() > 0
+            comptime if Self.NOSLIP_ITER > 0:
+                var tree_cpu = False
+                comptime if target == "cpu":
+                    tree_cpu = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+                if not tree_cpu:
+                    need_minv = True
+            if need_minv:
                 compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         else:
             compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)

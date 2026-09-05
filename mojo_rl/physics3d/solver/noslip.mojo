@@ -184,6 +184,7 @@ dog should expect iteration-count divergence, which is the same regime
 """
 
 from std.math import sqrt
+from std.sys import simd_width_of
 from std.collections import InlineArray
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
@@ -373,6 +374,171 @@ def _cost_change[
     return quad + d0 * r0 + d1 * r1
 
 
+@always_inline
+def _axpy_self[
+    O: MutOrigin, //,
+    DTYPE: DType,
+](
+    p: Pointer[Scalar[DTYPE], O],
+    xo: Int,
+    ao: Int,
+    alpha: Scalar[DTYPE],
+    n: Int,
+):
+    """`p[xo+k] += alpha * p[ao+k]` for `k < n`, `W` lanes at a time — the
+    one-pointer twin of `cholesky._axpy_seg` (two ranges of ONE buffer; the
+    exclusivity checker refuses the same mutable pointer twice). The caller
+    keeps the two ranges disjoint."""
+    comptime W = 2 * simd_width_of[DTYPE]()
+    var av = SIMD[DTYPE, W](alpha)
+    var k = 0
+    while k + W <= n:
+        p.store(xo + k, p.load[width=W](xo + k) + av * p.load[width=W](ao + k))
+        k += W
+    while k < n:
+        p[unsafe_offset = xo + k] = p[unsafe_offset = xo + k] + alpha * p[unsafe_offset = ao + k]
+        k += 1
+
+
+@always_inline
+def _minv_apply_rows[
+    DTYPE: DType,
+    V_CAP: Int,
+    RV_CAP: Int,
+    L_M_INV: Layout,
+    L_D: Layout,
+](
+    env: Int,
+    nv: Int,
+    n: Int,
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    par: Scratch[Int, V_CAP],
+    tree_ok: Bool,
+    B: Scratch[Scalar[DTYPE], RV_CAP],
+    mut X: Scratch[Scalar[DTYPE], RV_CAP],
+    mut Wk: Scratch[Scalar[DTYPE], RV_CAP],
+):
+    """`X[r*nv + k] = (M⁻¹ B[r])[k]` for the `n` rows `B[r*nv ..]`, in ONE
+    pass: `mj_solveLD` with `n` vectors (engine_core_smooth.c:2113).
+
+    WHY ONE PASS. A tree solve per row is a serial chain walk — ~3 µs a row
+    on dog's 79 dofs, and 32 rows made the noslip SLOWER than the dense
+    inverse it replaced (+100 µs). Here the vectors live column-major in
+    `Wk[k*n + r]`, so every chain step is one contiguous `n`-wide axpy over
+    all rows at once (`_axpy_self`, SIMD): the same flops, no dependency
+    chain, `W` lanes wide.
+
+    `tree_ok` False (no kinematic tree, `NTREE == 0`) is the dense product
+    against `m_inv`; the GPU legs never reach this function.
+    """
+    if tree_ok:
+        for r in range(n):
+            for k in range(nv):
+                Wk[k * n + r] = B[r * nv + k]
+        var wp = Wk.unsafe_ptr()
+        for i in range(nv - 1, -1, -1):
+            var ri = i * nv
+            var j = par[i]
+            while j >= 0:
+                _axpy_self[DTYPE](
+                    wp, j * n, i * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
+                )
+                j = par[j]
+        for i in range(nv):
+            var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
+            var inv = Scalar[DTYPE](0)
+            if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
+                inv = Scalar[DTYPE](1) / d_i
+            for r in range(n):
+                Wk[i * n + r] = Wk[i * n + r] * inv
+        for i in range(nv):
+            var ri = i * nv
+            var j = par[i]
+            while j >= 0:
+                _axpy_self[DTYPE](
+                    wp, i * n, j * n, -rebind[Scalar[DTYPE]](ldl_L[env, ri + j]), n
+                )
+                j = par[j]
+        for r in range(n):
+            for k in range(nv):
+                X[r * nv + k] = Wk[k * n + r]
+    else:
+        for r in range(n):
+            for i in range(nv):
+                var acc = Scalar[DTYPE](0)
+                for k in range(nv):
+                    acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * B[r * nv + k]
+                X[r * nv + i] = acc
+
+
+@always_inline
+def _minv_apply[
+    DTYPE: DType,
+    V_CAP: Int,
+    L_M_INV: Layout,
+    L_D: Layout,
+    TREE: Bool = False,
+](
+    env: Int,
+    nv: Int,
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    par: Scratch[Int, V_CAP],
+    tree_ok: Bool,
+    b: Scratch[Scalar[DTYPE], V_CAP],
+    mut x: Scratch[Scalar[DTYPE], V_CAP],
+):
+    """`x = M⁻¹ b`, the one product the noslip needs of the mass matrix.
+
+    Under `TREE` with `tree_ok` it is `mj_solveLD` (engine_core_smooth.c:2113)
+    on the step's tree-ordered `LᵀDL` factor of `M` and the dof parent table
+    — scatter up the tree, divide by `D`, gather — so the noslip needs no
+    dense inverse at all and the integrator stops computing one on this path
+    (PERFORMANCE.md §13.16: 141 µs of dog's 498 µs step, plus the dense
+    `M⁻¹Jᵀ` products here). Otherwise it is the dense product against
+    `m_inv`: the GPU legs, and a model with no kinematic tree (`NTREE == 0`,
+    whose `scratch.L` holds the dense LDLᵀ in the other convention).
+
+    ⚠ NOT BIT-EXACT against the dense product — a different operation order
+    — so it is gated against MuJoCo, not against the old checksum.
+    """
+    comptime if TREE:
+        if tree_ok:
+            for i in range(nv):
+                x[i] = b[i]
+            for i in range(nv - 1, -1, -1):
+                var yi = x[i]
+                if yi != Scalar[DTYPE](0):
+                    var ri = i * nv
+                    var j = par[i]
+                    while j >= 0:
+                        x[j] = x[j] - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * yi
+                        j = par[j]
+            for i in range(nv):
+                var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
+                if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
+                    x[i] = x[i] / d_i
+                else:
+                    x[i] = Scalar[DTYPE](0)
+            for i in range(nv):
+                var ri = i * nv
+                var acc_i = x[i]
+                var j = par[i]
+                while j >= 0:
+                    acc_i = acc_i - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * x[j]
+                    j = par[j]
+                x[i] = acc_i
+            return
+    for i in range(nv):
+        var acc = Scalar[DTYPE](0)
+        for k in range(nv):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * b[k]
+        x[i] = acc
+
+
 def noslip_pyramidal[
     FO: MutOrigin, //,
     DTYPE: DType,
@@ -383,6 +549,7 @@ def noslip_pyramidal[
     MAX_CONDIM: Int,
     L_CONTACTS: Layout,
     L_M_INV: Layout,
+    L_D: Layout,
     # GENERIC/GENERIC is the per-env caller (per-thread `InlineArray`s); the
     # blocked kernel passes SHARED rows and a `Je` that is SHARED or GLOBAL
     # depending on whether it fit. See the note above `_minv_jt`.
@@ -397,6 +564,7 @@ def noslip_pyramidal[
     N_CAP: Int = 1,
     IX_CAP: Int = 1,
     CACHE: Bool = False,
+    TREE: Bool = False,
 ](
     env: Int,
     nc: Int,
@@ -410,6 +578,12 @@ def noslip_pyramidal[
         MutAnyOrigin,
     ],
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    # The step's tree LDL of `M` and the dof parents; read only under `TREE`
+    # (see `_minv_apply`). The other legs pass placeholders and `False`.
+    ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    par: Scratch[Int, V_CAP],
+    tree_ok: Bool,
     # ⚠ `Je` is indexed with stride `V_CAP`, and both callers lay it out with
     # stride `NV`. Those agree because `V_CAP = _max_one[NV]()`, i.e. they
     # differ only at NV == 0, where there are no rows to sweep.
@@ -473,12 +647,34 @@ def noslip_pyramidal[
         num_edges * nv if CACHE else 1, uninitialized=Scalar[DTYPE](0)
     )
     comptime if CACHE:
-        for e in range(num_edges):
-            _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
-                env, nv, m_inv, Je, e, mj_a, je_n, je_ix
+        comptime if TREE:
+            # Every row's `M⁻¹ J_eᵀ` in ONE tree solve (`_minv_apply_rows`):
+            # the rows of `Je` in, `mj_cache` out.
+            var mj_rows = Scratch[Scalar[DTYPE], MJ_CAP](
+                num_edges * nv, fill=Scalar[DTYPE](0)
             )
-            for q in range(nv):
-                mj_cache[e * nv + q] = mj_a[q]
+            var mj_work = Scratch[Scalar[DTYPE], MJ_CAP](
+                num_edges * nv, uninitialized=Scalar[DTYPE](0)
+            )
+            for e in range(num_edges):
+                comptime if SPARSE:
+                    for a in range(je_n[e]):
+                        var k = je_ix[e * nv + a]
+                        mj_rows[e * nv + k] = Je[unsafe_offset = e * nv + k]
+                else:
+                    for k in range(nv):
+                        mj_rows[e * nv + k] = Je[unsafe_offset = e * nv + k]
+            _minv_apply_rows[DTYPE, V_CAP, MJ_CAP](
+                env, nv, num_edges, m_inv, ldl_L, ldl_D, par, tree_ok,
+                mj_rows, mj_cache, mj_work,
+            )
+        else:
+            for e in range(num_edges):
+                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                    env, nv, m_inv, Je, e, mj_a, je_n, je_ix
+                )
+                for q in range(nv):
+                    mj_cache[e * nv + q] = mj_a[q]
 
     comptime ZERO = Scalar[DTYPE](0)
     comptime HALF = Scalar[DTYPE](0.5)
@@ -654,11 +850,18 @@ def noslip_pyramidal[
         else:
             for i in range(nv):
                 qfrc[i] += Je[unsafe_offset=e * nv + i] * f
-    for i in range(nv):
-        var acc = Scalar[DTYPE](0)
-        for k in range(nv):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * qfrc[k]
-        qacc[i] = acc + qacc_smooth[i]
+    comptime if TREE:
+        _minv_apply[DTYPE, V_CAP, TREE=True](
+            env, nv, m_inv, ldl_L, ldl_D, par, tree_ok, qfrc, mj_a
+        )
+        for i in range(nv):
+            qacc[i] = mj_a[i] + qacc_smooth[i]
+    else:
+        for i in range(nv):
+            var acc = Scalar[DTYPE](0)
+            for k in range(nv):
+                acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * qfrc[k]
+            qacc[i] = acc + qacc_smooth[i]
 
 
 # =============================================================================
@@ -907,11 +1110,13 @@ def noslip_elliptic[
     EQ_CAP: Int,
     D: DimsLike,
     L_M_INV: Layout,
+    L_D: Layout,
     # CPU-path knobs, both off on the GPU legs — see `noslip_pyramidal`.
     SPARSE: Bool = False,
     N_CAP: Int = 1,
     IX_CAP: Int = 1,
     CACHE: Bool = False,
+    TREE: Bool = False,
 ](
     env: Int,
     nc: Int,
@@ -919,6 +1124,12 @@ def noslip_elliptic[
     neq_rows: Int,
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    # The step's tree LDL of `M` and the dof parents; read only under `TREE`
+    # (see `_minv_apply`). The other legs pass placeholders and `False`.
+    ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
+    par: Scratch[Int, V_CAP],
+    tree_ok: Bool,
     # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
     nt_c: Scratch[Int, MC_CAP],
     Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
@@ -1029,13 +1240,51 @@ def noslip_elliptic[
         nc * NT * nv if CACHE else 1, uninitialized=ZERO
     )
     comptime if CACHE:
-        for c in range(nc):
-            for t in range(nt_c[c]):
-                _minv_dense[DTYPE, T_CAP, V_CAP, NT, SPARSE=SPARSE](
-                    env, dims, m_inv, Jt_c, c * NT + t, MinvJ, t, cn_n, cn_ix, c
-                )
-                for q in range(nv):
-                    minv_cache[(c * NT + t) * nv + q] = MinvJ[t * nv + q]
+        comptime if TREE:
+            # Every tangent row's `M⁻¹ J_tᵀ` in ONE tree solve
+            # (`_minv_apply_rows`): rows of `Jt_c` in, `minv_cache` out.
+            var jt_rows = Scratch[Scalar[DTYPE], MJC_CAP](nc * NT * nv, fill=ZERO)
+            var jt_work = Scratch[Scalar[DTYPE], MJC_CAP](
+                nc * NT * nv, uninitialized=ZERO
+            )
+            for c in range(nc):
+                for t in range(nt_c[c]):
+                    var r0 = (c * NT + t) * nv
+                    comptime if SPARSE:
+                        for a in range(cn_n[c]):
+                            var k = cn_ix[c * nv + a]
+                            jt_rows[r0 + k] = Jt_c[r0 + k]
+                    else:
+                        for k in range(nv):
+                            jt_rows[r0 + k] = Jt_c[r0 + k]
+            _minv_apply_rows[DTYPE, V_CAP, MJC_CAP](
+                env, nv, nc * NT, m_inv, ldl_L, ldl_D, par, tree_ok,
+                jt_rows, minv_cache, jt_work,
+            )
+        else:
+            for c in range(nc):
+                for t in range(nt_c[c]):
+                    _minv_dense[DTYPE, T_CAP, V_CAP, NT, SPARSE=SPARSE](
+                        env, dims, m_inv, Jt_c, c * NT + t, MinvJ, t, cn_n, cn_ix, c
+                    )
+                    for q in range(nv):
+                        minv_cache[(c * NT + t) * nv + q] = MinvJ[t * nv + q]
+    # Friction-dof rows read a COLUMN of `M⁻¹` (`J = sign · e_dof`); under
+    # `TREE` those columns are one bulk tree solve of unit vectors.
+    comptime SC_CAP = S_CAP * V_CAP if TREE else 1
+    var col_cache = Scratch[Scalar[DTYPE], SC_CAP](
+        ns * nv if TREE else 1, uninitialized=ZERO
+    )
+    comptime if TREE:
+        var col_rows = Scratch[Scalar[DTYPE], SC_CAP](ns * nv, fill=ZERO)
+        var col_work = Scratch[Scalar[DTYPE], SC_CAP](ns * nv, uninitialized=ZERO)
+        for s_r in range(ns):
+            if sr_kind[s_r] == SROW_FRICTION:
+                col_rows[s_r * nv + sr_dof[s_r]] = ONE
+        _minv_apply_rows[DTYPE, V_CAP, SC_CAP](
+            env, nv, ns, m_inv, ldl_L, ldl_D, par, tree_ok,
+            col_rows, col_cache, col_work,
+        )
     # The `nt x nt` AR block, its rhs, the solved force and the old one.
     var Ac = InlineArray[Scalar[DTYPE], NT * NT](fill=ZERO)
     var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
@@ -1075,7 +1324,11 @@ def noslip_elliptic[
                 continue
             var dof = sr_dof[s]
             var sgn = sr_sign[s]
-            var a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
+            var a_ii = ZERO
+            comptime if TREE:
+                a_ii = col_cache[s * nv + dof]
+            else:
+                a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             var arinv = ONE / (a_ii if a_ii > MINVAL else MINVAL)
 
             # ⚠ COMPUTED HERE, NOT READ FROM A REFRESHED ARRAY. This is
@@ -1099,10 +1352,14 @@ def noslip_elliptic[
             var d = f - old
             if d != ZERO:
                 sr_f[s] = f
-                for k in range(nv):
-                    qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
-                        m_inv[env, k * nv + dof]
-                    )
+                comptime if TREE:
+                    for k in range(nv):
+                        qacc[k] += d * sgn * col_cache[s * nv + k]
+                else:
+                    for k in range(nv):
+                        qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
+                            m_inv[env, k * nv + dof]
+                        )
                 # (the full-system refresh that used to sit here is gone —
                 # every consumer now recomputes its own row on demand)
             # ⚠ `/ arinv`, matching MuJoCo literally. That is `a_ii` clamped

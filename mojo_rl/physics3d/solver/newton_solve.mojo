@@ -892,6 +892,13 @@ def _newton_solve_env[
     m_inv: LayoutTensor[
         DTYPE, L_M, MutAnyOrigin
     ],
+    # The step's tree-ordered LDL of `M` (`LᵀDL`, `mj_factorI`) and the dof
+    # parent table. On the CPU path with `NTREE > 0` the noslip solves against
+    # these (`noslip._minv_apply`) instead of reading `m_inv`, which the
+    # integrator then no longer computes; every other leg ignores them.
+    ldl_L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    dof_parent: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
         DTYPE, L_QVEL, MutAnyOrigin
     ],
@@ -1000,6 +1007,15 @@ def _newton_solve_env[
     if nc > max_contacts:
         nc = max_contacts
 
+    # Tree-solve inputs for the noslip (see the `ldl_L` parameter). `tree_ok`
+    # is the same predicate the LDL dispatcher uses to pick the tree factor.
+    var tree_ok = False
+    var par = Scratch[Int, V_CAP](nv if TREE_AWARE else 1, uninitialized=0)
+    comptime if TREE_AWARE and NOSLIP_ITER > 0:
+        tree_ok = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])) > 0
+        if tree_ok:
+            for i in range(nv):
+                par[i] = Int(rebind[Scalar[DTYPE]](dof_parent[i]))
     # ⚠ LIVE SLOTS ONLY. This used to init every one of `max_contacts` slots
     # and zero each slot's `NZ * nv` Jacobian rows on every solve — 64 slots
     # x 4 x 62 on humanoid_CMU, for ~11 contacts. Nothing reads a slot at or
@@ -2232,13 +2248,14 @@ def _newton_solve_env[
                 kind_dt[e_k] = Scalar[DTYPE](kind_e[e_k])
             noslip_pyramidal[
                 DTYPE, E_CAP, V_CAP, MC_CAP, D.CAP_MAX_CONTACTS,
-                MAX_CONDIM, SPARSE=TREE_AWARE, CACHE=TREE_AWARE,
+                MAX_CONDIM, SPARSE=TREE_AWARE, CACHE=TREE_AWARE, TREE=TREE_AWARE,
             ](
                 env,
                 nc,
                 num_edges,
                 contacts,
                 m_inv,
+                ldl_L, ldl_D, par, tree_ok,
                 # ⚠ POINTERS, not the arrays. `noslip_pyramidal` takes its row
                 # storage as address-space-parameterized pointers so the SAME
                 # routine can also be called from the blocked kernel, whose
@@ -3473,7 +3490,7 @@ def _newton_solve_env[
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
             DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP,
-            SPARSE=TREE_AWARE, CACHE=TREE_AWARE,
+            SPARSE=TREE_AWARE, CACHE=TREE_AWARE, TREE=TREE_AWARE,
         ](
             env,
             nc,
@@ -3481,6 +3498,7 @@ def _newton_solve_env[
             neq_rows,
             dims,
             m_inv,
+            ldl_L, ldl_D, par, tree_ok,
             nt_cache,
             Jn_c, Jt_c,
             fr_cache, D_n_cache, D_t_cache,
@@ -3630,6 +3648,9 @@ def _newton_solve_fields_kernel[
     m_inv: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
     ],
+    ldl_L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dof_parent: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
@@ -3650,7 +3671,7 @@ def _newton_solve_fields_kernel[
         SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, trees, equality, tendons, sites, geoms_w, body_invweight0,
-        dof_invweight0, cdof, M, m_inv, qacc_constrained, qacc_warmstart,
+        dof_invweight0, cdof, M, m_inv, ldl_L, ldl_D, dof_parent, qacc_constrained, qacc_warmstart,
         solver,
     )
 
@@ -3761,6 +3782,9 @@ def solve_newton[
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl2(BATCH, dm.get_nv()))
+        var P_v = m.dof_parentid.lt_dyn["cpu", DYN1](rl1(dm.get_nv()))
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
@@ -3773,7 +3797,7 @@ def solve_newton[
                 TREE_AWARE=True](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
+                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v,
             )
     else:
         # GPU. PYRAMIDAL (the production default cone) on NVIDIA uses the
@@ -3830,6 +3854,9 @@ def solve_newton[
                 scratch.cdof.lt["gpu", L_CDOF](),
                 scratch.M.lt["gpu", L_M](),
                 scratch.m_inv.lt["gpu", L_M](),
+                scratch.L.lt["gpu", L_M](),
+                scratch.D.lt["gpu", L_NV](),
+                m.dof_parentid.lt["gpu", L_DW](),
                 scratch.qacc_constrained.lt["gpu", L_NV](),
                 d.qacc_warmstart.lt["gpu", L_NV](),
                 cscratch.solver.lt["gpu", L_SOLVER](),
@@ -3925,6 +3952,9 @@ def _newton_blocked_fields_kernel[
     m_inv: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
     ],
+    ldl_L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    ldl_D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dof_parent: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
@@ -5773,6 +5803,7 @@ def _newton_blocked_fields_kernel[
         # one-element placeholders satisfy the signature and cost nothing.
         var _no_n = Scratch[Int, 1](1, fill=0)
         var _no_ix = Scratch[Int, 1](1, fill=0)
+        var _no_par = Scratch[Int, V_SIZE](1, fill=0)
         noslip_pyramidal[
             DTYPE, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
             # `Je` is SHARED or GLOBAL depending on whether it fit (see
@@ -5788,6 +5819,7 @@ def _newton_blocked_fields_kernel[
             num_edges_b,
             contacts,
             m_inv,
+            m_inv, qacc_constrained, _no_par, False,
             Je_sh.ptr,
             bias_e_sh.ptr,
             kind_e_sh.ptr,
@@ -5969,6 +6001,9 @@ def solve_newton_blocked[
         var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
         var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl2(BATCH, dm.get_nv()))
+        var P_v = m.dof_parentid.lt_dyn["cpu", DYN1](rl1(dm.get_nv()))
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
@@ -5977,7 +6012,7 @@ def solve_newton_blocked[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, qc_v, qw_v, sol_v,
+                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v,
             )
     else:
         var c = ctx.value()
@@ -6010,6 +6045,9 @@ def solve_newton_blocked[
             scratch.cdof.lt["gpu", L_CDOF](),
             scratch.M.lt["gpu", L_M](),
             scratch.m_inv.lt["gpu", L_M](),
+            scratch.L.lt["gpu", L_M](),
+            scratch.D.lt["gpu", L_NV](),
+            m.dof_parentid.lt["gpu", L_DW](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
             d.qacc_warmstart.lt["gpu", L_NV](),
             cscratch.solver.lt["gpu", L_SOLVER](),

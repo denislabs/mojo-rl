@@ -786,8 +786,18 @@ struct EulerIntegrator[
         # which are Gauss-Seidel over `J M^-1 J^T` and READ the inverse — the
         # bisect that found this was `test_limit_solref_per_joint`, whose
         # limit row went inert (153 of qacc) the moment the matrix was stale.
-        comptime if CONTACTS and Self.SOLVER == "newton" and Self.NOSLIP_ITER == 0:
-            if d.dims.get_nequality() > 0:
+        comptime if CONTACTS and Self.SOLVER == "newton":
+            # The Newton reads `M^-1` for equality rows, and its noslip does
+            # unless the CPU tree path solves against the LDL factor instead
+            # (`noslip._minv_apply`; the predicate is the LDL dispatcher's).
+            var need_minv = d.dims.get_nequality() > 0
+            comptime if Self.NOSLIP_ITER > 0:
+                var tree_cpu = False
+                comptime if target == "cpu":
+                    tree_cpu = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+                if not tree_cpu:
+                    need_minv = True
+            if need_minv:
                 compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         else:
             compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
