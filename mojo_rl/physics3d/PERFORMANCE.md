@@ -1142,3 +1142,58 @@ The two reassemble rows, added to the sweep (2000 timed steps × 3 rounds,
 
 Ours there is 81% `solve_newton` (elliptic), 6–11% `noslip_elliptic`, ~10%
 collision.
+
+### 13.7 LANDED (2026-09-05): the elliptic path — sparse rows, and an exit it never had
+
+Two changes on the elliptic Newton, in the order §13.6 ranked them.
+
+**D. Sparse contact rows** (`f6b67b73`, bit-exact). Each contact carries its
+nonzero-dof list (the union of its normal and tangent rows' supports); the
+cone-Hessian assembly, `J·s`, `Jᵀf`, the jar recomputation and the warm-start
+cost walk it. Same recipe as §13.5-A; `_cn_len` / `_cn_dof` make one loop
+body serve the dense GPU walk and the sparse CPU one. reassemble5 7320 → 5113
+µs/step, reassemble3 4165 → 3142. Checksums identical.
+
+**E. The improvement exit.** The re-probe after D still showed 18 and 35
+iterations per solve against MuJoCo's 4–7 Newton iterations (its
+`solver_niter` counts the five noslip sweeps too). The per-iteration trace
+(`_ELL_TRACE`) showed why: in float32 the scaled gradient falls from 3e6 to
+~0.3 in eight iterations and then WANDERS between 0.1 and 0.6 — the float32
+rounding of forces of order 1e6 — while the tolerance is 1e-8, so the only
+exits left were a vanished `alpha` or the 100-iteration cap, and one solve in
+six hit the cap. **The same scene in float64, same loop, converges in 5–8**
+(`reassemble3_f64` in the bench), so it is the precision floor and not the
+direction. The loop had no `improvement` test — `mj_solPrimal` stops on
+`(improvement > 0 && improvement < tol) || gradient < tol`
+(engine_solver.c:2279), and the pyramidal path has had one since it was
+written. It now prices the total cost once per iteration (one closure,
+`_total_cost`, shared with nothing that could drift) and stops on
+`improvement < tol`, without MuJoCo's `> 0` guard: a non-positive change is
+the noise floor, and in float64 it does not occur before convergence.
+
+| | iterations / solve | `solve_newton` µs | step µs (3 rounds) | vs MuJoCo |
+|---|---|---|---|---|
+| reassemble3 before | 18.3 | 1376 | 4165 | 8.6× |
+| reassemble3 after D | 18.3 | 1012 | 3142 | 6.4× |
+| **reassemble3 after E** | **3.1** | **356** | **738** | **1.54×** |
+| reassemble5 before | 35.4 | 7119 | 7320 | 3.0× |
+| reassemble5 after D | 35.4 | 4631 | 5113 | 2.1× |
+| **reassemble5 after E** | **3.9** | **1408** | **2223** | **0.92×** |
+
+(⚠ reassemble5's 0.92× is against a MuJoCo step that carries 232 contacts to
+our 129; the contact-count gap is still open and still flagged.) Sawyer,
+the other elliptic model, is unchanged at 23.9 µs.
+
+**Gates, all green after E:** `test_elliptic_condim46_vs_mujoco` (7e-11),
+`test_noslip_elliptic_vs_mujoco` (9e-12), `test_newton_both_legs`,
+`test_newton_float32_tracks_float64`, `test_reassemble_3_bricks_vs_dm_control`
+and `test_reassemble_5_bricks_vs_dm_control` (1e-15 on both, contact cases
+included), `test_reassemble_5_tower_energy_vs_mujoco`,
+`test_sawyer_mesh_rest_vs_mujoco`, `test_constraints_vs_mujoco`,
+`test_newton_solve_fields`.
+
+**After E the reassemble solve is noslip**: `noslip_elliptic` is 208 of 356 µs
+(58%) on reassemble3 and 947 of 1408 (67%) on reassemble5; the elliptic H
+rebuild is 15%, everything else under 8%. With dog's `noslip_pyramidal` at
+64% of its solve (§13.6), noslip is now the largest single term on three of
+the five heavy models, and it is next.

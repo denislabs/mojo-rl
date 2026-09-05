@@ -52,6 +52,10 @@ def main() raises:
         )
     elif name == "reassemble3":
         bench[Reassemble3Model, Reassemble3Config, DT, True](name, warmup, steps, rounds)
+    elif name == "reassemble3_f64":
+        bench[Reassemble3Model, Reassemble3Config, DType.float64, True](
+            name, warmup, steps, rounds
+        )
     elif name == "reassemble5":
         bench[Reassemble5Model, Reassemble5Config, DT, True](name, warmup, steps, rounds)
     else:

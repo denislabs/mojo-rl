@@ -2730,6 +2730,41 @@ def _newton_solve_env[
         var _p_now = Int(perf_counter_ns())
         _p_setup += _p_now - _p_last
         _p_last = _p_now
+    # ── The total primal cost, for MuJoCo's IMPROVEMENT exit (below). One
+    # evaluation per iteration, O(rows); the pyramidal path prices its rows
+    # the same way (`scalar_row_cost`) and this path already had every term
+    # of it in the warm-start comparison above — written ONCE here so the
+    # two readers cannot drift.
+    @parameter
+    @always_inline
+    def _total_cost() -> Scalar[DTYPE]:
+        var cst = Scalar[DTYPE](0)
+        for i in range(nv):
+            cst += (
+                Scalar[DTYPE](0.5)
+                * (Ma[i] - qfrc_sm[i])
+                * (qacc[i] - qacc_sm[i])
+            )
+        for c in range(nc):
+            if dist_cache[c] >= Scalar[DTYPE](0):
+                continue
+            cst += ell_row_cost[DTYPE, NT, T_CAP](
+                cs_arr[c], nt_cache[c], c * NT, jar_n_arr[c], jar_t_arr,
+                mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+            )
+        for s in range(ns):
+            cst += scalar_row_cost[DTYPE](
+                sr_st[s], sr_jar[s], sr_D[s], sr_R[s], sr_floss[s]
+            )
+        for e in range(neq_rows):
+            cst += scalar_row_cost[DTYPE](
+                eq_st[e], eq_jar[e], eq_D[e], Scalar[DTYPE](0),
+                Scalar[DTYPE](0),
+            )
+        return cst
+
+    var cost_prev = _total_cost()
+
     # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
     # Scalar rows contribute D only on their own dof (J = sign*e_dof, so
     # J^T*J = e_dof*e_dof^T — the sign squares away).
@@ -3230,6 +3265,35 @@ def _newton_solve_env[
         # 0.0895 / 0.2317 while `scale*|grad|` fell ~5% per PAIR of steps —
         # MuJoCo converged that pose in 6 iterations and we needed ~800.
         # `unitree_go1` was board #4 at 3.256e-07 and it was this.
+        # ── TERMINATION ON IMPROVEMENT, WHICH THIS LOOP DID NOT HAVE.
+        # `mj_solPrimal` stops on `(improvement > 0 && improvement < tol) ||
+        # gradient < tol` (engine_solver.c:2279); this path tested only the
+        # gradient (and a vanished alpha), and paid for it in float32: on the
+        # reassemble brick piles the scaled gradient falls from 3e6 to ~0.3 in
+        # eight iterations and then WANDERS between 0.1 and 0.6 — the float32
+        # rounding of forces of order 1e6 — while the tolerance is 1e-8. One
+        # solve in six ran to the 100-iteration cap; the mean was 18 and 35
+        # iterations where MuJoCo (float64) takes 4-7. The same scene in
+        # float64 converges in 5-8 with this loop unchanged, so it is the
+        # precision floor, not the direction (PERFORMANCE.md §13.7).
+        #
+        # ⚠ `improvement < tol` HERE, WITHOUT MuJoCo's `> 0` GUARD. MuJoCo
+        # keeps iterating on a non-positive improvement; in float64 that never
+        # happens before convergence, and in float32 it is exactly the noise
+        # floor — a step whose cost change is indistinguishable from zero is a
+        # converged step. The pyramidal loop has used this form since it was
+        # written. Nothing is reverted: the iterate is at most noise worse.
+        #
+        # Placed AFTER the qfrc_c recomputation so that noslip, which reads
+        # `qfrc_c`, sees forces consistent with the state it is handed.
+        var cost_new = _total_cost()
+        var improvement = scale * (cost_prev - cost_new)
+        cost_prev = cost_new
+        comptime if _ELL_TRACE:
+            print("       impr", improvement)
+        if improvement < tol_rt:
+            break
+
         var cone_live = False
         for c in range(nc):
             if cs_arr[c] == ELL_CONE:
