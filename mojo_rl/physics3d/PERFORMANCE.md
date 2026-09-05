@@ -1783,3 +1783,65 @@ which noslip 94, `chol` 27, `hbuild` 23, `setup` 19, `pre2` 17), collision
 manipulation scenes the solver is no longer the first item — the box-box
 narrow phase over the brick pile is.
 
+### 13.18 LANDED (2026-09-05): the manipulation scene is collision-bound — two exact cuts
+
+§13.17 left reassemble3 at 357 µs with collision at 204 (54%). The reference
+for the same scene, same task pose, same `ctrl = 0.1`
+(`physics3d_mujoco_phases.py`, now with a pose file and a ctrl argument):
+212 µs, of which collision 85 (narrow 81, broad 3.7), constraint make +
+project + solve 118, everything else 8. So on this scene the solver was
+already within 1.4× and collision carried the gap at 2.4×.
+
+`_COLL_PROBE` (broadphase_sap.mojo), the third stage probe, splits a
+detector call into the time before the pair loop, the loop's own overhead,
+and time × calls per narrow-phase routine, plus the pair counts at each
+stage of the loop. Two things it showed, and one it did not:
+
+* **The sweep held every geom, collidable or not.** 267 geoms, 120 with a
+  nonzero contype or conaffinity. 10,600 sweep iterations and 2,100
+  AABB-passing pairs per step for 79 real candidates; each of the 2,000
+  false candidates paid the predefined-pair lookup and the body filter.
+  MuJoCo walks only bodies that `canCollide` (engine_collision_driver.c:320)
+  and `filterBitmask` (:535) rejects a geom whose two words are zero against
+  every partner. Both detectors now drop such geoms before the pair loop
+  (`3b97ce19`). Exact, checksums identical. Sweep 10,600 → 3,450 iterations,
+  survivors 2,100 → 520. reassemble3 360 → 331, sawyer 23.7 → 21.0, dog
+  369 → 354.
+* **Every convex primitive pair ran GJK to convergence.** The generic
+  `gjk_epa` path (cylinder–box, cylinder–cylinder, …) is 64 calls a step on
+  reassemble3 at 2.15 µs — 138 of the 200 µs — and 34 calls on dog at
+  1.1 µs, **all 34 separated** (0.02 hits). MuJoCo's `mjc_Convex` sets
+  `dist_cutoff = 0` on its margin-inflated shapes so a separated pair exits
+  as soon as a lower bound proves it apart (engine_collision_convex.c:104,
+  engine_collision_gjk.c:225). Our `gjk_epa_witness` has that exit and the
+  mesh path already used it; the primitive wrapper `gjk_epa` hard-coded it
+  off. It now forwards `dist_cutoff`, and both detectors pass their margin,
+  which is the same test the caller applies. Exact by construction (the exit
+  fires only when no contact is possible) and by checksum on four models.
+  dog 351 → **316**, reassemble3 333 → **316**, humanoid_cmu 131 → 128.
+* **What the probe did NOT show, for 60 µs of it.** The first two builds
+  reported 180 µs of "pair-loop overhead" that no hook covered, and the
+  counters made it look like per-pair filtering. It was two unhooked
+  branches — `gjk_epa` and the `box_box` fallback — plus the probe's own
+  timers: at ~40 ns a read, four timer pairs on each of 520 survivors is
+  60 µs a step. A residual is only as informative as the hook set is
+  complete; hook every call site before reading the remainder.
+
+| model | §13.17 | now | vs MuJoCo |
+|---|---|---|---|
+| reassemble3 | 357 | **316** | 1.68× → **1.49×** |
+| dog_stand | 352 | **316** | 1.56× → **1.40×** |
+| sawyer_reach | 23.2 | 21.0 | 1.53× → 1.39× |
+| humanoid_cmu | 129 | 128 | 1.85× → 1.83× |
+
+(Interleaved, two rounds, MIN; MuJoCo reassemble3 212 at the task pose.)
+
+**What is left in reassemble3's collision (~130 µs):** 48 touching convex
+pairs a step at ~2.1 µs each (GJK + EPA + the polytope), where MuJoCo's
+whole narrow phase for 51 contacts is 81 µs — the per-touching-pair cost is
+the item, and it needs a probe INSIDE `gjk_epa_witness` (GJK, EPA, polytope
+init) before anything is changed; then the 520 surviving pairs' filtering
+(~20 ns each for the predefined-pair lookup and the body filter, both once
+per geom pair where MuJoCo does them once per body pair); then the 3,450
+sweep iterations (MuJoCo sweeps 18 bodies, not 119 geoms).
+
