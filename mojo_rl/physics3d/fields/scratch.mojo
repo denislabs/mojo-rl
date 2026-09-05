@@ -136,19 +136,34 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
             )
             self._heap = List[Self.T](length=n, fill=uninitialized)
 
+    # ⚠ `unsafe_get`, NOT `[i]`. `InlineArray.__getitem__` and
+    # `List.__getitem__` normalise a negative index and carry a bounds
+    # `debug_assert`; measured in `noslip_elliptic`'s cache build
+    # (PERFORMANCE.md §13.21), the indexed form cost ~4× a raw pointer access
+    # in plain element loops — zeroing 2.3k floats 4.3 µs → 1.1, a 2.3k
+    # transpose 5.6 → 1.3; 13–23% on every physics3d model once applied
+    # here. Nothing in the engine indexes a `Scratch` from the end, so the
+    # normalisation bought nothing.
+    #
+    # ⚠ SEMANTICALLY IDENTICAL, NOT CHECKSUM-STABLE. With the branch gone the
+    # compiler contracts multiply-adds differently, so trajectories shift at
+    # rounding level. Verified sound two ways before landing: an accessor
+    # that aborts on ANY out-of-range index ran four models without firing,
+    # and a fills-everywhere twin matched bit for bit (no uninitialized read
+    # moved with the frame layout). Gate against MuJoCo, not the old checksum.
     @always_inline
     def __getitem__(self, i: Int) -> Self.T:
         comptime if Self.STATIC:
-            return self._fixed[i]
+            return self._fixed.unsafe_get(i)
         else:
-            return self._heap[i]
+            return self._heap.unsafe_get(i)
 
     @always_inline
     def __setitem__(mut self, i: Int, v: Self.T):
         comptime if Self.STATIC:
-            self._fixed[i] = v
+            self._fixed.unsafe_get(i) = v
         else:
-            self._heap[i] = v
+            self._heap.unsafe_get(i) = v
 
     @always_inline
     def unsafe_ptr[SO: MutOrigin](ref [SO] self) -> Pointer[Self.T, SO]:
