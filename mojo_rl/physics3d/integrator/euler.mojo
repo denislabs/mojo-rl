@@ -32,12 +32,15 @@ from ..kinematics.forward_kinematics import (
 from ..dynamics.subtree_com import compute_subtree_com
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.mass_matrix import compute_mass_matrix
+from ..fields.scratch import Scratch, cap
 from ..dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
     _ldl_factor_env,
     _ldl_solve_env,
+    _ldl_factor_tree_env,
+    _ldl_solve_tree_env,
 )
 from ..constraints.limits import solve_limits
 from ..constraints.friction_dof import solve_friction
@@ -83,6 +86,7 @@ from ..gpu.constants import (
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_SPRINGREF,
     JOINT_IDX_FRICTIONLOSS,
+    MODEL_META_IDX_NTREE,
 )
 
 comptime EU_TPB: Int = 64
@@ -333,6 +337,109 @@ def _finalize_integrate_env[
 
 
 # ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
+
+
+@always_inline
+def _finalize_damping_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_JOINTS: Layout,
+    L_M: Layout,
+](
+    env: Int,
+    dt: Scalar[DTYPE],
+    dims: DIMS,
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+):
+    """`M_hat = M + dt * diag(damping)`, in place — `mj_Euler`'s implicit
+    damping (engine_forward.c, `eulerdamp`). ONE spelling, shared by the dense
+    and the tree-ordered finalize."""
+    var nv = dims.get_nv()
+    for j in range(dims.get_njoint()):
+        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
+        if damp > Scalar[DTYPE](0):
+            var nd = 1
+            if jnt_type == JNT_FREE:
+                nd = 6
+            elif jnt_type == JNT_BALL:
+                nd = 3
+            for d in range(nd):
+                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
+
+
+@always_inline
+def _finalize_tree_env[
+    DTYPE: DType,
+    DIMS: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_M: Layout,
+    L_P: Layout,
+](
+    env: Int,
+    dt: Scalar[DTYPE],
+    dims: DIMS,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    L: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    D: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    qacc_constrained: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    dofp: LayoutTensor[DTYPE, L_P, MutAnyOrigin],
+    eulerdamp_off: Bool,
+):
+    """`_finalize_env` on the tree-ordered LDL (CPU, `NTREE > 0`).
+
+    The dense twin below was the one caller of the forward-elimination LDL
+    that §13.10 did not switch — it calls `_ldl_factor_env` directly, not
+    through the dispatcher — and formed `M * qacc` as a dense nv^2 matvec:
+    34 us of humanoid_CMU's 208 and 71 of dog's 663 against MuJoCo's
+    `mj_Euler` at 4.6 / 6.8 (PERFORMANCE.md §13.14, item 3). Here the
+    right-hand side walks M's tree sparsity (row i is nonzero at i's
+    ancestors, plus the symmetric entries — `mj_mulM`'s shape) and the
+    factorisation and solve are `mj_factorI` / `mj_solveLD` on our storage.
+    Not bit-exact against the dense twin: a different rounding of the same
+    `M_hat^-1 (M qacc)`, gated by the Euler-model MuJoCo tests."""
+    var nv = dims.get_nv()
+    if eulerdamp_off:
+        for i in range(nv):
+            qacc_ws[env, i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        _finalize_integrate_env(
+            env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+        )
+        return
+    comptime V_CAP = cap[DIMS.NV]()
+    var par = Scratch[Int, V_CAP](nv, uninitialized=0)
+    for i in range(nv):
+        par[i] = Int(dofp[i])
+    # rhs = M * qacc_constrained over M's sparsity: the diagonal, then each
+    # (i, ancestor j) entry once for both rows it belongs to.
+    for i in range(nv):
+        fnet[env, i] = M[env, i * nv + i] * qacc_constrained[env, i]
+    for i in range(nv):
+        var qi = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        var j = par[i]
+        while j >= 0:
+            var mij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
+            fnet[env, i] = fnet[env, i] + mij * qacc_constrained[env, j]
+            fnet[env, j] = fnet[env, j] + mij * qi
+            j = par[j]
+    _finalize_damping_env[DTYPE](env, dt, dims, joints, M)
+    _ldl_factor_tree_env(env, dims, M, L, D, dofp)
+    _ldl_solve_tree_env(env, dims, L, D, fnet, qacc_ws, dofp)
+    _finalize_integrate_env(
+        env, dt, dims, qpos, qvel, qacc, joints, qacc_ws
+    )
+
+
 @always_inline
 def _finalize_env[
     DTYPE: DType,
@@ -396,18 +503,7 @@ def _finalize_env[
         fnet[env, i] = sum
 
     # Step 2: M_hat = M + dt*D (damping to diagonal)
-    for j in range(njoint):
-        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
-        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp > Scalar[DTYPE](0):
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                M[env, (dof_adr + d) * nv + (dof_adr + d)] += dt * damp
+    _finalize_damping_env[DTYPE](env, dt, dims, joints, M)
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
     _ldl_factor_env(env, dims, M, L, D, trees)
@@ -826,13 +922,26 @@ struct EulerIntegrator[
             var qacc_c_v3 = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             var rl_TREE = rl1(dm.get_nv() * MODEL_TREE_SIZE)
             var trees_v3 = m.trees.lt_dyn["cpu", DYN1](rl_TREE)
+            # Tree-ordered when the parser built the tables (the LDL
+            # dispatchers' own rule), dense otherwise.
+            var use_tree3 = Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0
+            var P_v3 = m.dof_parentid.lt_dyn["cpu", DYN1](
+                rl1(dm.get_nv() if dm.get_nv() > 0 else 1)
+            )
             for e in range(Self.BATCH):
-                _finalize_env[
-                    Self.DTYPE](
-                    e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
-                    D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, trees_v3,
-                    eulerdamp_off,
-                )
+                if use_tree3:
+                    _finalize_tree_env[Self.DTYPE](
+                        e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3,
+                        L_v3, D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, P_v3,
+                        eulerdamp_off,
+                    )
+                else:
+                    _finalize_env[
+                        Self.DTYPE](
+                        e, dt, dm, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
+                        D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3, trees_v3,
+                        eulerdamp_off,
+                    )
         else:
             ctx.value().enqueue_function[
                 _finalize_kernel[
