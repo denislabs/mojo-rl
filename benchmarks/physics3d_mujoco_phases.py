@@ -1,6 +1,6 @@
 """MuJoCo per-phase cost + work counts — the reference side of PERFORMANCE.md.
 
-    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key]
+    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup]
 
 Answers: of MuJoCo's step, how much is collision (broad / mid / narrow) vs
 constraint build vs solve vs dynamics, and how much WORK it does getting there
@@ -27,7 +27,7 @@ import mujoco
 
 XML = sys.argv[1]
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 20000
-KEY = sys.argv[3] if len(sys.argv) > 3 else None
+KEY = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 
 m = mujoco.MjModel.from_xml_path(XML)
 d = mujoco.MjData(m)
@@ -55,6 +55,9 @@ print(f"opt    solver={mujoco.mjtSolver(m.opt.solver).name} "
 # ⚠ EVERY MuJoCo NUMBER PUBLISHED IN `PERFORMANCE.md` BEFORE 2026-08-14 HAD
 # THIS ON, which flattered our ratios -- badly on so101 (1.78x -> 4.16x).
 BVACTIVE = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+# Optional: a shorter warmup / counting loop for a scene that changes character
+# after a known step (the SO-101 park scenes drop their props at step 1596).
+WARMUP = int(sys.argv[5]) if len(sys.argv) > 5 else 2000
 m.vis.global_.bvactive = BVACTIVE
 print(f"vis    bvactive={BVACTIVE}  nbvh={m.nbvh} "
       f"({m.nbvh/1e3:.0f} kB memset/step if on)")
@@ -63,7 +66,7 @@ print(f"vis    bvactive={BVACTIVE}  nbvh={m.nbvh} "
 d.ctrl[:] = 0.1
 
 # Warm up (page faults, first-touch, any lazily built tables).
-for _ in range(2000):
+for _ in range(WARMUP):
     mujoco.mj_step(m, d)
 
 TIMERS = {n: t.value for n, t in mujoco.mjtTimer.__members__.items()
@@ -74,7 +77,7 @@ TIMERS = {n: t.value for n, t in mujoco.mjtTimer.__members__.items()
 ncon = []
 nefc = []
 niter = []
-for _ in range(min(N, 2000)):
+for _ in range(min(N, WARMUP)):
     mujoco.mj_step(m, d)
     ncon.append(d.ncon)
     nefc.append(d.nefc)
