@@ -36,6 +36,77 @@ from ..gpu.constants import (
 )
 
 
+
+# Ancestor chains of the two contact bodies, walked ONCE per row.
+#
+# ⚠ The three Jacobian-row builders (`_contact_jacobian_row` here, the two
+# `_angular_jacobian_row`s in `constraints/`) used to decide "does joint j
+# move body a" by walking a's parent chain for EVERY joint: `njoint × depth`
+# dependent `bodies[.., BODY_IDX_PARENT]` loads per row — ~650 on dog for a
+# 50-joint model, three rows per contact. `mj_jac` walks the chain once. The
+# chain is recorded in a small fixed array and each joint's body is tested
+# against it (a handful of register compares). Same per-dof arithmetic in the
+# same order, so the rows are bit-identical (PERFORMANCE.md §13.23).
+#
+# `CHAIN_CAP` bounds the depth this fast path handles; a deeper chain returns
+# -1 and `_affects` falls back to the walk, so nothing is ever wrong, only
+# slower.
+comptime CHAIN_CAP: Int = 32
+
+
+@always_inline
+def _body_chain[
+    DTYPE: DType,
+    L_BODIES: Layout,
+](
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    body: Int,
+    mut chain: Scratch[Int, CHAIN_CAP],
+) -> Int:
+    """`chain[0..n)` = `body`, its parent, … up to the root body; returns `n`,
+    or -1 if the chain does not fit (`body <= 0` gives 0)."""
+    var n = 0
+    var cur = body
+    while cur > 0:
+        if n >= CHAIN_CAP:
+            return -1
+        chain[n] = cur
+        n += 1
+        cur = Int(rebind[Scalar[DTYPE]](bodies[cur, BODY_IDX_PARENT]))
+    return n
+
+
+@always_inline
+def _affects[
+    DTYPE: DType,
+    L_BODIES: Layout,
+](
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    chain: Scratch[Int, CHAIN_CAP],
+    n: Int,
+    body: Int,
+    joint_body: Int,
+) -> Bool:
+    """Does the joint on `joint_body` move `body`? `body` itself or one of its
+    ancestors. Reads the recorded chain; walks only when it overflowed."""
+    if n >= 0:
+        for a in range(n):
+            if chain[a] == joint_body:
+                return True
+        return False
+    if body <= 0:
+        return False
+    if body == joint_body:
+        return True
+    var cur = body
+    while cur > 0:
+        var par = Int(rebind[Scalar[DTYPE]](bodies[cur, BODY_IDX_PARENT]))
+        if par == joint_body:
+            return True
+        cur = par
+    return False
+
+
 @always_inline
 def _contact_jacobian_row[
     DTYPE: DType,
@@ -85,6 +156,10 @@ def _contact_jacobian_row[
         rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT])
     )
 
+    var chain_a = Scratch[Int, CHAIN_CAP](CHAIN_CAP, uninitialized=0)
+    var chain_b = Scratch[Int, CHAIN_CAP](CHAIN_CAP, uninitialized=0)
+    var n_a = _body_chain[DTYPE](bodies, contact_body_a, chain_a)
+    var n_b = _body_chain[DTYPE](bodies, contact_body_b, chain_b)
     for j_idx in range(num_joints):
         var jnt_type = Int(
             rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_TYPE])
@@ -97,37 +172,12 @@ def _contact_jacobian_row[
         )
 
         # Check if this joint affects body_a
-        var affects_a = False
-        if contact_body_a == joint_body:
-            affects_a = True
-        else:
-            var current = contact_body_a
-            while current > 0:
-                var current_parent = Int(
-                    rebind[Scalar[DTYPE]](bodies[current, BODY_IDX_PARENT])
-                )
-                if current_parent == joint_body:
-                    affects_a = True
-                    break
-                current = current_parent
-
-        # Check if this joint affects body_b (only if body_b > 0, i.e. not ground)
-        var affects_b = False
-        if contact_body_b > 0:
-            if contact_body_b == joint_body:
-                affects_b = True
-            else:
-                var current_b = contact_body_b
-                while current_b > 0:
-                    var current_parent_b = Int(
-                        rebind[Scalar[DTYPE]](
-                            bodies[current_b, BODY_IDX_PARENT]
-                        )
-                    )
-                    if current_parent_b == joint_body:
-                        affects_b = True
-                        break
-                    current_b = current_parent_b
+        var affects_a = _affects[DTYPE](
+            bodies, chain_a, n_a, contact_body_a, joint_body
+        )
+        var affects_b = _affects[DTYPE](
+            bodies, chain_b, n_b, contact_body_b, joint_body
+        )
 
         if not affects_a and not affects_b:
             continue

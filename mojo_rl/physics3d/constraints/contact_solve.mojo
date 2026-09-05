@@ -50,7 +50,12 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_FREE, JNT_BALL
 from .qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
-from ..dynamics.jac_contact_row import _contact_jacobian_row
+from ..dynamics.jac_contact_row import (
+    _contact_jacobian_row,
+    _body_chain,
+    _affects,
+    CHAIN_CAP,
+)
 from .limits import _limits_env
 from .friction_dof import _friction_env
 from .equality_tendon import _equality_env, _tendon_env
@@ -234,6 +239,10 @@ def _angular_jacobian_row[
         rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT])
     )
 
+    var chain_a = Scratch[Int, CHAIN_CAP](CHAIN_CAP, uninitialized=0)
+    var chain_b = Scratch[Int, CHAIN_CAP](CHAIN_CAP, uninitialized=0)
+    var n_a = _body_chain[DTYPE](bodies, contact_body_a, chain_a)
+    var n_b = _body_chain[DTYPE](bodies, contact_body_b, chain_b)
     for j_idx in range(num_joints):
         var jnt_type = Int(
             rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_TYPE])
@@ -246,37 +255,12 @@ def _angular_jacobian_row[
         )
 
         # Check if this joint affects body_a
-        var affects_a = False
-        if contact_body_a == joint_body:
-            affects_a = True
-        else:
-            var current = contact_body_a
-            while current > 0:
-                var current_parent = Int(
-                    rebind[Scalar[DTYPE]](bodies[current, BODY_IDX_PARENT])
-                )
-                if current_parent == joint_body:
-                    affects_a = True
-                    break
-                current = current_parent
-
-        # Check if this joint affects body_b (only if body_b > 0, i.e. not ground)
-        var affects_b = False
-        if contact_body_b > 0:
-            if contact_body_b == joint_body:
-                affects_b = True
-            else:
-                var current_b = contact_body_b
-                while current_b > 0:
-                    var current_parent_b = Int(
-                        rebind[Scalar[DTYPE]](
-                            bodies[current_b, BODY_IDX_PARENT]
-                        )
-                    )
-                    if current_parent_b == joint_body:
-                        affects_b = True
-                        break
-                    current_b = current_parent_b
+        var affects_a = _affects[DTYPE](
+            bodies, chain_a, n_a, contact_body_a, joint_body
+        )
+        var affects_b = _affects[DTYPE](
+            bodies, chain_b, n_b, contact_body_b, joint_body
+        )
 
         if not affects_a and not affects_b:
             continue
