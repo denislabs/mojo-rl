@@ -1534,3 +1534,97 @@ No model is now more than 2.8× MuJoCo on the CPU; hopper is faster.
 excess on the big models is the Newton loop's per-iteration passes and noslip,
 both now segment- and sparsity-restricted; and everything GPU-side from §13.2
 and §13.10 still waits for NVIDIA hardware.
+
+### 13.14 Why MuJoCo is still faster on the CPU, phase by phase, and what would close it
+
+Measured on the final binaries (`sample` for ours, MuJoCo's own `mjTimerStat`
+with `bvactive = 0`, the `_CPU_PROBE` stage split inside the Newton). µs per
+physics step; RK4 models run four solves a step.
+
+| humanoid_cmu (nv 62, 1 tree, ~14 contacts) | ours | MuJoCo | gap |
+|---|---|---|---|
+| constraint solve (`solve_newton` / CONSTRAINT + MAKE) | ~95–140 | 46.3 | **~60** |
+| Euler finalize: implicit damping refactor + `M·qacc` (/ ADVANCE) | 34 | 4.6 | **29** |
+| mass matrix + LDL (/ POS_INERTIA) | 12 | 5.3 | 7 |
+| kinematics + cdof + velocities (/ KIN + VEL) | 8 | 4.6 | 3 |
+| collision | 7 | 7.7 | 0 |
+| **step** | **208** | **70.7** | 137 |
+
+| dog_stand (nv 79, 1 tree, 9 contacts, noslip 4) | ours | MuJoCo | gap |
+|---|---|---|---|
+| solve incl. noslip | 179 (noslip 58) | 71 + 73 PROJECT | ~35 |
+| `compute_m_inv`, kept for noslip | 150 | (inside PROJECT) | ~150 |
+| Euler finalize | 71 | 6.8 | 64 |
+| collision (meshes) | 72 | 22.7 | 49 |
+| **step** | **663** | **200** | 463 |
+
+humanoid (nv 23, RK4): 105 vs 79 — the solve is 58 (4 × 14.4) against 27 + 19.
+ant (nv 14, RK4): 47 vs 34 — the solve is 29 against 13.8. park_k9: 25 vs 8.9,
+split evenly between solve (8), collision (8.5) and the Euler step (4).
+
+Inside our Newton on humanoid_cmu, per solve (3.3 iterations): Cholesky
+38.4 (40%), Hessian build 21.9 (23%), setup 19.4 (20%), line search 5.5,
+update 4.8, rows 3.6. MuJoCo's whole CONSTRAINT phase is 40.
+
+**What MuJoCo does that we do not, in the order it costs us:**
+
+1. **It factors the Hessian ONCE per solve and updates it.** Its Newton loop
+   (`engine_solver.c:2120`) walks the constraint states after each step and,
+   for every row that entered or left the quadratic zone, applies a rank-1
+   Cholesky update/downdate with `J_i·√D_i` (`mju_cholUpdate`, O(nv²));
+   it refactors only when an update loses rank. On humanoid_cmu the state
+   changes are 0–14 rows of 78 per iteration. We rebuild `H = M + JᵀDJ` and
+   refactor it from scratch on every iteration: 3.3 factorisations of a
+   62×62 where MuJoCo does one plus a handful of rank-1 updates. That is the
+   Cholesky's 38 µs AND the Hessian build's 22 µs — 60 of our 95.
+2. **Its factor is sparse past 60 dofs.** `jacobian="auto"` flips to sparse at
+   nv ≥ 60, so humanoid_cmu and dog get `mju_cholFactorSparse` over H's
+   symbolic pattern (the tree plus the contact couplings) — nC-sized, not
+   nv²-sized. Ours is dense within a tree, and both big models are one tree.
+3. **`mj_Euler`'s implicit damping uses the sparse factor.** Our
+   `_finalize_env` (`integrator/euler.mojo:337`) still calls the OLD dense
+   `_ldl_factor_env` / `_ldl_solve_env` on `M + h·D` directly — it never went
+   through the dispatcher that §13.10 switched — and forms `M·qacc` as a
+   dense nv² matvec. 34 µs on humanoid_cmu and 71 on dog against MuJoCo's
+   4.6 and 6.8. ⚠ The tree-ordered trio is already in the tree; this is
+   plumbing (`dof_parentid` into `_finalize_env`, `use_tree` on `NTREE > 0`).
+4. **Its `M·v` is sparse.** `mj_mulM` walks nC entries; our `Ma`, `Mv`, the
+   warm-start matvec and the finalize `rhs` are nv² (dense within the
+   segment). 3 844 against 952 FMAs each on humanoid_cmu, three or four times
+   a solve. Small per call; `dof_parentid` makes it a chain walk.
+5. **It allocates nothing per solve.** Ours fills per-solve `Scratch` arrays
+   built with `fill=` — `je_ix` alone is `E_CAP × V_CAP` Ints, ~118 kB on
+   humanoid_cmu, zeroed EVERY solve (`fill=0`; `Scratch(uninitialized=)` skips
+   the fill on the static leg, `fill=` does not), plus `kind_e`, `R_e`,
+   `floss_e`, `state_e`, `seg0/seg1`, `cn_ix`. `sample` shows `memset` /
+   `bzero` at 2–4% of the step on every model. Bit-exact to remove.
+6. **Its C is autovectorised; our Mojo is not** (§7.1). Every dense pass we
+   have not hand-vectorised — FK, RNE, CRBA, the row builders, the Hessian's
+   gathered rank-1 updates — runs one lane wide against clang's 2–4 lanes.
+   This is the diffuse 2× on kinematics and dynamics (8 vs 4.6 on
+   humanoid_cmu) and is not one fix.
+7. **Its inverse does not exist.** dog keeps `compute_m_inv` (150 µs) for
+   noslip; MuJoCo pays 73 µs of `mj_projectConstraint` for the same `AR`, so
+   this is a 2× not a 10× — and `M⁻¹Jᵀ` by 63 tree solves would cost about
+   what the 79 tree columns do. The saving is in not materialising the dense
+   inverse (nv² writes, nv² reads by noslip).
+8. **Mesh collision** (dog 72 vs 23, SO-ARM101 8.2 vs 3.1): the §12.1
+   support-walk item, unchanged, a separate campaign.
+
+**Ideas, ranked by what they buy per unit of risk:**
+
+| | idea | expected | risk |
+|---|---|---|---|
+| 1 | `_finalize_env` on the tree LDL + chain-walk `M·qacc` (item 3) | cmu −25, dog −55, every damped Euler model | LOW — the routines exist; numerics change of the kind already gated |
+| 2 | stop zero-filling per-solve scratch (item 5) | 2–4% everywhere | NONE — bit-exact |
+| 3 | rank-1 Cholesky update/downdate on state change; factor once per solve; drop the per-iteration `H` rebuild (item 1) | cmu −35 to −45 (of 95), dog −40, humanoid −10 | MEDIUM — port `mju_cholUpdate` per segment; not bit-exact; the gate batch |
+| 4 | chain-walk `M·v` for `Ma`, `Mv`, warm start, finalize (item 4) | ~3–5 on the big models | LOW |
+| 5 | symbolic sparse Cholesky of `H` on one tree (item 2) | cmu's remaining factor 12 → ~4 per iteration; only after 3 | HIGH — a second factorisation kind |
+| 6 | hand-vectorise the remaining dense passes (item 6) | diffuse, ≤ 2× on ~15% of the step | MEDIUM, piecemeal |
+| 7 | `M⁻¹Jᵀ` for noslip without the dense inverse (item 7) | dog −50 to −80 | MEDIUM — noslip reads rows of `M⁻¹` in three places |
+
+Items 1–4 together are worth roughly 70–80 µs of humanoid_cmu's 208 and
+120–150 of dog's 663 — humanoid_cmu at ~1.8× MuJoCo and dog at ~2.6×, from
+2.8× and 3.3× today — without a new factorisation kind. Item 5 is what the
+last 1.5× on the big single-tree models costs, and it is the one MuJoCo
+itself only turns on at 60 dofs.
