@@ -2124,3 +2124,74 @@ arena, no sparse/dense dual dispatch and no per-row generic instantiation,
 so it has no comparable floor. The advantage is a constant, and it vanishes
 as `nv` grows and the arithmetic dominates — which is the table's pattern:
 we win at 6–23 dofs and MuJoCo still wins at 62 and 79.
+
+### 13.23 LANDED (2026-09-06): the second round — ancestor arrays, chain walks, a compact factor
+
+Three commits (`f88de9db`, `1e3d53b8`, `aefcac0d`, `23918a84`),
+all BIT-EXACT by checksum on every model, picked from the stage probes after
+§13.21 had moved every stage. The method was §13.21's: count what a stage
+touches, and when the probe says several times the arithmetic, look at how
+the loop addresses memory before looking at the algorithm.
+
+**1. The tree LDL factor iterated `j = par[j]` chains.** `_ldl_factor_tree_env`
+(`mj_factorI` on dense storage) runs twice a step on the Euler path — the
+smooth factor, and again inside the finalize on `M + dt·damping` — and its
+triple loop visited ~8k entries on dog through parent-chain walks: one
+dependent load per hop, then a `LayoutTensor` read-modify-write per entry,
+after an element-wise zero of the whole `nv×nv` slab. Ancestor lists built
+once per call and iterated as arrays, the slab through a raw pointer, the zero
+as `W`-lane stores; the solve and the finalize's sparse `M·qacc` took the
+pointer form too. Factor 9.0 → 6.3 (humanoid_cmu) and 15.5 → 10.2 (dog);
+finalize 15.1 → 11.6 and 32.7 → 26.0 (ns per step, probe-inflated).
+
+**2. The Jacobian-row builders walked the chain once per JOINT.**
+`_contact_jacobian_row` and both `_angular_jacobian_row`s decided "does joint
+j move body a" by walking a's parent chain for every joint — `njoint × depth`
+dependent loads per row, ~650 on dog, three rows a contact, again for body
+b — which is why the two contact precomputes (`pre1` + `pre2`) stood at ~20 µs
+against MuJoCo's 6.6 for all of `POS_MAKE`. `mj_jac` walks the chain once.
+Now `_body_chain` records the chain in a 32-slot array and `_affects` tests
+each joint's body against it; a deeper chain falls back to the walk. The
+helper lives once and all three builders use it — the block had been written
+inline three times (§13.14's recurring defect shape). Dog 185 → 175 µs.
+
+**3. The factor in a compact row layout.** `mj_factorI`'s `qLD` shape: row
+`k` holds `L[k, anc]` root-first, then the diagonal. An ancestor's list is a
+PREFIX of its descendant's, so the inner update for `i ∈ anc(k)` is one
+contiguous `W`-lane axpy of `dep[i] + 1` entries where the dense form still
+gathered `nv`-strided entries. The dense `L` the solves read is rebuilt from
+the compact rows (zero, scatter). Factor 6.3 → 4.9 / 10.2 → 7.5; finalize
+11.6 → 10.2 / 26.0 → 23.9. The lists are built by copying the parent's
+(parents have the smaller index) — the first version walked twice per dof,
+and at nv = 6 with four factors a step that fixed cost showed.
+
+**The round, interleaved against §13.21's binaries** (500 + 3000 steps for
+the contact rows, 1000 + 10000 for the gym rows, two rounds, MIN):
+
+| model | §13.21 | now | | vs MuJoCo |
+|---|---|---|---|---|
+| humanoid_cmu | 103 | **93** | −10% | 1.45× → **1.33×** |
+| dog_stand (3k / 20k steps) | 192 / 281 | **168 / 248** | −11% | 1.19× → **1.10×** |
+| humanoid | 73 | **67.5** | −8% | 0.90× → 0.83× |
+| sawyer_reach | 16.4 | 16.6 | +1% | 1.08× |
+| reassemble3 / reassemble5 | 257 / 513 | 257 / 514 | 0 | 1.19× / 0.78× |
+| hopper / walker2d / ant / half_cheetah | 11.0 / 22.7 / 29.8 / 4.36 | 11.3 / 23.4 / 30.8 / 4.5 | **+2–4%** | 0.71× / 0.94× / 0.86× / — |
+
+⚠ **The small RK4 rows lost 2–4% to the compact factor.** They factor four
+times a step at nv = 6–14, where the compact form's fixed costs (the compact
+fill, the scatter back, the `W`-lane guards on 6-entry rows) exceed what the
+axpy saves. Kept as is: one code path, bit-exact, and those rows already sit
+15–30% under MuJoCo; the alternative is a size-gated second path, which is
+the drift shape this file keeps recording. If the gym rows ever matter more
+than dog and humanoid_cmu, that is the knob.
+
+**What the probes say is left** (dog / humanoid_cmu, ns per step,
+probe-inflated, at the end of the round): Newton ~100 / ~62 — of which the
+Cholesky with rank-1 updates 26 / 17 (the updates walk COLUMNS of a row-major
+`L`, as `mju_cholUpdate` does; inherent unless the updates are batched),
+`setup` 15 / 10 (the `M_local` copy could be one memcpy; the `je_ix` nonzero
+scan is `E × nv`), the pyramidal noslip 20 / 0, Hessian build 11 / 11; the
+two factors 7.5 + ~7.5 / 4.9 + ~4.9 against MuJoCo's ~3 + 3; collision 22 /
+4. Reassemble3's remaining structure is unchanged from §13.19: the pair
+filters cost ~35 ns a candidate pair (525 of them), the per-iteration elliptic
+Hessian rebuild 23, the elliptic noslip 28.
