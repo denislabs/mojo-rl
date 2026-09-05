@@ -1979,3 +1979,103 @@ scan and `LayoutTensor` indexing, and the `b_S` fold's one full solve;
 56 µs) still refreshes `qacc` per contact and caches `M⁻¹ Jᵀ` for every
 tangential row through `_minv_apply_rows`; it is the same shape and the
 next item.
+
+### 13.21 LANDED (2026-09-05, night): `Scratch[i]` cost four pointer accesses — 13–23% on every model
+
+Two changes, one commit each. The second came out of probing the first.
+
+**The elliptic pass** (`noslip_elliptic`, reassemble3's 56 µs). Its shape has
+to stay: at nv = 21 with 55 contacts a residual against a precomputed `A`
+would be a 110-long gather per row, worse than the 12-nonzero `J · qacc` it
+does now, and the pass keeps `qacc` incrementally on purpose (the float32
+rebuild note at the end of the routine). The stage probe (per solve, ns,
+probe-inflated): cache 17.5, dry-friction columns 1.3, sweep 31.6, `qfrc`
+1.5. Three cuts in the sweep and the cache:
+
+- each contact's `Ac` block (`J_t M⁻¹ J_uᵀ`, floored diagonal) is
+  loop-invariant and was rebuilt from `nt²` sparse dots on every contact of
+  every iteration — now built once, before the loop;
+- each contact copied its `nt` rows of `M⁻¹ Jᵀ` out of the cache before
+  using them — now read in place;
+- the cache build staged the rows row-major, memset the whole
+  `T_CAP × V_CAP` slab and transposed twice around the tree solve — the
+  rows' nonzeros now scatter straight into the column-major work slab
+  (`_tree_solve_cols`, the core of `_minv_apply_rows` exposed), and only the
+  live part is zeroed.
+
+Sweep 31.6 → 18.9. The cache build did not move (17.5 → 18.2 with the new
+`Ac` precompute inside it), and the arithmetic said ~5. A four-way sub-probe:
+
+| sub-stage | `Scratch[i]` loops | same loops on `unsafe_ptr()` |
+|---|---|---|
+| zero the live slab + scatter the rows | 4.3 | **1.1** |
+| tree solve (`_tree_solve_cols`) | 5.0 | 5.0 |
+| transpose out | 5.6 | **1.3** |
+| `Ac` precompute | 2.0 | 2.0 |
+
+Zeroing 2.3k floats in 4.3 µs is ~2 ns an element. The pointer rewrite of
+the same loops is 4× faster.
+
+**The accessor.** `Scratch.__getitem__` / `__setitem__` forwarded to
+`InlineArray.__getitem__` and `List.__getitem__`, which normalise a negative
+index (a compare and a select per access, and a branch the optimiser has to
+carry through every loop) and hold a bounds `debug_assert`. Nothing in the
+engine indexes a `Scratch` from the end. Both now call `unsafe_get`. One
+twelve-line change in `fields/scratch.mojo`, every model, interleaved twins
+built from the same tree with only that file different:
+
+| model | `Scratch[i]` | `unsafe_get` | |
+|---|---|---|---|
+| sawyer_reach | 21.2 | **16.4** | −23% |
+| humanoid_cmu | 125.5 | **101.0** | −19% |
+| dog_stand (3000 steps) | 233 | **188** | −19% |
+| reassemble3 | 297 | **252** | −15% |
+| reassemble5 | 628 | **507** | −19% |
+| hopper / walker2d / ant | 12.8 / 27.0 / 38.1 | **10.9 / 22.5 / 29.6** | −15 / −17 / −22% |
+| humanoid / half_cheetah | 81.2 / 5.13 | **70.5 / 4.32** | −13 / −16% |
+
+⚠ **Semantically identical, NOT checksum-stable.** The pyramidal models and
+the gym models shifted at rounding level (sawyer 6e-7 relative; dog, being
+chaotic, parted after a few thousand steps); reassemble3/5 were
+bit-identical. Two things had to be ruled out before believing that was
+codegen: (1) a site indexing from the end — an instrumented accessor that
+aborts on ANY out-of-range index ran 600 steps of sawyer, humanoid_cmu, dog
+and reassemble3 without firing; (2) an uninitialized read whose garbage
+moved with the new frame layout — a fills-everywhere twin of the new
+accessor matched it bit for bit on all three pyramidal models. What is left
+is the compiler contracting multiply-adds differently once the normalisation
+branch is gone. The gate for a change of this kind is MuJoCo, not the old
+checksum: the curated physics3d manifest (32 files — Newton legs and fields,
+warmstart, constraints, friction dofs, impratio, weld and equality rows,
+tendons, rolling friction, both noslip passes, condim 4/6, sawyer settle,
+walker2d and jaco contacts, mesh manifold, hfield, CCD margin, RNE
+sensors, tree blocks, humanoid limits) plus the two Metal kernel gates
+(`test_newton_freejoint_vs_cpu`, `test_noslip_blocked_kernel`) all pass.
+
+⚠ **Where else this lesson bites.** `sample` cannot see it — the accessor is
+inlined into every caller — and a stage probe only shows it as "a stage that
+costs more than its arithmetic". The check is cheap: count the elements a
+stage touches, multiply by ~0.3 ns, and if the probe says four times that,
+rewrite ONE loop on a pointer before touching the algorithm. The same
+family of cost is in §13.20's scalar reductions (one add chain, ~4 cycles a
+term): both are the accessor and the accumulator, not the flops.
+
+**The table after this round** (MIN of interleaved rounds, 500 + 3000 steps
+for the contact rows, 1000 + 10000 for the gym rows; MuJoCo per §13.15):
+
+| model | §13.19 (evening) | now | vs MuJoCo |
+|---|---|---|---|
+| humanoid_cmu | 129 | **101** | 1.85× → **1.45×** |
+| dog_stand | 314 | **268** (20k steps; 188 over the first 3k) | 1.39× → **1.19×** |
+| reassemble3 | 315 | **252** | 1.49× → **1.19×** (1.01× against native-CCD MuJoCo) |
+| reassemble5 | 818 | **507** | 1.26× → **0.78×** |
+| sawyer_reach | 21.0 | **16.4** | 1.39× → **1.08×** |
+| humanoid / ant / walker2d / hopper | 81 / 37.7 / 27.2 / 12.8 | **70.5 / 29.6 / 22.5 / 10.9** | 0.90× / 0.90× / 0.94× / 0.74× |
+| half_cheetah | 5.1 | **4.3** | — |
+
+Five of nine rows are now at or below MuJoCo. The three above it are
+humanoid_cmu (1.45×, a 62-dof Newton with nothing above 15% of the solve),
+dog (1.19×, the pyramidal noslip now ~30 µs of a 268 µs step) and
+reassemble3 (1.19× against libccd MuJoCo, parity against native CCD). Both
+commits of this section landed after the 32-file gate manifest and the two
+Metal kernel gates passed on the new accessor.
