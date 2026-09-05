@@ -1845,3 +1845,55 @@ init) before anything is changed; then the 520 surviving pairs' filtering
 per geom pair where MuJoCo does them once per body pair); then the 3,450
 sweep iterations (MuJoCo sweeps 18 bodies, not 119 geoms).
 
+### 13.19 Where the CPU path stands after the day (2026-09-05, evening)
+
+Every row below is the tree at `7596c6f7`, interleaved, MIN of two or three
+rounds; the MuJoCo column is §13.15's reference (§13.1 protocol) except
+where noted.
+
+| model | nv | ncon | §13.15 (this morning) | now | vs MuJoCo |
+|---|---|---|---|---|---|
+| humanoid_cmu | 62 | 11.6 | 171 | **129** | 2.45× → **1.85×** |
+| dog_stand | 79 | 7.8 | 542 | **314** | 2.40× → **1.39×** |
+| reassemble3 (task pose) | 21 | 55 | 390 | **315** | 1.84× → **1.49×** (1.26× against MuJoCo with native CCD, 249 µs) |
+| reassemble5 (task pose) | 33 | 111 | 1057 | **818** | 1.63× → **1.26×** |
+| sawyer_reach | 15 | 5 | 24.4 | **21.0** | 1.62× → **1.39×** |
+| humanoid | 23 | 7 | 92 | 81 | 1.16× → 1.03× |
+| ant | 14 | 3 | 40.8 | 37.7 | 1.24× → 1.14× |
+| walker2d | 9 | 6 | 28.2 | 27.2 | 1.18× → 1.14× |
+| hopper | 6 | 2 | 13.2 | 12.8 | 0.90× → 0.87× |
+
+Nothing is more than 1.85× MuJoCo now, the manipulation scenes are at
+1.26–1.49×, and the gym models sit between 0.87× and 1.14×. Three days ago
+dog was 3003 µs, humanoid_cmu 768 and reassemble5 2222.
+
+**What landed today, in order** (§13.15–§13.18 and this section): the
+Euler and Newton stage probes and the collision and GJK probes; no per-solve
+zero-fills; the finalize on the tree LDL; factor-once + rank-1 on the
+pyramidal Newton; the per-contact `M⁻¹J_n` nobody read; live-slot init; the
+noslip on the tree LDL (one-pass multi-vector solve); non-collidable geoms
+out of the sweep; the GJK cutoff on the primitive path; lower-triangle
+Hessian builds. Eight of the ten are bit-exact; the two that are not (tree
+LDL solves in the noslip) are gated against MuJoCo.
+
+**What the probes say is left, by model.** humanoid_cmu (85 µs Newton of
+129): `hbuild` 18, `chol` 17, `setup` 15, `pre2` 14 — no single item above
+15%; the chain-walk `M·v` (§13.14 item 2, now unblocked since the parent
+table reaches the Newton) is worth ~8 µs of `setup`. dog (314): noslip 93
+inside a 212 µs Newton, collision 57, finalize 38. reassemble3 (315):
+collision ~150 of which 48 touching convex pairs at ~2.5 µs (GJK+EPA, at
+parity with MuJoCo's native path per pair) and ~35 µs of sweep and
+per-geom-pair filtering that a body-level sweep would remove; the elliptic
+Newton ~165, of which noslip 56 and the per-iteration Hessian rebuild 35
+(MuJoCo pays a comparable per-iteration cone update at this nv).
+
+⚠ **Two measurement lessons from today, both about probes.** A flag-gated
+block that is off must be gated by CHECKSUM against the tree without the
+diff (§13.16: one indent level made the solve disappear and a bisect blamed
+an innocent commit). And a probe's residual is only as good as its hook set
+and its own overhead: §13.18's "180 µs of pair-loop overhead" was two
+unhooked routines plus 60 µs of timer reads, and §13.19's lower-triangle
+change gained a third of what the stage numbers promised because those
+numbers carried the probe's cost. Hook every call site, subtract the
+timers, and quote stage numbers as a ceiling.
+
