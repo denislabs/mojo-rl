@@ -363,6 +363,9 @@ def _precompute_contact_normal[
     L_CDOF: Layout,
     L_M_INV: Layout,
     L_SOLVER: Layout,
+    # False skips `M^-1 J_n` and the `K_n` it feeds: only the PGS family
+    # reads them (the Newton and CG take `R` from `diag_n` as MuJoCo does).
+    MINV_J: Bool = True,
 ](
     env: Int,
     contact_tid: Int,
@@ -562,11 +565,15 @@ def _precompute_contact_normal[
 
             for i in range(nv):
                 solver[env, ws_J_n + c * nv + i] = J_row[i]
-                var mi_j_sum: solver.element_type = 0
-                for j_idx in range(nv):
-                    mi_j_sum += m_inv[env, i * nv + j_idx] * J_row[j_idx]
-                solver[env, ws_MinvJn + c * nv + i] = mi_j_sum
-                k += J_row[i] * mi_j_sum
+                # ⚠ GATED: a dense nv x nv matvec PER CONTACT — 3844 FMAs on
+                # humanoid_CMU, 40 us of a 120 us Newton solve for eleven
+                # contacts — and the Newton never reads its result.
+                comptime if MINV_J:
+                    var mi_j_sum: solver.element_type = 0
+                    for j_idx in range(nv):
+                        mi_j_sum += m_inv[env, i * nv + j_idx] * J_row[j_idx]
+                    solver[env, ws_MinvJn + c * nv + i] = mi_j_sum
+                    k += J_row[i] * mi_j_sum
                 # Use current VELOCITY for damping in aref (MuJoCo: efc_vel = J*qvel)
                 v_n += J_row[i] * rebind[Scalar[DTYPE]](qvel[env, i])
                 # Constraint-space acceleration (for solver RHS)

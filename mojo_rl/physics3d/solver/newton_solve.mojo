@@ -973,6 +973,12 @@ def _newton_solve_env[
         )
         return
 
+    var _q_init: Int = 0
+    var _q_pre1: Int = 0
+    var _q_pre2: Int = 0
+    var _q_last: Int = 0
+    comptime if _CPU_PROBE:
+        _q_last = Int(perf_counter_ns())
     # === Initialize workspace (legacy: parallel, one thread per slot; the
     # legacy `contact_tid < MC` guard is vacuous with block_dim.y = MC) ===
     #
@@ -988,7 +994,19 @@ def _newton_solve_env[
     # fixed FOUR blocks and got away with it only because the pyramidal
     # producer re-zeros every edge itself.
     comptime NZ = 2 * NT if CONE_TYPE == ConeType.PYRAMIDAL else NT
-    for contact_tid in range(max_contacts):
+    # `nc` is read here rather than with the rest of the metadata below
+    # because the workspace init only touches the live slots.
+    var nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
+    if nc > max_contacts:
+        nc = max_contacts
+
+    # ⚠ LIVE SLOTS ONLY. This used to init every one of `max_contacts` slots
+    # and zero each slot's `NZ * nv` Jacobian rows on every solve — 64 slots
+    # x 4 x 62 on humanoid_CMU, for ~11 contacts. Nothing reads a slot at or
+    # past `nc` (the row loader, noslip and the write-back all run to `nc`),
+    # so the zeroing is needed for the live slots' untouched dofs and for
+    # nothing else.
+    for contact_tid in range(nc):
         _init_common_normal_ws[
             DTYPE](env, contact_tid, dims, solver)
         # Zero primal workspace for this contact slot
@@ -1006,7 +1024,6 @@ def _newton_solve_env[
 
     # Read metadata (legacy `dt` read dropped — only the unused-arg limits
     # call consumed it)
-    var nc = 0
     var K_spring: Scalar[DTYPE] = 0
     var B_damp: Scalar[DTYPE] = 0
     var si_dmin: Scalar[DTYPE] = 0
@@ -1016,9 +1033,6 @@ def _newton_solve_env[
     var si_power: Scalar[DTYPE] = Scalar[DTYPE](2.0)
     var impratio: Scalar[DTYPE] = Scalar[DTYPE](1.0)
 
-    nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
-    if nc > max_contacts:
-        nc = max_contacts
     var sr_tc = rebind[Scalar[DTYPE]](
         mmeta[MODEL_META_IDX_SOLREF_CONTACT_0]
     )
@@ -1063,11 +1077,16 @@ def _newton_solve_env[
     if impratio < Scalar[DTYPE](1e-6):
         impratio = Scalar[DTYPE](1.0)
 
+    comptime if _CPU_PROBE:
+        var _q_now = Int(perf_counter_ns())
+        _q_init += _q_now - _q_last
+        _q_last = _q_now
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
-    for contact_tid in range(max_contacts):
+    # Live slots only (see the workspace init above); PHASE 2 already did.
+    for contact_tid in range(nc):
         _precompute_contact_normal[
-            DTYPE, V_CAP](
+            DTYPE, V_CAP, MINV_J=False](
             env,
             contact_tid,
             nc,
@@ -1092,6 +1111,10 @@ def _newton_solve_env[
             si_power,
         )
 
+    comptime if _CPU_PROBE:
+        var _q_now = Int(perf_counter_ns())
+        _q_pre1 += _q_now - _q_last
+        _q_last = _q_now
     # === PHASE 2: Tangent frame + friction data (legacy launch guard
     # `contact_tid < nc`) ===
     for contact_tid in range(nc):
@@ -1115,6 +1138,9 @@ def _newton_solve_env[
             K_spring,
         )
 
+    comptime if _CPU_PROBE:
+        var _q_now = Int(perf_counter_ns())
+        _q_pre2 += _q_now - _q_last
     # === SEQUENTIAL: primal Newton (legacy: thread 0) ===
     # ⚠ A CEILING, NOT THE BUDGET — the model's `<option iterations>` is read
     # below and the loops break on it. Raised from 200 when it stopped being
@@ -2281,7 +2307,8 @@ def _newton_solve_env[
                     "[probe] pyr rows", _p_rows, "setup", _p_setup,
                     "hbuild", _p_hbuild, "chol", _p_chol, "mv", _p_mv,
                     "ls", _p_ls, "update", _p_update, "hrebuild", _p_hrebuild,
-                    "noslip", _p_noslip, "iters", _p_iters,
+                    "noslip", _p_noslip, "init", _q_init, "pre1", _q_pre1,
+                "pre2", _q_pre2, "iters", _p_iters,
                 )
         # Write qacc back
         for i in range(nv):
@@ -3490,7 +3517,8 @@ def _newton_solve_env[
                 "[probe] ell rows", _p_rows, "setup", _p_setup,
                 "hbuild", _p_hbuild, "chol", _p_chol, "mv", _p_mv,
                 "ls", _p_ls, "update", _p_update, "hrebuild", _p_hrebuild,
-                "noslip", _p_noslip, "iters", _p_iters,
+                "noslip", _p_noslip, "init", _q_init, "pre1", _q_pre1,
+                "pre2", _q_pre2, "iters", _p_iters,
             )
     # Write solved qacc back to workspace
     for i in range(nv):
@@ -4081,7 +4109,7 @@ def _newton_blocked_fields_kernel[
             # solver workspace; the real passes below rewrite the same slots.
             for _r in range(SERIAL_PROBE_REPEAT - 1):
                 _precompute_contact_normal[
-                    DTYPE, V_SIZE](
+                    DTYPE, V_SIZE, MINV_J=False](
                     env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
                     mmeta, body_invweight0, cdof, m_inv, qacc_constrained, solver,
                     K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
@@ -4093,7 +4121,7 @@ def _newton_blocked_fields_kernel[
                     mmeta, cdof, solver, B_damp, impratio, K_spring,
                 )
         _precompute_contact_normal[
-            DTYPE, V_SIZE](
+            DTYPE, V_SIZE, MINV_J=False](
             env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
             mmeta, body_invweight0, cdof, m_inv, qacc_constrained, solver,
             K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
