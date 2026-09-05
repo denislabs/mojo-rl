@@ -1735,3 +1735,51 @@ diff itself. The lesson was already in this file's ancestry (a rule written
 twice drifts): a flag-gated block is a statement like any other, and the gate
 for "off is a no-op" is the checksum of the flag-off build against the tree
 without the diff, not a read of the diff.
+
+### 13.17 LANDED (2026-09-05): the noslip solves against the LDL — dog loses its dense inverse
+
+§13.16's Euler split put dog's dense `M⁻¹` at 141 µs of 498 (28%), computed
+only because the noslip reads it: `M⁻¹Jᵀ` per row for the sweep's `A`
+entries and `M⁻¹·qfrc` at the end (§13.14 item 4). The step already holds a
+tree-ordered `LᵀDL` factor of `M` (§13.10, `mj_factorI`), and `mj_solveLD`
+applies `M⁻¹` to a vector in O(nv · depth) from it. MuJoCo never forms the
+inverse for this.
+
+**What landed.** `_newton_solve_env` takes the factor (`ldl_L`, `ldl_D`) and
+the dof parent table; on the CPU path with `NTREE > 0` the two noslip
+functions solve against them (`noslip._minv_apply` for one vector,
+`_minv_apply_rows` for a block) and the integrators skip `compute_m_inv`
+under the same predicate the LDL dispatcher uses. Every other leg — GPU
+kernels, `NTREE == 0` — passes placeholders and keeps the dense product; the
+blocked kernel and the per-env kernel both compile on Metal and match the
+CPU oracle (`test_newton_freejoint_vs_cpu`).
+
+⚠ **A tree solve per row was SLOWER than the inverse it replaced.** The first
+build did one `mj_solveLD` per noslip row: dog went 454 → 557 µs. A single
+solve is a serial chain walk — `x[j] -= L[i,j]·x[i]` up the parents, ~3 µs a
+row on 79 dofs — and 32 rows of it cost more than the 141 µs it saved. The
+reference does not do that either: `mj_solveLD(…, n)` solves `n` vectors in
+one pass. `_minv_apply_rows` keeps the vectors column-major (`W[k·n + r]`),
+so each chain step is one contiguous `n`-wide SIMD axpy over every row
+(`_axpy_self`, the one-pointer twin of `cholesky._axpy_seg`): same flops, no
+dependency chain. The noslip's own time rose 60 → 94 µs; the 141 µs is gone.
+
+| model | before | after | vs MuJoCo |
+|---|---|---|---|
+| dog_stand | 454 | **352** | 2.01× → **1.56×** |
+| reassemble3 (elliptic noslip) | 370 | 357 | |
+| humanoid_cmu, sawyer_reach (no noslip) | | bit-exact, unchanged | |
+
+(Interleaved, three rounds, MIN.) Not bit-exact — a different summation
+order — so the gate is MuJoCo: `test_noslip_vs_mujoco`,
+`test_noslip_elliptic_vs_mujoco`, `test_noslip_reaches_the_runtime_path`,
+`test_constraints_vs_mujoco`, plus both-legs, dispatchers, RK4 and fields
+tests. Checksums moved in the fifth digit (dog 903.639 → 903.671).
+
+**Where dog's 352 µs goes now** (`_EULER_PROBE`): Newton 213 (60%, of
+which noslip 94, `chol` 27, `hbuild` 23, `setup` 19, `pre2` 17), collision
+59, finalize 38, LDL factor 15. **Reassemble3** (379 µs probed): collision
+**204 (54%)**, Newton 167 (noslip 53, `hrebuild` 31, `hbuild` 16). On the
+manipulation scenes the solver is no longer the first item — the box-box
+narrow phase over the brick pile is.
+
