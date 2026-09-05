@@ -1410,3 +1410,66 @@ not wrong measurements; they were measurements of a scene with the bricks
 inside each other, which is cheaper for us (no stud contacts) and dearer for
 MuJoCo (28 coincident-hull contacts per pair). MuJoCo's own step on the posed
 scene is 219 / 645 µs, not 489 / 2440.
+
+### 13.12 Contact fidelity on the brick piles: at the reference's own tolerance
+
+After §13.11 the remaining differences on the reassemble scenes from the task
+pose were small and specific — ~10% fewer stud contacts on reassemble5 and a
+7e-6 state difference after ONE float64 step with identical contact sets. Both
+were run down with `contact_probe.mojo`'s detail mode (per-contact position,
+normal, distance, force, tangent frame; noslip / solver-tolerance / CCD-
+tolerance switches; body mass properties) against MuJoCo, and the answer is
+that we sit inside MuJoCo's own tolerance and backend spread.
+
+**1. The XML disables MuJoCo's native CCD** (`<flag nativeccd="disable"/>`),
+so the reference in those tables was **libccd**, while our GJK/EPA is the port
+of MuJoCo's NATIVE routines. With native CCD enabled on the reference:
+
+| step 0, welded brick vs brick 2 | ours | MuJoCo native | MuJoCo libccd |
+|---|---|---|---|
+| contact distances (µm) | 2.448 / 3.020 / 3.493 | **2.448 / 3.020 / 3.493** | 2.70 / 2.93 / 3.001 / 3.003 |
+| witness heights z | 0.02287 / 0.02321 | **0.02287 / 0.02321** | 0.0229 |
+| mean contacts, reassemble5, 2000 steps | 105.3 | 109.4 | 116.4 |
+| \|Δstate\| after 3000 steps, reassemble3 | ours–native **7e-4** | native–libccd **2.4e-3** | ours–libccd 1.7e-3 |
+| \|Δstate\| after 2000 steps, reassemble5 | ours–native 4.4e-3 | native–libccd 5.9e-3 | ours–libccd 1.4e-3 |
+
+Our contact geometry is MuJoCo native's to the printed digit, and our long-run
+drift against either backend is no larger than the two backends' drift
+against each other.
+
+**2. What was left against native: a yaw-only acceleration on the free
+bricks.** With noslip off, every arm dof and every brick translation and tilt
+agrees to ≤ 1e-11 after one step; the brick YAW accelerations differ by 0.05
+and 0.12 rad/s². Not tolerance (`tolerance = 1e-14` on both sides changed
+nothing; MuJoCo converges in ONE Newton iteration), not inertia (mass, inertia
+tensor, COM and inertial frame identical to 1e-12), not noslip (off). Per
+contact: 18 of 24 contacts agree to 1e-16 in position and to the digit in
+distance and force; **six stud/flange contacts** (the 0.55 mm-thick flange
+boxes) sit 50 µm apart, with the two distance values 3.02 and 3.49 µm
+assigned to different stud/flange pairs and normal forces 0.4% apart. That
+0.47 µm is below `ccd_tolerance = 1e-6`, the GJK exit both engines run with.
+**With `ccd_tolerance = 1e-12` on both sides the step-0 acceleration
+difference falls from 1.2e-1 to 6.6e-5** (2000×), and the yaw dofs carry the
+whole of what is left. A 12-gram brick has a yaw inertia of 1.9e-6 kg·m²: the
+0.1 rad/s² was a 2e-7 N·m torque, a 2e-5 N force imbalance against a 0.12 N
+weight — the size of a GJK tolerance, amplified by a tiny inertia.
+
+**3. Multiplicity.** The base~base box contact between stacked bricks is a
+knife edge: resting faces at 1e-9 separation with margin 0, and which of the
+box-box candidate points fall on the negative side decides 0 to 3 contacts. Ours
+emits 2–3 at depths of 1e-9 where MuJoCo emits 0–1 at 5e-11 — physically
+inert either way, and the whole of the "+16k only-ours contacts" over a
+3000-step run.
+
+**Conclusion:** no collision defect on these scenes. The remaining
+ours-vs-MuJoCo residual is at the reference's own GJK tolerance, and MuJoCo's
+two CCD backends disagree with each other by more than either disagrees with
+us. Anyone comparing manipulation rollouts against MuJoCo should enable native
+CCD on the reference (`m.opt.disableflags &= ~mjDSBL_NATIVECCD`) or accept a
+libccd-sized spread.
+
+⚠ Method notes, each of which changed a conclusion here: pose the scene the
+way the TASK does (§13.11); diff contact SETS as body pairs before trusting a
+count; MuJoCo's `mjcontact.frame[:3]` is the negation of our stored normal;
+match contacts by position AND check the distance travels with the match — six
+pairs matched to 4 digits and had swapped distances.
