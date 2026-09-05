@@ -271,28 +271,70 @@ def _ldl_factor_tree_env[
     var par = Scratch[Int, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         par[i] = Int(dofp[i])
-    # ⚠ THE ANCESTOR LISTS ARE BUILT ONCE, THEN ITERATED AS ARRAYS. The
-    # factor's triple loop visits `Σ_k Σ_{i ∈ anc(k)} |anc(i)|` entries — ~8k
-    # on dog — and each hop of a `j = par[j]` walk is a dependent load the
-    # core cannot pipeline. `anc[k*nv + a]` (parent first, root last) is the
-    # same sequence the walk produced, so the arithmetic order, and the bits,
-    # are unchanged; `mj_factorI` iterates `rownnz`/`colind` arrays the same
-    # way. The slab is addressed through a raw pointer (PERFORMANCE.md
-    # §13.21: indexed access in element loops is the cost, not the flops).
+    # ⚠ FACTORED IN A COMPACT ROW LAYOUT, THEN SCATTERED. Row `k` of `Lc`
+    # holds `L[k, anc]` for `anc` the ancestors of `k` ROOT-FIRST in slots
+    # `0 .. dep[k]`, and the diagonal in slot `dep[k]` — `mj_factorI`'s `qLD`
+    # shape. Because an ancestor's list is a PREFIX of its descendant's, the
+    # inner update `L[i, {i} ∪ anc(i)] += coef · L[k, same]` for `i ∈ anc(k)`
+    # is one CONTIGUOUS axpy of `dep[i] + 1` entries — `W` lanes wide — where
+    # the dense-storage form gathered `nv`-strided entries one dependent hop
+    # at a time (~8k of them on dog, twice a step). The dense `L` the solves
+    # read is rebuilt from `Lc` at the end. Each element update is the same
+    # single `a + coef·b`, so the result is identical up to the compiler's
+    # multiply-add contraction (PERFORMANCE.md §13.23).
     var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
     var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
     for k in range(nv):
         var n_a = 0
         var j = par[k]
         while j >= 0:
-            anc[k * nv + n_a] = j
             n_a += 1
             j = par[j]
         dep[k] = n_a
+        j = par[k]
+        var a = n_a - 1
+        while j >= 0:
+            anc[k * nv + a] = j
+            a -= 1
+            j = par[j]
     var nn = nv * nv
     var Lp = L.ptr + env * nn
     var Mp = M.ptr + env * nn
+    var Lc = Scratch[Scalar[DTYPE], A_CAP](nn, uninitialized=0)
+    for k in range(nv):
+        var rk = k * nv
+        for a in range(dep[k]):
+            Lc[rk + a] = Mp[rk + anc[rk + a]]
+        Lc[rk + dep[k]] = Mp[rk + k]
+    var cp = Lc.unsafe_ptr()
     comptime W = 2 * simd_width_of[DTYPE]()
+    for k in range(nv - 1, -1, -1):
+        var rk = k * nv
+        var dk = Lc[rk + dep[k]]
+        var inv_d = Scalar[DTYPE](0)
+        if dk > 1e-14 or dk < -1e-14:
+            inv_d = Scalar[DTYPE](1) / dk
+        for a in range(dep[k]):
+            var i = anc[rk + a]
+            var ri = i * nv
+            var coef = -(Lc[rk + a] * inv_d)
+            var n_up = a + 1
+            var cv = SIMD[DTYPE, W](coef)
+            var q = 0
+            while q + W <= n_up:
+                cp.store(
+                    ri + q,
+                    cp.load[width=W](ri + q) + cv * cp.load[width=W](rk + q),
+                )
+                q += W
+            while q < n_up:
+                cp[ri + q] = cp[ri + q] + coef * cp[rk + q]
+                q += 1
+        D[env, k] = dk
+        for a in range(dep[k]):
+            Lc[rk + a] = Lc[rk + a] * inv_d
+        Lc[rk + dep[k]] = 1
+    # Dense `L` for the solves: zero, then scatter the compact rows.
     var q = 0
     while q + W <= nn:
         Lp.store(q, SIMD[DTYPE, W](0))
@@ -302,29 +344,8 @@ def _ldl_factor_tree_env[
         q += 1
     for k in range(nv):
         var rk = k * nv
-        Lp[rk + k] = Mp[rk + k]
         for a in range(dep[k]):
-            var j = anc[rk + a]
-            Lp[rk + j] = Mp[rk + j]
-    for k in range(nv - 1, -1, -1):
-        var rk = k * nv
-        var dk = Lp[rk + k]
-        var inv_d = Scalar[DTYPE](0)
-        if dk > 1e-14 or dk < -1e-14:
-            inv_d = Scalar[DTYPE](1) / dk
-        for a in range(dep[k]):
-            var i = anc[rk + a]
-            var ri = i * nv
-            var coef = -(Lp[rk + i] * inv_d)
-            # `{i} ∪ anc(i)`, in the walk's order: `i` first.
-            Lp[ri + i] = Lp[ri + i] + coef * Lp[rk + i]
-            for b in range(dep[i]):
-                var j = anc[ri + b]
-                Lp[ri + j] = Lp[ri + j] + coef * Lp[rk + j]
-        D[env, k] = dk
-        for a in range(dep[k]):
-            var j2 = anc[rk + a]
-            Lp[rk + j2] = Lp[rk + j2] * inv_d
+            Lp[rk + anc[rk + a]] = Lc[rk + a]
         Lp[rk + k] = 1
 
 
