@@ -240,6 +240,9 @@ def _minv_jt[
     V_CAP: Int,
     L_M_INV: Layout,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
 ](
     env: Int,
     nv: Int,
@@ -247,6 +250,8 @@ def _minv_jt[
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
     mut out_v: Scratch[Scalar[DTYPE], V_CAP],
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
 ):
     """`out_v = M^-1 J_row^T`.
 
@@ -255,13 +260,27 @@ def _minv_jt[
     and far too much for per-env GPU local memory, and this module is meant to
     serve both. If the CPU path ever needs the speed, hoist it: `J` and `M` do
     not change during the sweep, so the result is loop-invariant.
+
+    ⚠ HOISTED AND SPARSE ON THE CPU PATH NOW (2026-09-05): `noslip_pyramidal`
+    fills a per-row cache once under `CACHE`, and under `SPARSE` the sum runs
+    over the row's nonzero dofs (`je_n` / `je_ix`, the Newton's own lists) —
+    every skipped term is a product with an exact zero, so the value is the
+    dense one bit for bit. The GPU legs keep both off (PERFORMANCE.md §13.6:
+    noslip was 64% of dog's solve and two thirds of the reassemble scenes').
     """
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
-        for k in range(nv):
-            acc += rebind[Scalar[DTYPE]](
-                m_inv[env, i * nv + k]
-            ) * Je[unsafe_offset = row * nv + k]
+        comptime if SPARSE:
+            for a in range(je_n[row]):
+                var k = je_ix[row * nv + a]
+                acc += rebind[Scalar[DTYPE]](
+                    m_inv[env, i * nv + k]
+                ) * Je[unsafe_offset = row * nv + k]
+        else:
+            for k in range(nv):
+                acc += rebind[Scalar[DTYPE]](
+                    m_inv[env, i * nv + k]
+                ) * Je[unsafe_offset = row * nv + k]
         out_v[i] = acc
 
 
@@ -270,16 +289,26 @@ def _dot_row[
     DTYPE: DType,
     V_CAP: Int,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
 ](
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
     v: Scratch[Scalar[DTYPE], V_CAP],
     nv: Int,
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
 ) -> Scalar[DTYPE]:
-    """`J_row . v`."""
+    """`J_row . v` — over the row's nonzero dofs under `SPARSE`, bit-exact."""
     var acc = Scalar[DTYPE](0)
-    for i in range(nv):
-        acc += Je[unsafe_offset=row * nv + i] * v[i]
+    comptime if SPARSE:
+        for a in range(je_n[row]):
+            var i = je_ix[row * nv + a]
+            acc += Je[unsafe_offset=row * nv + i] * v[i]
+    else:
+        for i in range(nv):
+            acc += Je[unsafe_offset=row * nv + i] * v[i]
     return acc
 
 
@@ -290,6 +319,9 @@ def _refresh_jar[
     V_CAP: Int,
     JE_AS: AddressSpace = AddressSpace.GENERIC,
     ROW_AS: AddressSpace = AddressSpace.GENERIC,
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
 ](
     num_edges: Int,
     Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
@@ -297,6 +329,8 @@ def _refresh_jar[
     qacc: Scratch[Scalar[DTYPE], V_CAP],
     mut jar: Scratch[Scalar[DTYPE], E_CAP],
     nv: Int,
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
 ):
     """`jar[e] = J_e . qacc + bias_e` for every row.
 
@@ -306,7 +340,7 @@ def _refresh_jar[
     """
     for e in range(num_edges):
         jar[e] = (
-            _dot_row[DTYPE, V_CAP, JE_AS](Je, e, qacc, nv)
+            _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, e, qacc, nv, je_n, je_ix)
             + bias_e[unsafe_offset=e]
         )
 
@@ -354,6 +388,15 @@ def noslip_pyramidal[
     # depending on whether it fit. See the note above `_minv_jt`.
     JE_AS: AddressSpace = AddressSpace.GENERIC,
     ROW_AS: AddressSpace = AddressSpace.GENERIC,
+    # CPU-path knobs (both off on the GPU legs): walk each row's nonzero dofs
+    # (`je_n` / `je_ix`, the pyramidal Newton's own lists) and cache
+    # `M^-1 J^T` per row for the whole sweep instead of recomputing it per
+    # row per iteration — the `E_CAP * V_CAP` slab the note on `_minv_jt`
+    # says a per-env GPU frame cannot hold. Bit-exact either way.
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+    CACHE: Bool = False,
 ](
     env: Int,
     nc: Int,
@@ -408,6 +451,8 @@ def noslip_pyramidal[
     force: Pointer[Scalar[DTYPE], FO, address_space=ROW_AS],
     mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
     nv: Int,
+    je_n: Scratch[Int, N_CAP],
+    je_ix: Scratch[Int, IX_CAP],
 ):
     """One `mj_solNoSlip` call: up to `max_iter` friction-only sweeps.
 
@@ -421,6 +466,19 @@ def noslip_pyramidal[
 
     var mj_a = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
     var mj_b = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
+    # `M^-1 J_e^T` for every row, once. `J` and `M` are loop-invariant across
+    # the sweeps, so this is the same value `_minv_jt` produced per use.
+    comptime MJ_CAP = E_CAP * V_CAP if CACHE else 1
+    var mj_cache = Scratch[Scalar[DTYPE], MJ_CAP](
+        num_edges * nv if CACHE else 1, fill=Scalar[DTYPE](0)
+    )
+    comptime if CACHE:
+        for e in range(num_edges):
+            _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                env, nv, m_inv, Je, e, mj_a, je_n, je_ix
+            )
+            for q in range(nv):
+                mj_cache[e * nv + q] = mj_a[q]
 
     comptime ZERO = Scalar[DTYPE](0)
     comptime HALF = Scalar[DTYPE](0.5)
@@ -444,8 +502,14 @@ def noslip_pyramidal[
         for i in range(num_edges):
             if Int(kind_e[unsafe_offset=i]) != SROW_FRICTION:
                 continue
-            _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](env, nv, m_inv, Je, i, mj_a)
-            var a_ii = _dot_row[DTYPE, V_CAP, JE_AS](Je, i, mj_a, nv)
+            comptime if CACHE:
+                for q in range(nv):
+                    mj_a[q] = mj_cache[i * nv + q]
+            else:
+                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                    env, nv, m_inv, Je, i, mj_a, je_n, je_ix
+                )
+            var a_ii = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, i, mj_a, nv, je_n, je_ix)
             var arinv = Scalar[DTYPE](1.0) / (
                 a_ii if a_ii > MINVAL else MINVAL
             )
@@ -464,8 +528,8 @@ def noslip_pyramidal[
                 force[unsafe_offset=i] = f
                 for k in range(nv):
                     qacc[k] += d * mj_a[k]
-                _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS](
-                    num_edges, Je, bias_e, qacc, jar, nv
+                _refresh_jar[DTYPE, E_CAP, V_CAP, JE_AS, ROW_AS, SPARSE](
+                    num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
                 )
             # `0.5*d^2/ARinv` — and `1/ARinv` is `a_ii`, so no division here.
             improvement -= HALF * d * d * a_ii + d * res
@@ -482,19 +546,33 @@ def noslip_pyramidal[
                 if j1 >= num_edges:
                     break
 
-                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](
-                    env, nv, m_inv, Je, j0, mj_a
-                )
-                _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS](
-                    env, nv, m_inv, Je, j1, mj_b
-                )
+                comptime if CACHE:
+
+                    for q in range(nv):
+
+                        mj_a[q] = mj_cache[j0 * nv + q]
+
+                else:
+
+                    _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+
+                        env, nv, m_inv, Je, j0, mj_a, je_n, je_ix
+
+                    )
+                comptime if CACHE:
+                    for q in range(nv):
+                        mj_b[q] = mj_cache[j1 * nv + q]
+                else:
+                    _minv_jt[DTYPE, V_CAP, JE_AS=JE_AS, SPARSE=SPARSE](
+                        env, nv, m_inv, Je, j1, mj_b, je_n, je_ix
+                    )
 
                 # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
                 # R is NOT part of it).
-                var a00 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j0, mj_a, nv)
-                var a01 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j0, mj_b, nv)
-                var a10 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j1, mj_a, nv)
-                var a11 = _dot_row[DTYPE, V_CAP, JE_AS](Je, j1, mj_b, nv)
+                var a00 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_a, nv, je_n, je_ix)
+                var a01 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j0, mj_b, nv, je_n, je_ix)
+                var a10 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_a, nv, je_n, je_ix)
+                var a11 = _dot_row[DTYPE, V_CAP, JE_AS, SPARSE](Je, j1, mj_b, nv, je_n, je_ix)
                 if a00 < DIAG_FLOOR:
                     a00 = DIAG_FLOOR
                 if a11 < DIAG_FLOOR:
@@ -547,8 +625,8 @@ def noslip_pyramidal[
                     force[unsafe_offset=j1] = f1
                     for q in range(nv):
                         qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
-                    _refresh_jar[DTYPE, E_CAP, V_CAP](
-                        num_edges, Je, bias_e, qacc, jar, nv
+                    _refresh_jar[DTYPE, E_CAP, V_CAP, SPARSE=SPARSE](
+                        num_edges, Je, bias_e, qacc, jar, nv, je_n, je_ix
                     )
                 improvement -= change
 
@@ -569,8 +647,13 @@ def noslip_pyramidal[
         var f = force[unsafe_offset=e]
         if f == Scalar[DTYPE](0):
             continue
-        for i in range(nv):
-            qfrc[i] += Je[unsafe_offset=e * nv + i] * f
+        comptime if SPARSE:
+            for a in range(je_n[e]):
+                var i = je_ix[e * nv + a]
+                qfrc[i] += Je[unsafe_offset=e * nv + i] * f
+        else:
+            for i in range(nv):
+                qfrc[i] += Je[unsafe_offset=e * nv + i] * f
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
         for k in range(nv):
@@ -590,7 +673,11 @@ def _minv_dense[
     V_CAP: Int,
     NT: Int,
     D: DimsLike,
-    L_M_INV: Layout](
+    L_M_INV: Layout,
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+](
     env: Int,
     dims: D,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
@@ -598,6 +685,9 @@ def _minv_dense[
     row: Int,
     mut out_v: Scratch[Scalar[DTYPE], NT * V_CAP],
     slot: Int,
+    cn_n: Scratch[Int, N_CAP],
+    cn_ix: Scratch[Int, IX_CAP],
+    c: Int,
 ):
     """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[R_CAP, nv]` Jacobian.
 
@@ -611,27 +701,50 @@ def _minv_dense[
     var nv = dims.get_nv()
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
-        for k in range(nv):
-            acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * J[
-                row * nv + k
-            ]
+        comptime if SPARSE:
+            # `cn_n` / `cn_ix`: contact `c`'s nonzero dofs (the elliptic
+            # Newton's lists); the skipped terms are exact zeros.
+            for a in range(cn_n[c]):
+                var k = cn_ix[c * nv + a]
+                acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * J[
+                    row * nv + k
+                ]
+        else:
+            for k in range(nv):
+                acc += rebind[Scalar[DTYPE]](m_inv[env, i * nv + k]) * J[
+                    row * nv + k
+                ]
         out_v[slot * nv + i] = acc
 
 
 @always_inline
 def _dot_dense[
-    DTYPE: DType, R_CAP: Int, V_CAP: Int, NT: Int
+    DTYPE: DType,
+    R_CAP: Int,
+    V_CAP: Int,
+    NT: Int,
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
 ](
     J: Scratch[Scalar[DTYPE], R_CAP * V_CAP],
     row: Int,
     v: Scratch[Scalar[DTYPE], NT * V_CAP],
     slot: Int,
     nv: Int,
+    cn_n: Scratch[Int, N_CAP],
+    cn_ix: Scratch[Int, IX_CAP],
+    c: Int,
 ) -> Scalar[DTYPE]:
-    """`J_row . v[slot]`."""
+    """`J_row . v[slot]` — over contact `c`'s nonzero dofs under `SPARSE`."""
     var acc = Scalar[DTYPE](0)
-    for i in range(nv):
-        acc += J[row * nv + i] * v[slot * nv + i]
+    comptime if SPARSE:
+        for a in range(cn_n[c]):
+            var i = cn_ix[c * nv + a]
+            acc += J[row * nv + i] * v[slot * nv + i]
+    else:
+        for i in range(nv):
+            acc += J[row * nv + i] * v[slot * nv + i]
     return acc
 
 
@@ -794,6 +907,11 @@ def noslip_elliptic[
     EQ_CAP: Int,
     D: DimsLike,
     L_M_INV: Layout,
+    # CPU-path knobs, both off on the GPU legs — see `noslip_pyramidal`.
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+    CACHE: Bool = False,
 ](
     env: Int,
     nc: Int,
@@ -836,6 +954,8 @@ def noslip_elliptic[
     mut eq_f: Scratch[Scalar[DTYPE], EQ_CAP],
     mut eq_jar: Scratch[Scalar[DTYPE], EQ_CAP],
     mut qfrc: Scratch[Scalar[DTYPE], V_CAP],
+    cn_n: Scratch[Int, N_CAP],
+    cn_ix: Scratch[Int, IX_CAP],
 ):
     """One `mj_solNoSlip` call on the ELLIPTIC cone: up to `max_iter` sweeps.
 
@@ -902,6 +1022,20 @@ def noslip_elliptic[
 
     # `M^-1 J_t^T`, one column per tangential row of the contact being swept.
     var MinvJ = Scratch[Scalar[DTYPE], NT * V_CAP](NT * nv, fill=ZERO)
+    # `M^-1 J_t^T` for every tangent row, once — loop-invariant across the
+    # sweeps, the same value `_minv_dense` produced per use.
+    comptime MJC_CAP = T_CAP * V_CAP if CACHE else 1
+    var minv_cache = Scratch[Scalar[DTYPE], MJC_CAP](
+        nc * NT * nv if CACHE else 1, fill=ZERO
+    )
+    comptime if CACHE:
+        for c in range(nc):
+            for t in range(nt_c[c]):
+                _minv_dense[DTYPE, T_CAP, V_CAP, NT, SPARSE=SPARSE](
+                    env, dims, m_inv, Jt_c, c * NT + t, MinvJ, t, cn_n, cn_ix, c
+                )
+                for q in range(nv):
+                    minv_cache[(c * NT + t) * nv + q] = MinvJ[t * nv + q]
     # The `nt x nt` AR block, its rhs, the solved force and the old one.
     var Ac = InlineArray[Scalar[DTYPE], NT * NT](fill=ZERO)
     var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
@@ -998,12 +1132,21 @@ def noslip_elliptic[
             for t in range(nt):
                 oldf[t] = ft_a[cb + t]
                 var jv = bt_c[cb + t]
-                for i in range(nv):
-                    jv += Jt_c[(cb + t) * nv + i] * qacc[i]
+                comptime if SPARSE:
+                    for a in range(cn_n[c]):
+                        var i = cn_ix[c * nv + a]
+                        jv += Jt_c[(cb + t) * nv + i] * qacc[i]
+                else:
+                    for i in range(nv):
+                        jv += Jt_c[(cb + t) * nv + i] * qacc[i]
                 jt_cur[t] = jv
-                _minv_dense[DTYPE, T_CAP, V_CAP, NT](
-                    env, dims, m_inv, Jt_c, cb + t, MinvJ, t
-                )
+                comptime if CACHE:
+                    for q in range(nv):
+                        MinvJ[t * nv + q] = minv_cache[(cb + t) * nv + q]
+                else:
+                    _minv_dense[DTYPE, T_CAP, V_CAP, NT, SPARSE=SPARSE](
+                        env, dims, m_inv, Jt_c, cb + t, MinvJ, t, cn_n, cn_ix, c
+                    )
 
             # `Ac` = the AR submatrix with R subtracted off the diagonal and
             # the diagonal floored (`extractBlock`, flg_subR=1) — so R is not
@@ -1011,8 +1154,8 @@ def noslip_elliptic[
             for t in range(nt):
                 for u in range(nt):
                     Ac[t * NT + u] = _dot_dense[
-                        DTYPE, T_CAP, V_CAP, NT
-                    ](Jt_c, cb + t, MinvJ, u, nv)
+                        DTYPE, T_CAP, V_CAP, NT, SPARSE
+                    ](Jt_c, cb + t, MinvJ, u, nv, cn_n, cn_ix, c)
                 if Ac[t * NT + t] < DIAG_FLOOR:
                     Ac[t * NT + t] = DIAG_FLOOR
 
@@ -1086,7 +1229,9 @@ def noslip_elliptic[
         qfrc[i] = ZERO
     for c in range(nc):
         var f_n = fn_a[c]
-        for i in range(nv):
+        var n_i = cn_n[c] if SPARSE else nv
+        for a in range(n_i):
+            var i = cn_ix[c * nv + a] if SPARSE else a
             var acc = Jn_c[c * nv + i] * f_n
             for t in range(nt_c[c]):
                 acc += Jt_c[(c * NT + t) * nv + i] * ft_a[c * NT + t]

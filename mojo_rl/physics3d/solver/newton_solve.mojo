@@ -1643,8 +1643,16 @@ def _newton_solve_env[
         comptime IX_CAP = E_CAP * V_CAP if TREE_AWARE else 1
         var je_n = Scratch[Int, N_CAP](me if TREE_AWARE else 1, fill=0)
         var je_ix = Scratch[Int, IX_CAP](me * nv if TREE_AWARE else 1, fill=0)
-        var seg0 = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
-        var seg1 = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](nv))
+        # ⚠ SIZED BY THE FLAG, like the lists: the GPU legs share this body and
+        # sit at Metal's per-thread stack limit on the big models, so two
+        # `V_CAP` arrays they never read are two arrays too many.
+        comptime SEG_CAP = V_CAP if TREE_AWARE else 1
+        var seg0 = Scratch[Scalar[DTYPE], SEG_CAP](
+            nv if TREE_AWARE else 1, fill=Scalar[DTYPE](0)
+        )
+        var seg1 = Scratch[Scalar[DTYPE], SEG_CAP](
+            nv if TREE_AWARE else 1, fill=Scalar[DTYPE](nv)
+        )
         comptime if TREE_AWARE:
             for e_idx in range(num_edges):
                 var n_e = 0
@@ -2121,7 +2129,7 @@ def _newton_solve_env[
                 kind_dt[e_k] = Scalar[DTYPE](kind_e[e_k])
             noslip_pyramidal[
                 DTYPE, E_CAP, V_CAP, MC_CAP, D.CAP_MAX_CONTACTS,
-                MAX_CONDIM,
+                MAX_CONDIM, SPARSE=TREE_AWARE, CACHE=TREE_AWARE,
             ](
                 env,
                 nc,
@@ -2182,6 +2190,8 @@ def _newton_solve_env[
                 force.unsafe_ptr(),
                 qfrc,
                 nv,
+                je_n,
+                je_ix,
             )
 
         comptime if _CPU_PROBE:
@@ -3356,7 +3366,8 @@ def _newton_solve_env[
         _p_last = _p_now
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
-            DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP
+            DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP,
+            SPARSE=TREE_AWARE, CACHE=TREE_AWARE,
         ](
             env,
             nc,
@@ -3386,6 +3397,8 @@ def _newton_solve_env[
             sr_f, sr_jar,
             eq_f, eq_jar,
             qfrc_c,
+            cn_n,
+            cn_ix,
         )
 
     comptime if _CPU_PROBE:
@@ -5649,6 +5662,10 @@ def _newton_blocked_fields_kernel[
     # and the contact-force reconstruction below, because it rewrites both
     # `qacc` and `force_sh`. Same placement as the per-env path.
     comptime if NOSLIP_ITER > 0:
+        # The row lists are a CPU-path feature (`SPARSE` off here); the two
+        # one-element placeholders satisfy the signature and cost nothing.
+        var _no_n = Scratch[Int, 1](1, fill=0)
+        var _no_ix = Scratch[Int, 1](1, fill=0)
         noslip_pyramidal[
             DTYPE, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
             # `Je` is SHARED or GLOBAL depending on whether it fit (see
@@ -5688,6 +5705,8 @@ def _newton_blocked_fields_kernel[
             force_sh.ptr,
             qfrc,
             NV,
+            _no_n,
+            _no_ix,
         )
 
     for i in range(NV):

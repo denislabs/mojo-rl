@@ -1197,3 +1197,61 @@ included), `test_reassemble_5_tower_energy_vs_mujoco`,
 rebuild is 15%, everything else under 8%. With dog's `noslip_pyramidal` at
 64% of its solve (§13.6), noslip is now the largest single term on three of
 the five heavy models, and it is next.
+
+### 13.8 LANDED (2026-09-05): noslip hoists `M⁻¹Jᵀ` and walks the nonzero dofs — bit-exact
+
+Item 3 of the §13.6 order. Both `noslip_pyramidal` and `noslip_elliptic`
+recomputed `M⁻¹J_rowᵀ` — an `nv²` product — for every friction row (or
+tangent row) on every sweep, and `_minv_jt`'s own docstring said so: "if the
+CPU path ever needs the speed, hoist it: J and M do not change during the
+sweep". They also walked dense Jacobians in every dot product and every jar
+refresh. Under `CACHE` the CPU path now forms every row's `M⁻¹Jᵀ` once per
+solve (`E_CAP × V_CAP` on the pyramidal side, `T_CAP × V_CAP` on the elliptic
+one — the slab the note says a per-env GPU frame cannot hold, so the GPU legs
+keep both knobs off and pass one-element placeholders); under `SPARSE` the
+products run over the Newton's own row lists (`je_n`/`je_ix`, `cn_n`/`cn_ix`).
+Bit-exact by the exact-zero argument: dog, both reassemble scenes and Sawyer
+print their previous checksums.
+
+| model | before | after | speedup | vs MuJoCo |
+|---|---|---|---|---|
+| dog_stand | 1937 | **1126** | 1.72× | 13.0× at the start of the day → **5.0×** |
+| reassemble3 | 738 | **613** | 1.20× | 8.6× → **1.28×** |
+| reassemble5 | 2223 | **1531** | 1.45× | 3.0× → **0.63×** |
+| sawyer_reach | 23.9 | 23.9 | — | 1.59× |
+
+(µs per physics step, MIN of 3 interleaved rounds.) Gates green:
+`test_noslip_vs_mujoco` (7e-17), `test_noslip_elliptic_vs_mujoco` (9e-12),
+`test_noslip_blocked_kernel` (the GPU call site with its placeholders),
+`test_friction_dof_rows_vs_mujoco`.
+
+⚠ `tests/dm_control/test_dog_gpu_vs_cpu.mojo` fails on this Mac with "Compute
+function exceeds available stack space" — **pre-existing and documented in
+its own header**: Apple builds that kernel and cannot run it, dog's NV=79 is
+past Metal's per-thread stack ceiling, NVIDIA is its only target. It was run
+to check the call-site change compiles, which it does. While there, the two
+`V_CAP` segment arrays the tree-aware CPU path allocates are now sized 1 on the
+GPU legs, so the shared body did not grow their frames at all.
+
+**The day's ledger, whole tree** (before = §13's table; after = the latest
+three-round row for each model):
+
+| model | nv | before µs | after µs | speedup | vs MuJoCo before → after |
+|---|---|---|---|---|---|
+| dog_stand | 79 | 3003 | 1126 | 2.7× | 13.0× → 5.0× |
+| humanoid_cmu | 62 | 768 | 254 | 3.0× | 10.7× → 3.75× |
+| park_k9 | 60 | 94.3 | 33.3 | 2.8× | 10.7× → 3.8× |
+| reassemble5 | 33 | 7320 | 1531 | 4.8× | 3.0× → 0.63× |
+| reassemble3 | 21 | 4165 | 613 | 6.8× | 8.6× → 1.28× |
+| humanoid | 23 | 199 | 120 | 1.7× | 2.48× → 1.55× |
+| ant | 14 | 67.5 | 51.3 | 1.3× | 2.02× → 1.58× |
+| walker2d | 9 | 38.8 | 33.0 | 1.2× | 1.60× → 1.41× |
+| ≤ 15 dofs, few contacts | | | | ~1.0× | unchanged |
+
+**What is left, on the after profiles:** humanoid_cmu's dense scalar Cholesky
+(51% of its solve; a SIMD dot is not bit-exact and needs its own gate batch),
+dog's remaining `M⁻¹` (it still forms the full inverse for noslip — `M⁻¹Jᵀ`
+by `ldl_solve` per row would replace an `nv³` with `rows × nv²`), park_k9's
+three `nv²` copies per iteration (bit-exact), and the reassemble contact
+count (ours 68 / 129 to MuJoCo's 93 / 232 — a fidelity question, not a
+speed one, and the reason the 0.63× is not a like-for-like number).
