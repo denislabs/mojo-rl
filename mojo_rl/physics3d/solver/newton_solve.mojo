@@ -117,6 +117,8 @@ from ..constraints.elliptic_layout import (
     ell_ntc,
 )
 from .elliptic_cone import (
+    _cn_len,
+    _cn_dof,
     ell_state_force,
     ell_row_cost,
     ell_hessian_block,
@@ -2301,6 +2303,14 @@ def _newton_solve_env[
     comptime T_CAP = cap[D.CAP_MAX_CONTACTS * NT]()
     var tn = max_contacts * NT
     var Jt_c = Scratch[Scalar[DTYPE], T_CAP * V_CAP](max_contacts * NT * nv, uninitialized=Scalar[DTYPE](0))
+    # ── TREE_AWARE: each contact's nonzero-dof list (union of its normal and
+    # tangent rows' supports), built below from the cached Jacobians and
+    # walked by every `J·v`, `Jᵀf` and Hessian pass in this path. Off, both
+    # are one-element placeholders and `_cn_len` / `_cn_dof` are `nv` / `a`.
+    comptime CN_CAP = MC_CAP if TREE_AWARE else 1
+    comptime CIX_CAP = MC_CAP * V_CAP if TREE_AWARE else 1
+    var cn_n = Scratch[Int, CN_CAP](max_contacts if TREE_AWARE else 1, fill=0)
+    var cn_ix = Scratch[Int, CIX_CAP](max_contacts * nv if TREE_AWARE else 1, fill=0)
     var mu_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
     var D_n_cache = Scratch[Scalar[DTYPE], MC_CAP](max_contacts, uninitialized=Scalar[DTYPE](0))
     var D_t_cache = Scratch[Scalar[DTYPE], T_CAP](max_contacts * NT, uninitialized=Scalar[DTYPE](0))
@@ -2343,6 +2353,17 @@ def _newton_solve_env[
                 Jt_c[(c * NT + t) * nv + i] = rebind[Scalar[DTYPE]](
                     solver[env, ws_Jt_idx + t * max_contacts * nv + c * nv + i]
                 )
+        comptime if TREE_AWARE:
+            var n_c = 0
+            for i in range(nv):
+                var nz = Jn_c[c * nv + i] != Scalar[DTYPE](0)
+                for t in range(NT):
+                    if Jt_c[(c * NT + t) * nv + i] != Scalar[DTYPE](0):
+                        nz = True
+                if nz:
+                    cn_ix[c * nv + n_c] = i
+                    n_c += 1
+            cn_n[c] = n_c
 
     # === Scalar rows: joint limits + dry-friction dofs ===
     # These used to be PGS post-passes that ran AFTER this solve, so the
@@ -2577,7 +2598,8 @@ def _newton_solve_env[
                 var jn = pb_cache[c]
                 for t in range(nt_c):
                     jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
-                for i in range(nv):
+                for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+                    var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
                     var qa_i = qacc_w[i] if cand == 0 else qacc_sm[i]
                     jn += Jn_c[c * nv + i] * qa_i
                     for t in range(nt_c):
@@ -2654,7 +2676,8 @@ def _newton_solve_env[
         var jar_n: Scalar[DTYPE] = pb_cache[c]
         for t in range(nt_c):
             jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
-        for i in range(nv):
+        for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+            var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
             var qa_i = qacc[i]
             jar_n += Jn_c[c * nv + i] * qa_i
             for t in range(nt_c):
@@ -2728,10 +2751,11 @@ def _newton_solve_env[
                 H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
     comptime HN = (NT + 1) * (NT + 1)
     ell_add_contact_hessian[
-        DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN
+        DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN,
+        CN_CAP, CIX_CAP, SPARSE=TREE_AWARE,
     ](
         nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
-        mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv,
+        mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv, cn_n, cn_ix,
     )
 
     # Cholesky factorize H (with regularization on rank deficiency)
@@ -2757,7 +2781,8 @@ def _newton_solve_env[
     for c in range(nc):
         if cs_arr[c] == ELL_SATISFIED:
             continue
-        for i in range(nv):
+        for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+            var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
             var acc = Jn_c[c * nv + i] * fn_arr[c]
             for t in range(nt_cache[c]):
                 acc += Jt_c[(c * NT + t) * nv + i] * ft_arr[c * NT + t]
@@ -2852,7 +2877,8 @@ def _newton_solve_env[
             var js_n: Scalar[DTYPE] = 0
             for t in range(NT):
                 Js_t[c * NT + t] = 0
-            for i in range(nv):
+            for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+                var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
                 var s_i = search[i]
                 js_n += Jn_c[c * nv + i] * s_i
                 for t in range(nt_c):
@@ -3122,7 +3148,8 @@ def _newton_solve_env[
             var jar_n: Scalar[DTYPE] = pb_cache[c]
             for t in range(nt_c):
                 jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
-            for i in range(nv):
+            for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+                var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
                 var qa_i = qacc[i]
                 jar_n += Jn_c[c * nv + i] * qa_i
                 for t in range(nt_c):
@@ -3174,7 +3201,8 @@ def _newton_solve_env[
         for c in range(nc):
             if cs_arr[c] == ELL_SATISFIED:
                 continue
-            for i in range(nv):
+            for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
+                var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
                 var acc = Jn_c[c * nv + i] * fn_arr[c]
                 for t in range(nt_cache[c]):
                     acc += Jt_c[(c * NT + t) * nv + i] * ft_arr[c * NT + t]
@@ -3230,10 +3258,11 @@ def _newton_solve_env[
                     for b in range(nv):
                         H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
             ell_add_contact_hessian[
-                DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN
+                DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN,
+                CN_CAP, CIX_CAP, SPARSE=TREE_AWARE,
             ](
                 nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
-                mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv,
+                mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv, cn_n, cn_ix,
             )
             var chol_ok_gpu2 = chol_factor_inline[DTYPE, M_CAP](
                 H, L_chol, nv

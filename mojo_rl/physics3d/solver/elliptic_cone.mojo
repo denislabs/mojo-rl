@@ -302,6 +302,32 @@ def ell_hessian_block[
 
 
 @always_inline
+def _cn_len[
+    SPARSE: Bool, N_CAP: Int
+](cn_n: Scratch[Int, N_CAP], c: Int, nv: Int) -> Int:
+    """How many dofs contact `c`'s rows touch: its nonzero list's length under
+    `SPARSE`, all `nv` otherwise. Paired with `_cn_dof`, it lets one loop body
+    serve both walks: `for a in range(_cn_len(...)): var i = _cn_dof(...)`
+    is the dense `for i in range(nv)` when `SPARSE` is off."""
+    comptime if SPARSE:
+        return cn_n[c]
+    else:
+        return nv
+
+
+@always_inline
+def _cn_dof[
+    SPARSE: Bool, IX_CAP: Int
+](cn_ix: Scratch[Int, IX_CAP], c: Int, a: Int, nv: Int) -> Int:
+    """The `a`-th dof contact `c` touches (`cn_ix[c*nv + a]`), or `a` itself
+    when `SPARSE` is off. See `_cn_len`."""
+    comptime if SPARSE:
+        return cn_ix[c * nv + a]
+    else:
+        return a
+
+
+@always_inline
 def ell_add_contact_hessian[
     DTYPE: DType,
     MC_CAP: Int,
@@ -310,6 +336,9 @@ def ell_add_contact_hessian[
     V_CAP: Int,
     M_CAP: Int,
     HN: Int,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
+    SPARSE: Bool = False,
 ](
     nc: Int,
     cs_arr: Scratch[Int, MC_CAP],
@@ -324,8 +353,19 @@ def ell_add_contact_hessian[
     fr_cache: Scratch[Scalar[DTYPE], T_CAP],
     mut H: Scratch[Scalar[DTYPE], M_CAP],
     nv: Int,
+    cn_n: Scratch[Int, N_CAP],
+    cn_ix: Scratch[Int, IX_CAP],
 ):
     """Add every contact's `J^T Hb J` to the `nv x nv` Newton Hessian.
+
+    ⚠ `SPARSE`: every walk over `nv` becomes a walk over the contact's
+    nonzero-dof list (`cn_n` / `cn_ix`, the union of its normal and tangent
+    rows' supports). A contact row is nonzero on its two bodies' ancestor
+    chains only — 6 or 12 of reassemble5's 33 dofs — so `J^T Hb J` goes from
+    `dim * nv^2` to `dim * nnz^2`. BIT-IDENTICAL to the dense walk: every
+    skipped term is a product with an exact zero and adds nothing, and the
+    `JH` entries outside the support are never read once both outer loops are
+    restricted. Off, the loops are the dense originals.
 
     Two-stage — `JH[k] = sum_j Hb[k,j] J_j`, then `H += sum_k J_k JH[k]^T` —
     which is `O(dim^2 nv + dim nv^2)` rather than the `O(dim^2 nv^2)` a naive
@@ -352,28 +392,34 @@ def ell_add_contact_hessian[
             mu_cache[c], D_n_cache[c], D_t_cache, fr_cache, Hb,
         )
 
+        var n_c = _cn_len[SPARSE](cn_n, c, nv)
         for k in range(nt_c + 1):
-            for i in range(nv):
+            for a in range(n_c):
+                var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
                 JH[k * nv + i] = ZERO
             for j in range(nt_c + 1):
                 var h = Hb[k * DIM + j]
                 if h == ZERO:
                     continue
                 if j == 0:
-                    for i in range(nv):
+                    for a in range(n_c):
+                        var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
                         JH[k * nv + i] += h * Jn_c[c * nv + i]
                 else:
                     var jb = (c * NT + j - 1) * nv
-                    for i in range(nv):
+                    for a in range(n_c):
+                        var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
                         JH[k * nv + i] += h * Jt_c[jb + i]
 
         for k in range(nt_c + 1):
             var kb = c * nv if k == 0 else (c * NT + k - 1) * nv
-            for i in range(nv):
+            for a in range(n_c):
+                var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
                 var jki = Jn_c[kb + i] if k == 0 else Jt_c[kb + i]
                 if jki == ZERO:
                     continue
-                for j in range(nv):
+                for b in range(n_c):
+                    var j = _cn_dof[SPARSE](cn_ix, c, b, nv)
                     H[i * nv + j] += jki * JH[k * nv + j]
 
 
