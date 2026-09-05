@@ -1633,7 +1633,7 @@ itself only turns on at 60 dofs.
 
 Three commits, each gated before the next, each on the CPU path only.
 
-* **No per-solve zero-fill** (`d4…`, bit-exact, ten checksums identical):
+* **No per-solve zero-fill** (`d8a8a66f`, bit-exact, ten checksums identical):
   `je_ix`, `cn_ix`, the noslip caches and the one-time `L` zeroing now use
   `Scratch(uninitialized=)`; the pyramidal factor never read an entry it had
   not written. park_k9 25.3 → 22.9, humanoid 99.8 → 94.2, ant 43 → 41.
@@ -1662,3 +1662,76 @@ Three commits, each gated before the next, each on the CPU path only.
 (Three interleaved rounds; `results_final2`.) Two days in: dog 3003 → 542,
 humanoid_cmu 768 → 171, park_k9 94 → 24; nothing past 20 dofs is more than
 2.45× MuJoCo, and the six-to-nine-dof models are at or under 1.2×.
+
+### 13.16 LANDED (2026-09-05): the step, stage by stage — and a matvec nobody read
+
+`euler.mojo` now has `_EULER_PROBE`, the twin of `newton_solve._CPU_PROBE`:
+off and free by default, on it prints one `[eprobe]` line per step with the
+nanoseconds of each stage of `step["cpu"]`. The Newton probe gained `init`,
+`pre1` and `pre2` marks over the preamble it had never covered.
+
+**Where a step goes** (µs per step, one round each, 2000 timed steps):
+
+| stage | humanoid_cmu (171) | dog_stand (498) |
+|---|---|---|
+| constraint solve (Newton) | **123.6** (72%) | **216** (43%) |
+| dense M⁻¹ (noslip needs it) | 0 (skipped, §13.13) | **141** (28%) |
+| collision | 6.1 | 61 |
+| Euler finalize | 17.4 | 37 |
+| LDL factor | 8.8 | 14 |
+| everything else (FK, CRBA, RNE, cdof, …) | 15 | 29 |
+
+So on humanoid_cmu three quarters of the step is the Newton, and on dog the
+noslip's dense inverse is the single biggest item after it (§13.14 item 4).
+
+**Inside the Newton, the preamble was half of it.** With the new marks,
+humanoid_cmu's 120 µs solve split as: `pre1` (normal precompute) **40.3**,
+`pre2` (friction precompute) 14.3, `hbuild` 17.7, `chol` 17.2, `setup` 14.4,
+`ls` 5.6, `update` 4.6, `rows` 3.6, `init` 0.6. The 40 µs was
+`_precompute_contact_normal` computing `M⁻¹·J_n` for every contact — a dense
+nv×nv matvec per contact, 3844 scalar FMAs on nv=62 — to fill `ws_MinvJn` and
+`K_n = J M⁻¹ Jᵀ`. Only the PGS family reads either. The Newton takes its
+`R` from `diag_n` (`body_invweight0`, as `mj_diagApprox` does) and reads only
+`J_n`, `pos_bias` and `c_dist` from that phase; the CG reads neither field
+either. Worse, the Newton path had stopped computing `M⁻¹` at all in §13.13,
+so on those models the matvec was multiplying a stale inverse.
+
+Two changes, one commit, bit-exact (four checksums identical: humanoid_cmu,
+dog, reassemble3, sawyer):
+
+* `_precompute_contact_normal[MINV_J=False]` at the three Newton call sites
+  (per-env and blocked kernel alike) skips the matvec and the `K_n` it feeds.
+  The GPU per-env kernel shares the body, so it inherits the skip untested
+  (no NVIDIA hardware here).
+* The workspace init and PHASE 1 run over the `nc` live slots, not
+  `max_contacts`: on humanoid_cmu that was 64 slots × 4 × 62 Jacobian zeroes
+  plus 64 normal inits per solve, for eleven contacts. Nothing reads a slot
+  at or past `nc`.
+
+| model | before | after | Newton/solve | vs MuJoCo |
+|---|---|---|---|---|
+| humanoid_cmu | 169 | **129** | 120 → 85 (`pre1` 40 → 6) | 2.45× → **1.85×** |
+| dog_stand | 494 | **454** | 212 → 176 | 2.40× → 2.01× |
+| reassemble3 | 388 | 383 | | |
+| sawyer_reach | 24.2 | 23.2 | | |
+
+(Interleaved, three rounds, MIN; the MuJoCo column uses §13.15's reference
+times.) What is left in humanoid_cmu's 85 µs solve: `hbuild` 17, `chol` 17,
+`setup` 14, `pre2` 14 — the friction precompute is now the largest piece of
+the preamble, and the next §13.14 item on this model. On dog the order is
+noslip 60, `chol` 28, `hbuild` 23, `setup` 20.
+
+⚠ **A probe that is off must be a no-op, and this one was not.** The first
+build of the Euler probe had one timer block indented one level shallower
+than the statement it followed; with the flag False, the `comptime if`
+swallowed the `comptime assert` and the whole constraint-solve dispatch after
+it. The step ran at 46 µs with 63 contacts (the humanoid fell through the
+floor), the checksum changed, and a worktree bisect blamed the rank-1 commit —
+the worktrees did not carry the uncommitted probe diff, and the one build
+that had the flag ON was sane. What settled it: the wrong answer was the same
+to the last digit across builds with every scratch zero-filled, so it was not
+garbage, and the only difference left between sane and broken trees was the
+diff itself. The lesson was already in this file's ancestry (a rule written
+twice drifts): a flag-gated block is a statement like any other, and the gate
+for "off is a no-op" is the checksum of the flag-off build against the tree
+without the diff, not a read of the diff.
