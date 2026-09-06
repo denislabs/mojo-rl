@@ -2609,3 +2609,95 @@ input from a shared scratch has to be checked at EVERY caller that reaches
 it — the integrators are three, the bench rows exercised one. And the board
 A/B costs seconds once the binaries exist; it belongs after every round,
 not after the report.
+
+### 13.29 The toddlerbot residual was two missing rows, and the reassemble5 asset has no pose (2026-09-06)
+
+Follow-up on the two items §13.28 left open, plus the studio question.
+
+**reassemble5 from the studio.** The asset has no `<keyframe>`; the task pose
+is built by dm_control's `initialize_episode`, which the viewer replays and
+the studio does not. From `qpos0` all five bricks sit at the origin inside
+each other: MuJoCo reports 330 contacts on step one, our probe caps at its
+128-contact budget, and the two disagree from the first step (finger_1
+8.4e-02 at N=1). Not an engine defect; the asset needs a keyframe carrying
+the task pose if it is to be opened in the studio (the bench writes that
+pose to a file for the MuJoCo twin — `harness.write_pose` — and the same
+numbers would do).
+
+**kinova_gen3 at 300 steps is chaos.** MuJoCo itself, kicked by 1e-12 on one
+dof, lands 3.2 away at 300 steps; both our builds sit inside that envelope
+(9e-05 and 1.7), and at 120 steps both are at 1e-09.
+
+**ToddlerBot: `waist_yaw` 4e-02 at 100 steps, MuJoCo stable to 4e-12.** The
+method that found it, since neither the board nor any gate had: step
+MuJoCo to state K, hand that exact state (qpos AND qvel) to our runtime
+probe, take ONE step on both sides at shared `<option iterations=N
+tolerance="0">`, and sweep K. The error is 1e-14 without contacts, 1e-5 to
+1e-4 per step with the six foot contacts, and independent of N on both
+sides — a converged-but-different answer, not a convergence gap. Ablating
+the model one attribute at a time from the SAME state (not from an ablated
+trajectory, which confounded the first pass): removing the four neck
+`connect`s takes it to 6e-15; softening their `solimp` from 0.9999 to 0.9
+takes it to 7e-07; damping, `eulerdamp`, the cone, `frictionloss`, the
+joint equalities and the anchor sites change nothing. Then the row itself,
+dumped from a traced build against MuJoCo's `efc_*` at that state: J to
+1e-17, D, pos, vel, KBIP, invweights, M — all equal; `aref` off by 5e-03.
+
+*Defect 1 — `J̇·v` on connect and weld rows.* MuJoCo 3.10's
+`mj_referenceConstraint` ends with `mj_Jdotv`, which subtracts the anchor's
+`J̇·qvel` (the centripetal/Coriolis part of its acceleration) from `aref` on
+every connect and weld row. None of the three older reference trees has the
+routine (3.3.6, 3.5.1, 3.6.0), and neither did `build_weld_equality_rows`.
+Zero at rest, so every connect/weld gate written at rest was green. Ported:
+an `mj_comVel` pass (per-body `cvel`, per-dof `cdof_dot`) once per call
+when a connect or weld exists, `mj_jacDot` folded with the matvec per
+anchor, and the weld's three-term quaternion product for its rotational
+rows. Gate: `test_equality_jdotv_vs_mujoco` — a four-bar closed by a
+connect swinging at 8 rad/s and two free boxes welded and spun; pre-fix
+2.9e-02 / 5.6e-02 after one step, rounding after.
+
+*Defect 2 — a `<fixed>` tendon's limit was never a row.*
+`build_tendon_limit_rows` had `else: continue` for every non-spatial
+tendon, with a comment saying the builder was not given `qpos`. ToddlerBot's
+waist is coupled by two fixed tendons with `range="-0.001 0.001"`; the
+one-step error jumped from 1e-13 to 3.4e-02 on exactly the step MuJoCo's
+`limTen` row appears (K=19), and back to 1e-13 two steps later when the
+row is satisfied on MuJoCo's side too. Fixed by threading `qpos` through
+the three call sites and giving the builder the same fixed-tendon
+length/Jacobian the equality builder has. Gate:
+`test_fixed_tendon_limit_vs_mujoco`; pre-fix 2.06 at five steps.
+
+*What is left on ToddlerBot* is a mesh-versus-plane manifold choice: at
+K=35 both engines report six foot contacts and agree on five; for the third
+vertex of the left foot MuJoCo picks (−0.021, 0.047) and we pick
+(0.036, 0.055), both under the plane. That is the hull/polygon column the
+board README already names (our exact hull keeps vertices qhull merges) and
+it is an event, not a drift: 3.3e-03 at 50 steps on `toddlerbot_2xm`, 3e-14
+on `toddlerbot_2xc`.
+
+**Board, the two fixes against the §13.28 build, N=50:** 0 worse, 9 better —
+toddlerbot_2xc 1.4e-02 → 3e-14, agility_cassie 1.3e-05 → 3e-15,
+ufactory_xarm7 1.3e-08 → 2e-15, robotiq_2f85 / _v4 to 1e-12 / 3e-15,
+stanford_tidybot 1.0e-03 → 7e-08, toddlerbot_2xm 1.2e-02 → 3.3e-03. Scenes
+at or below 1e-9: 64 → 67; above 1e-3: 8 → 6. At N=1 nothing moves above
+1e-12.
+
+**Bench:** every checksum unchanged except sawyer, whose mocap weld now
+carries the term (qsum 52.31560 → 52.31570) — the one bench row with an
+equality. Timings inside noise; sawyer +0.5 µs of 16 for the velocity pass.
+
+**Two things the gates caught before the commit, worth keeping.** The
+weld's rotational term was exact at identity and 0.5% off once the bodies
+rotated: the builder's `qrel` is already `q_a * relpose`, and the port had
+multiplied by `q_a` again — the jdotv gate's three-step arm (1.7e-06 where
+one step read 1e-10) is what showed it, and a row dump at a rotated state
+named it. And the `cvel`/`cdof_dot` scratch was first sized on the heap
+(`Scratch[.., 0]`), which the CPU path is happy with and the GPU Newton
+kernels are not: `test_equality_tendon_fields`' CPU-vs-GPU parity leg went
+red. Sized by `cap[D.NBODY]()` / `cap[D.NV]()` now — static on a
+compile-time model, the heap leg only on a dynamic one. That gate's
+part-B golden is a self-frozen pin on a MOVING weld, so the `J̇·v` term
+moves it by design — 23698.22 → 23708.37, 4.3e-04, inside the gate's own
+1e-3 — and part A moves 2.5e-06 as its injected tendons gain their limit
+rows. Both pins stay; the harvested numbers are recorded in the file, per
+its own rule that a moved golden is explained, never bumped.
