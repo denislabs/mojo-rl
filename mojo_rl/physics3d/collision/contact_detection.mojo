@@ -34,6 +34,7 @@ from ..constants import (
     GEOM_HFIELD,
     mj_geom_type_rank,
 )
+from ..fields.scratch import Scratch, cap
 from ..fields import (
     Data,
     Model,
@@ -637,11 +638,50 @@ def _plane_mesh_contacts[
 
 
 @always_inline
+def exclude_signatures[
+    DTYPE: DType,
+    EX_CAP: Int,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+](
+    nbody: Int,
+    nexclude_cap: Int,
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    excludes: LayoutTensor[DTYPE, L_EXCLUDES, MutAnyOrigin],
+    mut ex_sig: Scratch[Int, EX_CAP],
+) -> Int:
+    """The `<contact><exclude>` table as SORTED integer signatures
+    `min(b1, b2) * nbody + max(b1, b2)`, MuJoCo's `exclude_signature`. Returns
+    the count. Built once per detection call so `pair_body_filtered` can
+    binary-search it instead of re-reading and re-converting every row of the
+    float table per candidate pair — dog has 30 excludes and ~400 candidate
+    pairs a step, 24k reads (PERFORMANCE.md §13.26). Insertion sort: the
+    table is small, and the count is bounded by the model's budget."""
+    var n_ex = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE]))
+    if n_ex > nexclude_cap:
+        n_ex = nexclude_cap
+    for ex in range(n_ex):
+        var b1 = Int(rebind[Scalar[DTYPE]](excludes[ex, 0]))
+        var b2 = Int(rebind[Scalar[DTYPE]](excludes[ex, 1]))
+        var lo = b1 if b1 <= b2 else b2
+        var hi = b2 if b1 <= b2 else b1
+        var sig = lo * nbody + hi
+        var k = ex
+        while k > 0 and ex_sig[k - 1] > sig:
+            ex_sig[k] = ex_sig[k - 1]
+            k -= 1
+        ex_sig[k] = sig
+    return n_ex
+
+
+@always_inline
 def pair_body_filtered[
     DTYPE: DType,
     L_BODIES: Layout,
     L_MMETA: Layout,
-    L_EXCLUDES: Layout](
+    L_EXCLUDES: Layout,
+    EX_CAP: Int = 1,
+](
     gi_body: Int,
     gj_body: Int,
     bodies: LayoutTensor[
@@ -653,6 +693,12 @@ def pair_body_filtered[
     excludes: LayoutTensor[
         DTYPE, L_EXCLUDES, MutAnyOrigin
     ],
+    # The sorted signature table from `exclude_signatures`, optional: with
+    # `n_sig >= 0` the exclude test is a binary search on it; otherwise the
+    # float table is scanned as before. Same answer either way.
+    ex_sig: Scratch[Int, EX_CAP] = Scratch[Int, EX_CAP](1, fill=0),
+    n_sig: Int = -1,
+    nbody_sig: Int = 0,
 ) -> Bool:
     """MuJoCo's body-pair filter. True = DISCARD the pair.
 
@@ -713,6 +759,25 @@ def pair_body_filtered[
     # win. See `physics3d/PERFORMANCE.md` §5.
 
     # Body-pair exclusion, at the SAME level as the weld tests — not nested.
+    if n_sig >= 0:
+        if n_sig == 0:
+            return False
+        var ba = gi_body if gi_body <= gj_body else gj_body
+        var bb = gj_body if gi_body <= gj_body else gi_body
+        var sig = ba * nbody_sig + bb
+        var lo = 0
+        var hi = n_sig - 1
+        while lo <= hi:
+            var mid = (lo + hi) // 2
+            var v = ex_sig[mid]
+            if v == sig:
+                return True
+            elif v < sig:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return False
+
     var n_ex = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE]))
     if n_ex > 0:
         var ba = gi_body if gi_body <= gj_body else gj_body
@@ -1890,6 +1955,14 @@ def _detect_contacts_env[
     var nq = dims.get_nq()
     var nv = dims.get_nv()
     var nbody = dims.get_nbody()
+    # `<exclude>` signatures, sorted once per call (see `exclude_signatures`).
+    comptime EX_CAP = cap[D.NEXCLUDE]()
+    var ex_sig = Scratch[Int, EX_CAP](
+        dims.get_nexclude() if dims.get_nexclude() > 0 else 1, fill=0
+    )
+    var n_sig = exclude_signatures[DTYPE, EX_CAP](
+        nbody, dims.get_nexclude(), mmeta, excludes, ex_sig
+    )
     var njoint = dims.get_njoint()
     var max_contacts = dims.get_max_contacts()
     var ngeom = dims.get_ngeom()
@@ -2007,8 +2080,9 @@ def _detect_contacts_env[
                     continue
                 # MuJoCo's body-pair filter — weld, weld-parent and exclude.
                 # See `pair_body_filtered`; shared with BOTH SAP loops.
-                if pair_body_filtered[DTYPE](
-                    gi_body, gj_body, bodies, mmeta, excludes
+                if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+                    gi_body, gj_body, bodies, mmeta, excludes,
+                    ex_sig, n_sig, nbody,
                 ):
                     continue
                 var gj_contype = Int(

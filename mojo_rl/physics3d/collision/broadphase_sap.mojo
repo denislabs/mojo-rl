@@ -177,6 +177,7 @@ from .contact_detection import (
     _plane_mesh_contacts,
     mix_contact_params,
     pair_body_filtered,
+    exclude_signatures,
     find_predefined_pair,
     pair_params,
     _fill_pair_solparams,
@@ -449,6 +450,14 @@ def _detect_contacts_sap_env[
     var nbody = dims.get_nbody()
     var njoint = dims.get_njoint()
     var max_contacts = dims.get_max_contacts()
+    # `<exclude>` signatures, sorted once per call (see `exclude_signatures`).
+    comptime EX_CAP = cap[D.NEXCLUDE]()
+    var ex_sig = Scratch[Int, EX_CAP](
+        dims.get_nexclude() if dims.get_nexclude() > 0 else 1, fill=0
+    )
+    var n_sig = exclude_signatures[DTYPE, EX_CAP](
+        nbody, dims.get_nexclude(), mmeta, excludes, ex_sig
+    )
     # `_COLL_PROBE` accumulators (compiled out when the flag is False).
     var _c_t0: Int = 0
     var _c_start: Int = 0
@@ -705,8 +714,9 @@ def _detect_contacts_sap_env[
                 # world, so every static geom was colliding with the ground
                 # here while the O(N^2) path correctly emitted nothing. See
                 # `pair_body_filtered`.
-                if pair_body_filtered[DTYPE](
-                    gi_body, gj_body, bodies, mmeta, excludes
+                if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+                    gi_body, gj_body, bodies, mmeta, excludes,
+                    ex_sig, n_sig, nbody,
                 ):
                     continue
                 var gj_contype = Int(
@@ -1340,8 +1350,9 @@ def _detect_contacts_sap_env[
                 # (defect 24).
                 comptime if _COLL_PROBE:
                     _c_t0 = Int(perf_counter_ns())
-                var _pbf = pair_body_filtered[DTYPE](
-                    gi_body, gj_body, bodies, mmeta, excludes
+                var _pbf = pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+                    gi_body, gj_body, bodies, mmeta, excludes,
+                    ex_sig, n_sig, nbody,
                 )
                 comptime if _COLL_PROBE:
                     _c_pbf += Int(perf_counter_ns()) - _c_t0
