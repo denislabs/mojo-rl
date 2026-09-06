@@ -451,7 +451,10 @@ def _detect_contacts_sap_env[
     var njoint = dims.get_njoint()
     var max_contacts = dims.get_max_contacts()
     # `<exclude>` signatures, sorted once per call (see `exclude_signatures`).
-    comptime EX_CAP = cap[D.NEXCLUDE]()
+    # ⚠ A model with NO excludes gets a one-slot static array, not the heap
+    # leg: `cap` is 0 for a static zero as well as for a dynamic dim, and a
+    # heap slab per call was +3% on the RK4 gym rows (four calls a step).
+    comptime EX_CAP = cap[D.NEXCLUDE]() if may_exist[D.NEXCLUDE]() else 1
     var ex_sig = Scratch[Int, EX_CAP](
         dims.get_nexclude() if dims.get_nexclude() > 0 else 1, fill=0
     )
