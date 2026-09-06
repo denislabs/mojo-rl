@@ -45,6 +45,7 @@ from ..fields.scratch import Scratch
 
 
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -84,6 +85,7 @@ from ..gpu.constants import (
 )
 from ..dynamics.tendon import spatial_tendon_length_jac
 from .scalar_rows import SROW_EQ_BILATERAL
+from .constraint_data import solref_spring_damper
 
 # How many (joint, coef) pairs a fixed tendon stores.
 from ..fields import Dims, DimsLike, may_exist
@@ -308,8 +310,22 @@ def build_tendon_limit_rows[
         var midpt = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_SOLIMP_LIM_3])
         var power = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_SOLIMP_LIM_4])
 
-        var K_spring = Scalar[DTYPE](1) / (dmax * dmax * tc * tc * dr * dr)
-        var B_damp = Scalar[DTYPE](2) / (dmax * tc)
+        # ⚠ THROUGH THE SHARED HELPER, NOT INLINE. `solref_spring_damper`
+        # carries MuJoCo's REFSAFE clamp `timeconst = max(timeconst,
+        # 2*timestep)` (engine_core_constraint.c:2029) and the negative
+        # (direct) solref form; the inline `1/(d² tc² dr²)` this replaces had
+        # neither. It is what put dm_control's quadruped at 2.9e-2 on the
+        # three-tree board (2026-09-06): its coupling equalities say
+        # `solref=".005 .5"` at `timestep="0.005"`, MuJoCo clamps that
+        # timeconst to 0.01 before it becomes a stiffness, and the inline
+        # formula built a row four times too stiff. With the clamp the scene
+        # tracks MuJoCo to 4.9e-17 over 20 steps. Same rule at both tendon
+        # sites (limit and equality) — a rule written inline twice drifts.
+        var _kb = solref_spring_damper[DTYPE](
+            tc, dr, dmax, rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP])
+        )
+        var K_spring = _kb[0]
+        var B_damp = _kb[1]
 
         var diag = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_INVWEIGHT0])
 
@@ -546,8 +562,22 @@ def build_tendon_equality_rows[
         var midpt = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_SOLIMP_3])
         var power = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_SOLIMP_4])
 
-        var K_spring = Scalar[DTYPE](1) / (dmax * dmax * tc * tc * dr * dr)
-        var B_damp = Scalar[DTYPE](2) / (dmax * tc)
+        # ⚠ THROUGH THE SHARED HELPER, NOT INLINE. `solref_spring_damper`
+        # carries MuJoCo's REFSAFE clamp `timeconst = max(timeconst,
+        # 2*timestep)` (engine_core_constraint.c:2029) and the negative
+        # (direct) solref form; the inline `1/(d² tc² dr²)` this replaces had
+        # neither. It is what put dm_control's quadruped at 2.9e-2 on the
+        # three-tree board (2026-09-06): its coupling equalities say
+        # `solref=".005 .5"` at `timestep="0.005"`, MuJoCo clamps that
+        # timeconst to 0.01 before it becomes a stiffness, and the inline
+        # formula built a row four times too stiff. With the clamp the scene
+        # tracks MuJoCo to 4.9e-17 over 20 steps. Same rule at both tendon
+        # sites (limit and equality) — a rule written inline twice drifts.
+        var _kb = solref_spring_damper[DTYPE](
+            tc, dr, dmax, rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP])
+        )
+        var K_spring = _kb[0]
+        var B_damp = _kb[1]
 
         var pen = pos_err if pos_err >= Scalar[DTYPE](0) else -pos_err
         var imp = _solimp[DTYPE](pen, dmin, dmax, width, midpt, power)
