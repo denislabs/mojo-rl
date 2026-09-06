@@ -2007,6 +2007,20 @@ def _detect_contacts_env[
     # higher type — cylinder before ellipsoid, mesh before box, and so on. See
     # the same canonicalisation in `broadphase_sap`, where the sweep's own
     # order made it much worse.
+    # Which geoms a `<pair>` names, so the mask skip below cannot drop them.
+    var pair_geom = Scratch[Int, cap[D.NGEOM]()](ngeom, fill=0)
+    var n_pair_live = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
+    if n_pair_live > npair:
+        n_pair_live = npair
+    for p in range(n_pair_live):
+        for side in range(2):
+            var pg = Int(
+                rebind[Scalar[DTYPE]](
+                    pairs[p, PAIR_IDX_GEOM1 if side == 0 else PAIR_IDX_GEOM2]
+                )
+            )
+            if pg >= 0 and pg < ngeom:
+                pair_geom[pg] = 1
     for sa in range(ngeom):
         var sa_type = Int(
             rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_TYPE])
@@ -2014,15 +2028,20 @@ def _detect_contacts_env[
         # A geom with contype and conaffinity both zero collides with nothing
         # (`filterBitmask`, engine_collision_driver.c:535): skip it before the
         # pair loop, as the SAP sweep does (`broadphase_sap.mojo`, same rule).
+        # ⚠ UNLESS A `<pair>` NAMES IT — predefined pairs bypass the mask
+        # (engine_collision_driver.c:611, and the SAP twin's note); the
+        # `pair_geom` flags are built above the loop.
         if (
             Int(rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_CONTYPE])) == 0
             and Int(rebind[Scalar[DTYPE]](geoms[sa, GEOM_IDX_CONAFFINITY])) == 0
+            and pair_geom[sa] == 0
         ):
             continue
         for sb in range(sa + 1, ngeom):
             if (
                 Int(rebind[Scalar[DTYPE]](geoms[sb, GEOM_IDX_CONTYPE])) == 0
                 and Int(rebind[Scalar[DTYPE]](geoms[sb, GEOM_IDX_CONAFFINITY])) == 0
+                and pair_geom[sb] == 0
             ):
                 continue
             if num_contacts >= max_contacts:

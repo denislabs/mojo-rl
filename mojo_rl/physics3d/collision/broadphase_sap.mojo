@@ -1164,6 +1164,17 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
 
     # 4a. Build SAP index list.
+    # Which geoms a `<pair>` names — see the note on the mask filter below.
+    var pair_geom = Scratch[Int, cap[D.NGEOM]()](ngeom, fill=0)
+    for p in range(n_pair_aabb):
+        for side in range(2):
+            var pg = Int(
+                rebind[Scalar[DTYPE]](
+                    pairs[p, PAIR_IDX_GEOM1 if side == 0 else PAIR_IDX_GEOM2]
+                )
+            )
+            if pg >= 0 and pg < ngeom:
+                pair_geom[pg] = 1
     var sap_idx = Scratch[Int, cap[D.NGEOM]()](ngeom, uninitialized=0)
     var sap_n = 0
     for g in range(ngeom):
@@ -1182,9 +1193,21 @@ def _detect_contacts_sap_env[
         # 200 µs collision phase (PERFORMANCE.md §13.18). Exact: no contact
         # can come from such a geom, so the contact set and its order are
         # untouched.
+        #
+        # ⚠⚠ UNLESS A `<pair>` NAMES IT. MuJoCo's predefined pairs never meet
+        # `filterBitmask`: `mj_collision` merges them into the broadphase's
+        # body pairs by signature and collides them as they are
+        # (engine_collision_driver.c:611-615, :779-780), which is the whole
+        # point of `<pair>` — ToddlerBot's torso-to-arm contacts are 65 such
+        # pairs between geoms whose class sets `contype="0" conaffinity="0"`.
+        # From 3b97ce19 to this fix none of those geoms entered the sweep, so
+        # the arm went through the chest in the studio while every board row
+        # stayed green (no keyframe puts an arm in a torso). The rule that
+        # the comment above states is MuJoCo's rule for the MASK; the pair
+        # table is the other door, and `pair_geom` keeps it open.
         var g_ct = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONTYPE]))
         var g_ca = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONAFFINITY]))
-        if g_ct == 0 and g_ca == 0:
+        if g_ct == 0 and g_ca == 0 and pair_geom[g] == 0:
             continue
         sap_idx[sap_n] = g
         sap_n += 1
