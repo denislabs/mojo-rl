@@ -3299,3 +3299,78 @@ physics3d steps from two threads, and the module docstring says what a
 multi-threaded CPU leg would need. ⚠ `perf` rows are still not production
 numbers — the studio aliases' `MAX_CONDIM=6` and missing `CRBA_TREEWALK`
 remain — but the calibration is now 1.65–2.1× instead of 2.4–3.2×.
+
+### 13.37 LANDED (2026-09-06): the two studio aliases priced, and the tree-walk CRBA landed on them
+
+§13.36 left the runtime path at 1.65–2.1× the compile-time engine and named
+two alias choices in `studio/stepping.mojo` as the next measurable terms:
+`MAX_CONDIM=6` and no `CRBA_TREEWALK`. Both priced the same way — a variant
+`rbench` per choice, four binaries interleaved on one machine, MIN of three
+rounds × 3000 steps, contact capacity 16:
+
+| model | base µs | condim 3 | tree-walk CRBA | both |
+|---|---|---|---|---|
+| walker2d | 39.8 | 0.85 | 0.95 | 0.81 |
+| hopper | 18.8 | 0.89 | 0.97 | 0.86 |
+| half_cheetah | 6.9 | 0.92 | 0.94 | 0.87 |
+| ant | 48.8 | 0.95 | 0.82 | 0.76 |
+| humanoid | 108.7 | 0.92 | 0.81 | 0.73 |
+| google_barkour_vb | 58.3 | 0.97 | 0.94 | 0.91 |
+
+They split by model size. Condim 3 is the pyramidal edge count per slot
+(4 instead of 10) and is worth 8–15% on the small models, 3–5% on the
+big ones; it is bit-identical to the base on all six, as the note in
+`stepping.mojo` says (six is a superset of three). The tree walk is
+O(NV·depth) against the dense CRBA's O(NV²·NBODY) and is worth 3–6% on
+the small models and 18–20% on ant and humanoid. Together 0.73–0.91.
+
+**Landed: `CRBA_TREEWALK=True` on the five studio aliases.** It is a
+parameter on the existing instantiations (no build-time cost), and the
+training env has run it since `phyics3d_env.mojo` called it a fix rather
+than a knob. Condim 3 is NOT landed: 46 models in the tree need 6, and a
+condim dispatch axis would double the studio's instantiations for 8–15% on
+a tool that renders at 60 Hz — the standing decision in `stepping.mojo`.
+
+**Gate.** The tree walk is a different summation order, so it moves the
+last one or two digits of every checksum (1e-15 relative) and the stored
+`qsum`s cannot gate it. The fifty-step three-tree board through the
+tree-walk driver: **the same 106 / 4 / 1 / 6 rows in the four bins as
+§13.36, no row changes bin**; 48 rows identical to the printed digit, 69
+moved, the largest move flexiv_rizon4 2.8e-17 → 2.2e-16 and unitree_g1
+7.4e-16 → 2.7e-15 — rounding, on scenes that sit at 1e-16.
+
+**The perf board after both changes (§13.36 pool + this section):**
+same protocol as §13.30, MIN of three interleaved rounds, MuJoCo re-timed
+in the same sweep (median drift 1.01 against the §13.36 sweep):
+
+| | median ours/MuJoCo | faster than MuJoCo | within 2× | above 4× |
+|---|---|---|---|---|
+| Menagerie (85) | 2.63 → 1.88 → **1.76** | 0 → 1 → 1 | 22 → 46 → 46 | 12 → 9 → **4** |
+| Gymnasium (14) | 2.48 → 1.34 → **1.17** | 0 → 4 → 4 | 2 → 14 → 14 | 0 |
+| dm_control (19) | 2.46 → 1.32 → **1.24** | 1 → 1 → 2 | 4 → 18 → 19 | 3 → 0 → 0 |
+| all (118) | 2.49 → 1.65 → **1.50** | 1 → 6 → 7 | 28 → 78 → 79 | 15 → 9 → **4** |
+
+(§13.30 → §13.36 → here.) Per row against the pooled sweep: median 1.08×,
+and the gain sits where the dense CRBA's `NV²·NBODY` was: dog 387 → 200 µs
+(1.74× → **0.92×** MuJoCo), humanoid_CMU 169 → 110 (1.54×), flybody 664
+→ 462 (3.12×), robot_soccer_kit 225 → 136 (1.06×), the three toddlerbot
+scenes 3.4–3.6× → 2.7×, dm_control's quadruped 0.72× → 0.58×. The Gym
+five against §13.30's compile-time column: walker2d 37.7 vs 20.7, hopper
+17.6 vs 10.5, half_cheetah 6.3 vs 4.2, ant 39.6 vs 27.3, humanoid 82.4 vs
+50.9 — **1.45–1.8×**, from 1.65–2.1× (§13.36) and 2.4–3.2× (§13.30);
+humanoid now reads 1.05× MuJoCo through the studio path. ⚠ One row in the
+sweep is a load spike, not a regression: `unitree_go2` read 32.9 → 41.9 µs
+with MuJoCo inflated 35 → 66 in the SAME round; re-measured interleaved at
+capacity 32, pool 46.3 / tree-walk 43.4 (min of three) — the tree walk is
+6% faster there as everywhere else.
+
+Tests on the tree-walk aliases: `test_structural_edit` 66/66,
+`test_validate_vs_mujoco` 83/83, `test_noslip_implicitfast_vs_mujoco` 3/3.
+
+What remains between the runtime and compile-time engines after this is
+the runtime bound itself — the loops the compile-time `NV` unrolls into
+straight-line code — and the pyramidal edge count at `MAX_CONDIM=6`; the
+pricing above puts the first at ~1.5× on every row and the second at
+3–15%. Neither is an optimisation inside the engine: the first is a
+decision to specialise hot loops on a few compile-time `nv` buckets, the
+second the standing decision above.

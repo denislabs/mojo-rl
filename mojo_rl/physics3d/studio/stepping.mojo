@@ -122,13 +122,24 @@ comptime STUDIO_MAX_CONDIM = 6
 # probe than the quiet 4.4e-03 was.
 comptime STUDIO_NOSLIP = 1
 
+# `CRBA_TREEWALK=True` ON ALL FIVE, as on the training env's integrators
+# (`envs/phyics3d_env.mojo`): the dense CRBA is O(NV^2 * NBODY), the tree
+# walk O(NV * depth), and the studio had been running the dense one since
+# the knob was rejected on CPU. Priced interleaved on the runtime bench
+# (PERFORMANCE.md §13.37): humanoid 108.7 -> 87.4 us/step, ant 48.8 -> 40.0,
+# walker2d/hopper/half_cheetah 3-6%, google_barkour_vb 6%. ⚠ NOT
+# checksum-stable: a different summation order moves the last one or two
+# digits (1e-15 relative), so its gate is the fifty-step board against
+# MuJoCo, not a stored checksum. A parameter on the existing instantiations,
+# not a sixth one — no build-time cost.
+
 comptime StudioIntegPyr = EulerIntegrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP, CRBA_TREEWALK=True,
 ]
 comptime StudioIntegEll = EulerIntegrator[
     STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP, CRBA_TREEWALK=True,
 ]
 
 # ⚠⚠ AND THE IMPLICIT PAIR, BECAUSE THE FILE ASKS FOR IT. `integrator` was
@@ -147,11 +158,11 @@ comptime StudioIntegEll = EulerIntegrator[
 # with Euler anyway, spot leaves the ground and passes 18 m.
 comptime StudioImpFastPyr = ImplicitIntegrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton", SKIP_RNE_DERIV=True,
-    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP, CRBA_TREEWALK=True,
 ]
 comptime StudioImpFastEll = ImplicitIntegrator[
     STUDIO_DT, DynDims, ConeType.ELLIPTIC, 1, "newton", SKIP_RNE_DERIV=True,
-    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP, CRBA_TREEWALK=True,
 ]
 
 # ⚠⚠ AND RK4, THE LAST SUBSTITUTION LEFT — AND IT WAS WORTH 9.200e-06.
@@ -199,7 +210,7 @@ comptime StudioImpFastEll = ImplicitIntegrator[
 # cost of a second cone was NOT measured; do not assume it is another 12.
 comptime StudioRk4Pyr = RK4Integrator[
     STUDIO_DT, DynDims, ConeType.PYRAMIDAL, 1, "newton",
-    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP, CRBA_TREEWALK=True,
 ]
 
 
