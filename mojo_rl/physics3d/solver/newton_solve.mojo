@@ -68,6 +68,7 @@ The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 """
 
 from std.math import sqrt, pow, abs
+from std.sys import simd_width_of
 from std.time import perf_counter_ns
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
@@ -1699,14 +1700,32 @@ def _newton_solve_env[
             nv if TREE_AWARE else 1, fill=Scalar[DTYPE](nv)
         )
         comptime if TREE_AWARE:
+            # Each row's nonzero dofs, ascending. A contact row is nonzero on
+            # its two bodies' chains only — a dozen of dog's 79 dofs — so the
+            # scan reads `W` entries at a time and skips a chunk that is all
+            # zero (§13.24: this scan and the segment builder's copy of it
+            # were 9.6 of the Newton's 15 µs `setup` on dog).
+            comptime W_SCAN = 2 * simd_width_of[DTYPE]()
+            var jep = Je.unsafe_ptr()
             for e_idx in range(num_edges):
                 var n_e = 0
-                for i in range(nv):
-                    if Je[e_idx * nv + i] != Scalar[DTYPE](0):
-                        je_ix[e_idx * nv + n_e] = i
+                var base = e_idx * nv
+                var i = 0
+                while i + W_SCAN <= nv:
+                    var chunk = jep.load[width=W_SCAN](base + i)
+                    if chunk.ne(SIMD[DTYPE, W_SCAN](0)).reduce_or():
+                        for q in range(W_SCAN):
+                            if chunk[q] != Scalar[DTYPE](0):
+                                je_ix[base + n_e] = i + q
+                                n_e += 1
+                    i += W_SCAN
+                while i < nv:
+                    if Je[base + i] != Scalar[DTYPE](0):
+                        je_ix[base + n_e] = i
                         n_e += 1
+                    i += 1
                 je_n[e_idx] = n_e
-            _ = build_dof_segments_p[DTYPE](
+            _ = build_dof_segments_p[DTYPE, SPARSE=True](
                 nv,
                 Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])),
                 num_edges,
@@ -1714,6 +1733,8 @@ def _newton_solve_env[
                 Je.unsafe_ptr(),
                 seg0.unsafe_ptr(),
                 seg1.unsafe_ptr(),
+                je_n,
+                je_ix,
             )
             # The blocked kernel's guard, kept for the same reason: a segment
             # end at or below its start would never advance the walk below.
@@ -1737,13 +1758,19 @@ def _newton_solve_env[
         # they are copied; the rest of the slab is never touched. `M` is exactly
         # zero there anyway (CRBA writes within-tree pairs only), so nothing
         # that WAS read has changed — bit-exact.
-        comptime if TREE_AWARE:
-            for i in range(nv):
-                for j in range(Int(seg0[i]), Int(seg1[i])):
-                    M_local[i * nv + j] = rebind[Scalar[DTYPE]](M[env, i * nv + j])
-        else:
-            for k in range(nv * nv):
-                M_local[k] = rebind[Scalar[DTYPE]](M[env, k])
+        # One contiguous `W`-lane copy of the env's `nv×nv` slab: `M` is zero
+        # between trees, so every in-segment value is what the restricted
+        # copy read, and the rest is exact zeros instead of uninitialized.
+        var mlp = M_local.unsafe_ptr()
+        var msrc = M.ptr + env * nv * nv
+        comptime W_CP = 2 * simd_width_of[DTYPE]()
+        var kk = 0
+        while kk + W_CP <= nv * nv:
+            mlp.store(kk, msrc.load[width=W_CP](kk))
+            kk += W_CP
+        while kk < nv * nv:
+            mlp[kk] = msrc[kk]
+            kk += 1
 
         for i in range(nv):
             var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
@@ -2004,31 +2031,31 @@ def _newton_solve_env[
                             need_full = True
                             break
             if need_full:
-                comptime if TREE_AWARE:
-                    # In-segment entries only — the factorisation reads no
-                    # other, and every row's `JᵀDJ` update below lands inside
-                    # its segment by construction of the segments.
-                    for i in range(nv):
-                        for j in range(Int(seg0[i]), Int(seg1[i])):
-                            H[i * nv + j] = M_local[i * nv + j]
-                else:
-                    for i in range(nv):
-                        for j in range(nv):
-                            H[i * nv + j] = M_local[i * nv + j]
+                # `H = M`, one contiguous copy (see `M_local` above).
+                var hp = H.unsafe_ptr()
+                var mlp2 = M_local.unsafe_ptr()
+                var hk = 0
+                while hk + W_CP <= nv * nv:
+                    hp.store(hk, mlp2.load[width=W_CP](hk))
+                    hk += W_CP
+                while hk < nv * nv:
+                    hp[hk] = mlp2[hk]
+                    hk += 1
                 for e_idx in range(num_edges):
                     if state_e[e_idx] == SROW_QUADRATIC:
                         comptime if TREE_AWARE:
                             # `(De * Je_i) * Je_j` is the dense expression's
                             # own evaluation order, so hoisting the left
-                            # factor is the same arithmetic.
+                            # factor is the same arithmetic. `je_ix` is
+                            # ascending, so `b <= a` IS `j <= i`: the lower
+                            # triangle without a test per term.
                             var n_e = je_n[e_idx]
                             for a in range(n_e):
                                 var i = je_ix[e_idx * nv + a]
                                 var dji = De[e_idx] * Je[e_idx * nv + i]
-                                for b in range(n_e):
+                                for b in range(a + 1):
                                     var j = je_ix[e_idx * nv + b]
-                                    if j <= i:  # lower triangle only
-                                        H[i * nv + j] += dji * Je[e_idx * nv + j]
+                                    H[i * nv + j] += dji * Je[e_idx * nv + j]
                         else:
                             for i in range(nv):
                                 for j in range(i + 1):  # lower triangle only

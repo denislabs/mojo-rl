@@ -45,6 +45,7 @@ tile `[0, nv)` exactly both fall back to a single segment spanning every dof —
 which is today's behaviour, bit for bit.
 """
 
+from ..fields.scratch import Scratch
 from layout import Layout, LayoutTensor
 from max.gpu.memory import AddressSpace
 
@@ -103,6 +104,14 @@ def build_dof_segments_p[
     T_AS: AddressSpace = AddressSpace.GENERIC,
     J_AS: AddressSpace = AddressSpace.GENERIC,
     S_AS: AddressSpace = AddressSpace.GENERIC,
+    # `SPARSE`: the caller already holds each row's nonzero dof list
+    # (`je_n[e]` entries at `je_ix[e*nv ..]`, ascending) — the CPU Newton
+    # does — so a row's tree range is its first and last entry, not a scan
+    # of all `nv` (PERFORMANCE.md §13.24: this second scan was half of the
+    # Newton's `setup` on dog). Same `lo`/`hi`, same segments, bit-exact.
+    SPARSE: Bool = False,
+    N_CAP: Int = 1,
+    IX_CAP: Int = 1,
 ](
     nv: Int,
     ntree: Int,
@@ -111,6 +120,8 @@ def build_dof_segments_p[
     Je: Pointer[Scalar[DTYPE], JO, address_space=J_AS],
     seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
     seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
+    je_n: Scratch[Int, N_CAP] = Scratch[Int, N_CAP](1, fill=0),
+    je_ix: Scratch[Int, IX_CAP] = Scratch[Int, IX_CAP](1, fill=0),
 ) -> Int:
     """Pointer form of `build_dof_segments` — THE body; the `LayoutTensor`
     spelling above owns no arithmetic and delegates here.
@@ -161,13 +172,21 @@ def build_dof_segments_p[
     for e in range(num_edges):
         var lo = -1
         var hi = -1
-        for i in range(nv):
-            if Je[e * nv + i] != 0:
-                var t = Int(seg_start[i])
-                if lo < 0 or t < lo:
-                    lo = t
-                if t > hi:
-                    hi = t
+        comptime if SPARSE:
+            var n_e = je_n[e]
+            if n_e > 0:
+                # Ascending list, and `seg_start` is monotone in the dof
+                # index, so the first and last entries bound the trees.
+                lo = Int(seg_start[je_ix[e * nv]])
+                hi = Int(seg_start[je_ix[e * nv + n_e - 1]])
+        else:
+            for i in range(nv):
+                if Je[e * nv + i] != 0:
+                    var t = Int(seg_start[i])
+                    if lo < 0 or t < lo:
+                        lo = t
+                    if t > hi:
+                        hi = t
         # A row that touches nothing couples nothing. Not a defect: a limit
         # row whose Jacobian is a single dof still has lo == hi.
         if lo < 0:
