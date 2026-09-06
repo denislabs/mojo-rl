@@ -285,15 +285,35 @@ def chol_factor_seg[
     var rank_ok = True
     var Lp = L.unsafe_ptr()
 
+    comptime if VEC:
+        # COLUMN-OUTER, as `mju_cholFactor` (engine_util_solve.c). Row-outer
+        # (`for i: for j <= i`) is a SERIAL CHAIN along each row: the dot for
+        # `(i, j+1)` ends on `L[i, j]`, which is a subtract and a divide
+        # away, so every pair waits ~18 cycles on the one before it — 25 µs
+        # for dog's 79 dofs, latency-bound, not the 82k flops. With the
+        # column outermost the `s1 - j` dots of column `j` read rows that
+        # are already complete and are independent of each other, so the
+        # core overlaps them. THE SAME OPERATIONS IN THE SAME ORDER PER
+        # ENTRY — only the order of the entries changes — so the factor is
+        # bit-exact with the row-outer form below.
+        for j in range(s0, s1):
+            var sd = _dot_rows[DTYPE](Lp, j * nv + s0, j * nv + s0, j - s0)
+            var diag = H[j * nv + j] - sd
+            if diag < Scalar[DTYPE](_MJMINVAL):
+                rank_ok = False
+                diag = Scalar[DTYPE](_MJMINVAL)
+            var d = sqrt(diag)
+            L[j * nv + j] = d
+            for i in range(j + 1, s1):
+                var si = _dot_rows[DTYPE](Lp, i * nv + s0, j * nv + s0, j - s0)
+                L[i * nv + j] = (H[i * nv + j] - si) / d
+        return rank_ok
+
     for i in range(s0, s1):
         for j in range(s0, i + 1):
             var s: Scalar[DTYPE] = 0
-            comptime if VEC:
-                # Rows i and j are contiguous over [s0, j): a SIMD dot.
-                s = _dot_rows[DTYPE](Lp, i * nv + s0, j * nv + s0, j - s0)
-            else:
-                for k in range(s0, j):
-                    s += L[i * nv + k] * L[j * nv + k]
+            for k in range(s0, j):
+                s += L[i * nv + k] * L[j * nv + k]
             if i == j:
                 var diag = H[i * nv + i] - s
                 # ⚠⚠ THE THRESHOLD IS `mjMINVAL`, AND `1e-10` WAS OURS, NOT
@@ -366,6 +386,8 @@ def chol_update_seg[
     would be `0 ± 0`.
     """
     var rank_ok = True
+    var Lp = L.unsafe_ptr()
+    var xp = x.unsafe_ptr()
     for k in range(s0, s1):
         var xk = x[k]
         if xk == Scalar[DTYPE](0):
@@ -380,14 +402,19 @@ def chol_update_seg[
         var cinv = Scalar[DTYPE](1) / c
         var sc = xk / Lkk
         L[k * nv + k] = r
+        # ONE walk down column `k` (stride `nv`), not two: the `x` update
+        # reads the entry the `L` update just wrote, so both go in the same
+        # pass. Same operations per entry — bit-exact with the two-pass form.
         if plus:
             for i in range(k + 1, s1):
-                L[i * nv + k] = (L[i * nv + k] + sc * x[i]) * cinv
+                var l = (Lp[i * nv + k] + sc * xp[i]) * cinv
+                Lp[i * nv + k] = l
+                xp[i] = c * xp[i] - sc * l
         else:
             for i in range(k + 1, s1):
-                L[i * nv + k] = (L[i * nv + k] - sc * x[i]) * cinv
-        for i in range(k + 1, s1):
-            x[i] = c * x[i] - sc * L[i * nv + k]
+                var l = (Lp[i * nv + k] - sc * xp[i]) * cinv
+                Lp[i * nv + k] = l
+                xp[i] = c * xp[i] - sc * l
     return rank_ok
 
 
