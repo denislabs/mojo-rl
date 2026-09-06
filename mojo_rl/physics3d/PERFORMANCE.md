@@ -2250,3 +2250,66 @@ row); the two contact precomputes ~15 / ~13 (the joint loop above); the
 two LDL factors 7.5 + 7.5 / 4.9 + 4.9; collision on dog 22. On reassemble3:
 collision ~150 (64 GJK calls at per-pair parity), the elliptic noslip 28,
 the per-iteration rebuild region 23, the pair filters ~18.
+
+### 13.25 LANDED (2026-09-06): the contact rows visit the chain's joints — and where the day ends
+
+`8ed2153f`. §13.24 named the joint loop as the next item on the row path:
+`_contact_jacobian_row` visited all `njoint` joints per row, three fields
+each, when only the joints on the two contact bodies' ancestor chains — ~15
+of dog's 50 — contribute. `mj_jac` walks the chain. The body table has no
+`body_jntadr`, so the CPU Newton derives the map once per solve from the
+joint table (joints are stored in body order, so a body's joints are
+contiguous; if they ever were not the map is rejected and the scanning form
+kept) and passes it through the two contact precomputes via defaulted
+parameters, so the GPU kernels and every other caller are untouched. The
+per-joint arithmetic is one helper used by both walks.
+
+⚠ **Rounding-level, and not for the reason one would guess.** The checksums
+moved. A probe build ran BOTH walks on every row and printed the first
+differing dof: last-bit differences on rows where the two walks call the
+same helper with the same arguments. A build with the map forced off matched
+the old binary bit for bit. So the walk is logically identical, and each
+inlined call site of the helper gets its own copy in which the compiler
+contracts the multiply-adds differently. Third time today that a change
+that is the same arithmetic on paper is not the same bits (§13.21, §13.23
+item 3): the gate for such a change is MuJoCo, and the probe that compares
+the two paths element-wise is what tells "same algorithm, different
+contraction" from "different algorithm". Ten CPU gates and the Metal
+free-joint gate pass.
+
+**The day, against the §13.21 binaries** (interleaved, MIN of two or three
+rounds; contact rows 500 + 3000 steps, dog also 2000 + 20000, gym rows
+1000 + 10000; MuJoCo per §13.15):
+
+| model | §13.21 | now | | vs MuJoCo |
+|---|---|---|---|---|
+| humanoid_cmu | 103 | **75** | −27% | 1.45× → **1.07×** |
+| dog_stand (20k steps) | 281 | **219** | −22% | 1.19× → **0.97×** |
+| dog_stand (3k steps) | 192 | **150** | −22% | |
+| reassemble3 | 257 | **241** | −6% | 1.19× → **1.14×** |
+| reassemble5 | 513 | **486** | −5% | 0.78× → **0.74×** |
+| sawyer_reach | 16.4 | 16.1 | −2% | 1.07× |
+| humanoid | 70.2 | **54.2** | −23% | 0.87× → **0.67×** |
+| walker2d | 22.8 | **20.7** | −9% | 0.73× |
+| ant | 29.8 | **28.0** | −6% | 0.78× |
+| hopper / half_cheetah | 10.95 / 4.37 | 10.6 / 4.19 | −3 / −4% | 0.67× / — |
+
+Eight of ten rows are now at or below MuJoCo; humanoid_cmu is within 7%
+and reassemble3 within 14% (parity against MuJoCo's native-CCD build). The
+§13.23 small-model regression is gone: the joint map gave the RK4 rows back
+more than the compact factor took.
+
+⚠ **One measurement trap from today's table.** A single interleaved run
+had ant at +12% and hopper with a 17.6 µs outlier — a load spike, which the
+same binaries could not reproduce three rounds later (ant 29.8 → 28.0).
+With a laptop as the bench machine, no row moves on one run: three rounds,
+MIN, and a re-run before believing a regression.
+
+**Left, by the probes** (dog / humanoid_cmu, ns per step, probe-inflated):
+the Cholesky with rank-1 updates 26 / 17 (column walks of a row-major `L`,
+as `mju_cholUpdate`); the pyramidal noslip 20 / 0 (its `Z` half-solve reads
+`L` through `LayoutTensor` one hop at a time — the ancestor-table treatment
+of §13.23 applies); the Hessian build 11 / 11; the two LDL factors 7.5 + 7.5
+/ 4.9 + 4.9 against MuJoCo's ~3 + 3; collision on dog 22. On reassemble3:
+collision ~150 with the 64 GJK calls at per-pair parity, the elliptic noslip
+28, the per-iteration rebuild region 23, the pair filters ~18.
