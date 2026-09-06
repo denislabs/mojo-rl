@@ -2943,7 +2943,7 @@ def _newton_solve_env[
             var Ja = eq_J[e * nv + a]
             if Ja == Scalar[DTYPE](0):
                 continue
-            for b in range(nv):
+            for b in range(a + 1):  # lower triangle, as the rebuild below
                 H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
     comptime HN = (NT + 1) * (NT + 1)
     ell_add_contact_hessian[

@@ -424,10 +424,12 @@ def ell_add_contact_hessian[
                 # symmetric, so the upper half was half the work for nobody
                 # (PERFORMANCE.md §13.19). Same rule in `newton_solve.mojo`'s
                 # equality rows and pyramidal outer products.
-                for b in range(n_c):
+                # The dof list is ascending (dense: the index itself; sparse:
+                # built by an ascending scan), so `b <= a` IS `j <= i` — no
+                # test per term (§13.24).
+                for b in range(a + 1):
                     var j = _cn_dof[SPARSE](cn_ix, c, b, nv)
-                    if j <= i:
-                        H[i * nv + j] += jki * JH[k * nv + j]
+                    H[i * nv + j] += jki * JH[k * nv + j]
 
 
 @always_inline
