@@ -2195,3 +2195,58 @@ two factors 7.5 + ~7.5 / 4.9 + ~4.9 against MuJoCo's ~3 + 3; collision 22 /
 4. Reassemble3's remaining structure is unchanged from §13.19: the pair
 filters cost ~35 ns a candidate pair (525 of them), the per-iteration elliptic
 Hessian rebuild 23, the elliptic noslip 28.
+
+### 13.24 LANDED (2026-09-06): the Newton's setup scanned every row twice; the cone Hessian tested every term
+
+Two commits (`a3d32419`, `338a3cbb`), bit-exact by checksum, from a
+sub-probe of the pyramidal Newton's `setup` stage and a re-read of the
+elliptic cone Hessian.
+
+**`setup` was two scans of every row over every dof.** The sub-probe split
+dog's 15 µs `setup` (humanoid_cmu's 10) as: `je_ix` nonzero scan + segment
+builder **9.6** (5.9), `M_local` copy + `M·qacc` 1.7 (1.0), edge forces and
+warm-start cost 1.0 (1.0), the rest under 3. `build_dof_segments_p` was
+rescanning `Je[e*nv + i] != 0` for every row to find its tree range — the
+same scan the caller had just done to build the sparse lists. Three cuts:
+the nonzero scan reads `W` entries at a time and skips an all-zero chunk (a
+contact row is nonzero on its two chains only, a dozen of dog's 79 dofs);
+`build_dof_segments_p` gains `SPARSE` — a row's tree range is its first and
+last list entry, since `seg_start` is monotone in the dof index (the blocked
+kernel keeps the scanning form through the default); `M_local = M` and
+`H = M_local` are one contiguous copy each (`M` is zero between trees), and
+the `JᵀDJ` outer product runs `b <= a` over the ascending list instead of
+testing `j <= i` per term. Dog 167 → 155 µs, humanoid_cmu 92 → 84.
+
+**The elliptic cone Hessian did the same test.** `ell_add_contact_hessian`
+walked the full `nnz × nnz` block per contact row and kept the lower
+triangle by `if j <= i`; the contact dof list is ascending, so `b <= a` is
+the triangle by construction. Reassemble3 256 → 248, reassemble5 511 → 486.
+
+**Tried and reverted: hoisting the pyramid edges' per-dof `LayoutTensor`
+reads** (the normal row and `qvel`, re-read four times per contact) into
+locals. Bit-exact, and no measurable change on dog, humanoid_cmu or sawyer —
+so the remaining cost of the two contact precomputes (`pre1` + `pre2`, ~15 µs
+on dog) is not those reads. It is the joint loop: each Jacobian row visits
+all 50 of dog's joints, reading three joint fields for each, when only the
+~15 joints on the two contact bodies' chains contribute. Walking the chain's
+joints directly needs a body-to-joint map (`body_jntadr` / `body_jntnum`)
+the body table does not carry; it can be derived once per solve from the
+joint table (joints are stored in body order) and passed to the builders
+through a defaulted parameter, as `build_dof_segments_p` now does. Worth
+~5 µs on dog and humanoid_cmu; the next item on this path.
+
+| model | §13.23 | now | vs MuJoCo |
+|---|---|---|---|
+| humanoid_cmu | 93 | **83** | 1.33× → **1.19×** |
+| dog_stand (3k steps) | 168 | **155** | |
+| reassemble3 / reassemble5 | 257 / 514 | **248 / 486** | 1.19× → **1.15×** / 0.78× → **0.74×** |
+| sawyer_reach | 16.6 | 16.3 | 1.08× |
+
+**Left, by the probes** (dog / humanoid_cmu, probe-inflated): Cholesky with
+rank-1 updates 26 / 17 (column walks, as `mju_cholUpdate`); the pyramidal
+noslip 20 / 0 (its `Z` half-solve still reads `L` through `LayoutTensor`
+one hop at a time); Hessian build 11 / 11 (gathered `nnz²/2` updates per
+row); the two contact precomputes ~15 / ~13 (the joint loop above); the
+two LDL factors 7.5 + 7.5 / 4.9 + 4.9; collision on dog 22. On reassemble3:
+collision ~150 (64 GJK calls at per-pair parity), the elliptic noslip 28,
+the per-iteration rebuild region 23, the pair filters ~18.
