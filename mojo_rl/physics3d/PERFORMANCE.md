@@ -2881,3 +2881,45 @@ gives 27–140), `test_ant_fk_vs_mujoco`, `test_constraints_vs_mujoco`,
 fixtures and nine real models and then dies on its `iit_softfoot` row with
 the same radian-into-degree attach refusal as the wrap-tendon gate (§13.30)
 — two gates now name that expander gap, which is worth its own fix.
+
+### 13.32 "Before the campaign every Menagerie scene was below 1e-9" — at ONE step, and it still is (2026-09-06)
+
+The question, on reading §13.30's 69 of 84: was that a regression? No —
+two boards were being compared. The board §9 and §13.28–29 report is
+`sweepN.py 1`: ONE step from the keyframe, the metric that climbed 50 → 77
+→ 80 of 85 through the fidelity campaign. Today it reads **84 of 84 at or
+below 1e-9, none above 1e-3** — the best it has read. The 69/84 is the
+FIFTY-step board, a harder metric that was never all-green and that §13.29
+already reported at 64 → 67.
+
+To close the question properly rather than by recollection, an A/B on the
+fifty-step board: `drive` built from `7f4fa8e5` (2026-09-04, the last
+commit before anything in this campaign touched `physics3d`) against
+today's, both against the same MuJoCo answer, same controls:
+
+| N=50, Menagerie | pre-campaign (7f4fa8e5) | today |
+|---|---|---|
+| scenes compared | 85 | 84 |
+| at or below 1e-9 | 65 | **69** |
+| above 1e-3 | 8 | **5** |
+
+Rows that moved more than 10× — eight better (toddlerbot_2xc 1.4e-02 →
+3e-14, flybody 2.3e-03 → 1.3e-09, tidybot 1.0e-03 → 7e-08, skydio 3.4e-04 →
+3e-16, cassie 1.3e-05 → 3e-15, xarm7, both robotiq), one "worse":
+shadow_dexee 2.5e-13 → 1.1e-11, rounding-level and still four orders below
+the line, on the scene whose noslip pass §13.28 turned on. And one scene
+LOST: `iit_softfoot` loaded on the old binary (3.0e-04) and is refused on
+today's, because the expander now reads an absent `<compiler angle>` as
+`degree` (the `so101_tabletop` fix) and that scene attaches a `radian`
+sub-model into a scene that says nothing. The refusal is honest — a text
+splice would reinterpret the sub-model's angles — but it costs one board
+row and two gates (`test_wrap_tendon_vs_mujoco`,
+`test_validate_vs_mujoco`); converting the sub-model's angles at splice
+time is the fix, and it is the next parser item.
+
+The fifteen Menagerie rows above 1e-9 at fifty steps are, in order: the
+tetheria hand (§9, 3.7e-01), the three toddlerbot poses and
+hello_robot_stretch_3 (§13.29 and §9, the mesh manifold), then the anymal /
+spot / unitree / tidybot rows at 1e-6–1e-8 — event-driven trajectories
+after a contact — and crazyflie / flybody at 1e-8 / 1e-9. Nothing in that
+list is new to this campaign.
