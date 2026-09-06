@@ -81,6 +81,7 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
+from ..dynamics.body_joint_map import body_joint_map
 from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
     chol_solve_seg_p, _dot_seg, chol_update_seg,
@@ -1105,28 +1106,17 @@ def _newton_solve_env[
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
     # Live slots only (see the workspace init above); PHASE 2 already did.
     # Body → joint map for the row builders (§13.25): `jnt_adr[b]` is the
-    # first joint on body `b`, `jnt_num[b]` how many. Joints are stored in
-    # body order, so a body's joints are contiguous; if they ever were not,
-    # `map_ok` is False and the builders take their scanning form. Derived
-    # here once per solve from the joint table — the body table has no
-    # `body_jntadr`.
+    # first joint on body `b`, `jnt_num[b]` how many; `map_ok` False sends
+    # the builders to their scanning form. Derived once per solve from the
+    # joint table (`body_joint_map`) — the body table has no `body_jntadr`.
     comptime JM_CAP = cap[D.NBODY]()
     var nbody_m = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NBODY]))
     var njoint_m = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT]))
     var jnt_adr = Scratch[Int, JM_CAP](nbody_m, fill=-1)
     var jnt_num = Scratch[Int, JM_CAP](nbody_m, fill=0)
-    var map_ok = nbody_m > 0
-    for j_m in range(njoint_m):
-        var jb = Int(rebind[Scalar[DTYPE]](joints[j_m, JOINT_IDX_BODY_ID]))
-        if jb < 0 or jb >= nbody_m:
-            map_ok = False
-            break
-        if jnt_adr[jb] < 0:
-            jnt_adr[jb] = j_m
-        elif jnt_adr[jb] + jnt_num[jb] != j_m:
-            map_ok = False
-            break
-        jnt_num[jb] = jnt_num[jb] + 1
+    var map_ok = body_joint_map[DTYPE, JM_CAP](
+        njoint_m, nbody_m, joints, jnt_adr, jnt_num
+    )
     for contact_tid in range(nc):
         _precompute_contact_normal[
             DTYPE, V_CAP, MINV_J=False, JM_CAP=JM_CAP](

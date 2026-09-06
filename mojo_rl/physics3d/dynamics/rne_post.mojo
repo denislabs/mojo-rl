@@ -67,6 +67,7 @@ from ..fields import (
 )
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
+from .body_joint_map import body_joint_map
 from .rne import (
     _max_one,
     _rne_fwd_body,
@@ -268,6 +269,8 @@ def _rne_post_env[
     L_CDOF: Layout,
     L_CRB: Layout,
     L_CVEL: Layout,
+    # CPU dispatcher only — see `_rne_env`.
+    JMAP: Bool = False,
 ](
     env: Int,
     dims: D,
@@ -349,10 +352,19 @@ def _rne_post_env[
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
+    comptime JM_CAP = cap[D.NBODY]() if JMAP else 1
+    var jnt_adr = Scratch[Int, JM_CAP](nbody if JMAP else 1, fill=-1)
+    var jnt_num = Scratch[Int, JM_CAP](nbody if JMAP else 1, fill=0)
+    var map_ok = False
+    comptime if JMAP:
+        map_ok = body_joint_map[DTYPE, JM_CAP](
+            njoint, nbody, joints, jnt_adr, jnt_num
+        )
     # 1. cvel (into crb) + the qacc-free part of cacc, verbatim from RNE.
     for b in range(1, nbody):
-        _rne_fwd_body[DTYPE](
-            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, cacc
+        _rne_fwd_body[DTYPE, JM_CAP=JM_CAP](
+            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, cacc,
+            jnt_adr, jnt_num, map_ok,
         )
 
     # 2. The cdof*qacc term, as its own forward sweep (see docstring).
@@ -363,8 +375,15 @@ def _rne_post_env[
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         for k in range(6):
             extra[b * 6 + k] = extra[parent * 6 + k]
-        for j in range(njoint):
-            if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])) != b:
+        var j_lo = 0
+        var j_hi = njoint
+        if map_ok:
+            j_lo = jnt_adr[b]
+            j_hi = j_lo + jnt_num[b]
+        for j in range(j_lo, j_hi):
+            if not map_ok and Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
+            ) != b:
                 continue
             var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
             var adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
@@ -533,7 +552,7 @@ def compute_rne_post[
         var cfrc_ext_v = d.cfrc_ext.lt_dyn["cpu", DYN2](rl_B6)
         var cfrc_int_v = d.cfrc_int.lt_dyn["cpu", DYN2](rl_B6)
         for e in range(BATCH):
-            _rne_post_env[DTYPE](
+            _rne_post_env[DTYPE, JMAP=True](
                 e, dm, qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
                 bodies_v, joints_v, mmeta_v, cdof_v, crb_v, cvel_v, cacc_v,
                 cfrc_ext_v, cfrc_int_v,

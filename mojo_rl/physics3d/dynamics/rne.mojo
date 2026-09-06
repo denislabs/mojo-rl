@@ -17,6 +17,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
+from .body_joint_map import body_joint_map
 from ..fields import (
     Data,
     Model,
@@ -71,6 +72,7 @@ def _rne_fwd_body[
     L_CDOF: Layout,
     L_CVEL: Layout,
     L_CACC: Layout,
+    JM_CAP: Int = 1,
 ](
     env: Int,
     b: Int,
@@ -92,6 +94,12 @@ def _rne_fwd_body[
     cacc: LayoutTensor[
         DTYPE, L_CACC, MutAnyOrigin
     ],
+    # Body → joint map (`body_joint_map`), optional: with `map_ok` the joint
+    # loop runs over this body's contiguous run instead of scanning all
+    # `njoint` rows for `JOINT_IDX_BODY_ID == b`. Same joints, same order.
+    jnt_adr: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    jnt_num: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    map_ok: Bool = False,
 ):
     """Forward-pass cvel/cacc for one body (verbatim from rne_fwd_body;
     `cvel` is the crb scratch tensor, b*6 indexing)."""
@@ -116,12 +124,18 @@ def _rne_fwd_body[
         for k in range(6):
             cacc[env, b * 6 + k] = cacc[env, parent * 6 + k]
 
-    for j in range(njoint):
-        var jnt_body = Int(
-            rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
-        )
-        if jnt_body != b:
-            continue
+    var j_lo = 0
+    var j_hi = njoint
+    if map_ok:
+        j_lo = jnt_adr[b]
+        j_hi = j_lo + jnt_num[b]
+    for j in range(j_lo, j_hi):
+        if not map_ok:
+            var jnt_body = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
+            )
+            if jnt_body != b:
+                continue
 
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(
@@ -569,6 +583,10 @@ def _rne_env[
     L_CDOF: Layout,
     L_CRB: Layout,
     L_RNE_CACC: Layout,
+    # CPU dispatcher only: derive the body → joint map once per env and hand
+    # it to the per-body forward pass (see `body_joint_map`). The GPU legs
+    # keep the scan — untouched, and no per-thread table.
+    JMAP: Bool = False,
 ](
     env: Int,
     dims: D,
@@ -641,9 +659,18 @@ def _rne_env[
         crb[env, i] = 0
 
     # Step 1: Forward pass — cvel and cacc (root to leaves)
+    comptime JM_CAP = cap[D.NBODY]() if JMAP else 1
+    var jnt_adr = Scratch[Int, JM_CAP](nbody if JMAP else 1, fill=-1)
+    var jnt_num = Scratch[Int, JM_CAP](nbody if JMAP else 1, fill=0)
+    var map_ok = False
+    comptime if JMAP:
+        map_ok = body_joint_map[DTYPE, JM_CAP](
+            njoint, nbody, joints, jnt_adr, jnt_num
+        )
     for b in range(1, nbody):
-        _rne_fwd_body[DTYPE](
-            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, rne_cacc
+        _rne_fwd_body[DTYPE, JM_CAP=JM_CAP](
+            env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, rne_cacc,
+            jnt_adr, jnt_num, map_ok,
         )
 
     # Step 2: Spatial forces per body: cfrc = I*cacc + cvel x* (I*cvel)
@@ -870,7 +897,7 @@ def compute_bias_forces_rne[
         var cfrc_v = scratch.rne_cfrc.lt_dyn["cpu", DYN2](rl_B6)
         var bias_v = scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
-            _rne_env[DTYPE](
+            _rne_env[DTYPE, JMAP=True](
                 e, dm, qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
                 meta_v, cdof_v, crb_v, cacc_v, cfrc_v, bias_v,
             )
