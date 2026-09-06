@@ -724,38 +724,6 @@ def _detect_contacts_sap_env[
             # with `detect_contacts` so the two paths cannot drift, which is
             # exactly how the SAP ellipsoid branch went missing. A predefined
             # pair supplies its own parameters instead, unmixed.
-            var _mx = pair_params[DTYPE](
-                ipair, pairs
-            ) if ipair >= 0 else mix_contact_params[DTYPE](
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
-            )
-            var cdim = Int(_mx[0])
-            var cf = _mx[1]
-            var cfs = _mx[2]
-            var cfr = _mx[3]
             var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
@@ -829,6 +797,44 @@ def _detect_contacts_sap_env[
             )
             if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
                 continue
+            # ⚠ MIXED AFTER THE REJECT, as the SAP pair loop below already
+            # does (its note above `mix_contact_params`): the mix is ~30
+            # tensor reads plus MuJoCo's priority/solref/solimp rules, for
+            # every geom against every plane — 391 a step on dog, of which
+            # the bounding test keeps ~15. Nothing above the test reads it.
+            # Same values for every survivor: bit-exact (PERFORMANCE.md §13.26).
+            var _mx = pair_params[DTYPE](
+                ipair, pairs
+            ) if ipair >= 0 else mix_contact_params[DTYPE](
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
+            )
+            var cdim = Int(_mx[0])
+            var cf = _mx[1]
+            var cfs = _mx[2]
+            var cfr = _mx[3]
 
             var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
             var hlj = rebind[Scalar[DTYPE]](
