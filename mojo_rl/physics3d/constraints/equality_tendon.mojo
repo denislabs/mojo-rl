@@ -54,7 +54,7 @@ from ..dynamics.jac_contact_row import _body_chain, _affects, CHAIN_CAP
 from std.math import abs, pow, sqrt
 from layout import Layout, LayoutTensor
 
-from ..types import _max_one, EQ_WELD, EQ_JOINT
+from ..types import _max_one, EQ_CONNECT, EQ_WELD, EQ_JOINT
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
 from ..gpu.constants import (
@@ -384,6 +384,286 @@ def _angular_jacobian_row_eq[
 
 
 @always_inline
+@always_inline
+def _cross3[DTYPE: DType](
+    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
+    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    var r = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    r[0] = ay * bz - az * by
+    r[1] = az * bx - ax * bz
+    r[2] = ax * by - ay * bx
+    return r^
+
+
+def _comvel_and_cdof_dot[
+    DTYPE: DType,
+    CV_CAP: Int,
+    CDD_CAP: Int,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_QVEL: Layout,
+](
+    env: Int,
+    nbody: Int,
+    nv: Int,
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    mut cv_b: Scratch[Scalar[DTYPE], CV_CAP],
+    mut cdd: Scratch[Scalar[DTYPE], CDD_CAP],
+):
+    """`mj_comVel`: per-body spatial velocity `cvel` (ang 0:3, lin 3:6, in
+    the c-frame) and per-dof `cdof_dot = cvel_before_dof x cdof`, the same
+    recurrence `rne.mojo` runs inline. Bodies are visited in index order,
+    which is parent-first for every model the parser builds."""
+    var njoint = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT]))
+    for k in range(nbody * 6):
+        cv_b[k] = Scalar[DTYPE](0)
+    for k in range(nv * 6):
+        cdd[k] = Scalar[DTYPE](0)
+    for b in range(1, nbody):
+        var par = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
+        var wx = Scalar[DTYPE](0)
+        var wy = Scalar[DTYPE](0)
+        var wz = Scalar[DTYPE](0)
+        var vx = Scalar[DTYPE](0)
+        var vy = Scalar[DTYPE](0)
+        var vz = Scalar[DTYPE](0)
+        if par > 0:
+            wx = cv_b[par * 6 + 0]
+            wy = cv_b[par * 6 + 1]
+            wz = cv_b[par * 6 + 2]
+            vx = cv_b[par * 6 + 3]
+            vy = cv_b[par * 6 + 4]
+            vz = cv_b[par * 6 + 5]
+        for j in range(njoint):
+            if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])) != b:
+                continue
+            var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+            var adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+            var d_lo = 0
+            var nd = 1
+            if jt == JNT_FREE:
+                # translation dofs: cdof_dot = 0, cvel accumulates
+                for dd in range(3):
+                    var dof = adr + dd
+                    var qd = rebind[Scalar[DTYPE]](qvel[env, dof])
+                    wx += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 0]) * qd
+                    wy += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 1]) * qd
+                    wz += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 2]) * qd
+                    vx += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 3]) * qd
+                    vy += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 4]) * qd
+                    vz += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 5]) * qd
+                d_lo = 3
+                nd = 6
+            elif jt == JNT_BALL:
+                nd = 3
+            # rotational / scalar dofs: cdof_dot from the PRE-dof cvel, then
+            # accumulate (all of a ball's three read the same cvel)
+            for dd in range(d_lo, nd):
+                var dof = adr + dd
+                var sax = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 0])
+                var say = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 1])
+                var saz = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 2])
+                var slx = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 3])
+                var sly = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 4])
+                var slz = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 5])
+                var ca = _cross3[DTYPE](wx, wy, wz, sax, say, saz)
+                var cl1 = _cross3[DTYPE](wx, wy, wz, slx, sly, slz)
+                var cl2 = _cross3[DTYPE](vx, vy, vz, sax, say, saz)
+                cdd[dof * 6 + 0] = ca[0]
+                cdd[dof * 6 + 1] = ca[1]
+                cdd[dof * 6 + 2] = ca[2]
+                cdd[dof * 6 + 3] = cl1[0] + cl2[0]
+                cdd[dof * 6 + 4] = cl1[1] + cl2[1]
+                cdd[dof * 6 + 5] = cl1[2] + cl2[2]
+            for dd in range(d_lo, nd):
+                var dof = adr + dd
+                var qd = rebind[Scalar[DTYPE]](qvel[env, dof])
+                wx += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 0]) * qd
+                wy += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 1]) * qd
+                wz += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 2]) * qd
+                vx += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 3]) * qd
+                vy += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 4]) * qd
+                vz += rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 5]) * qd
+        cv_b[b * 6 + 0] = wx
+        cv_b[b * 6 + 1] = wy
+        cv_b[b * 6 + 2] = wz
+        cv_b[b * 6 + 3] = vx
+        cv_b[b * 6 + 4] = vy
+        cv_b[b * 6 + 5] = vz
+
+
+def _jdotv_point[
+    DTYPE: DType,
+    CV_CAP: Int,
+    CDD_CAP: Int,
+    L_SUBTREE_COM: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
+    L_QVEL: Layout,
+](
+    env: Int,
+    subtree_com: LayoutTensor[DTYPE, L_SUBTREE_COM, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    cv_b: Scratch[Scalar[DTYPE], CV_CAP],
+    cdd: Scratch[Scalar[DTYPE], CDD_CAP],
+    body: Int,
+    px: Scalar[DTYPE],
+    py: Scalar[DTYPE],
+    pz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 6]:
+    """`mj_jacDot(point, body) * qvel` — the translational (0:3) and rotational
+    (3:6) parts of the point Jacobian's time derivative applied to `qvel`.
+    Port of engine_core_util.c `mj_jacDot` folded with the matvec: over the
+    dof chain of `body`, `jacp_dot[i] = cdof_dot_lin + cdof_dot_ang x offset
+    + cdof_ang x pvel_lin`, `jacr_dot[i] = cdof_dot_ang`, with `cdof_dot`
+    of a quaternion dof (ball, free rotation) recomputed from the dof body's
+    FULL cvel as MuJoCo does. Body 0 (world) returns zeros."""
+    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    if body <= 0:
+        return out^
+    var root = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_ROOTID]))
+    var ox = px - rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 0])
+    var oy = py - rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 1])
+    var oz = pz - rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 2])
+    # point linear velocity: cvel_lin + cvel_ang x offset (mju_transformSpatial)
+    var bw = _cross3[DTYPE](
+        cv_b[body * 6 + 0], cv_b[body * 6 + 1], cv_b[body * 6 + 2], ox, oy, oz
+    )
+    var pvx = cv_b[body * 6 + 3] + bw[0]
+    var pvy = cv_b[body * 6 + 4] + bw[1]
+    var pvz = cv_b[body * 6 + 5] + bw[2]
+    var njoint = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT]))
+    for j in range(njoint):
+        var jb = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
+        var affects = jb == body
+        if not affects:
+            var cur = body
+            while cur > 0:
+                var par = Int(rebind[Scalar[DTYPE]](bodies[cur, BODY_IDX_PARENT]))
+                if par == jb:
+                    affects = True
+                    break
+                cur = par
+        if not affects:
+            continue
+        var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var nd = 1
+        if jt == JNT_FREE:
+            nd = 6
+        elif jt == JNT_BALL:
+            nd = 3
+        for dd in range(nd):
+            var dof = adr + dd
+            var qd = rebind[Scalar[DTYPE]](qvel[env, dof])
+            var sax = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 0])
+            var say = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 1])
+            var saz = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 2])
+            var cax = cdd[dof * 6 + 0]
+            var cay = cdd[dof * 6 + 1]
+            var caz = cdd[dof * 6 + 2]
+            var clx = cdd[dof * 6 + 3]
+            var cly = cdd[dof * 6 + 4]
+            var clz = cdd[dof * 6 + 5]
+            var is_quat = jt == JNT_BALL or (jt == JNT_FREE and dd >= 3)
+            if is_quat:
+                # crossMotion(cvel[dof body], cdof) — the FULL body velocity
+                var slx = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 3])
+                var sly = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 4])
+                var slz = rebind[Scalar[DTYPE]](cdof[env, dof * 6 + 5])
+                var fwx = cv_b[jb * 6 + 0]
+                var fwy = cv_b[jb * 6 + 1]
+                var fwz = cv_b[jb * 6 + 2]
+                var fvx = cv_b[jb * 6 + 3]
+                var fvy = cv_b[jb * 6 + 4]
+                var fvz = cv_b[jb * 6 + 5]
+                var ca = _cross3[DTYPE](fwx, fwy, fwz, sax, say, saz)
+                var cl1 = _cross3[DTYPE](fwx, fwy, fwz, slx, sly, slz)
+                var cl2 = _cross3[DTYPE](fvx, fvy, fvz, sax, say, saz)
+                cax = ca[0]
+                cay = ca[1]
+                caz = ca[2]
+                clx = cl1[0] + cl2[0]
+                cly = cl1[1] + cl2[1]
+                clz = cl1[2] + cl2[2]
+            var t1 = _cross3[DTYPE](cax, cay, caz, ox, oy, oz)
+            var t2 = _cross3[DTYPE](sax, say, saz, pvx, pvy, pvz)
+            out[0] += (clx + t1[0] + t2[0]) * qd
+            out[1] += (cly + t1[1] + t2[1]) * qd
+            out[2] += (clz + t1[2] + t2[2]) * qd
+            out[3] += cax * qd
+            out[4] += cay * qd
+            out[5] += caz * qd
+    return out^
+
+
+@always_inline
+def _qmul_wxyz[DTYPE: DType](
+    a: InlineArray[Scalar[DTYPE], 4], b: InlineArray[Scalar[DTYPE], 4]
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`mju_mulQuat` in MuJoCo's (w,x,y,z) order."""
+    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    r[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3]
+    r[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2]
+    r[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1]
+    r[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
+    return r^
+
+
+@always_inline
+def _qaxis_wxyz[DTYPE: DType](
+    q: InlineArray[Scalar[DTYPE], 4],
+    vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`mju_mulQuatAxis`: q * (0, v), (w,x,y,z) order."""
+    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    r[0] = -q[1] * vx - q[2] * vy - q[3] * vz
+    r[1] = q[0] * vx + q[2] * vz - q[3] * vy
+    r[2] = q[0] * vy + q[3] * vx - q[1] * vz
+    r[3] = q[0] * vz + q[1] * vy - q[2] * vx
+    return r^
+
+
+@always_inline
+def _qderiv_wxyz[DTYPE: DType](
+    q: InlineArray[Scalar[DTYPE], 4],
+    vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`mju_derivQuat`: 0.5 * (0, v) * q, (w,x,y,z) order."""
+    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var h = Scalar[DTYPE](0.5)
+    r[0] = h * (-vx * q[1] - vy * q[2] - vz * q[3])
+    r[1] = h * (vx * q[0] + vy * q[3] - vz * q[2])
+    r[2] = h * (-vx * q[3] + vy * q[0] + vz * q[1])
+    r[3] = h * (vx * q[2] - vy * q[1] + vz * q[0])
+    return r^
+
+
+@always_inline
+def _qneg_wxyz[DTYPE: DType](
+    q: InlineArray[Scalar[DTYPE], 4]
+) -> InlineArray[Scalar[DTYPE], 4]:
+    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    r[0] = q[0]
+    r[1] = -q[1]
+    r[2] = -q[2]
+    r[3] = -q[3]
+    return r^
+
+
 def build_weld_equality_rows[
     DTYPE: DType,
     V_SIZE: Int,
@@ -476,6 +756,47 @@ def build_weld_equality_rows[
     # invisible to every static-leg gate.
     var J_row = Scratch[Scalar[DTYPE], V_SIZE](nv, fill=Scalar[DTYPE](0))
     var num_eq_rows = 0
+
+    # ── `J̇·v` for connect/weld rows (mj_Jdotv, MuJoCo 3.10) ──────────────
+    #
+    # ⚠⚠ THIS TERM DID NOT EXIST IN THE TREES THIS FILE WAS TRANSCRIBED FROM.
+    # MuJoCo 3.10's `mj_referenceConstraint` ends with `mj_Jdotv`, which
+    # subtracts the anchor's `J̇·qvel` (the centripetal/Coriolis part of its
+    # acceleration) from `aref` on every connect and weld row; 3.3.6, 3.5.1
+    # and 3.6.0 have no such routine. The term is exactly zero at rest, so
+    # every connect/weld gate written at rest was green without it. It was
+    # found on ToddlerBot (PERFORMANCE.md §13.29): its neck is a closed loop
+    # of four near-hard connects whose anchors move while the robot sways,
+    # and `waist_yaw` walked 4e-02 from MuJoCo in 100 steps with J, D, pos,
+    # vel, KBIP, invweights and M all matched to 1e-14 — `aref` was the one
+    # number left, off by exactly this. Our `bias` is `-aref`, so it ADDS.
+    #
+    # The pass below is `mj_comVel` (per-body cvel, per-dof cdof_dot), run
+    # once per call and only when a connect or weld is present; the two
+    # `_jdotv_point` calls per row are `mj_jacDot` folded with the matvec.
+    var _has_cw = False
+    for _e in range(neq):
+        var _t = Int(rebind[Scalar[DTYPE]](equality[_e, EQ_IDX_TYPE]))
+        if _t == EQ_CONNECT or _t == EQ_WELD:
+            _has_cw = True
+    # ⚠ SIZED BY THE PROVIDER'S CAPS, NOT THE HEAP: this builder also runs
+    # inside the GPU Newton kernels, where a heap `Scratch[.., 0]` is
+    # undefined (it was — the tendon-fields gate's CPU/GPU parity broke on
+    # it). `cap[]` is the static extent on a compile-time model and 0 on a
+    # dynamic one, where the heap leg is the right one anyway.
+    comptime CV_CAP = 6 * cap[D.NBODY]()
+    comptime CDD_CAP = 6 * cap[D.NV]()
+    var cv_b = Scratch[Scalar[DTYPE], CV_CAP](
+        (nbody if _has_cw else 1) * 6, fill=Scalar[DTYPE](0)
+    )
+    var cdd = Scratch[Scalar[DTYPE], CDD_CAP](
+        (nv if _has_cw else 1) * 6, fill=Scalar[DTYPE](0)
+    )
+    if _has_cw:
+        _comvel_and_cdof_dot[DTYPE, CV_CAP, CDD_CAP](
+            env, nbody, nv, joints, bodies, mmeta, cdof, qvel, cv_b, cdd
+        )
+
 
     for eq_i in range(neq):
         var eq_type = Int(rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_TYPE]))
@@ -752,6 +1073,15 @@ def build_weld_equality_rows[
             world_by = anc_by
             world_bz = anc_bz
 
+        # J̇·v of the two anchors (zeros for the world) — see the note above
+        var jdv_a = _jdotv_point[DTYPE, CV_CAP, CDD_CAP](
+            env, subtree_com, joints, bodies, mmeta, cdof, qvel, cv_b, cdd,
+            body_a, world_ax, world_ay, world_az,
+        )
+        var jdv_b = _jdotv_point[DTYPE, CV_CAP, CDD_CAP](
+            env, subtree_com, joints, bodies, mmeta, cdof, qvel, cv_b, cdd,
+            body_b, world_bx, world_by, world_bz,
+        )
         var pos_err_x = world_ax - world_bx
         var pos_err_y = world_ay - world_by
         var pos_err_z = world_az - world_bz
@@ -783,6 +1113,7 @@ def build_weld_equality_rows[
         # Found only once the rows were diffed against `efc_D` directly;
         # `efc_J` and `efc_aref` both matched exactly with the bug present.
         var rot_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var rot_jdv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         var ts = Scalar[DTYPE](1)
         var cqb = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         var qrel = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
@@ -992,6 +1323,8 @@ def build_weld_equality_rows[
             # -K*I*pen because contact pos = -penetration, but equality pos
             # is signed directly.
             var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
+            # + J̇·v (MuJoCo: aref -= jdv1 - jdv2; bias is -aref, so it adds)
+            bias += jdv_a[d] - jdv_b[d]
             eq_bias[num_eq_rows] = bias
             # MuJoCo: R = (1-imp)/imp * diagApprox, and diagApprox for a
             # connect/weld row is
@@ -1159,6 +1492,68 @@ def build_weld_equality_rows[
 
                 # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
                 var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
+                # + rotational J̇·v (mj_Jdotv's weld branch): with q0, q1 the
+                # two body quaternions (w,x,y,z) and q0r = q0*relpose, the
+                # row's J is 0.5*ts*vec(neg(q1)*(J0-J1)*q0r); the product
+                # rule gives three terms and MuJoCo subtracts their sum from
+                # aref — so it ADDS to bias. Computed once, on d == 0.
+                if d == 0:
+                    var q0 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    q0[0] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 3])
+                    q0[1] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 0])
+                    q0[2] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 1])
+                    q0[3] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 2])
+                    var q1 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    q1[0] = Scalar[DTYPE](1)
+                    if body_b > 0:
+                        q1[0] = rebind[Scalar[DTYPE]](xquat[env, body_b * 4 + 3])
+                        q1[1] = rebind[Scalar[DTYPE]](xquat[env, body_b * 4 + 0])
+                        q1[2] = rebind[Scalar[DTYPE]](xquat[env, body_b * 4 + 1])
+                        q1[3] = rebind[Scalar[DTYPE]](xquat[env, body_b * 4 + 2])
+                    # ⚠ `qrel` above is ALREADY q_a * relpose; the raw relpose
+                    # is `rp_*`. Using `qrel` here applied the body rotation
+                    # twice — exact at identity, 0.5% off once rotated.
+                    var rp = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    rp[0] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_W])
+                    rp[1] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_X])
+                    rp[2] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_Y])
+                    rp[3] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_Z])
+                    var q0r = _qmul_wxyz[DTYPE](q0, rp)
+                    var negq1 = _qneg_wxyz[DTYPE](q1)
+                    var w1x = cv_b[body_a * 6 + 0]
+                    var w1y = cv_b[body_a * 6 + 1]
+                    var w1z = cv_b[body_a * 6 + 2]
+                    var w2x = Scalar[DTYPE](0)
+                    var w2y = Scalar[DTYPE](0)
+                    var w2z = Scalar[DTYPE](0)
+                    if body_b > 0:
+                        w2x = cv_b[body_b * 6 + 0]
+                        w2y = cv_b[body_b * 6 + 1]
+                        w2z = cv_b[body_b * 6 + 2]
+                    var dwx = w1x - w2x
+                    var dwy = w1y - w2y
+                    var dwz = w1z - w2z
+                    var qdot0 = _qderiv_wxyz[DTYPE](q0, w1x, w1y, w1z)
+                    var qdot0r = _qmul_wxyz[DTYPE](qdot0, rp)
+                    var qdot1 = _qderiv_wxyz[DTYPE](q1, w2x, w2y, w2z)
+                    var negqdot1 = _qneg_wxyz[DTYPE](qdot1)
+                    var djx = jdv_a[3] - jdv_b[3]
+                    var djy = jdv_a[4] - jdv_b[4]
+                    var djz = jdv_a[5] - jdv_b[5]
+                    var t1 = _qmul_wxyz[DTYPE](
+                        _qaxis_wxyz[DTYPE](negqdot1, dwx, dwy, dwz), q0r
+                    )
+                    var t2 = _qmul_wxyz[DTYPE](
+                        _qaxis_wxyz[DTYPE](negq1, djx, djy, djz), q0r
+                    )
+                    var t3 = _qmul_wxyz[DTYPE](
+                        _qaxis_wxyz[DTYPE](negq1, dwx, dwy, dwz), qdot0r
+                    )
+                    var half_ts_r = Scalar[DTYPE](0.5) * ts
+                    rot_jdv[0] = half_ts_r * (t1[1] + t2[1] + t3[1])
+                    rot_jdv[1] = half_ts_r * (t1[2] + t2[2] + t3[2])
+                    rot_jdv[2] = half_ts_r * (t1[3] + t2[3] + t3[3])
+                bias += rot_jdv[d]
                 eq_bias[num_eq_rows] = bias
                 # MuJoCo takes the ROTATION half of the pair for the weld's
                 # orientation rows — `body_invweight0[2*b + (weldcnt > 2)]`,
