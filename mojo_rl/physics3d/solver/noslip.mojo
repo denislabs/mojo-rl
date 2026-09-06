@@ -189,6 +189,7 @@ from std.collections import InlineArray
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch
+from ..dynamics.ldl import _dof_ancestors
 
 from ..constraints.scalar_rows import SROW_FRICTION
 from ..gpu.constants import (
@@ -555,13 +556,16 @@ def _minv_apply[
     L_M_INV: Layout,
     L_D: Layout,
     TREE: Bool = False,
+    A_CAP: Int = 1,
 ](
     env: Int,
     nv: Int,
     m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     ldl_L: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     ldl_D: LayoutTensor[DTYPE, L_D, MutAnyOrigin],
-    par: Scratch[Int, V_CAP],
+    # The dof ancestor table (`_dof_ancestors`), read only under `TREE`.
+    dep: Scratch[Int, V_CAP],
+    anc: Scratch[Int, A_CAP],
     tree_ok: Bool,
     b: Scratch[Scalar[DTYPE], V_CAP],
     mut x: Scratch[Scalar[DTYPE], V_CAP],
@@ -569,8 +573,8 @@ def _minv_apply[
     """`x = M⁻¹ b`, the one product the noslip needs of the mass matrix.
 
     Under `TREE` with `tree_ok` it is `mj_solveLD` (engine_core_smooth.c:2113)
-    on the step's tree-ordered `LᵀDL` factor of `M` and the dof parent table
-    — scatter up the tree, divide by `D`, gather — so the noslip needs no
+    on the step's tree-ordered `LᵀDL` factor of `M` and the dof ancestor
+    table — scatter up the tree, divide by `D`, gather — so the noslip needs no
     dense inverse at all and the integrator stops computing one on this path
     (PERFORMANCE.md §13.16: 141 µs of dog's 498 µs step, plus the dense
     `M⁻¹Jᵀ` products here). Otherwise it is the dense product against
@@ -582,30 +586,33 @@ def _minv_apply[
     """
     comptime if TREE:
         if tree_ok:
+            # Ancestor lists in place of the `par` chase, and `L` through
+            # its pointer: the same per-element operation order as
+            # `_ldl_solve_tree_env` (bit-exact with the chase, §13.26).
+            var xp = x.unsafe_ptr()
+            var Lp = ldl_L.ptr + env * nv * nv
             for i in range(nv):
-                x[i] = b[i]
+                xp[i] = b[i]
             for i in range(nv - 1, -1, -1):
-                var yi = x[i]
+                var yi = xp[i]
                 if yi != Scalar[DTYPE](0):
                     var ri = i * nv
-                    var j = par[i]
-                    while j >= 0:
-                        x[j] = x[j] - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * yi
-                        j = par[j]
+                    for a in range(dep[i]):
+                        var j = anc[ri + a]
+                        xp[j] = xp[j] - Lp[ri + j] * yi
             for i in range(nv):
                 var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
                 if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
-                    x[i] = x[i] / d_i
+                    xp[i] = xp[i] / d_i
                 else:
-                    x[i] = Scalar[DTYPE](0)
+                    xp[i] = Scalar[DTYPE](0)
             for i in range(nv):
                 var ri = i * nv
-                var acc_i = x[i]
-                var j = par[i]
-                while j >= 0:
-                    acc_i = acc_i - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * x[j]
-                    j = par[j]
-                x[i] = acc_i
+                var acc_i = xp[i]
+                for a in range(dep[i] - 1, -1, -1):
+                    var j = anc[ri + a]
+                    acc_i = acc_i - Lp[ri + j] * xp[j]
+                xp[i] = acc_i
             return
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
@@ -721,6 +728,15 @@ def noslip_pyramidal[
 
     var mj_a = Scratch[Scalar[DTYPE], V_CAP](nv, fill=ZERO)
     var mj_b = Scratch[Scalar[DTYPE], V_CAP](nv, fill=ZERO)
+    # The dof ancestor table for the three tree solves below (`Z`, `b_S`,
+    # `dualFinish`), built once per call from `par`. CPU only: the GPU legs
+    # carry a one-element placeholder they never read.
+    comptime AN_CAP = V_CAP * V_CAP if TREE else 1
+    var dep = Scratch[Int, V_CAP](nv if TREE else 1, uninitialized=0)
+    var anc = Scratch[Int, AN_CAP](nv * nv if TREE else 1, uninitialized=0)
+    comptime if TREE:
+        if tree_ok:
+            _dof_ancestors[V_CAP, AN_CAP](nv, par, dep, anc)
 
     # ── The CPU path (`CACHE`): MuJoCo's shape, on the SWEPT rows only ────
     #
@@ -806,6 +822,7 @@ def noslip_pyramidal[
         comptime if TREE:
             tree_path = tree_ok
         if tree_path:
+            var Lp = ldl_L.ptr + env * nv * nv
             var dis = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=ZERO)
             for k in range(nv):
                 var d_k = rebind[Scalar[DTYPE]](ldl_D[env, k])
@@ -813,31 +830,51 @@ def noslip_pyramidal[
                     Scalar[DTYPE](1) / sqrt(d_k)
                     if d_k > Scalar[DTYPE](1e-14) else ZERO
                 )
+            # COLUMN-MAJOR, all swept rows at once: `wk[k*ns + s]` is dof
+            # `k` of row `s`. Row by row, the push up the ancestors is a
+            # read-modify-write chain through one row's entries — every
+            # hop waits on the store before it (~7 µs a call on dog for
+            # 27 rows, unchanged by ancestor tables, §13.26). Here one hop
+            # is one `ns`-wide axpy over all rows, the shape of
+            # `_tree_solve_cols`, and the rows go back to row-major in one
+            # transpose for the Gram below. Each entry receives the same
+            # subtractions from the same `i` in the same order (all-zero
+            # entries add an exact zero), so this is the same arithmetic
+            # as the per-row walk. Heap (`CAP = 0`): the live `nv * ns`.
+            var wk = Scratch[Scalar[DTYPE], 0](nv * ns, uninitialized=ZERO)
+            var wp = wk.unsafe_ptr()
+            comptime W_Z = 2 * simd_width_of[DTYPE]()
+            var qz = 0
+            while qz + W_Z <= nv * ns:
+                wp.store(qz, SIMD[DTYPE, W_Z](0))
+                qz += W_Z
+            while qz < nv * ns:
+                wp[qz] = ZERO
+                qz += 1
             for s in range(ns):
                 var e = sw_ix[s]
-                var zb = s * nv
                 comptime if SPARSE:
                     for a in range(je_n[e]):
                         var k = je_ix[e * nv + a]
-                        zj[zb + k] = Je[unsafe_offset = e * nv + k]
+                        wp[k * ns + s] = Je[unsafe_offset = e * nv + k]
                 else:
                     for k in range(nv):
-                        zj[zb + k] = Je[unsafe_offset = e * nv + k]
-                # `L⁻ᵀ`: for `i` descending, push `z_i` up its ancestors —
-                # the first half of `mj_solveLD`, on this row's support only.
-                for i in range(nv - 1, -1, -1):
-                    var yi = zj[zb + i]
-                    if yi != ZERO:
-                        var ri = i * nv
-                        var j = par[i]
-                        while j >= 0:
-                            zj[zb + j] = (
-                                zj[zb + j]
-                                - rebind[Scalar[DTYPE]](ldl_L[env, ri + j]) * yi
-                            )
-                            j = par[j]
-                for k in range(nv):
-                    zj[zb + k] = zj[zb + k] * dis[k]
+                        wp[k * ns + s] = Je[unsafe_offset = e * nv + k]
+            # `L⁻ᵀ`: for `i` descending, push block `i` up its ancestors —
+            # the first half of `mj_solveLD`, `ns` lanes wide.
+            for i in range(nv - 1, -1, -1):
+                var ri = i * nv
+                var j = par[i]
+                while j >= 0:
+                    _axpy_self[DTYPE](wp, j * ns, i * ns, -Lp[ri + j], ns)
+                    j = par[j]
+            # `D^-½`, then back to row-major `zj[s*nv + k]`.
+            var zp0 = zj.unsafe_ptr()
+            for k in range(nv):
+                var dk = dis[k]
+                var kb = k * ns
+                for s in range(ns):
+                    zp0[s * nv + k] = wp[kb + s] * dk
             var zp = zj.unsafe_ptr()
             for s in range(ns):
                 var zs = s * nv
@@ -883,8 +920,8 @@ def noslip_pyramidal[
             else:
                 for k in range(nv):
                     qfrc[k] += Je[unsafe_offset = g * nv + k] * f
-        _minv_apply[DTYPE, V_CAP, TREE=TREE](
-            env, nv, m_inv, ldl_L, ldl_D, par, tree_ok, qfrc, mj_a
+        _minv_apply[DTYPE, V_CAP, TREE=TREE, A_CAP=AN_CAP](
+            env, nv, m_inv, ldl_L, ldl_D, dep, anc, tree_ok, qfrc, mj_a
         )
         for k in range(nv):
             mj_a[k] += qacc_smooth[k]  # qacc_ns
@@ -1078,8 +1115,8 @@ def noslip_pyramidal[
             for i in range(nv):
                 qfrc[i] += Je[unsafe_offset=e * nv + i] * f
     comptime if TREE:
-        _minv_apply[DTYPE, V_CAP, TREE=True](
-            env, nv, m_inv, ldl_L, ldl_D, par, tree_ok, qfrc, mj_a
+        _minv_apply[DTYPE, V_CAP, TREE=True, A_CAP=AN_CAP](
+            env, nv, m_inv, ldl_L, ldl_D, dep, anc, tree_ok, qfrc, mj_a
         )
         for i in range(nv):
             qacc[i] = mj_a[i] + qacc_smooth[i]

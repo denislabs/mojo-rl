@@ -245,6 +245,39 @@ def _ldl_solve_env[
 
 
 @always_inline
+def _dof_ancestors[
+    V_CAP: Int,
+    A_CAP: Int,
+](
+    nv: Int,
+    par: Scratch[Int, V_CAP],
+    mut dep: Scratch[Int, V_CAP],
+    mut anc: Scratch[Int, A_CAP],
+):
+    """Root-first ancestor lists of every dof: `anc[k*nv + a]` for
+    `a < dep[k]`, the parent last. One ascending pass — a dof's list is its
+    parent's list plus the parent, and a parent always has the smaller index.
+
+    WHY A TABLE. Every tree routine here walked `par` one hop at a time,
+    and each hop is a dependent load (`j = par[j]`) before the entry it
+    guards can be read: ~7 cycles a hop, for no arithmetic. With the list in
+    hand a row's entries are independent loads the core overlaps
+    (PERFORMANCE.md §13.23 for the factor, §13.26 for the solves)."""
+    for k in range(nv):
+        var pk = par[k]
+        if pk < 0:
+            dep[k] = 0
+        else:
+            var dp = dep[pk]
+            var rk = k * nv
+            var rp = pk * nv
+            for a in range(dp):
+                anc[rk + a] = anc[rp + a]
+            anc[rk + dp] = pk
+            dep[k] = dp + 1
+
+
+@always_inline
 def _ldl_factor_tree_env[
     DTYPE: DType,
     DIMS: DimsLike,
@@ -288,18 +321,7 @@ def _ldl_factor_tree_env[
     # four times a step) was the visible cost of this routine.
     var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
     var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
-    for k in range(nv):
-        var pk = par[k]
-        if pk < 0:
-            dep[k] = 0
-        else:
-            var dp = dep[pk]
-            var rk = k * nv
-            var rp = pk * nv
-            for a in range(dp):
-                anc[rk + a] = anc[rp + a]
-            anc[rk + dp] = pk
-            dep[k] = dp + 1
+    _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
     var nn = nv * nv
     var Lp = L.ptr + env * nn
     var Mp = M.ptr + env * nn
@@ -371,21 +393,30 @@ def _ldl_solve_tree_env[
     """`x = (Lᵀ D L)⁻¹ b`, `mj_solveLD`: scatter up the tree, divide, gather."""
     var nv = dims.get_nv()
     comptime V_CAP = cap[DIMS.NV]()
+    comptime A_CAP = V_CAP * V_CAP
     var par = Scratch[Int, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         par[i] = Int(dofp[i])
+    # The ancestor table (see `_dof_ancestors`) costs one pass of integer
+    # copies and turns both chain walks below into independent loads. Each
+    # `y[j]` still receives its updates from the same `i` in the same order,
+    # and the gather runs parent-first as the walk did, so the result is
+    # bit-exact with the `par`-chasing form.
+    var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
+    var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
+    _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
     var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
+    var yp = y.unsafe_ptr()
     var Lp = L.ptr + env * nv * nv
     for i in range(nv):
         y[i] = b[env, i]
     for i in range(nv - 1, -1, -1):
-        var yi = y[i]
+        var yi = yp[i]
         if yi != 0:
             var ri = i * nv
-            var j = par[i]
-            while j >= 0:
-                y[j] = y[j] - Lp[ri + j] * yi
-                j = par[j]
+            for a in range(dep[i]):
+                var j = anc[ri + a]
+                yp[j] = yp[j] - Lp[ri + j] * yi
     for i in range(nv):
         var d_i = D[env, i]
         if d_i > 1e-14 or d_i < -1e-14:
@@ -394,12 +425,11 @@ def _ldl_solve_tree_env[
             y[i] = 0
     for i in range(nv):
         var ri = i * nv
-        var s = y[i]
-        var j = par[i]
-        while j >= 0:
-            s = s - Lp[ri + j] * y[j]
-            j = par[j]
-        y[i] = s
+        var s = yp[i]
+        for a in range(dep[i] - 1, -1, -1):
+            var j = anc[ri + a]
+            s = s - Lp[ri + j] * yp[j]
+        yp[i] = s
         x[env, i] = s
 
 
