@@ -50,6 +50,7 @@ from ..dynamics.lu import (
     lu_solve,
     compute_m_inv_from_lu,
 )
+from ..dynamics.ldl import ldl_factor
 from ..dynamics.qderiv import compute_rne_vel_derivative
 from ..constraints.limits import solve_limits
 from ..constraints.contact_solve import solve_contacts
@@ -94,6 +95,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
     MODEL_META_IDX_NJOINT,
+    MODEL_META_IDX_NTREE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
@@ -721,6 +723,40 @@ struct ImplicitIntegrator[
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),
             )
+
+
+        # ── the tree LDL of the PLAIN M, for the noslip ──────────────────
+        #
+        # ⚠⚠ THE NOSLIP DOES NOT READ `M^-1` ANY MORE. On the CPU with a
+        # kinematic tree, `noslip._minv_apply` solves against `scratch.L` /
+        # `scratch.D` (`mj_solveLD` on `qLD`, engine_core_smooth.c) — and the
+        # Euler and RK4 steps fill those with `ldl_factor` before their
+        # Newton, so nothing there noticed. This step only ever LU-factored
+        # M (`lu_factor` above) and left `scratch.L/D` holding whatever the
+        # last caller wrote — nothing, on a fresh Data — so every implicitfast
+        # model with contacts and `NOSLIP_ITER > 0` solved its noslip against
+        # an unfactored slab. On the Menagerie board that was unitree_g1
+        # 5.9e-17 -> 1.0e-02 and kinova_gen3 2.4e-15 -> 4.5e-02 after ONE
+        # step, and a g1 that bounced off the floor in the studio; the bench
+        # models never saw it because none of them says `implicitfast`.
+        #
+        # MuJoCo keeps the two factors apart: `qLD` is M's (made in
+        # `mj_makeM`/`mj_factorM` for every integrator) and the implicit
+        # `qH = M - h*qDeriv` is factored separately (engine_forward.c:1812).
+        # Same here: factor M now, while `scratch.M` IS the plain M — it is
+        # turned into M_hat in place further down. Gated exactly like the
+        # noslip's own `tree_ok`, so no other leg pays for it.
+        #
+        # ⚠⚠ AFTER THE SMOOTH `lu_solve`, NOT BESIDE `lu_factor`. `lu_factor`
+        # keeps ITS factor in the same `scratch.L` / `scratch.D` slabs
+        # (`dynamics/lu.mojo`); factoring here first overwrote the LU the
+        # smooth solve above still had to read, and kinova_gen3 went from
+        # 4.5e-02 to 3.3e-01. From this line to the M_hat re-factor below
+        # nothing reads the LU of the plain M, so the slabs are the LDL's.
+        comptime if CONTACTS and Self.SOLVER == "newton" and Self.NOSLIP_ITER > 0:
+            comptime if target == "cpu":
+                if Int(m.meta.data[MODEL_META_IDX_NTREE]) > 0:
+                    ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
 
         # ── constraint seam (mirrors euler; uses M^-1 of the PLAIN M) ───
         comptime if CONTACTS:
