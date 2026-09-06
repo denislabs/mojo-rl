@@ -35,6 +35,7 @@ from ..dynamics.mass_matrix import compute_mass_matrix
 from std.time import perf_counter_ns
 from ..fields.scratch import Scratch, cap
 from ..dynamics.ldl import (
+    _dof_ancestors,
     ldl_factor,
     ldl_solve,
     compute_m_inv,
@@ -427,21 +428,39 @@ def _finalize_tree_env[
         )
         return
     comptime V_CAP = cap[DIMS.NV]()
+    comptime A_CAP = V_CAP * V_CAP
     var par = Scratch[Int, V_CAP](nv, uninitialized=0)
     for i in range(nv):
         par[i] = Int(dofp[i])
     # rhs = M * qacc_constrained over M's sparsity: the diagonal, then each
-    # (i, ancestor j) entry once for both rows it belongs to.
+    # (i, ancestor j) entry once for both rows it belongs to. Ancestor lists
+    # and pointers in place of the `par` chase through `LayoutTensor`
+    # (PERFORMANCE.md §13.26); the accumulation order per entry — diagonal,
+    # own ancestors parent-first, then descendants ascending — is the walk's,
+    # so this is the same arithmetic.
+    var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
+    var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
+    _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
+    var Mp = M.ptr + env * nv * nv
+    var fq = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var qc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
+    var fp = fq.unsafe_ptr()
+    var qp = qc.unsafe_ptr()
     for i in range(nv):
-        fnet[env, i] = M[env, i * nv + i] * qacc_constrained[env, i]
+        qp[i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        fp[i] = Mp[i * nv + i] * qp[i]
     for i in range(nv):
-        var qi = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
-        var j = par[i]
-        while j >= 0:
-            var mij = rebind[Scalar[DTYPE]](M[env, i * nv + j])
-            fnet[env, i] = fnet[env, i] + mij * qacc_constrained[env, j]
-            fnet[env, j] = fnet[env, j] + mij * qi
-            j = par[j]
+        var qi = qp[i]
+        var ri = i * nv
+        var acc = fp[i]
+        for a in range(dep[i] - 1, -1, -1):
+            var j = anc[ri + a]
+            var mij = Mp[ri + j]
+            acc = acc + mij * qp[j]
+            fp[j] = fp[j] + mij * qi
+        fp[i] = acc
+    for i in range(nv):
+        fnet[env, i] = fp[i]
     _finalize_damping_env[DTYPE](env, dt, dims, joints, M)
     _ldl_factor_tree_env(env, dims, M, L, D, dofp)
     _ldl_solve_tree_env(env, dims, L, D, fnet, qacc_ws, dofp)
