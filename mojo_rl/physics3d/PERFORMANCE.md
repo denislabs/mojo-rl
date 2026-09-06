@@ -2701,3 +2701,139 @@ moves it by design — 23698.22 → 23708.37, 4.3e-04, inside the gate's own
 1e-3 — and part A moves 2.5e-06 as its injected tendons gain their limit
 rows. Both pins stay; the harvested numbers are recorded in the file, per
 its own rule that a moved golden is explained, never bumped.
+
+### 13.30 The three-tree board: Menagerie + Gymnasium + dm_control through the runtime engine (2026-09-06)
+
+The question was whether the speed advantage over MuJoCo holds on every
+scene and whether any fidelity gap had been missed, asked of the RUNTIME
+engine because one instantiation per model does not scale to 118 scenes.
+`docs/menagerie_fidelity_harnesses/bigsweep.py` runs both columns from two
+binaries (`drive`, `rbench.mojo`) over every loadable `scene*.xml` in
+Menagerie, every Gymnasium MuJoCo asset and every dm_control suite model.
+
+**Fidelity, 50 steps of the board's random controls, |d(qpos)|max vs MuJoCo
+3.10.0, 116 scenes compared** (5 not comparable: `ms_human_700` ×3 will not
+load in MuJoCo, `lqr` has no joints, `iit_softfoot` attaches a radian model
+into a degree scene, which our expander refuses):
+
+| | scenes | ≤1e-9 | 1e-9..1e-6 | 1e-6..1e-3 | >1e-3 |
+|---|---|---|---|---|---|
+| Menagerie | 84 | 69 | 6 | 4 | 5 |
+| Gymnasium | 14 | 10 | 1 | 1 | 2 |
+| dm_control | 18 | 17 | 1 | 0 | 0 |
+| **all, after this section's fixes** | 116 | **96** | 8 | 5 | 7 |
+| all, before | 116 | 92 | | | 10 |
+
+The two trees the board had never covered found four defects in an
+afternoon, three of them fixed here and gated:
+
+1. **The inertia-box fluid model rotated the velocity into the BODY frame
+   and built the box from the INERTIAL-frame diagonal** (`dynamics/
+   fluid_forces.mojo`). `mj_inertiaBoxFluidModel` does both in `ximat`
+   (`xquat ⊗ iquat`); a `fromto` capsule along the body's x axis has its
+   principal z along that axis, so the pressure-drag faces were paired
+   with the wrong velocity components. Gymnasium's swimmer: 9.6e-08 at step
+   1, 5.6e-02 at 50; the injection probe with `viscosity=0` and `density=0`
+   ablations pinned it to the density term (viscous term symmetric, exact).
+   After: 1.1e-18 / 1.2e-15. Also moved by it: `flybody` 2.3e-03 → 1.3e-09
+   and `skydio_x2` 3.4e-04 → 3e-16, the two Menagerie scenes with a fluid
+   `<option>`, both previously filed as something else.
+2. **Both tendon spring sites skipped MuJoCo's REFSAFE clamp**
+   (`constraints/tendon_limit.mojo`, limit and equality rows). MuJoCo raises
+   `solref[0]` to `2*timestep` before it becomes a stiffness
+   (engine_core_constraint.c:2029); the inline `1/(d² tc² dr²)` did not.
+   dm_control's quadruped couples each leg with `<equality><tendon
+   solref=".005 .5">` at `dt=0.005`, so our row was four times too stiff:
+   2.9e-02 at 50 steps, exactly 1e-16 once the equality was ablated to the
+   default solref, and 8.9e-16 now that both sites go through
+   `solref_spring_damper`, the helper that already carried the clamp for the
+   twelve sites it replaced. A rule written inline twice, again.
+3. **`<custom><numeric name="init_qpos">` overrides our `qpos0`; MuJoCo
+   ignores it.** Gymnasium's ant ships one from the mujoco-py era (z 0.55,
+   ankles ±1.0 rad) and our parser applies it (`_fill_qpos0`, step 3,
+   mirroring the legacy parser). MuJoCo's ant starts at z 0.75 with every
+   ankle at 0 — OUTSIDE its `range="30 70"` — and its first step is a 1300
+   rad/s² limit shove. The board row (2.9e-01) is therefore two different
+   initial poses, not a solver defect; per-dof dumps had it reading
+   `pos=1.0` for the last joint and a joint-address hunt found nothing
+   because the address was right and the pose was not. **NOT CHANGED
+   HERE**: dropping the override moves the in-repo Ant env's reset pose,
+   which is a training-behaviour decision, not a fidelity fix.
+4. **humanoidstandup diverges 7.2e-05 at step 21 with a two-step history
+   dependence, not localised.** From MuJoCo's injected state at K=20 one
+   step is exact (4e-14) and so are five; from K=19 two steps are exact;
+   from K=18 three steps reproduce the 7.2e-05. Step 19 has five
+   margin-band contacts (butt, arms), 20 has none, 21 gains the left foot.
+   Not tolerance (both at `tolerance=0`), not `qacc_warmstart` (flag
+   disabled, honoured), not MuJoCo's PGS (reference forced to Newton), not
+   the per-slot force warm start (the Newton path only writes it). Something
+   a contact-free step leaves standing from the step before it. Repro:
+   `INJ_STEPS=3 inject1.py <standup_tol0.xml> 18`.
+
+Also read off the board and not defects: `point` (2.5e-04) is a sphere
+resting at EXACTLY `dist = 0` with no vertical dof, so `con->exclude = dist
+>= includemargin` is a rounding coin on both sides — moving it 1 mm either
+way makes the two agree to 1e-17; `humanoidstandup`'s remaining growth to
+1e-2 by step 50 and the anymal/spot/go1 rows at 1e-6 are the trajectories
+after an event, and hello_robot_stretch_3 / toddlerbot / tetheria are the
+rows §9 and §13.29 already own.
+
+**Step time through the runtime engine** — 117 scenes, `rbench` vs MuJoCo,
+same keyframe, `ctrl=0.1`, contact capacity 2× MuJoCo's observed max, MIN
+of three interleaved rounds:
+
+| | median ours/MuJoCo | faster than MuJoCo | within 2× | above 4× |
+|---|---|---|---|---|
+| Menagerie (84) | 2.63 | 0 | | |
+| Gymnasium (14) | 2.48 | 0 | | |
+| dm_control (19) | 2.46 | 1 (quadruped 0.93) | | |
+| all | **2.49** | 1 | 27 | 15 |
+
+**That number is the STUDIO's path, not the engine the training loop
+builds, and the calibration says so.** The five Gym models through the
+compile-time `Phyics3dEnv` (bench_gym) against `rbench` on the same XML
+against MuJoCo, interleaved, min of three:
+
+| model | compile-time | runtime (studio) | MuJoCo | runtime / compile-time |
+|---|---|---|---|---|
+| walker2d | 20.7 | 59.8 | 24.0 | 2.9× |
+| hopper | 10.5 | 33.9 | 14.6 | 3.2× |
+| half_cheetah | 4.18 | 11.3 | 4.69 | 2.7× |
+| ant | 27.3 | 66.7 | 32.6 | 2.4× |
+| humanoid | 50.9 | 134.9 | 82.4 | 2.7× |
+
+The compile-time engine still beats MuJoCo by 1.12–1.6× on all five, as
+§13.22 had it. The runtime path is 2.4–3.2× slower than it on the same XML,
+uniformly, and `sample` on hopper puts a quarter of the step in
+`_platform_memset`/`__bzero` and tcmalloc: the dynamic leg of `Scratch`
+allocates and fills a `List` at every one of the ~200 scratch sites a step
+crosses (126 in `newton_solve.mojo` alone), and the row-sized ones are
+sized by the contact CAPACITY (hopper at cap 128 → 8: 42 → 33 µs). The
+studio aliases also carry `MAX_CONDIM=6` (12–24%, `studio/stepping.mojo`)
+and no `CRBA_TREEWALK`. Dividing the runtime board by that calibration
+puts the production engine at roughly parity with MuJoCo on the median
+Menagerie scene and behind it on the 15 scenes above 4× — flybody (nv 108),
+pal_talos, apollo, aloha, trossen_wxai — which is consistent with §13.22's
+"the advantage is a constant and vanishes as nv grows". Whether the
+runtime path can be brought to the compile-time one (a step-scoped arena
+for the dynamic leg; the studio would gain the same 2.5×) is the next
+optimisation item, and it is the prerequisite for reading this board as a
+production number.
+
+**⚠ `pndbotics_adam_lite` reads 24.9× and is a measurement artefact**: 68
+µs/step when run alone, 644–651 in both sweeps, because a 30 s `mojo build`
+overlapped that row both times. A three-round MIN did not save it. Build
+nothing while a perf sweep runs.
+
+**Gates, all on the final tree:** PASS — `test_fluid_fields_vs_mujoco`,
+`test_swimmer_fk_vs_mujoco`, `test_fluid_wire_fields`,
+`test_batched_env_fields_swimmer`, `test_fixed_tendon_limit_vs_mujoco`,
+`test_spatial_tendon_equality_vs_mujoco`, `test_equality_tendon_fields`
+(goldens untouched), `test_equality_jdotv_vs_mujoco`,
+`test_tendon_rows_live_budget_vs_mujoco`, `test_tendon_index_order_vs_mujoco`,
+`test_newton_blocked_tendon_fields`, `test_limit_solref_per_joint`.
+`test_wrap_tendon_vs_mujoco` passes its 24 wrap poses and then dies on its
+`iit_softfoot` leg with the expander's radian-into-degree attach refusal —
+red since 8c788511 (2026-08-19), the same reason that scene is not on the
+board, and not this section's. Bench checksums: the Gym five bit-identical
+before and after (no fluid, no tendon rows in them).
