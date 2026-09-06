@@ -2313,3 +2313,102 @@ of §13.23 applies); the Hessian build 11 / 11; the two LDL factors 7.5 + 7.5
 / 4.9 + 4.9 against MuJoCo's ~3 + 3; collision on dog 22. On reassemble3:
 collision ~150 with the 64 GJK calls at per-pair parity, the elliptic noslip
 28, the per-iteration rebuild region 23, the pair filters ~18.
+
+### 13.26 LANDED (2026-09-06, evening): the fourth round — the Cholesky's chain, the tree walks, and two filters
+
+Seven commits (`e1ea3e8e` … `09cde68c`), every one bit-exact: checksums
+identical on all ten bench models at every step, gated by the Cholesky,
+noslip, Newton, Euler, sensor and collision tests. The method was the same
+as §13.20–§13.25 — sub-probe the largest window, read what the code does
+per element, change the loop shape and not the arithmetic.
+
+1. **The Newton's Cholesky ran row-outer** (`e1ea3e8e`). A sub-probe of
+   the Cholesky block found the FACTOR at 24 of dog's 28 µs and 14 of
+   humanoid_cmu's 17 — the rank-1 updates §13.25 had named were the other
+   4, one or two a step. `chol_factor_seg`'s vectorised leg walked `for i:
+   for j <= i`, and along a row that is a serial chain: the dot for
+   `(i, j+1)` ends on `L[i, j]`, a subtract and a divide away, so each entry
+   waited ~18 cycles on the one before — latency, not the 82k flops.
+   `mju_cholFactor` is column-outer: the `s1 - j` dots of a column read
+   complete rows and are independent, and the core overlaps them. Factor
+   24.1 → 11.6 µs on dog, 14.3 → 7.6 on humanoid_cmu, the same operations
+   per entry in the same order. The update's two column walks became one.
+   MuJoCo's reciprocal-multiply was tried and dropped: it moved the
+   checksums and gained nothing — the division was never on the critical
+   path once the chain was gone.
+2. **Ancestor lists for every tree walk; the noslip's Z half-solve
+   column-major** (`5f63e3fb`, `73ade3e5`). `_dof_ancestors` is now shared
+   by the LDL factor, the LDL solve, the noslip's two full solves and the
+   Euler finalize's `M·qacc`; the `par` chase (a dependent load per hop)
+   becomes independent loads, `L` and `M` are read through pointers, and
+   each walk keeps its per-entry order (parent-first gathers). Modest: the
+   two noslip solves 3.4 → 2.9 µs each on dog, the finalize's product
+   4 → 2. The half-solve was the surprise: 7.2 µs a call for 27 rows, and
+   the ancestor table did NOT move it — the cost is the read-modify-write
+   chain through one row's entries, not the chase. Column-major over all
+   swept rows (one 27-wide axpy per hop, `_tree_solve_cols`'s shape) gives
+   6.2 including its scatter. A GATHER form (each block collecting from
+   its descendants, deepest first) was tried and is SLOWER, 7.5: its
+   accumulator is one serial FMA chain per block, where the push form's
+   chains run through memory across independent blocks. Kept the push.
+3. **The plane loop mixed parameters before rejecting** (`91626a49`). The
+   SAP pair loop had hoisted its bounding-sphere test above
+   `mix_contact_params` with a note saying why; the plane loop — the third
+   copy of the same pair logic — still mixed ~30 tensor reads and the
+   priority/solref/solimp rules for every geom against every plane, 391 a
+   step on dog, of which the test keeps 58. Same values for every survivor.
+4. **The RNE passes scanned every joint per body** (`d9569b49`).
+   `_rne_fwd_body` — the forward pass of the bias RNE and of the
+   post-constraint RNE dog's sensors need — and the post pass's
+   `cdof·qacc` sweep each scanned all `njoint` rows per body for
+   `JOINT_IDX_BODY_ID == b`: three O(nbody·njoint) scans a step, 62 × 50,
+   a float→int conversion per read. The body→joint map §13.25 built inline
+   in the Newton is now `dynamics/body_joint_map.mojo`, shared by the
+   Newton and both RNE dispatchers, passed down under a `JMAP` flag only
+   the CPU legs set. Dog 135 → 127 µs.
+5. **The body-pair filter re-read the exclude table per pair**
+   (`03baf1a3`). Dog has 30 `<exclude>`s and ~400 candidate pairs a step:
+   24k `LayoutTensor` reads and conversions. MuJoCo keeps
+   `exclude_signature` sorted and searches it; each detection call now
+   sorts the integer signatures once and the three loops binary-search.
+   Dog 127 → 122.
+6. **A cap of 0 is the heap leg, and a static zero is also 0**
+   (`09cde68c`). The exclude table's `Scratch` used `cap[D.NEXCLUDE]()`,
+   which is 0 for a model with no excludes — so hopper, half_cheetah and
+   walker2d paid a malloc per detection call, four a step under RK4, and
+   the interleaved table showed them +2–4%. `may_exist` tells a static
+   zero from a dynamic dim; a one-slot inline array put the three rows
+   back on their baselines. ⚠ Any `Scratch` sized by `cap[]` of a
+   dimension that can be zero needs this guard.
+
+**Numbers, interleaved against this morning's binaries (`917c3cfd`), MIN of
+three rounds**, on a busier machine than §13.25's table — the absolute
+values are higher than this morning's, the deltas are what the interleave
+measures:
+
+| model | morning | now | | vs MuJoCo (§13.15) |
+|---|---|---|---|---|
+| dog_stand (3k steps) | 145.8 | **121.8** | −16.5% | |
+| dog_stand (20k steps) | 216.1 | **184.8** | −14.5% | 0.97× → **0.82×** |
+| humanoid_cmu | 73.5 | **63.3** | −14.0% | 1.07× → **0.91×** |
+| humanoid | 53.5 | 52.0 | −2.8% | 0.66× |
+| reassemble3 / reassemble5 | 238 / 551 | 241 / 549 | flat | 1.14× / 0.74× |
+| sawyer_reach | 16.0 | 15.9 | flat | 1.06× |
+| walker2d / ant / hopper / half_cheetah | 20.5 / 27.8 / 10.5 / 4.15 | 20.6 / 27.7 / 10.6 / 4.17 | flat | |
+
+Both large single-tree models are now under MuJoCo. Every row but
+reassemble3 (native-CCD parity at 1.14×) and sawyer (1.06×) is at or below.
+
+**Sub-probes this round, for the next one** (dog, µs a step, probe-inflated):
+inside the Newton — noslip 20 (Z 5.6, Gram 3.3, two full solves 2.9 each,
+four sweeps 2.8), Cholesky 14–16 (factor 11.6: 3160 short dots, throughput
+now — a 4-row blocking of `_dot_rows` is the next shape), setup 7.6
+(diffuse: the row copies through `LayoutTensor`, the limit loop's 20 reads
+a joint), Hessian build 6.3, line search 4.4; outside it — collision
+(SAP broad 6.3, 36 GJK-vs-plane calls on the mesh geoms 4.7, and two
+per-pair filters whose probe cost is mostly the timer's own), the two LDL
+factors 6.6 each (anc 0.7 + gather 0.6 + elimination 4.3 + dense scatter
+0.9: compact `qLD` storage read directly by the solves would drop the
+scatter and the zero, and the ancestor table is now rebuilt SIX times a
+step — factor ×2, solve ×2, noslip, finalize — ~4 µs that one per-step
+table would remove), fk 6.2, bodyvel / cdof / crba / rne ~4 each.
