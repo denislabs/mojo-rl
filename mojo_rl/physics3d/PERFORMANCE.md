@@ -2985,3 +2985,122 @@ by 10× in either direction (the ant row's 0.29 → 4e-16 is §13.31's). The
 fifteen attach / include / defaults / composition gates pass, and the two
 that had lost the scene (`test_wrap_tendon_vs_mujoco` 56/56,
 `test_validate_vs_mujoco`) exercise it again.
+
+### 13.34 The fifty-step board, row by row: one clamp, and five reasons that are not defects (2026-09-06)
+
+The nineteen three-tree rows above 1e-9 at fifty steps, each traced step
+by step (`trace.py`: the board's protocol on one scene, both engines'
+contact counts and MuJoCo's iteration count per step) and then stepped ONE
+step from MuJoCo's own state at the step before the jump (`one.py`, per
+dof, both contact lists, §13.29's method without XML surgery). Every row
+now has a mechanism. One was a defect; it is fixed below.
+
+**The defect: a `solimp` dmax of exactly 1 reached the friction damper
+unclamped.** Seven rows — anymal_b/c, spot, spot_arm, a1, go1, go2 — sat at
+1e-7…1e-6 and were already there at five steps, contact counts equal,
+converged on both sides (`tolerance="0"` moved nothing). From MuJoCo's
+state at step 1 the knee's qvel was off 9e-6 per step; from the keyframe
+(rest) the step was exact to 6e-17. Ablating the anymal foot one attribute
+at a time from the SAME state: `condim`, `frictionloss`, `impratio`, the
+cone, damping, `eulerdamp` changed nothing; removing the foot's
+`solimp="0.015 1 0.03"` OR its `priority="1"` took it to 6e-15 — and so
+did writing the 1 as 0.9999. MuJoCo clamps `solimp[0]`, `[1]`, `[3]` to
+[mjMINIMP, mjMAXIMP] = [0.0001, 0.9999] before deriving anything
+(`engine_core_constraint.c:2044`). Ours clamped them before the impedance,
+and `solref_spring_damper`'s docstring said the caller clamps the dmax it
+receives for `B = 2/(dmax*timeconst)`. The normal-row caller did; the two
+friction-row callers in `contact_solve` (pyramidal `_kb_c`, elliptic
+`_kb_e`) passed the contact's raw `solimp[1]`. With `priority="1"` the
+foot's parameters win unmixed, so the 1 came through where an
+equal-priority mix with the plane's 0.95 would have landed at 0.975 and
+never touched the clamp. B off by 1e-4 is invisible at rest — the damper
+term is B·vel — which is why the one-step board never saw it. The clamp
+now lives inside `solref_spring_damper`, idempotently, for all fourteen
+callers. Gate: `test_contact_solimp_clamp_vs_mujoco` — a `priority="1"`
+sphere with that solimp sliding on a plane; pre-fix 6.7e-06 after one step,
+after 4.5e-19 / 1.6e-18 / 3.6e-15 at 1 / 5 / 30. The seven rows:
+
+| N=50 | before | after |
+|---|---|---|
+| anybotics_anymal_b | 3.2e-06 | 8.5e-11 |
+| anybotics_anymal_c | 5.4e-06 | 8.6e-11 |
+| boston_dynamics_spot | 3.1e-06 | 1.3e-11 |
+| boston_dynamics_spot arm | 1.9e-06 | 2.0e-11 |
+| unitree_a1 | 9.2e-07 | 2.1e-11 |
+| unitree_go1 | 9.2e-07 | 4.4e-11 |
+| unitree_go2 | 7.8e-08 | 1.7e-10 |
+
+The Gym bench checksums are untouched by construction: the change is
+`dw = clamp(d_width)`, the identity for every dmax the five models carry
+(0.95 default, 0.99).
+
+**The reference solver, twice.** Gymnasium's `humanoid.xml` and
+`humanoidstandup.xml` declare `solver="PGS" iterations="50"`; MuJoCo hits
+that cap for the first three standup steps and again whenever a contact
+appears, and ours runs Newton. Text-ablating `PGS` to `Newton` on both
+sides: standup 3.7e-06 → 1.4e-17 at five steps and 6.7e-16 at ten,
+humanoid 4.7e-07 → 1.2e-15 at fifty. Those two rows measure MuJoCo's own
+unconverged PGS, not us. (These are the only two models in the three trees
+that declare a non-Newton solver.)
+
+**The iteration cap, and a convergence-rate difference under it.**
+`tetheria_aero_hand_open` (3.7e-01) is 1e-15 through step 7 and 3.7e-01 at
+step 8, the first step where MuJoCo's `solver_niter` reaches the scene's
+`iterations="5"`. With `iterations="200"` on BOTH sides the scene is 1e-14
+for all 25 steps traced, and one step from the same cold state at
+iterations 7, 8, 10 agrees to 2e-11. So the physics is right and the row
+is two truncated Newton runs stopped at different iterates — MuJoCo's own
+5-iteration answer is 1e-2 from its converged one. What is ours: from the
+same cold start our fifth iterate is 1700 from the converged thumb
+acceleration where MuJoCo's is 5 (iterate 1 differs by 0.5%, iterate 2 is
+IDENTICAL to 1e-12, iterate 3 diverges; the line-search cap is not it —
+`ls_iterations` 8 and 50 give the same answer). §9.4.3 measured the same
+thing and named it: our convergence RATE on this problem, not our answer.
+Open; the per-iteration traces are in the harness (`MJ_STATS=1`,
+`_PYR_TRACE`).
+
+**RK4 holds the actuator force fixed across its four stages.**
+`bitcraze_crazyflie_2` (1.9e-08) has no contacts and a one-step error of
+3.3e-13 that the fluid terms do not touch (density and viscosity ablated
+to zero: identical) and Euler does not have (5e-23). A Python replica of
+`mj_RungeKutta` built on `mj_forward` matches MuJoCo to 0.0; the same
+replica with `qfrc_actuator` frozen at the step's start matches OURS to
+1.3e-23. MuJoCo re-evaluates actuation at every stage; our driver applies
+actions once, before `RK4Integrator.step`, and the stages integrate that
+`qfrc`. A body-fixed thrust rotating with the body is exactly the case; a
+joint motor's `gear*ctrl` is not, which is why Gym's RK4 models never
+showed it. Open: a per-stage actuator hook in the RK4 step (it is the
+only Menagerie RK4 scene; tumbling flight amplifies the 3e-13 to 2e-8).
+
+**Rounding under stiff dynamics.** `stanford_tidybot` (7.0e-08): 1.6e-10
+at step one, no contacts, seven equality rows, `implicitfast`, and joint
+accelerations of 3.6e4 — the per-step qvel error is 8e-8 on a qvel of 71,
+1e-9 relative, then ×2 every eight steps. `point` (2.5e-04) is §13.30's
+`dist >= includemargin` coin on a sphere resting at exactly zero distance.
+
+**Contact geometry at 1e-9, and a self-colliding keyframe.** dm_control's
+`dog` (6.6e-08): exact to step 10 without noslip (with the scene's
+`noslip_iterations="4"` a 1e-9 difference appears at step 4 — the noslip
+pass is another capped iteration), then 4e-9 at step 11 where the two
+pelvis–tail contacts report `dist` 4e-9 apart between the engines — the
+convex-collision family of §13.29's toddlerbot manifold, which is where
+`toddlerbot_2xm` (3.3e-03 at 50, 9e-15 at 20) and the two `_pos` scenes
+still sit. `hello_robot_stretch_3` (2.1e-02): its keyframe has the wrist
+4.8 cm inside the base with 6e4 N of self-collision force on both sides,
+plus a floor–base contact at exactly zero distance that MuJoCo keeps and we
+drop; from there the two engines part at step 6. Not a state a simulation
+is meant to start from (§13.29's reassemble5 note).
+
+**Boards after the clamp**, same protocol as §13.33:
+
+| | before | after |
+|---|---|---|
+| one step, Menagerie, at or below 1e-9 | 85 of 85 | 85 of 85 |
+| fifty steps, three trees, at or below 1e-9 | 98 of 117 | **105 of 117** |
+| fifty steps, above 1e-3 | 6 | 6 |
+
+The twelve rows left above 1e-9: tetheria (cap), toddlerbot ×3 and dog
+(convex manifold), stretch_3 (keyframe), standup and humanoid (PGS),
+point (coin), tidybot (stiff rounding), crazyflie (RK4 actuation),
+flybody (1.3e-09: 5e-11 at step one under its `noslip_iterations="3"`,
+the same capped pass as dog's step 4).

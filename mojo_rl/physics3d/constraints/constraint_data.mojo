@@ -208,9 +208,17 @@ def solref_spring_damper[
     `friction_dof.mojo` already implements it. Do not route a friction row's K
     through here expecting a zero.
 
-    `d_width` is `solimp[1]` (dmax), already clamped to [mjMINIMP, mjMAXIMP] by
-    the caller — this function does not clamp it, because the callers do it in
-    the same breath as clamping dmin and power.
+    `d_width` is `solimp[1]` (dmax). ⚠ IT IS CLAMPED HERE to [mjMINIMP,
+    mjMAXIMP] (`engine_core_constraint.c:2045`), idempotently. This docstring
+    used to say "already clamped by the caller", and that was true of the
+    normal-row site and false of the two FRICTION-row sites in
+    `contact_solve` (pyramidal and elliptic), which passed the contact's raw
+    `CONTACT_IDX_SOLIMP_1`. anymal_c's feet carry `solimp="0.015 1 0.03"` with
+    `priority="1"`, so a dmax of exactly 1 reached the friction damper where
+    MuJoCo uses 0.9999: B off by 1e-4, invisible at rest (the damper term is
+    B*vel), 9e-6 in qvel per step in motion, 1e-6 on the fifty-step board
+    for every priority-footed quadruped (PERFORMANCE.md §13.34). The clamp
+    belongs to the formula, not to its callers.
 
     VERIFIED against `mjData.efc_KBIP`, which exposes MuJoCo's own K and B:
 
@@ -256,20 +264,27 @@ def solref_spring_damper[
         if ref_tc < two_dt:
             ref_tc = two_dt
 
-    var k_den = d_width * d_width * ref_tc * ref_tc * ref_dr * ref_dr
+    # mjMINIMP / mjMAXIMP — see the docstring: the clamp lives HERE.
+    var dw = d_width
+    if dw < Scalar[DTYPE](0.0001):
+        dw = Scalar[DTYPE](0.0001)
+    elif dw > Scalar[DTYPE](0.9999):
+        dw = Scalar[DTYPE](0.9999)
+
+    var k_den = dw * dw * ref_tc * ref_tc * ref_dr * ref_dr
     var k_out: Scalar[DTYPE]
     if ref_tc > Scalar[DTYPE](0):
         k_out = Scalar[DTYPE](1.0) / (k_den if k_den > MINVAL else MINVAL)
     else:
-        var dw2 = d_width * d_width
+        var dw2 = dw * dw
         k_out = -ref_tc / (dw2 if dw2 > MINVAL else MINVAL)
 
     var b_out: Scalar[DTYPE]
     if ref_dr > Scalar[DTYPE](0):
-        var b_den = d_width * ref_tc
+        var b_den = dw * ref_tc
         b_out = Scalar[DTYPE](2.0) / (b_den if b_den > MINVAL else MINVAL)
     else:
-        b_out = -ref_dr / (d_width if d_width > MINVAL else MINVAL)
+        b_out = -ref_dr / (dw if dw > MINVAL else MINVAL)
 
     return (k_out, b_out)
 
