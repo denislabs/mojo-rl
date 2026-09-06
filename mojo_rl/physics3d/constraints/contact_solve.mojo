@@ -350,6 +350,7 @@ def _precompute_contact_normal[
     # False skips `M^-1 J_n` and the `K_n` it feeds: only the PGS family
     # reads them (the Newton and CG take `R` from `diag_n` as MuJoCo does).
     MINV_J: Bool = True,
+    JM_CAP: Int = 1,
 ](
     env: Int,
     contact_tid: Int,
@@ -401,6 +402,10 @@ def _precompute_contact_normal[
     _unused_model_width: Scalar[DTYPE],
     _unused_model_midpoint: Scalar[DTYPE],
     _unused_model_power: Scalar[DTYPE],
+    # Body → joint map for the row builders (§13.25); defaults = no map.
+    jnt_adr: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    jnt_num: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    map_ok: Bool = False,
 ):
     """Precompute one contact's normal constraint data (verbatim from
     precompute_contact_normal_gpu, specialized to COMPUTE_RHS=False — its
@@ -523,7 +528,7 @@ def _precompute_contact_normal[
 
             # Compute normal Jacobian
             _contact_jacobian_row[
-                DTYPE, V_CAP](
+                DTYPE, V_CAP, JM_CAP=JM_CAP](
                 env,
                 subtree_com,
                 joints,
@@ -540,6 +545,7 @@ def _precompute_contact_normal[
                 rebind[Scalar[DTYPE]](solver[env, ws_c_nz + c]),
                 J_row,
                 nv,
+                jnt_adr, jnt_num, map_ok,
             )
 
             # Store J_n, compute MinvJn and K_n
@@ -645,6 +651,7 @@ def _precompute_contact_friction[
     L_SOLVER: Layout,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     MAX_CONDIM: Int = 3,
+    JM_CAP: Int = 1,
 ](
     env: Int,
     contact_tid: Int,
@@ -675,6 +682,10 @@ def _precompute_contact_friction[
     B_damp: Scalar[DTYPE],
     impratio: Scalar[DTYPE],
     K_spring: Scalar[DTYPE],
+    # Body → joint map for the row builders (§13.25); defaults = no map.
+    jnt_adr: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    jnt_num: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    map_ok: Bool = False,
 ):
     """Build friction tangent data for one contact (verbatim from
     precompute_contact_friction_gpu — the SHARED CG/Newton friction builder;
@@ -811,13 +822,15 @@ def _precompute_contact_friction[
     var J_t2 = Scratch[Scalar[DTYPE], V_CAP](
         nv, uninitialized=Scalar[DTYPE](0)
     )
-    _contact_jacobian_row[DTYPE, V_CAP](
+    _contact_jacobian_row[DTYPE, V_CAP, JM_CAP=JM_CAP](
         env, subtree_com, joints, bodies, mmeta, cdof,
         body_a, body_b, px, py, pz, t1x, t1y, t1z, J_t1, nv,
+        jnt_adr, jnt_num, map_ok,
     )
-    _contact_jacobian_row[DTYPE, V_CAP](
+    _contact_jacobian_row[DTYPE, V_CAP, JM_CAP=JM_CAP](
         env, subtree_com, joints, bodies, mmeta, cdof,
         body_a, body_b, px, py, pz, t2x, t2y, t2z, J_t2, nv,
+        jnt_adr, jnt_num, map_ok,
     )
 
     # Read J_n from normal precompute
