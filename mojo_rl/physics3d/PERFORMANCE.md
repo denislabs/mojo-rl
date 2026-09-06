@@ -43,6 +43,10 @@ an ablation tells you what it COSTS. Only the second one picks targets.
 
 ## 1. Headline
 
+(2026-09-06: this section is the August SO-ARM/Sawyer study. For the
+fourteen-model standing against MuJoCo after the September solver rounds,
+read §13.27 first, then §13.20–§13.26 for how each row got there.)
+
 Per **physics** step (env step ÷ `FRAME_SKIP=10`), `float32`, against MuJoCo
 3.10.0 (`float64`) stepping the same two XMLs.
 
@@ -755,6 +759,9 @@ not be written that way.
 ---
 
 ## 12. What is left, in the order the measurements support
+
+(2026-09-06: superseded for the solver-bound models by §13.27; items 1–2
+here, the convex walk and SO-ARM100's collision, still stand.)
 
 1. **The support walk on big hulls.** SO-ARM101's geom-geom GJK costs
    **3.56 µs/call against SO-ARM100's 1.18 µs — same code, 3× apart** (§10.1).
@@ -2412,3 +2419,117 @@ factors 6.6 each (anc 0.7 + gather 0.6 + elimination 4.3 + dense scatter
 scatter and the zero, and the ancestor table is now rebuilt SIX times a
 step — factor ×2, solve ×2, noslip, finalize — ~4 µs that one per-step
 table would remove), fk 6.2, bodyvel / cdof / crba / rne ~4 each.
+
+### 13.27 Standing after four rounds, and what is left — the consolidated list (2026-09-06)
+
+Four rounds in two days (§13.20–§13.26), twenty-two commits, one method:
+sub-probe the largest window, read what the code does per element, change
+the loop shape and never the arithmetic — and when the arithmetic has to
+change, gate against MuJoCo, not the old checksum. Nineteen of the
+twenty-two were bit-exact.
+
+**Where every row stands.** Ratios are §13.25's (measured this morning
+against MuJoCo 3.10.0 per §13.15, one `mj_step(m, d, n)` call, no Python
+in the loop) carried forward by today's interleaved deltas (§13.26); a
+ratio is only ever an interleaved pair, never two sessions' absolutes.
+
+| model | nv | ncon | cone | ours vs MuJoCo | where the rest is |
+|---|---|---|---|---|---|
+| dog_stand | 79 | ~9 | pyramidal | **0.82×** | noslip 20, Cholesky 14, collision ~22, LDL 2×6.6 |
+| humanoid_cmu | 62 | ~13 | pyramidal | **0.91×** | Cholesky 9.5, line search 6.7, Hessian 7.6, setup 6 |
+| humanoid | 23 | | pyramidal | 0.66× | |
+| walker2d / ant / hopper | 9 / 14 / 6 | | pyramidal | 0.73× / 0.78× / 0.67× | fixed per-forward setup MuJoCo pays and we do not (§13.22) |
+| half_cheetah | 9 | | pyramidal | not twinned | |
+| reassemble5 | | ~231 | elliptic | 0.74× | |
+| reassemble3 | | ~92 | elliptic | **1.14×** | collision ~150 (64 GJK at per-pair parity), elliptic noslip 28, per-iteration rebuild 23 |
+| sawyer_reach | 15 | ~5 | elliptic | 1.06× | |
+
+Two rows above MuJoCo. Both are the elliptic, contact-dense corner, and on
+reassemble3 the excess is collision at per-pair parity with MuJoCo's
+native CCD — an algorithmic gap (MuJoCo's mid-phase and its BVH-free
+convex path), not a loop-shape one.
+
+**Tried this fortnight and rejected, so nobody retries them blind:**
+
+- reciprocal-multiply in the Cholesky (MuJoCo's form): rounding-level, no
+  gain — the division was never on the critical path (§13.26);
+- the noslip half-solve in gather form (each block collecting from its
+  descendants): bit-exact and slower, one serial FMA chain per block
+  (§13.26);
+- hoisting the pyramid-edge reads out of the Hessian build: bit-exact,
+  no gain (§13.24);
+- ancestor tables for the noslip half-solve on their own: the cost was a
+  read-modify-write chain, not the pointer chase (§13.26);
+- a dense `M⁻¹ Jᵀ` cache for the noslip: slower than the half-solve it
+  replaced (§13.20).
+
+**What is left, ranked by the probes and by what each would take.** The
+first block is dog / humanoid_cmu (µs a step, probe-inflated, §13.26); the
+second is reassemble3.
+
+1. **One ancestor table a step, not six.** `_dof_ancestors` now runs in
+   the LDL factor (×2), the LDL solve (×2), the noslip and the finalize —
+   ~0.7 µs each on dog, ~4 µs a step, for a table that depends only on
+   `dof_parentid`. It belongs in `DynamicsScratch` (CPU-side, integer,
+   built once when the scratch is), threaded to the six consumers. Bit-exact
+   by construction. ~3% on dog, ~2% on humanoid_cmu.
+2. **Compact `qLD` storage read by the solves.** The tree factor already
+   works in MuJoCo's compact row layout and then zeroes and scatters a
+   dense `L` for the solves (0.9 + ~0.3 µs of each 6.6 µs factor, twice a
+   step). With ancestor lists in every consumer the compact row is the
+   natural read (`Lc[k*nv + a]` for slot `a` of the list), so the scatter
+   and the zero go, and the solves read contiguous rows. Consumers:
+   `_ldl_solve_tree_env`, `_m_inv_tree_env`, `_minv_apply`,
+   `_tree_solve_cols`, the noslip's half-solve, the finalize. ⚠ Only the
+   TREE path — the dense-block factor and every GPU kernel keep dense `L`,
+   so the storage convention becomes path-dependent and must be stated on
+   the field. ~3 µs a step on dog.
+3. **The Cholesky's 3160 short dots** (11.6 µs on dog, throughput-bound
+   now). Each pair is a `W`-lane dot of average length 26 plus a
+   `reduce_add`, a tail and a divide; a four-row blocking of `_dot_rows`
+   (four rows of `L` against one, sharing its loads and loop control)
+   halves the per-pair overhead. Bit-exact if each accumulator keeps its
+   order. Perhaps 11.6 → 8.
+4. **The pyramidal noslip, 20 µs a step on dog.** Its half-solve (5.6) is
+   now a memory chain through ~1260 hops that neither ancestor lists nor a
+   gather form shortened; the Gram (3.3) and the two full solves (2.9
+   each) are at their arithmetic. The lever left is structural: MuJoCo
+   projects `AR` for ALL rows once per solve and the noslip reads it —
+   ours projects the swept rows only, which is already less work — so what
+   remains is the hop count itself (dog's max dof depth is 37).
+5. **The Newton's setup (7.6) and Hessian build (6.3).** Diffuse: the
+   contact rows are copied out of the solver workspace through
+   `LayoutTensor` (nc·NE·nv reads), each limit row zeroes `nv` entries and
+   reads ~20 joint fields, and the Hessian's outer products gather through
+   `je_ix`. Pointer forms and a per-row dense segment (the support is
+   ancestor-closed, so a contact row's nonzeros lie in one tree segment)
+   would take each to about half; ~5 µs a step in total.
+6. **Collision on dog** (~22 real): the SAP broad phase 6.3 for 296 geoms,
+   36 GJK-vs-plane calls on the mesh geoms near the floor 4.7, and the
+   two per-pair filters whose probe cost is mostly the timer's own. The
+   plane-mesh path could reject on the mesh's bounding sphere before GJK
+   (MuJoCo does); the rest is at MuJoCo's shape.
+7. **The kinematics stages** (fk 6.2, bodyvel 4.3, cdof 4.3, crba 4.0,
+   rne 4.3 on dog): all `LayoutTensor`-indexed, joint-major, no
+   algorithmic defect left after §13.11 and the joint map. Pointer forms
+   would give 20–30% of each; ~5 µs a step, and the same on humanoid_cmu.
+
+On reassemble3 (§13.25's probes, unchanged by this round — it has no
+excludes and its noslip is elliptic):
+
+8. **Collision ~150 of ~240**, with the 64 GJK calls already at per-pair
+   parity. What MuJoCo has and we do not is a cheaper convex path for
+   box-box (its `mjc_BoxBox` face/edge routine where we run GJK+EPA) and
+   fewer calls from its mid-phase; §13.19 has the call-count comparison.
+   This is the one item on the list that is an algorithm, not a loop.
+9. **The elliptic noslip (28)** and **the per-iteration rebuild (23)**:
+   the elliptic Hessian and cone updates are per-contact 3×3 blocks that
+   still go through `Scratch` per element; the §13.21 pointer treatment
+   was applied to the cache build only.
+10. **The pair filters (~18)**: `find_predefined_pair` scans the pair
+    table per candidate; reassemble3 has pairs. The exclude table got its
+    sorted signatures this round (§13.26); the pair table wants the same,
+    keyed on `(geom1, geom2)`.
+
+Items 1–3 are a morning each and bit-exact; 8 is the only one that would
+change results and needs its own MuJoCo gates.
