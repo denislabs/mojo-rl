@@ -2756,9 +2756,8 @@ afternoon, three of them fixed here and gated:
    rad/s² limit shove. The board row (2.9e-01) is therefore two different
    initial poses, not a solver defect; per-dof dumps had it reading
    `pos=1.0` for the last joint and a joint-address hunt found nothing
-   because the address was right and the pose was not. **NOT CHANGED
-   HERE**: dropping the override moves the in-repo Ant env's reset pose,
-   which is a training-behaviour decision, not a fidelity fix.
+   because the address was right and the pose was not. Left as a decision
+   in the first cut of this section; taken in §13.31 below.
 4. **humanoidstandup diverges 7.2e-05 at step 21 with a two-step history
    dependence, not localised.** From MuJoCo's injected state at K=20 one
    step is exact (4e-14) and so are five; from K=19 two steps are exact;
@@ -2837,3 +2836,48 @@ nothing while a perf sweep runs.
 red since 8c788511 (2026-08-19), the same reason that scene is not on the
 board, and not this section's. Bench checksums: the Gym five bit-identical
 before and after (no fluid, no tendon rows in them).
+
+### 13.31 `qpos0` is MuJoCo's: the `init_qpos` numeric is no longer applied, and the Ant env resets like Gymnasium (2026-09-06)
+
+The decision on §13.30's third item: align to MuJoCo. `_fill_qpos0` no
+longer copies `<custom><numeric name="init_qpos">` over the pose it builds
+from joint `ref`s and free-joint body poses. MuJoCo's `mj_resetData` never
+read that numeric; mujoco-py's `MjSim` did, which is where the legacy parser
+took it from, and Gymnasium on the current bindings resets from `data.qpos`
+after load, i.e. `qpos0`. Gymnasium's ant is the only model in the tree
+carrying one.
+
+**Board:** Gymnasium ant 2.856e-01 → 4.4e-16 at 50 steps (1.5e-16 at one);
+every other row unchanged. `test_qpos0_vs_mujoco` pins `qpos0` to
+`MjModel.qpos0` elementwise on ant, humanoid and dm_control's quadruped, and
+on an inline fixture whose numeric says 9 everywhere so the gate cannot pass
+by coincidence.
+
+**The Ant env** (`mojo_rl/envs/ant/`) now resets from z 0.75 with every
+ankle at 0, which is outside `range="30 70"`, so its first step is MuJoCo's
+limit shove — exactly what Gymnasium's Ant-v5 does, and what our env had
+been sparing itself with the mujoco-py pose (z 0.55, ankles ±1 rad).
+Nothing in the env read the old pose by value: the reset is `qpos0 + 0.1
+uniform` on both devices (`reset_data` / the GPU reset kernel through
+`pose_meta`), `init_qpos_gpu` is a no-op for Ant, the inverse weights were
+already built from the joint records at MuJoCo's `qpos0` rather than the
+reset pose (§ `invweight.mojo`), and the healthy band [0.2, 1.0] contains
+0.75. `tests/envs/test_ant_env_reset_is_qpos0` pins the reset height and
+runs three random episodes from it. A policy trained on the old start pose
+will see a different first second of every episode; that is the price of
+matching the reference, and it is Gymnasium's first second too.
+
+The ant asset keeps its `<custom>` block: it is a verbatim copy of
+Gymnasium's file, and the parser now treats it the way MuJoCo does.
+`test_ant_fk_vs_mujoco`'s bent-ankle case stays as an explicit pose on both
+sides, no longer labelled the default.
+
+**Gates on the final tree:** PASS — `test_qpos0_vs_mujoco`,
+`tests/envs/test_ant_env_reset_is_qpos0` (reset z 0.66–0.85; random
+episodes 14 / 123 / 74 steps, where MuJoCo under Gymnasium's own protocol
+gives 27–140), `test_ant_fk_vs_mujoco`, `test_constraints_vs_mujoco`,
+`test_euler_fields_vs_mujoco`, `test_env_fields_mujoco_roundtrip`,
+`test_newton_freejoint_vs_cpu`. `test_validate_vs_mujoco` passes all 35
+fixtures and nine real models and then dies on its `iit_softfoot` row with
+the same radian-into-degree attach refusal as the wrap-tendon gate (§13.30)
+— two gates now name that expander gap, which is worth its own fix.
