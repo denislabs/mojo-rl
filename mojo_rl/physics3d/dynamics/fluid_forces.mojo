@@ -28,7 +28,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..kinematics.quat_math import quat_rotate
+from ..kinematics.quat_math import quat_rotate, quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..fields import (
     Data,
@@ -52,6 +52,10 @@ from ..gpu.constants import (
     BODY_IDX_IXX,
     BODY_IDX_IYY,
     BODY_IDX_IZZ,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
     BODY_IDX_PARENT,
     BODY_IDX_ROOTID,
     JOINT_IDX_TYPE,
@@ -139,11 +143,34 @@ def _fluid_forces_env[
         var wy_w = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 1])
         var wz_w = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 2])
 
-        # --- 3. Rotate velocity to body local frame (conjugate quat) ---
-        var qx = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])
-        var qy = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])
-        var qz = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])
-        var qw = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])
+        # --- 3. Rotate velocity into the INERTIAL frame (conjugate quat) ---
+        #
+        # ⚠ `ximat`, NOT `xmat`. `mj_inertiaBoxFluidModel` builds the box from
+        # `body_inertia`, which is the diagonal of the inertia tensor in the
+        # body's INERTIAL frame (`xquat ⊗ iquat`), and reads the velocity in
+        # that same frame (`mj_objectVelocity(..., flg_local=1)` uses
+        # `ximat`). `BODY_IDX_IXX..IZZ` are those principal moments, so the
+        # box's x face is the inertial frame's x face. Rotating the velocity
+        # into the BODY frame instead pairs each face with the wrong velocity
+        # component whenever `iquat` is not the identity — a `fromto` capsule
+        # along the body's x axis has its principal z along that axis. The
+        # viscous term is symmetric (one `diam`) and never noticed; the
+        # pressure-drag term was 0.18% off on Gymnasium's swimmer at step 1
+        # and 5.6e-2 in qpos by step 50 (bigsweep, 2026-09-06). Velocity-only
+        # and density-only ablations pinned it to the density term.
+        var bqx = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_W])
+        var qi = quat_mul[DTYPE](bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = qi[0]
+        var qy = qi[1]
+        var qz = qi[2]
+        var qw = qi[3]
 
         var vloc = quat_rotate[DTYPE](-qx, -qy, -qz, qw, vx_w, vy_w, vz_w)
         var wloc = quat_rotate[DTYPE](-qx, -qy, -qz, qw, wx_w, wy_w, wz_w)
