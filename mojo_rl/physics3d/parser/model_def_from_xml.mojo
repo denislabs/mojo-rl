@@ -511,10 +511,11 @@ struct ModelDefFromXML[
     ):
         """Reset qpos to initial pose, zero qvel/qacc/qfrc.
 
-        If the XML has a <custom><numeric name="init_qpos"/> section, those
-        values are applied directly.  Otherwise qpos is zeroed and the free
-        joint quaternion (if any) is set to identity (qw=1) so that FK does
-        not degenerate.
+        `qpos0` is MuJoCo's: joint `ref`s and each free joint's body pose.
+        (A `<custom><numeric name="init_qpos">` is NOT applied — MuJoCo does
+        not read it either.) If no pose was parsed, qpos is zeroed and the
+        free joint quaternion (if any) is set to identity (qw=1) so that FK
+        does not degenerate.
         """
         # ⚠ `qpos0_nq == 0` MEANS "NO POSE WAS PARSED", NOT "the pose is
         # zero" — the two want different resets, and the second branch below
@@ -523,14 +524,14 @@ struct ModelDefFromXML[
         # record, which is the whole point of the phase.
         var nq0 = Int(sf.pose_meta.data[POSE_IDX_QPOS0_NQ])
         if nq0 > 0:
-            # Apply init_qpos / the joint refs.
+            # Apply qpos0 (joint refs, free-joint body poses).
             for i in range(Self.NQ):
                 if i < nq0:
                     d.qpos.data[i] = sf.qpos0.data[i]
                 else:
                     d.qpos.data[i] = Scalar[DTYPE](0)
         else:
-            # No init_qpos — zero everything, then fix free-joint quaternion.
+            # No pose parsed — zero everything, then fix free-joint quaternion.
             for i in range(Self.NQ):
                 d.qpos.data[i] = Scalar[DTYPE](0)
             var fj = Int(sf.pose_meta.data[POSE_IDX_FREE_JOINT_QPOS_ADR])

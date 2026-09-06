@@ -160,10 +160,12 @@ def compute_invweight0[
     # ── reference pose = MuJoCo qpos0 ────────────────────────────────────────
     # `mj_setConst` evaluates the inverse weights at qpos0: the COMPILER's
     # reference configuration (joint `ref`, free joints at their body's pose),
-    # NOT the env reset pose.  For Gym-derived models those differ — ant's
-    # <custom><numeric name="init_qpos"> parks its ankles at ±1 rad — and M is
-    # configuration-dependent, so seeding from the reset pose skews every
-    # inverse weight (ant: 0.75% on the hinges, 32% on the free root).
+    # NOT the env reset pose.  Those used to differ for Gym-derived models —
+    # ant's <custom><numeric name="init_qpos"> parked its ankles at ±1 rad
+    # until the parser stopped applying it (MuJoCo never did) — and M is
+    # configuration-dependent, so seeding from a reset pose skewed every
+    # inverse weight (ant: 0.75% on the hinges, 32% on the free root). Built
+    # from the joint records here so that can never recur.
     for i in range(nq):
         d.qpos.data[i] = Scalar[DTYPE](0)
     for j in range(njoint):

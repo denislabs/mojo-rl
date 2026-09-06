@@ -113,10 +113,11 @@ struct SpecFields[
     # (`mj_resetDataKeyframe`). ⚠ THESE ARE NOT ACTUATION, and they live here
     # because they are the rest of what `_acd` carried — this struct's job is
     # to be its runtime replacement, not to be a taxonomy. `qpos0` is indexed
-    # by qpos ADDRESS, so a free joint occupies 7 of its slots and a `<custom>
-    # <numeric name="init_qpos">` overrides the lot; that last case is why it
-    # cannot be folded into `Model.joints[JOINT_IDX_QPOS0]`, which is one
-    # scalar per JOINT.
+    # by qpos ADDRESS, so a free joint occupies 7 of its slots (its body's
+    # pos and quat), which is why it cannot be folded into
+    # `Model.joints[JOINT_IDX_QPOS0]`, one scalar per JOINT. (`<custom>
+    # <numeric name="init_qpos">` used to override the lot; MuJoCo ignores
+    # it and so does the parser now.)
     var qpos0: TensorImpl[Self.DTYPE]  # [NQ]
     var pose_meta: TensorImpl[Self.DTYPE]  # [POSE_META_SIZE]
     var key_meta: TensorImpl[Self.DTYPE]  # [NKEY, KEY_META_SIZE]

@@ -2172,9 +2172,9 @@ struct FlatModelDef(Movable):
     # ── qpos0 / initial pose ─────────────────────────────────────────────
     # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
     #   1. each joint's `ref`, already deg-converted, at its qpos address
-    #   2. a free joint's enclosing body `pos` into adr..adr+2, and qw=1 at
-    #      adr+3 when no explicit init_qpos overrides
-    #   3. `<custom><numeric name="init_qpos" data=...>` OVERRIDING both
+    #   2. a free joint's enclosing body `pos` and `quat` into adr..adr+6
+    #   3. NOT `<custom><numeric name="init_qpos">` — MuJoCo ignores it and
+    #      so do we since 2026-09-06 (`_fill_qpos0`)
     # `qpos0_nq` mirrors `ComptimeActData.nq`: how many entries are
     # meaningful, NOT the model's nq. `reset_data` applies them only when > 0.
     var qpos0: List[Float64]

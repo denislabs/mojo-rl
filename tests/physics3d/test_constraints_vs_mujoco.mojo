@@ -119,9 +119,10 @@ def _check_invweights(
 def test_invweight0_vs_mujoco() raises:
     """Root-cause guard: build-time inverse weights must equal MuJoCo's.
 
-    Ant is the discriminating model: it carries a <custom> init_qpos that
-    bends its ankles, so a build at the reset pose instead of qpos0 shows up
-    here (0.75% on the hinges) and nowhere else. Humanoid isolates the
+    Ant was the discriminating model: its <custom> init_qpos used to bend
+    its ankles at reset (the parser no longer applies it; MuJoCo never did),
+    so a build at the reset pose instead of qpos0 showed up here (0.75% on
+    the hinges) and nowhere else. It stays as the guard's history. Humanoid isolates the
     free-joint dof-group averaging (its reset pose IS qpos0, so only the
     averaging can differ). Hopper has neither and must stay exact.
     """

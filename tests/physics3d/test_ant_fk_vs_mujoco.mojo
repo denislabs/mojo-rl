@@ -199,9 +199,12 @@ def compare_fk(
 
 
 def test_fk_default_qpos() raises:
-    """FK at Ant's default init_qpos: torso at z=0.75, identity quaternion,
-    legs at their default angles from the XML custom/numeric init_qpos."""
-    # From XML: <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
+    """FK at the pose the XML's `<custom><numeric name="init_qpos">` names
+    (z=0.55, ankles at ±1 rad). ⚠ That numeric is NOT `qpos0` — MuJoCo
+    ignores it and since 2026-09-06 so does the parser (`test_qpos0_vs_mujoco`
+    is the gate for that); it stays here as a bent-ankle FK case, set
+    explicitly on both sides."""
+    # <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     # Free joint: x=0, y=0, z=0.55, qw=1, qx=0, qy=0, qz=0 (identity quaternion)
     qpos[0] = 0.0  # x
@@ -220,7 +223,7 @@ def test_fk_default_qpos() raises:
     qpos[12] = -1.0  # ankle_3
     qpos[13] = 0.0  # hip_4
     qpos[14] = 1.0  # ankle_4
-    compare_fk("Default init_qpos (z=0.55, identity quat)", qpos)
+    compare_fk("Bent-ankle pose (z=0.55, identity quat)", qpos)
 
 
 def test_fk_zero_joints() raises:

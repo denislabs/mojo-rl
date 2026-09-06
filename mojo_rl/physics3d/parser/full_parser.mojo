@@ -4932,11 +4932,9 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
       2. a free joint's enclosing body `pos` into adr..adr+2 — taken here from
          `JointData.body_id` rather than by re-scanning the worldbody text for
          the nearest preceding `<body`, which is what the twin does,
-      3. `<custom><numeric name="init_qpos">` OVERRIDING both, and setting
-         `qpos0_nq` to its own length.
-
-    When nothing overrides, `qpos0_nq` is the total qpos width and a free
-    joint gets qw = 1 at adr+3 so FK does not start on a zero quaternion.
+      3. NOT `<custom><numeric name="init_qpos">` — see the note at the end.
+    `qpos0_nq` is the total qpos width and a free joint gets its body's
+    quaternion at adr+3.. so FK does not start on a zero quaternion.
     """
     var q = 0
     for i in range(len(result.joints)):
@@ -5032,33 +5030,20 @@ def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
             result.qpos0[adr] = jd.ref_val
         adr += jd.nq
 
-    # <custom><numeric name="init_qpos" data="..."/> overrides everything.
-    var custom_sec = _extract_section(xml, "custom")
+    # ⚠⚠ `<custom><numeric name="init_qpos">` IS NOT APPLIED — MuJoCo DOES
+    # NOT APPLY IT. Until 2026-09-06 this function ended by copying that
+    # numeric over everything above, mirroring the legacy parser, which
+    # mirrored mujoco-py's `MjSim`. `mj_resetData` never read it, and neither
+    # does Gymnasium on the current bindings (`init_qpos = data.qpos`, i.e.
+    # `qpos0`). Gymnasium's ant ships one from the mujoco-py era (z 0.55,
+    # ankles at ±1 rad) and was the only model in the tree with it, so our
+    # ant and MuJoCo's started from two different poses: 2.9e-01 on the
+    # three-tree board at 50 steps, and a joint-address hunt that found
+    # nothing because the address was right and the pose was not. MuJoCo's
+    # ant starts at z 0.75 with every ankle at 0 — outside its
+    # `range="30 70"` — and its first step is a limit shove; that IS the
+    # reference. Gate: `test_qpos0_vs_mujoco` (PERFORMANCE.md §13.30).
     var found = False
-    if custom_sec.byte_length() > 0:
-        var num_pos = 0
-        while True:
-            var t = custom_sec.find("<numeric", num_pos)
-            if t == -1:
-                break
-            var tag_end = custom_sec.find(">", t)
-            if tag_end == -1:
-                break
-            var tag = String(custom_sec[byte = t : tag_end + 1])
-            if _trim(_extract_attr(tag, "name")) == "init_qpos":
-                var parts = List[String]()
-                _split_spaces(_extract_attr(tag, "data"), parts)
-                var count = len(parts)
-                if count > 64:  # the twin's cap; kept so the two agree
-                    count = 64
-                for i in range(count):
-                    if i < len(result.qpos0):
-                        result.qpos0[i] = _parse_float(parts[i])
-                result.qpos0_nq = count
-                found = True
-                break
-            num_pos = t + 7
-
     if not found and q > 0:
         result.qpos0_nq = q
         # ⚠⚠ A `qpos0[qw] = 1.0` STAMP USED TO SIT HERE, and its own comment
