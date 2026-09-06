@@ -2923,3 +2923,65 @@ hello_robot_stretch_3 (§13.29 and §9, the mesh manifold), then the anymal /
 spot / unitree / tidybot rows at 1e-6–1e-8 — event-driven trajectories
 after a contact — and crazyflie / flybody at 1e-8 / 1e-9. Nothing in that
 list is new to this campaign.
+
+### 13.33 `iit_softfoot` is back: the splice converts a sub-model's angle units, and two default-class gaps it exposed (2026-09-06)
+
+§13.32's one lost scene. MuJoCo compiles each attached model under ITS OWN
+`<compiler angle>` and attaches the compiled result; we splice text, and
+the host's compiler then reads the sub-model's numbers. The expander used
+to refuse a unit mismatch. It now scales the sub-model's angles into the
+host's units before the splice, using the exact attribute set MuJoCo's
+compiler scales by `degree` (`user_objects.cc`, 3.10.0): `euler` (all
+components), `axisangle` (the angle only), joint `range` on hinge AND ball,
+joint `ref` / `springref` on hinge only. The joint attributes depend on the
+joint's TYPE, resolved as MuJoCo resolves it — `class=`, the enclosing
+body's `childclass=` (inherited down the tree), parent classes, the root
+`<default>` — so a slide joint's range, in metres, does not move. A
+`<default>` block is scaled under the type IT resolves to, and a joint that
+inherits an attribute from a block of the other kind gets it materialised
+on its own tag in its own units (MuJoCo confirms both traps: a slide joint
+under a root `<joint ref="0.1">` keeps `qpos0 = 0.1` raw; an explicit hinge
+in a slide class has its inherited range scaled). A differing `eulerseq`
+still refuses; no model in the tree does that.
+
+The gate (`test_attach_angle_units_vs_mujoco`, fixtures
+`fixtures/attach_units/`) compares `parse_xml_full(expand_mjcf(...))`
+against `MjModel.from_xml_path` on the SAME scene file — two routes to one
+model — for every joint's range / qpos0 / qpos_spring and every body, geom,
+site and camera quaternion, on a radian asset attached twice into a degree
+scene and a degree asset into a radian scene: 261 checks, worst 1.1e-16.
+
+Writing that fixture found three things that were NOT the conversion, all
+reproduced with the asset loaded plain, no attach:
+
+1. **Joint `ref` never consulted the class default.** `springref` and
+   `range` did. A `<default><joint ref=...>` gave every inheriting joint
+   `qpos0 = 0`. No reference model writes one, which is why no board saw it.
+2. **Geom orientation consulted the class default for `quat` only.**
+   `euler` / `axisangle` / `xyaxes` / `zaxis` from a class read as identity,
+   while sites resolved all five. `anymal_b` carries a class `<geom euler>`;
+   the fixture's root `<geom euler="0.3 0 0">` was the catch.
+3. **The sub-model's root `<default>` was merged into the host's root**, so
+   the scene's FLOOR inherited the foot's `<geom euler>`. MuJoCo attaches a
+   model's default tree as a class `<prefix>main` under the host's root
+   (`mj_saveLastXML` prints exactly that); the splice now wraps it that way
+   and points every top-level spliced element that names no class at it
+   (`childclass=` on bodies). What still differs: a class nested under the
+   host's root inherits the host's root attributes in a text model where
+   MuJoCo's attached tree does not; no scene in the tree attaches under a
+   root `<default>` that sets anything.
+
+Boards with the new binary, same protocol as §13.30 / §13.32:
+
+| | before | after |
+|---|---|---|
+| one step, Menagerie, at or below 1e-9 | 84 of 84 | **85 of 85** |
+| fifty steps, three trees, loaded | 116 | 117 |
+| fifty steps, at or below 1e-9 | 96 | **98** |
+| fifty steps, above 1e-3 | 7 | 6 |
+
+`iit_softfoot`: 1.8e-17 at one step, 3.0e-15 at fifty. No other row moved
+by 10× in either direction (the ant row's 0.29 → 4e-16 is §13.31's). The
+fifteen attach / include / defaults / composition gates pass, and the two
+that had lost the scene (`test_wrap_tendon_vs_mujoco` 56/56,
+`test_validate_vs_mujoco`) exercise it again.

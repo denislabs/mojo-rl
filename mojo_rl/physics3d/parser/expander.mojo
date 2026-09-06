@@ -60,11 +60,13 @@ directory first. Getting this wrong gives a mesh geom with no mesh — invisible
 and uncollidable, exactly the failure the nameless-`<mesh>` bug produced.
 """
 
+from std.math import pi
+
 from .xml_parser import (
     _trim, _extract_attr, _extract_section_inner, _extract_section,
     _strip_xml_comments, _strip_wrapper, _normalize_freejoint,
     _parse_float, _find_tag, _file_stem, resolve_includes, merge_mjcf,
-    _rebase_files,
+    _rebase_files, _class_attr, _class_parent, _last_compiler_attr,
 )
 
 
@@ -453,17 +455,317 @@ def compiler_attr(xml: String, attr: String) -> String:
     ⚠ A COMPOSER NEEDS THIS, AND THE ABSENCE OF IT COST A FAMILY ITS ARM.
     `tasks/family.compose_family` writes a host scene that `<attach>`es assets;
     if the host declares no `<compiler angle>` MuJoCo reads it as DEGREE, and
-    the guard in `_expand_attach_models` below skips its check entirely because
-    the host's attribute is empty. `so101_tabletop.xml` was written that way:
+    the guard in `expand_attach` below used to skip its check entirely because
+    the host's attribute was empty. `so101_tabletop.xml` was written that way:
     every joint range in a `angle="radian"` arm came back 57x too tight and the
-    arm could move +-1.9 degrees. So a composer must be able to READ the base's
-    angle and RESTATE it on the scene it writes, and that needs this reader —
-    not a second one spelled slightly differently in another package.
+    arm could move +-1.9 degrees. The splice now CONVERTS a sub-model's angles
+    into the host's units, so a composer no longer has to match them — but a
+    composer that restates the base's angle keeps the scene readable as the
+    asset was written, and that needs this reader, not a second one spelled
+    slightly differently in another package.
 
     A wrapper rather than a rename because this file is shared: renaming a
     symbol another session may be editing is how in-flight work gets swept.
     """
     return _compiler_attr(xml, attr)
+
+
+def _default_eulerseq(a: String) -> String:
+    """`<compiler eulerseq>` with MuJoCo's default (`xyz`) filled in."""
+    return String("xyz") if a.byte_length() == 0 else a
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# angle units — convert a sub-model's angles into the host's units
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# MuJoCo compiles each attached model under ITS OWN `<compiler angle>` and
+# attaches the compiled result, so a `radian` asset in a `degree` scene is
+# unremarkable there. A text splice reads the sub-model's numbers under the
+# HOST's compiler, so the numbers have to change. Which numbers is exactly
+# the set MuJoCo's own compiler scales by `degree` (user_objects.cc, 3.10.0):
+#
+#   `euler`        every component        (ResolveOrientation)
+#   `axisangle`    the 4th component only (ResolveOrientation)
+#   joint `range`  HINGE and BALL joints  (mjCJoint::Compile)
+#   joint `ref`, `springref`  HINGE joints only
+#
+# and nothing else: `ctrlrange`, `fovy`, light `cutoff`, `polycoef` are never
+# angle-converted. ⚠ THE JOINT ATTRIBUTES DEPEND ON THE JOINT'S TYPE, and the
+# type is resolved through `class=`, the enclosing body's `childclass=`, the
+# class's parents and the top-level `<default>` — a slide joint's `range` is
+# in METRES and must not move. `_convert_joint_angles` resolves the type the
+# way MuJoCo does and scales per joint; the `<default>` blocks are scaled
+# under the type THEY resolve to, and a joint that inherits an attribute
+# from a block of the other kind (a slide joint under a root default written
+# for hinges) gets the attribute MATERIALISED on its own tag in the units its
+# own type will be read with.
+
+
+def _split_ws(s: String) -> List[String]:
+    """Whitespace-separated tokens of an attribute value."""
+    var parts = List[String]()
+    var cur = String("")
+    for i in range(s.byte_length()):
+        var ch = String(s[byte = i : i + 1])
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r":
+            if cur.byte_length() > 0:
+                parts.append(cur)
+                cur = String("")
+        else:
+            cur += ch
+    if cur.byte_length() > 0:
+        parts.append(cur)
+    return parts^
+
+
+def _scale_attr(xml: String, attr: String, factor: Float64, only: Int) -> String:
+    """Multiply the numbers in every `attr="..."` of `xml` by `factor`.
+
+    All components, or only component `only` when it is >= 0 (`axisangle`
+    scales its angle and not its axis). Text-level, attribute by attribute,
+    same separator rule as `_prefix_all`: the character before the name must
+    be whitespace, or `ref="` also matches the tail of `springref="`.
+    """
+    var needle = attr + '="'
+    var res = String("")
+    var scan = 0
+    var n = xml.byte_length()
+    while True:
+        var at = xml.find(needle, scan)
+        if at == -1:
+            res += String(xml[byte=scan:n])
+            return res^
+        var ok = at == 0
+        if not ok:
+            var prev = String(xml[byte = at - 1 : at])
+            ok = prev == " " or prev == "\t" or prev == "\n" or prev == "\r"
+        var vs = at + needle.byte_length()
+        var ve = xml.find('"', vs)
+        if not ok or ve == -1:
+            res += String(xml[byte=scan:vs])
+            scan = vs
+            continue
+        res += String(xml[byte=scan:vs])
+        res += _scale_values(String(xml[byte=vs:ve]), factor, only)
+        res += '"'
+        scan = ve + 1
+
+
+def _scale_values(value: String, factor: Float64, only: Int) -> String:
+    """`"a b c"` with every number (or only component `only`) times `factor`."""
+    var parts = _split_ws(value)
+    var res = String("")
+    for i in range(len(parts)):
+        if i > 0:
+            res += " "
+        if only < 0 or i == only:
+            res += _f(_parse_float(parts[i]) * factor)
+        else:
+            res += parts[i]
+    return res^
+
+
+def _joint_class_supplier(
+    xml: String, cls: String, attr: String
+) -> List[String]:
+    """[class, value] of the `<joint>` default that supplies `attr` to `cls`.
+
+    The class itself first, then its parents, then the top-level `<default>`
+    (class ""). Both strings empty when nothing sets it.
+    """
+    var out = List[String]()
+    var c = cls
+    var guard = 0
+    while guard < 64:
+        guard += 1
+        var v = _class_attr(xml, c, String("joint"), attr)
+        if v.byte_length() > 0:
+            out.append(c)
+            out.append(v)
+            return out^
+        if c.byte_length() == 0:
+            break
+        c = _class_parent(xml, c)
+    out.append(String(""))
+    out.append(String(""))
+    return out^
+
+
+def _joint_type_of_class(xml: String, cls: String) -> String:
+    """The joint type an element of class `cls` resolves to ("" = hinge)."""
+    return _joint_class_supplier(xml, cls, String("type"))[1]
+
+
+def _angular(jtype: String, attr: String) -> Bool:
+    """Does MuJoCo scale this joint attribute by `<compiler angle>`?
+
+    `range` on hinge AND ball; `ref` / `springref` on hinge only. An empty
+    type is MuJoCo's default, hinge.
+    """
+    if jtype.byte_length() == 0 or jtype == "hinge":
+        return True
+    return jtype == "ball" and attr == "range"
+
+
+def _scale_joint_tag(tag: String, jtype: String, factor: Float64) -> String:
+    var out = tag
+    for a in ["range", "ref", "springref"]:
+        if _angular(jtype, String(a)):
+            out = _scale_attr(out, String(a), factor, -1)
+    return out^
+
+
+def _convert_joint_angles(xml: String, factor: Float64) -> String:
+    """Scale every `<joint>`'s angular attributes by `factor`, per its TYPE.
+
+    One forward walk over the text with two stacks: the open `<default>`
+    blocks (so a joint default knows which class it belongs to) and the open
+    `<body>` elements (so a bare joint knows the `childclass` in force —
+    which inherits down the tree until a body restates it).
+    """
+    var out = String("")
+    var scan = 0
+    var n = xml.byte_length()
+    var dstack = List[String]()  # class of each open <default>
+    var bstack = List[String]()  # childclass in force in each open <body>
+    while True:
+        var lt = xml.find("<", scan)
+        if lt == -1:
+            out += String(xml[byte=scan:n])
+            return out^
+        var te = xml.find(">", lt)
+        if te == -1:
+            out += String(xml[byte=scan:n])
+            return out^
+        var tag = String(xml[byte = lt : te + 1])
+        var name = tag_name_at(xml, lt)
+        var selfclose = te >= 1 and String(xml[byte = te - 1 : te]) == "/"
+        if name.byte_length() == 0:
+            if tag.startswith("</default"):
+                if len(dstack) > 0:
+                    _ = dstack.pop()
+            elif tag.startswith("</body"):
+                if len(bstack) > 0:
+                    _ = bstack.pop()
+        elif name == "default":
+            if not selfclose:
+                dstack.append(_trim(_extract_attr(tag, "class")))
+        elif name == "body":
+            if not selfclose:
+                var cc = _trim(_extract_attr(tag, "childclass"))
+                if cc.byte_length() == 0 and len(bstack) > 0:
+                    cc = bstack[len(bstack) - 1]
+                bstack.append(cc)
+        elif name == "joint":
+            var jtype = _trim(_extract_attr(tag, "type"))
+            if len(dstack) > 0:
+                # A joint DEFAULT: its type is its own, else its parents'.
+                var cls = dstack[len(dstack) - 1]
+                if jtype.byte_length() == 0 and cls.byte_length() > 0:
+                    jtype = _joint_type_of_class(xml, _class_parent(xml, cls))
+                tag = _scale_joint_tag(tag, jtype, factor)
+            else:
+                var cls = _trim(_extract_attr(tag, "class"))
+                if cls.byte_length() == 0 and len(bstack) > 0:
+                    cls = bstack[len(bstack) - 1]
+                if jtype.byte_length() == 0:
+                    jtype = _joint_type_of_class(xml, cls)
+                tag = _scale_joint_tag(tag, jtype, factor)
+                # ⚠ AN INHERITED ATTRIBUTE WAS SCALED UNDER THE BLOCK'S TYPE,
+                # not this joint's. When the two disagree (a slide joint under
+                # a root `<joint ref=>` written for hinges; a hinge in a slide
+                # class with no range of its own), MuJoCo reads the raw value
+                # under THIS joint's type — so write that value on the tag.
+                for a in ["range", "ref", "springref"]:
+                    if _extract_attr(tag, String(a)).byte_length() > 0:
+                        continue
+                    var sup = _joint_class_supplier(xml, cls, String(a))
+                    if sup[1].byte_length() == 0:
+                        continue
+                    var block_type = _joint_type_of_class(xml, sup[0])
+                    if _angular(block_type, String(a)) == _angular(
+                        jtype, String(a)
+                    ):
+                        continue
+                    var raw = sup[1]
+                    if _angular(jtype, String(a)):
+                        raw = _scale_values(raw, factor, -1)
+                    tag = _set_attr(tag, String(a), raw)
+        out += String(xml[byte=scan:lt]) + tag
+        scan = te + 1
+
+
+def _convert_angle_units(xml: String, factor: Float64) -> String:
+    """A sub-model's angles, rewritten so the host's compiler reads them right.
+
+    `factor` is 180/pi for a radian model entering a degree host, pi/180 the
+    other way. See the block comment above for the attribute set.
+    """
+    var out = _scale_attr(xml, String("euler"), factor, -1)
+    out = _scale_attr(out, String("axisangle"), factor, 3)
+    return _convert_joint_angles(out, factor)
+
+
+def _class_carriers() -> List[String]:
+    """Elements that take a `class=` (MJCF), plus `body`, which takes
+    `childclass=`. Sensors, `<exclude>`, textures and the rest take none."""
+    var out = List[String]()
+    for n in ["geom", "site", "joint", "camera", "light", "mesh", "material",
+              "general", "motor", "position", "velocity", "intvelocity",
+              "damper", "cylinder", "muscle", "adhesion", "spatial", "fixed",
+              "connect", "weld", "distance", "flex", "pair"]:
+        out.append(String(n))
+    return out^
+
+
+def _apply_default_class(inner: String, cls: String) -> String:
+    """Give each DIRECT CHILD of `inner` the default class `cls` unless it
+    names one: `childclass=` on a `<body>`, `class=` on the other carriers.
+
+    An element that already carries one keeps it — its class sits UNDER
+    `cls` after the wrap in `expand_attach`, so it inherits through it.
+    """
+    var carriers = _class_carriers()
+    var out = String("")
+    var scan = 0
+    var n = inner.byte_length()
+    while scan < n:
+        var lt = inner.find("<", scan)
+        if lt == -1:
+            out += String(inner[byte=scan:n])
+            break
+        out += String(inner[byte=scan:lt])
+        var ename = tag_name_at(inner, lt)
+        if ename.byte_length() == 0:
+            # a comment or a stray close tag: copy through to its `>`
+            var gt = inner.find(">", lt)
+            if gt == -1:
+                out += String(inner[byte=lt:n])
+                break
+            out += String(inner[byte = lt : gt + 1])
+            scan = gt + 1
+            continue
+        var elem_end = element_end(inner, ename, lt)
+        var elem = String(inner[byte=lt:elem_end])
+        var tag_end = elem.find(">")
+        var tag = String(elem[byte = 0 : tag_end + 1]) if tag_end != -1 else elem
+        var attr = String("")
+        if ename == "body":
+            attr = String("childclass")
+        else:
+            for c in carriers:
+                if c == ename:
+                    attr = String("class")
+        if attr.byte_length() > 0 and _trim(
+            _extract_attr(tag, attr)
+        ).byte_length() == 0:
+            tag = _set_attr(tag, attr, cls)
+        out += tag
+        if tag_end != -1:
+            out += String(elem[byte = tag_end + 1 : elem.byte_length()])
+        scan = elem_end
+    return out^
 
 
 def _read(path: String) raises -> String:
@@ -623,14 +925,18 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
                     sep="",
                 )
 
-        # ⚠⚠ `<compiler>` IS NOT DROPPED, IT IS CHECKED. Nearly every model
-        # declares one, and MuJoCo keeps a merged `<compiler>` in its own
-        # flattened output — but the attribute that matters is `angle`, and it
-        # governs how the SUB-MODEL's OWN numbers are read. Splicing a
-        # `degree` model's text into a `radian` host silently reinterprets
-        # every joint range and euler in it: a 90 becomes 90 radians. MuJoCo
-        # cannot hit this because it compiles each model separately and
-        # attaches the RESULT; a text splice can, so it has to refuse.
+        # ⚠⚠ `<compiler>` IS NOT DROPPED, ITS UNITS ARE CONVERTED. Nearly
+        # every model declares one, and the attribute that matters is
+        # `angle`: it governs how the SUB-MODEL's OWN numbers are read. After
+        # the splice the HOST's compiler applies, so a `radian` model's text
+        # inside a `degree` scene would have every joint range and euler read
+        # 57x too small. MuJoCo cannot hit this — it compiles each model
+        # separately and attaches the RESULT — so the splice has to do what
+        # its compiler would: scale the sub-model's angles into the host's
+        # units (`_convert_angle_units`, the exact attribute set MuJoCo's
+        # compiler scales). This used to REFUSE, and the refusal cost
+        # `iit_softfoot` (a radian foot in a scene that says nothing) one
+        # board row and two gates.
         #
         # ⚠⚠ AN ABSENT `angle` IS NOT "NO OPINION", IT IS `degree`. This
         # comparison required BOTH sides to be present for one commit, and a
@@ -641,18 +947,26 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         # instead of +-1.9199, the arm could move +-1.9 DEGREES, and nbody /
         # njnt / nq / nv / ngeom were all correct. Defaulting both sides is
         # what makes the absent case comparable at all.
-        var sub_angle = _default_angle(_compiler_attr(sub, "angle"))
-        var host_angle = _default_angle(_compiler_attr(xml, "angle"))
-        if sub_angle != host_angle:
+        #
+        # ⚠ `_last_compiler_attr`, NOT the first tag: an included file may
+        # carry the `<compiler angle>` and the host's own tag only `meshdir`.
+        var sub_angle = _default_angle(_last_compiler_attr(sub, "angle"))
+        var host_angle = _default_angle(_last_compiler_attr(xml, "angle"))
+        var sub_seq = _default_eulerseq(_last_compiler_attr(sub, "eulerseq"))
+        var host_seq = _default_eulerseq(_last_compiler_attr(xml, "eulerseq"))
+        if sub_seq != host_seq:
+            # An euler triple only converts to a quaternion under ONE
+            # sequence; rewriting it for another is a job for the compiler,
+            # not a text splice. No model in the tree does this.
             raise Error(
                 "physics3d: attached model '" + mdl + "' uses <compiler"
-                " angle='" + sub_angle + "'> while the scene uses '"
-                + host_angle + "'. A text splice would read its angles in the"
-                " scene's units. Convert the asset, or set both to the same."
-                " ⚠ An absent <compiler angle> counts as 'degree' — MuJoCo's"
-                " default — so a scene that attaches radian assets must SAY"
-                " angle='radian'."
+                " eulerseq='" + sub_seq + "'> while the scene uses '"
+                + host_seq + "'. A text splice would read its euler angles"
+                " in the scene's sequence. Set both to the same."
             )
+        if sub_angle != host_angle:
+            var factor = (180.0 / pi) if sub_angle == "radian" else (pi / 180.0)
+            sub = _convert_angle_units(sub, factor)
         # ⚠ `meshdir` / `assetdir` FOLD INTO THE REBASE, and must: after the
         # splice the HOST's compiler applies, so a sub-model whose paths are
         # `meshdir`-relative would resolve against the wrong directory and its
@@ -685,11 +999,38 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         if body.byte_length() > 0:
             spliced = _named_body(sub_world, prefix + body)
 
+        # ⚠⚠ THE SUB-MODEL'S ROOT `<default>` IS ITS OWN, NOT THE SCENE'S.
+        # MuJoCo attaches a model's default tree as a class named
+        # `<prefix>main` under the host's root (user_model.cc, `operator+=`
+        # on `mjCDef`; `mj_saveLastXML` prints exactly that), and the
+        # attached elements inherit from it. Merging the root block's text
+        # into the host's root gave the sub-model's `<geom euler>` to the
+        # scene's FLOOR — measured on the angle-units fixture — and would
+        # hand a scene's `<geom condim>` to every attached robot. So the
+        # block is wrapped as `<default class="<prefix>main">` and every
+        # top-level element of the splice that names no class is pointed
+        # at it (`childclass=` on bodies, which inherits down the tree).
+        # ⚠ What still leaks is the OTHER direction: a class nested under
+        # the host's root inherits the host's root attributes in a text
+        # model, where MuJoCo's attached tree does not. No scene in the
+        # tree attaches under a root `<default>` that sets anything.
+        var sub_defaults = _extract_section_inner(sub_prefixed, "default")
+        var has_defaults = _trim(sub_defaults).byte_length() > 0
+        var main_cls = prefix + "main"
+        if has_defaults:
+            spliced = _apply_default_class(spliced, main_cls)
+            extra.append(
+                '<default><default class="' + main_cls + '">' + sub_defaults
+                + "</default></default>"
+            )
+
         # Everything that is not the worldbody rides along.
-        for sec in ["asset", "default", "actuator", "tendon", "equality",
-                    "contact", "sensor"]:
+        for sec in ["asset", "actuator", "tendon", "equality", "contact",
+                    "sensor"]:
             var inner = _extract_section_inner(sub_prefixed, String(sec))
             if _trim(inner).byte_length() > 0:
+                if has_defaults:
+                    inner = _apply_default_class(inner, main_cls)
                 extra.append(
                     "<" + String(sec) + ">" + inner + "</" + String(sec) + ">"
                 )

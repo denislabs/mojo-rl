@@ -1,0 +1,12 @@
+<mujoco model="scene_rad">
+  <compiler angle="radian"/>
+  <asset>
+    <model name="a" file="deg_asset.xml"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="mount" pos="0 0 0.5" euler="0 0 1.5707963267948966">
+      <attach model="a" prefix="a_"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1369,6 +1369,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var joint_actfrc_limited: Bool
     var joint_frictionloss: Float64
     var joint_springref: Float64
+    var joint_ref: Float64  # `ref` — an angle for hinge, a length for slide
     var joint_solref_limit_0: Float64
     var joint_solref_limit_1: Float64
     var joint_solimp_limit_0: Float64
@@ -1492,7 +1493,14 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # childclass stack into that pass.
     var geom_material_s: String
     var geom_pos_s: String
+    # ⚠ ALL FIVE orientation spellings, as `site_*_s` below: a class may set
+    # any of them (anymal_b's `<geom euler>`), and a geom that inherits one
+    # must not read identity. `quat` alone was captured until 2026-09-06.
     var geom_quat_s: String
+    var geom_axisangle_s: String
+    var geom_xyaxes_s: String
+    var geom_zaxis_s: String
+    var geom_euler_s: String
     var geom_group_s: String
     var geom_hfield_s: String
     # Site structural attrs, same raw-string treatment as the geom ones.
@@ -1550,6 +1558,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_actfrc_limited: Bool = False,
         joint_frictionloss: Float64 = 0.0,
         joint_springref: Float64 = 0.0,
+        joint_ref: Float64 = 0.0,
         joint_solref_limit_0: Float64 = 0.02,
         joint_solref_limit_1: Float64 = 1.0,
         joint_solimp_limit_0: Float64 = 0.9,
@@ -1594,6 +1603,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_actfrc_limited = joint_actfrc_limited
         self.joint_frictionloss = joint_frictionloss
         self.joint_springref = joint_springref
+        self.joint_ref = joint_ref
         self.joint_solref_limit_0 = joint_solref_limit_0
         self.joint_solref_limit_1 = joint_solref_limit_1
         self.joint_solimp_limit_0 = joint_solimp_limit_0
@@ -1659,6 +1669,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_material_s = ""
         self.geom_pos_s = ""
         self.geom_quat_s = ""
+        self.geom_axisangle_s = ""
+        self.geom_xyaxes_s = ""
+        self.geom_zaxis_s = ""
+        self.geom_euler_s = ""
         self.geom_group_s = ""
         self.geom_hfield_s = ""
         self.tendon_stiffness_s = ""

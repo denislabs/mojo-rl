@@ -681,6 +681,12 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         if sr_s.byte_length() > 0:
             d.joint_springref = _parse_float(sr_s)
 
+        # `ref` — kept RAW, like `springref` and `range`: whether it is an
+        # angle depends on the JOINT's type, which this block does not know.
+        var jref_s = _extract_attr(jtag, "ref")
+        if jref_s.byte_length() > 0:
+            d.joint_ref = _parse_float(jref_s)
+
         var srl_s = _extract_attr(jtag, "solreflimit")
         if srl_s.byte_length() > 0:
             var sv = _solref_into(
@@ -831,6 +837,18 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var gq_s = _extract_attr(gtag, "quat")
         if gq_s.byte_length() > 0:
             d.geom_quat_s = gq_s
+        var gaa_s = _extract_attr(gtag, "axisangle")
+        if gaa_s.byte_length() > 0:
+            d.geom_axisangle_s = gaa_s
+        var gxy_s = _extract_attr(gtag, "xyaxes")
+        if gxy_s.byte_length() > 0:
+            d.geom_xyaxes_s = gxy_s
+        var gza_s = _extract_attr(gtag, "zaxis")
+        if gza_s.byte_length() > 0:
+            d.geom_zaxis_s = gza_s
+        var geu_s = _extract_attr(gtag, "euler")
+        if geu_s.byte_length() > 0:
+            d.geom_euler_s = geu_s
         var gg_s = _extract_attr(gtag, "group")
         if gg_s.byte_length() > 0:
             d.geom_group_s = gg_s
@@ -2275,15 +2293,17 @@ def _parse_one_joint(
     # a LENGTH for slide. Without this, finger's `ref="-90"` became
     # -90 rad instead of -pi/2, which (per bug 18) silently skews
     # every constraint inverse weight since they are built at qpos0.
+    #
+    # ⚠ THE CLASS DEFAULT IS CONSULTED, like `springref` just above. It was
+    # not until 2026-09-06: a `<default><joint ref=...>` gave every joint
+    # inheriting it qpos0 = 0. No reference model in the tree writes one,
+    # which is why the board never saw it; a fixture does.
     var ref_s = _extract_attr(tag, "ref")
-    if ref_s.byte_length() > 0:
-        var r_angular = (
-            jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
-        )
-        var rrf = deg_factor if r_angular else Float64(1.0)
-        jd.ref_val = _parse_float(ref_s) * rrf
-    else:
-        jd.ref_val = 0.0
+    var ref_raw = (
+        _parse_float(ref_s) if ref_s.byte_length() > 0 else jdef.joint_ref
+    )
+    var r_angular = jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
+    jd.ref_val = ref_raw * (deg_factor if r_angular else Float64(1.0))
 
     # frictionloss
     var fl_s = _extract_attr(tag, "frictionloss")
@@ -2490,17 +2510,27 @@ def _parse_one_geom(
             gd.pos_z = pv[2]
 
         # orientation: quat > axisangle > xyaxes > zaxis > euler
+        # ⚠ EACH SPELLING FALLS BACK TO THE CLASS ON ITS OWN, as sites do —
+        # only `quat` did until 2026-09-06, so anymal_b's class `<geom
+        # euler>` and any inherited `axisangle` / `xyaxes` / `zaxis` read as
+        # identity. Caught by a fixture whose root default carries `euler`.
         var quat_s = _extract_attr(tag, "quat")
         if quat_s.byte_length() == 0:
             quat_s = eff_defaults.geom_quat_s
+        var gaa_s = _extract_attr(tag, "axisangle")
+        if gaa_s.byte_length() == 0:
+            gaa_s = eff_defaults.geom_axisangle_s
+        var gxy_s = _extract_attr(tag, "xyaxes")
+        if gxy_s.byte_length() == 0:
+            gxy_s = eff_defaults.geom_xyaxes_s
+        var gza_s = _extract_attr(tag, "zaxis")
+        if gza_s.byte_length() == 0:
+            gza_s = eff_defaults.geom_zaxis_s
+        var geu_s = _extract_attr(tag, "euler")
+        if geu_s.byte_length() == 0:
+            geu_s = eff_defaults.geom_euler_s
         var gq = _orientation_to_quat(
-            quat_s,
-            _extract_attr(tag, "axisangle"),
-            _extract_attr(tag, "xyaxes"),
-            _extract_attr(tag, "zaxis"),
-            _extract_attr(tag, "euler"),
-            deg_factor,
-            eulerseq,
+            quat_s, gaa_s, gxy_s, gza_s, geu_s, deg_factor, eulerseq
         )
         gd.quat_x = gq[0]
         gd.quat_y = gq[1]
