@@ -150,6 +150,7 @@ def build_tendon_limit_rows[
     E_CAP: Int,
     BATCH: Int,
     D: DimsLike,
+    L_QPOS: Layout,
     L_QVEL: Layout,
     L_TENDONS: Layout,
     L_SITES: Layout,
@@ -164,6 +165,7 @@ def build_tendon_limit_rows[
 ](
     env: Int,
     dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     tendons: LayoutTensor[
         DTYPE, L_TENDONS, MutAnyOrigin
@@ -244,10 +246,42 @@ def build_tendon_limit_rows[
                 cdof, xpos, xquat, tJ,
             )
         else:
-            # A fixed tendon's length needs qpos, which this builder is not
-            # given; no gated model has a limited fixed tendon, and letting it
-            # through as length 0 would fabricate a permanent violation.
-            continue
+            # ⚠⚠ A FIXED TENDON'S LIMIT IS A ROW TOO. This branch was
+            # `continue` until 2026-09-06 ("this builder is not given
+            # qpos"): every `<fixed limited="true">` tendon fell through and
+            # its range never produced a row, on every solver path, while the
+            # equality builder below handled both kinds. MuJoCo's
+            # `mj_instantiateLimit` does not distinguish them — `ten_length`
+            # and `ten_J` are whatever `mj_tendon` computed, `sum(coef*qpos)`
+            # and `coef` per dof for a fixed one. ToddlerBot's waist is
+            # coupled by two such tendons with `range="-0.001 0.001"`; without
+            # their rows `waist_yaw` walked 4e-02 from MuJoCo in 100 steps
+            # (PERFORMANCE.md §13.29). Same length/Jacobian as
+            # `build_tendon_equality_rows`.
+            for i in range(nv):
+                tJ[i] = Scalar[DTYPE](0)
+            var njnt_f = Int(
+                rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_NUM_JOINTS])
+            )
+            for k in range(TENDON_MAX_JOINTS):
+                if k >= njnt_f:
+                    break
+                var jf = Int(
+                    rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_JOINT_0 + k])
+                )
+                if jf < 0 or jf >= njoint:
+                    continue
+                var coef_f = rebind[Scalar[DTYPE]](
+                    tendons[t, TENDON_IDX_COEF_0 + k]
+                )
+                var qadr_f = Int(
+                    rebind[Scalar[DTYPE]](joints[jf, JOINT_IDX_QPOS_ADR])
+                )
+                var dadr_f = Int(
+                    rebind[Scalar[DTYPE]](joints[jf, JOINT_IDX_DOF_ADR])
+                )
+                ten_len += coef_f * rebind[Scalar[DTYPE]](qpos[env, qadr_f])
+                tJ[dadr_f] = tJ[dadr_f] + coef_f
 
         # --- ten_J . qvel --------------------------------------------------
         var ten_vel = Scalar[DTYPE](0)

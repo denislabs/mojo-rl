@@ -1572,7 +1572,7 @@ def _newton_solve_env[
             build_tendon_limit_rows[
                 DTYPE, V_CAP, E_CAP, BATCH
             ](
-                env, dims, qvel, tendons, sites, geoms_w, bodies, joints,
+                env, dims, qpos, qvel, tendons, sites, geoms_w, bodies, joints,
                 mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, me, num_edges,
@@ -2626,7 +2626,7 @@ def _newton_solve_env[
         build_tendon_limit_rows[
             DTYPE, V_CAP, EQ_CAP, BATCH
         ](
-            env, dims, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
+            env, dims, qpos, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
             subtree_com, cdof, xpos, xquat, m_inv,
             eq_J, eq_D, eq_bias, max_eq_rows, neq_rows,
         )
@@ -4844,7 +4844,7 @@ def _newton_blocked_fields_kernel[
             build_tendon_limit_rows[
                 DTYPE, V_SIZE, MAX_TLIM,
                 BATCH](
-                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, geoms_w, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 t_je, t_de, t_bias, MAX_TLIM, t_n,
             )
