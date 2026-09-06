@@ -636,7 +636,23 @@ struct Phyics3dEnv[
                 comptime if Self.CONFIG.INTEGRATOR == "euler":
                     self.integ_euler.step["cpu"](self.d, self.mf)
                 else:
-                    self.integ_rk4.step["cpu"](self.d, self.mf)
+                    # ⚠ RK4 RE-EVALUATES THE ACTUATORS AT STAGES 1-3, as
+                    # `mj_RungeKutta` does — a servo reads the stage's qpos,
+                    # a site wrench the stage's orientation. For a `<motor>`
+                    # this rewrites `gear*ctrl` three more times and is
+                    # bit-identical to `step`; a CONFIG that applied its own
+                    # actions has nothing the integrator can re-evaluate,
+                    # so it keeps the frozen-qfrc entry (PERFORMANCE.md
+                    # §13.34).
+                    if custom_applied:
+                        self.integ_rk4.step["cpu"](self.d, self.mf)
+                    else:
+                        self.integ_rk4.step_actuated[
+                            "cpu", NORMALIZED = Self.CONFIG.NORMALIZED_ACTIONS
+                        ](
+                            self.d, self.mf, self.sf, action_list, self.act,
+                            Self.MODEL_DEF.TIMESTEP,
+                        )
             except e:
                 print("Phyics3dEnv.step: physics error:", e)
 

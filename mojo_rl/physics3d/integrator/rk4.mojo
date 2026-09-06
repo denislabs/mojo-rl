@@ -46,6 +46,7 @@ Deliberately NOT yet ported (raise / absent by design):
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
+from std.memory import UnsafePointer
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
 from ..kinematics.forward_kinematics import (
@@ -64,6 +65,8 @@ from ..types import ConeType
 from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..dynamics.gravcomp import compute_gravcomp_forces
+from ..dynamics.actuation import apply_actions_fields
+from ..dynamics.pose_transmission import apply_pose_transmission
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
 from ..solver.warmstart import save_qacc_warmstart
@@ -84,6 +87,7 @@ from ..fields import (
     DynamicsScratch,
     ContactScratch,
     Rk4Scratch,
+    SpecFields,
     Dims,
     DimsLike,
     DYN2,
@@ -729,41 +733,141 @@ struct RK4Integrator[
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full RK4 step (4 stages [+ per-stage contact/limit solve] +
-        combine)."""
+        combine), with `d.qfrc` — the driver's actuator + applied force —
+        HELD FIXED across the four stages.
+
+        ⚠ THAT IS NOT WHAT MuJoCo DOES for an actuator whose force depends
+        on the pose: `mj_RungeKutta` runs `mj_forwardSkip` at every stage,
+        which re-evaluates `qfrc_actuator` at the stage's `qpos`/`qvel`. A
+        `<motor>` on a joint is `gear*ctrl`, the same at every stage, so
+        this entry is exact for it; a `<position>` servo, a spatial-tendon
+        transmission or a body-fixed thrust (`<general site=...>` on a free
+        body — crazyflie) is not. Use `step_actuated` for those: PERFORMANCE.md
+        §13.34 measured the difference at 3.3e-13 per step on crazyflie,
+        amplified to 2e-8 by fifty steps of tumbling flight, and a Python
+        replica of `mj_RungeKutta` with the actuator frozen at stage 0
+        matched THIS entry to 1.3e-23.
+        """
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
         comptime for s in range(4):
             self._stage_setup[target, s](dt, d, m, ctx)
             self._stage_dynamics[target, CONTACTS](d, m, ctx)
-            # Per-stage constraint solve (legacy: solver launch after every
-            # stage kernel; corrects qacc_constrained before the next
-            # stage's A[k] snapshot / the combine).
-            comptime if CONTACTS:
-                # Auto broadphase = legacy production (the legacy stage
-                # kernel calls detect_contacts_auto_gpu): SAP for
-                # NGEOM >= 16, O(N^2) otherwise — routing is bit-identical
-                # for every existing gate model (all NGEOM < 16).
-                detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
-                comptime assert (
-                    Self.SOLVER == "pgs"
-                    or Self.SOLVER == "newton"
-                    or Self.SOLVER == "cg"
-                    or Self.SOLVER == "island"
-                ), (
-                    "RK4Integrator: SOLVER must be 'pgs', 'newton',"
-                    " 'cg', or 'island'"
-                )
-                comptime if Self.SOLVER == "newton":
-                    solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, NOSLIP_ITER=Self.NOSLIP_ITER, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
-                else:
-                    comptime if Self.SOLVER == "cg":
-                        solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-                    else:
-                        comptime if Self.SOLVER == "island":
-                            solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
-                        else:
-                            solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+            self._stage_constraints[target, CONTACTS](d, m, ctx)
+        self._finish[target](dt, d, m, ctx)
 
+    def step_actuated[
+        target: StaticString,
+        CONTACTS: Bool = True,
+        NORMALIZED: Bool = False,
+        DS: DimsLike = Self.D,
+    ](
+        mut self,
+        mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
+        mut m: Model[Self.DTYPE, Self.D],
+        sf: SpecFields[Self.DTYPE, DS],
+        actions: List[Float64],
+        act: List[Scalar[Self.DTYPE]],
+        timestep: Float64,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """`step`, with the actuator forces RE-EVALUATED at stages 1-3 from
+        each stage's own `qpos`/`qvel` — what `mj_RungeKutta` does.
+
+        The caller has already applied `actions` at the start state (stage
+        0 uses the `d.qfrc` it left, exactly as `step` does); here every
+        later stage zeroes `d.qfrc` and re-runs `apply_actions_fields` +
+        `apply_pose_transmission` at the stage state, so a servo reads the
+        stage's `qpos`, a spatial tendon its stage moment arm, and a site
+        wrench the stage's body orientation. `_stage_setup` writes the stage
+        `qpos`/`qvel` before this runs, and `_stage_dynamics` recomputes FK
+        a moment later from the same `qpos`, so the FK the transmission
+        refreshes is not wasted work on a different pose.
+
+        ⚠ `act` IS NOT ADVANCED HERE. `apply_actions_fields` integrates a
+        dyntype's activation (filter, PID integral, slew) by `timestep` on
+        every call, and the driver's call at stage 0 already did that for
+        this step; the stages work on a COPY, so a dyntype actuator sees its
+        start-of-step activation at every stage. MuJoCo carries `act` in the
+        RK state and evaluates it at the stage (`act + h*A*act_dot`); no RK4
+        model in the tree has a dyntype (crazyflie's rotors are `<general>`
+        with none), so the difference is not measurable here yet.
+
+        CPU, BATCH=1 (the actuation entry points are CPU and single-env).
+        `NORMALIZED` is the env's `NORMALIZED_ACTIONS`.
+        """
+        comptime assert target == "cpu", "step_actuated: CPU only"
+        comptime assert Self.BATCH == 1, "step_actuated: BATCH must be 1"
+        var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
+        var nv = d.dims.get_nv()
+        # `apply_actions_fields` is typed on `Data[DTYPE, D2, 1]`; with
+        # BATCH asserted 1 the two types are the same bytes, and the cast is
+        # the no-op the assert makes it.
+        var d1 = UnsafePointer(to=d).bitcast[Data[Self.DTYPE, Self.D, 1]]()
+
+        comptime for s in range(4):
+            self._stage_setup[target, s](dt, d, m, ctx)
+            comptime if s > 0:
+                var act_stage = act.copy()
+                for i in range(nv):
+                    d.qfrc.data[i] = Scalar[Self.DTYPE](0)
+                apply_actions_fields[Self.DTYPE, NORMALIZED=NORMALIZED](
+                    sf, d1[], actions, act_stage, timestep
+                )
+                apply_pose_transmission[Self.DTYPE](
+                    sf, m, d, self.scratch, actions, act_stage, timestep
+                )
+            self._stage_dynamics[target, CONTACTS](d, m, ctx)
+            self._stage_constraints[target, CONTACTS](d, m, ctx)
+        self._finish[target](dt, d, m, ctx)
+
+    def _stage_constraints[
+        target: StaticString, CONTACTS: Bool
+    ](
+        mut self,
+        mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
+        mut m: Model[Self.DTYPE, Self.D],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Per-stage constraint solve (legacy: solver launch after every
+        stage kernel; corrects qacc_constrained before the next stage's
+        A[k] snapshot / the combine)."""
+        comptime if CONTACTS:
+            # Auto broadphase = legacy production (the legacy stage
+            # kernel calls detect_contacts_auto_gpu): SAP for
+            # NGEOM >= 16, O(N^2) otherwise — routing is bit-identical
+            # for every existing gate model (all NGEOM < 16).
+            detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+            comptime assert (
+                Self.SOLVER == "pgs"
+                or Self.SOLVER == "newton"
+                or Self.SOLVER == "cg"
+                or Self.SOLVER == "island"
+            ), (
+                "RK4Integrator: SOLVER must be 'pgs', 'newton',"
+                " 'cg', or 'island'"
+            )
+            comptime if Self.SOLVER == "newton":
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, NOSLIP_ITER=Self.NOSLIP_ITER, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
+            else:
+                comptime if Self.SOLVER == "cg":
+                    solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+                else:
+                    comptime if Self.SOLVER == "island":
+                        solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+                    else:
+                        solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
+
+    def _finish[
+        target: StaticString
+    ](
+        mut self,
+        dt: Scalar[Self.DTYPE],
+        mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
+        mut m: Model[Self.DTYPE, Self.D],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """After the fourth stage: save the warmstart, then the RK4 combine."""
         # `qacc_warmstart = qacc` — the tail of `mj_forward`
         # (engine_forward.c:1087). ⚠ HERE AND NOT AFTER THE INTEGRATOR: MuJoCo
         # saves the CONSTRAINT SOLVER's acceleration, and anything the

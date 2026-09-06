@@ -3104,3 +3104,56 @@ The twelve rows left above 1e-9: tetheria (cap), toddlerbot ×3 and dog
 point (coin), tidybot (stiff rounding), crazyflie (RK4 actuation),
 flybody (1.3e-09: 5e-11 at step one under its `noslip_iterations="3"`,
 the same capped pass as dog's step 4).
+
+### 13.35 RK4 re-evaluates the actuators at every stage (2026-09-06)
+
+§13.34's open item. `mj_RungeKutta` runs `mj_forwardSkip` at each stage,
+which recomputes `qfrc_actuator` at the stage's `qpos`/`qvel`.
+`RK4Integrator.step` integrated the `d.qfrc` the driver applied at the
+step's start through all four stages. For a joint `<motor>` the two are
+the same constant, which is why the Gym suite's RK4 models — walker2d,
+hopper, humanoid, ant — were exact; for a `<position>` servo (reads the
+stage's `qpos`), a spatial-tendon transmission (its stage moment arm) or a
+body-fixed site wrench (the stage's orientation) they are not, and the
+Python replica of §13.34 pinned the old entry at 1.3e-23 with the actuator
+frozen.
+
+`step` is now a stage loop over three pieces — setup, dynamics, the
+per-stage constraint solve — and a finish (warmstart save + combine), and
+`step_actuated` is the same loop with `d.qfrc` zeroed and
+`apply_actions_fields` + `apply_pose_transmission` re-run at stages 1–3
+from the stage state (the driver's application IS stage 0). The activation
+state is not advanced by the stages: `apply_actions_fields` integrates a
+dyntype's `act` by `timestep` on every call, and the driver's call already
+did that once, so the stages work on a copy and a dyntype actuator sees
+its start-of-step activation at every stage (MuJoCo carries `act` in the
+RK state; no RK4 model in the tree has a dyntype, so this is not yet
+measurable). CPU, BATCH=1 — the actuation entry points are. `drive.mojo`
+and `Phyics3dEnv`'s RK4 branch call it; a CONFIG that applied its own
+actions keeps the frozen entry, since the integrator has nothing to
+re-evaluate for it.
+
+Gate: `test_rk4_stage_actuation_vs_mujoco` — a servo pendulum at dt 0.02
+and an off-axis site thrust on a tumbling free body, each with a CONTROL
+ARM that runs the frozen `step` and must disagree with MuJoCo (it does, by
+3e-02 at five steps), then `step_actuated` at 1 / 5 / 30 steps: 7e-15 /
+3e-14 / 8e-13.
+
+| N=50 | before | after |
+|---|---|---|
+| bitcraze_crazyflie_2 | 1.85e-08 | **4.7e-20** |
+| the fourteen Gym rows | unchanged to the last digit | |
+
+Fifty-step board: **106 of 117** at or below 1e-9.
+
+**Bench checksums, A/B against the previous commit** (the bench harness
+calls `integ_rk4.step` directly, so it exercises the refactored loop, not
+the new entry): walker2d, hopper, half_cheetah and ant bit-identical over
+20000 steps; humanoid identical for 2010 steps (contacts from step 37) and
+then 1 ulp of float32 (1.2e-10) at step 2011, 5e-07 by 3000. A per-substep
+probe from an identical state shows `step` and `step_actuated` bit-identical
+on humanoid for twenty substeps, so the re-application is the no-op it
+should be for motors; the 1-ulp event is the refactor's inlining choosing
+a different FMA contraction on a rarely-taken branch — the same shape as
+§13.21's `Scratch` change, and gated the same way, against MuJoCo
+(`test_humanoid_limits_fields_vs_mujoco`) rather than the old checksum.
