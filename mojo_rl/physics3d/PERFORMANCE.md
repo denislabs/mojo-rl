@@ -2533,3 +2533,79 @@ excludes and its noslip is elliptic):
 
 Items 1–3 are a morning each and bit-exact; 8 is the only one that would
 change results and needs its own MuJoCo gates.
+
+### 13.28 Two regressions from the campaign, found by the Menagerie board and bisected (2026-09-06)
+
+Reported after the fourth round, from the studio: unitree_g1 bouncing off
+the floor "like a trampoline", ToddlerBot's arm passing through its chest,
+and a folded Jaco in the reassemble viewer. Neither bench checksum nor any
+gate that ran during the four rounds had moved. The board did, at ONE step:
+
+```
+docs/menagerie_fidelity_harnesses/ab.py 1 <drive_base> <drive_head>   # base = worktree at 58ec75a2
+  WORSE   5.941e-17 ->  1.010e-02  unitree_g1/scene.xml
+  WORSE   2.442e-15 ->  4.494e-02  kinova_gen3/scene.xml
+```
+
+Six builds of `drive.mojo` from worktrees (never `git checkout`) bisected
+that to `3bc98c55`; a folded-arm pose on ToddlerBot, compared contact set
+for contact set against `mj_forward`, named the second one without a bisect.
+
+**Defect 1 — the noslip read a factor the implicit step never built.**
+`3bc98c55` moved the CPU noslip off the dense `M^-1` and onto the step's
+tree LDL (`scratch.L`/`scratch.D`, as `mj_solNoSlip` solves on `qLD`). The
+Euler and RK4 steps fill those with `ldl_factor` before their Newton, so
+every bench row and every noslip gate stayed green: none of them says
+`implicitfast`. `ImplicitIntegrator.step` LU-factors M instead, and the LU
+keeps its factor in the SAME two slabs — so an implicitfast model with
+contacts and `NOSLIP_ITER > 0` (the studio runs 1) solved its noslip
+against the LU of M read as an LDL. Fix: factor the plain M's tree LDL in
+the implicit step, AFTER the smooth `lu_solve` and BEFORE the constraint
+seam (`integrator/implicit.mojo`), gated exactly like the noslip's own
+`tree_ok`. Placing it beside `lu_factor` instead overwrote the LU the
+smooth solve still had to read — kinova went 4.5e-02 -> 3.3e-01, which is
+how the slab sharing was found. MuJoCo keeps `qLD` and the implicit `qH`
+apart (engine_forward.c:1812); so do we now.
+
+Gate: `test_noslip_implicitfast_vs_mujoco` — the chain of
+`test_noslip_reaches_the_runtime_path` under `integrator="implicitfast"`,
+both cones, through `StudioImpFast*`. ON arm 1.3e-13 / 4.1e-13 vs MuJoCo
+where the pass is worth 0.09 / 0.18; on a pre-fix worktree it reads 0.35
+and 17.8. Board after: g1 2.8e-17, kinova 2.7e-15.
+
+**Defect 2 — the "cannot collide" skip dropped the predefined pairs.**
+`3b97ce19` (§13.18) keeps a geom with `contype = conaffinity = 0` out of
+the SAP sweep, and out of the naive O(N²) loop, because `filterBitmask`
+rejects it against every partner. It does — but MuJoCo's `<pair>` table
+never meets `filterBitmask` (engine_collision_driver.c:611–615, :779–780),
+and ToddlerBot's 65 torso-to-arm pairs are between geoms whose class sets
+both words to zero. Folded-arm pose, contacts against `mj_forward`: MuJoCo
+31 (torso × five arm links, pelvis × hand), ours 0 before, 31 after, body
+pair for body pair. Fix: a per-call `pair_geom` flag from the pair table
+lets a named geom through the mask skip, in both loops. The existing gate
+`test_contact_pair_vs_mujoco` (fixture "masks off + pair") had been red
+since `3b97ce19` — it is not in the smoke manifest and nobody ran it during
+the rounds; it is 7/7 now.
+
+**What did not reproduce.** The reassemble fold: reassemble5 from its task
+reset, 3000 steps at zero control, tracks MuJoCo to 1e-5 on every arm joint;
+under the viewer's `sweep` drive (600 env steps, frame_skip 20) joints 1–3
+agree to 1e-3 and joint 4 to 0.1 rad in plateaus that jump only at brick
+collisions, which the pre-campaign build also shows (0.02). Nothing folds
+and nothing sticks on the CPU Euler path. ToddlerBot's board residual
+(`waist_yaw` 4e-02 at 100 steps, MuJoCo itself stable to 4e-12 under a
+1e-12 kick) is IDENTICAL on the pre-campaign build — an older defect,
+open. kinova_gen3's 1.7 at 300 steps is chaos: MuJoCo kicked by 1e-12 lands
+3.2 away.
+
+**Cost.** Both fixes are bit-exact on every bench row (all eight `qsum`
+identical) and inside noise on the timings (dog 121.6 → 122.2, humanoid_cmu
+64.6 → 64.4, reassemble3 239.0 → 238.9, reassemble5 548 → 532 µs, MIN of 3
+interleaved). Board after both fixes: 84/84 scenes ≤ 1e-9 at N=1; at N=50
+the same eight scenes above 1e-3 on both builds and nothing new.
+
+**The lesson the rounds should have carried.** A routine that gains a new
+input from a shared scratch has to be checked at EVERY caller that reaches
+it — the integrators are three, the bench rows exercised one. And the board
+A/B costs seconds once the binaries exist; it belongs after every round,
+not after the report.
