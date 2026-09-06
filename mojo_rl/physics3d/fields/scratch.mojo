@@ -27,7 +27,18 @@ not preserve that.** So the two legs genuinely want different containers, and
 `Scratch` is the one spelling that picks the right one:
 
     CAP > 0   ->  InlineArray[T, CAP]   comptime bound   (the static leg)
-    CAP == 0  ->  List[T]               runtime bound    (the dynamic leg)
+    CAP == 0  ->  a pooled block        runtime bound    (the dynamic leg)
+
+## The dynamic leg is a pooled block, not a `List` (PERFORMANCE.md §13.36)
+
+The heap leg was a `List[T]` built and dropped at every site — a malloc, a
+fill and a free per scratch, ~300-430 of them a step on the runtime engine,
+a quarter of hopper's step in tcmalloc and memset. It now takes its block
+from `ScratchPool` (`scratch_pool.mojo`), a process-wide free list keyed by
+size class, and hands it back in `__deinit__`; after the first step nothing
+mallocs, and the `uninitialized=` sites no longer fill. hopper 35 -> 19 us
+a step through the studio path, humanoid 139 -> 110, every board row and
+bench checksum unchanged.
 
 ## Why CAP == 0 is the dynamic marker, and not DIM_POISON
 
@@ -58,7 +69,12 @@ directions are load-bearing; see `DimsLike`'s docstring, and the pair of
 checks in `test_dyn_dims_ldl` section D that exist to stop the merge.
 """
 
+from std.memory import Pointer
+from std.os import abort
+from std.sys import size_of
+
 from .dims import DIM_POISON
+from .scratch_pool import ScratchPool, scratch_pool
 
 
 @always_inline
@@ -94,47 +110,82 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
 
     ⚠ THE `n` PASSED TO THE CONSTRUCTOR IS LOAD-BEARING ON THE HEAP LEG and
     inert on the stack leg, so a site that gets it wrong is invisible to every
-    static-leg gate. It fails LOUDLY when the dynamic leg runs, though —
-    `List` bounds-checks, so a short length is `Assert Error: index 9 is out
-    of bounds, valid range is 0 to 3` naming this file and the line. That is
-    the good direction, and it is why the sweep can be mechanical: pass the
-    live length (`nv`, `nbody * 6`, `me * nv`), never the cap.
+    static-leg gate. While the heap leg was a `List` a short length failed
+    loudly on the dynamic leg (`List` bounds-checks); the pooled block does
+    NOT — a short `n` is an overrun into the next block, silent until it
+    isn't. `BOUNDS = True` below restores the loud failure: the heap leg
+    then keeps `n` and aborts on any index at or past it, naming the index
+    and the length. Build with it on when sweeping sites or when a dynamic
+    model misbehaves; it is off in shipped binaries (a compare per access).
+    Pass the live length (`nv`, `nbody * 6`, `me * nv`), never the cap.
     """
+
+    comptime BOUNDS = False
+    """Heap-leg bounds check. See the docstring; the static leg is untouched
+    either way (its bound is the comptime cap, as before)."""
 
     comptime STATIC = Self.CAP > 0
     var _fixed: InlineArray[Self.T, _slot[Self.CAP]()]
-    var _heap: List[Self.T]
+    # The heap leg: a block from the process's `ScratchPool` (see that
+    # module), returned in `__deinit__`. `_bytes` is what was asked of the
+    # pool and is handed back with the block; `_pool` is the handle looked
+    # up once at construction so the release costs no lookup. On the static
+    # leg all three are inert (null pointer, 0 bytes).
+    var _heap: Pointer[Self.T, MutUntrackedOrigin]
+    var _bytes: Int
+    var _pool: Pointer[ScratchPool, MutUntrackedOrigin]
 
     @always_inline
     def __init__(out self, n: Int, fill: Self.T):
         """`n` is the LIVE length — `dims.get_nv()`, not the cap."""
         comptime if Self.STATIC:
             self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](fill=fill)
-            self._heap = List[Self.T]()
+            self._heap = Pointer[Self.T, MutUntrackedOrigin](
+                unsafe_from_address=Int(0)
+            )
+            self._bytes = 0
+            self._pool = Pointer[ScratchPool, MutUntrackedOrigin](
+                unsafe_from_address=Int(0)
+            )
         else:
-            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](fill=fill)
-            self._heap = List[Self.T](length=n, fill=fill)
+            self = Self(n, uninitialized=fill)
+            for i in range(n):
+                self._heap[unsafe_offset=i] = fill
 
     @always_inline
     def __init__(out self, n: Int, *, uninitialized: Self.T):
         """The `InlineArray[..., N](uninitialized=True)` sites.
 
-        The static leg skips the fill, which is the point — those sites are
-        hot and the array can be `NV * NV`. The heap leg CANNOT skip it (a
-        `List` must have a length before it can be indexed), so it fills with
-        `uninitialized`, whose value the static leg never reads. Pass the
-        type's zero.
+        Neither leg fills. The heap leg used to (a `List` needs a length
+        before it can be indexed, so it filled with `uninitialized`), which
+        made the value a safety net on the dynamic leg only; with the pool
+        behind it the block is handed over as is, and the two legs read the
+        same uninitialized memory the same way. The argument is kept so the
+        sites keep naming the type's zero — the value nothing reads.
         """
         comptime if Self.STATIC:
             self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
                 uninitialized=True
             )
-            self._heap = List[Self.T]()
+            self._heap = Pointer[Self.T, MutUntrackedOrigin](
+                unsafe_from_address=Int(0)
+            )
+            self._bytes = 0
+            self._pool = Pointer[ScratchPool, MutUntrackedOrigin](
+                unsafe_from_address=Int(0)
+            )
         else:
             self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
-                fill=uninitialized
+                uninitialized=True
             )
-            self._heap = List[Self.T](length=n, fill=uninitialized)
+            self._pool = scratch_pool()
+            self._bytes = n * size_of[Self.T]()
+            self._heap = self._pool[].take(self._bytes).unsafe_bitcast[Self.T]()
+
+    @always_inline
+    def __deinit__(deinit self):
+        comptime if not Self.STATIC:
+            self._pool[].give(self._heap.unsafe_bitcast[Byte](), self._bytes)
 
     # ⚠ `unsafe_get`, NOT `[i]`. `InlineArray.__getitem__` and
     # `List.__getitem__` normalise a negative index and carry a bounds
@@ -152,18 +203,30 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
     # and a fills-everywhere twin matched bit for bit (no uninitialized read
     # moved with the frame layout). Gate against MuJoCo, not the old checksum.
     @always_inline
+    def _check(self, i: Int):
+        comptime if Self.BOUNDS and not Self.STATIC:
+            var n = self._bytes // size_of[Self.T]()
+            if i < 0 or i >= n:
+                abort(
+                    "Scratch: index " + String(i) + " out of bounds for a"
+                    " heap scratch of length " + String(n)
+                )
+
+    @always_inline
     def __getitem__(self, i: Int) -> Self.T:
         comptime if Self.STATIC:
             return self._fixed.unsafe_get(i)
         else:
-            return self._heap.unsafe_get(i)
+            self._check(i)
+            return self._heap[unsafe_offset=i]
 
     @always_inline
     def __setitem__(mut self, i: Int, v: Self.T):
         comptime if Self.STATIC:
             self._fixed.unsafe_get(i) = v
         else:
-            self._heap.unsafe_get(i) = v
+            self._check(i)
+            self._heap[unsafe_offset=i] = v
 
     @always_inline
     def unsafe_ptr[SO: MutOrigin](ref [SO] self) -> Pointer[Self.T, SO]:
@@ -191,4 +254,4 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
         comptime if Self.STATIC:
             return rebind[Pointer[Self.T, SO]](self._fixed.unsafe_ptr())
         else:
-            return rebind[Pointer[Self.T, SO]](self._heap.unsafe_ptr())
+            return rebind[Pointer[Self.T, SO]](self._heap)

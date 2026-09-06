@@ -3157,3 +3157,145 @@ should be for motors; the 1-ulp event is the refactor's inlining choosing
 a different FMA contraction on a rarely-taken branch — the same shape as
 §13.21's `Scratch` change, and gated the same way, against MuJoCo
 (`test_humanoid_limits_fields_vs_mujoco`) rather than the old checksum.
+
+### 13.36 LANDED (2026-09-06): the runtime path's `Scratch` takes its blocks from a pool — the three-tree median from 2.49× to 1.65× MuJoCo
+
+§13.30 read the runtime (studio) engine at 2.4–3.2× the compile-time one
+on the same XML and named the per-call heap `Scratch` of the dynamic leg as
+the first suspect. This section is that item, and it was bigger than the
+runtime-dims assessment had it: that assessment measured "heap scratch" at
+~1.14× on a CRBA+LDL microbench, a handful of sites, and the number was
+carried as the cost of the leg. The step crosses a few hundred.
+
+**Counted, not inferred.** A `_Global` counter in `Scratch.__init__`
+(temporary, `rbench` printed it), one step of the board protocol:
+
+| model | heap scratches / step | bytes malloc'd + filled / step | of which `fill=` sites |
+|---|---|---|---|
+| hopper (RK4) | 314 | 168 kB | 88 |
+| half_cheetah | 92 | 60 kB | 22 |
+| ant | 329 | 341 kB | 88 |
+| humanoid | 429 | 646 kB | 96 |
+
+Every one of those was a `List[T](length=n, fill=...)`: a tcmalloc
+`malloc` (its thread cache behind `pthread_getspecific`), a fill — the
+`uninitialized=` sites too, since a `List` cannot be indexed without a
+length — and a `free`. `sample` on the main thread of the hopper bench:
+tcmalloc family 21%, `_platform_memset` 10%; humanoid 7% + 6%.
+
+**What landed — `fields/scratch_pool.mojo`.** A process-wide free list
+keyed by size class (four classes per octave; a request rounds up to a
+quarter of its leading power of two, so a site whose length varies with
+the row count lands on a bounded set of classes). Blocks link through their
+own first word. `Scratch`'s heap leg takes a block at construction and
+hands it back in `__deinit__`; after the first step nothing mallocs, and
+the `uninitialized=` sites no longer fill. The static leg is untouched:
+three inert fields (a null pointer, 0, a null pointer) beside the
+`InlineArray`.
+
+Not a step-scoped bump arena, which is what the item was filed as. An
+arena reset at the top of `step` wants either LIFO release or no release
+within the step, and neither holds here: Mojo destroys a value at its LAST
+USE, so two scratches in one function are released in whatever order
+their last reads fall, and the Newton constructs scratches inside its
+iteration loop, so an arena without release would grow with the iteration
+count. The free list has neither constraint and needs no reset hook in
+four integrators — it is the arena's saving with the `List` leg's lifetime
+rules.
+
+Where the handle lives: Mojo has no mutable module-level `var` (nightly
+2026-09: "use of unknown declaration"). The stdlib's own globals are
+`std.ffi._Global`, a name-keyed slot in the compiler runtime; the named
+lookup costs **7.4 ns** (it `memcmp`s the name), the fixed-index variant
+`get_or_create_indexed_ptr(2)` **1.1 ns**, but slot 2 is the stdlib's
+"reserved for prototyping" and not ours to take. A `Scratch` looks the
+pool up ONCE, at construction, and keeps the pointer for the release;
+after the change the lookup is 4% of hopper's step (`get_or_create_ptr`
+1.8% + the runtime stub + its `memcmp`).
+
+**Results, `rbench` interleaved head vs pool, MIN of 3 × 3000 steps, `qsum`
+identical:**
+
+| | before | after | |
+|---|---|---|---|
+| hopper (Gym, RK4) | 34.9 / 35.3 | **19.1 / 19.0** | 1.84× |
+| humanoid (Gym) | 139.3 / 139.3 | **110.4 / 109.4** | 1.27× |
+
+After, on hopper's main thread: `solve_newton` 47%, `compute_mass_matrix`
+9%, contact detection 7%, memset 6% (the 88 `fill=` sites), the global
+lookup 4%; the allocation family as a whole 30% → 10%.
+
+**The three-tree perf board** (`bigsweep.py perf`, same protocol as
+§13.30, MIN of three interleaved rounds, MuJoCo re-timed in the same
+sweep and within 0.96–1.04 of §13.30's column):
+
+| | median ours/MuJoCo | faster than MuJoCo | within 2× | above 4× |
+|---|---|---|---|---|
+| Menagerie (85) | 2.63 → **1.88** | 0 → 1 | 22 → 46 | 12 → 9 |
+| Gymnasium (14) | 2.48 → **1.34** | 0 → 4 | 2 → 14 | 0 → 0 |
+| dm_control (19) | 2.46 → **1.32** | 1 → 1 | 4 → 18 | 3 → 0 |
+| all (118) | 2.49 → **1.65** | 1 → 6 | 28 → 78 | 15 → 9 |
+
+Per row, ours before / ours after: median 1.27×, from 1.01× to 3.03×. The
+small models gained the most — pendulum 4.3 → 1.4 µs, cartpole 17.9 →
+6.3, inverted_pendulum 18.3 → 6.7, point 15.9 → 6.1 (four rows now at or
+under MuJoCo) — because a fixed per-site cost is a larger share of a small
+step, which is §13.22's argument seen from the other side. The rows that
+did not move are the ones the solver owns: flybody (nv 108) 667 → 664,
+aloha 161 → 157, pal_talos 461 → 446; there the malloc share was already
+small and the remaining gap is the Newton at `MAX_CONDIM=6` with runtime
+bounds. The Gym five through this path against §13.30's compile-time
+column: walker2d 40.1 vs 20.7, hopper 18.6 vs 10.5, half_cheetah 6.9 vs
+4.2, ant 48.9 vs 27.3, humanoid 105 vs 50.9 — **1.65–2.1×**, from 2.4–3.2×
+(⚠ the sweep's rows, not the §13.30 calibration script's; same controls,
+different step counts). What is left of that ratio, in the order the
+profile supports: `MAX_CONDIM=6` in the studio aliases (12–24%,
+`studio/stepping.mojo`), no `CRBA_TREEWALK` (`compute_mass_matrix` 9% on
+hopper, 18% on humanoid before this change), the runtime bound itself
+(~1.1–1.25× per the assessment's layout split), the 88 `fill=` sites, and
+rows still sized by the contact capacity.
+
+**Gates.**
+- Checksums: `rbench` `qsum` identical head vs pool on hopper and
+  humanoid; the compile-time bench (`bench_gym`) interleaved against the
+  §13.35 build, all five Gym models `qsum` identical and 0.99–1.01× in
+  time (the inert fields cost nothing).
+- The fifty-step three-tree board through the pooled driver: **121 of 121
+  rows identical to the previous board to the printed digit**, 106 of 117
+  comparable rows at or below 1e-9 as in §13.35 — every uninitialized
+  block the heap leg now hands over unfilled is read only after it is
+  written, on 117 scenes.
+- Tests: `test_dyn_dims_ldl`, `test_studio_honours_option_cone`,
+  `test_structural_edit`, `test_noslip_implicitfast_vs_mujoco`,
+  `test_tendon_rows_live_budget_vs_mujoco`, `test_dof_parentid_vs_mujoco`,
+  `test_hfield_vs_mujoco`, `test_equality_tendon_fields` /
+  `test_newton_blocked_tendon_fields` / `test_contact_solve_fields` (GPU
+  parity on Metal — the static leg from a kernel's side),
+  `test_rk4_stage_actuation_vs_mujoco`, `test_contact_solimp_clamp_vs_mujoco`,
+  `test_attach_angle_units_vs_mujoco`, `test_fk_fields`: all PASS.
+  `test_studio_honours_option_cone` reads 5 of 6 — its "the two cones
+  differ" arm sees 1.2251e-13 between pyramidal and elliptic on its
+  contact model — and reads exactly the same 5 of 6 with the same digits
+  at `15ed3b37` in a detached worktree: pre-existing, not this change's
+  (the pool cannot move arithmetic; a test that asserts two cones DISAGREE
+  is measuring the scene, and is left for its owner).
+- ⚠ Harness caveat met on the way: `rbench`'s final `qsum` depends on
+  `rounds` (humanoid 153.52 at 1, 152.215 at 3, on head and pool alike) —
+  something survives its per-round reset (qpos/qvel/warmstart/act are
+  reset; the contact slots are not). Compare checksums at equal `rounds`.
+
+**What the `List` was also doing, and its replacement.** A short `n` at a
+heap site used to fail loudly (`List` bounds-checks); a pooled block
+overruns into the next block silently. `Scratch.BOUNDS = True` (a
+comptime flag, off in shipped binaries) keeps `n` on the heap leg and
+aborts on any index at or past it, naming the index and the length —
+positive control: a four-slot scratch written at index 4 aborts with
+`Scratch: index 4 out of bounds for a heap scratch of length 4`; negative
+control: hopper, humanoid, unitree_go1 and google_robot run 200 steps
+under it without firing. Build with it on when sweeping sites.
+
+⚠ The pool is not thread-safe and lives in one `_Global` slot; nothing in
+physics3d steps from two threads, and the module docstring says what a
+multi-threaded CPU leg would need. ⚠ `perf` rows are still not production
+numbers — the studio aliases' `MAX_CONDIM=6` and missing `CRBA_TREEWALK`
+remain — but the calibration is now 1.65–2.1× instead of 2.4–3.2×.
