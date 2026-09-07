@@ -129,16 +129,39 @@ def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
     return MC if MC > NEWTON_THREADS_FLOOR else NEWTON_THREADS_FLOOR
 
 
-# ⚠⚠ THE PER-BLOCK SHARED LIMIT THE BLOCKED KERNEL IS COMPILED AGAINST, and it
-# is an NVIDIA number ON PURPOSE. `solve_newton` routes PYRAMIDAL + NVIDIA to
-# `solve_newton_blocked` and everything else to the one-thread-per-env kernel,
-# which holds `Je` as per-thread `InlineArray`s and never consults this file.
-# So the only consumer of this budget is a kernel that only ever runs on CUDA.
+# ⚠⚠ TWO NUMBERS, AND THEY WERE ONE UNTIL 2026-09-07. The LIMIT is what
+# `ptxas` accepts per block; the BUDGET is the footprint above which `Je`
+# leaves threadgroup memory. They were the same constant, so `Je` spilled
+# only when the block would otherwise not COMPILE — which optimised for the
+# wrong thing, because a block's footprint decides how many blocks an SM
+# holds, and this kernel is thread-0 LATENCY-bound: it needs co-resident
+# blocks to overlap, not a full threadgroup.
 #
-# 0x18c00 is what `ptxas` itself reports as the maximum on an RTX 5090:
+# THE LIMIT, an NVIDIA number on purpose (`solve_newton` routes PYRAMIDAL +
+# NVIDIA here and everything else to the per-env kernel, which never reads
+# this file). 0x18c00 is what `ptxas` itself reports on an RTX 5090:
 #
 #     ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
 #                   too much shared data (0x21414 bytes, 0x18c00 max)
+comptime SOLVER_SHARED_LIMIT: Int = 0x18C00
+
+# THE BUDGET — the spill POLICY, and it is a measurement, not a portability
+# figure. RTX 5090, the parked-slot probe (BLOCK_DIAGONAL_..., 2026-09-07,
+# "Experiment 3"), Newton µs per launch with `Je` in threadgroup memory
+# against `Je` spilled to its per-env global buffer, every other kernel
+# at 1.00 and the answer bit-identical:
+#
+#     k   nv   footprint with Je     spilled     ratio
+#     3   24        22.5 KB           157/204    1.30x faster
+#     6   42        50.2 KB           508/556    1.09x
+#     9   60        90.1 KB          1282/1308   1.02x
+#    12   78   (already spilled: 84 KB was over the LIMIT)
+#
+# A spilled `Je` is re-read from global on every Newton iteration and that
+# was the reason not to spill; the reads turn out to cost less than the
+# blocks-per-SM the array was buying, at every k measured. 16 KB keeps the
+# k=0 scene (6 KB) and nothing else in threadgroup memory. ⚠ The ledger's
+# earlier "no spill penalty at k=12/13" was the same fact seen from above.
 #
 # ⚠ THE OLD 64 KB WAS INCOHERENT, WHICH IS WHY IT IS GONE. It was justified as
 # "the widely-supported opt-in floor", so that a model fitting everywhere kept
@@ -146,7 +169,7 @@ def newton_block_threads[MAX_CONTACTS: Int]() -> Int:
 # TOTAL was already 87 KB at k=9 and compiling fine. A budget that guards one
 # array against a portability figure the whole block has already blown is not
 # protecting portability; it is just failing to predict `ptxas`.
-comptime SOLVER_SHARED_BUDGET: Int = 0x18C00
+comptime SOLVER_SHARED_BUDGET: Int = 0x4000
 
 
 def _max_one[N: Int]() -> Int:

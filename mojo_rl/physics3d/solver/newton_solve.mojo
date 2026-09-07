@@ -73,7 +73,7 @@ from std.time import perf_counter_ns
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
-from .je_budget import je_spills, newton_block_threads
+from .je_budget import je_spills, je_ws_size, newton_block_threads
 from std.sys.info import size_of
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
@@ -6039,6 +6039,22 @@ def solve_newton_blocked[
     launch is meaningful; the CPU branch falls back to the single-source per-env
     body (`_newton_solve_env`, identical PYRAMIDAL math) for parity.
     """
+    # ⚠⚠ THE WORKSPACE THE CALLER BUILT MUST BE THE ONE THIS KERNEL INDEXES.
+    # `JE_WS` is a parameter so the integrators can size `ContactScratch`
+    # once; the kernel's own spill decision comes from `je_spills` on the
+    # same dims. When the two disagree the kernel writes `ME*NV` rows into a
+    # one-scalar buffer and nothing crashes — 2026-09-07, the budget moved
+    # from 99 KB to 16 KB and `test_newton_freejoint_vs_cpu`'s SO101Tabletop
+    # arm, which hand-built its scratch at the default `JE_WS = 0`, read a
+    # relative error of 722 against the oracle instead of a compile error.
+    comptime assert JE_WS == je_ws_size[
+        DTYPE, D.NV, D.NJOINT, D.NTENDON, D.NEQUALITY, D.MAX_CONTACTS,
+        MAX_CONDIM,
+    ](), (
+        "solve_newton_blocked: JE_WS does not match je_ws_size for these"
+        " dims — size ContactScratch with je_budget.je_ws_size, as the"
+        " integrators do"
+    )
     comptime MC = _max_one[D.MAX_CONTACTS]()
     comptime SOLVER_WS = 81 * MC + 12 * MC * D.NV
 

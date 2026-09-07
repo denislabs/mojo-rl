@@ -65,6 +65,7 @@ from mojo_rl.physics3d.fields import (
     Dims,
  DimsLike,)
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.solver.je_budget import je_ws_size
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel,
@@ -436,9 +437,10 @@ def test_blocked_friction_rows() raises:
     var sg = DynamicsScratch[DTYPE, MD, BATCH]()
     var sc = DynamicsScratch[DTYPE, MD, BATCH]()
     var sp = DynamicsScratch[DTYPE, MD, BATCH]()
-    var cg = ContactScratch[DTYPE, MD, BATCH]()
-    var cc = ContactScratch[DTYPE, MD, BATCH]()
-    var cp = ContactScratch[DTYPE, MD, BATCH]()
+    comptime JE_WS = je_ws_size[DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3]()
+    var cg = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
+    var cc = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
+    var cp = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
 
@@ -455,9 +457,9 @@ def test_blocked_friction_rows() raises:
             "no contacts — the COUPLED friction+contact regime is untested"
         )
 
-    solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dg, mf, sg, cg, ctx)
-    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dc, mf, sc, cc, None)
-    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dp, mf, sp, cp, None)
+    solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, JE_WS=JE_WS](dg, mf, sg, cg, ctx)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, JE_WS=JE_WS](dc, mf, sc, cc, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, JE_WS=JE_WS](dp, mf, sp, cp, None)
 
     sg.qacc_constrained.download(ctx)
 

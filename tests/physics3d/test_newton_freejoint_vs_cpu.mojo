@@ -41,6 +41,7 @@ from mojo_rl.physics3d.fields import (
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.solver.je_budget import je_ws_size
 from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
@@ -302,12 +303,20 @@ def _validate[
             d_c.qfrc.data[e * NV + i] = qf
     d_g.upload_all(ctx)
 
+    # ⚠ SIZED FROM THE SPILL POLICY, AS THE INTEGRATORS DO. At the default
+    # `JE_WS = 0` a model whose `Je` spills has the blocked kernel writing
+    # its rows into a one-scalar buffer: SO101Tabletop read a relative error
+    # of 722 the day the budget moved to 16 KB. `solve_newton_blocked` now
+    # refuses the mismatch at compile time.
+    comptime JE_WS = je_ws_size[
+        DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3
+    ]()
     var sg = DynamicsScratch[DTYPE, MD, BATCH]()
-    var cg = ContactScratch[DTYPE, MD, BATCH]()
+    var cg = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
     var sc = DynamicsScratch[DTYPE, MD, BATCH]()
-    var cc = ContactScratch[DTYPE, MD, BATCH]()
+    var cc = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
 
     # GPU path (blocked on NVIDIA, per-env on Apple).
     _prep["gpu"](
@@ -315,7 +324,7 @@ def _validate[
     )
     comptime if FORCE_BLOCKED:
         solve_newton_blocked[
-            "gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH
+            "gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH, JE_WS=JE_WS
         ](d_g, mf, sg, cg, ctx)
     else:
         solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)

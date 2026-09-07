@@ -78,6 +78,7 @@ from mojo_rl.physics3d.fields import (
     Data, Model, DynamicsScratch, ContactScratch, Dims,
 )
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.solver.je_budget import je_ws_size
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -394,7 +395,10 @@ def _solve[
     _slam_state[VSCALE](d)
 
     var scratch = DynamicsScratch[DTYPE, MD_2, BATCH]()
-    var cscratch = ContactScratch[DTYPE, MD_2, BATCH]()
+    # Sized from the spill policy, as the integrators do; `solve_newton_blocked`
+    # refuses a mismatch at compile time (dog spills at the 16 KB budget).
+    comptime JE_WS = je_ws_size[DTYPE, MD_2.NV, MD_2.NJOINT, MD_2.NTENDON, MD_2.NEQUALITY, MD_2.MAX_CONTACTS, MD.MAX_CONDIM]()
+    var cscratch = ContactScratch[DTYPE, MD_2, BATCH, JE_WS]()
 
     comptime if target == "gpu_perenv":
         # ⚠⚠ THE PER-ENV KERNEL ON THE SAME DEVICE. `solve_newton` routes
@@ -413,7 +417,7 @@ def _solve[
         scratch.upload_all(ctx)
         cscratch.upload_all(ctx)
         _prep["gpu"](d, mf, scratch, ctx)
-        solve_newton["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, ctx)
+        solve_newton["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER, JE_WS=JE_WS](d, mf, scratch, cscratch, ctx)
         scratch.qacc_constrained.download(ctx)
         d.meta.download(ctx)
         d.contacts.download(ctx)
@@ -422,13 +426,13 @@ def _solve[
         scratch.upload_all(ctx)
         cscratch.upload_all(ctx)
         _prep["gpu"](d, mf, scratch, ctx)
-        solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, ctx)
+        solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER, JE_WS=JE_WS](d, mf, scratch, cscratch, ctx)
         scratch.qacc_constrained.download(ctx)
         d.meta.download(ctx)
         d.contacts.download(ctx)
     else:
         _prep["cpu"](d, mf, scratch, None)
-        solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, None)
+        solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER, JE_WS=JE_WS](d, mf, scratch, cscratch, None)
 
     var ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     if ncon == 0:

@@ -100,6 +100,7 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_RELPOSE_W,
 )
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.solver.je_budget import je_ws_size
 from layout import Layout
 from mojo_rl.physics3d.model.model_dims import ModelDims
 
@@ -459,8 +460,9 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
 
     var sb = DynamicsScratch[DTYPE, MD, 1]()
     var sp = DynamicsScratch[DTYPE, MD, 1]()
-    var cb = ContactScratch[DTYPE, MD, 1]()
-    var cp = ContactScratch[DTYPE, MD, 1]()
+    comptime JE_WS = je_ws_size[DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3]()
+    var cb = ContactScratch[DTYPE, MD, 1, JE_WS]()
+    var cp = ContactScratch[DTYPE, MD, 1, JE_WS]()
     _prep(db, mf, sb)
     _prep(dp, mf, sp)
 
@@ -473,8 +475,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         " agree, so this comparison would pass with the bug present",
     )
 
-    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](db, mf, sb, cb, None)
-    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](dp, mf, sp, cp, None)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1, JE_WS=JE_WS](db, mf, sb, cb, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1, JE_WS=JE_WS](dp, mf, sp, cp, None)
 
     var worst = Float64(0)
     for i in range(M.NV):

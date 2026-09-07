@@ -35,6 +35,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_newton_shared_budget.mojo
 from std.sys.info import size_of
 from mojo_rl.physics3d.solver.je_budget import (
     newton_shared_elems, je_spills, je_elems, SOLVER_SHARED_BUDGET,
+    SOLVER_SHARED_LIMIT,
 )
 
 comptime DT = DType.float32          # the park probe's dtype
@@ -72,7 +73,7 @@ def _je_bytes[NV: Int, NJOINT: Int]() -> Int:
 def main() raises:
     var t = Tally()
     print("=== the Newton kernel's shared footprint (P4) ===")
-    print("  budget:", SOLVER_SHARED_BUDGET, "B  (ptxas 0x18c00 on an RTX 5090)")
+    print("  limit:", SOLVER_SHARED_LIMIT, "B (ptxas 0x18c00 on an RTX 5090)  spill budget:", SOLVER_SHARED_BUDGET, "B")
 
     # ── A: the formula reproduces ptxas, to the byte ─────────────────────
     # (k, nv, njoint, the bytes ptxas reported BEFORE PN2c's two seg arrays)
@@ -98,15 +99,23 @@ def main() raises:
                    seg_delta_78))
 
     # ── B: the decision flips where ptxas does ───────────────────────────
-    print("--- B: k<=9 keeps threadgroup Je, k>=10 spills ---")
-    t.truth(not je_spills[DT, 42, 12, 0, 0, MC, CONDIM](),
-            "k=6  does NOT spill (48,708 B fits)")
-    t.truth(not je_spills[DT, 60, 15, 0, 0, MC, CONDIM](),
-            "k=9  does NOT spill (87,156 B fits) — the ceiling today")
+    # ⚠ THE POLICY FLIPPED ON 2026-09-07: the budget is 16 KB, an
+    # OCCUPANCY figure measured on the RTX 5090 (je_budget's table: Newton
+    # 1.30x / 1.09x / 1.02x faster at k=3/6/9 with `Je` spilled), no longer
+    # the ptxas limit. Only the k=0 scene keeps `Je` in threadgroup memory.
+    print("--- B: k=0 keeps threadgroup Je, every wider leg spills ---")
+    t.truth(not je_spills[DT, 6, 6, 0, 0, MC, CONDIM](),
+            "k=0  does NOT spill (6 KB, under the 16 KB budget)")
+    t.truth(je_spills[DT, 24, 9, 0, 0, MC, CONDIM](),
+            "k=3  SPILLS (22.5 KB over the budget) — measured 1.30x faster")
+    t.truth(je_spills[DT, 42, 12, 0, 0, MC, CONDIM](),
+            "k=6  SPILLS (48,708 B) — measured 1.09x faster")
+    t.truth(je_spills[DT, 60, 15, 0, 0, MC, CONDIM](),
+            "k=9  SPILLS (87,156 B) — measured 1.02x faster")
     t.truth(je_spills[DT, 66, 16, 0, 0, MC, CONDIM](),
-            "k=10 SPILLS (102,468 B over) — was a COMPILE FAILURE")
+            "k=10 SPILLS (102,468 B over the LIMIT) — was a COMPILE FAILURE")
     t.truth(je_spills[DT, 78, 18, 0, 0, MC, CONDIM](),
-            "k=12 SPILLS (136,836 B over) — was a COMPILE FAILURE")
+            "k=12 SPILLS (136,836 B over the LIMIT) — was a COMPILE FAILURE")
 
     # ── C: ⚠ THE OLD RULE WOULD HAVE GOT B WRONG. Without this the gate
     # only says the new code agrees with itself.
@@ -123,29 +132,34 @@ def main() raises:
     print("--- D: spilling is enough — the rest fits ---")
     var r10 = newton_shared_elems[66, 16, 0, 0, MC, CONDIM, False]() * 4
     var r12 = newton_shared_elems[78, 18, 0, 0, MC, CONDIM, False]() * 4
-    t.truth(r10 <= SOLVER_SHARED_BUDGET,
-            String("k=10 with Je spilled: ", r10, " B fits"))
-    t.truth(r12 <= SOLVER_SHARED_BUDGET,
-            String("k=12 with Je spilled: ", r12, " B fits"))
+    t.truth(r10 <= SOLVER_SHARED_LIMIT,
+            String("k=10 with Je spilled: ", r10, " B fits the LIMIT"))
+    t.truth(r12 <= SOLVER_SHARED_LIMIT,
+            String("k=12 with Je spilled: ", r12, " B fits the LIMIT"))
     # ⚠ AND WHERE IT STOPS BEING ENOUGH, so nobody reads "P4 unblocks k" as
     # unbounded. Past this the three NV*NV arrays are the binding term.
     var r14 = newton_shared_elems[90, 20, 0, 0, MC, CONDIM, False]() * 4
-    t.truth(r14 > SOLVER_SHARED_BUDGET,
-            String("k=14 with Je spilled: ", r14, " B still OVER — spilling"
-                   " reaches k=13, not further"))
+    t.truth(r14 > SOLVER_SHARED_LIMIT,
+            String("k=14 with Je spilled: ", r14, " B still OVER the LIMIT —"
+                   " spilling reaches k=13, not further"))
 
     # ── E: ⚠ NO SHIPPED MODEL CHANGES ITS MIND. Widening the budget from
     # "Je vs 64 KB" to "the total vs the device limit" could easily have made
     # models that run today start spilling — a straight perf regression, since
     # a spilled `Je` is re-read from global across every Newton iteration.
     # The six models `je_budget`'s own table records must keep their answer.
-    print("--- E: the six models in je_budget's table are unmoved ---")
-    t.truth(not je_spills[DT, 22, 78, 0, 0, 16, CONDIM](),
-            "quadruped       (nv 22) still does NOT spill")
-    t.truth(not je_spills[DT, 27, 96, 0, 0, 32, CONDIM](),
-            "humanoid        (nv 27) still does NOT spill")
-    t.truth(not je_spills[DT, 28, 156, 0, 0, 24, 6](),
-            "quadruped_fetch (nv 28) still does NOT spill")
+    # ⚠ E USED TO PIN "no shipped model changes its mind", because a spilled
+    # `Je` was assumed to be a perf regression. It is the opposite at every
+    # k measured (je_budget's table), so the pin now says what the policy
+    # says: every model over 16 KB spills, and the spilled path is what the
+    # golden fingerprint and the free-joint oracle run on Metal.
+    print("--- E: the six models in je_budget's table follow the policy ---")
+    t.truth(je_spills[DT, 22, 78, 0, 0, 16, CONDIM](),
+            "quadruped       (nv 22, 25 KB) spills under the 16 KB budget")
+    t.truth(je_spills[DT, 27, 96, 0, 0, 32, CONDIM](),
+            "humanoid        (nv 27, 37 KB) spills")
+    t.truth(je_spills[DT, 28, 156, 0, 0, 24, 6](),
+            "quadruped_fetch (nv 28, 59 KB) spills")
     t.truth(je_spills[DT, 62, 185, 0, 0, 64, CONDIM](),
             "humanoid_CMU    (nv 62) still SPILLS")
     t.truth(je_spills[DT, 79, 206, 0, 0, 24, CONDIM](),

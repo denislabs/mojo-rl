@@ -50,6 +50,7 @@ from mojo_rl.physics3d.fields import (
     AsStatic, Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike,
 )
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.solver.je_budget import je_ws_size
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.integrator.euler import (
     _armature_env, _fnet_passive_env, _qacc_writeback_env,
@@ -109,6 +110,7 @@ comptime BoxModel = ModelDefFromXML[
 # take a `DimsLike`, and a `ModelDefLike` is not one — the same wrapper
 # `test_friction_dof_rows_vs_mujoco` uses (`:307`).
 comptime MD = ModelDims[BoxModel]
+comptime JE_WS = je_ws_size[DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3]()
 comptime NQ = BoxModel.NQ
 comptime NV = BoxModel.NV
 comptime NJOINT = BoxModel.NJOINT
@@ -237,7 +239,7 @@ def main() raises:
     for path in range(3):
         var d = Data[DTYPE, MD, BATCH]()
         var sc = DynamicsScratch[DTYPE, MD, BATCH]()
-        var cs = ContactScratch[DTYPE, MD, BATCH]()
+        var cs = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
         _seed(d, 1.0)                    # a metre up: nothing touches
         _prep(d, mf, sc)
         var nc = _ncon(d)
@@ -255,7 +257,7 @@ def main() raises:
                          BATCH=BATCH](d, mf, sc, cs, None)
         else:
             solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL,
-                                 BATCH=BATCH](d, mf, sc, cs, None)
+                                 BATCH=BATCH, JE_WS=JE_WS](d, mf, sc, cs, None)
         var diffs = _bit_diffs(before, sc)
         compared += BATCH * NV
         t.truth(diffs == 0,
@@ -268,7 +270,7 @@ def main() raises:
     for path in range(3):
         var d = Data[DTYPE, MD, BATCH]()
         var sc = DynamicsScratch[DTYPE, MD, BATCH]()
-        var cs = ContactScratch[DTYPE, MD, BATCH]()
+        var cs = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
         # Centre 0.03 against a radius of 0.05: 0.02 of penetration.
         _seed(d, BALL_R - 0.02)
         _prep(d, mf, sc)
@@ -284,7 +286,7 @@ def main() raises:
                          BATCH=BATCH](d, mf, sc, cs, None)
         else:
             solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL,
-                                 BATCH=BATCH](d, mf, sc, cs, None)
+                                 BATCH=BATCH, JE_WS=JE_WS](d, mf, sc, cs, None)
         var diffs = _bit_diffs(before, sc)
         moved_any += diffs
         t.truth(diffs > 0,
