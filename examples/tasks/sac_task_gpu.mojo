@@ -333,6 +333,27 @@ def main() raises:
     var warmup = WARMUP_STEPS
     var eval_every = EVAL_EVERY
     var task_name = String(DEFAULT_TASK)
+    # ⚠⚠ FLAGS BECAUSE THESE TWO ARE WHAT A FLAT RUN ACTUALLY NEEDS SWEPT.
+    # Measured on a 230k-step `gather` run: `mean_q` reached **1151** while the
+    # true episode return was **-7.5** — wrong sign, and 11x beyond the most
+    # the task can pay even if every one of 300 steps scored the +1 success
+    # bonus. The critic had diverged, and it was tracking the ENTROPY term,
+    # not the task: corr(alpha, mean_q) = 0.88 over 111 points, with
+    # mean_q ~ 2500 * alpha throughout.
+    #
+    # The task's own contribution to Q is r/(1-gamma) = -0.025 * 95 = -2.4, so
+    # at alpha = 0.26 the task was about 0.2% of the value function the actor
+    # was maximising. That is a REWARD SCALE problem — SAC's per-step reward
+    # here is 0.025 where HalfCheetah's is O(1..10) — and the two levers that
+    # reach it without changing what a reward MEANS are the entropy target and
+    # the initial temperature.
+    #
+    # ⚠ `-ACT_DIM` IS THE STANDARD HEURISTIC AND IT IS WHAT FORCES ALPHA UP.
+    # Making it more negative (-12, -24) drives alpha down and shrinks the
+    # entropy contribution to Q. Falsifiable in a short run: if the mechanism
+    # is right, `mean_q` should fall roughly in proportion.
+    var target_entropy = -Scalar[DT](ACT_DIM)
+    var init_alpha = Scalar[DT](0.2)
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -344,6 +365,10 @@ def main() raises:
             eval_every = Int(String(args[i + 1]))
         elif a == "--task" and i + 1 < len(args):
             task_name = String(args[i + 1])
+        elif a == "--target-entropy" and i + 1 < len(args):
+            target_entropy = Scalar[DT](Float64(String(args[i + 1])))
+        elif a == "--alpha" and i + 1 < len(args):
+            init_alpha = Scalar[DT](Float64(String(args[i + 1])))
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
@@ -374,6 +399,7 @@ def main() raises:
     print("  steps    :", num_steps, " warmup:", warmup,
           "(baseline run)" if warmup >= num_steps else "")
     print("  action_scale:", ACTION_SCALE, "(NORMALIZED_ACTIONS is True)")
+    print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
 
     # ⚠⚠ AN ACTIVE FREE SLOT WOULD FALL FOR THE WHOLE EPISODE. Refused here
     # rather than trained around — see the header. The failure is not a crash:
@@ -427,6 +453,8 @@ def main() raises:
         remote.set_config("warmup", String(warmup))
         remote.set_config("horizon", String(So101TabletopConfig.MAX_STEPS))
         remote.set_config("action_scale", String(ACTION_SCALE))
+        remote.set_config("target_entropy", String(target_entropy))
+        remote.set_config("init_alpha", String(init_alpha))
         # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
         # unreadable without it — 0.05 is nothing on `reach` and would be real
         # on `lift` — and a config field is the only part of a run that is
@@ -446,8 +474,8 @@ def main() raises:
             gamma=0.99,
             tau=0.005,
             action_scale=ACTION_SCALE,
-            init_alpha=Scalar[DT](0.2),
-            target_entropy=-Scalar[DT](ACT_DIM),
+            init_alpha=init_alpha,
+            target_entropy=target_entropy,
             learning_starts=warmup,
             window_size=100,
             # See wiring fact 3 in the header: a return here is 0 or 1.
