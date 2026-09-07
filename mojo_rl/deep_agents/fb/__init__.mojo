@@ -9,8 +9,13 @@ Milestone 1 scope: the pieces, each separately gated. `point_mass` first and
 walker second — on `point_mass` (nq = 2) the successor measure is traceable by
 hand, and a collapsed `B` and a correct one produce the same loss curve on
 walker.
+
+Milestone A3 (`docs/BFM_ZERO_SHOT_RL.md` §18.3): `FBOnlineAgent` runs the same
+trainer ONLINE on a batched GPU env with no dataset at all — the coverage
+experiment §16.2 asks for.
 """
 
+from .online import FBOnlineAgent
 from .z_sampler import (
     sample_z,
     sample_z_uniform,
