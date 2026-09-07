@@ -252,6 +252,10 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # (one lane of 64), so random DOES occasionally push the blocks
         # together. 0.02 is the ceiling of what was seen and is what a rate
         # has to beat before it means anything.
+        #
+        # ⚠ THESE ARE SUCCESS RATES AND ARE LANE-COUNT INDEPENDENT, unlike the
+        # shaped RETURN — a rate is per episode either way. The return
+        # baselines in the header are not, and mixing the two cost two rounds.
         return (0.02, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         return (0.25, 1.00, True)
