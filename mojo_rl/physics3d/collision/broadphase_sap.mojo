@@ -2918,6 +2918,13 @@ def _detect_contacts_sap_block_kernel[
         DTYPE, Layout.row_major(2 * NG), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    # geom type / body / contype / conaffinity, so thread 0's candidate
+    # generation reads its per-pair fields from threadgroup memory instead
+    # of one dependent global load per field per pair.
+    var gf_sh = LayoutTensor[
+        DTYPE, Layout.row_major(4 * NG), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
     # candidate list: a, b, si_type (-1 = plane candidate), staging offset,
     # thread, emitted count
     var cand_sh = LayoutTensor[
@@ -2949,6 +2956,10 @@ def _detect_contacts_sap_block_kernel[
         wp_sh[5 * NG + g] = qz
         wp_sh[6 * NG + g] = qw
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
+        gf_sh[0 * NG + g] = Scalar[DTYPE](gt)
+        gf_sh[1 * NG + g] = geoms[g, GEOM_IDX_BODY]
+        gf_sh[2 * NG + g] = geoms[g, GEOM_IDX_CONTYPE]
+        gf_sh[3 * NG + g] = geoms[g, GEOM_IDX_CONAFFINITY]
         if gt == GEOM_PLANE:
             continue
         var r = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RADIUS])
@@ -2989,9 +3000,7 @@ def _detect_contacts_sap_block_kernel[
                         pairs[p, PAIR_IDX_GEOM1 if side == 0 else PAIR_IDX_GEOM2]
                     )
                 )
-                if Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE])) == (
-                    GEOM_PLANE
-                ):
+                if Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + g])) == GEOM_PLANE:
                     continue
                 ab_sh[0 * NG + g] = rebind[Scalar[DTYPE]](ab_sh[0 * NG + g]) - pm
                 ab_sh[1 * NG + g] = rebind[Scalar[DTYPE]](ab_sh[1 * NG + g]) + pm
@@ -3033,7 +3042,7 @@ def _detect_contacts_sap_block_kernel[
 
         # 3. plane vs non-plane, the serial loop's order
         for gi in range(ngeom):
-            if Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])) != GEOM_PLANE:
+            if Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + gi])) != GEOM_PLANE:
                 continue
             for gj in range(ngeom):
                 _push(gi, gj, -1, False)
@@ -3051,11 +3060,11 @@ def _detect_contacts_sap_block_kernel[
                     idx_sh[NG + pg] = Scalar[DTYPE](1)
         var sap_n = 0
         for g in range(ngeom):
-            var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
+            var gt = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + g]))
             if gt == GEOM_PLANE:
                 continue
-            var g_ct = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONTYPE]))
-            var g_ca = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_CONAFFINITY]))
+            var g_ct = Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + g]))
+            var g_ca = Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + g]))
             if g_ct == 0 and g_ca == 0 and Int(rebind[Scalar[DTYPE]](idx_sh[NG + g])) == 0:
                 continue
             idx_sh[sap_n] = Scalar[DTYPE](g)
@@ -3075,7 +3084,7 @@ def _detect_contacts_sap_block_kernel[
         for i in range(sap_n):
             var si = Int(rebind[Scalar[DTYPE]](idx_sh[i]))
             var si_max_x = rebind[Scalar[DTYPE]](ab_sh[1 * NG + si])
-            var si_type = Int(rebind[Scalar[DTYPE]](geoms[si, GEOM_IDX_TYPE]))
+            var si_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + si]))
             for j in range(i + 1, sap_n):
                 var sj = Int(rebind[Scalar[DTYPE]](idx_sh[j]))
                 if rebind[Scalar[DTYPE]](ab_sh[0 * NG + sj]) > si_max_x:
@@ -3090,7 +3099,7 @@ def _detect_contacts_sap_block_kernel[
                     or rebind[Scalar[DTYPE]](ab_sh[4 * NG + si]) > rebind[Scalar[DTYPE]](ab_sh[5 * NG + sj])
                 ):
                     continue
-                var sj_type = Int(rebind[Scalar[DTYPE]](geoms[sj, GEOM_IDX_TYPE]))
+                var sj_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + sj]))
                 # Needs a CCD row: anything that can reach GJK/EPA or the
                 # clipper. Conservative — a cheap pair on a lane costs a
                 # slot, a CCD pair off a lane would race on lane 0's row.
@@ -3161,9 +3170,9 @@ def _detect_contacts_sap_block_kernel[
             if t < 0:
                 # a plane candidate: the plane's own data, as the serial loop
                 # head computes it once per plane
-                var gi_body = Int(rebind[Scalar[DTYPE]](geoms[a, GEOM_IDX_BODY]))
-                var gi_contype = Int(rebind[Scalar[DTYPE]](geoms[a, GEOM_IDX_CONTYPE]))
-                var gi_conaffinity = Int(rebind[Scalar[DTYPE]](geoms[a, GEOM_IDX_CONAFFINITY]))
+                var gi_body = Int(rebind[Scalar[DTYPE]](gf_sh[1 * NG + a]))
+                var gi_contype = Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + a]))
+                var gi_conaffinity = Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + a]))
                 var plq_x = wqx[a]
                 var plq_y = wqy[a]
                 var plq_z = wqz[a]

@@ -231,7 +231,12 @@ comptime CCD_WS_SIZE: Int = MC_WS_PD + MC_MAX_POLYVERT
 # box-box ceiling; a mesh manifold can exceed it), or a candidate list past
 # `COLL_NCAND_CAP`, sends the env to the serial per-env function on thread 0
 # — slow and exact, never wrong.
-comptime COLL_TPB: Int = 64
+# 32, not 64: E2 on Metal (block ledger §6) put the thread count at a 1.4x
+# term between 8 and 64 threads, and a block's register footprint scales
+# with it, which is what bounds blocks per SM on CUDA (255 regs x 32 = 8K of
+# 64K). 28 threads for the cheap candidates cover the 61 the k=0 park scene
+# sweeps in three rounds.
+comptime COLL_TPB: Int = 32
 comptime COLL_CCD_LANES: Int = 4
 comptime COLL_NCAND_CAP: Int = 128
 comptime COLL_STAGE_MAXC: Int = 8
