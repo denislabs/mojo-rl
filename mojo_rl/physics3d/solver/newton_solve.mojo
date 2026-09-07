@@ -507,6 +507,13 @@ comptime NEWTON_FORCE_PER_ENV: Bool = False
 # not, because the spill decision is what a real footprint should drive, and
 # this footprint is a fake one.
 comptime NEWTON_SHARED_PAD: Int = 0
+# ⚠ THE PAD APPLIES ONLY TO LEGS WITH `NV <= NEWTON_SHARED_PAD_MAX_NV`. The
+# park probe carries every leg in ONE binary, and ptxas refuses any kernel
+# over 0x18c00 = 101,376 B of static shared memory — k=9 (90.1 KB) plus a
+# 44 KB pad fails the whole build, even for a sweep that only runs k=3 and
+# k=6. 48 admits k=3 (NV 24) and k=6 (NV 42) and leaves k>=9 exactly as
+# production.
+comptime NEWTON_SHARED_PAD_MAX_NV: Int = 48
 
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
@@ -4561,7 +4568,7 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(3), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
-    comptime if NEWTON_SHARED_PAD > 0:
+    comptime if NEWTON_SHARED_PAD > 0 and NV <= NEWTON_SHARED_PAD_MAX_NV:
         # See the knob. Touched on thread 0 only, consumed through the same
         # sentinel the probe terms use, so the allocation survives and the
         # answer cannot move.
