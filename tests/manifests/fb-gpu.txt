@@ -23,3 +23,7 @@ tests/deep_agents/test_fb_cuda_graph_safety.mojo
 # driver runs end to end, two device steps advance the counters, and the
 # checkpoint loads into the CPU FBTrainer the eval scripts build. ~5 min.
 tests/deep_agents/test_fb_online_smoke.mojo
+
+# The batched GPU walker raises `done` at MAX_STEPS on every lane — the env
+# side of the `episodes 0` symptom of the first online run (§18.7). ~2 min.
+tests/dm_control/test_walker_batched_truncation_gpu.mojo

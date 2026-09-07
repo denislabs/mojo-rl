@@ -18,6 +18,10 @@ a property the loss curve could not show:
       and move `B` differently — the device counters advance in-sequence.
   [6] a checkpoint written by the online agent loads into the plain CPU
       `FBTrainer` the eval scripts build, and `B` agrees with the GPU copy.
+  [7] the driver's episode readback COUNTS at `episode_sync_every = 32` —
+      the setting the walker runs use and the one the first online run
+      reported `episodes 0` under (§18.7). Pendulum truncates at 200, so
+      4096 steps over 4 lanes must complete ~20 episodes.
 
 Run (Apple Metal or NVIDIA):
     pixi run -e apple mojo run -I . tests/deep_agents/test_fb_online_smoke.mojo
@@ -307,6 +311,30 @@ def test_driver_ring_and_capture(ctx: DeviceContext) raises:
     print("      OK")
 
 
+def test_episode_readback_at_sync_32(ctx: DeviceContext) raises:
+    print("[7] episode readback counts at episode_sync_every = 32 ...")
+    seed(SEED)
+    var a = _make(ctx)
+    var env = EnvT(ctx)
+    _ = run_offpolicy_train_batched[
+        Agent, EnvT, N_ENVS=LANES,
+        USE_TRAIN_CUDA_GRAPH=False, USE_ENV_CUDA_GRAPH=False,
+    ](
+        Optional(ctx), a, env, 4096,
+        rng_seed=UInt64(SEED), updates_per_step=1,
+        print_every=100_000, verbose=False, episode_sync_every=32,
+    )
+    # Pendulum: 200-step episodes, 4 lanes, 4096 steps -> 1024 iterations
+    # -> 5 episodes per lane -> 20 total.
+    print("      ep_count", a.ep_count(), " mean_ret", a.mean_return(), " (expect 20)")
+    assert_true(
+        a.ep_count() >= 16,
+        "the driver counted " + String(a.ep_count()) + " episodes at"
+        " episode_sync_every=32 — the deferred readback is dropping them",
+    )
+    print("      OK")
+
+
 def main() raises:
     print("=" * 70)
     print("FB online agent smoke — Pendulum, 4 lanes")
@@ -315,4 +343,5 @@ def main() raises:
     test_lane_z(ctx)
     test_relabel(ctx)
     test_driver_ring_and_capture(ctx)
+    test_episode_readback_at_sync_32(ctx)
     print("\n[PASS] FB online smoke")
