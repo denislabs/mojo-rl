@@ -33,3 +33,6 @@ tests/physics3d/test_ldl_blocked.mojo
 tests/physics3d/test_fields_mt_parity.mojo
 # The batched cfrc_ext kernel vs the CPU rne_post path.
 tests/physics3d/test_cfrc_ext_batched_vs_cpu.mojo
+# The Euler finalize's four launches (rhs kernel, the step's LDL factor and
+# solve, integrate) against the CPU step, bit-exact, on a damped model.
+tests/physics3d/test_euler_finalize_gpu_parity.mojo

@@ -22,6 +22,7 @@ each stage is independently gated; fusion is a later NVIDIA perf lever."""
 
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
+from max.gpu.sync import barrier
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
@@ -631,6 +632,99 @@ def _finalize_kernel[
 
 
 # ── the stateful integrator ───────────────────────────────────────────────
+# ⚠ THE FINALIZE IN FOUR LAUNCHES, NOT ONE — a measurement's consequence.
+# `_finalize_kernel` ran the whole finalize on ONE THREAD PER ENV: a dense
+# nv^2 matvec, the damping diagonal, `_ldl_factor_env` and `_ldl_solve_env`.
+# On the RTX 5090 that launch read 1028 us at the k=13 park scene (nv=84) —
+# 22% of the Euler step, second to Newton, growing like nv^3 — where the
+# cooperative LDL factor the step already launches costs 73 us on the same
+# matrix and the solve 115 (PERFORMANCE.md §13.39). So: a block-per-env
+# right-hand-side kernel (row-parallel matvec, then the damping diagonal
+# over joints), then the SAME `ldl_factor` / `ldl_solve` dispatchers the
+# step uses — `scratch.M` is `M_hat` in place by then, `scratch.fnet` the rhs,
+# `scratch.qacc_ws` the result, exactly the fields the solve reads and writes
+# — then a per-env integrate kernel. Every piece is arithmetic that already
+# runs on the other path (the dense matvec's ascending row sum, the
+# damping's in-place add, the factor and solve the dispatchers own), so the
+# result is the old kernel's bit for bit; `test_tape_gpu_parity` and
+# `test_device_placement` gate it. False = the old single launch.
+comptime EULER_FINALIZE_SPLIT: Bool = True
+
+
+def _finalize_rhs_kernel[
+    DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
+](
+    dt: Scalar[DTYPE],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+):
+    """One block per env, `NV` threads: `fnet = M * qacc_constrained` one row
+    per thread (the dense path's ascending sum, so the same bits), then
+    `M_hat = M + dt * diag(damping)` with the joints split over threads —
+    every joint owns its dofs' diagonal entries, so no two threads write one
+    slot. The barrier between them is what keeps the matvec reading `M`."""
+    var env = Int(block_idx.x)
+    var i = Int(thread_idx.x)
+    if env >= BATCH:
+        return
+    comptime NVn = NV if NV > 0 else 1
+    if i < NV:
+        var sum = Scalar[DTYPE](0)
+        for j in range(NV):
+            sum += rebind[Scalar[DTYPE]](M[env, i * NV + j]) * rebind[
+                Scalar[DTYPE]
+            ](qacc_constrained[env, j])
+        fnet[env, i] = sum
+    barrier()
+    for j in range(i, NJOINT, NVn):
+        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
+        if damp > Scalar[DTYPE](0):
+            var nd = 1
+            if jnt_type == JNT_FREE:
+                nd = 6
+            elif jnt_type == JNT_BALL:
+                nd = 3
+            for d in range(nd):
+                M[env, (dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+
+
+def _finalize_integrate_kernel[
+    DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
+](
+    dt: Scalar[DTYPE],
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qacc: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    # 1 = `eulerdamp` disabled: integrate the constrained acceleration as is,
+    # as `_finalize_env`'s first branch does.
+    use_constrained: Scalar[DTYPE],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    if use_constrained != Scalar[DTYPE](0):
+        for i in range(NV):
+            qacc_ws[env, i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+    _finalize_integrate_env(
+        env, dt, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, qacc, joints, qacc_ws
+    )
+
+
 struct EulerIntegrator[
     DTYPE: DType,
     D: DimsLike,
@@ -1066,6 +1160,43 @@ struct EulerIntegrator[
                 _e_last = _e_now
             comptime if _EULER_PROBE:
                 print("[eprobe]", "fk", _e_fk, "bodyvel", _e_bodyvel, "subtree", _e_subtree, "cdof", _e_cdof, "crba", _e_crba, "armature", _e_armature, "ldlf", _e_ldlf, "minv", _e_minv, "rne", _e_rne, "fnet", _e_fnet, "ldls", _e_ldls, "wb", _e_wb, "coll", _e_coll, "newton", _e_newton, "warm", _e_warm, "fin", _e_fin)
+        elif EULER_FINALIZE_SPLIT:
+            var c = ctx.value()
+            if not eulerdamp_off:
+                c.enqueue_function[
+                    _finalize_rhs_kernel[
+                        Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
+                    ]
+                ](
+                    dt,
+                    m.joints.lt["gpu", L_JOINT](),
+                    self.scratch.M.lt["gpu", L_M](),
+                    self.scratch.fnet.lt["gpu", L_NV](),
+                    self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                    grid_dim=(Self.BATCH,),
+                    block_dim=(Self.D.NV if Self.D.NV > 0 else 1,),
+                )
+                # `scratch.M` is `M_hat` now; the step's own factor and solve,
+                # on the fields they already read and write.
+                ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
+                ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
+            c.enqueue_function[
+                _finalize_integrate_kernel[
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
+                ]
+            ](
+                dt,
+                d.qpos.lt["gpu", L_QPOS](),
+                d.qvel.lt["gpu", L_NV](),
+                d.qacc.lt["gpu", L_NV](),
+                m.joints.lt["gpu", L_JOINT](),
+                self.scratch.qacc_ws.lt["gpu", L_NV](),
+                self.scratch.qacc_constrained.lt["gpu", L_NV](),
+                Scalar[Self.DTYPE](1) if eulerdamp_off
+                else Scalar[Self.DTYPE](0),
+                grid_dim=(BLOCKS,),
+                block_dim=(EU_TPB,),
+            )
         else:
             ctx.value().enqueue_function[
                 _finalize_kernel[
