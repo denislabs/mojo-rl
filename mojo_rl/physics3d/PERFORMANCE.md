@@ -3506,3 +3506,35 @@ chased today. The per-episode probe measures the first regime plus the
 reset; whoever trains a policy that lives in the second should know its
 Newton costs 5× and that the block ledger's `THREADS = 16` item is what
 addresses it.
+
+**THE BASELINE (2026-09-07, RTX 5090, per-episode probe, commit a0eadfee).**
+Residual +0.13..+0.22 ms at every k — decidable for the first time; the
+k=13 drift profile reads 0.97 last/first with a sawtooth in the max column
+(5.35 ms single launches in the first steps after each reset, 2.45 ms
+otherwise) and no trend. Wall ms/step at 1024 lanes, and env-steps/s:
+
+| k | nv | ms/step | env-steps/s | newton | collision | crba | ldl_pair | Je |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 6 | 3.39 | 302,000 | 0.29 | 2.15 | 0.06 | 0.06 | shared |
+| 3 | 24 | 5.40 | 190,000 | 1.63 | 2.22 | 0.15 | 0.28 | shared |
+| 6 | 42 | 10.34 | 99,000 | 4.45 | 3.16 | 0.57 | 0.59 | shared |
+| 9 | 60 | 17.88 | 57,000 | 10.47 | 3.32 | 1.15 | 0.89 | shared |
+| 12 | 78 | 26.07 | 39,000 | 16.03 | 3.41 | 2.56 | 1.38 | spilled |
+| 13 | 84 | 28.61 | 35,800 | 17.94 | 3.44 | 2.97 | 1.52 | spilled |
+
+Against the block ledger's closing table (0.0.11, 2026-09-03, no-reset
+500-step probe): k=13 43.9 → 28.6 ms, k=9 27.4 → 17.9, k=0 5.76 → 3.39.
+The two are not the same workload (this one pays five resets and the
+cold first steps of each episode; that one measured steps 200–500 of one
+drift), so read the ratio as "the training-shaped cost fell by about a
+third", not as a kernel A/B. Within THIS workload the shares at k=13:
+newton 63%, collision 12%, crba 10%, ldl_pair 5%; `d/dnv² = 0.0029` on
+newton. This morning's k=3 row (9.78 ms) is confirmed as a perturbed
+process: 5.40 here, newton 204 µs/launch against Sep 4's 205.
+
+Every later sweep compares to this table, at the same probe. What remains
+is the block ledger's own list: the Newton block at `THREADS =
+MAX_CONTACTS = 16` (63% of the step), CRBA's dense `[BATCH, NV*NV]` write
+(10%), `ldl_solve` (the 117 µs kernel), and the second-plateau Newton
+(11 ms/launch when the arms rest on the table), which is what the
+iteration cap governs.
