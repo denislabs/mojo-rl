@@ -102,6 +102,10 @@ means. Passing each micro-batch its own count would weight a chunk near an
 episode boundary more heavily than a full one, by exactly the ratio of their
 valid counts.
 
+⚠ **The held-out groups are FIXED, noise and timestep included.** See
+`VAL_SEED`. A validation curve is only readable if every pass scores the
+identical problem, and for flow matching the problem includes its `t`.
+
 ⚠ **Validation runs the backward it does not need.** `SmolVLATrainStep.run`
 does forward and backward together, so a validation pass costs about twice what
 it should and leaves gradients that the next training step's
@@ -193,9 +197,14 @@ comptime VAL_EVERY = 200
 comptime VAL_GROUPS = 8
 comptime LOG_EVERY = 10
 comptime VAL_SEED: UInt64 = 0x5DEECE66D
-"""⚠ Validation redraws from the SAME seed every time, so every pass scores
-the identical held-out observations. Otherwise the curve is a random walk over
-which frames came up and "it improved" is unfalsifiable."""
+"""⚠ The seed the held-out groups are drawn with, ONCE, before training.
+
+An observation here is (frame, instruction, pose, chunk, noise, t) and the
+loss depends strongly on t, so pinning only the ROW sampler is not enough —
+the noise and the timestep come from the global RNG and would be redrawn every
+pass. The first run of this file did exactly that and printed 2.034 -> 1.008
+across two Adam steps at lr 1e-4: a redraw, not learning, and unfalsifiable
+either way. The groups are now built once and reused verbatim."""
 
 comptime Pol = SmolVLAPolicy[
     N_CAM, N_LANG, CHUNK, STEPS_EULER, B, SMOLLM_LAYERS, SIGLIP_LAYERS, True
@@ -224,6 +233,13 @@ def _need(name: String) raises -> String:
 struct Group(Movable):
     """One accumulation group, drawn BEFORE any forward runs.
 
+    ⚠ It carries its own NOISE and TIMESTEP, not just its rows. A
+    flow-matching observation is (frame, instruction, pose, chunk, noise, t)
+    and the loss depends strongly on t — so a validation pass that redrew
+    them would score the same frames as a different problem. The first run of
+    this file did exactly that and reported 2.034 -> 1.008 across two Adam
+    steps at lr 1e-4, which is a redraw and cannot be learning.
+
     ⚠ The whole group is sampled first so `total_valid` can be its sum. Each
     micro-batch's `flow_mse` is then given that total, which makes the
     accumulated gradient the mean over the group. Giving each micro-batch its
@@ -237,6 +253,8 @@ struct Group(Movable):
     var raw_state: List[Float32]
     var actions: List[Scalar[DT]]
     var valid: List[Scalar[DT]]
+    var noise: List[Scalar[DT]]
+    var times: List[Float64]
     var total_valid: Int
 
     def __init__(out self):
@@ -245,6 +263,8 @@ struct Group(Movable):
         self.raw_state = List[Float32]()
         self.actions = List[Scalar[DT]]()
         self.valid = List[Scalar[DT]]()
+        self.noise = List[Scalar[DT]]()
+        self.times = List[Float64]()
         self.total_valid = 0
 
     def __init__(out self, *, deinit move: Self):
@@ -253,6 +273,8 @@ struct Group(Movable):
         self.raw_state = move.raw_state^
         self.actions = move.actions^
         self.valid = move.valid^
+        self.noise = move.noise^
+        self.times = move.times^
         self.total_valid = move.total_valid
 
 
@@ -276,6 +298,13 @@ def draw_group(
             gr.actions.append(acts_t.data[i])
         for i in range(B * CHUNK):
             gr.valid.append(valid_t.data[i])
+        var nz = Tensor.alloc(AN)
+        sample_noise(nz, AN)
+        for i in range(AN):
+            gr.noise.append(nz.data[i])
+        var tl = sample_times(B)
+        for b in range(B):
+            gr.times.append(tl[b])
     # ⚠ The bound `flow_mse` used to carry, at the only place that knows
     # `accum`. A group total above this means a micro-batch reported more
     # valid timesteps than it has slots; below 1 means every timestep in the
@@ -403,7 +432,25 @@ def main() raises:
     var row = List[Scalar[DType.uint8]](unsafe_uninit_length=IMG_ELEMS)
     var img_col = sam.store.open_column[DType.uint8](String("images"))
 
+    # ⚠ The held-out groups are drawn ONCE, here, and reused by every
+    # validation — rows, chunks, NOISE and TIMESTEPS all fixed. Pinning only
+    # the row sampler leaves the noise and t coming from the global RNG, and
+    # then the curve moves because the problem changed rather than because
+    # the policy did.
+    var keep_rng = sam.rng
+    sam.rng = VAL_SEED
+    var vgroups = List[Group]()
+    for _ in range(VAL_GROUPS):
+        vgroups.append(
+            draw_group(sam, accum, split, n_rows, state_t, acts_t, valid_t)
+        )
+    sam.rng = keep_rng
+    print("  val     " + String(VAL_GROUPS) + " fixed groups x "
+          + String(accum) + " observations, drawn once")
+
     var t0 = perf_counter_ns()
+    var ns_img = 0
+    var ns_step = 0
 
     for s in range(steps):
         zero_trainable_grads[
@@ -419,6 +466,7 @@ def main() raises:
             loss += run_one(
                 m, gr, sam, tasks, pol, st, img_col, row, images, scratch,
                 acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
+                ns_img, ns_step,
             )
         adam_step_trainables[
             "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
@@ -430,9 +478,15 @@ def main() raises:
 
         if s % LOG_EVERY == 0:
             var el = Float64(perf_counter_ns() - t0) / 1.0e9
+            var tot = Float64(ns_img + ns_step)
             print(
                 "  step " + String(s) + "   train " + String(loss)
                 + "   " + String(el / Float64(s + 1)) + " s/step"
+                + "   host-images " + String(
+                    100.0 * Float64(ns_img) / tot
+                ) + "%  gpu-step " + String(
+                    100.0 * Float64(ns_step) / tot
+                ) + "%"
             )
             var names = List[String]()
             var vals = List[Float64]()
@@ -444,20 +498,14 @@ def main() raises:
             # ⚠ The seed is PINNED, so every validation scores the identical
             # held-out observations. It is restored afterwards so training
             # does not replay the same batches for ever.
-            var keep_rng = sam.rng
-            sam.rng = VAL_SEED
             var vsum = 0.0
-            for _ in range(VAL_GROUPS):
-                var vg = draw_group(
-                    sam, accum, split, n_rows, state_t, acts_t, valid_t
-                )
+            for vi in range(VAL_GROUPS):
                 for m in range(accum):
                     vsum += run_one(
-                        m, vg, sam, tasks, pol, st, img_col, row, images,
-                        scratch, acts_t, valid_t, noise_t, times_t, x_t, u_t,
-                        ctx,
+                        m, vgroups[vi], sam, tasks, pol, st, img_col, row,
+                        images, scratch, acts_t, valid_t, noise_t, times_t,
+                        x_t, u_t, ctx, ns_img, ns_step,
                     )
-            sam.rng = keep_rng
             var vloss = vsum / Float64(VAL_GROUPS)
             print("  step " + String(s) + "   HELD-OUT " + String(vloss))
             var vn = List[String]()
@@ -492,13 +540,25 @@ def run_one(
     mut x_t: Tensor,
     mut u_t: Tensor,
     ctx: DeviceContext,
+    mut ns_img: Int,
+    mut ns_step: Int,
 ) raises -> Float64:
-    """One observation: its prefix, its interpolant, one denoising step."""
+    """One observation: its prefix, its interpolant, one denoising step.
+
+    ⚠ The two timers split HOST from DEVICE, and they can only be read that
+    way because each phase ENDS in a synchronisation: `fill_store_images`
+    finishes with `upload_resident`, and `run` finishes with `mean_err`, which
+    downloads. Subtracting host timers across a run of pure enqueues would
+    measure the enqueues (`_a_per_call_sweep_is_an_upper_bound_on_a_step`).
+    """
+    var t_img = perf_counter_ns()
     var g = gr.rows[m * B]
     img_col.read_range[DType.uint8](g, g + 1, mptr(row))
     fill_store_images["gpu", N_CAM](
         row, SRC_W, SRC_H, images, scratch, Optional(ctx)
     )
+    ns_img += perf_counter_ns() - t_img
+    var t_step = perf_counter_ns()
     var lang = tasks.for_index(gr.tasks[m * B])
     var rs = List[Float32]()
     for j in range(SDIM):
@@ -512,19 +572,24 @@ def run_one(
     acts_t.upload_resident(ctx)
     valid_t.upload_resident(ctx)
 
-    sample_noise(noise_t, AN)
+    noise_t.ensure(AN)
+    for i in range(AN):
+        noise_t.data[i] = gr.noise[m * AN + i]
     noise_t.upload_resident(ctx)
-    var tl = sample_times(B)
+    var tl = List[Float64]()
     times_t.ensure(B)
     for b in range(B):
+        tl.append(gr.times[m * B + b])
         times_t.data[b] = Scalar[DT](tl[b])
     times_t.upload_resident(ctx)
     build_xt_ut["gpu", B, CHUNK * PAD](
         noise_t, acts_t, times_t, x_t, u_t, Optional(ctx)
     )
     st.set_times["gpu"](tl, Optional(ctx))
-    return st.run["gpu", Pol.P](
+    var l = st.run["gpu", Pol.P](
         pol.expert, pol.cache, pol.denoiser, pol.action_in, pol.time_mlp_in,
         pol.time_mlp_out, pol.action_out, x_t, u_t, valid_t, gr.total_valid,
         Optional(ctx),
     )
+    ns_step += perf_counter_ns() - t_step
+    return l
