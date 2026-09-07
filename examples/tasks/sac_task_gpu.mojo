@@ -489,6 +489,31 @@ def main() raises:
     var track = 1.0 - (1.0 - Float64(tau)) ** Float64(updates_per_step)
     print("  updates/step:", updates_per_step, " tau:", tau,
           " -> the target moves", track, "per iteration")
+    print("  UTD:", Float64(updates_per_step) / Float64(N_ENVS))
+    # ⚠⚠ THE KNOWN-BAD BAND, MEASURED ON THIS FAMILY. Three runs, same task:
+    #
+    #     27.4%  (64 env / 64 upd)   mean_q -> 14820, mean_reward FLAT
+    #     14.8%  (32 env / 32 upd)   mean_q -> 1152,  next_q-q +5.9, no trend
+    #      7.7%  (64 env / 16 upd)   mean_q -> -6.63 converging, reward moving
+    #
+    # So the threshold is somewhere in (7.7%, 14.8%] and it is BELOW what the
+    # working references use — `sac_so_arm101_reach_training_gpu.mojo` trains
+    # at 14.8%, this family does not. Warned rather than refused, because the
+    # rate is a legitimate sweep axis and the band is three points wide, not a
+    # law.
+    #
+    # ⚠ TO KEEP UTD AT 1 AND STILL LAND AT 7.7%, LOWER `tau`, NOT THE UPDATE
+    # COUNT: 32 updates at tau 0.0025 is 7.70%, which is the tracking rate
+    # that held and the sample efficiency that 16-updates gave away.
+    if track > 0.10:
+        print()
+        print("  ⚠⚠ THE TARGET MOVES", track, "PER ITERATION, AND THIS FAMILY")
+        print("  HAS DIVERGED ABOVE 0.10 IN EVERY RUN SO FAR (14.8% and")
+        print("  27.4%; 7.7% converged). Watch `mean_q` against")
+        print("  `mean_reward / (1 - gamma)` — if it passes zero the run is")
+        print("  already lost. `--tau 0.0025` at", updates_per_step,
+              "updates gives 7.7% with UTD unchanged.")
+        print()
 
     # ⚠⚠ AN ACTIVE FREE SLOT WOULD FALL FOR THE WHOLE EPISODE. Refused here
     # rather than trained around — see the header. The failure is not a crash:
