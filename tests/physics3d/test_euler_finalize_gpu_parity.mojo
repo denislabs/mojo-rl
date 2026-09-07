@@ -1,6 +1,16 @@
-"""The Euler integrator's GPU step against its CPU step, BIT-EXACT, on a
-model with joint damping — the gate for `_finalize_rhs_kernel` and the
-four-launch finalize (`EULER_FINALIZE_SPLIT`).
+"""The Euler integrator's GPU step against its CPU step on a model with joint
+damping — the gate for `_finalize_rhs_kernel` and the four-launch finalize
+(`EULER_FINALIZE_SPLIT`).
+
+⚠ NOT BIT-EXACT, AND THE REASON IS ON RECORD. The CPU step takes
+`_finalize_tree_env` on a model with a tree table, whose docstring says it
+is "not bit-exact against the dense twin: a different rounding of the same
+M_hat^-1 (M qacc)"; the GPU step is the dense twin. Measured on this fixture
+the two legs differ at 11 of 12 values by at most 2^-20 (1.49e-06 at
+|qpos| ~ 1.6) — with the OLD single-launch kernel and with the split, the
+same values and the same worst digit, which is what says the split is the
+old kernel's arithmetic. The bound below is 1e-5 absolute: two decades
+above that rounding, five decades below what a halved damping does (0.32).
 
 WHY THIS FILE EXISTS. The finalize's implicit damping (`M_hat = M +
 dt*diag(damping)`, `mj_Euler`'s eulerdamp) runs only when a dof has damping,
@@ -8,8 +18,8 @@ and the two gates that were green while a mutant halved that damping did not
 reach it: `test_tape_gpu_parity` never steps the physics, and
 `test_ip_fields_env_loop` compares at 1e-2. This one steps the inverted
 pendulum (`damping="1"` on both joints, no meshes) on both targets from the
-same state under the same forces and demands the same bits in `qpos` and
-`qvel`, and it asserts the damping is non-zero so it cannot go vacuous by a
+same state under the same forces and demands `qpos` and `qvel` within the
+tree/dense rounding, and it asserts the damping is non-zero so it cannot go vacuous by a
 model edit.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_euler_finalize_gpu_parity.mojo
@@ -89,6 +99,7 @@ def main() raises:
     print("  compared", BATCH * (NQ + NV), "values over", N_STEPS, "steps; differing:", diffs, " worst |d|:", worst, " |qpos| max:", moved)
     if moved == 0.0:
         raise Error("nothing moved: the step is vacuous")
-    if diffs != 0:
-        raise Error("Euler GPU step differs from the CPU step: " + String(diffs) + " values, worst " + String(worst))
-    print("test_euler_finalize_gpu_parity: ALL PASS")
+    # The tree-vs-dense rounding is ~1.5e-6 here; the damping mutant is 0.32.
+    if worst > 1e-5:
+        raise Error("Euler GPU step differs from the CPU step beyond the tree/dense rounding: worst " + String(worst))
+    print("test_euler_finalize_gpu_parity: ALL PASS (within the tree/dense rounding)")
