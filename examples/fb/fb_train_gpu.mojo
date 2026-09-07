@@ -18,7 +18,7 @@ so an arm costs a process launch rather than a rebuild (~90 s each, which is
 most of a 17-minute arm):
 
     --steps N      --ortho X     --lr-b X     --bc X
-    --obs-norm 0|1 --tag NAME
+    --obs-norm 0|1 --tag NAME    --seed N
 
 `--tag` is the one that matters for bookkeeping: it renames the checkpoint, the
 CSV and the remote run together, so two arms cannot overwrite each other's
@@ -122,18 +122,22 @@ comptime MAX_GRAD_NORM: Float64 = 1.0
 # rather than against the loss.
 comptime BC_WEIGHT: Float64 = 1.0
 
-# ⚠⚠ **BFM-Zero ships `ortho_coef = 100`; this has always run 1.0.**
-# `docs/BFM_ZERO_SHOT_RL.md` §16.3 — arXiv 2511.04131 Table 1 AND the released
-# `fb_cpr/configs.py` both carry 100, a factor of 100 above `FBTrainer.make`'s
-# default, which is what every §13 measurement was taken at. It is left at 1.0
-# here so the existing numbers stay comparable; `--ortho 100` is the arm.
-comptime ORTHO_WEIGHT: Float64 = 1.0
+# ⚠⚠ **`ortho_coef = 100` AND `lr_B = 1e-5`, TOGETHER — measured, not copied.**
+# `docs/BFM_ZERO_SHOT_RL.md` §18.6: on the fixed mixture, `ortho100` alone was
+# null (+0.07 / +0.19 vs base and ended in an excursion), `lr_b 1e-5` alone
+# was null in round 1, and the PAIR — the reference's own setting — scored
+# stand 1.57 / walk 1.92 / run 1.63x random with every rung SIGNAL
+# (t 4.5–11.4). The training side says why: with B held orthonormal AND
+# moving 30x slower, |F| plateaus at ~153 by 100 k and the measure loss and
+# F's gradient norm are FLAT from there, which no other arm managed. Every
+# §13 number and A2 round 1 ran at 1.0 / -1; `base_u` is the reference for
+# anything trained from now on.
+comptime ORTHO_WEIGHT: Float64 = 100.0
 
-# ⚠ **B's learning rate, SEPARATE from F's.** The reference trains B at 1e-5
-# against F's 3e-4 — B is the shared representation and F chases it, so a B
-# moving at F's rate is a target that will not sit still. -1 inherits `lr`,
-# which is what this script did implicitly before the flag existed.
-comptime LR_B: Float64 = -1.0
+# ⚠ **B's learning rate, SEPARATE from F's** — 1e-5 against F's 3e-4, the
+# reference's value, and the half of the winning pair above that makes the
+# other half work. -1 inherits `lr` (what every §13 run did).
+comptime LR_B: Float64 = 1e-5
 
 # ⚠⚠ **Observation standardisation.** BFM-Zero normalises every observation
 # entering F, B and the actor (`BatchNorm1d(affine=False)`); we fed raw
@@ -164,6 +168,8 @@ comptime USE_TRAIN_CUDA_GRAPH: Bool = True
 # a killed monitor, and a laptop reboot.
 comptime CSV_PATH: StaticString = "fb_walker_all_d128_metrics.csv"
 comptime RUN_NAME: StaticString = "FB walker all-tasks d128"
+# `--seed` overrides it: a replicate arm at a second seed is the only way to
+# put an error bar on a 3-rung mean (§18.6.1 — the winner is ONE run).
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -252,6 +258,7 @@ def main() raises:
     var obs_norm_on = atol(_flag(String("--obs-norm"),
                                  String(Int(OBS_NORM)))) != 0
     var tag = _flag(String("--tag"), String(""))
+    var seed_v = atol(_flag(String("--seed"), String(SEED)))
     var ckpt_path = String(CKPT_PATH)
     var csv_path = String(CSV_PATH)
     var run_name = String(RUN_NAME)
@@ -261,7 +268,7 @@ def main() raises:
         run_name = String(RUN_NAME) + " [" + tag + "]"
     print(
         "[0] arm: steps", train_steps, " ortho", ortho_w, " lr_b", lr_b,
-        " bc", bc_w, " obs_norm", obs_norm_on, " tag '", tag, "'",
+        " bc", bc_w, " obs_norm", obs_norm_on, " seed", seed_v, " tag '", tag, "'",
     )
 
     var ctx = DeviceContext()
@@ -389,8 +396,8 @@ def main() raises:
     var idx_s = ctx.enqueue_create_buffer[IDX_DT](BATCH)
     var idx_sn = ctx.enqueue_create_buffer[IDX_DT](BATCH)
     var idx_sp = ctx.enqueue_create_buffer[IDX_DT](BATCH)
-    var samp_a = UniformDeviceSampler(n_rows, seed=UInt64(SEED))
-    var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(SEED) + 977)
+    var samp_a = UniformDeviceSampler(n_rows, seed=UInt64(seed_v))
+    var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(seed_v) + 977)
 
     var t = Trainer.make(
         lr=3e-4,
@@ -398,7 +405,7 @@ def main() raises:
         tau=0.01,
         ortho_weight=ortho_w,
         ctx=ctx,
-        seed=UInt64(SEED) + 13,
+        seed=UInt64(seed_v) + 13,
         max_grad_norm=MAX_GRAD_NORM,
         bc_weight=bc_w,
         lr_b=lr_b,
@@ -440,6 +447,7 @@ def main() raises:
     logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
     logger.set_config("obs_norm", String(obs_norm_on))
     logger.set_config("tag", tag)
+    logger.set_config("seed", String(seed_v))
     logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
     logger.set_config("epochs_over_dataset", String(epochs))
 
@@ -502,7 +510,7 @@ def main() raises:
         # policy that emits plausible garbage and reports nothing.
         t.embed_sp()
         box_muller_normal_gpu[BATCH * D](
-            ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(SEED), rng_off
+            ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(seed_v), rng_off
         )
         rng_off += UInt64(BATCH * D)
         # ⚠⚠ UNIFORMS, not Gaussians. Until 2026-09-07 this was a second
@@ -511,7 +519,7 @@ def main() raises:
         # See `kernels.uniform01_kernel`. Every §13 number and the A2 sweep
         # trained under the old draw; re-run `base` before comparing across it.
         ctx.enqueue_function[uniform01_kernel[BATCH * 2]](
-            mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off,
+            mptr(pick.dev.value().unsafe_ptr()), UInt64(seed_v) + 31, rng_off,
             grid_dim=_blocks(BATCH * 2), block_dim=TPB,
         )
         rng_off += UInt64(2 * BATCH * 2)

@@ -39,8 +39,10 @@ observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
   `--bc` 0.0: the offline BC term was the stand-in for CPR against
   extrapolation on a FROZEN dataset; online, F is fitted on the policy's own
   actions. `mean|a|` at flush is the check that this prediction holds.
-  `--ortho` 1.0 and `--lr-b` -1 (= lr) match the offline `base` arm so the
-  two are comparable; the sweep (A2) decides whether either moves.
+  `--ortho` 100 and `--lr-b` 1e-5: the A2 winner (§18.6.1), which is the
+  reference's own PAIR — each was null alone, together stand 1.57 / walk
+  1.92 / run 1.63x random offline with every rung SIGNAL. That offline arm
+  (`ortho100_lrb1e5_u`) is the number this run has to beat with no dataset.
 
 ⚠ Segmented, with STEP-STAMPED checkpoints — the driver overwrites its
 `checkpoint_path` on every save, and §13 records a good early checkpoint
@@ -107,8 +109,8 @@ comptime WARMUP_STEPS: Int = 25_600      # 100 iterations of random actions
 comptime Z_HOLD: Int = 150
 comptime EXPL_STD: Float64 = 0.2
 comptime BC_WEIGHT: Float64 = 0.0
-comptime ORTHO_WEIGHT: Float64 = 1.0
-comptime LR_B: Float64 = -1.0
+comptime ORTHO_WEIGHT: Float64 = 100.0
+comptime LR_B: Float64 = 1e-5
 comptime MAX_GRAD_NORM: Float64 = 1.0
 comptime DIAG_EVERY: Int = N_ENVS * 100  # 100 iterations
 comptime PRINT_EVERY: Int = N_ENVS * 500
