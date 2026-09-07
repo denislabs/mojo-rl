@@ -103,6 +103,14 @@ touches something, which on `gather` is the whole difficulty.
     shaped mean return, random actions, gather    -19.98   (weights .50/.25)
     success rate, greedy, untrained                 0.00
 
+⚠ AND A HEALTHY RUN NOW HAS A SHAPE. At 16 updates/step the eval return went
+-28.7 -> -20.1 over 47k steps while `mean_reward` improved on 70 of 79
+consecutive samples. What to read FIRST is `mean_q`: it should converge toward
+`mean_reward / (1 - gamma)` — about -9 at these weights — with
+`mean_next_q - mean_q` under a tenth. Run 3's gap was +5 and its `mean_q` ran
+to 508; that is the shape of a critic chasing itself, and no return moves
+under one.
+
 ⚠ THAT -19.98 IS AT THE CURRENT WEIGHTS AND WAS -3.996 AT THE OLD 0.10/0.05.
 A shaped return is only comparable within one weight pair, which is why they
 are logged as config fields — `shape_w_goal` and `shape_w_reach`.
@@ -384,7 +392,27 @@ def main() raises:
     # argument was right and the conclusion was wrong — the two examples that
     # DO train on this stack (`sac_so_arm101_reach_training_gpu.mojo` and
     # `sac_half_cheetah_training_gpu.mojo`) both run 32.
-    var updates_per_step = N_ENVS
+    # ⚠⚠ 16, NOT `N_ENVS`, AND THAT ONE CHANGE IS WHAT MADE THIS FAMILY
+    # TRAIN. Measured, same task, same everything else:
+    #
+    #                    64 updates (27.4%)      16 updates (7.7%)
+    #     mean_q          0 -> 14820             0 -> -6.63, converging
+    #     next_q - q      about +5               +0.048
+    #     critic_loss     190800                 0.0035
+    #     mean_reward     -0.115, FLAT           -0.112 -> -0.0889, improving
+    #                                            on 70 of 79 samples
+    #     eval return     -25 .. -51, no trend   -28.7 -> -20.1
+    #
+    # The critic's fixed point is r/(1-gamma) = -8.9 and `mean_q` reached
+    # -6.63 descending toward it: right sign, right magnitude, first time in
+    # five runs.
+    #
+    # ⚠ IT COSTS SAMPLE EFFICIENCY, AND THAT IS THE TRADE. UTD drops from 1 to
+    # 16/64 = 0.25. The alternative that keeps UTD at 1 is what the two
+    # examples that train on this stack do — N_ENVS 32 with 32 updates, i.e.
+    # 15% tracking — but `N_ENVS` is comptime here and 64-with-16 is the
+    # configuration that has actually been measured.
+    var updates_per_step = 16
     var tau = Scalar[DT](0.005)
     var args = argv()
     for i in range(1, len(args)):
