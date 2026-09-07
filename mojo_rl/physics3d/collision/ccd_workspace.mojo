@@ -237,10 +237,25 @@ comptime CCD_WS_SIZE: Int = MC_WS_PD + MC_MAX_POLYVERT
 # 64K). 28 threads for the cheap candidates cover the 61 the k=0 park scene
 # sweeps in three rounds.
 comptime COLL_TPB: Int = 32
-comptime COLL_CCD_LANES: Int = 4
+# ⚠ OFF BY DEFAULT, AND THE REASON IS A MEASUREMENT (BLOCK_DIAGONAL_..., §6,
+# 2026-09-07). On the RTX 5090 at k=0 the block kernel's launch read 269.7 µs
+# against the serial kernel's 269.0 (381 vs 430 at k=13), exact both ways;
+# the bisect put 206 of its 270 µs in FOUR GJK candidates on four lanes of
+# one warp — twice what the same four cost one after another on one thread,
+# because lanes are parallel only on the SAME instructions and four
+# different pairs diverge at every branch. The old mapping (32 envs per
+# warp, each lane its own env, in lockstep) was the SIMT-friendly one. The
+# kernel stays as the substrate for a WARP-cooperative GJK (one warp per
+# candidate, the hill climb's neighbourhood across lanes), which is the
+# lever that fits SIMT; until that exists this is False, and the workspace
+# lanes and staging slab below collapse to one row so nothing is paid.
+comptime COLL_BLOCK_KERNEL: Bool = False
+comptime COLL_CCD_LANES: Int = 4 if COLL_BLOCK_KERNEL else 1
 comptime COLL_NCAND_CAP: Int = 128
 comptime COLL_STAGE_MAXC: Int = 8
-comptime COLL_STAGE_SLOTS: Int = COLL_NCAND_CAP * COLL_STAGE_MAXC
+comptime COLL_STAGE_SLOTS: Int = (
+    COLL_NCAND_CAP * COLL_STAGE_MAXC if COLL_BLOCK_KERNEL else 1
+)
 
 # The single-row spelling, for host callers that collide one pair at a time
 # (every gate and probe in `tests/physics3d`). The engine binds

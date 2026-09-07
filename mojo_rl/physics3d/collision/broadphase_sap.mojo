@@ -167,7 +167,7 @@ def _hf_len(n: Int) -> Int:
 
 from .ccd_workspace import (
     CCD_WS_SIZE, COLL_TPB, COLL_CCD_LANES, COLL_NCAND_CAP, COLL_STAGE_MAXC,
-    COLL_STAGE_SLOTS,
+    COLL_STAGE_SLOTS, COLL_BLOCK_KERNEL,
 )
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
@@ -2774,10 +2774,8 @@ def _detect_contacts_sap_fields_kernel[
 
 
 
-# ⚠ A KNOB, AND THE ONLY ONE THAT MOVES THE COLLISION KERNEL'S LAUNCH SHAPE.
-# True routes GPU SAP detection to the block-per-env kernel below on every
-# model without a heightfield; False keeps the one-thread-per-env kernel.
-comptime COLL_BLOCK_KERNEL: Bool = True
+# The block-kernel switch lives in `ccd_workspace.mojo` (`COLL_BLOCK_KERNEL`),
+# next to the sizes that depend on it.
 
 # ⚠ A BISECT KNOB, TIMING INSTRUMENT ONLY. Returns from the block kernel after
 # phase N, writing `ncon = 0` so the step stays bounded (no contacts: the
