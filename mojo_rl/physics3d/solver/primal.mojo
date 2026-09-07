@@ -135,6 +135,10 @@ def pyramidal_linesearch[
     # `pyramidal_edge_forces`.
     je_n: Scratch[Int, N_CAP],
     je_ix: Scratch[Int, IX_CAP],
+    # The number of `peval` calls this search made — the line search's unit
+    # of work, and the count the blocked kernel reports as `[lseval]`. The
+    # caller zeroes it; MuJoCo's `neval` is the same quantity per iteration.
+    mut lsiter: Int,
     # `<option ls_iterations>`. ⚠ THE COMPTIME `LINESEARCH_ITER` IS THE CEILING
     # A `range()` NEEDS, NOT THE BUDGET — a model asking for fewer iterations
     # (apollo asks for 10, so101 for 20) must get them. A non-positive value
@@ -302,8 +306,6 @@ def pyramidal_linesearch[
         if d1 <= ZERO:
             d1 = MINVAL
         it += 1
-
-    var lsiter = 0
 
     var p0_a = ZERO
     var p0_c = ZERO

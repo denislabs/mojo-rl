@@ -467,6 +467,30 @@ comptime NEWTON_ITER_REPORT: Bool = False
 # together and no `barrier()` is left half-reached. Timing instrument only.
 comptime NEWTON_STOP_AFTER: Int = 0
 
+# ⚠ A ROUTING KNOB FOR PRICING THE TWO NVIDIA KERNELS AGAINST EACH OTHER.
+# `solve_newton` sends PYRAMIDAL + NVIDIA to the blocked kernel (one env per
+# block, cooperative, threadgroup-resident matrices), the OOM-safe path at
+# humanoid scale. The per-env kernel (one THREAD per env, the same body the
+# CPU runs) also compiles and runs on NVIDIA — `test_noslip_blocked_kernel`
+# holds the device fixed and reads blocked-GPU vs per-env-GPU at exactly
+# 0.0 with the noslip pass off and on — so the choice between them is a
+# COST decision, and it was never measured on the parked-slot workload.
+#
+# WHY IT MIGHT GO THE OTHER WAY THERE (BLOCK_DIAGONAL_..., the 2026-09-07
+# section): on the k=13 park scene at zero control the problem has 6
+# constraint rows, 1.3 Newton iterations and 2 line-search evaluations per
+# solve; the CPU per-env solver does one solve in 4.6 us, and the blocked
+# kernel spends ~360 us per block-solve on it. The blocked kernel's cost
+# there is tid-0 SERIAL LATENCY on global reads (the 97-joint limit scan,
+# the warmstart), not arithmetic — a per-thread kernel pays that latency
+# once per thread with 1024 threads in flight instead of once per block
+# with one block per SM.
+#
+# False = production. True = a measurement build; never ship it, because
+# the per-env kernel's local-memory footprint is the OOM the blocked kernel
+# was written to avoid at high contact counts.
+comptime NEWTON_FORCE_PER_ENV: Bool = False
+
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
 # dead-store elimination is entitled to delete the whole thing — and the probe
@@ -1313,6 +1337,7 @@ def _newton_solve_env[
         var _p_hrebuild: Int = 0
         var _p_noslip: Int = 0
         var _p_iters: Int = 0
+        var _p_lsev: Int = 0
         var _p_last: Int = 0
         comptime if _CPU_PROBE:
             _p_last = Int(perf_counter_ns())
@@ -2162,6 +2187,7 @@ def _newton_solve_env[
             # `opt.tolerance * opt.ls_tolerance / scale`, the product
             # `mj_solPrimal` passes at engine_solver.c:2236 divided by the
             # convergence scale; the callee multiplies by `|search|`.
+            var ls_evals = 0
             var alpha = pyramidal_linesearch[
                 DTYPE, E_CAP, V_CAP, LINESEARCH_ITER,
                 PRIMAL_MINVAL_GPU, N_CAP, IX_CAP, SPARSE=TREE_AWARE
@@ -2169,6 +2195,7 @@ def _newton_solve_env[
                 num_edges, Je, De, kind_e, R_e, floss_e, search, Mv, Ma,
                 f_smooth, qacc, qacc_smooth, jar,
                 nv, je_n, je_ix,
+                ls_evals,
                 lsiter_rt,
                 tol_rt * lstol_rt / scale,
             )
@@ -2177,6 +2204,7 @@ def _newton_solve_env[
                 var _p_now = Int(perf_counter_ns())
                 _p_ls += _p_now - _p_last
                 _p_last = _p_now
+                _p_lsev += ls_evals
             if alpha < Scalar[DTYPE](1e-10):
                 break
 
@@ -2238,7 +2266,7 @@ def _newton_solve_env[
             var improvement = scale * (old_cost - new_cost)
             comptime if _PYR_TRACE:
                 print("  [pyr]", iter_n, "alpha", alpha, "impr", improvement,
-                      "tol", tol_rt)
+                      "tol", tol_rt, "lsev", ls_evals)
             if improvement < tol_rt and iter_n > 0:
                 if improvement < Scalar[DTYPE](0):
                     # Cost increased — revert to old state
@@ -2371,7 +2399,7 @@ def _newton_solve_env[
                     "hbuild", _p_hbuild, "chol", _p_chol, "mv", _p_mv,
                     "ls", _p_ls, "update", _p_update, "hrebuild", _p_hrebuild,
                     "noslip", _p_noslip, "init", _q_init, "pre1", _q_pre1,
-                "pre2", _q_pre2, "iters", _p_iters,
+                "pre2", _q_pre2, "iters", _p_iters, "lsev", _p_lsev,
                 )
         # Write qacc back
         for i in range(nv):
@@ -3855,7 +3883,7 @@ def solve_newton[
         # kernel (which only OOMs on NVIDIA, where PYRAMIDAL never takes it).
         var used_blocked = False
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
-            if has_nvidia_gpu_accelerator():
+            if has_nvidia_gpu_accelerator() and not NEWTON_FORCE_PER_ENV:
                 solve_newton_blocked["gpu", DTYPE, CONE_TYPE=CONE_TYPE, BATCH=BATCH, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER, JE_WS=JE_WS](d, m, scratch, cscratch, ctx)
                 used_blocked = True
         if not used_blocked:
