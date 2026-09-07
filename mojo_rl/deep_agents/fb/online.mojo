@@ -457,6 +457,7 @@ struct FBOnlineAgent[
         ortho_weight: Float64 = 1.0,
         max_grad_norm: Float64 = 1.0,
         bc_weight: Float64 = 0.0,
+        act_l2_weight: Float64 = 1.0,
         learning_starts: Int = 10_000,
         action_scale: Float64 = 1.0,
         expl_std: Float64 = 0.2,
@@ -471,11 +472,15 @@ struct FBOnlineAgent[
         """Defaults are BFM-Zero's rollout / relabel settings on top of
         `FBTrainer.make`'s (`gamma` 0.98, `tau` 0.01, Adam 3e-4).
 
-        `bc_weight = 0` deliberately: the offline BC term was the stand-in for
-        CPR against extrapolation on a FROZEN dataset. Online, `F` is fitted on
-        the policy's own actions, so the argmax corner is visited and
-        corrected rather than extrapolated to. It stays a knob because that is
-        a prediction, not a measurement — `mean|a|` at flush is the check.
+        `bc_weight = 0`, `act_l2_weight = 1.0`. The first online walker run
+        (2026-09-07, no BC, no penalty) went bang-bang from the first flush:
+        mean|a| 0.82 → 0.88, 82–90 % saturated at eval, walk/run below
+        random. The prediction that on-policy data would correct the corner
+        was WRONG — a bang-bang policy generates bang-bang data and `F` fits
+        it. BC toward the replay's own (saturated) actions cannot help; the
+        magnitude penalty is the direct form of what BFM-Zero's `Q_R`
+        action-rate term does. `mean|a|` at flush is the check that 1.0 is
+        in the right decade.
         """
         comptime assert Self.CAP >= Self.BATCH, (
             "FBOnlineAgent: CAP must be >= BATCH"
@@ -494,7 +499,7 @@ struct FBOnlineAgent[
         a.t = Self.TrainerT.make[INIT](
             lr=lr, gamma=gamma, tau=tau, ortho_weight=ortho_weight,
             ctx=octx, seed=seed + 13, max_grad_norm=max_grad_norm,
-            bc_weight=bc_weight, lr_b=lr_b,
+            bc_weight=bc_weight, lr_b=lr_b, act_l2_weight=act_l2_weight,
         )
         a.t.ensure_sized()
         a.tracker = EpisodeTracker.new(

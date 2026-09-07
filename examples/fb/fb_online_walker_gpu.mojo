@@ -10,7 +10,7 @@ that claim, because it changes nothing else: same `FBTrainer`, same nets as
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_online_walker_gpu.mojo \
         [--steps N] [--ups K] [--warmup N] [--z-hold N] [--bc X] [--ortho X] \
-        [--lr-b X] [--expl-std X] [--tag NAME]
+        [--lr-b X] [--expl-std X] [--act-l2 X] [--tag NAME]
 
 Then score it — the online arm has its OWN eval, because the batched env's
 observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
@@ -36,9 +36,12 @@ observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
   64 updates/iter as a target that chased itself (§13's SAC note), so this
   starts at 8 and exposes it.
   `--z-hold` 150 and the 10 k ZBuffer are BFM-Zero's rollout rule.
-  `--bc` 0.0: the offline BC term was the stand-in for CPR against
-  extrapolation on a FROZEN dataset; online, F is fitted on the policy's own
-  actions. `mean|a|` at flush is the check that this prediction holds.
+  `--bc` 0.0 and `--act-l2` 1.0: the FIRST run of this script (bc 0, no
+  penalty, 4.9 M env steps) went bang-bang from the first flush — mean|a|
+  0.82 → 0.88, 82–90 % saturated at eval, walk 0.71x / run 0.48x random.
+  The prediction that on-policy data corrects the corner was wrong; see
+  `FBTrainer.act_l2_weight`. Watch `mean|a|` at the first flush: at 1.0 it
+  must sit well below 0.8, or the penalty is in the wrong decade.
   `--ortho` 100 and `--lr-b` 1e-5: the A2 winner (§18.6.1), which is the
   reference's own PAIR — each was null alone, together stand 1.57 / walk
   1.92 / run 1.63x random offline with every rung SIGNAL. That offline arm
@@ -109,6 +112,7 @@ comptime WARMUP_STEPS: Int = 25_600      # 100 iterations of random actions
 comptime Z_HOLD: Int = 150
 comptime EXPL_STD: Float64 = 0.2
 comptime BC_WEIGHT: Float64 = 0.0
+comptime ACT_L2: Float64 = 1.0
 comptime ORTHO_WEIGHT: Float64 = 100.0
 comptime LR_B: Float64 = 1e-5
 comptime MAX_GRAD_NORM: Float64 = 1.0
@@ -139,6 +143,7 @@ def main() raises:
     var warmup = atol(_flag(String("--warmup"), String(WARMUP_STEPS)))
     var z_hold = atol(_flag(String("--z-hold"), String(Z_HOLD)))
     var bc_w = atof(_flag(String("--bc"), String(BC_WEIGHT)))
+    var act_l2 = atof(_flag(String("--act-l2"), String(ACT_L2)))
     var ortho_w = atof(_flag(String("--ortho"), String(ORTHO_WEIGHT)))
     var lr_b = atof(_flag(String("--lr-b"), String(LR_B)))
     var expl = atof(_flag(String("--expl-std"), String(EXPL_STD)))
@@ -165,7 +170,7 @@ def main() raises:
     print("  updates / iteration =", ups, " (", ups * BATCH // N_ENVS, "samples per env step )")
     print("  warmup env steps    =", warmup)
     print("  z_hold / ZBUF       =", z_hold, "/", ZBUF)
-    print("  expl_std / bc / ortho / lr_b =", expl, "/", bc_w, "/", ortho_w, "/", lr_b)
+    print("  expl_std / bc / act_l2 / ortho / lr_b =", expl, "/", bc_w, "/", act_l2, "/", ortho_w, "/", lr_b)
     print("  CUDA graph (train)  =", USE_TRAIN_CUDA_GRAPH)
     print("  tag                 = '", tag, "'")
     print("=" * 70)
@@ -193,6 +198,7 @@ def main() raises:
         logger.set_config("z_hold", String(z_hold))
         logger.set_config("expl_std", String(expl))
         logger.set_config("bc_weight", String(bc_w))
+        logger.set_config("act_l2", String(act_l2))
         logger.set_config("ortho_weight", String(ortho_w))
         logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
         logger.set_config("max_grad_norm", String(MAX_GRAD_NORM))
@@ -206,6 +212,7 @@ def main() raises:
             ortho_weight=ortho_w,
             max_grad_norm=MAX_GRAD_NORM,
             bc_weight=bc_w,
+            act_l2_weight=act_l2,
             learning_starts=warmup,
             action_scale=1.0,
             expl_std=expl,

@@ -315,10 +315,49 @@ def test_actor_update_independent_of_want_loss() raises:
     print("      OK")
 
 
+def test_act_l2_curbs_action_saturation() raises:
+    """[6] `act_l2_weight` must pull `pi_z` toward ZERO — the online stand-in
+    for BC, where the replay's own actions are already saturated and BC
+    toward them would be circular. Same construction as [4] with the data
+    actions LARGE (+-1), so that BC could not have produced the effect."""
+    print("[6] act_l2_weight pulls pi_z toward zero ...")
+    var probe = Tensor.alloc(BATCH * OBS)
+    for i in range(BATCH * OBS):
+        probe.data[i] = Scalar[DT](0.17 * Float64(i % 11) - 0.8)
+    var zp = _z_tensor(BATCH)
+    var sat = List[Float64]()
+    for variant in range(2):
+        var w = 0.0 if variant == 0 else 2.0
+        seed(SEED)
+        var t = Trainer.make(lr=3e-3, act_l2_weight=w)
+        seed(SEED + 9)
+        for _ in range(60):
+            var s = _rand_tensor(BATCH * OBS, 1.0)
+            var a = _rand_tensor(BATCH * ACT, 1.0)
+            var sn = _rand_tensor(BATCH * OBS, 1.0)
+            var sp = _rand_tensor(BATCH * OBS, 1.0)
+            var z = _z_tensor(BATCH)
+            t.load_batch(s, a, sn, sp, z)
+            _ = t.train_step(want_loss=False)
+        var out = Tensor()
+        t.act[BATCH](probe, zp, out)
+        var acc = Float64(0)
+        for i in range(BATCH * ACT):
+            acc += abs(Float64(out.data[i]))
+        sat.append(acc / Float64(BATCH * ACT))
+    print("      mean|a|:  act_l2=0 ->", sat[0], "  act_l2=2 ->", sat[1])
+    assert_true(
+        sat[1] < sat[0],
+        "act_l2_weight did not reduce |action| (" + String(sat[0]) + " -> "
+        + String(sat[1]) + ") — the penalty gradient is not reaching the actor",
+    )
+
+
 def main() raises:
     test_step_runs_and_reports()
     test_b_does_not_collapse()
     test_ortho_weight_changes_the_update()
     test_bc_weight_curbs_action_saturation()
     test_actor_update_independent_of_want_loss()
+    test_act_l2_curbs_action_saturation()
     print("\n[PASS] FB trainer smoke gate")

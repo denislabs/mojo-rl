@@ -285,6 +285,18 @@ struct FBTrainer[
     # below follows TD3+BC: the value term is normalised by its own magnitude
     # so `bc_weight` is a ratio rather than an absolute.
     var bc_weight: Float64
+    # ⚠⚠ Action-MAGNITUDE penalty on the actor (0 = OFF): `w · mean(pi^2)`.
+    # The ONLINE counterpart of `bc_weight`. Measured 2026-09-07 on the first
+    # online walker run (`fb_online_walker_gpu.mojo`, bc 0, no penalty):
+    # mean|a| 0.82 at the FIRST flush after warmup, 0.88 by 155 k updates,
+    # 82-90 % of actions saturated at eval, walk/run WORSE than random. The
+    # prediction that on-policy data would correct the corner was wrong: a
+    # bang-bang policy generates bang-bang data, F fits it, and the corner
+    # stays self-consistent. Nothing in plain FB opposes it; BFM-Zero's
+    # auxiliary critic carries an action-rate term for exactly this reason
+    # (§16.1 D), and its offline stand-in here is TD3+BC. This is the direct
+    # form — penalise the quantity that is climbing.
+    var act_l2_weight: Float64
     var steps: Int
     var _rng_seed: UInt64
     var _rng_offset: UInt64
@@ -360,6 +372,7 @@ struct FBTrainer[
         self.noise_clip = 0.3
         self.max_grad_norm = 0.0
         self.bc_weight = 0.0
+        self.act_l2_weight = 0.0
         self.steps = 0
         self._rng_seed = UInt64(0x5EED)
         self._rng_offset = UInt64(0)
@@ -431,6 +444,7 @@ struct FBTrainer[
         self.noise_clip = move.noise_clip
         self.max_grad_norm = move.max_grad_norm
         self.bc_weight = move.bc_weight
+        self.act_l2_weight = move.act_l2_weight
         self.steps = move.steps
         self._rng_seed = move._rng_seed
         self._rng_offset = move._rng_offset
@@ -450,6 +464,7 @@ struct FBTrainer[
         max_grad_norm: Float64 = 0.0,
         bc_weight: Float64 = 0.0,
         lr_b: Float64 = -1.0,
+        act_l2_weight: Float64 = 0.0,
     ) raises -> Self:
         """`tau = 0.01` (EMA 0.99), `gamma = 0.98`, Adam 3e-4 — the published
         FB / Meta Motivo settings.
@@ -502,6 +517,7 @@ struct FBTrainer[
         t.ortho_weight = ortho_weight
         t.max_grad_norm = max_grad_norm
         t.bc_weight = bc_weight
+        t.act_l2_weight = act_l2_weight
         t._rng_seed = seed
         return t^
 
@@ -889,7 +905,9 @@ struct FBTrainer[
         #
         # The magnitude now stays on device and the scale kernel reads it, so
         # the normalisation is unconditional AND capture-safe.
-        if self.bc_weight > 0.0:
+        # The adaptive scale applies whenever ANY regulariser competes with the
+        # value term — the penalty below is a ratio for the same reason BC is.
+        if self.bc_weight > 0.0 or self.act_l2_weight > 0.0:
             scale_by_inv_mag_t[T, Self._ND](
                 self.g_fa, self.bz, self.acc_lam,
                 Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
@@ -922,6 +940,15 @@ struct FBTrainer[
             )
             axpy_t[T, Self._NA](self.g_pi, self.pi, w, c)
             axpy_t[T, Self._NA](self.g_pi, self.ba, -w, c)
+        # + action magnitude: d/dpi of `act_l2_weight · mean(pi^2)` — the BC
+        # term with the data action at 0. Same scale form, so the two knobs
+        # read on the same axis.
+        if self.act_l2_weight > 0.0:
+            var w2 = Scalar[DT](
+                self.act_l2_weight * 2.0
+                / (Float64(Self.BATCH) * Float64(Self.ACT))
+            )
+            axpy_t[T, Self._NA](self.g_pi, self.pi, w2, c)
 
         call_vjp[T, Self.BATCH](
             self.actor.online, TensorRefs[1, MutAnyOrigin](self.ain), self.g_pi,
