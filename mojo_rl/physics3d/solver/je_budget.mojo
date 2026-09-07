@@ -249,7 +249,7 @@ def newton_shared_elems[
     thing the old budget got wrong by counting a single array. In the order the
     kernel declares them (`newton_solve.mojo:3640+`):
 
-        M_sh, H_sh, L_sh          3 * max(1, NV*NV)
+        L_sh (H built in, in place)   1 * max(1, NV*NV)   (stage 1; was 3)
         seg0_sh, seg1_sh          2 * max(1, NV)      (PN2c)
         grad_sh                   1 * max(1, NV)      (F3b)
         Je_sh                     ME * max(1, NV), or 1 when spilled
@@ -264,7 +264,9 @@ def newton_shared_elems[
     counts the k=6/9/10/12 park scenes produced.
     """
     return (
-        3 * _max_one[NV * NV]()
+        # ONE dense array since stage 1 (2026-09-07): `L_sh` holds the Hessian
+        # and is factored in place; `M_sh` and `H_sh` are gone.
+        1 * _max_one[NV * NV]()
         # 2 seg + 1 grad + search/Mv/qacc/qfrc
         + 7 * _max_one[NV]()
         + (

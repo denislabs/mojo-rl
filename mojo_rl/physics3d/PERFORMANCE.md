@@ -3644,3 +3644,54 @@ triple (block ledger stage 1, 1.1–1.6× on Newton), `ldl_solve` (F1: the
 107 µs kernel, block-restricted like its siblings, ~10×), CRBA's dense
 write (F2), and at the small k the real tasks run at, collision — the
 warp-cooperative GJK (block ledger §6).
+
+### 13.40 LANDED (2026-09-07): Newton stage 1 — one dense array in threadgroup memory, not three
+
+The blocked Newton kernel kept three `NV*NV` arrays per block: a copy of
+`M`, the Hessian `H`, and its factor `L`. At k=13 (nv=84) that is 84,672 B
+of the block's ~94 KB, and it is what held the kernel at one block per SM
+on the RTX 5090 (§13.38: occupancy is the elastic term — a 44 KB pad cost
+2.45×/1.6× at k=3/6, spilling `Je` bought 1.30/1.09/1.02×). Stage 1 of the
+block ledger removes two of the three:
+
+- **`M` is not copied.** The two setup matvecs (`M*qacc_smooth`, the
+  warmstart trial's `M*qacc_w`) were `NV²` serial loops on thread 0 over
+  the copy; they are one cooperative block-restricted matvec each
+  (`_block_matvec_coop`, a row per thread, the same ascending inner sum, so
+  the same bits), reading `M` from global memory. The Hessian build and the
+  loop's `M*search` read global `M` too.
+- **`H` is factored in place.** The build writes `L_sh`; `_chol_factor_coop`
+  reads `H[i,j]` at the slot it then writes `L[i,j]` into, and every `L[.,k]`
+  it reads was finished when column k ran. The zeroing pass went with it
+  (nothing reads outside a block or above the diagonal — audited: the factor's
+  restricted k loops and `chol_solve_seg_p`'s lower-triangle reads). The
+  rank-deficient retry moved to the caller: rebuild `H` with 1e-6 on the
+  diagonal (the same bits the helper used to add) and factor again.
+
+Footprint (`newton_shared_elems`, pinned in `test_newton_shared_budget`,
+22/22): k=6 48,876 → 34,764 B, k=13 ~94 KB → ~37 KB. The ceiling the three
+arrays set moved: k=14 (nv=90) was 74 KB over `0x18C00` and now fits at
+41,920 B; the reach is ~k=24 before `L_sh` alone binds. Gates on Apple:
+`test_newton_blocked_fields` (golden fingerprint 5707.35403907299, bit-exact),
+`test_newton_freejoint_vs_cpu` (ThreeTrees oracle), `test_noslip_blocked_kernel`
+4/4, `test_newton_blocked_tendon_fields` 2/2, `test_fields_mt_parity`
+BIT-EXACT over two steps. Not priced yet: the box sweep and
+`p0_kernel_shape.py` say what the occupancy bought; the block ledger's
+estimate is 1.1–1.6× on the Newton launch, more at high k.
+
+⚠ THE DEFECT IN THE MAKING, recorded because it cost two hours and the
+analysis could not find it. The edit that removed the `M` copy matched the
+`if valid_env:` block around it — and that block also held the cooperative
+load of the contact edges (`Je_sh`/`De_sh`/`bias_e_sh`) and the `barrier()`
+that publishes them. The golden read −815.75, the smooth acceleration:
+thread 0 built every row from unloaded edge arrays, unsynchronised. Every
+static suspect (aliasing through the solve, the retry's scope, the global-M
+indexing) was exonerated by reading, correctly; what named the race was a
+discriminating run that should have changed nothing — giving `H` its own
+array again moved the fingerprint, and two runs of that one configuration
+differed by 2e-3. A number that moves between identical runs is a race,
+and a race after a deletion is a missing barrier: diff the barrier list
+before and after any block removed by pattern. `NEWTON_STAGE1_CHECK` (a
+knob, off) now recomputes all four moved pieces on thread 0 and poisons
+`qacc[0]` with a magnitude per failing check — one run names the cut;
+positive control 1.1e21.

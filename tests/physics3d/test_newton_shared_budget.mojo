@@ -81,13 +81,19 @@ def main() raises:
     # PN2c's seg0/seg1 (2*NV) plus F3b's grad_sh (1*NV) = 3*NV scalars =
     # 12*NV bytes. Spelled out, not folded in, so the NEXT array to arrive
     # fails this arm and names its size instead of failing `ptxas` later.
-    var seg_delta_42 = 12 * 42
-    var seg_delta_60 = 12 * 60
-    var seg_delta_66 = 12 * 66
-    var seg_delta_78 = 12 * 78
+    # Stage 1 (2026-09-07) took TWO of the three NV*NV arrays away — `M_sh`
+    # (the matvecs read global M) and `H_sh` (the Hessian is factored in
+    # place in `L_sh`) — so the same recorded counts now carry `- 2*NV*NV*4`.
+    # ⚠ The recorded numbers stay the pre-stage-1 ptxas print; the
+    # post-stage-1 print is the box's to confirm (`p0_kernel_shape.py`).
+    var seg_delta_42 = 12 * 42 - 2 * 42 * 42 * 4
+    var seg_delta_60 = 12 * 60 - 2 * 60 * 60 * 4
+    var seg_delta_66 = 12 * 66 - 2 * 66 * 66 * 4
+    var seg_delta_78 = 12 * 78 - 2 * 78 * 78 * 4
     t.truth(_bytes[42, 12]() == 48372 + seg_delta_42,
             String("k=6  nv=42: ", _bytes[42, 12](), " == 48372 + ",
-                   seg_delta_42, " (ptxas + PN2c's 2*NV + F3b's grad_sh)"))
+                   seg_delta_42, " (ptxas + PN2c's 2*NV + F3b's grad_sh"
+                   " - stage 1's two NV*NV arrays)"))
     t.truth(_bytes[60, 15]() == 86676 + seg_delta_60,
             String("k=9  nv=60: ", _bytes[60, 15](), " == 86676 + ",
                    seg_delta_60))
@@ -137,11 +143,18 @@ def main() raises:
     t.truth(r12 <= SOLVER_SHARED_LIMIT,
             String("k=12 with Je spilled: ", r12, " B fits the LIMIT"))
     # ⚠ AND WHERE IT STOPS BEING ENOUGH, so nobody reads "P4 unblocks k" as
-    # unbounded. Past this the three NV*NV arrays are the binding term.
+    # unbounded. Past this the ONE remaining NV*NV array (`L_sh`) is the
+    # binding term. Before stage 1 the three of them stopped the reach at
+    # k=13 (k=14 was 74,320 B over 0x18C00); with one, k=14 fits and the
+    # ceiling moves out to about k=24.
     var r14 = newton_shared_elems[90, 20, 0, 0, MC, CONDIM, False]() * 4
-    t.truth(r14 > SOLVER_SHARED_LIMIT,
-            String("k=14 with Je spilled: ", r14, " B still OVER the LIMIT —"
-                   " spilling reaches k=13, not further"))
+    t.truth(r14 <= SOLVER_SHARED_LIMIT,
+            String("k=14 with Je spilled: ", r14, " B fits the LIMIT —"
+                   " stage 1 moved the ceiling past k=13"))
+    var r25 = newton_shared_elems[156, 31, 0, 0, MC, CONDIM, False]() * 4
+    t.truth(r25 > SOLVER_SHARED_LIMIT,
+            String("k=25 with Je spilled: ", r25, " B still OVER the LIMIT —"
+                   " the reach is bounded by `L_sh` now"))
 
     # ── E: ⚠ NO SHIPPED MODEL CHANGES ITS MIND. Widening the budget from
     # "Je vs 64 KB" to "the total vs the device limit" could easily have made

@@ -466,6 +466,16 @@ comptime NEWTON_ITER_REPORT: Bool = False
 # ⚠ Every return is comptime-selected and unconditional, so all threads take it
 # together and no `barrier()` is left half-reached. Timing instrument only.
 comptime NEWTON_STOP_AFTER: Int = 0
+# ⚠ Stage 1's self-check (2026-09-07). When True, thread 0 recomputes each of
+# the four things stage 1 moved — the two setup matvecs (bit-equal to the
+# serial loops they replaced), the in-place Cholesky (`L L^T == H` rebuilt
+# from global M and the quadratic rows, 1e-3 relative) and the block solve
+# (`H * search == -grad`) — and adds a distinct magnitude to `qacc[0]` per
+# failing check: 1e20, 1e24, 1e28, 1e32. The golden fingerprint then names
+# the guilty cut in one run instead of four. Positive control: offset one
+# reference by 1 and the fingerprint reads 1.1e21. Debug only — never on in
+# a build that is timed.
+comptime NEWTON_STAGE1_CHECK: Bool = False
 
 # ⚠ A ROUTING KNOB FOR PRICING THE TWO NVIDIA KERNELS AGAINST EACH OTHER.
 # `solve_newton` sends PYRAMIDAL + NVIDIA to the blocked kernel (one env per
@@ -581,87 +591,73 @@ def _chol_factor_coop[
     ],
 ):
     """Cooperative column-parallel Cholesky of shared H_sh -> L_sh (verbatim
-    from chol_factor_coop_gpu). Bit-identical to chol_factor_inline."""
+    from chol_factor_coop_gpu). Bit-identical to chol_factor_inline. `H_sh`
+    and `L_sh` may be the SAME array — see the note in the body."""
     var nv = dims.get_nv()
-    for _attempt in range(2):
+    # ⚠ IN PLACE, ONE ATTEMPT (2026-09-07, stage 1). The caller passes the SAME
+    # array as `H_sh` and `L_sh`: the column loop reads `H[i,j]` at the slot it
+    # then writes `L[i,j]` into, `H[j,j]` at the slot `L[j,j]` goes into, and
+    # every `L[.,k]` it reads (k < j) was written when column k ran — the
+    # barriers between columns are what make that true. So the Hessian's
+    # threadgroup array is gone (28 KB at nv=84, one of the three that held the
+    # kernel at one block per SM). The zeroing pass is gone with it: with the
+    # k loops restricted to the block, nothing reads outside the block, and the
+    # solve reads the lower triangle only. The rank-deficient retry is the
+    # CALLER's now — it must rebuild `H` (the factor destroyed it) with 1e-6 on
+    # the diagonal and call again; `ctrl_sh[2]` says whether to.
+    if tid == 0:
+        ctrl_sh[2] = Scalar[DTYPE](0)
+    barrier()
+    for j in range(nv):
+        # ⚠ THE BLOCK OF COLUMN j. The OUTER loop and both barriers are
+        # untouched, so the cooperative schedule — and the per-column
+        # bit-identity with `chol_factor_inline` — is exactly what it was;
+        # only the two inner ranges shrink. Every term dropped is
+        # `L[.,k] * L[.,k]` with k outside the block, where L is exactly 0
+        # (zeroed above, never written, since no segment owns that column),
+        # so a sequential accumulation returns the identical bits.
+        var b0 = Int(rebind[Scalar[DTYPE]](seg0[j]))
+        var b1 = Int(rebind[Scalar[DTYPE]](seg1[j]))
         if tid == 0:
-            ctrl_sh[2] = Scalar[DTYPE](0)
-        # ⚠⚠ PER BLOCK, AND HERE THE ZERO IS LOAD-BEARING — unlike `H_sh`.
-        # It is what makes the segmented factor equal the dense one: the terms
-        # the restricted `k` loops drop are `L[.,k]*L[.,k]` outside the block,
-        # and the dense version reads them AS ZERO. Within a block that
-        # property is preserved exactly. Outside, nothing reads `L_sh` at all
-        # — audited: every read is `[j*nv+k]`, `[i*nv+k]`, `[j*nv+j]` inside
-        # the factor's segment-restricted loops, and the tid-0 copy, which
-        # PN2c already restricted to the blocks.
-        var zp = 0
-        while zp < nv:
-            var ze = Int(rebind[Scalar[DTYPE]](seg1[zp]))
-            if ze <= zp:
-                ze = nv
-            for q in range(tid, (ze - zp) * (ze - zp), n_threads):
-                L_sh[(zp + q // (ze - zp)) * nv + zp + q % (ze - zp)] = (
-                    Scalar[DTYPE](0)
-                )
-            zp = ze
+            comptime if NEWTON_SERIAL_PROBE == 3:
+                # Pure recompute of the reduction. It reads `L_sh` columns
+                # strictly BELOW j, which are final at this point and which
+                # it does not write, so repeating it cannot move its own
+                # input. The `ctrl_sh[2]` flag and `L_sh[j*nv+j]` write are
+                # left to the real pass below.
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    var p_sd: Scalar[DTYPE] = 0
+                    for k in range(b0, j):
+                        var p_l = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
+                        p_sd += p_l * p_l
+                    # Consume it so the reduction cannot be folded away.
+                    if p_sd == _probe_sentinel[DTYPE]():
+                        ctrl_sh[2] = Scalar[DTYPE](0)
+            var s_d: Scalar[DTYPE] = 0
+            for k in range(b0, j):
+                var ljk = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
+                s_d += ljk * ljk
+            var diag = rebind[Scalar[DTYPE]](H_sh[j * nv + j]) - s_d
+            # `mjMINVAL`, matching `chol_factor_inline` — see the long
+            # note in `cholesky.mojo`. This third copy exists because the
+            # cooperative GPU factorization is documented as BIT-IDENTICAL
+            # to that one, and a threshold that drifted between them would
+            # break exactly that property.
+            if diag < Scalar[DTYPE](_CHOL_MJMINVAL):
+                ctrl_sh[2] = Scalar[DTYPE](1)
+                diag = Scalar[DTYPE](_CHOL_MJMINVAL)
+            L_sh[j * nv + j] = sqrt(diag)
         barrier()
-        for j in range(nv):
-            # ⚠ THE BLOCK OF COLUMN j. The OUTER loop and both barriers are
-            # untouched, so the cooperative schedule — and the per-column
-            # bit-identity with `chol_factor_inline` — is exactly what it was;
-            # only the two inner ranges shrink. Every term dropped is
-            # `L[.,k] * L[.,k]` with k outside the block, where L is exactly 0
-            # (zeroed above, never written, since no segment owns that column),
-            # so a sequential accumulation returns the identical bits.
-            var b0 = Int(rebind[Scalar[DTYPE]](seg0[j]))
-            var b1 = Int(rebind[Scalar[DTYPE]](seg1[j]))
-            if tid == 0:
-                comptime if NEWTON_SERIAL_PROBE == 3:
-                    # Pure recompute of the reduction. It reads `L_sh` columns
-                    # strictly BELOW j, which are final at this point and which
-                    # it does not write, so repeating it cannot move its own
-                    # input. The `ctrl_sh[2]` flag and `L_sh[j*nv+j]` write are
-                    # left to the real pass below.
-                    for _r in range(SERIAL_PROBE_REPEAT - 1):
-                        var p_sd: Scalar[DTYPE] = 0
-                        for k in range(b0, j):
-                            var p_l = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
-                            p_sd += p_l * p_l
-                        # Consume it so the reduction cannot be folded away.
-                        if p_sd == _probe_sentinel[DTYPE]():
-                            ctrl_sh[2] = Scalar[DTYPE](0)
-                var s_d: Scalar[DTYPE] = 0
-                for k in range(b0, j):
-                    var ljk = rebind[Scalar[DTYPE]](L_sh[j * nv + k])
-                    s_d += ljk * ljk
-                var diag = rebind[Scalar[DTYPE]](H_sh[j * nv + j]) - s_d
-                # `mjMINVAL`, matching `chol_factor_inline` — see the long
-                # note in `cholesky.mojo`. This third copy exists because the
-                # cooperative GPU factorization is documented as BIT-IDENTICAL
-                # to that one, and a threshold that drifted between them would
-                # break exactly that property.
-                if diag < Scalar[DTYPE](_CHOL_MJMINVAL):
-                    ctrl_sh[2] = Scalar[DTYPE](1)
-                    diag = Scalar[DTYPE](_CHOL_MJMINVAL)
-                L_sh[j * nv + j] = sqrt(diag)
-            barrier()
-            var ljj = rebind[Scalar[DTYPE]](L_sh[j * nv + j])
-            for i in range(j + 1 + tid, b1, n_threads):
-                var s: Scalar[DTYPE] = 0
-                for k in range(b0, j):
-                    s += rebind[Scalar[DTYPE]](L_sh[i * nv + k]) * rebind[
-                        Scalar[DTYPE]
-                    ](L_sh[j * nv + k])
-                L_sh[i * nv + j] = (
-                    rebind[Scalar[DTYPE]](H_sh[i * nv + j]) - s
-                ) / ljj
-            barrier()
-        if Int(rebind[Scalar[DTYPE]](ctrl_sh[2])) == 0:
-            break
-        # Rank-deficient: add 1e-6 to the H diagonal and refactor once.
-        if tid == 0:
-            for i in range(nv):
-                H_sh[i * nv + i] += Scalar[DTYPE](1e-6)
+        var ljj = rebind[Scalar[DTYPE]](L_sh[j * nv + j])
+        for i in range(j + 1 + tid, b1, n_threads):
+            var s: Scalar[DTYPE] = 0
+            for k in range(b0, j):
+                s += rebind[Scalar[DTYPE]](L_sh[i * nv + k]) * rebind[
+                    Scalar[DTYPE]
+                ](L_sh[j * nv + k])
+            L_sh[i * nv + j] = (
+                rebind[Scalar[DTYPE]](H_sh[i * nv + j]) - s
+            ) / ljj
         barrier()
 
 
@@ -680,12 +676,10 @@ def _matvec_mv_jve_coop[
     n_threads: Int,
     num_edges: Int,
     dims: D,
-    M_sh: LayoutTensor[
-        DTYPE,
-        L_M_SH,
-        MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
-    ],
+    # The mass matrix from GLOBAL memory (stage 1: the threadgroup copy is
+    # gone). Row i's block is a handful of L2-resident loads per thread.
+    env: Int,
+    M: LayoutTensor[DTYPE, L_M_SH, MutAnyOrigin],
     # ⚠ `Je` is the ONE array whose address space varies — see JE_IN_SHARED at
     # the allocation site. Everything else stays in threadgroup memory.
     Je_sh: LayoutTensor[
@@ -737,7 +731,7 @@ def _matvec_mv_jve_coop[
             j0 = 0
             j1 = nv
         for j in range(j0, j1):
-            s += rebind[Scalar[DTYPE]](M_sh[i * nv + j]) * rebind[
+            s += rebind[Scalar[DTYPE]](M[env, i * nv + j]) * rebind[
                 Scalar[DTYPE]
             ](search_sh[j])
         Mv_sh[i] = s
@@ -3978,6 +3972,51 @@ def solve_newton[
 # =============================================================================
 
 
+@always_inline
+def _block_matvec_coop[
+    DTYPE: DType,
+    L_M: Layout,
+    L_V: Layout,
+    L_SEG: Layout,
+](
+    tid: Int,
+    n_threads: Int,
+    env: Int,
+    nv: Int,
+    M: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    x_sh: LayoutTensor[
+        DTYPE, L_V, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+    out_sh: LayoutTensor[
+        DTYPE, L_V, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+    seg0: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+    seg1: LayoutTensor[
+        DTYPE, L_SEG, MutAnyOrigin, address_space=AddressSpace.SHARED,
+    ],
+):
+    """`out = M * x` over each row's diagonal block, one row per thread —
+    the setup's two `M * qacc` matvecs (stage 1). Row i's sum runs j
+    ascending from 0 like the thread-0 loop it replaces, so the bits are
+    the same; the block restriction drops structural zeros only (the
+    `_matvec_mv_jve_coop` argument). `M` is read from global memory."""
+    for i in range(tid, nv, n_threads):
+        var j0 = Int(rebind[Scalar[DTYPE]](seg0[i]))
+        var j1 = Int(rebind[Scalar[DTYPE]](seg1[i]))
+        if j1 <= j0:
+            j0 = 0
+            j1 = nv
+        var acc: Scalar[DTYPE] = 0
+        for j in range(j0, j1):
+            acc += rebind[Scalar[DTYPE]](M[env, i * nv + j]) * rebind[
+                Scalar[DTYPE]
+            ](x_sh[j])
+        out_sh[i] = acc
+
+
+
 def _newton_blocked_fields_kernel[
     DTYPE: DType,
     NQ: Int,
@@ -4450,14 +4489,9 @@ def _newton_blocked_fields_kernel[
         return
 
     # === SHARED memory (per-block == per-env) ===
-    var M_sh = LayoutTensor[
-        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
-    ].stack_allocation()
-    var H_sh = LayoutTensor[
-        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
-    ].stack_allocation()
+    # `M_sh` and `H_sh` are gone (stage 1): the Hessian is built into `L_sh`
+    # and factored in place, and the mass matrix is read from global memory
+    # by the cooperative passes that need it.
     # ⚠ BOTH BRANCHES ARE TYPE-CHECKED even though only one is emitted
     # (measured: an ill-typed untaken `comptime if` branch fails the build).
     # `address_space_cast[JE_AS]()` on each side is what makes them agree —
@@ -4586,23 +4620,13 @@ def _newton_blocked_fields_kernel[
             ):
                 ctrl_sh[2] = Scalar[DTYPE](0)
 
-    # === COOPERATIVE LOAD: M into shared ===
-    if valid_env:
-        comptime if NEWTON_SERIAL_PROBE == 7:
-            # `NV^2` scalars read from GLOBAL every solve — the one setup term
-            # that grows quadratically in nv. Pure copy; the real pass rewrites
-            # every slot.
-            for _r in range(SERIAL_PROBE_REPEAT - 1):
-                var p_ck: Scalar[DTYPE] = 0
-                for k in range(tid, NV * NV, COOP):
-                    var v = rebind[Scalar[DTYPE]](M[env, k])
-                    M_sh[k] = v
-                    p_ck += v
-                if p_ck == _probe_sentinel[DTYPE]():
-                    ctrl_sh[2] = Scalar[DTYPE](0)
-        for k in range(tid, NV * NV, COOP):
-            M_sh[k] = rebind[Scalar[DTYPE]](M[env, k])
 
+    # === COOPERATIVE LOAD: contact edges into shared ===
+    # Stage 1 (2026-09-07): `M` is no longer copied — the setup matvecs, the
+    # H build and the loop's `M*search` read it from global memory. The edge
+    # load and the barrier that publishes it stay: the serial setup below
+    # reads `Je_sh`/`De_sh`/`bias_e_sh` from thread 0.
+    if valid_env:
         # Cooperative load of contact edges (Je/De/bias_e) into shared. One
         # thread per contact (contact_tid == c), matching serial load order
         # (c ascending, e ascending).
@@ -4620,6 +4644,7 @@ def _newton_blocked_fields_kernel[
                 bias_e_sh[idx] = rebind[Scalar[DTYPE]](
                     solver[env, pyr_sc + NE * MC + e * MC + c]
                 )
+
 
     barrier()
 
@@ -4671,6 +4696,13 @@ def _newton_blocked_fields_kernel[
     )
     var old_cost: Scalar[DTYPE] = 0
     var scale: Scalar[DTYPE] = 0
+    # The warmstart trial's two costs cross the setup's second cut (stage 1).
+    var ws_cost_s: Scalar[DTYPE] = 0
+    var ws_cost_w: Scalar[DTYPE] = 0
+    var dbg_f1 = False
+    var dbg_f2 = False
+    var dbg_f3 = False
+    var dbg_f4 = False
     var num_edges = 0
 
     if valid_env and tid == 0:
@@ -5070,44 +5102,34 @@ def _newton_blocked_fields_kernel[
             var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
             qacc[i] = q_i
             qacc_smooth[i] = q_i
-        # Ma = M * qacc (read from M_sh)
-        # ⚠⚠ `Ma = M*qacc` OVER ROW i'S BLOCK. `M`'s off-tree entries are
-        # STRUCTURALLY zero — both CRBA paths only ever write within a tree —
-        # and a segment is a UNION of trees, so `[seg0[i], seg1[i])` is a
-        # superset of row i's nonzeros and dropping the rest drops exact
-        # zeros. Same argument as `_matvec_mv_jve_coop`.
-        #
-        # ⚠ THIS IS `NV^2` SERIAL ON THREAD 0 — 3,600 operations at nv=60,
-        # against ~1,080 for the whole tid-0 half of one Newton ITERATION.
-        # PN2d segmented every dense pass INSIDE the iteration loop and missed
-        # both of the ones out here in the setup, which between them cost more
-        # than several iterations. `range(tid, ..., THREADS)` made the others
-        # easy to spot; a bare `for i in range(NV)` under `tid == 0` did not.
-        comptime if NEWTON_SERIAL_PROBE == 8:
-            # `Ma` is reset to 0 at the top of each row, so the accumulation is
-            # idempotent and the real pass below recomputes it identically.
-            for _r in range(SERIAL_PROBE_REPEAT - 1):
-                for i in range(NV):
-                    Ma[i] = Scalar[DTYPE](0)
-                    var j0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
-                    var j1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
-                    if j1 <= j0:
-                        j0 = 0
-                        j1 = NV
-                    for j in range(j0, j1):
-                        Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
-                    f_smooth[i] = Ma[i]
+        # ── CUT 1 (stage 1): `Ma = M * qacc` was an NV^2 serial matvec on
+        # this thread reading a threadgroup copy of M; it is a cooperative
+        # block-restricted matvec on global M now, so `qacc` is published
+        # and the serial block resumes after it.
         for i in range(NV):
-            Ma[i] = Scalar[DTYPE](0)
-            var j0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
-            var j1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
-            if j1 <= j0:
-                j0 = 0
-                j1 = NV
-            for j in range(j0, j1):
-                Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
+            qacc_sh[i] = qacc[i]
+    barrier()
+    if valid_env:
+        _block_matvec_coop[DTYPE](
+            tid, COOP, env, NV, M, qacc_sh, Mv_sh, seg0_sh, seg1_sh
+        )
+    barrier()
+    if valid_env and tid == 0:
         for i in range(NV):
+            Ma[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
             f_smooth[i] = Ma[i]
+        comptime if NEWTON_STAGE1_CHECK:
+            for i in range(NV):
+                var c0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                var c1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                if c1 <= c0:
+                    c0 = 0
+                    c1 = NV
+                var r1: Scalar[DTYPE] = 0
+                for j in range(c0, c1):
+                    r1 += rebind[Scalar[DTYPE]](M[env, i * NV + j]) * qacc[j]
+                if r1 != Ma[i]:
+                    dbg_f1 = True
         # Same model-constant scale as the per-env path above; see the note
         # there for why a pose-dependent trace(M) is wrong and why this is NOT
         # a fix for the open dog residual.
@@ -5154,27 +5176,27 @@ def _newton_blocked_fields_kernel[
             mmeta[MODEL_META_IDX_WARMSTART_DISABLED] == Scalar[DTYPE](0)
             and num_edges > 0
         ):
-            var cost_s: Scalar[DTYPE] = 0
+            ws_cost_s = 0
             for e_idx in range(num_edges):
-                cost_s += scalar_row_cost[DTYPE](
+                ws_cost_s += scalar_row_cost[DTYPE](
                     Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
                     jar[e_idx],
                     rebind[Scalar[DTYPE]](De_sh[e_idx]),
                     rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
                     rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                 )
-            var qacc_w = Scratch[Scalar[DTYPE], V_SIZE](
-                NV, uninitialized=Scalar[DTYPE](0)
-            )
+            # The trial acceleration goes to threadgroup memory for the
+            # cooperative matvec after the cut (`search_sh` is free until the
+            # loop).
             for i in range(NV):
-                qacc_w[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
-            var cost_w: Scalar[DTYPE] = 0
+                search_sh[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
+            ws_cost_w = 0
             for e_idx in range(num_edges):
                 var jar_w = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
                 for i in range(NV):
                     jar_w += (
                         rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
-                        * qacc_w[i]
+                        * rebind[Scalar[DTYPE]](search_sh[i])
                     )
                 var st_w = scalar_row_state[DTYPE](
                     Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
@@ -5182,7 +5204,7 @@ def _newton_blocked_fields_kernel[
                     rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
                     rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                 )
-                cost_w += scalar_row_cost[DTYPE](
+                ws_cost_w += scalar_row_cost[DTYPE](
                     st_w,
                     jar_w,
                     rebind[Scalar[DTYPE]](De_sh[e_idx]),
@@ -5192,57 +5214,75 @@ def _newton_blocked_fields_kernel[
             # The warmstart trial's `Ma = M*qacc_w` — the second NV^2 serial
             # matvec in this setup block, same block restriction and the same
             # exact-zero argument as the one above.
+    barrier()
+    # ── CUT 2 (stage 1): the warmstart trial's `M * qacc_w`, cooperative.
+    var warm_on = (
+        valid_env
+        and mmeta[MODEL_META_IDX_WARMSTART_DISABLED] == Scalar[DTYPE](0)
+        and Int(rebind[Scalar[DTYPE]](ctrl_sh[0])) > 0
+    )
+    if warm_on:
+        _block_matvec_coop[DTYPE](
+            tid, COOP, env, NV, M, search_sh, Mv_sh, seg0_sh, seg1_sh
+        )
+    barrier()
+    if warm_on and tid == 0:
+        for i in range(NV):
+            var s_i = rebind[Scalar[DTYPE]](Mv_sh[i])
+            Ma[i] = s_i
+            ws_cost_w += (
+                Scalar[DTYPE](0.5)
+                * (s_i - f_smooth[i])
+                * (rebind[Scalar[DTYPE]](search_sh[i]) - qacc_smooth[i])
+            )
+        comptime if NEWTON_STAGE1_CHECK:
             for i in range(NV):
-                var s_i: Scalar[DTYPE] = 0
-                var w0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
-                var w1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
-                if w1 <= w0:
-                    w0 = 0
-                    w1 = NV
-                for j in range(w0, w1):
-                    s_i += (
-                        rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc_w[j]
+                var c0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                var c1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                if c1 <= c0:
+                    c0 = 0
+                    c1 = NV
+                var r2: Scalar[DTYPE] = 0
+                for j in range(c0, c1):
+                    r2 += rebind[Scalar[DTYPE]](M[env, i * NV + j]) * rebind[
+                        Scalar[DTYPE]
+                    ](search_sh[j])
+                if r2 != Ma[i]:
+                    dbg_f2 = True
+        if ws_cost_w <= ws_cost_s:
+            for i in range(NV):
+                qacc[i] = rebind[Scalar[DTYPE]](search_sh[i])
+                qfrc[i] = Scalar[DTYPE](0)
+            for e_idx in range(num_edges):
+                jar[e_idx] = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
+                for i in range(NV):
+                    jar[e_idx] += (
+                        rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
+                        * qacc[i]
                     )
-                Ma[i] = s_i
-                cost_w += (
-                    Scalar[DTYPE](0.5)
-                    * (s_i - f_smooth[i])
-                    * (qacc_w[i] - qacc_smooth[i])
+                var st_c = scalar_row_state[DTYPE](
+                    Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                    jar[e_idx],
+                    rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
                 )
-            if cost_w <= cost_s:
+                state_e_sh[e_idx] = Scalar[DTYPE](st_c)
+                var f_c = scalar_row_force[DTYPE](
+                    st_c,
+                    jar[e_idx],
+                    rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                )
+                force_sh[e_idx] = f_c
                 for i in range(NV):
-                    qacc[i] = qacc_w[i]
-                    qfrc[i] = Scalar[DTYPE](0)
-                for e_idx in range(num_edges):
-                    jar[e_idx] = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
-                    for i in range(NV):
-                        jar[e_idx] += (
-                            rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
-                            * qacc[i]
-                        )
-                    var st_c = scalar_row_state[DTYPE](
-                        Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
-                        jar[e_idx],
-                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    qfrc[i] += (
+                        rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_c
                     )
-                    state_e_sh[e_idx] = Scalar[DTYPE](st_c)
-                    var f_c = scalar_row_force[DTYPE](
-                        st_c,
-                        jar[e_idx],
-                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
-                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
-                    )
-                    force_sh[e_idx] = f_c
-                    for i in range(NV):
-                        qfrc[i] += (
-                            rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_c
-                        )
-            else:
-                for i in range(NV):
-                    Ma[i] = f_smooth[i]
+        else:
+            for i in range(NV):
+                Ma[i] = f_smooth[i]
 
-    # Make num_edges + force_sh visible to all threads.
+# Make num_edges + force_sh visible to all threads.
     barrier()
     comptime if NEWTON_STOP_AFTER == 4:
         return
@@ -5325,70 +5365,106 @@ def _newton_blocked_fields_kernel[
         if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
             break
 
-        # --- ALL threads: parallel Hessian assembly (inner edge-sum ascending
-        # → bit-identical to the serial build) ---
-        if valid_env:
-            # ⚠⚠ ONLY THE DIAGONAL BLOCKS, AND THIS WAS THE LARGEST TERM LEFT
-            # AFTER PN2c. The build ran over every one of `NV*NV` entries with
-            # an inner sweep of the rows — `NV^2*(1+E)/THREADS` = 1,575 per
-            # thread per iteration at nv=60 with six rows and THREADS=16 —
-            # while the segmented factorisation reads only the blocks. Every
-            # off-block write was dead. Audited: the only reads of `H_sh` are
-            # `[j*nv+j]` and `[i*nv+j]` inside the factor's segment-restricted
-            # loops, plus the rank-deficient retry's diagonal bump.
-            #
-            # ⚠ THE ENTRIES IT NO LONGER WRITES ARE NOW STALE, not zero. That
-            # is safe only because nothing reads them; it is NOT the same
-            # property as `L_sh` below, where zero is load-bearing.
-            var bp = 0
-            while bp < NV:
-                var be = Int(rebind[Scalar[DTYPE]](seg1_sh[bp]))
-                # A malformed partition would hang the walk; a runaway is worse
-                # than a wrong answer.
-                if be <= bp:
-                    be = NV
-                var bn = be - bp
-                comptime if NEWTON_SERIAL_PROBE == 10:
-                    for _r in range(SERIAL_PROBE_REPEAT - 1):
-                        for q in range(tid, bn * bn, COOP):
-                            var pi = bp + q // bn
-                            var pj = bp + q % bn
-                            var pidx = pi * NV + pj
-                            var ph = rebind[Scalar[DTYPE]](M_sh[pidx])
-                            for e in range(num_edges_b):
-                                if (
-                                    Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
-                                    == SROW_QUADRATIC
-                                ):
-                                    ph += (
-                                        rebind[Scalar[DTYPE]](De_sh[e])
-                                        * rebind[Scalar[DTYPE]](Je_sh[e * NV + pi])
-                                        * rebind[Scalar[DTYPE]](Je_sh[e * NV + pj])
-                                    )
-                            H_sh[pidx] = ph
-                for q in range(tid, bn * bn, COOP):
-                    var i = bp + q // bn
-                    var j = bp + q % bn
-                    var idx = i * NV + j
-                    var h = rebind[Scalar[DTYPE]](M_sh[idx])
-                    for e in range(num_edges_b):
-                        if (
-                            Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
-                            == SROW_QUADRATIC
-                        ):
-                            h += (
-                                rebind[Scalar[DTYPE]](De_sh[e])
-                                * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
-                                * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
-                            )
-                    H_sh[idx] = h
-                bp = be
-        barrier()
+        # ⚠ TWO ATTEMPTS, AND THE RETRY REBUILDS. The factor runs in place in
+        # `L_sh`, so a rank-deficient first attempt has no `H` left to lift;
+        # the build runs again with 1e-6 on the diagonal (stage 1).
+        for chol_attempt in range(2):
+            # --- ALL threads: parallel Hessian assembly (inner edge-sum ascending
+            # → bit-identical to the serial build) ---
+            if valid_env:
+                # ⚠⚠ ONLY THE DIAGONAL BLOCKS, AND THIS WAS THE LARGEST TERM LEFT
+                # AFTER PN2c. The build ran over every one of `NV*NV` entries with
+                # an inner sweep of the rows — `NV^2*(1+E)/THREADS` = 1,575 per
+                # thread per iteration at nv=60 with six rows and THREADS=16 —
+                # while the segmented factorisation reads only the blocks. Every
+                # off-block write was dead. Audited: the only reads of `H_sh` are
+                # `[j*nv+j]` and `[i*nv+j]` inside the factor's segment-restricted
+                # loops, plus the rank-deficient retry's diagonal bump.
+                #
+                # ⚠ THE ENTRIES IT NO LONGER WRITES ARE NOW STALE, not zero. That
+                # is safe only because nothing reads them; it is NOT the same
+                # property as `L_sh` below, where zero is load-bearing.
+                var bp = 0
+                while bp < NV:
+                    var be = Int(rebind[Scalar[DTYPE]](seg1_sh[bp]))
+                    # A malformed partition would hang the walk; a runaway is worse
+                    # than a wrong answer.
+                    if be <= bp:
+                        be = NV
+                    var bn = be - bp
+                    comptime if NEWTON_SERIAL_PROBE == 10:
+                        for _r in range(SERIAL_PROBE_REPEAT - 1):
+                            for q in range(tid, bn * bn, COOP):
+                                var pi = bp + q // bn
+                                var pj = bp + q % bn
+                                var pidx = pi * NV + pj
+                                var ph = rebind[Scalar[DTYPE]](M[env, pidx])
+                                for e in range(num_edges_b):
+                                    if (
+                                        Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
+                                        == SROW_QUADRATIC
+                                    ):
+                                        ph += (
+                                            rebind[Scalar[DTYPE]](De_sh[e])
+                                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + pi])
+                                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + pj])
+                                        )
+                                L_sh[pidx] = ph
+                    for q in range(tid, bn * bn, COOP):
+                        var i = bp + q // bn
+                        var j = bp + q % bn
+                        var idx = i * NV + j
+                        var h = rebind[Scalar[DTYPE]](M[env, idx])
+                        # The rank-deficient retry: what `_chol_factor_coop`
+                        # used to add to the stored H's diagonal, added to the
+                        # rebuilt one — the same value, the same bits.
+                        if chol_attempt == 1 and i == j:
+                            h += Scalar[DTYPE](1e-6)
+                        for e in range(num_edges_b):
+                            if (
+                                Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
+                                == SROW_QUADRATIC
+                            ):
+                                h += (
+                                    rebind[Scalar[DTYPE]](De_sh[e])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
+                                )
+                        L_sh[idx] = h
+                    bp = be
+            barrier()
 
-        # --- Cooperative Cholesky factor of H into L_sh ---
-        _chol_factor_coop[DTYPE](
-            tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), H_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
-        )
+            # --- Cooperative Cholesky factor of H into L_sh ---
+            _chol_factor_coop[DTYPE](
+                tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), L_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
+            )
+            if Int(rebind[Scalar[DTYPE]](ctrl_sh[2])) == 0:
+                break
+        comptime if NEWTON_STAGE1_CHECK:
+            if valid_env and tid == 0:
+                var ne_c = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+                for i in range(NV):
+                    var c0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                    var c1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                    if c1 <= c0:
+                        c0 = 0
+                        c1 = NV
+                    for j in range(c0, i + 1):
+                        var h = rebind[Scalar[DTYPE]](M[env, i * NV + j])
+                        for e in range(ne_c):
+                            if Int(rebind[Scalar[DTYPE]](state_e_sh[e])) == SROW_QUADRATIC:
+                                h += (
+                                    rebind[Scalar[DTYPE]](De_sh[e])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
+                                )
+                        var llt: Scalar[DTYPE] = 0
+                        for k in range(c0, j + 1):
+                            llt += rebind[Scalar[DTYPE]](L_sh[i * NV + k]) * rebind[
+                                Scalar[DTYPE]
+                            ](L_sh[j * NV + k])
+                        if abs(llt - h) > Scalar[DTYPE](1e-3) * (abs(h) + Scalar[DTYPE](1)):
+                            dbg_f3 = True
 
         # --- ALL threads: one DIAGONAL BLOCK each, Cholesky solve ---
         #
@@ -5477,10 +5553,31 @@ def _newton_blocked_fields_kernel[
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
         _matvec_mv_jve_coop[DTYPE, JE_AS=JE_AS](
-            tid, COOP, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh, seg0_sh, seg1_sh
+            tid, COOP, num_edges_b, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), env, M, Je_sh, search_sh, Mv_sh, Jv_e_sh, seg0_sh, seg1_sh
         )
         barrier()
         if valid_env and tid == 0:
+            comptime if NEWTON_STAGE1_CHECK:
+                var ne_c = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+                for i in range(NV):
+                    var c0 = Int(rebind[Scalar[DTYPE]](seg0_sh[i]))
+                    var c1 = Int(rebind[Scalar[DTYPE]](seg1_sh[i]))
+                    if c1 <= c0:
+                        c0 = 0
+                        c1 = NV
+                    var r4 = rebind[Scalar[DTYPE]](grad_sh[i])
+                    for j in range(c0, c1):
+                        var h = rebind[Scalar[DTYPE]](M[env, i * NV + j])
+                        for e in range(ne_c):
+                            if Int(rebind[Scalar[DTYPE]](state_e_sh[e])) == SROW_QUADRATIC:
+                                h += (
+                                    rebind[Scalar[DTYPE]](De_sh[e])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
+                                    * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
+                                )
+                        r4 += h * rebind[Scalar[DTYPE]](search_sh[j])
+                    if abs(r4) > Scalar[DTYPE](1e-3) * (abs(rebind[Scalar[DTYPE]](grad_sh[i])) + Scalar[DTYPE](1)):
+                        dbg_f4 = True
             comptime if NEWTON_SERIAL_PROBE == 4:
                 for _r in range(SERIAL_PROBE_REPEAT - 1):
                     var p_ck: Scalar[DTYPE] = 0
@@ -5965,6 +6062,17 @@ def _newton_blocked_fields_kernel[
 
     for i in range(NV):
         qacc_constrained[env, i] = qacc[i]
+    comptime if NEWTON_STAGE1_CHECK:
+        var dbg_code: Scalar[DTYPE] = 0
+        if dbg_f1:
+            dbg_code += Scalar[DTYPE](1e20)
+        if dbg_f2:
+            dbg_code += Scalar[DTYPE](1e24)
+        if dbg_f3:
+            dbg_code += Scalar[DTYPE](1e28)
+        if dbg_f4:
+            dbg_code += Scalar[DTYPE](1e32)
+        qacc_constrained[env, 0] = rebind[Scalar[DTYPE]](qacc_constrained[env, 0]) + dbg_code
 
     for c in range(nc):
         var fn_c: Scalar[DTYPE] = 0
