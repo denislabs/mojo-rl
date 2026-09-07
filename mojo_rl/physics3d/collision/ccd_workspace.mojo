@@ -211,6 +211,32 @@ comptime MC_WS_PD: Int = MC_WS_PN + MC_MAX_POLYVERT * 3
 # EPA's 964 floats plus 28 * MC_MAX_POLYVERT.
 comptime CCD_WS_SIZE: Int = MC_WS_PD + MC_MAX_POLYVERT
 
+# ── The block-per-env collision kernel (`broadphase_sap.mojo`,
+# `_detect_contacts_sap_block_kernel`), 2026-09-07 ────────────────────────
+#
+# One block per env, `COLL_TPB` threads over the candidate pairs. A pair that
+# reaches GJK/EPA or the multicontact clipper needs a CCD workspace ROW, and a
+# row is `CCD_WS_SIZE` = 11,394 scalars (45 KB in float32) — one per thread
+# would be gigabytes at 1024 envs — so those candidates run on the first
+# `COLL_CCD_LANES` threads, each with its own row: `Data.ccd_ws` is
+# `[BATCH * COLL_CCD_LANES, CCD_WS_SIZE]` and the serial kernels keep using
+# row `env` (< BATCH, so never another env's lane). 4 lanes = 187 MB at
+# 1024 envs; the k=13 park scene has 4 such candidates per step.
+#
+# Contacts are emitted into a per-env STAGING region of `COLL_STAGE_SLOTS`
+# records, `COLL_STAGE_MAXC` per candidate, at offsets thread 0 assigns in
+# the serial emission order; thread 0 then compacts them in that order into
+# `Data.contacts`, so the array is the serial kernel's bit for bit. A
+# candidate whose routine fills its whole window (8 is `mjMAXCONPAIR`'s
+# box-box ceiling; a mesh manifold can exceed it), or a candidate list past
+# `COLL_NCAND_CAP`, sends the env to the serial per-env function on thread 0
+# — slow and exact, never wrong.
+comptime COLL_TPB: Int = 64
+comptime COLL_CCD_LANES: Int = 4
+comptime COLL_NCAND_CAP: Int = 128
+comptime COLL_STAGE_MAXC: Int = 8
+comptime COLL_STAGE_SLOTS: Int = COLL_NCAND_CAP * COLL_STAGE_MAXC
+
 # The single-row spelling, for host callers that collide one pair at a time
 # (every gate and probe in `tests/physics3d`). The engine binds
 # `[BATCH, CCD_WS_SIZE]` instead and passes the env index as `wrow`.

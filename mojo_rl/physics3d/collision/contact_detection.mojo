@@ -183,7 +183,7 @@ def _hf_len(n: Int) -> Int:
 
 
 from .hfield_convex import hfield_convex_contacts
-from .ccd_workspace import CCD_WS_SIZE
+from .ccd_workspace import CCD_WS_SIZE, COLL_CCD_LANES
 from .gjk import gjk_epa, gjk_epa_witness, hillclimb_support_index
 from .native_multicontact import (
     native_multicontact_contacts,
@@ -3791,7 +3791,7 @@ def _detect_contacts_fields_kernel[
         DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
     ],
     ccd_ws: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, CCD_WS_SIZE), MutAnyOrigin
+        DTYPE, Layout.row_major(BATCH * COLL_CCD_LANES, CCD_WS_SIZE), MutAnyOrigin
     ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -3839,7 +3839,7 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
     comptime L_HF_DATA = Layout.row_major(BATCH * _hf_len(D.NHFIELD_DATA))
     comptime L_CONTACTS = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
-    comptime L_CCD_WS = Layout.row_major(BATCH, CCD_WS_SIZE)
+    comptime L_CCD_WS = Layout.row_major(BATCH * COLL_CCD_LANES, CCD_WS_SIZE)
 
     comptime if target == "cpu":
         var dm = d.dims
@@ -3861,7 +3861,7 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var rl_HF_DATA = rl1(BATCH * _hf_len(dm.get_nhfield_data()))
         var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
         var rl_SMETA = rl2(BATCH, METADATA_SIZE)
-        var rl_CCD_WS = rl2(BATCH, CCD_WS_SIZE)
+        var rl_CCD_WS = rl2(BATCH * COLL_CCD_LANES, CCD_WS_SIZE)
         var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
         var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
         var geoms_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM)

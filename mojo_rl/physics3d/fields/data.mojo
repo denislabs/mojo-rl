@@ -31,7 +31,9 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from .dims import DimsLike
 
 from ..gpu.constants import CONTACT_SIZE, METADATA_SIZE
-from ..collision.ccd_workspace import CCD_WS_SIZE
+from ..collision.ccd_workspace import (
+    CCD_WS_SIZE, COLL_CCD_LANES, COLL_STAGE_SLOTS,
+)
 
 
 struct Data[
@@ -63,7 +65,8 @@ struct Data[
         Self.BATCH, Self.MAX_CONTACTS * CONTACT_SIZE
     )
     comptime L_META = Layout.row_major(Self.BATCH, METADATA_SIZE)
-    comptime L_CCD_WS = Layout.row_major(Self.BATCH, CCD_WS_SIZE)
+    comptime L_CCD_WS = Layout.row_major(Self.BATCH * COLL_CCD_LANES, CCD_WS_SIZE)
+    comptime L_COLL_STAGE = Layout.row_major(Self.BATCH, COLL_STAGE_SLOTS * CONTACT_SIZE)
     comptime L_SITE = Layout.row_major(Self.BATCH, Self.NSITE * 3)
 
     # Joint space
@@ -121,7 +124,8 @@ struct Data[
     # the GPU. One row per env, so it is thread-local in the collision kernels
     # by the same argument that makes `contacts` thread-local. Nothing reads it
     # across calls — it is pure scratch, never uploaded or downloaded.
-    var ccd_ws: TensorImpl[Self.DTYPE]  # [BATCH, CCD_WS_SIZE]
+    var ccd_ws: TensorImpl[Self.DTYPE]  # [BATCH * COLL_CCD_LANES, CCD_WS_SIZE]
+    var coll_stage: TensorImpl[Self.DTYPE]  # [BATCH, COLL_STAGE_SLOTS * CONTACT_SIZE]
     # Derived / auxiliary
     var hfield_data: TensorImpl[Self.DTYPE]  # [BATCH, NHFIELD_DATA]
     """The heightfield elevation grids, PER ENVIRONMENT.
@@ -241,7 +245,15 @@ struct Data[
             B * dims.get_max_contacts() * CONTACT_SIZE
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(B * METADATA_SIZE)
-        self.ccd_ws = TensorImpl[Self.DTYPE].alloc(B * CCD_WS_SIZE)
+        self.ccd_ws = TensorImpl[Self.DTYPE].alloc(
+            B * COLL_CCD_LANES * CCD_WS_SIZE
+        )
+        # The block-per-env collision kernel's staging region — see
+        # `ccd_workspace.COLL_STAGE_SLOTS`. Scratch like `ccd_ws`: written
+        # before read on every call, never downloaded.
+        self.coll_stage = TensorImpl[Self.DTYPE].alloc(
+            B * COLL_STAGE_SLOTS * CONTACT_SIZE
+        )
         # ⚠ `_at_least_one`: a model with no heightfield must still allocate,
         # because `alloc(0)` is not a valid buffer and every kernel binds this
         # tensor whether the model uses it or not.
@@ -288,6 +300,7 @@ struct Data[
         # call, so the host copy is never meaningful in either direction —
         # hence no matching `download`.
         self.ccd_ws.upload(ctx)
+        self.coll_stage.upload(ctx)
         if Self.NSITE > 0:
             self.site_xpos.upload(ctx)
         self.cfrc_ext.upload(ctx)
