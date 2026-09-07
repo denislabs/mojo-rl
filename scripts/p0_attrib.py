@@ -50,12 +50,13 @@ import csv
 from collections import defaultdict
 
 OUT = os.environ.get("OUT", "p0_attrib")
-# ⚠ THE SPILL BOUNDARY SITS BETWEEN 9 AND 12. `je_spills` puts `Je` in global
-# memory from k=10 on (P4), so the two halves are different code paths and the
-# `d/dnv^2` column below mixes them if both are present. It is still the right
-# number for each half; read it as two curves.
+# ⚠ THE SPILL BOUNDARY MOVED ON 2026-09-07. `je_spills` put `Je` in global
+# memory from k=10 on (P4, the ptxas limit); the budget is 16 KB since
+# e9918f5e (occupancy, measured), so every leg but k=0 spills. The label
+# below says which code path a column ran; the `d/dnv^2` column mixes the
+# two halves if both are present and is still the right number for each.
 KS = [int(x) for x in os.environ.get("KS", "0 3 6 9 12 13").split()]
-SPILL_FROM = 10
+SPILL_FROM = 1
 
 # ⚠⚠ THESE ARE TRUNCATED MODULE PATHS, AND THE TRUNCATION IS THE POINT.
 # Mojo emits a long kernel symbol as the module path CUT TO 29 CHARACTERS, then

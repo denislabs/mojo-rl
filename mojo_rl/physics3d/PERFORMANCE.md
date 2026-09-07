@@ -3538,3 +3538,24 @@ MAX_CONTACTS = 16` (63% of the step), CRBA's dense `[BATCH, NV*NV]` write
 (10%), `ldl_solve` (the 117 µs kernel), and the second-plateau Newton
 (11 ms/launch when the arms rest on the table), which is what the
 iteration cap governs.
+
+**BASELINE 2 (2026-09-07 evening, commit e9918f5e — `Je` spilled above 16 KB
+of threadgroup memory).** Same probe, same box, residual +0.13..+0.22 at
+every k. The first GPU change of the campaign that ships; the block ledger
+(experiments 1–3) has the mechanism — the blocked kernel is thread-0
+latency-bound and needs co-resident blocks, and the Jacobian rows were
+buying them out.
+
+| k | ms/step, baseline 1 | baseline 2 | newton µs/launch | env-steps/s |
+|---|---|---|---|---|
+| 0 | 3.39 | 3.39 | 36 | 302,000 |
+| 3 | 5.40 | 5.10 | 204 → 158 | 201,000 |
+| 6 | 10.34 | 10.03 | 556 → 508 | 102,000 |
+| 9 | 17.88 | 17.70 | 1308 → 1283 | 57,900 |
+| 12 | 26.07 | 26.08 | 2006 | 39,300 |
+| 13 | 28.61 | 28.62 | 2244 | 35,800 |
+
+k=12/13 already spilled, k=0 never does. Every later sweep compares to
+this table. Next on the same mechanism: one dense array instead of three
+in the blocked kernel (block ledger, stage 1), expected 1.1–1.6× on
+Newton at k≥9 and measured, not predicted, when it lands.
