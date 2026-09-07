@@ -41,8 +41,17 @@ the denominator (`losses.sum() / num_valid`); doing only the first would leave
 the loss scaled by the fraction of valid steps, which changes the effective
 learning rate with how close the sample sits to an episode boundary.
 
-`valid` is `[B, CHUNK]`, 1.0 or 0.0, and `n_valid` is the count of 1s. The
-caller builds both because the caller is what knows where the episode ended.
+`valid` is `[B, CHUNK]`, 1.0 or 0.0, and `n_terms` is the denominator the loss
+is averaged over. The caller builds both because the caller is what knows
+where the episode ended.
+
+⚠ **`n_terms` is NOT necessarily this call's own count of 1s.** Under gradient
+accumulation it is the whole GROUP's — every micro-batch is given the same
+total so the accumulated gradient is the mean over the group rather than a sum
+of per-micro-batch means. `n_terms` was originally called `n_valid` and
+bounded by `B*CHUNK`, which read as a sanity check and was really a
+single-call assumption; the first accumulating run hit it at 400 against a
+bound of 50. The bound is gone and the name says what the number is.
 
 ⚠ Where the reference does `num_valid.clamp_min(1)`, this RAISES. A batch with
 no valid timestep at all is a broken sampler, and a loss quietly divided by 1
@@ -204,11 +213,13 @@ def flow_mse[
     target: StaticString, B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int
 ](
     mut v_t: Tensor, mut u_t: Tensor, mut valid: Tensor, mut grad_v: Tensor,
-    mut err: Tensor, n_valid: Int, ctx: Optional[DeviceContext] = None,
+    mut err: Tensor, n_terms: Int, ctx: Optional[DeviceContext] = None,
 ) raises:
     """Writes `grad_v` = dL/d(v_t) and `err` = the per-element squared errors.
 
-    `valid` is `[B, CHUNK]` (1.0 / 0.0) and `n_valid` counts its 1s.
+    `valid` is `[B, CHUNK]` (1.0 / 0.0). `n_terms` is the averaging
+    denominator — this call's count of 1s when used alone, the whole group's
+    when accumulating. See the header.
 
     ⚠ Split from the scalar so a training step can skip the reduction: reading
     the loss means bringing `err` back to the host, and that is a full pipeline
@@ -219,18 +230,13 @@ def flow_mse[
         " exceed the padded ADIM"
     )
     comptime TOT = B * CHUNK * ADIM
-    if n_valid <= 0:
+    if n_terms <= 0:
         raise Error(
-            "flow_mse: n_valid is 0 — every timestep in the batch is padding."
+            "flow_mse: n_terms is 0 — every timestep in the batch is padding."
             " The reference clamps this to 1 and returns a number; that number"
             " is not a loss, so this raises instead."
         )
-    if n_valid > B * CHUNK:
-        raise Error(
-            "flow_mse: n_valid " + String(n_valid) + " exceeds B*CHUNK "
-            + String(B * CHUNK)
-        )
-    var two_over_n = Scalar[DT](2.0 / Float64(n_valid * ADIM_REAL))
+    var two_over_n = Scalar[DT](2.0 / Float64(n_terms * ADIM_REAL))
     comptime if target == "cpu":
         grad_v.ensure(TOT)
         err.ensure(TOT)
@@ -265,22 +271,22 @@ def flow_mse[
 def mean_err[
     target: StaticString, B: Int, CHUNK: Int, ADIM: Int, ADIM_REAL: Int
 ](
-    mut err: Tensor, n_valid: Int, ctx: Optional[DeviceContext] = None
+    mut err: Tensor, n_terms: Int, ctx: Optional[DeviceContext] = None
 ) raises -> Float64:
     """The scalar loss. ⚠ SYNCHRONISES on GPU — call it when you want to log.
 
-    Divides by `n_valid * ADIM_REAL`, the count of terms that are not
+    Divides by `n_terms * ADIM_REAL`, the count of terms that are not
     structurally zero, matching `losses.sum() / num_valid`. Dividing by the
     padded total would report a loss scaled by the fraction of real columns
     and real timesteps — which varies per batch, so two batches' losses would
     not be comparable and neither would two runs.
     """
     comptime TOT = B * CHUNK * ADIM
-    if n_valid <= 0:
-        raise Error("mean_err: n_valid is 0")
+    if n_terms <= 0:
+        raise Error("mean_err: n_terms is 0")
     comptime if target != "cpu":
         err.download(ctx.value())
     var acc = 0.0
     for i in range(TOT):
         acc += Float64(err.data[i])
-    return acc / Float64(n_valid * ADIM_REAL)
+    return acc / Float64(n_terms * ADIM_REAL)

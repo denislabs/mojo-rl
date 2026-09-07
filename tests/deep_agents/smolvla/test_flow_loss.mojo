@@ -404,6 +404,21 @@ def main() raises:
         abs(mloss - mref) < 1.0e-5,
         "the masked loss is not the mean over VALID (step, real column) terms",
     )
+    # ⚠ A denominator LARGER than this call's own count is legal and is what
+    # gradient accumulation passes: every micro-batch of a group is given the
+    # group's total so the accumulated gradient is a mean, not a sum of means.
+    # `flow_mse` used to reject that with a `> B*CHUNK` bound, which read as a
+    # sanity check and was a single-call assumption; the first accumulating
+    # run hit it at 400 against 50.
+    var big = mean_err["cpu", B, CHUNK, ADIM, ADIM_REAL](err, 4 * n_pv, None)
+    print("      a GROUP denominator 4x this call's:", big, " (must be"
+          " exactly a quarter of", mloss, ")")
+    assert_true(
+        abs(big * 4.0 - mloss) < 1.0e-9,
+        "the denominator is not applied linearly, so an accumulation group"
+        " cannot share one",
+    )
+
     # ⚠ and it must NOT equal the same sum over the full denominator, or the
     # `num_valid` half of the reference's rule is untested.
     var wrong_den = mref * Float64(n_pv) / Float64(B * CHUNK)

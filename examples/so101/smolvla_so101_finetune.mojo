@@ -276,6 +276,15 @@ def draw_group(
             gr.actions.append(acts_t.data[i])
         for i in range(B * CHUNK):
             gr.valid.append(valid_t.data[i])
+    # ⚠ The bound `flow_mse` used to carry, at the only place that knows
+    # `accum`. A group total above this means a micro-batch reported more
+    # valid timesteps than it has slots; below 1 means every timestep in the
+    # group is padding and the loss has no terms.
+    if gr.total_valid <= 0 or gr.total_valid > accum * B * CHUNK:
+        raise Error(
+            "draw_group: total_valid " + String(gr.total_valid)
+            + " is outside (0, " + String(accum * B * CHUNK) + "]"
+        )
     return gr^
 
 

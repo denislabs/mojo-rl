@@ -183,13 +183,15 @@ struct SmolVLATrainStep[
         mut x_t: Tensor,
         mut u_t: Tensor,
         mut valid: Tensor,
-        n_valid: Int,
+        n_terms: Int,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Float64:
         """One step. Returns the loss; call `set_times` first.
 
-        `valid` is `[B, CHUNK]` and `n_valid` its count of 1s — the timesteps
-        that are inside their episode. A chunk sampled near an episode's end
+        `valid` is `[B, CHUNK]` marking the timesteps inside their episode.
+        `n_terms` is the averaging denominator: this call's count of 1s when
+        used alone, the whole accumulation GROUP's when several calls sum
+        their gradients before one optimizer step. A chunk sampled near an episode's end
         has its tail CLAMPED to the last real action by the dataset, and
         training on that teaches the model that episodes end by holding
         still.
@@ -233,7 +235,7 @@ struct SmolVLATrainStep[
             target, Self.B, Self.CHUNK, Self.ADIM, Self.ADIM_REAL
         ](
             self.pool[Self.V], u_t, valid, self.pool[Self.GV],
-            self.pool[Self.ERR], n_valid, ctx,
+            self.pool[Self.ERR], n_terms, ctx,
         )
 
         # ── backward ─────────────────────────────────────────────────────
@@ -278,4 +280,4 @@ struct SmolVLATrainStep[
 
         return mean_err[
             target, Self.B, Self.CHUNK, Self.ADIM, Self.ADIM_REAL
-        ](self.pool[Self.ERR], n_valid, ctx)
+        ](self.pool[Self.ERR], n_terms, ctx)
