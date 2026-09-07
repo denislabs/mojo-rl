@@ -3584,3 +3584,32 @@ step and Euler's own extra term — the `M_hat = M + dt·diag(damping)`
 re-factorisation (`euler.mojo:403`) that the RK4 probe never saw.
 `scripts/p0_attrib.py` derives launches per step from the instance count;
 `p0_drift.py` now does too (it assumed 8).
+
+**BASELINE 3 (2026-09-07, commit 3c3b480f — Euler, 2 launches per step).**
+Same probe, same box, residual +0.05..+0.07 ms at every k, k=13 drift 0.96.
+
+| k | ms/step, baseline 2 | baseline 3 | ratio | env-steps/s | newton | euler finalize | collision | crba |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 3.39 | 0.93 | 3.6× | 1,100,000 | 0.07 | 0.03 | 0.54 | 0.02 |
+| 3 | 5.10 | 1.56 | 3.3× | 656,000 | 0.32 | 0.22 | 0.57 | 0.04 |
+| 6 | 10.03 | 3.13 | 3.2× | 327,000 | 1.02 | 0.55 | 0.79 | 0.15 |
+| 9 | 17.70 | 5.54 | 3.2× | 185,000 | 2.58 | 1.02 | 0.84 | 0.30 |
+| 12 | 26.08 | 8.18 | 3.2× | 125,000 | 4.02 | 1.54 | 0.85 | 0.65 |
+| 13 | 28.62 | 9.32 | 3.1× | 110,000 | 4.48 | 2.06 | 0.86 | 0.75 |
+
+Every kernel's per-launch cost is what it was (Newton 2240 µs at k=13,
+collision 431); the step is 2 launches instead of 8. The shortfall from 4×
+is ONE new term: the Euler integrator's fused finalize kernel
+(`integrator…`, 1028 µs per launch at k=13, 22% of the step, second to
+Newton, `d/dnv^2` the highest after Newton's — it grows like nv³). That is
+the `M_hat = M + dt·diag(damping)` re-factorisation (`euler.mojo:403`) the
+RK4 probe never ran, a DENSE LDL where the LDL pair's kernels are
+block-restricted and cost 115 + 73 µs on the same matrix. Next item, and
+the cheapest on the table: the block-restricted factor on `M_hat` (the
+tree table is already in the kernel's reach), ~1.0 → ~0.15 ms per launch,
+k=13 9.3 → ~7.6 ms/step. After it the shares at k=13 are Newton 48%,
+collision 9%, CRBA 8%.
+
+The real SO-101 tasks live near k=0..3: 0.93–1.56 ms per step, 0.66–1.1 M
+env-steps/s at 1024 lanes, where collision is 36–58% of the step and the
+warp-cooperative GJK (block ledger §6) is the remaining lever.
