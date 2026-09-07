@@ -3613,3 +3613,20 @@ collision 9%, CRBA 8%.
 The real SO-101 tasks live near k=0..3: 0.93–1.56 ms per step, 0.66–1.1 M
 env-steps/s at 1024 lanes, where collision is 36–58% of the step and the
 warp-cooperative GJK (block ledger §6) is the remaining lever.
+
+**The Euler finalize, split (0a4bf917 + the gate fix after it).** The
+single-launch kernel ran the whole finalize on one thread per env — dense
+nv² matvec, damping diagonal, `_ldl_factor_env`, `_ldl_solve_env` — 1028 µs
+per launch at k=13. It is now a block-per-env rhs kernel (row-parallel
+matvec, then the damping diagonal over joints), the step's own
+cooperative `ldl_factor` and `ldl_solve` on `scratch.M`/`fnet`/`qacc_ws`,
+and a per-env integrate kernel. Same arithmetic as the old kernel (its
+GPU-vs-CPU rounding signature reproduced to the digit: 11 values at 2⁻²⁰
+on the pendulum, the CPU's tree-ordered leg against the dense one, which
+predates all of this). Gate: `test_euler_finalize_gpu_parity` (damped
+model, 1e-5, the halved-damping mutant reads 0.32). ⚠ Two green gates had
+said nothing — `test_tape_gpu_parity` never steps, `test_ip_fields_env_loop`
+compares at 1e-2 — and the first version of the new gate demanded
+bit-exactness across two legs that never had it and was committed on the
+mutant's verdict alone. Priced on the box next: expect ~1.0 → ~0.2 ms per
+launch at k=13, the step 9.3 → ~7.7.
