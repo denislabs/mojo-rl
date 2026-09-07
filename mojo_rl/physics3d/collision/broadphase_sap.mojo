@@ -206,6 +206,17 @@ comptime SAP_TPB: Int = 64
 # wraps and holds only timer lines (PERFORMANCE.md §13.16).
 comptime _COLL_PROBE: Bool = False
 
+# ⚠ A PRICING KNOB FOR THE GPU COLLISION KERNEL, BIT-IDENTICAL AT EVERY VALUE.
+# `_COLL_PROBE` is CPU-only (`perf_counter_ns`), so the share of the per-env
+# GPU chain that GJK/EPA takes cannot be read from it; on the k=13 park scene
+# the CPU phase is 10.3 us with GJK at 45% (4 calls), while the GPU kernel
+# spends ~430 us per env — a serial thread walking hull adjacency one
+# dependent global load at a time. This repeats every GJK/EPA call this many
+# times with THROWAWAY outputs (the real call runs last and overwrites the
+# workspace row it shares), so `t(R) - t(1)` over `R - 1` is one GJK's cost
+# on the device — the `NEWTON_SERIAL_PROBE` pattern. 1 = production.
+comptime _COLL_REPEAT_GJK: Int = 1
+
 
 def _aabb_half_extents[
     DTYPE: DType
@@ -2018,6 +2029,24 @@ def _detect_contacts_sap_env[
                 # convex query is symmetric and returns `gi -> gj` either way.
                 comptime if _COLL_PROBE:
                     _c_t0 = Int(perf_counter_ns())
+                comptime if _COLL_REPEAT_GJK > 1:
+                    for _rep in range(_COLL_REPEAT_GJK - 1):
+                        var rq = gjk_epa[DTYPE](
+                            gi_type,
+                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                            ri, hli, hxi, hyi, hzi,
+                            mesh_verts, mesh_vert_edgeadr, mesh_edges, 0, 0,
+                            gj_type,
+                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                            rj, hlj, hxj, hyj, hzj,
+                            0, 0,
+                            ws, env,
+                            ccd_tol, ccd_iter, cm,
+                            dist_cutoff=cm,
+                        )
+                        # Consumed against a value it cannot produce.
+                        if rq[0] == Scalar[DTYPE](-1.0e30):
+                            dist = rq[0]
                 var r = gjk_epa[DTYPE](
                     gi_type,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -2092,6 +2121,34 @@ def _detect_contacts_sap_env[
                     var wf_ok = 0
                     comptime if _COLL_PROBE:
                         _c_t0 = Int(perf_counter_ns())
+                    comptime if _COLL_REPEAT_GJK > 1:
+                        for _rep in range(_COLL_REPEAT_GJK - 1):
+                            var qf1 = InlineArray[Scalar[DTYPE], 9](
+                                fill=Scalar[DTYPE](0)
+                            )
+                            var qf2 = InlineArray[Scalar[DTYPE], 9](
+                                fill=Scalar[DTYPE](0)
+                            )
+                            var qxx = InlineArray[Scalar[DTYPE], 6](
+                                fill=Scalar[DTYPE](0)
+                            )
+                            var qf_ok = 0
+                            var rq = gjk_epa_witness[DTYPE](
+                                gi_type,
+                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                                ri, hli, hxi, hyi, hzi,
+                                mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
+                                gj_type,
+                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                                rj, hlj, hxj, hyj, hzj,
+                                va2, mnv2,
+                                qf1, qf2, qxx, qf_ok,
+                                ws, env,
+                                ccd_tol, ccd_iter, cm,
+                                cm,
+                            )
+                            if rq[0] == Scalar[DTYPE](-1.0e30):
+                                dist = rq[0]
                     var result = gjk_epa_witness[DTYPE](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
