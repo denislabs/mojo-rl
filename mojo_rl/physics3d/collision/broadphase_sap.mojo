@@ -2935,6 +2935,12 @@ def _detect_contacts_sap_block_kernel[
         DTYPE, Layout.row_major(4), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    # `<exclude>` signatures, sorted once per block by thread 0 (they are a
+    # per-model table; every thread used to sort its own copy).
+    var ex_sh = LayoutTensor[
+        DTYPE, Layout.row_major(EX_CAP), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
 
     # ── phase 0: world pose and AABB, one geom per thread ────────────────
     for g in range(tid, ngeom, COLL_TPB):
@@ -3113,8 +3119,17 @@ def _detect_contacts_sap_block_kernel[
                     )
                 )
                 _push(si, sj, si_type, ccd)
+        var ex0 = Scratch[Int, EX_CAP](
+            NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
+        )
+        var n_sig0 = exclude_signatures[DTYPE, EX_CAP](
+            nbody, NEXCLUDE, mmeta, excludes, ex0
+        )
+        for k in range(EX_CAP):
+            ex_sh[k] = Scalar[DTYPE](ex0[k])
         ctrl_sh[0] = Scalar[DTYPE](ncand)
         ctrl_sh[1] = Scalar[DTYPE](overflow)
+        ctrl_sh[2] = Scalar[DTYPE](n_sig0)
     barrier()
 
     # ── phase 2: one candidate per thread, into its staging window ───────
@@ -3141,9 +3156,9 @@ def _detect_contacts_sap_block_kernel[
         var ex_sig = Scratch[Int, EX_CAP](
             NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
         )
-        var n_sig = exclude_signatures[DTYPE, EX_CAP](
-            nbody, NEXCLUDE, mmeta, excludes, ex_sig
-        )
+        for k in range(EX_CAP):
+            ex_sig[k] = Int(rebind[Scalar[DTYPE]](ex_sh[k]))
+        var n_sig = Int(rebind[Scalar[DTYPE]](ctrl_sh[2]))
         var ccd_tol = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_CCD_TOLERANCE])
         if ccd_tol <= 0:
             ccd_tol = Scalar[DTYPE](MJ_CCD_TOLERANCE)
@@ -3205,7 +3220,7 @@ def _detect_contacts_sap_block_kernel[
             ctrl_sh[1] = Scalar[DTYPE](1)
     barrier()
 
-    # ── phase 3: compaction in candidate order, the sort, ncon (thread 0) ─
+    # ── phase 3: offsets (thread 0), cooperative copy, the sort, ncon ─────
     if tid == 0:
         if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) != 0:
             # ⚠ THE FALLBACK IS A SECOND LAUNCH, NOT A CALL. Calling the
@@ -3220,24 +3235,39 @@ def _detect_contacts_sap_block_kernel[
             # kernel with `ONLY_FLAGGED=True` right after, which runs it for
             # marked envs only and overwrites the mark with the real count.
             smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](-1)
-            return
-        var n = 0
+            ctrl_sh[3] = Scalar[DTYPE](0)
+        else:
+            # Destination offset per candidate: a prefix over the counts,
+            # capped at `max_contacts` contact by contact (the serial guard's
+            # semantics), parked in the candidate list's thread slot, which
+            # is done with.
+            var n = 0
+            for c in range(ncand):
+                var cnt = Int(rebind[Scalar[DTYPE]](cand_sh[5 * NC + c]))
+                if n + cnt > max_contacts:
+                    cnt = max_contacts - n
+                    cand_sh[5 * NC + c] = Scalar[DTYPE](cnt)
+                cand_sh[4 * NC + c] = Scalar[DTYPE](n)
+                n += cnt
+            ctrl_sh[3] = Scalar[DTYPE](n)
+    barrier()
+    # Every thread copies records; the order is fixed by the offsets.
+    var n_out = Int(rebind[Scalar[DTYPE]](ctrl_sh[3]))
+    if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 0:
         for c in range(ncand):
             var start = Int(rebind[Scalar[DTYPE]](cand_sh[3 * NC + c]))
             var cnt = Int(rebind[Scalar[DTYPE]](cand_sh[5 * NC + c]))
-            for k in range(cnt):
-                if n >= max_contacts:
-                    break
-                var src = (start + k) * CONTACT_SIZE
-                var dst = n * CONTACT_SIZE
-                for f in range(CONTACT_SIZE):
-                    contacts[env, dst + f] = rebind[Scalar[DTYPE]](stage[env, src + f])
-                n += 1
-            if n >= max_contacts:
-                break
-        sort_contacts_mujoco_order[DTYPE](env, contacts, n)
-        smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](n)
-
+            var dst0 = Int(rebind[Scalar[DTYPE]](cand_sh[4 * NC + c]))
+            for q in range(tid, cnt * CONTACT_SIZE, COLL_TPB):
+                var k = q // CONTACT_SIZE
+                var f = q - k * CONTACT_SIZE
+                contacts[env, (dst0 + k) * CONTACT_SIZE + f] = rebind[
+                    Scalar[DTYPE]
+                ](stage[env, (start + k) * CONTACT_SIZE + f])
+    barrier()
+    if tid == 0 and Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 0:
+        sort_contacts_mujoco_order[DTYPE](env, contacts, n_out)
+        smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](n_out)
 
 def detect_contacts_sap[
     target: StaticString,
