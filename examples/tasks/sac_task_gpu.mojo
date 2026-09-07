@@ -427,7 +427,20 @@ def main() raises:
     # YET MEASURED ON THIS FAMILY; the 7.7% column is. If the critic diverges
     # again, `--updates-per-step 16` is the configuration known to hold.
     var updates_per_step = N_ENVS
-    var tau = Scalar[DT](0.005)
+    # ⚠⚠ 0.0025, NOT SAC'S USUAL 0.005, BECAUSE 32 UPDATES OF 0.005 IS 14.8%
+    # AND THIS FAMILY DIVERGES THERE. Lowering `tau` rather than the update
+    # count is what buys the safe tracking rate WITHOUT paying UTD:
+    #
+    #     32 upd, tau 0.005    14.8%   UTD 1.00   mean_q -> 1152, diverged
+    #     16 upd, tau 0.005     7.7%   UTD 0.50   mean_q -> -6.63, converged
+    #     32 upd, tau 0.0025    7.7%   UTD 1.00   mean_q -> -3.10, converged
+    #
+    # ⚠ THE THIRD ROW IS WHAT SETTLED IT. Rows one and two differ in TWO
+    # things, so neither could say whether the tracking rate or the UTD was
+    # the axis; row three holds UTD at 1 and moves only the rate, and the
+    # critic came back healthy — `next_q - q` +0.18 against +5.85 at 14.8%,
+    # `critic_loss` 0.013 against 1667. The tracking rate is the axis.
+    var tau = Scalar[DT](0.0025)
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
