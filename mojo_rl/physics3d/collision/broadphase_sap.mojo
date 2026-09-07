@@ -354,6 +354,1254 @@ def _aabb_half_extents[
     return (rbound, rbound, rbound)
 
 
+
+struct _SapProbe(Copyable, Movable):
+    """`_COLL_PROBE`'s accumulators, one struct so the per-pair narrow phase
+    (`_sap_pair_narrow`) can carry them as ONE `mut` argument. Every field is
+    an `Int` and every read/write sits under `comptime if _COLL_PROBE`, so at
+    the production value the struct is dead weight the compiler drops."""
+
+    var _c_t0: Int
+    var _c_start: Int
+    var _c_loop0: Int
+    var _n_gjkhit: Int
+    var _c_cas: Int
+    var _n_cas: Int
+    var _c_bs: Int
+    var _n_bs: Int
+    var _c_bbf: Int
+    var _n_bbf: Int
+    var _c_cys: Int
+    var _n_cys: Int
+    var _c_gjkp: Int
+    var _n_gjkp: Int
+    var _c_pbf: Int
+    var _n_pbf: Int
+    var _c_ppair: Int
+    var _n_ppair: Int
+    var _c_pparm: Int
+    var _n_pparm: Int
+    var _n_pairs: Int
+    var _n_aabb: Int
+    var _c_pcyl: Int
+    var _n_pcyl: Int
+    var _c_pbox: Int
+    var _n_pbox: Int
+    var _c_pmesh: Int
+    var _n_pmesh: Int
+    var _c_hf: Int
+    var _n_hf: Int
+    var _c_ss: Int
+    var _n_ss: Int
+    var _c_cc: Int
+    var _n_cc: Int
+    var _c_cb: Int
+    var _n_cb: Int
+    var _c_bb: Int
+    var _n_bb: Int
+    var _c_gjk: Int
+    var _n_gjk: Int
+    var _c_mcn: Int
+    var _n_mcn: Int
+    var _c_mccd: Int
+    var _n_mccd: Int
+
+    def __init__(out self):
+        self._c_t0 = 0
+        self._c_start = 0
+        self._c_loop0 = 0
+        self._n_gjkhit = 0
+        self._c_cas = 0
+        self._n_cas = 0
+        self._c_bs = 0
+        self._n_bs = 0
+        self._c_bbf = 0
+        self._n_bbf = 0
+        self._c_cys = 0
+        self._n_cys = 0
+        self._c_gjkp = 0
+        self._n_gjkp = 0
+        self._c_pbf = 0
+        self._n_pbf = 0
+        self._c_ppair = 0
+        self._n_ppair = 0
+        self._c_pparm = 0
+        self._n_pparm = 0
+        self._n_pairs = 0
+        self._n_aabb = 0
+        self._c_pcyl = 0
+        self._n_pcyl = 0
+        self._c_pbox = 0
+        self._n_pbox = 0
+        self._c_pmesh = 0
+        self._n_pmesh = 0
+        self._c_hf = 0
+        self._n_hf = 0
+        self._c_ss = 0
+        self._n_ss = 0
+        self._c_cc = 0
+        self._n_cc = 0
+        self._c_cb = 0
+        self._n_cb = 0
+        self._c_bb = 0
+        self._n_bb = 0
+        self._c_gjk = 0
+        self._n_gjk = 0
+        self._c_mcn = 0
+        self._n_mcn = 0
+        self._c_mccd = 0
+        self._n_mccd = 0
+
+
+@always_inline
+def _sap_pair_narrow[
+    DTYPE: DType,
+    BATCH: Int,
+    D: DimsLike,
+    EX_CAP: Int,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+    L_PAIRS: Layout,
+    L_MESH_META: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout,
+    L_MESH_VERT_POLYMAP: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_HF_META: Layout,
+    L_HF_DATA: Layout,
+    L_CONTACTS: Layout,
+    L_WS: Layout,
+    HFIELD_ENABLED: Bool,
+](
+    env: Int,
+    dims: D,
+    si: Int,
+    sj: Int,
+    si_type: Int,
+    nbody: Int,
+    max_contacts: Int,
+    ex_sig: Scratch[Int, EX_CAP],
+    n_sig: Int,
+    mut pr: _SapProbe,
+    mut num_contacts: Int,
+    wpx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wpy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wpz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqw: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    ccd_tol: Scalar[DTYPE],
+    ccd_iter: Int,
+    multiccd_off: Bool,
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, L_BODIES, MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, L_MMETA, MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, L_EXCLUDES, MutAnyOrigin
+    ],
+    pairs: LayoutTensor[
+        DTYPE, L_PAIRS, MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        L_MESH_META,
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
+    ],
+    mesh_polys: LayoutTensor[
+        DTYPE,
+        L_MESH_POLYS,
+        MutAnyOrigin,
+    ],
+    mesh_polyvert: LayoutTensor[
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
+    ],
+    mesh_polymap: LayoutTensor[
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
+    ],
+    mesh_vert_polymap: LayoutTensor[
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
+    ],
+    hfield_meta: LayoutTensor[
+        DTYPE, L_HF_META, MutAnyOrigin
+    ],
+    hfield_data: LayoutTensor[
+        DTYPE, L_HF_DATA, MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, L_CONTACTS,
+        MutAnyOrigin,
+    ],
+    ws: LayoutTensor[
+        DTYPE, L_WS, MutAnyOrigin
+    ],
+):
+    """ONE candidate geom pair of the SAP sweep — canonicalisation, filters,
+    contact parameters, the narrow-phase dispatch and its emission — moved
+    out of `_detect_contacts_sap_env`'s `j` loop verbatim (2026-09-07) so a
+    block-per-env kernel can run candidates on separate threads. Every
+    `continue` of the loop body is a `return` here; nothing followed the
+    body inside the loop, so the two are the same control flow.
+
+    ⚠ THE CPU PATH CALLS THIS TOO. It is the single narrow-phase dispatch
+    for the SAP sweep on both targets; a rule written here is written once."""
+    var sj_type = Int(
+        rebind[Scalar[DTYPE]](geoms[sj, GEOM_IDX_TYPE])
+    )
+    var lo = si if si < sj else sj
+    var hi = sj if si < sj else si
+    var lo_type = si_type if si < sj else sj_type
+    var hi_type = sj_type if si < sj else si_type
+    var gi = lo
+    var gj = hi
+    # ⚠ RANK, NOT THE RAW ID. `pushPairArena` sorts by `mjtGeom`, and
+    # this enum is not `mjtGeom` — comparing raw ids orders 10 of the
+    # 28 type pairs the OPPOSITE way. See `mj_geom_type_rank`.
+    if mj_geom_type_rank(lo_type) > mj_geom_type_rank(hi_type):
+        gi = hi
+        gj = lo
+
+    var gi_type = Int(
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+    )
+    var gi_body = Int(
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
+    )
+    var gi_contype = Int(
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
+    )
+    var gi_conaffinity = Int(
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
+    )
+    var pi_x = wpx[gi]
+    var pi_y = wpy[gi]
+    var pi_z = wpz[gi]
+    var qi_x = wqx[gi]
+    var qi_y = wqy[gi]
+    var qi_z = wqz[gi]
+    var qi_w = wqw[gi]
+    var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
+    var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
+    var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
+    var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
+    var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
+    # Multi-CCD scales its distinctness tolerance by the smaller
+    # bounding radius (`mjc_Convex`).
+    var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
+
+    var gj_type = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
+    )
+    var gj_body = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
+    )
+    # `<contact><pair>` bypasses every filter below — see the same
+    # gate in `_detect_contacts_env`. The AABB tests above still
+    # apply, which is why the AABBs are inflated by the pair margin
+    # where they are built: MuJoCo collides predefined pairs outside
+    # the broadphase entirely, so a pair must not be prunable by a
+    # bound that ignores its margin.
+    comptime if _COLL_PROBE:
+        pr._c_t0 = Int(perf_counter_ns())
+    var ipair = find_predefined_pair[DTYPE](
+        gi, gj, dims, pairs, mmeta
+    )
+    comptime if _COLL_PROBE:
+        pr._c_ppair += Int(perf_counter_ns()) - pr._c_t0
+        pr._n_ppair += 1
+    if ipair < 0:
+        # MuJoCo's body-pair filter — weld, weld-parent and exclude.
+        # See `pair_body_filtered`; shared with the O(N^2) loop and
+        # the plane loop above, which had no body filter at all
+        # (defect 24).
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var _pbf = pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+            gi_body, gj_body, bodies, mmeta, excludes,
+            ex_sig, n_sig, nbody,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_pbf += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_pbf += 1
+        if _pbf:
+            return
+        var gj_contype = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+        )
+        var gj_conaffinity = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+        )
+        if (gi_contype & gj_conaffinity) == 0 and (
+            gj_contype & gi_conaffinity
+        ) == 0:
+            return
+
+    var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
+    var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+    # Sum of the two geoms' margins, or the PAIR's own — never both.
+    var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
+    var cgp = (
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
+        + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
+    )
+    if ipair >= 0:
+        cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+        cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
+    # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
+    # is what the contact stores as its `includemargin`; 3.10.0 passes
+    # `margin + gap` to the collision function and `margin` alone to
+    # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
+    # and then EXCLUDED from the solver by
+    # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
+    # two are equal and every line below is what it always was.
+    var cm = cim + cgp
+
+    var pj_x = wpx[gj]
+    var pj_y = wpy[gj]
+    var pj_z = wpz[gj]
+    var qj_x = wqx[gj]
+    var qj_y = wqy[gj]
+    var qj_z = wqz[gj]
+    var qj_w = wqw[gj]
+    var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
+    var hlj = rebind[Scalar[DTYPE]](
+        geoms[gj, GEOM_IDX_HALF_LENGTH]
+    )
+    var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+    var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+    var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+    var rbound_j = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RBOUND])
+
+    # ── BOUNDING-SPHERE REJECT — MuJoCo's `mj_filterSphere` ────────
+    # ⚠⚠ THIS PATH RAN WITHOUT IT AND THE O(N^2) PATH DID NOT. MuJoCo
+    # applies the test inside `mj_collideGeoms`, which sits DOWNSTREAM
+    # of whichever broadphase produced the pair, so it covers every
+    # candidate. Ours lived only in `contact_detection.mojo`, so every
+    # model big enough to take the SAP branch (`ngeom >= 16` — which is
+    # every interesting one) sent pairs into GJK that MuJoCo rejects
+    # with three subtractions. The AABB tests above do NOT subsume it:
+    # a sweep overlap on inflated world AABBs is far weaker than the
+    # two bounding spheres actually touching.
+    #
+    # Measured, ms per env step (`FRAME_SKIP=10`), MIN of two
+    # interleaved rounds against a pristine worktree of the parent:
+    #
+    #     SO-ARM100   2.87 -> 1.09   (349 -> 918 Hz)
+    #     SO-ARM101   4.77 -> 1.84   (210 -> 544 Hz)
+    #
+    # MuJoCo steps the same two XMLs at 0.078 and 0.121 ms, so the
+    # remaining gap is 14x and 15x, down from 37x and 39x.
+    #
+    # ⚠ `+ cm` IS LOAD-BEARING, and its absence is silent. A pair
+    # separated by more than the two radii but LESS than its margin is
+    # a contact MuJoCo reports; drop the term and it vanishes with no
+    # error anywhere. This is the same trap the O(N^2) copy documents,
+    # which is where the term was missing once before.
+    #
+    # ⚠ PLANES ARE EXCLUDED BY `rbound > 0`, which is how MuJoCo
+    # detects them here too (a plane's `rbound` is 0 because it is
+    # unbounded). MuJoCo additionally has a plane-specific arm using
+    # `planeGeomDist`; that is NOT implemented here or in the O(N^2)
+    # path, so plane pairs fall through to narrow phase exactly as
+    # they did before this change.
+    if rbound_i > Scalar[DTYPE](0) and rbound_j > Scalar[DTYPE](0):
+        var sfx = pi_x - pj_x
+        var sfy = pi_y - pj_y
+        var sfz = pi_z - pj_z
+        var sfb = rbound_i + rbound_j + cm
+        if sfx * sfx + sfy * sfy + sfz * sfz > sfb * sfb:
+            return
+
+    # ⚠⚠ THE CONTACT-PARAMETER MIX RUNS **AFTER** THE SPHERE
+    # REJECT, NOT BEFORE, AND THE ORDER IS THE POINT.
+    # `mix_contact_params` is ~30 tensor reads plus MuJoCo's
+    # priority/max/min rules, and it used to run on every pair that
+    # survived the body/contype filters — 65 per step on SO-ARM100,
+    # of which the bounding-sphere test then rejects all but 2.
+    # Nothing above needs it: the reject reads only the two rbounds
+    # and `cm`, and `cm` comes from the geoms' own margins (or the
+    # pair's), never from the mix. `_n0` moves with it because it is
+    # a snapshot of `num_contacts`, which the reject cannot change.
+    #
+    # ⚠ THIS IS NOT THE HOIST §5.1 MEASURED AT ZERO. That one tried
+    # to compute the per-GEOM decode once per geom; the mix is
+    # per-PAIR and hoisting cannot remove it. Deferring past the
+    # reject removes 97% of the CALLS.
+    # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+    # with `detect_contacts` so the two paths cannot drift, which is
+    # exactly how the SAP ellipsoid branch went missing. A predefined
+    # pair supplies its own parameters instead, unmixed.
+    comptime if _COLL_PROBE:
+        pr._c_t0 = Int(perf_counter_ns())
+    var _mx = pair_params[DTYPE](
+        ipair, pairs
+    ) if ipair >= 0 else mix_contact_params[DTYPE](
+        Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+        Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+        Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+        Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
+    )
+    comptime if _COLL_PROBE:
+        pr._c_pparm += Int(perf_counter_ns()) - pr._c_t0
+        pr._n_pparm += 1
+    var cdim = Int(_mx[0])
+    var cf = _mx[1]
+    var cfs = _mx[2]
+    var cfr = _mx[3]
+    var _n0 = num_contacts
+
+    var dist: Scalar[DTYPE] = 1.0
+    var cx: Scalar[DTYPE] = 0
+    var cy: Scalar[DTYPE] = 0
+    var cz: Scalar[DTYPE] = 0
+    var nx: Scalar[DTYPE] = 0
+    var ny: Scalar[DTYPE] = 0
+    var nz: Scalar[DTYPE] = 1
+    # CONTACT DIRECTION INVARIANT — every branch below emits
+    # `normal = gi -> gj` with `body_a = gi_body, body_b = gj_body`.
+    #
+    # The REVERSED-ORDER branches call a primitive written for the
+    # other operand order, so they negate the returned normal to get
+    # back to gi->gj. They used to ALSO swap body_a/body_b, and that
+    # double flip left them emitting `normal = body_b -> body_a` while
+    # the ten canonical-order branches emitted `body_a -> body_b`.
+    # Either operation alone is correct; both is not.
+    #
+    # Silent until dm_control manipulator, which is the first model
+    # where one physical pair type reaches BOTH orderings — a sphere
+    # (the ball) contacting capsules (the fingers), under the SAP
+    # broadphase where (gi, gj) comes from the sweep rather than the
+    # geom index. `aref` is built from the penetration DEPTH and so
+    # does not flip with the normal, so a flipped normal desynchronises
+    # `jar = aref + J*qacc`: one contact was self-consistent and the
+    # other was not, giving contact forces 9% and 20% below MuJoCo's
+    # while every row constant matched to 15 digits.
+    var body_a = gi_body
+    var body_b = gj_body
+    # Mesh vertex ranges, hoisted out of the mesh branch so multi-CCD
+    # can re-run the SAME convex query at its perturbed poses. Zero for
+    # every non-mesh pair, which is what `gjk_epa` wants there.
+    var va1 = 0
+    var mnv1 = 0
+    var va2 = 0
+    var mnv2 = 0
+
+    # ── HEIGHTFIELD, before every primitive pair ──────────────────
+    #
+    # `mjCOLLISIONFUNC`'s HFIELD row is `mjc_ConvexHField` against
+    # every type but PLANE and HFIELD (`engine_collision_driver.c:48`)
+    # — the two it leaves at 0 are the two that cannot bound a volume.
+    # It writes its own records, one per prism, so it exits the loop
+    # the way the capsule manifold does.
+    if HFIELD_ENABLED and (
+        gi_type == GEOM_HFIELD or gj_type == GEOM_HFIELD
+    ):
+        # PLANE x HFIELD and HFIELD x HFIELD are 0 in the table.
+        if (
+            gi_type == GEOM_PLANE
+            or gj_type == GEOM_PLANE
+            or (gi_type == GEOM_HFIELD and gj_type == GEOM_HFIELD)
+        ):
+            return
+        var hf_is_i = gi_type == GEOM_HFIELD
+        var hf_g = gi if hf_is_i else gj
+        var cx_g = gj if hf_is_i else gi
+        var hid = Int(
+            rebind[Scalar[DTYPE]](geoms[hf_g, GEOM_IDX_HFIELD_ID])
+        )
+        if hid < 0:
+            return
+        # The convex geom's mesh range, if it has one.
+        var cvm = Int(
+            rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_MESH_ID])
+        )
+        var cva = 0
+        var cmnv = 0
+        if cvm >= 0:
+            cva = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 0]))
+            cmnv = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 1]))
+        # ⚠ THE BODIES ARE NEVER SWAPPED — `body_a` is `gi_body`
+        # whichever side the field is on, exactly as every other
+        # branch in this loop. The normal's sign carries the
+        # difference instead; see `_hfield_contacts`.
+        var nsg = Scalar[DTYPE](-1) if hf_is_i else Scalar[DTYPE](1)
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _ = _hfield_contacts[DTYPE](
+            env, gi_body, gj_body, hid,
+            pi_x if hf_is_i else pj_x,
+            pi_y if hf_is_i else pj_y,
+            pi_z if hf_is_i else pj_z,
+            qi_x if hf_is_i else qj_x,
+            qi_y if hf_is_i else qj_y,
+            qi_z if hf_is_i else qj_z,
+            qi_w if hf_is_i else qj_w,
+            gj_type if hf_is_i else gi_type,
+            pj_x if hf_is_i else pi_x,
+            pj_y if hf_is_i else pi_y,
+            pj_z if hf_is_i else pi_z,
+            qj_x if hf_is_i else qi_x,
+            qj_y if hf_is_i else qi_y,
+            qj_z if hf_is_i else qi_z,
+            qj_w if hf_is_i else qi_w,
+            rj if hf_is_i else ri,
+            hlj if hf_is_i else hli,
+            hxj if hf_is_i else hxi,
+            hyj if hf_is_i else hyi,
+            hzj if hf_is_i else hzi,
+            rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_RBOUND]),
+            cva, cmnv,
+            cm,
+            cf,
+            cfs,
+            cfr,
+            cdim,
+            nsg,
+            hfield_meta, hfield_data, dims.get_nhfield_data(),
+            mesh_verts, mesh_vert_edgeadr, mesh_edges,
+            dims, contacts, ws, num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_hf += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_hf += 1
+        _fill_pair_solparams[DTYPE](
+            env, _n0, num_contacts, _mx, contacts
+        )
+        return
+
+    if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = sphere_sphere[DTYPE](
+            pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
+        )
+        comptime if _COLL_PROBE:
+            pr._c_ss += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_ss += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+    elif gi_type == GEOM_CAPSULE and gj_type == GEOM_SPHERE:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = capsule_sphere[DTYPE](
+            pi_x,
+            pi_y,
+            pi_z,
+            qi_x,
+            qi_y,
+            qi_z,
+            qi_w,
+            hli,
+            ri,
+            pj_x,
+            pj_y,
+            pj_z,
+            rj,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cas += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cas += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+    elif gi_type == GEOM_SPHERE and gj_type == GEOM_CAPSULE:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = capsule_sphere[DTYPE](
+            pj_x,
+            pj_y,
+            pj_z,
+            qj_x,
+            qj_y,
+            qj_z,
+            qj_w,
+            hlj,
+            rj,
+            pi_x,
+            pi_y,
+            pi_z,
+            ri,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cas += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cas += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = -r[4]
+        ny = -r[5]
+        nz = -r[6]
+    elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
+        # ⚠ THE TWO NARROW PHASES MUST MOVE TOGETHER
+        # (`feedback_sap_path_missing_a_whole_geom_type`). Parallel
+        # capsules are a two-point manifold; see
+        # `_capsule_capsule_contacts`, which writes its own records.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _ = _capsule_capsule_contacts[DTYPE](
+            env, gi_body, gj_body,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+            cm, cf, cfs, cfr, cdim,
+            dims, contacts, num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cc += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cc += 1
+        _fill_pair_solparams[DTYPE](
+            env, _n0, num_contacts, _mx, contacts
+        )
+        return
+    elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = box_sphere[DTYPE](
+            pi_x,
+            pi_y,
+            pi_z,
+            qi_x,
+            qi_y,
+            qi_z,
+            qi_w,
+            hxi,
+            hyi,
+            hzi,
+            pj_x,
+            pj_y,
+            pj_z,
+            rj,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_bs += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_bs += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+    elif gi_type == GEOM_SPHERE and gj_type == GEOM_BOX:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = box_sphere[DTYPE](
+            pj_x,
+            pj_y,
+            pj_z,
+            qj_x,
+            qj_y,
+            qj_z,
+            qj_w,
+            hxj,
+            hyj,
+            hzj,
+            pi_x,
+            pi_y,
+            pi_z,
+            ri,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_bs += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_bs += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = -r[4]
+        ny = -r[5]
+        nz = -r[6]
+    elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
+        # A capsule along a box face is a two-point manifold — see
+        # `_capsule_box_contacts`, which writes its own records.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _ = _capsule_box_contacts[DTYPE](
+            env, gi_body, gj_body,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+            Scalar[DTYPE](-1),
+            cm, cf, cfs, cfr, cdim,
+            dims, contacts, num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cb += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cb += 1
+        _fill_pair_solparams[DTYPE](
+            env, _n0, num_contacts, _mx, contacts
+        )
+        return
+    elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _ = _capsule_box_contacts[DTYPE](
+            env, gi_body, gj_body,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+            Scalar[DTYPE](1),
+            cm, cf, cfs, cfr, cdim,
+            dims, contacts, num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cb += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cb += 1
+        _fill_pair_solparams[DTYPE](
+            env, _n0, num_contacts, _mx, contacts
+        )
+        return
+    elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
+        # A box/box contact is a whole manifold, not a point — see
+        # `_box_box_contacts`. It writes its own records and this
+        # branch is done; only a SEPARATED pair (code -1) falls through
+        # to `box_box`, which then rejects it too.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var code = _box_box_contacts[DTYPE](
+            env,
+            gi_body,
+            gj_body,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+            cm,
+            cf,
+            cfs,
+            cfr,
+            cdim,
+            dims,
+            contacts,
+            num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_bb += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_bb += 1
+        if code >= 0:
+            _fill_pair_solparams[DTYPE](
+                env, _n0, num_contacts, _mx, contacts
+            )
+            return
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = box_box[DTYPE](
+            pi_x,
+            pi_y,
+            pi_z,
+            qi_x,
+            qi_y,
+            qi_z,
+            qi_w,
+            hxi,
+            hyi,
+            hzi,
+            pj_x,
+            pj_y,
+            pj_z,
+            qj_x,
+            qj_y,
+            qj_z,
+            qj_w,
+            hxj,
+            hyj,
+            hzj,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_bbf += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_bbf += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+    elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = cylinder_sphere[DTYPE](
+            pi_x,
+            pi_y,
+            pi_z,
+            qi_x,
+            qi_y,
+            qi_z,
+            qi_w,
+            hli,
+            ri,
+            pj_x,
+            pj_y,
+            pj_z,
+            rj,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cys += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cys += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+    elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        var r = cylinder_sphere[DTYPE](
+            pj_x,
+            pj_y,
+            pj_z,
+            qj_x,
+            qj_y,
+            qj_z,
+            qj_w,
+            hlj,
+            rj,
+            pi_x,
+            pi_y,
+            pi_z,
+            ri,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_cys += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_cys += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = -r[4]
+        ny = -r[5]
+        nz = -r[6]
+
+    elif (
+        (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX)
+        or (gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER)
+        or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
+        or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
+        or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
+        # ⚠ EVERY ELLIPSOID PAIR EXCEPT PLANE. Row ELLIPSOID of
+        # `mjCOLLISIONFUNC` is `mjc_Convex` against ELLIPSOID,
+        # CYLINDER, BOX and MESH, and column ELLIPSOID is `mjc_Convex`
+        # from SPHERE and CAPSULE down — only `mjc_PlaneConvex` is a
+        # separate path, and it has its own loop above. Before this
+        # branch existed those pairs fell through to nothing at all,
+        # because `_support` returns a geom's CENTRE for a type it
+        # does not know: an ellipsoid collided as a zero-radius dot.
+        # flybody's two labrum ellipsoids are the case in Menagerie —
+        # MuJoCo has them in contact at the model's own keyframe.
+        # (ELLIPSOID x MESH is caught by the mesh branch below, which
+        # also goes through the same support function.)
+        or (gi_type == GEOM_ELLIPSOID and gj_type != GEOM_MESH)
+        or (gj_type == GEOM_ELLIPSOID and gi_type != GEOM_MESH)
+    ):
+        # ⚠⚠ THE SAME MERGE AS `contact_detection.mojo` — see the
+        # long note there. MuJoCo's `mjCOLLISIONFUNC` sends every
+        # cylinder pair except SPHERE and PLANE to `mjc_Convex`;
+        # `cylinder_capsule` / `cylinder_cylinder` use the
+        # CAPSULE-capsule formula, which rounds the cylinder's flat
+        # ends into hemispheres and bulges its surface a full radius.
+        #
+        # ⚠ THIS FILE IS A SECOND DISPATCH COPY of the same table, and
+        # the CYLINDER x BOX re-route below landed in BOTH. The two
+        # must move together or a model collides differently depending
+        # on which path ran it.
+        # MuJoCo routes CYLINDER x BOX to `mjc_Convex` — GJK plus EPA
+        # (`engine_collision_driver.c:41`), not to a primitive. Ours
+        # used `cylinder_box`, which REDUCES THE CYLINDER TO A CAPSULE,
+        # so the hemispherical cap dips a full radius below the flat
+        # face. Measured against the analytic depth that is an error of
+        # exactly -r in EVERY configuration, separated or penetrating:
+        # at 1 cm of CLEARANCE it still reported a 4 cm penetration. On
+        # sawyer (obj r = 0.02) it manufactured a 2 cm contact at the
+        # canonical reset pose, where MuJoCo has none and where all 13
+        # Phase 7 manipulation tasks begin.
+        #
+        # ⚠ THIS RE-ROUTE WAS ATTEMPTED ONCE BEFORE AND REVERTED. It
+        # dropped contacts at SHALLOW penetration in the RIM
+        # configuration, because GJK handed EPA a 2-simplex that did
+        # not enclose the origin. `gjkIntersect` (`4b773bdf`) is what
+        # made it viable; without that commit this branch is wrong.
+        #
+        # One branch for both orderings: `cylinder_box` needed two
+        # because the primitive is asymmetric in its operands, but the
+        # convex query is symmetric and returns `gi -> gj` either way.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        comptime if _COLL_REPEAT_GJK > 1:
+            for _rep in range(_COLL_REPEAT_GJK - 1):
+                var rq = gjk_epa[DTYPE](
+                    gi_type,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    ri, hli, hxi, hyi, hzi,
+                    mesh_verts, mesh_vert_edgeadr, mesh_edges, 0, 0,
+                    gj_type,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    rj, hlj, hxj, hyj, hzj,
+                    0, 0,
+                    ws, env,
+                    ccd_tol, ccd_iter, cm,
+                    dist_cutoff=cm,
+                )
+                # Consumed against a value it cannot produce.
+                if rq[0] == Scalar[DTYPE](-1.0e30):
+                    dist = rq[0]
+        var r = gjk_epa[DTYPE](
+            gi_type,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+            ri, hli, hxi, hyi, hzi,
+            mesh_verts, mesh_vert_edgeadr, mesh_edges, 0, 0,
+            gj_type,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+            rj, hlj, hxj, hyj, hzj,
+            0, 0,
+            ws, env,
+            ccd_tol, ccd_iter, cm,
+            dist_cutoff=cm,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_gjkp += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_gjkp += 1
+            if r[0] < cm:
+                pr._n_gjkhit += 1
+        dist = r[0]
+        cx = r[1]
+        cy = r[2]
+        cz = r[3]
+        nx = r[4]
+        ny = r[5]
+        nz = r[6]
+
+    # GJK/EPA fallback for any pair involving a mesh geom
+    elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+        comptime if may_exist[D.NMESH_VERTS]():
+            # Read mesh IDs from geom data
+            var mi_id = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
+            )
+            var mj_id = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
+            )
+            # Resolve mesh vertex ranges from mesh_meta records
+            if mi_id >= 0:
+                va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
+                mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
+            if mj_id >= 0:
+                va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
+                mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
+
+            # NATIVE MULTI-CONTACT — the SAME dispatch as
+            # `contact_detection.mojo`. ⚠ THIS FILE IS A SECOND COPY OF
+            # THE NARROW PHASE, and when the manifold path landed there
+            # first the two producers disagreed: an env on the SAP path
+            # got ONE point for a mesh pair where the O(N^2) path gave
+            # four. Same model, different contacts, decided by which
+            # broadphase the config happened to select. See
+            # `feedback_one_field_two_producers`.
+            # `MC_ENABLED` sits LAST because it is a comptime
+            # `True`: on the left it folds and the compiler flags the
+            # rest of the chain unreachable. Every other operand is a
+            # pure comparison, so the order is not observable.
+            var mc_pair = (
+                (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
+                and (gj_type == GEOM_MESH or gj_type == GEOM_BOX)
+                and cm <= Scalar[DTYPE](0)
+                and MC_ENABLED
+            )
+            var wf1 = InlineArray[Scalar[DTYPE], 9](
+                fill=Scalar[DTYPE](0)
+            )
+            var wf2 = InlineArray[Scalar[DTYPE], 9](
+                fill=Scalar[DTYPE](0)
+            )
+            var wxx = InlineArray[Scalar[DTYPE], 6](
+                fill=Scalar[DTYPE](0)
+            )
+            var wf_ok = 0
+            comptime if _COLL_PROBE:
+                pr._c_t0 = Int(perf_counter_ns())
+            comptime if _COLL_REPEAT_GJK > 1:
+                for _rep in range(_COLL_REPEAT_GJK - 1):
+                    var qf1 = InlineArray[Scalar[DTYPE], 9](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var qf2 = InlineArray[Scalar[DTYPE], 9](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var qxx = InlineArray[Scalar[DTYPE], 6](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var qf_ok = 0
+                    var rq = gjk_epa_witness[DTYPE](
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi,
+                        mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj,
+                        va2, mnv2,
+                        qf1, qf2, qxx, qf_ok,
+                        ws, env,
+                        ccd_tol, ccd_iter, cm,
+                        cm,
+                    )
+                    if rq[0] == Scalar[DTYPE](-1.0e30):
+                        dist = rq[0]
+            var result = gjk_epa_witness[DTYPE](
+                gi_type,
+                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                ri, hli, hxi, hyi, hzi,
+                mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
+                gj_type,
+                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                rj, hlj, hxj, hyj, hzj,
+                va2, mnv2,
+                wf1, wf2, wxx, wf_ok,
+                ws, env,
+                ccd_tol, ccd_iter, cm,
+                # Opt in to the cutoff exit: `dist` below is read ONLY
+                # by `if dist < cm`, and everything that consumes the
+                # witness sits inside that branch.
+                cm,
+            )
+            comptime if _COLL_PROBE:
+                pr._c_gjk += Int(perf_counter_ns()) - pr._c_t0
+                pr._n_gjk += 1
+            dist = result[0]
+            cx = result[1]
+            cy = result[2]
+            cz = result[3]
+            nx = result[4]
+            ny = result[5]
+            nz = result[6]
+            body_a = gi_body
+            body_b = gj_body
+
+            if (
+                mc_pair
+                and wf_ok == 1
+                and dist < cm
+                and num_contacts < max_contacts
+            ):
+                var pa1 = 0
+                var pn1 = 0
+                var pa2 = 0
+                var pn2 = 0
+                if mi_id >= 0:
+                    pa1 = Int(rebind[Scalar[DTYPE]](
+                        mesh_meta[mi_id, MESH_META_IDX_POLYADR]
+                    ))
+                    pn1 = Int(rebind[Scalar[DTYPE]](
+                        mesh_meta[mi_id, MESH_META_IDX_POLYNUM]
+                    ))
+                if mj_id >= 0:
+                    pa2 = Int(rebind[Scalar[DTYPE]](
+                        mesh_meta[mj_id, MESH_META_IDX_POLYADR]
+                    ))
+                    pn2 = Int(rebind[Scalar[DTYPE]](
+                        mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
+                    ))
+                # ⚠ THE OPERANDS ARE ALREADY MuJoCo'S. `(gi, gj)` is
+                # `pushPairArena`'s pair — sorted by (type, geom
+                # index) where the sweep names it — so the manifold
+                # runs on the SAME order GJK just ran on, which is the
+                # reference's structure: `mjc_Convex` hands
+                # `multicontact` the `status` of its own `mjc_ccd`.
+                #
+                # ⚠⚠ THERE USED TO BE A SECOND, LOCAL SWAP HERE, and
+                # it was half a fix. It ordered the MANIFOLD correctly
+                # and left GJK running on whatever the broadphase
+                # emitted, so `wf1`/`wf2`/`wx` — the witness the
+                # manifold clips from — came out of a query in the
+                # OTHER order and had to be re-swapped to match. With
+                # the pair canonicalised where it is named, that
+                # predicate is always false and the re-swap is gone.
+                comptime if _COLL_PROBE:
+                    pr._c_t0 = Int(perf_counter_ns())
+                var mcn = native_multicontact_contacts[
+                    DTYPE](
+                    env, body_a, body_b,
+                    gi_type,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                    gj_type,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                    dims,
+                    mesh_verts, mesh_polys, mesh_polyvert,
+                    mesh_polymap, mesh_vert_polymap,
+                    wf1, wf2, wxx,
+                    dist, cm, cf, cfs, cfr, cdim,
+                    False,
+                    contacts, ws, env, num_contacts,
+                    cgp,
+                )
+                comptime if _COLL_PROBE:
+                    pr._c_mcn += Int(perf_counter_ns()) - pr._c_t0
+                    pr._n_mcn += 1
+                # The manifold REPLACES the single point.
+                if mcn > 0:
+                    _fill_pair_solparams[
+                        DTYPE](env, _n0, num_contacts, _mx, contacts)
+                    return
+        else:
+            _fill_pair_solparams[DTYPE](
+                env, _n0, num_contacts, _mx, contacts
+            )
+            return
+
+    if dist < cm and num_contacts < max_contacts:
+        # The `gi -> gj` normal, captured BEFORE the emit negates it in
+        # place — see the identical capture in `contact_detection.mojo`.
+        var mccd_nx = nx
+        var mccd_ny = ny
+        var mccd_nz = nz
+        var mccd_first = num_contacts
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            body_a
+        )
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            body_b
+        )
+        contacts[env, c_off + CONTACT_IDX_POS_X] = cx
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
+        # The record's normal points `body_b -> body_a`. Every branch
+        # above computed `gi -> gj` with `body_a = gi`, so it is
+        # negated here — UNCONDITIONALLY.
+        #
+        # ⚠ This used to be `if body_b > 0:`, which skipped the negation
+        # whenever the second geom sat on the WORLD body and left those
+        # contacts as `a -> b` while every other contact was `b -> a`.
+        # Two conventions in one record, selected by a body id. Planes
+        # are not affected either way — they have their own loop and
+        # never reach this emit — so `body_b == 0` here means a
+        # NON-PLANE world geom, which no shipped model currently has.
+        # Latent, but it made body labels and normal direction
+        # interdependent, and it nearly derailed the bug 35 fix.
+        # Measured by `tests/physics3d/test_narrow_phase_pairs.mojo`'s
+        # WORLD groups: a full 2.0 reversal on a unit vector.
+        nx = -nx
+        ny = -ny
+        nz = -nz
+        contacts[env, c_off + CONTACT_IDX_NX] = nx
+        contacts[env, c_off + CONTACT_IDX_NY] = ny
+        contacts[env, c_off + CONTACT_IDX_NZ] = nz
+        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+        contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+        contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            cdim
+        )
+        num_contacts += 1
+
+        # MULTI-POINT CONVEX CONTACT — defect 21.
+        #
+        # ⚠⚠ THIS FILE IS THE SECOND NARROW PHASE. `contact_detection`
+        # carries the same dispatch and the same emit, and SAP takes
+        # over at ngeom >= SAP_THRESHOLD — so patching only the other
+        # one would have left every LARGE model (dog, quadruped: the
+        # exact models this was found on) with single-point cylinder
+        # contacts while the small-model gate went green. That is the
+        # shape of `feedback_sap_path_missing_a_whole_geom_type`, and
+        # it is why this hook is duplicated rather than "left for
+        # later". The two must move together.
+        #
+        # ⚠ AND THEY DID, for `mjDSBL_MULTICCD`. `<flag
+        # multiccd="disable"/>` is the model asking for single-point
+        # convex contacts; honouring it in only one narrow phase would
+        # have left every model at or above `SAP_THRESHOLD` — which is
+        # every dm_control manipulation model, at 185-431 geoms — with
+        # the 4-point manifold the flag exists to switch off.
+        if not multiccd_off and multi_ccd_pair_supported(
+            gi_type, gj_type
+        ):
+            comptime if _COLL_PROBE:
+                pr._c_t0 = Int(perf_counter_ns())
+            _ = multi_ccd_extra_contacts[
+                DTYPE](
+                env, body_a, body_b, mccd_first,
+                gi_type,
+                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                ri, hli, hxi, hyi, hzi, rbound_i, va1, mnv1,
+                gj_type,
+                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                rj, hlj, hxj, hyj, hzj, rbound_j, va2, mnv2,
+                dims,
+                mesh_verts,
+                mesh_vert_edgeadr,
+                mesh_edges,
+                cx, cy, cz,
+                mccd_nx, mccd_ny, mccd_nz,
+                dist,
+                cm, cf, cfs, cfr, cdim,
+                contacts, num_contacts,
+                ws, env,
+                ccd_tol, ccd_iter, cm,
+                cgp,
+            )
+            comptime if _COLL_PROBE:
+                pr._c_mccd += Int(perf_counter_ns()) - pr._c_t0
+                pr._n_mccd += 1
+
+    _fill_pair_solparams[DTYPE](
+        env, _n0, num_contacts, _mx, contacts
+    )
+
+
 @always_inline
 def _detect_contacts_sap_env[
     DTYPE: DType,
@@ -473,52 +1721,9 @@ def _detect_contacts_sap_env[
         nbody, dims.get_nexclude(), mmeta, excludes, ex_sig
     )
     # `_COLL_PROBE` accumulators (compiled out when the flag is False).
-    var _c_t0: Int = 0
-    var _c_start: Int = 0
-    var _c_loop0: Int = 0
-    var _n_gjkhit: Int = 0
-    var _c_cas: Int = 0
-    var _n_cas: Int = 0
-    var _c_bs: Int = 0
-    var _n_bs: Int = 0
-    var _c_bbf: Int = 0
-    var _n_bbf: Int = 0
-    var _c_cys: Int = 0
-    var _n_cys: Int = 0
-    var _c_gjkp: Int = 0
-    var _n_gjkp: Int = 0
-    var _c_pbf: Int = 0
-    var _n_pbf: Int = 0
-    var _c_ppair: Int = 0
-    var _n_ppair: Int = 0
-    var _c_pparm: Int = 0
-    var _n_pparm: Int = 0
-    var _n_pairs: Int = 0
-    var _n_aabb: Int = 0
-    var _c_pcyl: Int = 0
-    var _n_pcyl: Int = 0
-    var _c_pbox: Int = 0
-    var _n_pbox: Int = 0
-    var _c_pmesh: Int = 0
-    var _n_pmesh: Int = 0
-    var _c_hf: Int = 0
-    var _n_hf: Int = 0
-    var _c_ss: Int = 0
-    var _n_ss: Int = 0
-    var _c_cc: Int = 0
-    var _n_cc: Int = 0
-    var _c_cb: Int = 0
-    var _n_cb: Int = 0
-    var _c_bb: Int = 0
-    var _n_bb: Int = 0
-    var _c_gjk: Int = 0
-    var _n_gjk: Int = 0
-    var _c_mcn: Int = 0
-    var _n_mcn: Int = 0
-    var _c_mccd: Int = 0
-    var _n_mccd: Int = 0
+    var pr = _SapProbe()
     comptime if _COLL_PROBE:
-        _c_start = Int(perf_counter_ns())
+        pr._c_start = Int(perf_counter_ns())
     var ngeom = dims.get_ngeom()
     var nexclude = dims.get_nexclude()
     var nmesh_verts = dims.get_nmesh_verts()
@@ -992,7 +2197,7 @@ def _detect_contacts_sap_env[
                 # shared with the naive path so the two cannot drift, which
                 # is exactly how the ellipsoid branch below went missing.
                 comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
+                    pr._c_t0 = Int(perf_counter_ns())
                 _plane_cylinder_contacts[DTYPE, BATCH](
                     env,
                     gj_body,
@@ -1015,8 +2220,8 @@ def _detect_contacts_sap_env[
                     cgp,
                 )
                 comptime if _COLL_PROBE:
-                    _c_pcyl += Int(perf_counter_ns()) - _c_t0
-                    _n_pcyl += 1
+                    pr._c_pcyl += Int(perf_counter_ns()) - pr._c_t0
+                    pr._n_pcyl += 1
 
             elif gj_type == GEOM_ELLIPSOID:
                 # ⚠ ADDED 2026-08-03. This branch did not exist, and
@@ -1095,7 +2300,7 @@ def _detect_contacts_sap_env[
                 # task #42. ⚠ This path writes -1 for the world body where
                 # `detect_contacts` writes 0, hence the explicit argument.
                 comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
+                    pr._c_t0 = Int(perf_counter_ns())
                 _plane_box_contacts[DTYPE](
                     env,
                     gj_body,
@@ -1117,8 +2322,8 @@ def _detect_contacts_sap_env[
                     cgp,
                 )
                 comptime if _COLL_PROBE:
-                    _c_pbox += Int(perf_counter_ns()) - _c_t0
-                    _n_pbox += 1
+                    pr._c_pbox += Int(perf_counter_ns()) - pr._c_t0
+                    pr._n_pbox += 1
 
             elif gj_type == GEOM_MESH:
                 # Plane-mesh. Was a verbatim copy of the O(N^2) path's vertex
@@ -1135,7 +2340,7 @@ def _detect_contacts_sap_env[
                 # parameters rather than quietly aligned with the other path.
                 comptime if may_exist[D.NMESH_VERTS]():
                     comptime if _COLL_PROBE:
-                        _c_t0 = Int(perf_counter_ns())
+                        pr._c_t0 = Int(perf_counter_ns())
                     _plane_mesh_contacts[
                         DTYPE,
                         -1, True, False](
@@ -1163,8 +2368,8 @@ def _detect_contacts_sap_env[
                         cgp,
                     )
                     comptime if _COLL_PROBE:
-                        _c_pmesh += Int(perf_counter_ns()) - _c_t0
-                        _n_pmesh += 1
+                        pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
+                        pr._n_pmesh += 1
 
             _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
@@ -1241,7 +2446,7 @@ def _detect_contacts_sap_env[
     # AABB tests and the `break` may read `si`/`sj`; everything downstream of
     # them reads `gi`/`gj`.
     comptime if _COLL_PROBE:
-        _c_loop0 = Int(perf_counter_ns())
+        pr._c_loop0 = Int(perf_counter_ns())
     for i in range(sap_n):
         var si = sap_idx[i]
         var si_max_x = aabb_max_x[si]
@@ -1263,7 +2468,7 @@ def _detect_contacts_sap_env[
                 )
                 return
             comptime if _COLL_PROBE:
-                _n_pairs += 1
+                pr._n_pairs += 1
             var sj = sap_idx[j]
 
             if aabb_min_x[sj] > si_max_x:
@@ -1280,7 +2485,7 @@ def _detect_contacts_sap_env[
             ):
                 continue
             comptime if _COLL_PROBE:
-                _n_aabb += 1
+                pr._n_aabb += 1
 
             # ── THE PAIR IN MuJoCo'S ORDER — `pushPairArena` ──────────────
             #
@@ -1316,1047 +2521,20 @@ def _detect_contacts_sap_env[
             # `gi_*` reads move from once-per-sweep-column to once-per-pair —
             # the `gj_*` ones already were, and both sit AFTER the AABB tests
             # that reject most candidates.
-            var sj_type = Int(
-                rebind[Scalar[DTYPE]](geoms[sj, GEOM_IDX_TYPE])
-            )
-            var lo = si if si < sj else sj
-            var hi = sj if si < sj else si
-            var lo_type = si_type if si < sj else sj_type
-            var hi_type = sj_type if si < sj else si_type
-            var gi = lo
-            var gj = hi
-            # ⚠ RANK, NOT THE RAW ID. `pushPairArena` sorts by `mjtGeom`, and
-            # this enum is not `mjtGeom` — comparing raw ids orders 10 of the
-            # 28 type pairs the OPPOSITE way. See `mj_geom_type_rank`.
-            if mj_geom_type_rank(lo_type) > mj_geom_type_rank(hi_type):
-                gi = hi
-                gj = lo
-
-            var gi_type = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
-            )
-            var gi_body = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
-            )
-            var gi_contype = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
-            )
-            var gi_conaffinity = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
-            )
-            var pi_x = wpx[gi]
-            var pi_y = wpy[gi]
-            var pi_z = wpz[gi]
-            var qi_x = wqx[gi]
-            var qi_y = wqy[gi]
-            var qi_z = wqz[gi]
-            var qi_w = wqw[gi]
-            var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
-            var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
-            var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
-            var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
-            var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
-            # Multi-CCD scales its distinctness tolerance by the smaller
-            # bounding radius (`mjc_Convex`).
-            var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
-
-            var gj_type = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
-            )
-            var gj_body = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
-            )
-            # `<contact><pair>` bypasses every filter below — see the same
-            # gate in `_detect_contacts_env`. The AABB tests above still
-            # apply, which is why the AABBs are inflated by the pair margin
-            # where they are built: MuJoCo collides predefined pairs outside
-            # the broadphase entirely, so a pair must not be prunable by a
-            # bound that ignores its margin.
-            comptime if _COLL_PROBE:
-                _c_t0 = Int(perf_counter_ns())
-            var ipair = find_predefined_pair[DTYPE](
-                gi, gj, dims, pairs, mmeta
-            )
-            comptime if _COLL_PROBE:
-                _c_ppair += Int(perf_counter_ns()) - _c_t0
-                _n_ppair += 1
-            if ipair < 0:
-                # MuJoCo's body-pair filter — weld, weld-parent and exclude.
-                # See `pair_body_filtered`; shared with the O(N^2) loop and
-                # the plane loop above, which had no body filter at all
-                # (defect 24).
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var _pbf = pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
-                    gi_body, gj_body, bodies, mmeta, excludes,
-                    ex_sig, n_sig, nbody,
-                )
-                comptime if _COLL_PROBE:
-                    _c_pbf += Int(perf_counter_ns()) - _c_t0
-                    _n_pbf += 1
-                if _pbf:
-                    continue
-                var gj_contype = Int(
-                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
-                )
-                var gj_conaffinity = Int(
-                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-                )
-                if (gi_contype & gj_conaffinity) == 0 and (
-                    gj_contype & gi_conaffinity
-                ) == 0:
-                    continue
-
-            var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
-            var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
-            # Sum of the two geoms' margins, or the PAIR's own — never both.
-            var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
-            var cgp = (
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
-                + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
-            )
-            if ipair >= 0:
-                cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
-                cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
-            # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
-            # is what the contact stores as its `includemargin`; 3.10.0 passes
-            # `margin + gap` to the collision function and `margin` alone to
-            # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
-            # and then EXCLUDED from the solver by
-            # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
-            # two are equal and every line below is what it always was.
-            var cm = cim + cgp
-
-            var pj_x = wpx[gj]
-            var pj_y = wpy[gj]
-            var pj_z = wpz[gj]
-            var qj_x = wqx[gj]
-            var qj_y = wqy[gj]
-            var qj_z = wqz[gj]
-            var qj_w = wqw[gj]
-            var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
-            var hlj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_HALF_LENGTH]
-            )
-            var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
-            var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
-            var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
-            var rbound_j = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RBOUND])
-
-            # ── BOUNDING-SPHERE REJECT — MuJoCo's `mj_filterSphere` ────────
-            # ⚠⚠ THIS PATH RAN WITHOUT IT AND THE O(N^2) PATH DID NOT. MuJoCo
-            # applies the test inside `mj_collideGeoms`, which sits DOWNSTREAM
-            # of whichever broadphase produced the pair, so it covers every
-            # candidate. Ours lived only in `contact_detection.mojo`, so every
-            # model big enough to take the SAP branch (`ngeom >= 16` — which is
-            # every interesting one) sent pairs into GJK that MuJoCo rejects
-            # with three subtractions. The AABB tests above do NOT subsume it:
-            # a sweep overlap on inflated world AABBs is far weaker than the
-            # two bounding spheres actually touching.
-            #
-            # Measured, ms per env step (`FRAME_SKIP=10`), MIN of two
-            # interleaved rounds against a pristine worktree of the parent:
-            #
-            #     SO-ARM100   2.87 -> 1.09   (349 -> 918 Hz)
-            #     SO-ARM101   4.77 -> 1.84   (210 -> 544 Hz)
-            #
-            # MuJoCo steps the same two XMLs at 0.078 and 0.121 ms, so the
-            # remaining gap is 14x and 15x, down from 37x and 39x.
-            #
-            # ⚠ `+ cm` IS LOAD-BEARING, and its absence is silent. A pair
-            # separated by more than the two radii but LESS than its margin is
-            # a contact MuJoCo reports; drop the term and it vanishes with no
-            # error anywhere. This is the same trap the O(N^2) copy documents,
-            # which is where the term was missing once before.
-            #
-            # ⚠ PLANES ARE EXCLUDED BY `rbound > 0`, which is how MuJoCo
-            # detects them here too (a plane's `rbound` is 0 because it is
-            # unbounded). MuJoCo additionally has a plane-specific arm using
-            # `planeGeomDist`; that is NOT implemented here or in the O(N^2)
-            # path, so plane pairs fall through to narrow phase exactly as
-            # they did before this change.
-            if rbound_i > Scalar[DTYPE](0) and rbound_j > Scalar[DTYPE](0):
-                var sfx = pi_x - pj_x
-                var sfy = pi_y - pj_y
-                var sfz = pi_z - pj_z
-                var sfb = rbound_i + rbound_j + cm
-                if sfx * sfx + sfy * sfy + sfz * sfz > sfb * sfb:
-                    continue
-
-            # ⚠⚠ THE CONTACT-PARAMETER MIX RUNS **AFTER** THE SPHERE
-            # REJECT, NOT BEFORE, AND THE ORDER IS THE POINT.
-            # `mix_contact_params` is ~30 tensor reads plus MuJoCo's
-            # priority/max/min rules, and it used to run on every pair that
-            # survived the body/contype filters — 65 per step on SO-ARM100,
-            # of which the bounding-sphere test then rejects all but 2.
-            # Nothing above needs it: the reject reads only the two rbounds
-            # and `cm`, and `cm` comes from the geoms' own margins (or the
-            # pair's), never from the mix. `_n0` moves with it because it is
-            # a snapshot of `num_contacts`, which the reject cannot change.
-            #
-            # ⚠ THIS IS NOT THE HOIST §5.1 MEASURED AT ZERO. That one tried
-            # to compute the per-GEOM decode once per geom; the mix is
-            # per-PAIR and hoisting cannot remove it. Deferring past the
-            # reject removes 97% of the CALLS.
-            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
-            # with `detect_contacts` so the two paths cannot drift, which is
-            # exactly how the SAP ellipsoid branch went missing. A predefined
-            # pair supplies its own parameters instead, unmixed.
-            comptime if _COLL_PROBE:
-                _c_t0 = Int(perf_counter_ns())
-            var _mx = pair_params[DTYPE](
-                ipair, pairs
-            ) if ipair >= 0 else mix_contact_params[DTYPE](
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
-            )
-            comptime if _COLL_PROBE:
-                _c_pparm += Int(perf_counter_ns()) - _c_t0
-                _n_pparm += 1
-            var cdim = Int(_mx[0])
-            var cf = _mx[1]
-            var cfs = _mx[2]
-            var cfr = _mx[3]
-            var _n0 = num_contacts
-
-            var dist: Scalar[DTYPE] = 1.0
-            var cx: Scalar[DTYPE] = 0
-            var cy: Scalar[DTYPE] = 0
-            var cz: Scalar[DTYPE] = 0
-            var nx: Scalar[DTYPE] = 0
-            var ny: Scalar[DTYPE] = 0
-            var nz: Scalar[DTYPE] = 1
-            # CONTACT DIRECTION INVARIANT — every branch below emits
-            # `normal = gi -> gj` with `body_a = gi_body, body_b = gj_body`.
-            #
-            # The REVERSED-ORDER branches call a primitive written for the
-            # other operand order, so they negate the returned normal to get
-            # back to gi->gj. They used to ALSO swap body_a/body_b, and that
-            # double flip left them emitting `normal = body_b -> body_a` while
-            # the ten canonical-order branches emitted `body_a -> body_b`.
-            # Either operation alone is correct; both is not.
-            #
-            # Silent until dm_control manipulator, which is the first model
-            # where one physical pair type reaches BOTH orderings — a sphere
-            # (the ball) contacting capsules (the fingers), under the SAP
-            # broadphase where (gi, gj) comes from the sweep rather than the
-            # geom index. `aref` is built from the penetration DEPTH and so
-            # does not flip with the normal, so a flipped normal desynchronises
-            # `jar = aref + J*qacc`: one contact was self-consistent and the
-            # other was not, giving contact forces 9% and 20% below MuJoCo's
-            # while every row constant matched to 15 digits.
-            var body_a = gi_body
-            var body_b = gj_body
-            # Mesh vertex ranges, hoisted out of the mesh branch so multi-CCD
-            # can re-run the SAME convex query at its perturbed poses. Zero for
-            # every non-mesh pair, which is what `gjk_epa` wants there.
-            var va1 = 0
-            var mnv1 = 0
-            var va2 = 0
-            var mnv2 = 0
-
-            # ── HEIGHTFIELD, before every primitive pair ──────────────────
-            #
-            # `mjCOLLISIONFUNC`'s HFIELD row is `mjc_ConvexHField` against
-            # every type but PLANE and HFIELD (`engine_collision_driver.c:48`)
-            # — the two it leaves at 0 are the two that cannot bound a volume.
-            # It writes its own records, one per prism, so it exits the loop
-            # the way the capsule manifold does.
-            if HFIELD_ENABLED and (
-                gi_type == GEOM_HFIELD or gj_type == GEOM_HFIELD
-            ):
-                # PLANE x HFIELD and HFIELD x HFIELD are 0 in the table.
-                if (
-                    gi_type == GEOM_PLANE
-                    or gj_type == GEOM_PLANE
-                    or (gi_type == GEOM_HFIELD and gj_type == GEOM_HFIELD)
-                ):
-                    continue
-                var hf_is_i = gi_type == GEOM_HFIELD
-                var hf_g = gi if hf_is_i else gj
-                var cx_g = gj if hf_is_i else gi
-                var hid = Int(
-                    rebind[Scalar[DTYPE]](geoms[hf_g, GEOM_IDX_HFIELD_ID])
-                )
-                if hid < 0:
-                    continue
-                # The convex geom's mesh range, if it has one.
-                var cvm = Int(
-                    rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_MESH_ID])
-                )
-                var cva = 0
-                var cmnv = 0
-                if cvm >= 0:
-                    cva = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 0]))
-                    cmnv = Int(rebind[Scalar[DTYPE]](mesh_meta[cvm, 1]))
-                # ⚠ THE BODIES ARE NEVER SWAPPED — `body_a` is `gi_body`
-                # whichever side the field is on, exactly as every other
-                # branch in this loop. The normal's sign carries the
-                # difference instead; see `_hfield_contacts`.
-                var nsg = Scalar[DTYPE](-1) if hf_is_i else Scalar[DTYPE](1)
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                _ = _hfield_contacts[DTYPE](
-                    env, gi_body, gj_body, hid,
-                    pi_x if hf_is_i else pj_x,
-                    pi_y if hf_is_i else pj_y,
-                    pi_z if hf_is_i else pj_z,
-                    qi_x if hf_is_i else qj_x,
-                    qi_y if hf_is_i else qj_y,
-                    qi_z if hf_is_i else qj_z,
-                    qi_w if hf_is_i else qj_w,
-                    gj_type if hf_is_i else gi_type,
-                    pj_x if hf_is_i else pi_x,
-                    pj_y if hf_is_i else pi_y,
-                    pj_z if hf_is_i else pi_z,
-                    qj_x if hf_is_i else qi_x,
-                    qj_y if hf_is_i else qi_y,
-                    qj_z if hf_is_i else qi_z,
-                    qj_w if hf_is_i else qi_w,
-                    rj if hf_is_i else ri,
-                    hlj if hf_is_i else hli,
-                    hxj if hf_is_i else hxi,
-                    hyj if hf_is_i else hyi,
-                    hzj if hf_is_i else hzi,
-                    rebind[Scalar[DTYPE]](geoms[cx_g, GEOM_IDX_RBOUND]),
-                    cva, cmnv,
-                    cm,
-                    cf,
-                    cfs,
-                    cfr,
-                    cdim,
-                    nsg,
-                    hfield_meta, hfield_data, dims.get_nhfield_data(),
-                    mesh_verts, mesh_vert_edgeadr, mesh_edges,
-                    dims, contacts, ws, num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    _c_hf += Int(perf_counter_ns()) - _c_t0
-                    _n_hf += 1
-                _fill_pair_solparams[DTYPE](
-                    env, _n0, num_contacts, _mx, contacts
-                )
-                continue
-
-            if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = sphere_sphere[DTYPE](
-                    pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
-                )
-                comptime if _COLL_PROBE:
-                    _c_ss += Int(perf_counter_ns()) - _c_t0
-                    _n_ss += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_SPHERE:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = capsule_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cas += Int(perf_counter_ns()) - _c_t0
-                    _n_cas += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CAPSULE:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = capsule_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cas += Int(perf_counter_ns()) - _c_t0
-                    _n_cas += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
-                # ⚠ THE TWO NARROW PHASES MUST MOVE TOGETHER
-                # (`feedback_sap_path_missing_a_whole_geom_type`). Parallel
-                # capsules are a two-point manifold; see
-                # `_capsule_capsule_contacts`, which writes its own records.
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                _ = _capsule_capsule_contacts[DTYPE](
-                    env, gi_body, gj_body,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    cm, cf, cfs, cfr, cdim,
-                    dims, contacts, num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cc += Int(perf_counter_ns()) - _c_t0
-                    _n_cc += 1
-                _fill_pair_solparams[DTYPE](
-                    env, _n0, num_contacts, _mx, contacts
-                )
-                continue
-            elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = box_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                comptime if _COLL_PROBE:
-                    _c_bs += Int(perf_counter_ns()) - _c_t0
-                    _n_bs += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_BOX:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = box_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                comptime if _COLL_PROBE:
-                    _c_bs += Int(perf_counter_ns()) - _c_t0
-                    _n_bs += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-            elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
-                # A capsule along a box face is a two-point manifold — see
-                # `_capsule_box_contacts`, which writes its own records.
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                _ = _capsule_box_contacts[DTYPE](
-                    env, gi_body, gj_body,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    Scalar[DTYPE](-1),
-                    cm, cf, cfs, cfr, cdim,
-                    dims, contacts, num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cb += Int(perf_counter_ns()) - _c_t0
-                    _n_cb += 1
-                _fill_pair_solparams[DTYPE](
-                    env, _n0, num_contacts, _mx, contacts
-                )
-                continue
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                _ = _capsule_box_contacts[DTYPE](
-                    env, gi_body, gj_body,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    Scalar[DTYPE](1),
-                    cm, cf, cfs, cfr, cdim,
-                    dims, contacts, num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cb += Int(perf_counter_ns()) - _c_t0
-                    _n_cb += 1
-                _fill_pair_solparams[DTYPE](
-                    env, _n0, num_contacts, _mx, contacts
-                )
-                continue
-            elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
-                # A box/box contact is a whole manifold, not a point — see
-                # `_box_box_contacts`. It writes its own records and this
-                # branch is done; only a SEPARATED pair (code -1) falls through
-                # to `box_box`, which then rejects it too.
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var code = _box_box_contacts[DTYPE](
-                    env,
-                    gi_body,
-                    gj_body,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
-                    cm,
-                    cf,
-                    cfs,
-                    cfr,
-                    cdim,
-                    dims,
-                    contacts,
-                    num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    _c_bb += Int(perf_counter_ns()) - _c_t0
-                    _n_bb += 1
-                if code >= 0:
-                    _fill_pair_solparams[DTYPE](
-                        env, _n0, num_contacts, _mx, contacts
-                    )
-                    continue
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = box_box[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                )
-                comptime if _COLL_PROBE:
-                    _c_bbf += Int(perf_counter_ns()) - _c_t0
-                    _n_bbf += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = cylinder_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cys += Int(perf_counter_ns()) - _c_t0
-                    _n_cys += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                var r = cylinder_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                comptime if _COLL_PROBE:
-                    _c_cys += Int(perf_counter_ns()) - _c_t0
-                    _n_cys += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-
-            elif (
-                (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX)
-                or (gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER)
-                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE)
-                or (gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER)
-                or (gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER)
-                # ⚠ EVERY ELLIPSOID PAIR EXCEPT PLANE. Row ELLIPSOID of
-                # `mjCOLLISIONFUNC` is `mjc_Convex` against ELLIPSOID,
-                # CYLINDER, BOX and MESH, and column ELLIPSOID is `mjc_Convex`
-                # from SPHERE and CAPSULE down — only `mjc_PlaneConvex` is a
-                # separate path, and it has its own loop above. Before this
-                # branch existed those pairs fell through to nothing at all,
-                # because `_support` returns a geom's CENTRE for a type it
-                # does not know: an ellipsoid collided as a zero-radius dot.
-                # flybody's two labrum ellipsoids are the case in Menagerie —
-                # MuJoCo has them in contact at the model's own keyframe.
-                # (ELLIPSOID x MESH is caught by the mesh branch below, which
-                # also goes through the same support function.)
-                or (gi_type == GEOM_ELLIPSOID and gj_type != GEOM_MESH)
-                or (gj_type == GEOM_ELLIPSOID and gi_type != GEOM_MESH)
-            ):
-                # ⚠⚠ THE SAME MERGE AS `contact_detection.mojo` — see the
-                # long note there. MuJoCo's `mjCOLLISIONFUNC` sends every
-                # cylinder pair except SPHERE and PLANE to `mjc_Convex`;
-                # `cylinder_capsule` / `cylinder_cylinder` use the
-                # CAPSULE-capsule formula, which rounds the cylinder's flat
-                # ends into hemispheres and bulges its surface a full radius.
-                #
-                # ⚠ THIS FILE IS A SECOND DISPATCH COPY of the same table, and
-                # the CYLINDER x BOX re-route below landed in BOTH. The two
-                # must move together or a model collides differently depending
-                # on which path ran it.
-                # MuJoCo routes CYLINDER x BOX to `mjc_Convex` — GJK plus EPA
-                # (`engine_collision_driver.c:41`), not to a primitive. Ours
-                # used `cylinder_box`, which REDUCES THE CYLINDER TO A CAPSULE,
-                # so the hemispherical cap dips a full radius below the flat
-                # face. Measured against the analytic depth that is an error of
-                # exactly -r in EVERY configuration, separated or penetrating:
-                # at 1 cm of CLEARANCE it still reported a 4 cm penetration. On
-                # sawyer (obj r = 0.02) it manufactured a 2 cm contact at the
-                # canonical reset pose, where MuJoCo has none and where all 13
-                # Phase 7 manipulation tasks begin.
-                #
-                # ⚠ THIS RE-ROUTE WAS ATTEMPTED ONCE BEFORE AND REVERTED. It
-                # dropped contacts at SHALLOW penetration in the RIM
-                # configuration, because GJK handed EPA a 2-simplex that did
-                # not enclose the origin. `gjkIntersect` (`4b773bdf`) is what
-                # made it viable; without that commit this branch is wrong.
-                #
-                # One branch for both orderings: `cylinder_box` needed two
-                # because the primitive is asymmetric in its operands, but the
-                # convex query is symmetric and returns `gi -> gj` either way.
-                comptime if _COLL_PROBE:
-                    _c_t0 = Int(perf_counter_ns())
-                comptime if _COLL_REPEAT_GJK > 1:
-                    for _rep in range(_COLL_REPEAT_GJK - 1):
-                        var rq = gjk_epa[DTYPE](
-                            gi_type,
-                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                            ri, hli, hxi, hyi, hzi,
-                            mesh_verts, mesh_vert_edgeadr, mesh_edges, 0, 0,
-                            gj_type,
-                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                            rj, hlj, hxj, hyj, hzj,
-                            0, 0,
-                            ws, env,
-                            ccd_tol, ccd_iter, cm,
-                            dist_cutoff=cm,
-                        )
-                        # Consumed against a value it cannot produce.
-                        if rq[0] == Scalar[DTYPE](-1.0e30):
-                            dist = rq[0]
-                var r = gjk_epa[DTYPE](
-                    gi_type,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                    ri, hli, hxi, hyi, hzi,
-                    mesh_verts, mesh_vert_edgeadr, mesh_edges, 0, 0,
-                    gj_type,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                    rj, hlj, hxj, hyj, hzj,
-                    0, 0,
-                    ws, env,
-                    ccd_tol, ccd_iter, cm,
-                    dist_cutoff=cm,
-                )
-                comptime if _COLL_PROBE:
-                    _c_gjkp += Int(perf_counter_ns()) - _c_t0
-                    _n_gjkp += 1
-                    if r[0] < cm:
-                        _n_gjkhit += 1
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-
-            # GJK/EPA fallback for any pair involving a mesh geom
-            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                comptime if may_exist[D.NMESH_VERTS]():
-                    # Read mesh IDs from geom data
-                    var mi_id = Int(
-                        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
-                    )
-                    var mj_id = Int(
-                        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
-                    )
-                    # Resolve mesh vertex ranges from mesh_meta records
-                    if mi_id >= 0:
-                        va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
-                        mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
-                    if mj_id >= 0:
-                        va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
-                        mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
-
-                    # NATIVE MULTI-CONTACT — the SAME dispatch as
-                    # `contact_detection.mojo`. ⚠ THIS FILE IS A SECOND COPY OF
-                    # THE NARROW PHASE, and when the manifold path landed there
-                    # first the two producers disagreed: an env on the SAP path
-                    # got ONE point for a mesh pair where the O(N^2) path gave
-                    # four. Same model, different contacts, decided by which
-                    # broadphase the config happened to select. See
-                    # `feedback_one_field_two_producers`.
-                    # `MC_ENABLED` sits LAST because it is a comptime
-                    # `True`: on the left it folds and the compiler flags the
-                    # rest of the chain unreachable. Every other operand is a
-                    # pure comparison, so the order is not observable.
-                    var mc_pair = (
-                        (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
-                        and (gj_type == GEOM_MESH or gj_type == GEOM_BOX)
-                        and cm <= Scalar[DTYPE](0)
-                        and MC_ENABLED
-                    )
-                    var wf1 = InlineArray[Scalar[DTYPE], 9](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    var wf2 = InlineArray[Scalar[DTYPE], 9](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    var wxx = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    var wf_ok = 0
-                    comptime if _COLL_PROBE:
-                        _c_t0 = Int(perf_counter_ns())
-                    comptime if _COLL_REPEAT_GJK > 1:
-                        for _rep in range(_COLL_REPEAT_GJK - 1):
-                            var qf1 = InlineArray[Scalar[DTYPE], 9](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            var qf2 = InlineArray[Scalar[DTYPE], 9](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            var qxx = InlineArray[Scalar[DTYPE], 6](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            var qf_ok = 0
-                            var rq = gjk_epa_witness[DTYPE](
-                                gi_type,
-                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                                ri, hli, hxi, hyi, hzi,
-                                mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-                                gj_type,
-                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                                rj, hlj, hxj, hyj, hzj,
-                                va2, mnv2,
-                                qf1, qf2, qxx, qf_ok,
-                                ws, env,
-                                ccd_tol, ccd_iter, cm,
-                                cm,
-                            )
-                            if rq[0] == Scalar[DTYPE](-1.0e30):
-                                dist = rq[0]
-                    var result = gjk_epa_witness[DTYPE](
-                        gi_type,
-                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                        ri, hli, hxi, hyi, hzi,
-                        mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
-                        gj_type,
-                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                        rj, hlj, hxj, hyj, hzj,
-                        va2, mnv2,
-                        wf1, wf2, wxx, wf_ok,
-                        ws, env,
-                        ccd_tol, ccd_iter, cm,
-                        # Opt in to the cutoff exit: `dist` below is read ONLY
-                        # by `if dist < cm`, and everything that consumes the
-                        # witness sits inside that branch.
-                        cm,
-                    )
-                    comptime if _COLL_PROBE:
-                        _c_gjk += Int(perf_counter_ns()) - _c_t0
-                        _n_gjk += 1
-                    dist = result[0]
-                    cx = result[1]
-                    cy = result[2]
-                    cz = result[3]
-                    nx = result[4]
-                    ny = result[5]
-                    nz = result[6]
-                    body_a = gi_body
-                    body_b = gj_body
-
-                    if (
-                        mc_pair
-                        and wf_ok == 1
-                        and dist < cm
-                        and num_contacts < max_contacts
-                    ):
-                        var pa1 = 0
-                        var pn1 = 0
-                        var pa2 = 0
-                        var pn2 = 0
-                        if mi_id >= 0:
-                            pa1 = Int(rebind[Scalar[DTYPE]](
-                                mesh_meta[mi_id, MESH_META_IDX_POLYADR]
-                            ))
-                            pn1 = Int(rebind[Scalar[DTYPE]](
-                                mesh_meta[mi_id, MESH_META_IDX_POLYNUM]
-                            ))
-                        if mj_id >= 0:
-                            pa2 = Int(rebind[Scalar[DTYPE]](
-                                mesh_meta[mj_id, MESH_META_IDX_POLYADR]
-                            ))
-                            pn2 = Int(rebind[Scalar[DTYPE]](
-                                mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
-                            ))
-                        # ⚠ THE OPERANDS ARE ALREADY MuJoCo'S. `(gi, gj)` is
-                        # `pushPairArena`'s pair — sorted by (type, geom
-                        # index) where the sweep names it — so the manifold
-                        # runs on the SAME order GJK just ran on, which is the
-                        # reference's structure: `mjc_Convex` hands
-                        # `multicontact` the `status` of its own `mjc_ccd`.
-                        #
-                        # ⚠⚠ THERE USED TO BE A SECOND, LOCAL SWAP HERE, and
-                        # it was half a fix. It ordered the MANIFOLD correctly
-                        # and left GJK running on whatever the broadphase
-                        # emitted, so `wf1`/`wf2`/`wx` — the witness the
-                        # manifold clips from — came out of a query in the
-                        # OTHER order and had to be re-swapped to match. With
-                        # the pair canonicalised where it is named, that
-                        # predicate is always false and the re-swap is gone.
-                        comptime if _COLL_PROBE:
-                            _c_t0 = Int(perf_counter_ns())
-                        var mcn = native_multicontact_contacts[
-                            DTYPE](
-                            env, body_a, body_b,
-                            gi_type,
-                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                            hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                            gj_type,
-                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                            hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                            dims,
-                            mesh_verts, mesh_polys, mesh_polyvert,
-                            mesh_polymap, mesh_vert_polymap,
-                            wf1, wf2, wxx,
-                            dist, cm, cf, cfs, cfr, cdim,
-                            False,
-                            contacts, ws, env, num_contacts,
-                            cgp,
-                        )
-                        comptime if _COLL_PROBE:
-                            _c_mcn += Int(perf_counter_ns()) - _c_t0
-                            _n_mcn += 1
-                        # The manifold REPLACES the single point.
-                        if mcn > 0:
-                            _fill_pair_solparams[
-                                DTYPE](env, _n0, num_contacts, _mx, contacts)
-                            continue
-                else:
-                    _fill_pair_solparams[DTYPE](
-                        env, _n0, num_contacts, _mx, contacts
-                    )
-                    continue
-
-            if dist < cm and num_contacts < max_contacts:
-                # The `gi -> gj` normal, captured BEFORE the emit negates it in
-                # place — see the identical capture in `contact_detection.mojo`.
-                var mccd_nx = nx
-                var mccd_ny = ny
-                var mccd_nz = nz
-                var mccd_first = num_contacts
-                var c_off = num_contacts * CONTACT_SIZE
-                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                    body_a
-                )
-                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                    body_b
-                )
-                contacts[env, c_off + CONTACT_IDX_POS_X] = cx
-                contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
-                contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
-                # The record's normal points `body_b -> body_a`. Every branch
-                # above computed `gi -> gj` with `body_a = gi`, so it is
-                # negated here — UNCONDITIONALLY.
-                #
-                # ⚠ This used to be `if body_b > 0:`, which skipped the negation
-                # whenever the second geom sat on the WORLD body and left those
-                # contacts as `a -> b` while every other contact was `b -> a`.
-                # Two conventions in one record, selected by a body id. Planes
-                # are not affected either way — they have their own loop and
-                # never reach this emit — so `body_b == 0` here means a
-                # NON-PLANE world geom, which no shipped model currently has.
-                # Latent, but it made body labels and normal direction
-                # interdependent, and it nearly derailed the bug 35 fix.
-                # Measured by `tests/physics3d/test_narrow_phase_pairs.mojo`'s
-                # WORLD groups: a full 2.0 reversal on a unit vector.
-                nx = -nx
-                ny = -ny
-                nz = -nz
-                contacts[env, c_off + CONTACT_IDX_NX] = nx
-                contacts[env, c_off + CONTACT_IDX_NY] = ny
-                contacts[env, c_off + CONTACT_IDX_NZ] = nz
-                contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-                contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                    cdim
-                )
-                num_contacts += 1
-
-                # MULTI-POINT CONVEX CONTACT — defect 21.
-                #
-                # ⚠⚠ THIS FILE IS THE SECOND NARROW PHASE. `contact_detection`
-                # carries the same dispatch and the same emit, and SAP takes
-                # over at ngeom >= SAP_THRESHOLD — so patching only the other
-                # one would have left every LARGE model (dog, quadruped: the
-                # exact models this was found on) with single-point cylinder
-                # contacts while the small-model gate went green. That is the
-                # shape of `feedback_sap_path_missing_a_whole_geom_type`, and
-                # it is why this hook is duplicated rather than "left for
-                # later". The two must move together.
-                #
-                # ⚠ AND THEY DID, for `mjDSBL_MULTICCD`. `<flag
-                # multiccd="disable"/>` is the model asking for single-point
-                # convex contacts; honouring it in only one narrow phase would
-                # have left every model at or above `SAP_THRESHOLD` — which is
-                # every dm_control manipulation model, at 185-431 geoms — with
-                # the 4-point manifold the flag exists to switch off.
-                if not multiccd_off and multi_ccd_pair_supported(
-                    gi_type, gj_type
-                ):
-                    comptime if _COLL_PROBE:
-                        _c_t0 = Int(perf_counter_ns())
-                    _ = multi_ccd_extra_contacts[
-                        DTYPE](
-                        env, body_a, body_b, mccd_first,
-                        gi_type,
-                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                        ri, hli, hxi, hyi, hzi, rbound_i, va1, mnv1,
-                        gj_type,
-                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                        rj, hlj, hxj, hyj, hzj, rbound_j, va2, mnv2,
-                        dims,
-                        mesh_verts,
-                        mesh_vert_edgeadr,
-                        mesh_edges,
-                        cx, cy, cz,
-                        mccd_nx, mccd_ny, mccd_nz,
-                        dist,
-                        cm, cf, cfs, cfr, cdim,
-                        contacts, num_contacts,
-                        ws, env,
-                        ccd_tol, ccd_iter, cm,
-                        cgp,
-                    )
-                    comptime if _COLL_PROBE:
-                        _c_mccd += Int(perf_counter_ns()) - _c_t0
-                        _n_mccd += 1
-
-            _fill_pair_solparams[DTYPE](
-                env, _n0, num_contacts, _mx, contacts
+            _sap_pair_narrow[
+                DTYPE, BATCH, D, EX_CAP, HFIELD_ENABLED=HFIELD_ENABLED
+            ](
+                env, dims, si, sj, si_type, nbody, max_contacts,
+                ex_sig, n_sig, pr, num_contacts,
+                wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                ccd_tol, ccd_iter, multiccd_off,
+                geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap, mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, hfield_meta, hfield_data, contacts, ws,
             )
 
     comptime if _COLL_PROBE:
         var _c_end = Int(perf_counter_ns())
-        var _c_sum = _c_pcyl + _c_pbox + _c_pmesh + _c_hf + _c_ss + _c_cc + _c_cb + _c_bb + _c_gjk + _c_mcn + _c_mccd + _c_cas + _c_bs + _c_bbf + _c_cys + _c_gjkp
-        print("[cprobe]", "broad", _c_loop0 - _c_start, 0, "other", _c_end - _c_loop0 - _c_sum, 0, "pairs", 0, _n_pairs, "aabb", 0, _n_aabb, "ppair", _c_ppair, _n_ppair, "pparm", _c_pparm, _n_pparm, "pbf", _c_pbf, _n_pbf, "pcyl", _c_pcyl, _n_pcyl, "pbox", _c_pbox, _n_pbox, "pmesh", _c_pmesh, _n_pmesh, "hf", _c_hf, _n_hf, "ss", _c_ss, _n_ss, "cc", _c_cc, _n_cc, "cb", _c_cb, _n_cb, "bb", _c_bb, _n_bb, "gjk", _c_gjk, _n_gjk, "mcn", _c_mcn, _n_mcn, "mccd", _c_mccd, _n_mccd, "cas", _c_cas, _n_cas, "bs", _c_bs, _n_bs, "bbf", _c_bbf, _n_bbf, "cys", _c_cys, _n_cys, "gjkp", _c_gjkp, _n_gjkp, "gjkhit", 0, _n_gjkhit)
+        var _c_sum = pr._c_pcyl + pr._c_pbox + pr._c_pmesh + pr._c_hf + pr._c_ss + pr._c_cc + pr._c_cb + pr._c_bb + pr._c_gjk + pr._c_mcn + pr._c_mccd + pr._c_cas + pr._c_bs + pr._c_bbf + pr._c_cys + pr._c_gjkp
+        print("[cprobe]", "broad", pr._c_loop0 - pr._c_start, 0, "other", _c_end - pr._c_loop0 - _c_sum, 0, "pairs", 0, pr._n_pairs, "aabb", 0, pr._n_aabb, "ppair", pr._c_ppair, pr._n_ppair, "pparm", pr._c_pparm, pr._n_pparm, "pbf", pr._c_pbf, pr._n_pbf, "pcyl", pr._c_pcyl, pr._n_pcyl, "pbox", pr._c_pbox, pr._n_pbox, "pmesh", pr._c_pmesh, pr._n_pmesh, "hf", pr._c_hf, pr._n_hf, "ss", pr._c_ss, pr._n_ss, "cc", pr._c_cc, pr._n_cc, "cb", pr._c_cb, pr._n_cb, "bb", pr._c_bb, pr._n_bb, "gjk", pr._c_gjk, pr._n_gjk, "mcn", pr._c_mcn, pr._n_mcn, "mccd", pr._c_mccd, pr._n_mccd, "cas", pr._c_cas, pr._n_cas, "bs", pr._c_bs, pr._n_bs, "bbf", pr._c_bbf, pr._n_bbf, "cys", pr._c_cys, pr._n_cys, "gjkp", pr._c_gjkp, pr._n_gjkp, "gjkhit", 0, pr._n_gjkhit)
     # ── MuJoCo's contact ORDER (`bfsort`, engine_collision_driver.c:1683) ──
     # The sweep above emits in AABB order and runs PLANES in a separate phase
     # before it; MuJoCo runs body pair by body pair in SORTED signature order.
