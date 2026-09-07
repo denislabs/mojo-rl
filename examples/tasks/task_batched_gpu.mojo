@@ -94,6 +94,40 @@ comptime NQ = So101TabletopModel.NQ
 comptime NV = So101TabletopModel.NV
 
 
+def parked_drift(
+    mut env: EnvT, ctx: DeviceContext, pk_z: Float64
+) raises -> Tuple[Float64, Float64]:
+    """`(max |dz|, max |v|)` of the PARKED slot across the batch.
+
+    ⚠ A FUNCTION BECAUSE IT IS CALLED TWICE, at two step counts — see the
+    caller. A nested def cannot capture `env` mutably.
+    """
+    env.d.qpos.download(ctx)
+    env.d.qvel.download(ctx)
+    ctx.synchronize()
+    var mdz = 0.0
+    var mv = 0.0
+    for e in range(N_ENVS):
+        var dz = Float64(
+            env.d.qpos.data[e * NQ + So101TabletopConfig.FREE_QADR_2 + 2]
+        ) - pk_z
+        if dz < 0.0:
+            dz = -dz
+        if dz > mdz:
+            mdz = dz
+        for k in range(6):
+            var v = Float64(
+                env.d.qvel.data[
+                    e * NV + So101TabletopConfig.FREE_DADR_2 + k
+                ]
+            )
+            if v < 0.0:
+                v = -v
+            if v > mv:
+                mv = v
+    return (mdz, mv)
+
+
 def main() raises:
     seed_rng(0)
     print("=" * 68)
@@ -377,47 +411,89 @@ def main() raises:
         # gates the repark's arithmetic on one call; this is whether it holds
         # after real physics — gravity is a `Model` field shared by the batch,
         # so before Gap D a parked body FELL, 7.06 m over a full horizon.
-        env.d.qpos.download(ctx)
-        env.d.qvel.download(ctx)
-        ctx.synchronize()
-        comptime CB_SLOT = So101TabletopConfig.FREE_SLOT_IDX_2
-        comptime CB_QADR = So101TabletopConfig.FREE_QADR_2
-        comptime CB_DADR = So101TabletopConfig.FREE_DADR_2
+        # ⚠⚠ THE CLAIM IS NON-ACCUMULATION, NOT EXACTNESS, AND THIS CHECK
+        # USED TO DEMAND EXACTNESS. It asserted `dz != 0.0` for every lane and
+        # failed on the 5090 with **max |dz| = 7.62939453125e-05 m** — which
+        # is not drift, it is arithmetic:
+        #
+        #   one control step of free fall = 0.5 * 9.81 * (0.002 * 2)^2
+        #                                 = 7.848e-05 m
+        #   stored in float32 at z = 50    ulp = 2^(5-23) = 3.815e-06
+        #   7.848e-05 / 3.815e-06          = 20.6 ulps -> 20 ulps
+        #   20 * 3.815e-06                 = 7.62939453125e-05    <- measured
+        #
+        # and the velocity says the same thing with no rounding in the way:
+        # one control step's dv is 9.81 * 0.002 * 2 = 0.03924 m/s, and the
+        # measurement is 0.03924000263214111. Two independent numbers, both
+        # exactly one step.
+        #
+        # `pre_step_full_gpu` pins the slot BEFORE the step, so any state read
+        # AFTER a step necessarily shows one step of fall. An exact check can
+        # therefore never pass, and the version that did pass had simply never
+        # run on a device with gravity — this is the first GPU run since Gap D
+        # landed.
+        #
+        # ⚠ SO THE GATE IS A RATE TEST, AND IT NEEDS NO PHYSICAL CONSTANT.
+        # Pinned, the drift is one step's fall at ANY step count. Unpinned it
+        # is quadratic in the step count. ABLATED by skipping the pin: 8
+        # steps gives 5.02e-03 m and 32 steps 8.04e-02 m, a ratio of exactly
+        # 16.0, with |v| going 0.314 -> 1.256 m/s. Measuring at both and
+        # demanding the
+        # SECOND is not materially larger separates the two by 8x with nothing
+        # tuned. The original symptom Gap D fixed — 7.06 m over a horizon — is
+        # the unpinned branch and fails this by five orders of magnitude.
         var pk_z = f.park_z
-        var moved = 0
-        var spun = 0
-        var max_dz = 0.0
-        for e in range(N_ENVS):
-            # ⚠ `cube_b` IS PARKED IN ALL THREE SHIPPED TASKS, which is why it
-            # is the one checked. `brick` and `cube_a` are active here and
-            # MUST have moved — that is the anti-vacuity leg below.
-            var z = Float64(env.d.qpos.data[e * NQ + CB_QADR + 2])
-            var dz = z - pk_z
-            if dz < 0.0:
-                dz = -dz
-            if dz > max_dz:
-                max_dz = dz
-            if dz != 0.0:
-                moved += 1
-            for k in range(6):
-                if Float64(env.d.qvel.data[e * NV + CB_DADR + k]) != 0.0:
-                    spun += 1
-                    break
+        var d1 = parked_drift(env, ctx, pk_z)
+        for _ in range(STEPS * 3):
+            env.step_batch[N_ENVS](ctx, UInt64(0))
+        var d2 = parked_drift(env, ctx, pk_z)
+
         print()
-        print("  parked cube_b after", STEPS, "steps: max |dz| =", max_dz,
-              "m,", moved, "lanes moved,", spun, "lanes carry velocity")
-        if moved != 0 or spun != 0:
+        print("  parked cube_b  |dz| after", STEPS, "steps:", d1[0],
+              "m   after", STEPS * 4, "steps:", d2[0], "m")
+        print("  parked cube_b  |v|  after", STEPS, "steps:", d1[1],
+              "m/s after", STEPS * 4, "steps:", d2[1], "m/s")
+
+        # ⚠ THE ABSOLUTE BOUND IS A SANITY RAIL, NOT THE CHECK. It catches
+        # "pinned, but to the wrong place" — a millimetre is already 13x the
+        # one-step fall and 5e4 times below the unpinned value at 32 steps.
+        if d1[0] > 1e-3 or d2[0] > 1e-3:
             raise Error(
-                "P3/Gap D: " + String(moved) + " lanes' parked cube_b left"
-                " z=" + String(pk_z) + " and " + String(spun) + " carry"
-                " velocity. `pre_step_full_gpu` pins it EVERY step; if this"
-                " fires, either the env stopped calling the wide pre-step"
-                " hook or the active mask says cube_b is active."
+                "P3/Gap D: the parked slot is " + String(d2[0]) + " m from"
+                " z=" + String(pk_z) + ", past the 1 mm rail. One control"
+                " step of free fall is 7.8e-05 m, so this is not the"
+                " pin-before-step lag — `pre_step_full_gpu` is pinning to the"
+                " wrong place, or not at all."
             )
-        # ⚠⚠ ANTI-VACUITY, AND IT IS THE WHOLE CHECK. "Nothing moved" is also
-        # true of a batch that never stepped, of a scene with no gravity, and
-        # of a repark that pinned EVERY slot. An ACTIVE prop must have moved.
+        # ⚠⚠ AND THIS IS THE CHECK. Quadratic growth is what an unpinned body
+        # does; a factor of 2 is generous against the 16 it would show.
+        if d2[0] > d1[0] * 2.0 + 1e-9:
+            raise Error(
+                "P3/Gap D: the parked slot's offset GREW from "
+                + String(d1[0]) + " m at " + String(STEPS) + " steps to "
+                + String(d2[0]) + " m at " + String(STEPS * 4) + ". Pinned,"
+                " it is one step's fall at any step count; growing with the"
+                " step count is what a body nobody pins does — the env stopped"
+                " calling the wide pre-step hook, or the active mask says"
+                " cube_b is ACTIVE."
+            )
+        if d2[1] > d1[1] * 2.0 + 1e-9:
+            raise Error(
+                "P3/Gap D: the parked slot's speed GREW from " + String(d1[1])
+                + " to " + String(d2[1]) + " m/s. `pre_step_full_gpu` zeroes"
+                " qvel every step, so one step's acceleration is the ceiling."
+            )
+        print("  ok: the parked slot's offset and speed do NOT grow with the"
+              " step count — it is pinned, and what is left is the"
+              " pin-before-step lag")
+
+        # ⚠⚠ ANTI-VACUITY, AND IT MATTERS MORE NOW THAT THE CHECK ABOVE IS A
+        # RATIO. "The offset did not grow" is also true of a batch that never
+        # stepped, of a scene with no gravity, and of a repark that pinned
+        # EVERY slot — all three make BOTH measurements equal and pass. An
+        # ACTIVE prop must be somewhere else entirely.
         comptime BR_QADR = So101TabletopConfig.FREE_QADR_0
+        comptime CB_QADR = So101TabletopConfig.FREE_QADR_2
         var active_moved = 0
         for e in range(N_ENVS):
             if Float64(env.d.qpos.data[e * NQ + BR_QADR + 2]) != Float64(
@@ -431,7 +507,7 @@ def main() raises:
                 " nothing — either the repark pinned everything, or the batch"
                 " never stepped."
             )
-        print("  ok: the parked slot is EXACTLY at its park pose with zero"
-              " velocity, while", active_moved, "lanes' active brick is not")
+        print("  ok:", active_moved, "lanes' ACTIVE brick is nowhere near the"
+              " parked slot — the batch really stepped and gravity is on")
         print()
         print("=== PASS ===")
