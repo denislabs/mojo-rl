@@ -80,7 +80,7 @@ struct SmolVLAExpert[
     QW: Int = VLM_W,
     KVW: Int = VLM_KV_W,
     SELF_EVERY: Int = EXPERT_SELF_EVERY,
-](Movable & ParamWalkable):
+](ParamWalkable):
     """All 16 layers plus the final norm, walked under the CHECKPOINT's index."""
 
     comptime N_SELF: Int = (Self.LAYERS + Self.SELF_EVERY - 1) // Self.SELF_EVERY

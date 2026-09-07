@@ -100,6 +100,55 @@ struct ParamArena(Movable & ParamVisitor):
             model.for_each_param["gpu"](self, Optional(c))
             self.adopted = True
 
+    def adopt_multi[
+        target: StaticString, *Ms: ParamWalkable
+    ](mut self, ctx: Optional[DeviceContext], mut *models: *Ms) raises:
+        """Pack N models into ONE arena, in pack order (GPU); NO-OP on CPU.
+
+        ⚠ `adopt` says "call ONCE" and means it — it resets `total` and `_off`
+        and reallocates, so calling it per model leaves only the LAST one in
+        the arena while `adopted` reads True. A trainable set spread over
+        several objects (SmolVLA's is an expert plus four projections) needs
+        this instead, and needs it to be one arena rather than several: a
+        GLOBAL grad-norm clip is not the same operation as N independent ones,
+        and `clip_arena_grads` clips whatever the arena holds.
+
+        Same shape as `save_params_multi` — one pass to size, one to place,
+        models walked in the order given, and the caller must use that same
+        order everywhere after.
+        """
+        comptime if target == "gpu":
+            var c = ctx.value()
+            var total = 0
+            comptime for i in range(models.__len__()):
+                var nps = named_params["gpu"](models[i])
+                for j in range(len(nps)):
+                    total += nps[j].size
+            self.total = total
+
+            var dm = Tensor.alloc(total)
+            var off = 0
+            comptime for i in range(models.__len__()):
+                var nps = named_params["gpu"](models[i])
+                for j in range(len(nps)):
+                    var d = (
+                        Scalar[DT](1.0) if nps[j].decay else Scalar[DT](0.0)
+                    )
+                    for k in range(nps[j].size):
+                        dm.data[off + k] = d
+                    off += nps[j].size
+            dm.upload(c)
+            self.decay_mask = dm^
+
+            self.val = Tensor.alloc_gpu(c, total)
+            self.grd = Tensor.alloc_gpu(c, total)
+            # ⚠ `_off` is reset ONCE and then advances ACROSS the models —
+            # that is the whole difference from calling `adopt` N times.
+            self._off = 0
+            comptime for i in range(models.__len__()):
+                models[i].for_each_param["gpu"](self, Optional(c))
+            self.adopted = True
+
     def zero_grad(mut self) raises:
         """Zero the whole grad arena in ONE fill (vs N per-param fills)."""
         if self.adopted and self.total > 0:

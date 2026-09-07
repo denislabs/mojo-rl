@@ -259,7 +259,7 @@ def main() raises:
     var last = 0.0
     for s in range(STEPS):
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e, ai, ti, to, ao, sp, None
+            opt, e, ai, ti, to, ao, sp, None
         )
         var loss = st.run["cpu", P](e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None)
         if s == 0:
@@ -361,7 +361,7 @@ def main() raises:
     var l0 = 0.0
     for s in range(20):
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e2, ai2, ti2, to2, ao2, sp, None
+            opt0, e2, ai2, ti2, to2, ao2, sp, None
         )
         var loss = st2.run["cpu", P](
             e2, c2, den2, ai2, ti2, to2, ao2, x_t, u_t, valid, N_VALID,
@@ -417,7 +417,7 @@ def main() raises:
             if _ggrad(g, t, e3, ai3, ti3, to3, ao3) != Scalar[DT](0):
                 live += 1
     zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-        e3, ai3, ti3, to3, ao3, sp, None
+        opt, e3, ai3, ti3, to3, ao3, sp, None
     )
     var left = 0
     var probed = 0
@@ -501,7 +501,7 @@ def main() raises:
     var lc = 0.0
     for _ in range(10):
         zero_trainable_grads["gpu", L, EW, EFF, W, KVW, ADIM](
-            eg, aig, tig, tog, aog, spg, Optional(d)
+            og, eg, aig, tig, tog, aog, spg, Optional(d)
         )
         lg = stg.run["gpu", P](
             eg, cg, deng, aig, tig, tog, aog, xg, ug, validg, N_VALID,
@@ -511,7 +511,7 @@ def main() raises:
             og, eg, aig, tig, tog, aog, spg, Optional(d)
         )
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e4, ai4, ti4, to4, ao4, sp, None
+            oc, e4, ai4, ti4, to4, ao4, sp, None
         )
         lc = st4.run["cpu", P](e4, c4, den4, ai4, ti4, to4, ao4, x_t, u_t,
                                valid, N_VALID, None)

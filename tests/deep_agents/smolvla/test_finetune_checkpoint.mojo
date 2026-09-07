@@ -175,7 +175,7 @@ def main() raises:
     var trained_loss = 0.0
     for _ in range(TRAIN_STEPS):
         zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-            e, ai, ti, to, ao, sp, None
+            opt, e, ai, ti, to, ao, sp, None
         )
         trained_loss = st.run["cpu", P](
             e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None
@@ -190,7 +190,7 @@ def main() raises:
     # checkpoint was fine. The loss to compare against is the one at the
     # weights actually saved.
     zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-        e, ai, ti, to, ao, sp, None
+        opt, e, ai, ti, to, ao, sp, None
     )
     trained_loss = st.run["cpu", P](
         e, c, den, ai, ti, to, ao, x_t, u_t, valid, N_VALID, None
@@ -267,7 +267,7 @@ def main() raises:
     var st2 = Step.make["cpu"](None)
     st2.set_times["cpu"](tl, None)
     zero_trainable_grads["cpu", L, EW, EFF, W, KVW, ADIM](
-        e2, ai2, ti2, to2, ao2, sp2, None
+        opt, e2, ai2, ti2, to2, ao2, sp2, None
     )
     var reloaded_loss = st2.run["cpu", P](
         e2, c2, den2, ai2, ti2, to2, ao2, x_t, u_t, valid, N_VALID, None

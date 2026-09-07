@@ -369,6 +369,71 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             )
             model.for_each_param["gpu"](mp, ctx)
 
+    def adopt_multi[
+        target: StaticString, *Ms: ParamWalkable
+    ](mut self, ctx: Optional[DeviceContext], mut *models: *Ms) raises:
+        """`adopt` for a trainable set spread over several objects.
+
+        ⚠ Everything `adopt` allocates is sized from `arena.total`, so this
+        must build the arena across ALL the models before allocating — which
+        is why it cannot be N calls to `adopt`. See `ParamArena.adopt_multi`.
+        """
+        self.arena.adopt_multi[target](ctx, *models)
+        comptime if target == "gpu":
+            var c = ctx.value()
+            self.m_arena = Tensor.alloc_gpu(c, self.arena.total)
+            self.v_arena = Tensor.alloc_gpu(c, self.arena.total)
+            self._pow_dev = Tensor.alloc_gpu(c, 2)
+            self._pow_dev.dev.value().enqueue_fill(Scalar[DT](1.0))
+            var nblk = (self.arena.total + TPB - 1) // TPB
+            self._clip_partials = Tensor.alloc_gpu(c, nblk if nblk > 0 else 1)
+            self._clip_scale = Tensor.alloc_gpu(c, 1)
+            self._clip_norm = Tensor.alloc_gpu(c, 1)
+            self._lr_dev = Tensor.alloc_gpu(c, 1)
+            self._lr_dev.dev.value().enqueue_fill(self.lr)
+            self._step_dev = Tensor.alloc_gpu(c, 1)
+            self._step_dev.dev.value().enqueue_fill(Scalar[DT](0.0))
+            # ⚠ Every model, or the checkpoint silently loses the moments of
+            # the ones that were skipped — `save_moments=True` becomes a
+            # partial no-op and a resume comes back with a half-cold
+            # optimizer.
+            var mp = _MomentPlacer(
+                self.m_arena.dev.value(), self.v_arena.dev.value()
+            )
+            comptime for i in range(models.__len__()):
+                models[i].for_each_param["gpu"](mp, ctx)
+
+    def arena_step(mut self, c: DeviceContext) raises:
+        """One grouped update over an arena adopted with `adopt_multi`.
+
+        ⚠ The caller runs the `ParamVersionBump` walk itself, over the same
+        models — `step` bundles it for a single model and there is no single
+        model here.
+        """
+        if not self.arena.adopted:
+            raise Error(
+                "Adam.arena_step: no arena — call adopt_multi first, or use"
+                " the per-parameter walk"
+            )
+        self.begin_step()
+        self._grouped_step(c)
+
+    def arena_clip(
+        mut self, max_norm: Scalar[DT], c: DeviceContext
+    ) raises -> Scalar[DT]:
+        """GLOBAL grad-norm clip over the whole arena; returns the pre-clip
+        norm.
+
+        ⚠ Global is the point. Clipping each component of a trainable set to
+        `max_norm` independently is a DIFFERENT algorithm from clipping their
+        joint norm — with five components it can pass through a total norm of
+        5x the limit — and it is what `clip_grads` would do if handed them one
+        at a time.
+        """
+        if not self.arena.adopted:
+            raise Error("Adam.arena_clip: no arena — call adopt_multi first")
+        return clip_arena_grads(self.arena, max_norm, c)
+
     def step[
         target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:

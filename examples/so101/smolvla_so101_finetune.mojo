@@ -122,14 +122,6 @@ warmup and runs at ~5e-05, essentially peak — not the gentle ramp a 3-step
 what a step costs; the loss it prints is a full schedule crammed into three
 steps and means nothing.
 
-⚠ **Gradient clipping is ABSENT and the reference sets `grad_clip_norm = 10`.**
-`Adam.clip_grads` needs one `ParamWalkable`, and the trainable set here is five
-separate objects; clipping each to 10 independently is a DIFFERENT algorithm
-from one global norm, so it is left out rather than approximated. The fix is
-the `SmolVLATrainables` walkable already deferred once — which would also
-unlock Adam's grouped arena (~10% of all kernel launches in the ACT profile)
-and the on-device warmup. Three reasons, one refactor.
-
 ### Checkpoints
 
 `$SMOLVLA_CKPT_best.ckpt` is written whenever the held-out loss improves and
@@ -184,7 +176,7 @@ from mojo_rl.deep_agents.smolvla.observation import fill_store_images
 from mojo_rl.deep_agents.smolvla.train_step import SmolVLATrainStep
 from mojo_rl.deep_agents.smolvla.finetune import (
     zero_trainable_grads, adam_step_trainables, save_trainables,
-    load_trainables,
+    load_trainables, adopt_trainables, clip_trainables,
 )
 from mojo_rl.deep_agents.smolvla.flow_loss import (
     build_xt_ut, sample_noise, sample_times,
@@ -233,6 +225,7 @@ comptime BETA1 = Scalar[DT](0.9)
 comptime BETA2 = Scalar[DT](0.95)
 comptime EPS = Scalar[DT](1.0e-8)
 comptime WD = Scalar[DT](1.0e-10)
+comptime CLIP_NORM = Scalar[DT](10.0)
 """⚠ Every one of these is `configuration_smolvla.py`'s, not a default.
 
 `beta2` is **0.95**, not Adam's usual 0.999 — a much shorter second-moment
@@ -525,6 +518,21 @@ def main() raises:
         )
         print("  resumed from " + init_from)
 
+    # ⚠ AFTER the base checkpoint and any resume, BEFORE the first step:
+    # adopting rebinds every Param to a slice of one arena, so it must happen
+    # once the values are final. It buys the grouped update AND the global
+    # grad-norm clip, which cannot be done component-by-component.
+    adopt_trainables[
+        "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
+        SMOLLM_KV_W, PAD,
+    ](
+        opt, pol.expert, pol.action_in, pol.time_mlp_in, pol.time_mlp_out,
+        pol.action_out, sp_frozen, Optional(ctx),
+    )
+    print("  arena   " + String(opt.arena.total)
+          + " trainable elements, grouped update + global clip at "
+          + String(CLIP_NORM))
+
     var images = Tensor.alloc(N_CAM * 3 * 512 * 512)
     var scratch = List[Float32]()
     var state_t = Tensor.alloc(B * PAD)
@@ -595,8 +603,8 @@ def main() raises:
             "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
             SMOLLM_KV_W, PAD,
         ](
-            pol.expert, pol.action_in, pol.time_mlp_in, pol.time_mlp_out,
-            pol.action_out, sp_frozen, Optional(ctx),
+            opt, pol.expert, pol.action_in, pol.time_mlp_in,
+            pol.time_mlp_out, pol.action_out, sp_frozen, Optional(ctx),
         )
         var gr = draw_group(sam, accum, 0, split, state_t, acts_t, valid_t)
         var loss = 0.0
@@ -606,6 +614,11 @@ def main() raises:
                 acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
                 ns_img, ns_step,
             )
+        # ⚠ Clip BEFORE the step, over the JOINT norm of the whole trainable
+        # set — `optimizer_grad_clip_norm = 10` in the reference. Clipping the
+        # five components separately would let a joint norm of sqrt(5)x the
+        # limit through.
+        var gnorm = clip_trainables["gpu"](opt, CLIP_NORM, Optional(ctx))
         adam_step_trainables[
             "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
             SMOLLM_KV_W, PAD,
@@ -621,6 +634,7 @@ def main() raises:
                 "  step " + String(s) + "   train " + String(loss)
                 + "   " + String(el / Float64(s + 1)) + " s/step"
                 + "   lr " + String(opt.get_lr())
+                + "   |g| " + String(gnorm)
                 + "   host-images " + String(
                     100.0 * Float64(ns_img) / tot
                 ) + "%  gpu-step " + String(

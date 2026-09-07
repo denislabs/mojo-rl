@@ -40,14 +40,22 @@ gradient arrives only after a full backward through all sixteen VLM layers
 step must compute, not just which parameters it updates, so the flag being
 visible in the type is worth more than the convenience of a bool.
 
-⚠ **The per-parameter walk, not Adam's grouped arena.** `Adam.adopt` packs
-every parameter into one slab so the GPU update is a single kernel instead of
-one per parameter — worth ~10% of all launches in the ACT profile. Adopting
-requires the trainable set to be ONE `ParamWalkable`, and it is five separate
-objects that the inference path also owns. That refactor belongs with the
-Jetson work, where the launch overhead is actually being paid; a correctness
-milestone does not need it. The cost is named here so it is a decision and
-not an oversight.
+⚠ **Two modes, and the caller picks with `adopt_trainables`.**
+
+Un-adopted, `adam_step_trainables` walks the five components parameter by
+parameter — one GPU kernel each, and no way to clip their JOINT gradient norm.
+
+`adopt_trainables` packs all five into ONE `ParamArena`, which buys both: the
+update becomes a single grouped kernel, and `clip_trainables` can clip the
+global norm the reference asks for at 10. ⚠ It cannot be five calls to
+`Adam.adopt` — that one says "call ONCE" and means it, resetting the arena
+each time, so five calls leave only the last component adopted while
+`adopted` reads True. `adopt_multi` exists for exactly this.
+
+⚠ **Clipping each component to 10 independently is NOT clipping their joint
+norm to 10** — with five components the total can pass through at up to
+sqrt(5)x the limit. That is why the arena is what unlocks the clip rather
+than being merely faster.
 """
 
 from max.gpu.host import DeviceContext
@@ -97,11 +105,64 @@ def state_proj_backward[
     )
 
 
+def adopt_trainables[
+    target: StaticString,
+    LAYERS: Int, EW: Int, EFF: Int, W: Int, KVW: Int, ADIM: Int,
+    SDIM: Int = 32, VW: Int = 960, TRAIN_STATE_PROJ: Bool = False,
+](
+    mut opt: Adam,
+    mut expert: SmolVLAExpert[LAYERS, EW, EFF, W, KVW, 2],
+    mut action_in: Linear[ADIM, EW],
+    mut time_mlp_in: Linear[2 * EW, EW],
+    mut time_mlp_out: Linear[EW, EW],
+    mut action_out: Linear[EW, ADIM],
+    mut state_proj: Linear[SDIM, VW],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Pack the trainable set into one arena. GPU only; a no-op on CPU.
+
+    ⚠ Call ONCE, after the weights are loaded and before the first step —
+    adopting REBINDS every Param's buffers to arena slices, so anything that
+    wrote to them beforehand is preserved (the arena copies values in) and
+    anything holding a stale handle is not.
+
+    ⚠ The SAME five components in the SAME order as every other walk here.
+    """
+    opt.adopt_multi[target](
+        ctx, expert, action_in, time_mlp_in, time_mlp_out, action_out
+    )
+    _ = state_proj
+    comptime if TRAIN_STATE_PROJ:
+        raise Error(
+            "adopt_trainables: TRAIN_STATE_PROJ is not wired into the arena"
+            " yet — state_proj would train un-adopted while the other five"
+            " are adopted, which is two optimizers on one model. Use the"
+            " per-parameter path for that regime."
+        )
+
+
+def clip_trainables[
+    target: StaticString
+](
+    mut opt: Adam, max_norm: Scalar[DT], ctx: Optional[DeviceContext] = None
+) raises -> Scalar[DT]:
+    """Global grad-norm clip over the adopted trainable set; the pre-clip norm.
+
+    `configuration_smolvla.py` sets `optimizer_grad_clip_norm = 10`. Needs
+    `adopt_trainables` first — there is no arena to clip otherwise, and
+    clipping the five components one at a time is a different operation.
+    """
+    comptime if target == "cpu":
+        return Scalar[DT](0)
+    return opt.arena_clip(max_norm, ctx.value())
+
+
 def zero_trainable_grads[
     target: StaticString,
     LAYERS: Int, EW: Int, EFF: Int, W: Int, KVW: Int, ADIM: Int,
     SDIM: Int = 32, VW: Int = 960, TRAIN_STATE_PROJ: Bool = False,
 ](
+    mut opt: Adam,
     mut expert: SmolVLAExpert[LAYERS, EW, EFF, W, KVW, 2],
     mut action_in: Linear[ADIM, EW],
     mut time_mlp_in: Linear[2 * EW, EW],
@@ -112,10 +173,21 @@ def zero_trainable_grads[
 ) raises:
     """Zero every trainable gradient. Call ONCE per step, before the forward.
 
+    ⚠ Takes the optimizer because whether there IS an arena is the
+    optimizer's state, and zeroing an adopted set component-by-component
+    would work while quietly being five fills instead of one.
+
     ⚠ `Linear.vjp` ACCUMULATES (`grad_w += ...`), which is the `nn` convention
     and is what makes gradient accumulation across micro-batches possible. It
     also means a forgotten zero is a silent running sum.
     """
+    # ⚠ Adopted, the whole arena zeroes in ONE fill; the per-component walk
+    # would zero the same memory five times and, worse, read as if the two
+    # paths were interchangeable when only one of them can be clipped.
+    comptime if target == "gpu":
+        if opt.arena.adopted:
+            opt.arena.zero_grad()
+            return
     expert.zero_grad[target](ctx)
     action_in.zero_grad[target](ctx)
     time_mlp_in.zero_grad[target](ctx)
@@ -148,6 +220,19 @@ def adam_step_trainables[
     step, so the bias corrections would run ahead of the moments and the early
     steps would take the wrong size.
     """
+    comptime if target == "gpu":
+        if opt.arena.adopted:
+            # ONE grouped kernel over the whole trainable set.
+            opt.arena_step(ctx.value())
+            var b = ParamVersionBump()
+            expert.for_each_param[target](b, ctx, String("expert"))
+            action_in.for_each_param[target](b, ctx, String("action_in"))
+            time_mlp_in.for_each_param[target](b, ctx, String("time_mlp_in"))
+            time_mlp_out.for_each_param[target](
+                b, ctx, String("time_mlp_out")
+            )
+            action_out.for_each_param[target](b, ctx, String("action_out"))
+            return
     opt.begin_step()
     expert.for_each_param[target](opt, ctx, String("expert"))
     action_in.for_each_param[target](opt, ctx, String("action_in"))
