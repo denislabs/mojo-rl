@@ -136,6 +136,25 @@ comptime TIMED_STEPS = 1500
 comptime RESET_EVERY_STEP: Bool = False
 comptime RESET_SEED: UInt64 = 42
 
+# ⚠⚠ RESET EVERY EPISODE, BECAUSE THE WORKLOAD IS NOT STATIONARY. The probe
+# drives nothing (action buffer at zero), so under position control the arms
+# drift toward the zero pose for as long as the run lasts, and past ~700
+# steps they sit somewhere a training episode never reaches. Measured
+# 2026-09-07 with the SAME Newton kernel (identical hash): 2181 us/launch
+# averaged over a 500-step run, 6095 us over a 1700-step run at k=13; the
+# Sep 4 1000-step k=3 trace shows the jump — flat at ~178 us to step 700,
+# then 10x spikes (`scripts/p0_drift.py`). A per-launch average over a
+# trajectory that changes character is not a property of the kernel, and two
+# runs of different lengths are not comparable.
+#
+# Training resets every `MAX_STEPS = 300` (tasks/family_config.mojo), so the
+# cost that matters is the average over a 300-step episode from the reset
+# pose. Resetting on that cadence makes the timed region cover each episode
+# phase equally as long as TIMED_STEPS is a multiple of EPISODE_STEPS (1500 =
+# five episodes). The reset's kernels enter the table; training pays them too.
+# `RESET_EVERY_STEP = True` still overrides this for bisects.
+comptime EPISODE_STEPS = 300
+
 comptime ParkCfg0 = So101ParkProbeConfig[6, 6, 0]
 comptime ParkCfg3 = So101ParkProbeConfig[27, 24, 3]
 comptime ParkCfg6 = So101ParkProbeConfig[48, 42, 6]
@@ -165,12 +184,17 @@ def run_leg[
     # un-synced enqueue measures host time, not GPU time, and the whole point
     # here is elapsed GPU work.
     var warm = 0
+    var step = 0
     var t_warm = perf_counter_ns()
     while True:
         for _ in range(50):
             comptime if RESET_EVERY_STEP:
                 env.reset_batch[N_ENVS](ctx, RESET_SEED)
+            else:
+                if step > 0 and step % EPISODE_STEPS == 0:
+                    env.reset_batch[N_ENVS](ctx, RESET_SEED)
             env.step_batch[N_ENVS](ctx, UInt64(0))
+            step += 1
         ctx.synchronize()
         warm += 50
         if (
@@ -183,7 +207,11 @@ def run_leg[
     for _ in range(TIMED_STEPS):
         comptime if RESET_EVERY_STEP:
             env.reset_batch[N_ENVS](ctx, RESET_SEED)
+        else:
+            if step > 0 and step % EPISODE_STEPS == 0:
+                env.reset_batch[N_ENVS](ctx, RESET_SEED)
         env.step_batch[N_ENVS](ctx, UInt64(0))
+        step += 1
     # The sync is inside the timed region: it is what makes the number mean
     # "the work finished" rather than "the work was enqueued".
     ctx.synchronize()
@@ -205,6 +233,7 @@ def run_leg[
     # that ratio — silently, and uniformly, which is the hardest kind to spot.
     print("  warmup_steps    ", warm)
     print("  timed_steps     ", TIMED_STEPS)
+    print("  episode_steps   ", EPISODE_STEPS)
     comptime if RESET_EVERY_STEP:
         print("  reset_every_step TRUE  <- state pinned; absolutes NOT comparable")
         print("                          to a normal sweep, only arm-to-arm")

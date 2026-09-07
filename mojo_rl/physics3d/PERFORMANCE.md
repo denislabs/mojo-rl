@@ -3450,3 +3450,41 @@ nothing measured above; it gates the first tendon model anyone trains on
 GPU. Rented-box discipline learned today: a blocked-kernel test is ~15
 min of compile there (`test_noslip_blocked_kernel` 924 s), so run only the
 NVIDIA-only gates on the box and everything else on Apple.
+
+**Addendum, later the same day — the 1500-step sweep, and why its Newton
+column is not a regression.** The rebuilt probe (`TIMED_STEPS = 1500`) came
+back decidable (residual +0.2..+4.1 ms, all positive) and with Newton at
+**2.8× the morning's cost per launch** on the SAME kernel hash at every k:
+
+| k | newton µs/launch, 500-step run | 1700-step run | collision |
+|---|---|---|---|
+| 3 | 332 | 543 | 286 → 296 |
+| 6 | 524 | 1468 | 388 → 260 |
+| 9 | 1234 | 3077 | 414 → 287 |
+| 13 | 2181 | 6095 | 428 → 305 |
+
+Same code, same box; the only change is the trajectory length. The probe
+drives nothing (action buffer at zero, never resets), so under position
+control the arms drift toward the zero pose and settle into resting
+contact with the table and each other. Newton's cost is set by constraint
+rows and iterations, so it climbs; the collision kernel's is set by the
+geometry-pair count, so it does not (it even fell) — the same reason it was
+a useless control in the bisect note above. The Sep 4 1000-step k=3 trace
+shows the shape (`scripts/p0_drift.py`): flat at ~178 µs to step 700, then
+10× spikes. The 500-step sweeps sat entirely in the flat regime by
+accident; the 1700-step one averaged the other regime. A per-launch
+average over a trajectory that changes character is not a property of the
+kernel, and the positive residual is the same fact from the other side —
+the warmup steps were CHEAPER than the timed ones this time.
+
+Redefined: the probe resets every `EPISODE_STEPS = 300`, the task's own
+`MAX_STEPS`, so the 1500 timed steps cover five whole zero-action episodes
+and every episode phase equally. That is the quantity training pays,
+reset kernels included. Header prints `episode_steps`; the pre-existing
+`RESET_EVERY_STEP` still overrides it for bisects. Consequences: (1) none
+of today's three sweeps is the baseline — the next one is; (2) run
+`p0_drift.py` on each sweep's k=13 trace before reading its table, a flat
+profile is what makes the average a number; (3) the "1500 fixes the
+residual" claim above was half right — it fixed the cold-clock bias and
+exposed the drift the 500-step runs had been hiding. Same shape as
+`_the_sweep_was_not_the_distribution`.
