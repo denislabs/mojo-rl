@@ -57,10 +57,18 @@ FORCE=${FORCE:-0}
 
 # tag : flags. `base` MUST stay first — the summary reports every other arm as
 # a delta against it, and an arm compared against nothing is not a measurement.
-declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0)
-declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0")
+# ⚠ The first six arms ran 2026-09-07 under the GAUSSIAN `pick` draw
+# (docs/BFM_ZERO_SHOT_RL.md §18.4 — the mixture was ~69/31, not 50/50). The
+# `_u` arms are the same settings on the FIXED uniform draw; `base_u` is the
+# reference every later arm compares against. Read-out of the first six:
+# §18.6 — ortho100 won walk/run by +0.3, lr_b was null, bc 0.3 fell below random.
+declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u  ortho100_u    ortho100_obsnorm_u           ortho100_lrb1e5_u)
+declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" ""      "--ortho 100" "--ortho 100 --obs-norm 1"   "--ortho 100 --lr-b 1e-5")
 
-ARMS=${ARMS:-"${ARM_TAGS[*]}"}
+# Default to the arms that still need running; the first six are done and
+# their `.final` files are skipped anyway if present.
+ARMS=${ARMS:-"base_u ortho100_u ortho100_obsnorm_u ortho100_lrb1e5_u"}
+
 
 if [ ! -f "$STORE" ]; then
     echo "FATAL: store '$STORE' not found. Run examples/fb/collect_walker_all.mojo first." >&2
@@ -130,7 +138,7 @@ PARSE
     echo ""
 done
 
-echo "=== summary (mean ratio over the late rungs, delta vs 'base') ==="
+echo "=== summary (mean ratio over the late rungs, delta vs base_u if present, else base) ==="
 python3 - "$OUT" "$skipped_rungs" <<'SUMMARY'
 import csv, sys
 from collections import defaultdict
@@ -152,8 +160,9 @@ for (a, t) in agg:
     if t not in tasks:
         tasks.append(t)
 tasks = [t for t in ("stand", "walk", "run") if t in tasks]
-if "base" in arms:
-    arms = ["base"] + [a for a in arms if a != "base"]
+ref = "base_u" if "base_u" in arms else "base"
+if ref in arms:
+    arms = [ref] + [a for a in arms if a != ref]
 
 def mean(v):
     return sum(v) / len(v) if v else float("nan")
@@ -161,13 +170,13 @@ def mean(v):
 w = max([len(a) for a in arms] + [8])
 print("")
 print("  %-*s  %s" % (w, "arm", "  ".join("%-16s" % t for t in tasks)))
-base = {t: mean(agg.get(("base", t), [])) for t in tasks}
+base = {t: mean(agg.get((ref, t), [])) for t in tasks}
 for a in arms:
     cells = []
     for t in tasks:
         vals = agg.get((a, t), [])
         m = mean(vals)
-        if a == "base" or base.get(t) != base.get(t):   # nan-safe
+        if a == ref or base.get(t) != base.get(t):   # nan-safe
             cells.append("%-16s" % ("%.3f (n=%d)" % (m, len(vals))))
         else:
             cells.append("%-16s" % ("%.3f (%+.3f)" % (m, m - base[t])))

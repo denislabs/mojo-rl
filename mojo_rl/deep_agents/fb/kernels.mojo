@@ -40,6 +40,7 @@ from mojo_rl.nn.random.box_muller import (
     box_muller_normal_gpu_dev,
     advance_rng_offset_kernel,
 )
+from std.random.philox import Random as PhiloxRandom
 from mojo_rl.data.resident import IDX_DT
 
 
@@ -401,6 +402,28 @@ def z_mixture_kernel[D: Int, BATCH: Int](
             src = 0
         for k in range(D):
             z[unsafe_offset=base + k] = b_states[unsafe_offset=src * D + k]
+
+
+def uniform01_kernel[N: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin], seed: UInt64, offset: UInt64
+):
+    """`dst[i] ~ U[0, 1)`, Philox, host offset — the draw `z_mixture_kernel`'s
+    `pick` buffer needs.
+
+    ⚠⚠ Exists because both GPU training scripts filled `pick` with
+    `box_muller_normal_gpu` — GAUSSIANS — for the whole of M2 and the A2
+    sweep (found 2026-09-07 while writing the online agent). Against
+    `uniform_frac = 0.5` a N(0,1) draw takes the uniform branch 69 % of the
+    time, and `Int(n · nb)` on a negative `n` clamps to row 0, so about half
+    of the `B(s+)` picks were the SAME row. Nothing raised, `|B|` stayed
+    pinned, the loss descended. Every §13 number and every A2 arm trained
+    under that mixture; A2's deltas are between arms that share it.
+    """
+    var i = Int(global_idx.x)
+    if i >= N:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset)
+    dst[unsafe_offset=i] = Scalar[DT](Float32(philox.step_uniform()[0]))
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -100,6 +100,7 @@ from .kernels import (
     pack2_kernel,
     project_sphere_kernel,
     gaussian_dev_t,
+    uniform01_kernel,
     mean_sq_t,
     ensure_t,
     _blocks,
@@ -117,30 +118,14 @@ def uniform01_dev_kernel[N: Int](
     offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """`dst[i] ~ U[0, 1)`, Philox, offset read FROM DEVICE (capture-safe).
-
-    ⚠ The mixture kernels below consume UNIFORMS. `fb_train_gpu.mojo` feeds
-    `z_mixture_kernel` a `box_muller_normal_gpu` buffer — Gaussians — so its
-    branch test `pick < 0.5` fires 69 % of the time, not 50 %, and half of the
-    `B(s+)` picks clamp to row 0. Found while writing this file; NOT changed
-    there while the sweep runs on that binary. Draw uniforms here.
-    """
+    Device-offset twin of `kernels.uniform01_kernel` — see its docstring for
+    why the mixture kernels must be fed UNIFORMS."""
     var i = Int(global_idx.x)
     if i >= N:
         return
     var philox = PhiloxRandom(
         seed=seed + UInt64(i), offset=rebind[UInt64](offset_buf[0])
     )
-    dst[unsafe_offset=i] = Scalar[DT](Float32(philox.step_uniform()[0]))
-
-
-def uniform01_kernel[N: Int](
-    dst: Pointer[Scalar[DT], MutAnyOrigin], seed: UInt64, offset: UInt64
-):
-    """Host-offset twin of `uniform01_dev_kernel` for the EAGER rollout path."""
-    var i = Int(global_idx.x)
-    if i >= N:
-        return
-    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset)
     dst[unsafe_offset=i] = Scalar[DT](Float32(philox.step_uniform()[0]))
 
 

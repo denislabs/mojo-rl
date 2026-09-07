@@ -73,6 +73,7 @@ from mojo_rl.deep_agents.fb.kernels import (
     gather_idx_kernel,
     z_mixture_kernel,
     project_sphere_kernel,
+    uniform01_kernel,
     ensure_t,
     _blocks,
 )
@@ -504,10 +505,16 @@ def main() raises:
             ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(SEED), rng_off
         )
         rng_off += UInt64(BATCH * D)
-        box_muller_normal_gpu[BATCH * 2](
-            ctx, mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off
+        # ⚠⚠ UNIFORMS, not Gaussians. Until 2026-09-07 this was a second
+        # `box_muller_normal_gpu` call: `z_mixture_kernel` then took the uniform
+        # branch 69 % of the time and clamped half its B(s+) picks to row 0.
+        # See `kernels.uniform01_kernel`. Every §13 number and the A2 sweep
+        # trained under the old draw; re-run `base` before comparing across it.
+        ctx.enqueue_function[uniform01_kernel[BATCH * 2]](
+            mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off,
+            grid_dim=_blocks(BATCH * 2), block_dim=TPB,
         )
-        rng_off += UInt64(BATCH * 2)
+        rng_off += UInt64(2 * BATCH * 2)
         ctx.enqueue_function[z_mixture_kernel[D, BATCH]](
             t.bz.dev.value().unsafe_ptr(),
             gauss.dev.value().unsafe_ptr(),
