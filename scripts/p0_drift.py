@@ -20,6 +20,8 @@ table; a flat profile is what makes the average a number.
 
 import csv
 import io
+import os
+import re
 import sys
 
 
@@ -39,13 +41,23 @@ def main():
     if not d:
         print(f"!! no launch matches '{pat}'"); return 1
     n = len(d); per = max(1, n // bins)
-    print(f"{path}: {n} launches of '{pat}'  (8/step on the park scene => {n/8:.0f} steps)")
+    # Launches per step are DERIVED from the probe header next to the trace
+    # (`k13.probe.txt`: `total_steps`), not assumed: RK4 at frame skip 2 made
+    # 8, Euler makes 2, and a constant here is how a column drifts.
+    lps = 8.0
+    ph = path.replace(".trace.csv", ".probe.txt")
+    if os.path.exists(ph):
+        for line in open(ph, errors="replace"):
+            m = re.match(r"\s+total_steps\s+(\d+)", line)
+            if m:
+                lps = n / float(m.group(1))
+    print(f"{path}: {n} launches of '{pat}'  ({lps:.1f}/step => {n/lps:.0f} steps)")
     print(f"  {'launches':>14}  {'~steps':>11}  {'avg us':>9}  {'max us':>9}")
     for b in range(bins):
         seg = d[b * per:(b + 1) * per] if b < bins - 1 else d[b * per:]
         if not seg: break
         lo, hi = b * per, b * per + len(seg)
-        print(f"  {lo:6d}-{hi:6d}  {lo/8:5.0f}-{hi/8:5.0f}  {sum(seg)/len(seg):9.1f}  {max(seg):9.1f}")
+        print(f"  {lo:6d}-{hi:6d}  {lo/lps:5.0f}-{hi/lps:5.0f}  {sum(seg)/len(seg):9.1f}  {max(seg):9.1f}")
     first, last = d[:per], d[-per:]
     print(f"  last/first span ratio: {(sum(last)/len(last))/(sum(first)/len(first)):.2f}"
           f"   (a flat workload reads ~1.0)")

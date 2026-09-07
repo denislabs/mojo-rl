@@ -115,6 +115,16 @@ from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 struct So101TabletopConfig(Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 2
     comptime HAS_GPU_HOOKS: Bool = True
+    # ⚠ EULER, AS MuJoCo RUNS THIS MODEL. Neither the Menagerie SO-101 nor the
+    # generated scenes set `<option integrator>`, so MuJoCo steps them under
+    # Euler; RK4 was this config's inherited default, not the model's. RK4
+    # at frame skip 2 ran the whole pipeline 8 times per env step — 8
+    # collision launches, 8 Newton solves — for 4x the cost of Euler's 2
+    # (PERFORMANCE.md §13.38, the parked-slot probe). Fidelity: the studio
+    # path under Euler agrees with MuJoCo to 4.2e-17 over 50 steps on the
+    # k=0 and k=13 park scenes (2026-09-07). Position actuators at dt=0.002
+    # are what MuJoCo's own default runs them with.
+    comptime INTEGRATOR: StaticString = "euler"
     comptime MAX_STEPS: Int = 300
     """The family's `horizon=`. ⚠ RESTATED, NOT READ — a config is a comptime
     TYPE and the `.family` is a runtime file, so this cannot import it. Keep
@@ -176,9 +186,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # ⚠ A drift here is LOUD: `fields_build` raises rather than truncating.
     comptime NMESH_VERTS: Int = SO_ARM101_NMESH_VERTS
 
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        So101TabletopModel.NQ, So101TabletopModel.NV
-    ]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler needs no extra workspace
 
     # ── THE FREE-SLOT TABLE — the one thing this type restates ────────────
     #

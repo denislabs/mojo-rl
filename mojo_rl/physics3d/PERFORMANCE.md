@@ -3559,3 +3559,28 @@ k=12/13 already spilled, k=0 never does. Every later sweep compares to
 this table. Next on the same mechanism: one dense array instead of three
 in the blocked kernel (block ledger, stage 1), expected 1.1–1.6× on
 Newton at k≥9 and measured, not predicted, when it lands.
+
+### 13.39 LANDED (2026-09-07): the SO-101 configs step under Euler, as MuJoCo does
+
+`So101ParkProbeConfig` and `So101TabletopConfig` inherited `INTEGRATOR =
+"rk4"` from the trait's default; neither the Menagerie SO-101 model nor the
+generated park scenes set `<option integrator>`, so MuJoCo steps them under
+Euler. RK4 at frame skip 2 ran the whole pipeline 8 times per env step — 8
+collision launches, 8 Newton solves, 8 CRBA passes — against Euler's 2.
+Both configs now say `"euler"` and `INTEGRATOR_WS_EXTRA = 0`.
+
+Fidelity, before the switch was made: the studio path under Euler agrees
+with MuJoCo to **4.2e-17** over 50 steps on the k=0 and k=13 park scenes
+(`trace.py`, the board's protocol: seed 2024, random ctrl); the
+compile-time CPU engine under Euler at 300 physics steps, zero control,
+matches MuJoCo on every arm dof to ~1e-12 and on the parked free body
+(free fall from 50 m) to the same order — see the line pair in the
+session log. Gates on Apple: `test_tape_gpu_parity`,
+`test_device_placement`, `test_goal_distance`, `test_active_mask`.
+
+⚠ Every parked-slot number above this section was RK4: 8 launches per
+step. The next sweep is a new baseline (baseline 3) with 2 launches per
+step and Euler's own extra term — the `M_hat = M + dt·diag(damping)`
+re-factorisation (`euler.mojo:403`) that the RK4 probe never saw.
+`scripts/p0_attrib.py` derives launches per step from the instance count;
+`p0_drift.py` now does too (it assumed 8).

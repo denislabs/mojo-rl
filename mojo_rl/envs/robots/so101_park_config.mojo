@@ -70,6 +70,16 @@ struct So101ParkProbeConfig[
 ](Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 2
     comptime HAS_GPU_HOOKS: Bool = True
+    # ⚠ EULER, AS MuJoCo RUNS THIS MODEL. Neither the Menagerie SO-101 nor the
+    # generated scenes set `<option integrator>`, so MuJoCo steps them under
+    # Euler; RK4 was this config's inherited default, not the model's. RK4
+    # at frame skip 2 ran the whole pipeline 8 times per env step — 8
+    # collision launches, 8 Newton solves — for 4x the cost of Euler's 2
+    # (PERFORMANCE.md §13.38, the parked-slot probe). Fidelity: the studio
+    # path under Euler agrees with MuJoCo to 4.2e-17 over 50 steps on the
+    # k=0 and k=13 park scenes (2026-09-07). Position actuators at dt=0.002
+    # are what MuJoCo's own default runs them with.
+    comptime INTEGRATOR: StaticString = "euler"
 
     # ⚠ SO-ARM101 SHIPS A MOCAP BODY — `<body name="target" mocap="true">`,
     # body 8. `Phyics3dBatchedEnv.__init__` RAISES if a mocap-flagged body
@@ -101,9 +111,7 @@ struct So101ParkProbeConfig[
     # budget on.
     comptime NMESH_VERTS: Int = PARK_NMESH_VERTS
 
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        Self.NQ_MODEL, Self.NV_MODEL
-    ]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler needs no extra workspace
 
     # === CPU hooks — present for the trait; the probe is GPU-only ===
     @staticmethod
