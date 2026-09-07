@@ -185,6 +185,7 @@ test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", desc
 test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", description = "ACT reference gates (needs -e act-ref dumps)" }
 test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
 test-swm = { cmd = "bash scripts/run_tests.sh tests/manifests/swm.txt", description = "SWM-H sheaf world model gates (experimental, CPU)" }
+test-fb = { cmd = "bash scripts/run_tests.sh tests/manifests/fb.txt", description = "Forward-Backward zero-shot RL gates (CPU; docs/BFM_ZERO_SHOT_RL.md)" }
 test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.txt", description = "Concurrency backbone (mojo_rl/core/concurrent): pthread, SPSC ring, atomic cells" }
 # Format interop: our safetensors reader/writer against the REFERENCE library,
 # and the Hub's ImageNet ResNet18 against torchvision's. Needs `-e act-ref`
@@ -199,6 +200,7 @@ test-vla-ref = { cmd = "bash scripts/run_tests.sh tests/manifests/vla-ref.txt", 
 dump-vla-ref = { cmd = "pixi run -e act-ref python tools/vla/dump_smolvla_reference.py --out /tmp/vla_ref && pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img && pixi run -e act-ref python tools/vla/dump_smolvla_norm_reference.py --out /tmp/vla_norm", description = "Dump the SmolVLM activations, image preprocessing and normalisation references" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 test-physics3d-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/physics3d-gpu.txt", description = "physics3d blocked-kernel gates vs the CPU oracles (use -e nvidia; see the manifest header)" }
+test-fb-gpu = { cmd = "bash scripts/run_tests.sh tests/manifests/fb-gpu.txt", description = "FB device-path parity gates (needs -e nvidia or -e apple)" }
 # Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
 # VALUE in an asset needs no regeneration; adding or removing an element does,
 # because only that changes a count. Drift is silent — a stale count sizes a

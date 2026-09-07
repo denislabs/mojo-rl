@@ -1,0 +1,19 @@
+# FB GPU manifest — `pixi run -e nvidia test-fb-gpu` (or -e apple).
+#
+# The device path is gated against the CPU path, which carries the
+# finite-difference checks in fb.txt. Tolerances were set FROM the measured
+# parity (measure 7.1e-08, ortho 2.1e-07, actor 8.5e-08 on Apple), not
+# defensively — see docs/BFM_ZERO_SHOT_RL.md §13 M2.
+#
+# ⚠ A GPU-vs-CPU band written on Metal is a TF32 trap on CUDA: compare weights
+# bit-for-bit first if a 5090 run lands outside it.
+
+# PairwiseDot / RowDot: M = F·B^T and its vjp (dA = G·B, dB = G^T·A) on device.
+tests/nn/test_pairwise_dot.mojo
+
+# One FBTrainer step, CPU vs GPU: losses, B(s), and smooth_action_t bit-exact.
+tests/deep_agents/test_fb_trainer_gpu_parity.mojo
+
+# The captured train step allocates nothing per call — any per-call alloc is a
+# capture blocker, and the capture abort names only the FIRST one.
+tests/deep_agents/test_fb_cuda_graph_safety.mojo

@@ -1,0 +1,46 @@
+# FB / zero-shot RL manifest — `pixi run test-fb`
+#
+# Forward-Backward representations (docs/BFM_ZERO_SHOT_RL.md). CPU-only,
+# self-contained: no store on disk, no GPU. The GPU parity gates live in
+# fb-gpu.txt.
+#
+# Every gate here pins a property the loss curve cannot show — §14's standing
+# caution is that L_FB descends when B collapses, when B expands, when F runs
+# away and when the actor goes bang-bang. Read the gate headers before adding
+# a value check; most of these are ABLATIONS by design.
+
+# Losses as pure functions of activations: finite-difference gradient checks,
+# the anchor term's descent direction at F=0 (ablation), L_ortho ranking a
+# collapsed B below a spread one.
+tests/deep_agents/test_fb_loss.mojo
+
+# z on the radius-sqrt(d) sphere — every producer renormalises inside itself;
+# z(r) == z(17r) is the scale-invariance leg that fails if the projection is
+# deleted from z_from_reward.
+tests/deep_agents/test_fb_z_sampler.mojo
+
+# Trainer smoke on synthetic data: B's row spread after training, and the three
+# accumulating B vjps really accumulate (ortho_weight 0 vs 1 move B differently).
+tests/deep_agents/test_fb_trainer_smoke.mojo
+
+# save_state / load_state round trip; targets equal their online nets after load.
+tests/deep_agents/test_fb_checkpoint.mojo
+
+# Fixed-statistics observation standardisation + the <ckpt>.norm sidecar:
+# training path and rollout path bit-identical, width mismatch RAISES.
+tests/deep_agents/test_fb_obs_norm.mojo
+
+# RND novelty: fitted-vs-unseen RATIO (a predictor collapsing to a constant also
+# drives the fitted error down), RunningNorm vs a known mean/var + split merge.
+tests/deep_agents/test_fb_rnd.mojo
+
+# The collection side. Widened reset writes the WORLD torso height (rootz is a
+# joint offset, not a height — an absolute bound is the only check that caught
+# it) and refuses the dead quadruped lever at compile time.
+tests/dm_control/test_wide_reset.mojo
+
+# Suite rewards are Markovian in (qpos, qvel, action): relabelled OUT OF ORDER
+# at exactly 0.0 error, with Gym HalfCheetah as the negative control (reads
+# prev_x, fails by 41.5). This is what makes a reward invented after collection
+# scorable at all. ~3.5 min: it builds walker, cheetah, point_mass and Gym.
+tests/dm_control/test_reward_relabel.mojo
