@@ -100,8 +100,12 @@ tape) and `SHAPE_W_REACH` on the gripper's distance to the body the goal
 names — the second because goal distance alone has NO gradient until the arm
 touches something, which on `gather` is the whole difficulty.
 
-    shaped mean return, random actions, gather     -3.996
+    shaped mean return, random actions, gather    -19.98   (weights .50/.25)
     success rate, greedy, untrained                 0.00
+
+⚠ THAT -19.98 IS AT THE CURRENT WEIGHTS AND WAS -3.996 AT THE OLD 0.10/0.05.
+A shaped return is only comparable within one weight pair, which is why they
+are logged as config fields — `shape_w_goal` and `shape_w_reach`.
 
 ⚠ SO THIS FILE PRINTS TWO NUMBERS. `mean_return` is what SAC optimises and
 moves smoothly; the SUCCESS RATE is measured separately by
@@ -354,6 +358,15 @@ def main() raises:
     # is right, `mean_q` should fall roughly in proportion.
     var target_entropy = -Scalar[DT](ACT_DIM)
     var init_alpha = Scalar[DT](0.2)
+    # ⚠⚠ THE REWARD SCALE IS THE OPEN QUESTION ON THIS FAMILY, so it is a flag.
+    # Three 190k-step runs at 0.10/0.05 held `mean_reward` at -0.024 from the
+    # first diagnostic sample to the last — through an alpha fix and an
+    # observation widening — while `mean_q` ran to 508. With `mean_done` at
+    # 8e-05 nothing anchors the value function except the reward, and 0.024
+    # per step is 200x too small to. `SoArm101ReachConfig`, which DOES train
+    # on this robot, pays a `tolerance` in [0, 1] every step.
+    var shape_goal = So101TabletopConfig.SHAPE_W_GOAL
+    var shape_reach = So101TabletopConfig.SHAPE_W_REACH
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -369,6 +382,10 @@ def main() raises:
             target_entropy = Scalar[DT](Float64(String(args[i + 1])))
         elif a == "--alpha" and i + 1 < len(args):
             init_alpha = Scalar[DT](Float64(String(args[i + 1])))
+        elif a == "--shape-goal" and i + 1 < len(args):
+            shape_goal = Float64(String(args[i + 1]))
+        elif a == "--shape-reach" and i + 1 < len(args):
+            shape_reach = Float64(String(args[i + 1]))
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
@@ -400,6 +417,8 @@ def main() raises:
           "(baseline run)" if warmup >= num_steps else "")
     print("  action_scale:", ACTION_SCALE, "(NORMALIZED_ACTIONS is True)")
     print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
+    print("  shape weights: goal", shape_goal, " reach", shape_reach,
+          " clip", So101TabletopConfig.SHAPE_CLIP)
 
     # ⚠⚠ AN ACTIVE FREE SLOT WOULD FALL FOR THE WHOLE EPISODE. Refused here
     # rather than trained around — see the header. The failure is not a crash:
@@ -455,6 +474,8 @@ def main() raises:
         remote.set_config("action_scale", String(ACTION_SCALE))
         remote.set_config("target_entropy", String(target_entropy))
         remote.set_config("init_alpha", String(init_alpha))
+        remote.set_config("shape_w_goal", String(shape_goal))
+        remote.set_config("shape_w_reach", String(shape_reach))
         # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
         # unreadable without it — 0.05 is nothing on `reach` and would be real
         # on `lift` — and a config field is the only part of a run that is
@@ -496,7 +517,8 @@ def main() raises:
         # the region's own band — a CPU/GPU disagreement inside the reward.
         var cw = region_table_words(
             rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
-            rheights[0],
+            rheights[0], shape_goal, shape_reach,
+            So101TabletopConfig.SHAPE_CLIP,
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])

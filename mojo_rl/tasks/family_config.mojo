@@ -98,6 +98,7 @@ from mojo_rl.physics3d.gpu.constants import (
 
 from .gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
+    CUR_IDX_SHAPE_W_GOAL, CUR_IDX_SHAPE_W_REACH,
 )
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from .obs import (
@@ -298,8 +299,20 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # ⚠⚠ SET EITHER WEIGHT TO 0.0 AND THE REWARD IS SPARSE AGAIN, exactly as
     # it was. That is not a courtesy: every baseline this family has recorded
     # was measured at 0.0, and a shaped run is not comparable with them.
-    comptime SHAPE_W_GOAL: Float64 = 0.10
+    comptime SHAPE_W_GOAL: Float64 = 0.50
     """On the goal's own distance, from the tape — generic over the language.
+
+    ⚠⚠ THIS IS THE DEFAULT THE HOST WRITES INTO `curriculum`, NOT WHAT THE
+    KERNEL READS. The reward hook reads `curriculum[0, CUR_IDX_SHAPE_W_GOAL]`
+    so a run can sweep the scale without a rebuild — see `gpu_eval`.
+
+    ⚠ IT WAS 0.10 AND THAT WAS 5x TOO SMALL, measured. Three 190k-step
+    `gather` runs at 0.10/0.05 held `mean_reward` at -0.024 from the first
+    diagnostic sample to the last, through an alpha fix and an observation
+    widening, while `mean_q` ran to 508 with `mean_done` at 8e-05 — nothing
+    anchors the value function except the reward, and at 0.024 per step it is
+    200x too small to. The env that DOES train on this robot,
+    `SoArm101ReachConfig`, pays a `tolerance` in [0, 1] EVERY step.
 
     ⚠ IT HAS NO GRADIENT UNTIL THE ARM TOUCHES SOMETHING, on the tasks that
     move an object. `Near(brick, cube_a, 0.06)` depends only on where the two
@@ -307,7 +320,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     this term alone rewards the OUTCOME of a lucky contact and says nothing
     about how to make one. `SHAPE_W_REACH` is the term that does."""
 
-    comptime SHAPE_W_REACH: Float64 = 0.05
+    comptime SHAPE_W_REACH: Float64 = 0.25
     """On the gripper's distance to the body the goal names first.
 
     ⚠⚠ MANIPULATION-SPECIFIC, AND DELIBERATELY SO. There is no general reason
@@ -1015,6 +1028,15 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         var dist = tape_distance_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
             meta, curriculum, xpos, xquat, site_xpos, env
         )
+        # ⚠ THE WEIGHTS COME FROM `curriculum`, the config's constants are
+        # only the host's default. A run sweeping the scale changes two words
+        # of an upload, not the binary.
+        var w_goal = rebind[Scalar[DTYPE]](
+            curriculum[0, CUR_IDX_SHAPE_W_GOAL]
+        )
+        var w_reach = rebind[Scalar[DTYPE]](
+            curriculum[0, CUR_IDX_SHAPE_W_REACH]
+        )
         comptime CLIP = Scalar[DTYPE](Self.SHAPE_CLIP)
         if dist > CLIP:
             dist = CLIP
@@ -1045,8 +1067,8 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
                 reach = CLIP
 
         var r = Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
-        r = r - Scalar[DTYPE](Self.SHAPE_W_GOAL) * dist
-        r = r - Scalar[DTYPE](Self.SHAPE_W_REACH) * reach
+        r = r - w_goal * dist
+        r = r - w_reach * reach
         _ = qpos
         _ = qvel
         _ = xipos

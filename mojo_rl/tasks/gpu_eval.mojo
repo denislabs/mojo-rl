@@ -73,12 +73,29 @@ comptime CUR_IDX_REGION_Y1: Int = 4
 # one region — the table did not get narrower, see MAX_CURRICULUM_REGIONS.
 comptime CUR_IDX_REGION_H: Int = 5
 comptime REGION_WORDS: Int = 6
+
+# ── the two shaping weights, words 6 and 7 ────────────────────────────────
+#
+# ⚠⚠ RUNTIME, NOT COMPTIME, AND THE REASON IS THAT THEY NEEDED SWEEPING. They
+# were `comptime` on `So101TabletopConfig`, so trying a different scale meant a
+# rebuild — and reward SCALE is the open question on this family, not a
+# setting anybody knows. `curriculum` is already the host-written,
+# device-shared channel the region table lives in and it had exactly two words
+# left.
+#
+# ⚠ THE HOST STILL OWNS THE DEFAULTS. The config's `SHAPE_W_*` constants are
+# what `region_table_words` writes when a caller does not override, so a
+# driver that never heard of these gets the family's chosen scale rather than
+# zero — which would silently be the sparse reward again.
+comptime CUR_IDX_SHAPE_W_GOAL: Int = 6
+comptime CUR_IDX_SHAPE_W_REACH: Int = 7
 comptime MAX_CURRICULUM_REGIONS: Int = MODEL_CURRICULUM_SIZE // REGION_WORDS
 
 
 def region_table_words(
     site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
     half_height: Float64,
+    shape_w_goal: Float64, shape_w_reach: Float64, shape_clip: Float64,
 ) raises -> List[Float64]:
     """The `curriculum` words for a one-region family. Host-side.
 
@@ -111,6 +128,34 @@ def region_table_words(
             " number. `spec.parse_region` refuses this too."
         )
     out[CUR_IDX_REGION_H] = half_height
+
+    # ⚠⚠ THE 0.5 BOUND IS CHECKED HERE BECAUSE THE WEIGHTS ARE RUNTIME NOW.
+    # `test_goal_distance` asserts the config's DEFAULTS satisfy it, and that
+    # is no longer enough once a `--shape-goal` flag can set anything: three
+    # files read "solved" as `reward > 0.5` and the shaping is subtracted from
+    # that same scalar, so a weight pair whose worst case reaches 0.5 makes a
+    # SOLVED lane report 0.4 and every success counter in the tree read it as
+    # a miss. Refused at the point the number enters the system.
+    if shape_w_goal < 0.0 or shape_w_reach < 0.0:
+        raise Error(
+            "tasks: negative shaping weight (" + String(shape_w_goal) + ", "
+            + String(shape_w_reach) + ") — that pays the policy to move AWAY"
+            " from the goal."
+        )
+    var worst = (shape_w_goal + shape_w_reach) * shape_clip
+    if worst >= 0.5:
+        raise Error(
+            "tasks: the shaping weights (" + String(shape_w_goal) + " + "
+            + String(shape_w_reach) + ") * clip " + String(shape_clip)
+            + " = " + String(worst) + ", which reaches the 0.5 that separates"
+            " SOLVED from not. `task_batched_gpu.mojo`,"
+            " `task_eval_frozen.mojo` and `sac_task_gpu.mojo` all read success"
+            " as `reward > 0.5`, so a solved lane would report less than that"
+            " and be counted as a miss — silently. Lower the weights or lower"
+            " SHAPE_CLIP."
+        )
+    out[CUR_IDX_SHAPE_W_GOAL] = shape_w_goal
+    out[CUR_IDX_SHAPE_W_REACH] = shape_w_reach
     return out^
 
 

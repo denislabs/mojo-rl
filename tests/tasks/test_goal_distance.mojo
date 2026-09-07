@@ -114,6 +114,9 @@ def main() raises:
     var cw = region_table_words(
         rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
         rheights[0],
+        So101TabletopConfig.SHAPE_W_GOAL,
+        So101TabletopConfig.SHAPE_W_REACH,
+        So101TabletopConfig.SHAPE_CLIP,
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         cur.data[i] = Scalar[DTYPE](cw[i])

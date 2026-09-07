@@ -31,6 +31,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.tasks.spec import load_family, load_task
 from mojo_rl.tasks.family import scene_path
+from mojo_rl.tasks.family_config import So101TabletopConfig
 from mojo_rl.tasks.predicates import parse_goal, bind_goal
 from mojo_rl.tasks.eval import (
     region_sites, region_rects, region_half_heights,
@@ -129,6 +130,9 @@ def main() raises:
     var cw = region_table_words(
         rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
         rheights[0],
+        So101TabletopConfig.SHAPE_W_GOAL,
+        So101TabletopConfig.SHAPE_W_REACH,
+        So101TabletopConfig.SHAPE_CLIP,
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         cur.data[i] = Scalar[DTYPE](cw[i])
