@@ -3630,3 +3630,17 @@ compares at 1e-2 — and the first version of the new gate demanded
 bit-exactness across two legs that never had it and was committed on the
 mutant's verdict alone. Priced on the box next: expect ~1.0 → ~0.2 ms per
 launch at k=13, the step 9.3 → ~7.7.
+
+**MEASURED (RTX 5090): the finalize split, k=6 3.13 → 2.77 ms/step (1.13×),
+k=13 9.32 → 7.71 (1.21×).** The 277 / 1028 µs launch is gone; the Euler
+step now carries two LDL pairs per step (the unconstrained solve's and
+`M_hat`'s: 4 launches of 107 + 70 µs at k=13), a 40 µs rhs kernel and the
+integrate. Residual +0.06 at both k. Shares at k=13: Newton 58%, collision
+11%, CRBA 10%, LDL pair 9%. The step is 3.7× baseline 2 at k=13 and
+3.6× at k=0; 133k env-steps/s at k=13, 1.1 M at k=0, 1024 lanes.
+
+Standing levers, in the order the shares set: the Newton kernel's dense
+triple (block ledger stage 1, 1.1–1.6× on Newton), `ldl_solve` (F1: the
+107 µs kernel, block-restricted like its siblings, ~10×), CRBA's dense
+write (F2), and at the small k the real tasks run at, collision — the
+warp-cooperative GJK (block ledger §6).
