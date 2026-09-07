@@ -2786,6 +2786,8 @@ comptime COLL_BLOCK_KERNEL: Bool = True
 # AABB phase, 2 = after thread 0's candidate generation, 3 = after the
 # per-thread narrow phase, 0 = production. Same pattern as
 # `newton_solve.NEWTON_STOP_AFTER`, for the same reason: on the RTX 5090 the
+# per-thread narrow phase (phase 2) read 240 of the 270 us; 21/22/23 split it
+# into the per-thread setup, the cheap candidates and the CCD candidates —
 # block kernel's launch at k=0 read 269.7 us against the serial kernel's
 # 269.0, so the chain it was built to cut is somewhere it did not reach.
 comptime COLL_STOP_AFTER: Int = 0
@@ -3192,9 +3194,23 @@ def _detect_contacts_sap_block_kernel[
         var pr = _SapProbe()
         var wrow = env * COLL_CCD_LANES + (tid if tid < COLL_CCD_LANES else 0)
         var full = 0
+        # Sub-stops of the bisect (see the knob): 21 = the per-thread setup
+        # above and nothing else; 22 = cheap candidates only (the CCD lanes
+        # skip theirs); 23 = CCD candidates only (the cheap threads skip).
+        comptime if COLL_STOP_AFTER == 21:
+            # keep the setup live: consume one copied value
+            if wpx[0] == Scalar[DTYPE](-1.0e30):
+                full = 1
+            ncand = 0
         for c in range(ncand):
             if Int(rebind[Scalar[DTYPE]](cand_sh[4 * NC + c])) != tid:
                 continue
+            comptime if COLL_STOP_AFTER == 22:
+                if tid < COLL_CCD_LANES:
+                    continue
+            comptime if COLL_STOP_AFTER == 23:
+                if tid >= COLL_CCD_LANES:
+                    continue
             var a = Int(rebind[Scalar[DTYPE]](cand_sh[0 * NC + c]))
             var b = Int(rebind[Scalar[DTYPE]](cand_sh[1 * NC + c]))
             var t = Int(rebind[Scalar[DTYPE]](cand_sh[2 * NC + c]))
@@ -3238,7 +3254,7 @@ def _detect_contacts_sap_block_kernel[
         if full == 1:
             ctrl_sh[1] = Scalar[DTYPE](1)
     barrier()
-    comptime if COLL_STOP_AFTER == 3:
+    comptime if COLL_STOP_AFTER == 3 or COLL_STOP_AFTER >= 21:
         if tid == 0:
             smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
         return
