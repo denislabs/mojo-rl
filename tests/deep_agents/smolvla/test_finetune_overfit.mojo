@@ -104,6 +104,13 @@ comptime XN = B * CHUNK * ADIM
 comptime PKV = B * P * KVW
 comptime STEPS = 120
 comptime LR = Scalar[DT](3.0e-3)
+comptime GPU_CPU_BAND = 5.0e-2
+"""⚠ A CROSS-PRECISION band, and a COMPOUNDING one. On CUDA the GPU runs TF32
+and the CPU fp32, so a single step's losses differ by ~1e-3 — and leg [6] runs
+TEN Adam steps, each starting from weights the previous step moved slightly
+differently. The divergence therefore grows with the step count, which is why
+this band is looser than the single-step ones elsewhere and why the leg checks
+that BOTH loops learned rather than only that they agree."""
 
 comptime Expert = SmolVLAExpert[L, EW, EFF, W, KVW, 2]
 comptime Cache = SmolVLAKVCache[L, P, CHUNK, NKV, HD, B]
@@ -514,16 +521,24 @@ def main() raises:
         var rel = abs(lg - lc) / lc
         if rel > worst_rel:
             worst_rel = rel
-    print("  [6] 10 steps GPU vs CPU: final", lg, "vs", lc,
-          " worst per-step rel", worst_rel)
+    print("  [6] 10 steps GPU vs CPU: final", lg, "vs", lc, " rel",
+          abs(lg - lc) / abs(lc), " worst per-step rel", worst_rel)
+    # ⚠ BOTH must have learned. A comparison of two loops that each did
+    # nothing agrees perfectly and says nothing.
     assert_true(
         lc < f0 * 0.9,
         "the CPU control in leg [6] did not learn, so the comparison is"
         " between two networks that both did nothing",
     )
     assert_true(
-        worst_rel < 1.0e-3,
-        "the GPU training loop diverges from the CPU one",
+        lg < f0 * 0.9,
+        "the GPU loop did not learn — the optimizer's GPU path is not"
+        " updating anything",
+    )
+    assert_true(
+        abs(lg - lc) / abs(lc) < GPU_CPU_BAND,
+        "the GPU training loop diverges from the CPU one by more than ten"
+        " steps of TF32 explain",
     )
 
     print()

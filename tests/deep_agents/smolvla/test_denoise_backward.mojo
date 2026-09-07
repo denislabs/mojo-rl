@@ -155,12 +155,19 @@ comptime FD_HW = Scalar[DT](8.0e-2)
 comptime FD_HW2 = Scalar[DT](4.0e-2)
 comptime N_KINDS = 16
 comptime BAND = 3.0e-3
-comptime NORM_BAND = 2.0e-3
 """Relative band, against a scale floored at 1e-3 of the group's own largest
 gradient. Flooring matters: a component that is 0.6 beside neighbours of 11
 is not meaningfully "22% wrong" when it is off by 0.1 — the difference is at
 the noise level of the vector it lives in, and a per-component ratio says
 otherwise."""
+comptime NORM_BAND = 2.0e-3
+comptime GPU_CPU_BAND = 1.0e-2
+"""⚠ A CROSS-PRECISION band, not a correctness one. On CUDA the GPU side runs
+TF32 (10 explicit mantissa bits) while the CPU side is fp32, so identical
+networks differ by ~1e-3. Metal measures 8.8e-08 and a 5090 1.25e-03. Set from
+the arithmetic rather than from either platform's number, and still tight
+enough that a real GPU defect — which moves this to 1e-1 or worse, as the
+ablations show — fails it."""
 
 
 def _pname(which: Int) -> String:
@@ -259,6 +266,34 @@ def _pgrad(which: Int, t: Int, mut e: Expert) raises -> Scalar[DT]:
     if which == 13: return e.cross_layers[0].mlp.up.weight.grd.data[t]
     if which == 14: return e.cross_layers[0].input_layernorm.gamma.grd.data[t]
     return e.norm.gamma.grd.data[t]
+
+
+def _pvdownload(which: Int, mut e: Expert, d: DeviceContext) raises:
+    """Bring one probed `.val` back from the device.
+
+    ⚠ `_pdownload`'s twin, for the WEIGHTS rather than their gradients. Leg
+    [5] needs to establish that the two experts ARE the same network, and
+    inferring that from agreeing forwards is exactly the inference that broke
+    on CUDA — where the forwards do NOT agree to fp32 and the weights are
+    nonetheless identical.
+    """
+    if which == 0: e.self_layers[0].q.weight.val.download(d)
+    elif which == 1: e.self_layers[0].k.weight.val.download(d)
+    elif which == 2: e.self_layers[0].v.weight.val.download(d)
+    elif which == 3: e.self_layers[0].o.weight.val.download(d)
+    elif which == 4: e.self_layers[0].mlp.gate.weight.val.download(d)
+    elif which == 5: e.self_layers[0].mlp.down.weight.val.download(d)
+    elif which == 6: e.self_layers[0].input_layernorm.gamma.val.download(d)
+    elif which == 7:
+        e.self_layers[0].post_attention_layernorm.gamma.val.download(d)
+    elif which == 8: e.self_layers[0].q.bias.val.download(d)
+    elif which == 9: e.cross_layers[0].q.weight.val.download(d)
+    elif which == 10: e.cross_layers[0].k.weight.val.download(d)
+    elif which == 11: e.cross_layers[0].v.weight.val.download(d)
+    elif which == 12: e.cross_layers[0].o.weight.val.download(d)
+    elif which == 13: e.cross_layers[0].mlp.up.weight.val.download(d)
+    elif which == 14: e.cross_layers[0].input_layernorm.gamma.val.download(d)
+    else: e.norm.gamma.val.download(d)
 
 
 def _pdownload(which: Int, mut e: Expert, d: DeviceContext) raises:
@@ -674,6 +709,57 @@ def main() raises:
     d.synchronize()
     outg.download(d)
 
+    # ── [5] the two experts are the SAME NETWORK — checked, not inferred ──
+    # ⚠ This leg used to compare the two FORWARDS and conclude the weights
+    # matched. That inference is false on CUDA: MAX's multistage GEMM runs
+    # TF32 for fp32 outside SM100 (`use_tf32=False` is a comptime error
+    # there), so a GPU forward and a CPU forward of the IDENTICAL network
+    # differ by ~1e-3 — measured 1.25e-03 on a 5090 against 8.8e-08 on Metal,
+    # and the fp32-vs-TF32 gap this repo has recorded elsewhere is 1.1e-03 to
+    # 5.8e-03. The old 1e-4 band was a Metal number masquerading as a
+    # correctness threshold.
+    #
+    # So the precondition is now established DIRECTLY, bit for bit, and the
+    # cross-precision comparison below is banded for what it actually is.
+    var wdiff = 0
+    var wn = 0
+    for which in range(N_KINDS):
+        _pvdownload(which, eg, d)
+        for t in range(_psize(which)):
+            wn += 1
+            if _pget(which, t, eg) != _pget(which, t, e):
+                wdiff += 1
+    print("  [5] the two experts' weights: compared", wn, " differing",
+          wdiff)
+    assert_true(
+        wn > 0, "no weight was compared — leg [5] establishes nothing"
+    )
+    assert_true(
+        wdiff == 0,
+        "the CPU and GPU experts are different networks, so nothing below can"
+        " be attributed to the backward",
+    )
+
+    # And the GPU forward is DETERMINISTIC — which rules out the other way a
+    # cross-device difference could be real rather than arithmetic.
+    var out_a = Tensor.alloc(XN)
+    out_a.upload(d)
+    deng.step["gpu"](eg, cg, xg, out_a, Optional(d))
+    d.synchronize()
+    out_a.download(d)
+    var rerun = 0
+    for i in range(XN):
+        if out_a.data[i] != outg.data[i]:
+            rerun += 1
+    print("      the GPU forward re-run: compared", XN, " differing", rerun)
+    assert_true(
+        rerun == 0,
+        "the GPU forward is not deterministic — a race, not a precision"
+        " difference",
+    )
+
+    # With the network identical and the kernel deterministic, what is left is
+    # arithmetic. Reported against a band sized for TF32, not for Metal.
     var fwd = Cmp()
     var fl = List[Float64]()
     for i in range(XN):
@@ -681,12 +767,11 @@ def main() raises:
     fwd.set_group(fl)
     for i in range(XN):
         fwd.add(Float64(outg.data[i]), Float64(out.data[i]), i)
-    print("  [5] GPU forward vs CPU: compared", fwd.n, " ||err||/||fd||",
-          fwd.rel_norm())
+    print("      GPU vs CPU forward: compared", fwd.n, " ||err||/||cpu||",
+          fwd.rel_norm(), "  (Metal 8.8e-08, CUDA ~1.3e-03: TF32)")
     assert_true(
-        fwd.rel_norm() < 1.0e-4,
-        "the GPU forward disagrees with the CPU one, so leg [6] cannot"
-        " attribute a gradient difference to the backward",
+        fwd.rel_norm() < GPU_CPU_BAND,
+        "the GPU forward differs from the CPU one by more than TF32 explains",
     )
 
     var gxg = Tensor.alloc(XN)
@@ -728,8 +813,9 @@ def main() raises:
         "the GPU leg must compare every component, cache gradient included",
     )
     assert_true(
-        gcmp.rel_norm() < 1.0e-4,
-        "the GPU backward disagrees with the CPU one",
+        gcmp.rel_norm() < GPU_CPU_BAND,
+        "the GPU backward differs from the CPU one by more than TF32"
+        " explains",
     )
 
     print()

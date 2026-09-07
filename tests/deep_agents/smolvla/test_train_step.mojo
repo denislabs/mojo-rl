@@ -127,6 +127,11 @@ comptime AOut = Linear[EW, ADIM]
 comptime FD_H = 2.0e-2
 comptime FD_H2 = 1.0e-2
 comptime NORM_BAND = 3.0e-3
+comptime GPU_CPU_BAND = 1.0e-2
+"""⚠ A CROSS-PRECISION band. On CUDA the GPU side runs TF32 and the CPU side
+fp32, so identical networks differ by ~1e-3 — measured 1.25e-03 on a 5090
+against 8.8e-08 on Metal. Sized from the arithmetic, and still tight enough
+that this file's ablations (0.171 and up) fail it."""
 comptime N_KINDS = 8
 
 
@@ -190,6 +195,26 @@ def _pgrad(
     if which == 5: return to.bias.grd.data[t]
     if which == 6: return ao.weight.grd.data[t]
     return ao.bias.grd.data[t]
+
+
+def _pvdownload(
+    which: Int, mut ai: AIn, mut ti: TIn, mut to: TOut, mut ao: AOut,
+    d: DeviceContext,
+) raises:
+    """Bring one probed `.val` back — the WEIGHTS, not their gradients.
+
+    ⚠ Leg [4] needs the two networks to be identical, and inferring that from
+    agreeing forwards is false on CUDA: MAX's multistage GEMM runs TF32 for
+    fp32 outside SM100, so identical networks give forwards ~1e-3 apart.
+    """
+    if which == 0: ai.weight.val.download(d)
+    elif which == 1: ai.bias.val.download(d)
+    elif which == 2: ti.weight.val.download(d)
+    elif which == 3: ti.bias.val.download(d)
+    elif which == 4: to.weight.val.download(d)
+    elif which == 5: to.bias.val.download(d)
+    elif which == 6: ao.weight.val.download(d)
+    else: ao.bias.val.download(d)
 
 
 def _pdownload(
@@ -435,11 +460,31 @@ def main() raises:
     var lg = stg.run["gpu", P](eg, cg, deng, aig, tig, tog, aog, xg, ug, validg,
                                N_VALID, Optional(d))
     d.synchronize()
-    print("  [4] GPU loss", lg, " vs CPU", l0, " diff", abs(lg - l0))
+    # ⚠ The precondition is that the two networks are IDENTICAL, and it is
+    # checked bit for bit rather than inferred from agreeing losses — on CUDA
+    # the losses do not agree to fp32 and the weights are identical anyway.
+    var wdiff = 0
+    var wn = 0
+    for which in range(N_KINDS):
+        _pvdownload(which, aig, tig, tog, aog, d)
+        for t in range(_psize(which)):
+            wn += 1
+            if _pget(which, t, aig, tig, tog, aog) != _pget(
+                which, t, ai, ti, to, ao
+            ):
+                wdiff += 1
+    print("  [4] the two head sets' weights: compared", wn, " differing",
+          wdiff, " | GPU loss", lg, " vs CPU", l0, " rel",
+          abs(lg - l0) / abs(l0))
+    assert_true(wn > 0, "no weight compared — the precondition is vacuous")
     assert_true(
-        abs(lg - l0) < 1.0e-5,
-        "the GPU forward disagrees with the CPU one, so leg [5] cannot"
-        " attribute a gradient difference to the backward",
+        wdiff == 0,
+        "the CPU and GPU heads are different networks, so nothing below can"
+        " be attributed to the backward",
+    )
+    assert_true(
+        abs(lg - l0) / abs(l0) < GPU_CPU_BAND,
+        "the GPU forward differs from the CPU one by more than TF32 explains",
     )
 
     var gc = Cmp()
@@ -455,8 +500,9 @@ def main() raises:
           " ||err||/||cpu||", gc.rel_norm(), " outside band", gc.bad)
     assert_equal(gc.n, len(snap), "the GPU leg must compare every component")
     assert_true(
-        gc.rel_norm() < 1.0e-4,
-        "the GPU training step disagrees with the CPU one",
+        gc.rel_norm() < GPU_CPU_BAND,
+        "the GPU training step differs from the CPU one by more than TF32"
+        " explains",
     )
 
     print()
