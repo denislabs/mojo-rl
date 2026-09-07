@@ -482,6 +482,10 @@ def multi_ccd_extra_contacts[
     # `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ) -> Int:
     """Append the perturbed manifold points for one already-emitted contact.
 
@@ -494,7 +498,9 @@ def multi_ccd_extra_contacts[
     contact there is nothing to perturb about, and with a manifold already in
     hand the extra points are redundant.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var written = 0
 
     # `mjc_Convex`: tolerance scales with the SMALLER bounding radius, so a

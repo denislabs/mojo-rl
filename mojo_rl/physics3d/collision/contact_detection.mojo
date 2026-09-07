@@ -346,6 +346,10 @@ def _plane_mesh_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ):
     """Plane-mesh, after `mjc_PlaneConvex` (`engine_collision_convex.c`).
 
@@ -449,7 +453,9 @@ def _plane_mesh_contacts[
     lives in `qh_triangulate`'s diagonals and in the facet order
     `vertex->neighbors` happens to hold.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
     if m_id < 0:
@@ -1028,6 +1034,10 @@ def _plane_cylinder_contacts[
     # helper below. Defaulted to 0 so every existing call site is
     # unchanged. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ):
     """Plane-cylinder: up to FOUR points — two rim, two triangle.
 
@@ -1068,7 +1078,9 @@ def _plane_cylinder_contacts[
     swept against the MuJoCo runtime over 400 random poses — 272 contacting,
     557 points, 0 count mismatches, dist 2.1e-17, position 5.6e-17.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     comptime MINVAL = Scalar[DTYPE](1e-15)
 
@@ -1303,6 +1315,10 @@ def _plane_box_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ):
     """Plane-box: one contact per box CORNER below the plane, up to four.
 
@@ -1328,7 +1344,9 @@ def _plane_box_contacts[
     qualify: MuJoCo keeps the first four in `i = 0..7` with x = i&1, y = i&2,
     z = i&4, so this loop matches that order rather than sorting by depth.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var cnt = 0
     for i in range(8):
@@ -1415,6 +1433,10 @@ def _capsule_capsule_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ) -> Int:
     """Capsule/capsule: up to TWO contacts, MuJoCo's manifold.
 
@@ -1429,7 +1451,9 @@ def _capsule_capsule_contacts[
 
     Returns the number of records written.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var cc_dist = InlineArray[Scalar[DTYPE], CC_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
@@ -1619,6 +1643,10 @@ def _capsule_box_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ) -> Int:
     """Capsule/box: up to TWO contacts, MuJoCo's manifold.
 
@@ -1636,7 +1664,9 @@ def _capsule_box_contacts[
     single-point branches this replaces encoded the same thing as `nx = r[4]`
     versus `nx = -r[4]` followed by the shared emit's unconditional negation.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var cb_dist = InlineArray[Scalar[DTYPE], CB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
@@ -1737,6 +1767,10 @@ def _box_box_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ) -> Int:
     """Box/box: the whole manifold, on both the FACE and EDGE-EDGE axes.
 
@@ -1749,7 +1783,9 @@ def _box_box_contacts[
     `box_box_manifold` for the port and for why it came from MuJoCo 3.6.0
     rather than from `references/mujoco-3.3.6/`.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     var n_bb = 0
     var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)

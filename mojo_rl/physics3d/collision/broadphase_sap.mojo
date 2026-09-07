@@ -473,6 +473,12 @@ def _sap_plane_narrow[
     HFIELD_ENABLED: Bool,
 ](
     env: Int,
+    # The contact slab row and the CCD workspace row. The serial path
+    # passes `env` for both; the block kernel gives each thread its own
+    # staging window and CCD lane. `env` itself stays the per-env DATA
+    # row (heightfield samples), which is why it is three parameters.
+    crow: Int,
+    wrow: Int,
     dims: D,
     gi: Int,
     gj: Int,
@@ -708,10 +714,10 @@ def _sap_plane_narrow[
         var dist = pj_z - rj - ground_z
         if dist < cm and num_contacts < max_contacts:
             var c_off = num_contacts * CONTACT_SIZE
-            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                 gj_body
             )
-            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                 -1
             )
             var cw = from_plane_frame[DTYPE](
@@ -719,18 +725,18 @@ def _sap_plane_narrow[
                 pj_x, pj_y,
                 ground_z + dist * Scalar[DTYPE](0.5),
             )
-            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-            contacts[env, c_off + CONTACT_IDX_DIST] = dist
-            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[crow, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[crow, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[crow, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[crow, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[crow, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[crow, c_off + CONTACT_IDX_DIST] = dist
+            contacts[crow, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[crow, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[crow, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                 cdim
             )
             num_contacts += 1
@@ -760,10 +766,10 @@ def _sap_plane_narrow[
         var dist1 = e1_z - rj - ground_z
         if dist1 < cm and num_contacts < max_contacts:
             var c_off = num_contacts * CONTACT_SIZE
-            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                 gj_body
             )
-            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                 -1
             )
             var cw = from_plane_frame[DTYPE](
@@ -771,23 +777,23 @@ def _sap_plane_narrow[
                 e1_x, e1_y,
                 ground_z + dist1 * Scalar[DTYPE](0.5),
             )
-            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-            contacts[env, c_off + CONTACT_IDX_DIST] = dist1
-            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[crow, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[crow, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[crow, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[crow, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[crow, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[crow, c_off + CONTACT_IDX_DIST] = dist1
+            contacts[crow, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[crow, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[crow, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                 cdim
             )
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
             num_contacts += 1
         var e2_x = pj_x - hlj * axis_w[0]
         var e2_y = pj_y - hlj * axis_w[1]
@@ -795,10 +801,10 @@ def _sap_plane_narrow[
         var dist2 = e2_z - rj - ground_z
         if dist2 < cm and num_contacts < max_contacts:
             var c_off = num_contacts * CONTACT_SIZE
-            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                 gj_body
             )
-            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                 -1
             )
             var cw = from_plane_frame[DTYPE](
@@ -806,23 +812,23 @@ def _sap_plane_narrow[
                 e2_x, e2_y,
                 ground_z + dist2 * Scalar[DTYPE](0.5),
             )
-            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-            contacts[env, c_off + CONTACT_IDX_DIST] = dist2
-            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[crow, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[crow, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[crow, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[crow, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[crow, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[crow, c_off + CONTACT_IDX_DIST] = dist2
+            contacts[crow, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[crow, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[crow, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                 cdim
             )
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
-            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+            contacts[crow, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
             num_contacts += 1
 
     elif gj_type == GEOM_CYLINDER:
@@ -833,7 +839,7 @@ def _sap_plane_narrow[
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         _plane_cylinder_contacts[DTYPE, BATCH](
-            env,
+            crow,
             gj_body,
             pj_x, pj_y, pj_z,
             qj_x, qj_y, qj_z, qj_w,
@@ -852,6 +858,7 @@ def _sap_plane_narrow[
             contacts,
             num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_pcyl += Int(perf_counter_ns()) - pr._c_t0
@@ -897,10 +904,10 @@ def _sap_plane_narrow[
         var diste = epe[0]
         if diste < cm and num_contacts < max_contacts:
             var c_off = num_contacts * CONTACT_SIZE
-            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                 gj_body
             )
-            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                 -1
             )
             # `ellipsoid_plane` already returns the contact point in
@@ -910,18 +917,18 @@ def _sap_plane_narrow[
                 plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
                 epe[1], epe[2], epe[3],
             )
-            contacts[env, c_off + CONTACT_IDX_POS_X] = cwe[0]
-            contacts[env, c_off + CONTACT_IDX_POS_Y] = cwe[1]
-            contacts[env, c_off + CONTACT_IDX_POS_Z] = cwe[2]
-            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-            contacts[env, c_off + CONTACT_IDX_DIST] = diste
-            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contacts[crow, c_off + CONTACT_IDX_POS_X] = cwe[0]
+            contacts[crow, c_off + CONTACT_IDX_POS_Y] = cwe[1]
+            contacts[crow, c_off + CONTACT_IDX_POS_Z] = cwe[2]
+            contacts[crow, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[crow, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[crow, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[crow, c_off + CONTACT_IDX_DIST] = diste
+            contacts[crow, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[crow, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[crow, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[crow, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                 cdim
             )
             num_contacts += 1
@@ -936,7 +943,7 @@ def _sap_plane_narrow[
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         _plane_box_contacts[DTYPE](
-            env,
+            crow,
             gj_body,
             pj_x, pj_y, pj_z,
             qj_x, qj_y, qj_z, qj_w,
@@ -954,6 +961,7 @@ def _sap_plane_narrow[
             contacts,
             num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_pbox += Int(perf_counter_ns()) - pr._c_t0
@@ -978,7 +986,7 @@ def _sap_plane_narrow[
             _plane_mesh_contacts[
                 DTYPE,
                 -1, True, False](
-                env,
+                crow,
                 gj,
                 gj_body,
                 pj_x, pj_y, pj_z,
@@ -1000,13 +1008,14 @@ def _sap_plane_narrow[
                 contacts,
                 num_contacts,
                 cgp,
+                max_contacts_in=max_contacts,
             )
             comptime if _COLL_PROBE:
                 pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
                 pr._n_pmesh += 1
 
     _fill_pair_solparams[DTYPE](
-        env, _n0, num_contacts, _mx, contacts
+        crow, _n0, num_contacts, _mx, contacts
     )
 
 
@@ -1035,6 +1044,12 @@ def _sap_pair_narrow[
     HFIELD_ENABLED: Bool,
 ](
     env: Int,
+    # The contact slab row and the CCD workspace row. The serial path
+    # passes `env` for both; the block kernel gives each thread its own
+    # staging window and CCD lane. `env` itself stays the per-env DATA
+    # row (heightfield samples), which is why it is three parameters.
+    crow: Int,
+    wrow: Int,
     dims: D,
     si: Int,
     sj: Int,
@@ -1462,7 +1477,7 @@ def _sap_pair_narrow[
             pr._c_hf += Int(perf_counter_ns()) - pr._c_t0
             pr._n_hf += 1
         _fill_pair_solparams[DTYPE](
-            env, _n0, num_contacts, _mx, contacts
+            crow, _n0, num_contacts, _mx, contacts
         )
         return
 
@@ -1546,18 +1561,19 @@ def _sap_pair_narrow[
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         _ = _capsule_capsule_contacts[DTYPE](
-            env, gi_body, gj_body,
+            crow, gi_body, gj_body,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
             cm, cf, cfs, cfr, cdim,
             dims, contacts, num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_cc += Int(perf_counter_ns()) - pr._c_t0
             pr._n_cc += 1
         _fill_pair_solparams[DTYPE](
-            env, _n0, num_contacts, _mx, contacts
+            crow, _n0, num_contacts, _mx, contacts
         )
         return
     elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
@@ -1624,38 +1640,40 @@ def _sap_pair_narrow[
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         _ = _capsule_box_contacts[DTYPE](
-            env, gi_body, gj_body,
+            crow, gi_body, gj_body,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
             Scalar[DTYPE](-1),
             cm, cf, cfs, cfr, cdim,
             dims, contacts, num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_cb += Int(perf_counter_ns()) - pr._c_t0
             pr._n_cb += 1
         _fill_pair_solparams[DTYPE](
-            env, _n0, num_contacts, _mx, contacts
+            crow, _n0, num_contacts, _mx, contacts
         )
         return
     elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         _ = _capsule_box_contacts[DTYPE](
-            env, gi_body, gj_body,
+            crow, gi_body, gj_body,
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
             Scalar[DTYPE](1),
             cm, cf, cfs, cfr, cdim,
             dims, contacts, num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_cb += Int(perf_counter_ns()) - pr._c_t0
             pr._n_cb += 1
         _fill_pair_solparams[DTYPE](
-            env, _n0, num_contacts, _mx, contacts
+            crow, _n0, num_contacts, _mx, contacts
         )
         return
     elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
@@ -1666,7 +1684,7 @@ def _sap_pair_narrow[
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
         var code = _box_box_contacts[DTYPE](
-            env,
+            crow,
             gi_body,
             gj_body,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
@@ -1680,13 +1698,14 @@ def _sap_pair_narrow[
             contacts,
             num_contacts,
             cgp,
+            max_contacts_in=max_contacts,
         )
         comptime if _COLL_PROBE:
             pr._c_bb += Int(perf_counter_ns()) - pr._c_t0
             pr._n_bb += 1
         if code >= 0:
             _fill_pair_solparams[DTYPE](
-                env, _n0, num_contacts, _mx, contacts
+                crow, _n0, num_contacts, _mx, contacts
             )
             return
         comptime if _COLL_PROBE:
@@ -1845,7 +1864,7 @@ def _sap_pair_narrow[
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                     rj, hlj, hxj, hyj, hzj,
                     0, 0,
-                    ws, env,
+                    ws, wrow,
                     ccd_tol, ccd_iter, cm,
                     dist_cutoff=cm,
                 )
@@ -1861,7 +1880,7 @@ def _sap_pair_narrow[
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
             0, 0,
-            ws, env,
+            ws, wrow,
             ccd_tol, ccd_iter, cm,
             dist_cutoff=cm,
         )
@@ -1948,7 +1967,7 @@ def _sap_pair_narrow[
                         rj, hlj, hxj, hyj, hzj,
                         va2, mnv2,
                         qf1, qf2, qxx, qf_ok,
-                        ws, env,
+                        ws, wrow,
                         ccd_tol, ccd_iter, cm,
                         cm,
                     )
@@ -1964,7 +1983,7 @@ def _sap_pair_narrow[
                 rj, hlj, hxj, hyj, hzj,
                 va2, mnv2,
                 wf1, wf2, wxx, wf_ok,
-                ws, env,
+                ws, wrow,
                 ccd_tol, ccd_iter, cm,
                 # Opt in to the cutoff exit: `dist` below is read ONLY
                 # by `if dist < cm`, and everything that consumes the
@@ -2027,7 +2046,7 @@ def _sap_pair_narrow[
                     pr._c_t0 = Int(perf_counter_ns())
                 var mcn = native_multicontact_contacts[
                     DTYPE](
-                    env, body_a, body_b,
+                    crow, body_a, body_b,
                     gi_type,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                     hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
@@ -2040,8 +2059,9 @@ def _sap_pair_narrow[
                     wf1, wf2, wxx,
                     dist, cm, cf, cfs, cfr, cdim,
                     False,
-                    contacts, ws, env, num_contacts,
+                    contacts, ws, wrow, num_contacts,
                     cgp,
+                    max_contacts_in=max_contacts,
                 )
                 comptime if _COLL_PROBE:
                     pr._c_mcn += Int(perf_counter_ns()) - pr._c_t0
@@ -2049,11 +2069,11 @@ def _sap_pair_narrow[
                 # The manifold REPLACES the single point.
                 if mcn > 0:
                     _fill_pair_solparams[
-                        DTYPE](env, _n0, num_contacts, _mx, contacts)
+                        DTYPE](crow, _n0, num_contacts, _mx, contacts)
                     return
         else:
             _fill_pair_solparams[DTYPE](
-                env, _n0, num_contacts, _mx, contacts
+                crow, _n0, num_contacts, _mx, contacts
             )
             return
 
@@ -2065,15 +2085,15 @@ def _sap_pair_narrow[
         var mccd_nz = nz
         var mccd_first = num_contacts
         var c_off = num_contacts * CONTACT_SIZE
-        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+        contacts[crow, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
             body_a
         )
-        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+        contacts[crow, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
             body_b
         )
-        contacts[env, c_off + CONTACT_IDX_POS_X] = cx
-        contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
-        contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
+        contacts[crow, c_off + CONTACT_IDX_POS_X] = cx
+        contacts[crow, c_off + CONTACT_IDX_POS_Y] = cy
+        contacts[crow, c_off + CONTACT_IDX_POS_Z] = cz
         # The record's normal points `body_b -> body_a`. Every branch
         # above computed `gi -> gj` with `body_a = gi`, so it is
         # negated here — UNCONDITIONALLY.
@@ -2092,15 +2112,15 @@ def _sap_pair_narrow[
         nx = -nx
         ny = -ny
         nz = -nz
-        contacts[env, c_off + CONTACT_IDX_NX] = nx
-        contacts[env, c_off + CONTACT_IDX_NY] = ny
-        contacts[env, c_off + CONTACT_IDX_NZ] = nz
-        contacts[env, c_off + CONTACT_IDX_DIST] = dist
-        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-        contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-        contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-        contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+        contacts[crow, c_off + CONTACT_IDX_NX] = nx
+        contacts[crow, c_off + CONTACT_IDX_NY] = ny
+        contacts[crow, c_off + CONTACT_IDX_NZ] = nz
+        contacts[crow, c_off + CONTACT_IDX_DIST] = dist
+        contacts[crow, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+        contacts[crow, c_off + CONTACT_IDX_FRICTION] = cf
+        contacts[crow, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+        contacts[crow, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+        contacts[crow, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
             cdim
         )
         num_contacts += 1
@@ -2130,7 +2150,7 @@ def _sap_pair_narrow[
                 pr._c_t0 = Int(perf_counter_ns())
             _ = multi_ccd_extra_contacts[
                 DTYPE](
-                env, body_a, body_b, mccd_first,
+                crow, body_a, body_b, mccd_first,
                 gi_type,
                 pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                 ri, hli, hxi, hyi, hzi, rbound_i, va1, mnv1,
@@ -2146,16 +2166,17 @@ def _sap_pair_narrow[
                 dist,
                 cm, cf, cfs, cfr, cdim,
                 contacts, num_contacts,
-                ws, env,
+                ws, wrow,
                 ccd_tol, ccd_iter, cm,
                 cgp,
+                max_contacts_in=max_contacts,
             )
             comptime if _COLL_PROBE:
                 pr._c_mccd += Int(perf_counter_ns()) - pr._c_t0
                 pr._n_mccd += 1
 
     _fill_pair_solparams[DTYPE](
-        env, _n0, num_contacts, _mx, contacts
+        crow, _n0, num_contacts, _mx, contacts
     )
 
 
@@ -2257,10 +2278,13 @@ def _detect_contacts_sap_env[
     ws: LayoutTensor[
         DTYPE, L_WS, MutAnyOrigin
     ],
+    # CCD workspace row; -1 = `env` (every serial caller).
+    wrow_in: Int = -1,
 ):
     """AABB/SAP broadphase contact detection for one env (verbatim from
     detect_contacts_sap_gpu; mesh branches compiled in iff nmesh_verts > 0).
     """
+    var wrow = wrow_in if wrow_in >= 0 else env
     var nq = dims.get_nq()
     var nv = dims.get_nv()
     var nbody = dims.get_nbody()
@@ -2467,7 +2491,7 @@ def _detect_contacts_sap_env[
             _sap_plane_narrow[
                 DTYPE, BATCH, D, EX_CAP, HFIELD_ENABLED=HFIELD_ENABLED
             ](
-                env, dims, gi, gj, gi_body, gi_contype, gi_conaffinity,
+                env, env, wrow, dims, gi, gj, gi_body, gi_contype, gi_conaffinity,
                 plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
                 pn, nbody, max_contacts, ex_sig, n_sig, pr, num_contacts,
                 wpx, wpy, wpz, wqx, wqy, wqz, wqw,
@@ -2623,7 +2647,7 @@ def _detect_contacts_sap_env[
             _sap_pair_narrow[
                 DTYPE, BATCH, D, EX_CAP, HFIELD_ENABLED=HFIELD_ENABLED
             ](
-                env, dims, si, sj, si_type, nbody, max_contacts,
+                env, env, wrow, dims, si, sj, si_type, nbody, max_contacts,
                 ex_sig, n_sig, pr, num_contacts,
                 wpx, wpy, wpz, wqx, wqy, wqz, wqw,
                 ccd_tol, ccd_iter, multiccd_off,

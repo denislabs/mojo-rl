@@ -1350,6 +1350,10 @@ def native_multicontact_contacts[
     # `includemargin` is `contact_margin - contact_gap`, and the solver excludes
     # `dist >= includemargin`. See `GEOM_IDX_GAP`.
     contact_gap: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # The emission cap. -1 = the model's `max_contacts` (every serial
+    # caller); the block-per-env collision kernel passes the end of the
+    # thread's staging window instead, so a routine cannot write past it.
+    max_contacts_in: Int = -1,
 ) -> Int:
     """`multicontact` — emit the clipped face manifold, or 0 if there is none.
 
@@ -1375,7 +1379,9 @@ def native_multicontact_contacts[
     When the caller swaps, the manifold normal comes out as `obj2 -> obj1`,
     which is `gi -> gj`; the record wants `body_b -> body_a`, so it is negated.
     """
-    var max_contacts = dims.get_max_contacts()
+    var max_contacts = (
+        max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
+    )
     # A mesh with no polygons (a degenerate hull) is skipped, as MuJoCo skips
     # `!obj->data.mesh.mesh_polynum`.
     if gi_type == GEOM_MESH and pn1 <= 0:
