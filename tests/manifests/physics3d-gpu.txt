@@ -1,0 +1,35 @@
+# physics3d NVIDIA gates — `pixi run -e nvidia test-physics3d-gpu`.
+#
+# WHY THIS MANIFEST EXISTS. The 2026-09 CPU campaign edited solver code that
+# the batched GPU kernels share — the M⁻¹ skip at the Newton call sites
+# (`_precompute_contact_normal[MINV_J=False]`), the `D = 1/R` rows, the
+# elliptic improvement exit, the new `_newton_solve_env` arguments, the
+# noslip CACHE/SPARSE legs — and every one of them was compiled and matched
+# on APPLE only. The PYRAMIDAL + NVIDIA route goes through the BLOCKED
+# Newton kernel, which never launches on Metal, so a green Apple run proves
+# nothing about it. Run this before reading any NVIDIA perf number from a
+# tree that carries those changes (scripts/p0_attrib.sh, scripts/p0_ab.sh).
+#
+# Every entry is self-contained: no references/, no MuJoCo, no dumps. The
+# elliptic and noslip vs-MuJoCo gates are CPU gates and live in smoke.txt.
+#
+# On Apple the same manifest runs, but the blocked-kernel entries exercise
+# the per-env fallback there — meaningful for the per-env path, blind for
+# the blocked one.
+
+# The blocked pyramidal Newton against the CPU per-env oracle on free-joint
+# models (Ant, Humanoid) and on the ThreeTrees model — the SEGMENTED blocked
+# kernel against the DENSE oracle, contacts spanning two trees.
+tests/physics3d/test_newton_freejoint_vs_cpu.mojo
+# The blocked kernel's GOLDEN fingerprint (Walker2D, contacts + joint limits).
+tests/physics3d/test_newton_blocked_fields.mojo
+# The blocked kernel's tendon-limit and dry-friction rows — NVIDIA-only rows.
+tests/physics3d/test_newton_blocked_tendon_fields.mojo
+# mj_solNoSlip on the blocked kernel (dm_control's dog is pyramidal + noslip).
+tests/physics3d/test_noslip_blocked_kernel.mojo
+# Block-restricted LDL factor / M⁻¹ / solve == the dense ones, bit for bit.
+tests/physics3d/test_ldl_blocked.mojo
+# The cooperative (PARALLEL=True) fields kernels vs the serial ones, bit-exact.
+tests/physics3d/test_fields_mt_parity.mojo
+# The batched cfrc_ext kernel vs the CPU rne_post path.
+tests/physics3d/test_cfrc_ext_batched_vs_cpu.mojo

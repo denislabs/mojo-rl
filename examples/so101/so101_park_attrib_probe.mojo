@@ -97,7 +97,15 @@ comptime WARMUP_STEPS = 200
 # control is the denominator of the `x k=0` column, so a cold k=0 corrupts
 # every ratio in the table while looking like a fast control.
 comptime WARMUP_SECONDS = 5.0
-comptime TIMED_STEPS = 300
+# ⚠ 1500, NOT 300, BECAUSE THE WARMUP IS IN THE DENOMINATOR. nsys averages a
+# kernel over EVERY launch, warmup included, and scripts/p0_attrib.py divides
+# by total_steps; the wall clock covers the timed steps only. With 200 warm +
+# 300 timed the warmup was 40% of the launches at k>=9 and its slower (ramping)
+# launches pulled the average 2% above the wall clock — three sweeps in a row
+# (Sep 3, 4, 7) printed "NOT DECIDABLE" at k=9..13 for that reason alone. At
+# 1500 the warmup is 12% of the launches; the bias shrinks by the same factor.
+# Cost: k=13 at ~27 ms/step is 40 s per leg.
+comptime TIMED_STEPS = 1500
 
 # ⚠⚠ RESET EVERY STEP — THE FIX FOR A BISECT THAT FED BACK INTO ITS OWN INPUT.
 # `NEWTON_STOP_AFTER` truncates the solver, which leaves `qacc_constrained` at

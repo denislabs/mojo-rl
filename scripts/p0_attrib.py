@@ -474,7 +474,7 @@ def main():
             f"k={k} ({100*r/probes[k]['ms_per_step']:+.1f}%)" for k, r in bad))
         print("  !!")
         print("  !! The per-launch averages include WARMUP launches the wall")
-        print("  !! time never saw. Raise WARMUP_STEPS in the probe, or profile")
+        print("  !! time never saw. Raise TIMED_STEPS in the probe (1500 since 2026-09-07), or profile")
         print("  !! only the timed region, and re-run. Compare terms ACROSS")
         print("  !! runs only after this is clean — every untouched kernel")
         print("  !! moves together when it is not.")
