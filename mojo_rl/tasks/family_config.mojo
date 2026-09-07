@@ -77,8 +77,11 @@ from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
+from std.math import sqrt
+
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
+    META_IDX_TASK_PARAM_0,
     MODEL_SITE_SIZE,
     CONTACT_SIZE,
     MODEL_BODY_SIZE,
@@ -93,7 +96,8 @@ from mojo_rl.physics3d.gpu.constants import (
     rk4_extra_workspace_size,
 )
 
-from .gpu_eval import eval_tape_gpu
+from .gpu_eval import eval_tape_gpu, tape_distance_gpu
+from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from .obs import (
     slot_active, write_free_slot_obs, write_free_slot_obs_host,
     FREE_JOINT_NV,
@@ -286,6 +290,55 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # restatement safe.
     comptime MAX_PLACE_ATTEMPTS: Int = 64
     comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
+
+    # ── REWARD SHAPING — see `custom_reward_gpu` for the whole argument ────
+    #
+    # ⚠⚠ SET EITHER WEIGHT TO 0.0 AND THE REWARD IS SPARSE AGAIN, exactly as
+    # it was. That is not a courtesy: every baseline this family has recorded
+    # was measured at 0.0, and a shaped run is not comparable with them.
+    comptime SHAPE_W_GOAL: Float64 = 0.10
+    """On the goal's own distance, from the tape — generic over the language.
+
+    ⚠ IT HAS NO GRADIENT UNTIL THE ARM TOUCHES SOMETHING, on the tasks that
+    move an object. `Near(brick, cube_a, 0.06)` depends only on where the two
+    props are, and the arm flailing in free space does not change that — so
+    this term alone rewards the OUTCOME of a lucky contact and says nothing
+    about how to make one. `SHAPE_W_REACH` is the term that does."""
+
+    comptime SHAPE_W_REACH: Float64 = 0.05
+    """On the gripper's distance to the body the goal names first.
+
+    ⚠⚠ MANIPULATION-SPECIFIC, AND DELIBERATELY SO. There is no general reason
+    a goal is easier when the gripper is near its subject — it is true of
+    every task in THIS family and it is the term that turns "flail until a
+    block moves" into "approach the block". Kept separate from
+    `SHAPE_W_GOAL`, with its own weight, so the generic half stays generic.
+
+    ⚠ ZERO WHEN THE GOAL'S SUBJECT IS NOT A BODY. `AtRegion`'s subject is a
+    SITE, and the gripper's distance to itself is not a task."""
+
+    comptime SHAPE_CLIP: Float64 = 0.5
+    """Metres past which neither term grows.
+
+    ⚠⚠ THE BOUND IS WHAT KEEPS `reward > 0.5` MEANING "SOLVED". Three places
+    read success out of the reward that way — `examples/tasks/
+    task_batched_gpu.mojo`, `task_eval_frozen.mojo` and this file's own
+    trainer — and shaping is subtracted from the same scalar. So the total
+    penalty must stay strictly below 0.5:
+
+        (SHAPE_W_GOAL + SHAPE_W_REACH) * SHAPE_CLIP = 0.15 * 0.5 = 0.075
+
+    `tests/tasks/test_goal_distance.mojo` asserts that product, because the
+    failure is silent: a lane that met its goal would report `reward = 0.4`
+    and every success counter in the tree would read it as a miss."""
+
+    comptime GRIPPER_SITE: Int = 1
+    """`robot_gripperframe`'s site id in the composed scene.
+
+    ⚠ RESTATED LIKE THE REGION TABLE, and checked the same way — the reward
+    hook gets `site_xpos` but no name table. Measured through MuJoCo 3.10.0 on
+    `scenes/so101_tabletop.xml`: 0 `robot_baseframe`, 1 `robot_gripperframe`,
+    2 `table_surface`."""
 
     comptime OBS_MASK_BASE: Int = (
         So101TabletopModel.NQ + So101TabletopModel.NV
@@ -798,7 +851,62 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # exactly that and reported 0/128 on a task that holds at reset; the
         # eval reads `_reward` instead, which is this hook's other return and
         # needs no flag.
+        # ── the shaped terms ──────────────────────────────────────────────
+        #
+        # ⚠⚠ THE SPARSE REWARD COULD NOT BE LEARNED, AND THAT IS MEASURED.
+        # `so101_gather_bricks` on a 5090: 125k env-steps, ~384 episodes, a
+        # success rate indistinguishable from random (0.00 .. 0.05, entirely
+        # inside the random baseline's 2-sigma band). At ~1.5% success that is
+        # about SIX rewarding transitions in 125,000 — 5e-05 of the replay
+        # buffer, which a batch of 256 contains 1.4% of the time. The critic
+        # almost never saw a success. No optimiser setting reaches that.
+        #
+        # ⚠ SHAPING IS A PER-FAMILY CONCERN AND THIS IS WHERE IT BELONGS.
+        # §5.3 and the note above: a shaped reward is a research choice about
+        # one experiment, and putting it in a `.task` would make two runs
+        # incomparable while their files looked identical. Here it is one
+        # decision for the whole family, in the type every task shares.
+        #
+        # ⚠⚠ AND IT CHANGES WHAT A RETURN MEANS. Sparse, with termination on
+        # success, an episode return was exactly 0 or 1 and `mean_return()`
+        # WAS the success rate. It is not any more. Every caller that wants
+        # the rate must count `reward > 0.5` itself — which stays valid only
+        # because `SHAPE_CLIP` bounds the penalty below 0.5.
+        var dist = tape_distance_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
+            meta, curriculum, xpos, xquat, site_xpos, env
+        )
+        comptime CLIP = Scalar[DTYPE](Self.SHAPE_CLIP)
+        if dist > CLIP:
+            dist = CLIP
+
+        # ⚠ THE REACH TERM READS THE FIRST TERM'S SUBJECT OUT OF THE TAPE.
+        # `meta[TASK_PARAM_1]` is term 0's `a`, which for `Near`, `Above`,
+        # `On` and `In` is a BODY id — and for `AtRegion` is a SITE id, which
+        # is why the op is checked before the distance is taken. A site id
+        # read as a body id lands on a real, wrong body.
+        var reach = Scalar[DTYPE](0)
+        var op0 = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0]))
+        if op0 == OP_NEAR or op0 == OP_ABOVE or op0 == OP_ON or op0 == OP_IN:
+            var sb = Int(
+                rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + 1])
+            )
+            comptime GS = Self.GRIPPER_SITE
+            var ex = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3]) - rebind[
+                Scalar[DTYPE]
+            ](xpos[env, sb * 3])
+            var ey = rebind[Scalar[DTYPE]](
+                site_xpos[env, GS * 3 + 1]
+            ) - rebind[Scalar[DTYPE]](xpos[env, sb * 3 + 1])
+            var ez = rebind[Scalar[DTYPE]](
+                site_xpos[env, GS * 3 + 2]
+            ) - rebind[Scalar[DTYPE]](xpos[env, sb * 3 + 2])
+            reach = sqrt(ex * ex + ey * ey + ez * ez)
+            if reach > CLIP:
+                reach = CLIP
+
         var r = Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
+        r = r - Scalar[DTYPE](Self.SHAPE_W_GOAL) * dist
+        r = r - Scalar[DTYPE](Self.SHAPE_W_REACH) * reach
         _ = qpos
         _ = qvel
         _ = xipos

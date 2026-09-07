@@ -87,10 +87,31 @@ meaningless and its 20032 episodes in 20k steps (one per step, because
 success terminates) is what a correctly wired success-termination looks like.
 
 ⚠⚠ SO A FLOOR OF 0.00 IS WHAT `lift` AND `gather` ACTUALLY HAVE, and any
-sustained rate above it is learning. They are also SPARSE and HARD: `lift`
-needs a grasp before it pays anything. A flat curve on them is an honest RL
-result, not a broken harness — which is a claim this file can now make,
-because the harness is measured.
+sustained rate above it is learning.
+
+## ⚠⚠ THE REWARD IS SHAPED NOW, AND THE RETURN IS NO LONGER THE SUCCESS RATE
+
+The first 125k-step `gather` run was flat, and the reason was arithmetic:
+at ~1.5% success that is about SIX rewarding transitions in 125,000 — 5e-05
+of the replay buffer, which a batch of 256 contains 1.4% of the time. The
+critic almost never saw a success. `So101TabletopConfig` now subtracts two
+dense terms, `SHAPE_W_GOAL` on the goal's own distance (generic, from the
+tape) and `SHAPE_W_REACH` on the gripper's distance to the body the goal
+names — the second because goal distance alone has NO gradient until the arm
+touches something, which on `gather` is the whole difficulty.
+
+    shaped mean return, random actions, gather     -3.996
+    success rate, greedy, untrained                 0.00
+
+⚠ SO THIS FILE PRINTS TWO NUMBERS. `mean_return` is what SAC optimises and
+moves smoothly; the SUCCESS RATE is measured separately by
+`greedy_success_rate` — one greedy episode per lane, counting `reward > 0.5`
+— because that test stays valid only while `SHAPE_CLIP` bounds the penalty
+below 0.5. `tests/tasks/test_goal_distance.mojo` asserts that bound.
+
+⚠ SET `SHAPE_W_GOAL` AND `SHAPE_W_REACH` TO 0.0 to get the sparse reward
+back. Every success-rate baseline above was measured there, and a shaped run
+is not comparable with a sparse one on RETURN — only on the rate.
 
 ## ⚠ THE RETURN *IS* THE SUCCESS RATE, WHICH IS WHY THIS IS READABLE AT ALL
 
@@ -113,7 +134,10 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
@@ -227,6 +251,73 @@ comptime CriticNet = Sequential[
     LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
+
+comptime AgentT = SACAgent[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet,
+    CriticNet,
+]
+
+
+def greedy_success_rate(
+    mut agent: AgentT, mut env: EnvT, ctx: DeviceContext
+) raises -> Float64:
+    """Fraction of lanes whose goal is met at ANY step of one greedy episode.
+
+    ## ⚠⚠ WHY THIS EXISTS: THE RETURN STOPPED BEING THE SUCCESS RATE
+
+    Sparse, with termination on success, an episode return was exactly 0 or 1
+    and `agent.mean_return()` WAS the rate — no band table, no decoding. The
+    shaped terms in `So101TabletopConfig.custom_reward_gpu` subtract a
+    per-step penalty from that same scalar, so a return is now dominated by
+    integrated distance and says nothing directly about success. The driver's
+    own greedy eval returns that shaped mean too.
+
+    ⚠ `reward > 0.5` IS STILL THE SUCCESS TEST, and it is only valid because
+    `SHAPE_CLIP` bounds the total penalty at 0.075.
+    `tests/tasks/test_goal_distance.mojo` asserts that product for exactly
+    this reason — the same rule `task_eval_frozen.mojo` and
+    `task_batched_gpu.mojo` read success by.
+
+    ⚠ NO `selective_reset_batch` IN THE LOOP, deliberately. A lane that
+    succeeds TERMINATES and then keeps stepping with its done flag set; what
+    is being counted is "did this lane ever meet its goal in one episode", so
+    resetting mid-window would let one lane contribute twice and inflate the
+    rate above what an episode is worth.
+    """
+    comptime AO = 2 * ACT_DIM
+    var ao = ctx.enqueue_create_buffer[DT](N_ENVS * AO)
+    env.reset_batch[N_ENVS](ctx, UInt64(20260907))
+
+    var solved = List[Bool](length=N_ENVS, fill=False)
+    var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0))
+
+    for step in range(So101TabletopConfig.MAX_STEPS):
+        agent.trainer.select_greedy_action_batched[N_ENVS](
+            ctx,
+            LayoutTensor[DT, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin](
+                env.obs_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, ACT_DIM), MutAnyOrigin](
+                env.action_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, AO), MutAnyOrigin](
+                mptr(ao.unsafe_ptr())
+            ),
+        )
+        env.step_batch[N_ENVS](ctx, UInt64(step + 1))
+        ctx.enqueue_copy(rew_h.unsafe_ptr(), env._reward)
+        ctx.synchronize()
+        for e in range(N_ENVS):
+            if rew_h[e] > Scalar[DT](0.5):
+                solved[e] = True
+
+    var n = 0
+    for e in range(N_ENVS):
+        if solved[e]:
+            n += 1
+    return Float64(n) / Float64(N_ENVS)
 
 
 def main() raises:
@@ -347,12 +438,7 @@ def main() raises:
         var logger = CompositeLogger(CsvLogger(csv_path), remote)
         var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
-        ](
+        var agent = AgentT(
             ctx=ctx,
             actor_lr=3e-4,
             critic_lr=3e-4,
@@ -471,12 +557,19 @@ def main() raises:
         logger.close()
         _ = logger        # keeps `logger_ptr` alive to here
 
-        var rate = Float64(agent.mean_return())
+        # ⚠⚠ TWO DIFFERENT NUMBERS NOW, AND THEY USED TO BE ONE. `mean_return`
+        # is the SHAPED return — dominated by integrated distance, and what
+        # SAC actually optimises. The success rate has to be measured, and
+        # `greedy_success_rate` is that measurement: one greedy episode per
+        # lane, counting `reward > 0.5`.
+        var shaped = Float64(agent.mean_return())
+        var rate = greedy_success_rate(agent, eval_env, ctx)
         print("-" * 72)
         print("  env steps          :", num_steps)
         print("  elapsed            :", secs, "s")
         print("  episodes           :", agent.ep_count())
-        print("  SUCCESS RATE       :", rate, "(last 100 episodes)")
+        print("  shaped mean return :", shaped, "(last 100 episodes)")
+        print("  SUCCESS RATE       :", rate, "(greedy,", N_ENVS, "lanes)")
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)
 
@@ -519,23 +612,26 @@ def main() raises:
         # Printing the interval is what stops a noisy tick being read as a
         # curve; the first `gather` run oscillated 0.00 .. 0.05 for 125k steps
         # and every one of those values sits inside this band.
-        var n = Float64(agent.ep_count())
-        if n > Float64(100):
-            n = Float64(100)
+        # ⚠ THE DENOMINATOR IS THE GREEDY EVAL'S LANE COUNT, not the training
+        # window — `rate` above comes from N_ENVS greedy episodes and the band
+        # has to be the band for THAT n.
+        var n = Float64(N_ENVS)
         var p = bl[0]
         var se = 0.0
         if n > 0.0:
             se = (p * (1.0 - p) / n) ** 0.5
-        print("  baseline se over", Int(n), "episodes:", se,
+        print("  baseline se over", Int(n), "greedy episodes:", se,
               " -> 2-sigma band ends at", p + 2.0 * se)
 
         if rate <= p + 2.0 * se:
             print("  FLAT — the rate is inside the random baseline's 2-sigma")
-            print("  band. Not a failure of the agent yet: with a sparse 0/1")
-            print("  reward at this floor there is almost nothing to")
-            print("  bootstrap from. Read `mean_q` and `alpha` from the")
-            print("  logger before touching hyperparameters — a critic whose")
-            print("  mean_q never leaves 0 has never seen a success.")
+            print("  band. ⚠ READ THE SHAPED RETURN BEFORE CONCLUDING")
+            print("  ANYTHING: it is dense, so it moves long before the rate")
+            print("  does. Random actions score", -3.996, "on `gather`; a run")
+            print("  climbing toward 0 is learning to close the distance even")
+            print("  with no successes yet. If the shaped return is ALSO flat,")
+            print("  the shaping is not reaching the policy — check `mean_q`")
+            print("  and `alpha` in the logger before touching anything else.")
         else:
             print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
         print("=" * 72)

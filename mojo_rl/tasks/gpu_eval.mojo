@@ -42,6 +42,8 @@ no error anywhere. `require_gpu_regions` refuses that goal; it is the region
 counterpart of `predicates.require_tier_a` and is called in the same place.
 """
 
+from std.math import sqrt
+
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.gpu.constants import (
@@ -233,6 +235,181 @@ def eval_tape_gpu[
             else:
                 v2 = r
             last = r
+    return last
+
+
+@always_inline
+def tape_distance_gpu[
+    DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+](
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    curriculum: LayoutTensor[
+        DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
+    ],
+    env: Int,
+) -> Scalar[DTYPE]:
+    """HOW FAR this lane is from its goal, in metres. ZERO iff the goal holds.
+
+    ## ⚠⚠ WHY A DISTANCE EXISTS AT ALL: A SPARSE REWARD HAS NOTHING TO LEARN
+
+    `so101_gather_bricks` pays +1 on success and nothing otherwise. Measured on
+    a 5090: random actions meet it on about 1.5% of episodes, so 125k env-steps
+    produced roughly SIX rewarding transitions out of 125,000 — 5e-05 of the
+    replay buffer, which a batch of 256 contains 1.4% of the time. The critic
+    almost never sees a success and `mean_q` has nothing to move toward. That
+    is not a hyperparameter problem and no amount of tuning reaches it.
+
+    This is the quantity a shaped term needs, and it is derived from the TAPE
+    so it works for every goal the language can express rather than for one
+    task — a `Near` special case inside a family config is exactly the
+    "rule written inline twice" defect this tree keeps paying for.
+
+    ## THE CONTRACT, AND THE GATE THAT HOLDS IT
+
+    **Zero iff the goal holds.** `tests/tasks/test_goal_distance.mojo` sweeps
+    states and asserts `tape_distance_gpu(s) == 0` exactly when
+    `eval_tape_gpu(s)` is True — two separate switches over one tape, so an op
+    this one forgot shows up as a disagreement rather than as a term with no
+    gradient.
+
+    ⚠ AND ZERO IS ALSO WHAT AN UNSHAPEABLE TERM RETURNS. `Not` has no
+    monotone distance (the further you are from satisfying the negated term,
+    the better) and Tier B has no geometry here, so both contribute 0 — no
+    gradient, never a WRONG gradient. The zero-iff contract still holds
+    because those ops are refused as goals long before this
+    (`require_tier_a`), and `Not` composes to a term whose truth this file
+    reads and whose distance it declines to guess.
+
+    ## ⚠ THE COMPOSITION IS max FOR `And` AND min FOR `Or`
+
+    Both must hold, so the distance to satisfying a conjunction is the WORST
+    of its parts; either will do for a disjunction, so it is the best. Summing
+    an `And` would let a policy trade one term off against another and sit
+    between two half-satisfied goals.
+    """
+    var d0 = Scalar[DTYPE](0)
+    var d1 = Scalar[DTYPE](0)
+    var d2 = Scalar[DTYPE](0)
+    var last = Scalar[DTYPE](0)
+
+    var rs = Int(rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_SITE]))
+    var rx0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X0])
+    var ry0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y0])
+    var rx1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X1])
+    var ry1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y1])
+    var rh = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_H])
+
+    comptime for i in range(MAX_TAPE_TERMS):
+        comptime w = META_IDX_TASK_PARAM_0 + i * TERM_WORDS
+        var op = Int(rebind[Scalar[DTYPE]](meta[env, w]))
+        if op >= 0:
+            var a = Int(rebind[Scalar[DTYPE]](meta[env, w + 1]))
+            var b = Int(rebind[Scalar[DTYPE]](meta[env, w + 2]))
+            var param = rebind[Scalar[DTYPE]](meta[env, w + 3])
+            var d = Scalar[DTYPE](0)
+
+            if op == OP_AND:
+                var pa = d0 if a == 0 else (d1 if a == 1 else d2)
+                var pb = d0 if b == 0 else (d1 if b == 1 else d2)
+                d = pa if pa > pb else pb
+            elif op == OP_OR:
+                var pa = d0 if a == 0 else (d1 if a == 1 else d2)
+                var pb = d0 if b == 0 else (d1 if b == 1 else d2)
+                d = pa if pa < pb else pb
+            elif op == OP_NEAR:
+                var ex = rebind[Scalar[DTYPE]](xpos[env, a * 3]) - rebind[
+                    Scalar[DTYPE]
+                ](xpos[env, b * 3])
+                var ey = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1]) - rebind[
+                    Scalar[DTYPE]
+                ](xpos[env, b * 3 + 1])
+                var ez = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2]) - rebind[
+                    Scalar[DTYPE]
+                ](xpos[env, b * 3 + 2])
+                var r = sqrt(ex * ex + ey * ey + ez * ez) - param
+                d = r if r > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+            elif op == OP_ABOVE:
+                # ⚠ `pred_above` is `za > zb + margin`, so the shortfall is
+                # how much higher `a` still has to be — and it is ZERO the
+                # instant the predicate flips, which is the contract.
+                var r2 = (
+                    rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2]) + param
+                ) - rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
+                d = r2 if r2 > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+            elif op == OP_UPRIGHT:
+                # ⚠ NOT IN METRES, AND THAT IS STATED RATHER THAN SCALED. It
+                # is the shortfall in the cosine `pred_upright` compares, so
+                # it is in [0, 2] and mixes with a metre term only through the
+                # weight the config gives it.
+                var qw = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 3])
+                var qx = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 0])
+                var qy = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 1])
+                var cosang = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (
+                    qx * qx + qy * qy
+                )
+                var need = Scalar[DTYPE](1) - param
+                var r3 = need - cosang
+                d = r3 if r3 > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+                _ = qw
+            else:
+                # IN / ON / AT_REGION — the distance to the box, in site
+                # coordinates. ⚠ AXIS-ALIGNED AND CLAMPED PER AXIS: an
+                # overshoot on one axis must not cancel a shortfall on
+                # another, which is what a signed sum would do.
+                var px: Scalar[DTYPE]
+                var py: Scalar[DTYPE]
+                var pz: Scalar[DTYPE]
+                if op == OP_AT_REGION:
+                    px = rebind[Scalar[DTYPE]](site_xpos[env, a * 3])
+                    py = rebind[Scalar[DTYPE]](site_xpos[env, a * 3 + 1])
+                    pz = rebind[Scalar[DTYPE]](site_xpos[env, a * 3 + 2])
+                else:
+                    px = rebind[Scalar[DTYPE]](xpos[env, a * 3])
+                    py = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1])
+                    pz = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
+                var zlo = -rh
+                var zhi = rh
+                if op == OP_ON:
+                    zlo = Scalar[DTYPE](ON_MIN_DZ)
+                    zhi = Scalar[DTYPE](ON_MAX_DZ)
+                var ux = px - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3])
+                var uy = py - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 1])
+                var uz = pz - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 2])
+                var gx = Scalar[DTYPE](0)
+                if ux < rx0:
+                    gx = rx0 - ux
+                elif ux > rx1:
+                    gx = ux - rx1
+                var gy = Scalar[DTYPE](0)
+                if uy < ry0:
+                    gy = ry0 - uy
+                elif uy > ry1:
+                    gy = uy - ry1
+                var gz = Scalar[DTYPE](0)
+                if uz < zlo:
+                    gz = zlo - uz
+                elif uz > zhi:
+                    gz = uz - zhi
+                d = sqrt(gx * gx + gy * gy + gz * gz)
+
+            if i == 0:
+                d0 = d
+            elif i == 1:
+                d1 = d
+            else:
+                d2 = d
+            last = d
     return last
 
 

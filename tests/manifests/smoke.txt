@@ -197,6 +197,25 @@ examples/tasks/task_reachability.mojo
 # INDEX (the trap the hook's comment names) fails 168 of 168 coordinates.
 tests/tasks/test_device_placement.mojo
 
+# ── mojo_rl/tasks: the shaped term's distance ───────────────────────────
+# ⚠⚠ THE SPARSE REWARD COULD NOT BE LEARNED, AND IT WAS MEASURED. `gather` on
+# a 5090: 125k env-steps, ~384 episodes, a rate indistinguishable from random.
+# At ~1.5% success that is ~6 rewarding transitions in 125,000 — 5e-05 of the
+# replay buffer, which a batch of 256 contains 1.4% of the time. So
+# `gpu_eval.tape_distance_gpu` derives a distance FROM THE TAPE (generic over
+# the goal language, not a `Near` special case in a family config) and the
+# config subtracts it.
+# Asserts: (1) the distance is ZERO exactly when `eval_tape_gpu` says the goal
+# holds — two separate switches over one tape, so a forgotten op shows up as a
+# disagreement instead of as a term with no gradient; (2) the total penalty
+# stays below 0.5, which is what keeps `reward > 0.5` meaning SOLVED in the
+# THREE files that read success that way; (3) the distance is monotone toward
+# the goal and reaches exactly zero.
+# ABLATED: a sign flip in the `Above` shortfall — the classic error, and one
+# that passes (2) and (3) perfectly — makes 108 of 432 states report distance
+# 0 while the goal is FALSE.
+tests/tasks/test_goal_distance.mojo
+
 # ── mojo_rl/tasks: is a task solved by a CONSTANT action ────────────────
 # ⚠⚠ THE DEGENERACY `test_task_reset_steps` CANNOT SEE. That gate asserts a
 # goal is false AT RESET and every task passes it; `so101_reach_brick` passed
