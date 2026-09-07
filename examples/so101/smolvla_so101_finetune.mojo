@@ -112,6 +112,14 @@ it should and leaves gradients that the next training step's
 `zero_trainable_grads` discards. Correct, wasteful, and named here rather than
 left to be discovered in a profile.
 
+⚠ **Gradient clipping is ABSENT and the reference sets `grad_clip_norm = 10`.**
+`Adam.clip_grads` needs one `ParamWalkable`, and the trainable set here is five
+separate objects; clipping each to 10 independently is a DIFFERENT algorithm
+from one global norm, so it is left out rather than approximated. The fix is
+the `SmolVLATrainables` walkable already deferred once — which would also
+unlock Adam's grouped arena (~10% of all kernel launches in the ACT profile)
+and the on-device warmup. Three reasons, one refactor.
+
 ⚠ **No checkpoint is written.** Deliberately: the trainable subset is ~100 M
 parameters and checkpoint v2 truncates at 2 GiB, so a save path needs thought
 rather than a hurried call. THIS RUN IS FOR ANSWERING "DOES THE LOSS FALL",
@@ -129,6 +137,7 @@ caches a subset, which is a design with a memory budget in it rather than a
 one-line change. Measure first — this file exists to produce that measurement.
 """
 
+from std.math import cos, pi
 from std.os import getenv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
@@ -192,7 +201,26 @@ comptime DEFAULT_STEPS = 2000
 recording. NOT a converged fine-tune — a first answer to whether the held-out
 loss moves at all. Raise it with `SMOLVLA_STEPS` once a step time is known."""
 comptime DEFAULT_ACCUM = 8
-comptime LR = Scalar[DT](1.0e-4)
+comptime PEAK_LR = 1.0e-4
+comptime DECAY_LR = 2.5e-6
+comptime WARMUP_STEPS = 1000
+comptime DECAY_STEPS = 30000
+comptime BETA1 = Scalar[DT](0.9)
+comptime BETA2 = Scalar[DT](0.95)
+comptime EPS = Scalar[DT](1.0e-8)
+comptime WD = Scalar[DT](1.0e-10)
+"""⚠ Every one of these is `configuration_smolvla.py`'s, not a default.
+
+`beta2` is **0.95**, not Adam's usual 0.999 — a much shorter second-moment
+memory. And `scheduler_warmup_steps` is 1,000.
+
+The first run of this file had neither, and it showed: base training loss
+0.570, held-out 2.765 after ONE optimizer step, 1.055 after three. Adam's
+first step moves EVERY parameter by about ±lr regardless of gradient
+magnitude — `m/sqrt(v)` is ±1 when the moments are fresh — so 100 M
+parameters of a pretrained checkpoint all shift at once and the step damages
+the model before it improves it. That is what a warmup is for, and skipping it
+does not fail, it just wastes the checkpoint you started from."""
 comptime VAL_EVERY = 200
 comptime VAL_GROUPS = 8
 comptime LOG_EVERY = 10
@@ -216,6 +244,34 @@ comptime Step = SmolVLATrainStep[
 comptime Sampler = SmolVLABatchSampler[SDIM, ADIM_REAL, PAD, CHUNK, B]
 comptime IMG_ELEMS = N_CAM * 3 * SRC_H * SRC_W
 comptime AN = B * CHUNK * PAD
+
+
+def lr_at(step: Int, total: Int) -> Float64:
+    """`CosineDecayWithWarmupSchedulerConfig`, transcribed.
+
+    ⚠ Including its AUTO-SCALING: when a run is shorter than `DECAY_STEPS` the
+    reference rescales both the warmup and the decay to fit, so a 2,000-step
+    run gets a 66-step warmup rather than never leaving it. A transcription
+    that dropped that would spend a short run entirely in the ramp and report
+    that fine-tuning does not work.
+    """
+    var warm = WARMUP_STEPS
+    var dec = DECAY_STEPS
+    if total < DECAY_STEPS:
+        var scale = Float64(total) / Float64(DECAY_STEPS)
+        warm = Int(Float64(WARMUP_STEPS) * scale)
+        dec = total
+    if warm < 1:
+        warm = 1
+    if step < warm:
+        # linear from peak/(warm+1) up to peak
+        var frac = 1.0 - Float64(step) / Float64(warm)
+        var mult = (1.0 / Float64(warm + 1) - 1.0) * frac + 1.0
+        return PEAK_LR * mult
+    var st = step if step < dec else dec
+    var cd = 0.5 * (1.0 + cos(pi * Float64(st) / Float64(dec)))
+    var alpha = DECAY_LR / PEAK_LR
+    return PEAK_LR * ((1.0 - alpha) * cd + alpha)
 
 
 def _need(name: String) raises -> String:
@@ -352,7 +408,8 @@ def main() raises:
     print("  store   " + store_path)
     print("  stats   " + stats_path)
     print("  steps   " + String(steps) + " x accum " + String(accum)
-          + "   lr " + String(LR))
+          + "   peak lr " + String(PEAK_LR) + ", warmup "
+          + String(WARMUP_STEPS) + " (auto-scaled), beta2 " + String(BETA2))
 
     var tasks = TaskTokens(tasks_path)
     var n_lang = tasks.n_lang()
@@ -408,10 +465,15 @@ def main() raises:
     logger.set_config("store", store_path)
     logger.set_config("chunk", String(CHUNK))
     logger.set_config("accum", String(accum))
-    logger.set_config("lr", String(LR))
+    logger.set_config("peak_lr", String(PEAK_LR))
+    logger.set_config("beta2", String(BETA2))
+    logger.set_config("warmup", String(WARMUP_STEPS))
 
     var st = Step.make["gpu"](Optional(ctx))
-    var opt = Adam(lr=LR)
+    var opt = Adam(
+        lr=Scalar[DT](lr_at(0, steps)), beta1=BETA1, beta2=BETA2, eps=EPS,
+        wd=WD,
+    )
     var sp_frozen = Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM].make[
         "gpu", Deterministic
     ](Optional(ctx))
@@ -453,6 +515,11 @@ def main() raises:
     var ns_step = 0
 
     for s in range(steps):
+        # ⚠ Host-side, because `Adam.attach_warmup_schedule` is a NO-OP off
+        # the GPU-arena path — "a no-op stub for CPU/non-adopted (use host
+        # set_lr + a host schedule there)". Calling it here would have looked
+        # like a schedule and done nothing.
+        opt.set_lr(Scalar[DT](lr_at(s, steps)))
         zero_trainable_grads[
             "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
             SMOLLM_KV_W, PAD,
@@ -482,6 +549,7 @@ def main() raises:
             print(
                 "  step " + String(s) + "   train " + String(loss)
                 + "   " + String(el / Float64(s + 1)) + " s/step"
+                + "   lr " + String(opt.get_lr())
                 + "   host-images " + String(
                     100.0 * Float64(ns_img) / tot
                 ) + "%  gpu-step " + String(
