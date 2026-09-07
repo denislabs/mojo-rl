@@ -2779,6 +2779,17 @@ def _detect_contacts_sap_fields_kernel[
 # model without a heightfield; False keeps the one-thread-per-env kernel.
 comptime COLL_BLOCK_KERNEL: Bool = True
 
+# ⚠ A BISECT KNOB, TIMING INSTRUMENT ONLY. Returns from the block kernel after
+# phase N, writing `ncon = 0` so the step stays bounded (no contacts: the
+# solver sees no rows — the WORKLOAD changes, so read only the collision
+# kernel's own per-launch time, never the step). 1 = after the world-pose /
+# AABB phase, 2 = after thread 0's candidate generation, 3 = after the
+# per-thread narrow phase, 0 = production. Same pattern as
+# `newton_solve.NEWTON_STOP_AFTER`, for the same reason: on the RTX 5090 the
+# block kernel's launch at k=0 read 269.7 us against the serial kernel's
+# 269.0, so the chain it was built to cut is somewhere it did not reach.
+comptime COLL_STOP_AFTER: Int = 0
+
 
 def _detect_contacts_sap_block_kernel[
     DTYPE: DType,
@@ -2990,6 +3001,10 @@ def _detect_contacts_sap_block_kernel[
         ab_sh[4 * NG + g] = pz - he[2] - gm
         ab_sh[5 * NG + g] = pz + he[2] + gm
     barrier()
+    comptime if COLL_STOP_AFTER == 1:
+        if tid == 0:
+            smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
+        return
 
     # ── phase 1: candidates, in the serial emission order (thread 0) ─────
     if tid == 0:
@@ -3131,6 +3146,10 @@ def _detect_contacts_sap_block_kernel[
         ctrl_sh[1] = Scalar[DTYPE](overflow)
         ctrl_sh[2] = Scalar[DTYPE](n_sig0)
     barrier()
+    comptime if COLL_STOP_AFTER == 2:
+        if tid == 0:
+            smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
+        return
 
     # ── phase 2: one candidate per thread, into its staging window ───────
     var ncand = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
@@ -3219,6 +3238,10 @@ def _detect_contacts_sap_block_kernel[
         if full == 1:
             ctrl_sh[1] = Scalar[DTYPE](1)
     barrier()
+    comptime if COLL_STOP_AFTER == 3:
+        if tid == 0:
+            smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
+        return
 
     # ── phase 3: offsets (thread 0), cooperative copy, the sort, ncon ─────
     if tid == 0:
