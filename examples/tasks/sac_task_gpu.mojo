@@ -61,9 +61,16 @@ random) and the driver's greedy eval on an UNTRAINED actor:
 
     task                  random   untrained greedy   constant action
     so101_lift_brick        0.00        0.00           never met
-    so101_gather_bricks     0.00        0.00           never met
+    so101_gather_bricks    <0.02        0.00           never met
     so101_reach_clear       0.25        1.00           SWEPT THROUGH
     so101_settle_brick      1.00        1.00           met at every step
+
+⚠ `gather` IS NOT EXACTLY ZERO under random actions — two 20k warmup-only runs
+gave 0.000 and 0.0156 (one lane of 64). Random does occasionally push the
+blocks together, so 0.02 is the number a rate has to beat, and at a 100-
+episode window its standard error is 0.014. The verdict prints that band
+because the first long `gather` run oscillated 0.00 .. 0.05 for 125k steps and
+every one of those values sits inside it.
 
 ⚠ `reach` IS NOT A REACHING TASK AND THAT IS WHY THE DEFAULT IS `lift`.
 `examples/tasks/task_null_action.mojo` measures it: a CONSTANT action of +0.3
@@ -110,7 +117,8 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.core.logger import CsvLogger
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
@@ -171,13 +179,39 @@ comptime DIAG_EVERY = 2_000
 comptime CHECKPOINT_EVERY = 50_000
 comptime EVAL_EVERY = 25_000
 
-# ⚠ MEASURED, NOT ASSUMED — the header carries the whole table. These two are
-# the DEFAULT task's, because a verdict that has to be looked up to be read is
-# a verdict nobody reads.
-comptime RANDOM_BASELINE = 0.00
-comptime UNTRAINED_GREEDY = 0.00
-comptime CHECKPOINT_PATH = "sac_task_reach.ckpt"
-comptime CSV = "/tmp/mojo_rl_sac_task_reach.csv"
+def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
+    """`(random, untrained_greedy, measured)` for a task — see the header.
+
+    ⚠⚠ PER TASK, AND IT WAS A PAIR OF CONSTANTS. This file trained one task
+    when those were written; `--task` made them a lie, and the first `gather`
+    run on a 5090 printed `lift`'s floors under `gather`'s rate. A verdict
+    that names the wrong baseline is worse than none, because it reads as
+    though somebody checked.
+
+    ⚠ THE THIRD FIELD IS "HAS THIS BEEN MEASURED". A task nobody has run a
+    baseline for gets `False` and the verdict says so, rather than defaulting
+    to 0.0 — which is a real claim, and the flattering one.
+    """
+    if task == "so101_lift_brick":
+        return (0.00, 0.00, True)
+    if task == "so101_gather_bricks":
+        # ⚠ NOT EXACTLY ZERO. Two 20k warmup-only runs gave 0.000 and 0.0156
+        # (one lane of 64), so random DOES occasionally push the blocks
+        # together. 0.02 is the ceiling of what was seen and is what a rate
+        # has to beat before it means anything.
+        return (0.02, 0.00, True)
+    if task == "so101_reach_clear" or task == "so101_reach_brick":
+        return (0.25, 1.00, True)
+    if task == "so101_settle_brick":
+        return (1.00, 1.00, True)
+    return (0.0, 0.0, False)
+# ⚠⚠ PER TASK, AND IT WAS NOT. Both of these were fixed strings from when
+# this file trained one task, so the first `gather` run on a 5090 wrote
+# `sac_task_reach.ckpt` — and a `lift` run after it would have OVERWRITTEN
+# that checkpoint with weights for a different task, silently, under a name
+# naming a third. `--task` made the name a lie; these make it the task's.
+comptime CKPT_PREFIX = "sac_task_"
+comptime CSV_PREFIX = "/tmp/mojo_rl_sac_"
 
 # See wiring fact 2 in the header. NORMALIZED_ACTIONS is True on this config.
 comptime ACTION_SCALE = Scalar[DT](1.0)
@@ -222,6 +256,8 @@ def main() raises:
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
+    var ckpt_path = String(CKPT_PREFIX) + task_name + ".ckpt"
+    var csv_path = String(CSV_PREFIX) + task_name + ".csv"
     print("=" * 72)
 
     # ── the task, on the host ─────────────────────────────────────────────
@@ -266,7 +302,49 @@ def main() raises:
     print("  free slots placed at reset:", n_active_free, "of", len(iw))
 
     with DeviceContext() as ctx:
-        var logger = CsvLogger(CSV)
+        # ── the logger: CSV always, the dashboard when it is configured ──
+        #
+        # ⚠⚠ A SPARSE 0/1 RETURN TELLS YOU ALMOST NOTHING WHILE IT IS ZERO,
+        # which is exactly the regime this task sits in. `diag_every` flushes
+        # the SAC bundle — `mean_q`, `critic_loss`, `actor_loss`, `alpha`,
+        # `mean_reward`, `train_steps` — and those move long before the return
+        # does: a critic whose `mean_q` is drifting up has found SOMETHING to
+        # predict, and an `alpha` pinned at its ceiling says the actor is
+        # still being paid to be random. Without them a flat return is
+        # indistinguishable from a broken reward.
+        #
+        # ⚠ `RemoteLogger` WITH NO URL IS INERT — its POST sink is built
+        # lazily on the first payload — so this is safe with no `.env` and
+        # costs nothing. The CSV is the local artefact that survives the
+        # dashboard being down and is what a later run gets diffed against.
+        var env_vars = load_dotenv()
+        var remote = RemoteLogger(
+            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            run_name=String("SAC task ") + task_name,
+            buffer_size=64,
+            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        )
+        remote.set_config("algorithm", "SAC")
+        remote.set_config("family", f.name)
+        remote.set_config("task", task_name)
+        remote.set_config("goal", t.goal)
+        remote.set_config("language", t.language)
+        remote.set_config("target", "gpu")
+        remote.set_config("n_envs", String(N_ENVS))
+        remote.set_config("hidden", String(HIDDEN))
+        remote.set_config("batch", String(BATCH))
+        remote.set_config("warmup", String(warmup))
+        remote.set_config("horizon", String(So101TabletopConfig.MAX_STEPS))
+        remote.set_config("action_scale", String(ACTION_SCALE))
+        # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
+        # unreadable without it — 0.05 is nothing on `reach` and would be real
+        # on `lift` — and a config field is the only part of a run that is
+        # still there when somebody opens the chart a week later.
+        var bl0 = baselines_for(task_name)
+        remote.set_config("baseline_random", String(bl0[0]))
+        remote.set_config("baseline_untrained_greedy", String(bl0[1]))
+        remote.set_config("baseline_measured", String(bl0[2]))
+        var logger = CompositeLogger(CsvLogger(csv_path), remote)
         var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
         var agent = SACAgent[
@@ -362,7 +440,7 @@ def main() raises:
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=True,
             USE_ENV_CUDA_GRAPH=False,
-            L=CsvLogger,
+            L=CompositeLogger[CsvLogger, RemoteLogger],
         ](
             env,
             num_steps,
@@ -374,7 +452,7 @@ def main() raises:
             diag_every=DIAG_EVERY,
             episode_sync_every=32,
             checkpoint_every=CHECKPOINT_EVERY,
-            checkpoint_path=String(CHECKPOINT_PATH),
+            checkpoint_path=ckpt_path,
             # ⚠ GREEDY, on a SEPARATE env, at a FIXED eval seed — the
             # criterion number. `mean_return()` below is measured under SAC's
             # stochastic policy and understates what the actor has learned;
@@ -387,7 +465,11 @@ def main() raises:
             eval_max_steps=So101TabletopConfig.MAX_STEPS + 1,
         )
         var secs = Float64(perf_counter_ns() - t0) / 1e9
+        # ⚠ `close()` IS NOT OPTIONAL on the remote half — it drains the queue
+        # and joins the POST thread, and whatever is still queued at process
+        # exit is otherwise lost. It also prints the sink's drop tally.
         logger.close()
+        _ = logger        # keeps `logger_ptr` alive to here
 
         var rate = Float64(agent.mean_return())
         print("-" * 72)
@@ -395,8 +477,8 @@ def main() raises:
         print("  elapsed            :", secs, "s")
         print("  episodes           :", agent.ep_count())
         print("  SUCCESS RATE       :", rate, "(last 100 episodes)")
-        print("  csv                :", CSV)
-        print("  checkpoint         :", CHECKPOINT_PATH)
+        print("  csv                :", csv_path)
+        print("  checkpoint         :", ckpt_path)
 
         # ⚠⚠ THE ANTI-VACUITY CHECK, AND IT IS NOT THE SUCCESS CRITERION.
         # Zero completed episodes reports `mean_return` as the fill value and
@@ -420,13 +502,40 @@ def main() raises:
         # 0.27 and the UNTRAINED greedy actor scores 1.00 (see the header).
         # Printing "moved off zero" here would have reported a trivial task as
         # a trained one.
-        print("  baselines for", DEFAULT_TASK, "— random", RANDOM_BASELINE,
-              " untrained greedy", UNTRAINED_GREEDY)
-        if task_name != DEFAULT_TASK:
-            print("  ⚠ RUNNING", task_name, "— the baselines above are the")
-            print("  DEFAULT task's. See this file's header for the table.")
-        if rate <= RANDOM_BASELINE:
-            print("  FLAT — the rate did not beat the random baseline.")
+        var bl = baselines_for(task_name)
+        if not bl[2]:
+            print("  ⚠⚠ NO BASELINE MEASURED for", task_name, "— run it with")
+            print("  `--warmup >= --steps` first. A rate with nothing to")
+            print("  compare it to is not a result.")
+            print("=" * 72)
+            return
+        print("  baselines for", task_name, "— random", bl[0],
+              " untrained greedy", bl[1])
+
+        # ⚠⚠ A RATE OVER n EPISODES HAS A STANDARD ERROR, AND AT THESE n IT IS
+        # THE SAME SIZE AS THE EFFECT. The window is 100 episodes, so a
+        # baseline of 0.02 carries se = sqrt(p(1-p)/n) = 0.014 — and a reading
+        # of 0.05 is 2 se above it, which is suggestive and is NOT a result.
+        # Printing the interval is what stops a noisy tick being read as a
+        # curve; the first `gather` run oscillated 0.00 .. 0.05 for 125k steps
+        # and every one of those values sits inside this band.
+        var n = Float64(agent.ep_count())
+        if n > Float64(100):
+            n = Float64(100)
+        var p = bl[0]
+        var se = 0.0
+        if n > 0.0:
+            se = (p * (1.0 - p) / n) ** 0.5
+        print("  baseline se over", Int(n), "episodes:", se,
+              " -> 2-sigma band ends at", p + 2.0 * se)
+
+        if rate <= p + 2.0 * se:
+            print("  FLAT — the rate is inside the random baseline's 2-sigma")
+            print("  band. Not a failure of the agent yet: with a sparse 0/1")
+            print("  reward at this floor there is almost nothing to")
+            print("  bootstrap from. Read `mean_q` and `alpha` from the")
+            print("  logger before touching hyperparameters — a critic whose")
+            print("  mean_q never leaves 0 has never seen a success.")
         else:
-            print("  the rate BEAT the random baseline:", rate)
+            print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
         print("=" * 72)
