@@ -239,6 +239,42 @@ def eval_tape_gpu[
 
 
 @always_inline
+def goal_frame_ids(
+    op: Int, a: Int, b: Int, region_site: Int
+) -> Tuple[Int, Int, Int, Int]:
+    """`(subject_is_site, subject_id, target_is_site, target_id)` for a term.
+
+    ⚠⚠ THE RULE IS WRITTEN ONCE HERE AND THE MEMORY ACCESS TWICE. The two
+    observation hooks read `xpos`/`site_xpos` through different types — a
+    `LayoutTensor` on device and a `Data` on the host — so the READS cannot be
+    shared, but which body and which site to read is a rule, and a rule
+    written inline twice drifts. `test_active_mask` compares the two hooks'
+    output vectors and would catch a divergence; this makes one impossible.
+
+    ⚠ `In`/`On`/`AtRegion` TARGET THE REGION'S SITE, and only `AtRegion`'s
+    SUBJECT is a site. Mixing those up reads a site id out of the body array
+    and lands on a real, wrong position — the same trap `eval_goal` records.
+
+    ⚠ `Upright` HAS NO TARGET, so it points at its own subject and the
+    relative vector comes out zero. That is the honest answer: there is no
+    second frame in the predicate, and inventing one would put a number in the
+    observation that means nothing.
+
+    ⚠ TERM 0 IS ALWAYS A LEAF, so `And`/`Or`/`Not` never reach this. The tape
+    is POST-ORDER — every child index is lower than its parent's, asserted in
+    `test_goal_language` — so the first term cannot be a composition.
+    """
+    if op == OP_AT_REGION:
+        return (1, a, 1, region_site)
+    if op == OP_IN or op == OP_ON:
+        return (0, a, 1, region_site)
+    if op == OP_UPRIGHT:
+        return (0, a, 0, a)
+    # NEAR / ABOVE — both arguments are bodies.
+    return (0, a, 0, b)
+
+
+@always_inline
 def tape_distance_gpu[
     DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
 ](

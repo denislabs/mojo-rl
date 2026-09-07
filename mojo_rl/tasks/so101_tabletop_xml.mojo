@@ -67,12 +67,34 @@ comptime SO101_TABLETOP_MAX_CONTACTS: Int = 32
 #   [0            .. NQ)               qpos, IN FULL
 #   [NQ           .. NQ+NV)            qvel
 #   [NQ+NV        .. NQ+NV+N_FREE)     1.0 if that free slot is active
+#   [.. +3)                            the gripper site, in world coordinates
+#   [.. +3)                            goal SUBJECT minus the gripper
+#   [.. +3)                            goal TARGET minus the subject
 #
 # ⚠ AN INACTIVE SLOT'S POSE AND VELOCITY WORDS ARE ZEROED, not left at the
 # park pose. See `tasks/obs.mojo` for why both halves are needed.
+#
+# ⚠⚠ THE LAST NINE WORDS ARE THE REWARD'S OWN GEOMETRY, AND WITHOUT THEM THE
+# POLICY COULD NOT SEE HALF ITS REWARD. `So101TabletopConfig`'s shaped term
+# pays `SHAPE_W_REACH` on the gripper-to-subject distance — and the gripper's
+# Cartesian position is FORWARD KINEMATICS over six joint angles, which the
+# observation above does not contain. Measured on a 190k-step `gather` run:
+# the critic converged (mean_q 33.8, critic_loss 0.30) and the return did not
+# move at all (-6.7 .. -9.5, no trend), with `mean_reward` pinned at -0.026
+# from the first sample to the last. Roughly half the shaped reward was
+# computed from a quantity the network would have had to learn FK to recover.
+#
+# ⚠ `SoArm101ReachConfig` — the config that DOES train on this robot — has had
+# this all along: its 21 words are qpos(6) + qvel(6) + ee(3) + target(3) +
+# ee_to_target(3). The relative vectors are in the observation on purpose.
+#
+# ⚠ APPENDED, NOT INSERTED, so `OBS_MASK_BASE` and every index before it are
+# unchanged and the mask gates keep testing what they tested.
 comptime SO101_TABLETOP_N_FREE_SLOTS: Int = 3
+comptime SO101_TABLETOP_N_GOAL_WORDS: Int = 9
 comptime SO101_TABLETOP_OBS_DIM: Int = (
     _pm.NQ + _pm.NV + SO101_TABLETOP_N_FREE_SLOTS
+    + SO101_TABLETOP_N_GOAL_WORDS
 )
 
 comptime So101TabletopModel = ModelDefFromXML[

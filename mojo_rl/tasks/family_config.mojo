@@ -96,7 +96,9 @@ from mojo_rl.physics3d.gpu.constants import (
     rk4_extra_workspace_size,
 )
 
-from .gpu_eval import eval_tape_gpu, tape_distance_gpu
+from .gpu_eval import (
+    eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
+)
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from .obs import (
     slot_active, write_free_slot_obs, write_free_slot_obs_host,
@@ -332,6 +334,20 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     failure is silent: a lane that met its goal would report `reward = 0.4`
     and every success counter in the tree would read it as a miss."""
 
+    comptime REGION_SITE_ID: Int = 2
+    """`table_surface`'s site id — the site EVERY region in this family hangs
+    off.
+
+    ⚠⚠ USED BY BOTH OBSERVATION HOOKS AND BY NEITHER EVALUATOR. The device
+    evaluator reads the same id out of `curriculum[0, CUR_IDX_REGION_SITE]`,
+    but `custom_extract_obs_cpu` is handed no `curriculum` — so having the GPU
+    hook read the table and the CPU hook read a constant would put a
+    divergence between the two vectors a checkpoint is shaped by, which is
+    exactly what `test_active_mask` exists to prevent and what it would then
+    have to catch. Both hooks read THIS, and
+    `tests/tasks/test_device_placement.mojo` asserts it equals
+    `region_sites(f, fmd.site_names)[0]`."""
+
     comptime GRIPPER_SITE: Int = 1
     """`robot_gripperframe`'s site id in the composed scene.
 
@@ -350,6 +366,14 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     `NQ + NV + N_FREE_SLOTS` — so the number the ENV allocates and the number
     this hook lays out are the same expression, not two copies of a total that
     happen to match today."""
+
+    comptime OBS_GOAL_BASE: Int = Self.OBS_MASK_BASE + Self.N_FREE_SLOTS
+    """Where the nine goal words start — gripper(3), subject-gripper(3),
+    target-subject(3).
+
+    ⚠ AFTER the mask, so every index the mask gates already test is
+    unchanged. Inserting them would have renumbered `OBS_MASK_BASE` and made
+    `test_active_mask` pass against a shifted layout."""
 
     # === CPU hooks — present for the trait; this config is GPU-only ===
     @staticmethod
@@ -441,6 +465,54 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
                 nq + da,
                 nq + nv + j,
             )
+
+        # ── the nine goal words — the CPU twin of the block in `_gpu` ─────
+        #
+        # ⚠ THE RULE IS SHARED (`goal_frame_ids`) AND ONLY THE READS DIFFER.
+        # `Data` here, `LayoutTensor` there; there is no type that is both, so
+        # the two loops exist, and the ids they use come from one function so
+        # the body-vs-site decision cannot drift between them.
+        var g_op = Int(d.meta.data[META_IDX_TASK_PARAM_0])
+        comptime GS = Self.GRIPPER_SITE
+        var gx = d.site_xpos.data[GS * 3]
+        var gy = d.site_xpos.data[GS * 3 + 1]
+        var gz = d.site_xpos.data[GS * 3 + 2]
+        var sx = Scalar[DTYPE](0)
+        var sy = Scalar[DTYPE](0)
+        var sz = Scalar[DTYPE](0)
+        var tx = Scalar[DTYPE](0)
+        var ty = Scalar[DTYPE](0)
+        var tz = Scalar[DTYPE](0)
+        if g_op >= 0:
+            var ga = Int(d.meta.data[META_IDX_TASK_PARAM_0 + 1])
+            var gb = Int(d.meta.data[META_IDX_TASK_PARAM_0 + 2])
+            var ids = goal_frame_ids(g_op, ga, gb, Self.REGION_SITE_ID)
+            if ids[0] == 1:
+                sx = d.site_xpos.data[ids[1] * 3]
+                sy = d.site_xpos.data[ids[1] * 3 + 1]
+                sz = d.site_xpos.data[ids[1] * 3 + 2]
+            else:
+                sx = d.xpos.data[ids[1] * 3]
+                sy = d.xpos.data[ids[1] * 3 + 1]
+                sz = d.xpos.data[ids[1] * 3 + 2]
+            if ids[2] == 1:
+                tx = d.site_xpos.data[ids[3] * 3]
+                ty = d.site_xpos.data[ids[3] * 3 + 1]
+                tz = d.site_xpos.data[ids[3] * 3 + 2]
+            else:
+                tx = d.xpos.data[ids[3] * 3]
+                ty = d.xpos.data[ids[3] * 3 + 1]
+                tz = d.xpos.data[ids[3] * 3 + 2]
+        obs.append(gx)
+        obs.append(gy)
+        obs.append(gz)
+        obs.append(sx - gx)
+        obs.append(sy - gy)
+        obs.append(sz - gz)
+        obs.append(tx - sx)
+        obs.append(ty - sy)
+        obs.append(tz - sz)
+
         _ = m_bodies
         _ = m_joints
         _ = m_geoms
@@ -712,7 +784,75 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         _ = xquat
         _ = xvel
         _ = bodies
-        _ = site_xpos
+        # ── the nine goal words ───────────────────────────────────────────
+        #
+        # ⚠⚠ THE REWARD'S OWN GEOMETRY, AND WITHOUT IT THE POLICY CANNOT SEE
+        # HALF ITS REWARD. `SHAPE_W_REACH` pays on the gripper-to-subject
+        # distance, and the gripper's Cartesian position is forward kinematics
+        # over six joint angles — nothing in `qpos` or `qvel` gives it.
+        # Measured over 190k steps on `gather`: critic converged (mean_q 33.8,
+        # critic_loss 0.30) and the return never moved.
+        #
+        # ⚠ THE IDS COME FROM `goal_frame_ids`, which is the ONE place the
+        # body-vs-site rule is written — the CPU twin below calls the same
+        # function and only the reads differ.
+        var g_op = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0]))
+        var gx = Scalar[DTYPE](0)
+        var gy = Scalar[DTYPE](0)
+        var gz = Scalar[DTYPE](0)
+        var sx = Scalar[DTYPE](0)
+        var sy = Scalar[DTYPE](0)
+        var sz = Scalar[DTYPE](0)
+        var tx = Scalar[DTYPE](0)
+        var ty = Scalar[DTYPE](0)
+        var tz = Scalar[DTYPE](0)
+        comptime GS = Self.GRIPPER_SITE
+        gx = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3])
+        gy = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3 + 1])
+        gz = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3 + 2])
+        # ⚠ `op < 0` IS THE EMPTY TAPE — a lane whose goal was never written.
+        # Its goal words stay ZERO rather than reading term 0's garbage as a
+        # body id, which would land on a real, wrong position.
+        if g_op >= 0:
+            var ga = Int(
+                rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + 1])
+            )
+            var gb = Int(
+                rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + 2])
+            )
+            # ⚠ THE CONSTANT, NOT `curriculum` — the CPU twin has no
+            # curriculum to read and the two vectors must agree word for word.
+            var ids = goal_frame_ids(g_op, ga, gb, Self.REGION_SITE_ID)
+            if ids[0] == 1:
+                sx = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3])
+                sy = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3 + 1])
+                sz = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3 + 2])
+            else:
+                sx = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3])
+                sy = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3 + 1])
+                sz = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3 + 2])
+            if ids[2] == 1:
+                tx = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3])
+                ty = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3 + 1])
+                tz = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3 + 2])
+            else:
+                tx = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3])
+                ty = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3 + 1])
+                tz = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3 + 2])
+        comptime GB = Self.OBS_GOAL_BASE
+        obs[env, GB + 0] = gx
+        obs[env, GB + 1] = gy
+        obs[env, GB + 2] = gz
+        # ⚠ RELATIVE, NOT ABSOLUTE, for the two vectors. An absolute subject
+        # position makes the policy learn the subtraction; the reward is a
+        # function of the DIFFERENCES and those are what it is handed.
+        obs[env, GB + 3] = sx - gx
+        obs[env, GB + 4] = sy - gy
+        obs[env, GB + 5] = sz - gz
+        obs[env, GB + 6] = tx - sx
+        obs[env, GB + 7] = ty - sy
+        obs[env, GB + 8] = tz - sz
+
         _ = contacts
         _ = sites
         _ = geoms

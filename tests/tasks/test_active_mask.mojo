@@ -79,8 +79,13 @@ from mojo_rl.physics3d.fields import Data, DynDims
 from mojo_rl.tasks.reset import free_slot_addresses
 from mojo_rl.tasks.family_config import So101TabletopConfig
 from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from mojo_rl.physics3d.gpu.constants import META_IDX_PREV_X
+from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_PREV_X, META_IDX_TASK_PARAM_0,
+)
+from mojo_rl.tasks.predicates import parse_goal, bind_goal
+from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.so101_tabletop_xml import (
+    SO101_TABLETOP_N_GOAL_WORDS,
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS, SO101_TABLETOP_OBS_DIM,
 )
 
@@ -98,6 +103,7 @@ comptime MC = So101TabletopModel.MAX_CONTACTS
 comptime OD = So101TabletopModel.OBS_DIM
 comptime SD = NS * 3
 comptime NFREE = So101TabletopConfig.N_FREE_SLOTS
+comptime NGOAL = SO101_TABLETOP_N_GOAL_WORDS
 
 comptime CFG = So101TabletopConfig
 
@@ -210,10 +216,18 @@ def main() raises:
         "qposadr and dofadr DIVERGE after the first free slot (7 vs 6)",
     )
 
+    # ⚠ NINE GOAL WORDS AFTER THE MASK — gripper(3), subject-gripper(3),
+    # target-subject(3). This gate caught the widening, which is what it is
+    # for: it asserts the EXPRESSION, so a layout change has to be stated here
+    # before it can pass. See `so101_tabletop_xml.SO101_TABLETOP_OBS_DIM` for
+    # the measurement that forced them in — half the shaped reward was
+    # computed from the gripper's Cartesian position, which nothing in
+    # qpos/qvel gives.
     ta.check(
-        OD == NQ + NV + NFREE and OD == SO101_TABLETOP_OBS_DIM,
+        OD == NQ + NV + NFREE + NGOAL and OD == SO101_TABLETOP_OBS_DIM,
         "OBS_DIM " + String(OD) + " == NQ " + String(NQ) + " + NV "
-        + String(NV) + " + " + String(NFREE) + " active words",
+        + String(NV) + " + " + String(NFREE) + " active + "
+        + String(NGOAL) + " goal words",
     )
     ta.check(
         CFG.OBS_MASK_BASE == NQ + NV,
@@ -231,6 +245,17 @@ def main() raises:
     print("--- 2. the mask round-trips ---")
     var tg = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
     var tr = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
+    # ⚠ REAL TAPES, for the nine goal words below — see the note at their
+    # write. `gather`'s term 0 is `Near` (two BODIES) and `reach`'s is
+    # `AtRegion` (a SITE subject), so the two lanes exercise both arms of
+    # `goal_frame_ids`.
+    var fmd_t = parse_model_runtime(scene_path(f))
+    var tape_g = encode_goal(
+        bind_goal(parse_goal(tg.goal), f, fmd_t.body_names, fmd_t.site_names)
+    )
+    var tape_r = encode_goal(
+        bind_goal(parse_goal(tr.goal), f, fmd_t.body_names, fmd_t.site_names)
+    )
     validate_task_against_family(tg, f)
     validate_task_against_family(tr, f)
     var mg = active_mask(tg, f)
@@ -311,6 +336,31 @@ def main() raises:
             obs.data[e * OD + i] = Scalar[DTYPE](-999.0)
     meta.data[0 * METADATA_SIZE + META_IDX_TASK_ACTIVE] = Scalar[DTYPE](mg)
     meta.data[1 * METADATA_SIZE + META_IDX_TASK_ACTIVE] = Scalar[DTYPE](mr)
+
+    # ⚠⚠ A REAL TAPE AND REAL SITE POSITIONS, OR THE NINE GOAL WORDS ARE
+    # VACUOUS. They are derived from term 0 of the tape and from `site_xpos`,
+    # and with `meta` zeroed the op reads as 0 — which is `OP_IN`, not "empty"
+    # — with body 0 and a site at the origin, so every one of the nine comes
+    # out ZERO. "The two hooks agree word for word" is then true of nine zeros
+    # and says nothing about the half of the observation that was just added.
+    for k in range(TAPE_WORDS):
+        meta.data[0 * METADATA_SIZE + META_IDX_TASK_PARAM_0 + k] = (
+            Scalar[DTYPE](tape_g[k])
+        )
+        meta.data[1 * METADATA_SIZE + META_IDX_TASK_PARAM_0 + k] = (
+            Scalar[DTYPE](tape_r[k])
+        )
+    # distinct, nonzero, and different per lane so a hook that ignored `env`
+    # is visible too
+    for e in range(BATCH):
+        for i in range(SD):
+            sxp.data[e * SD + i] = Scalar[DTYPE](
+                0.5 + Float64(i) * 0.01 + Float64(e) * 0.1
+            )
+        for i in range(NB * 3):
+            b3.data[e * NB * 3 + i] = Scalar[DTYPE](
+                1.5 + Float64(i) * 0.02 + Float64(e) * 0.1
+            )
 
     var wrote = False
     for e in range(BATCH):
@@ -411,11 +461,30 @@ def main() raises:
         bit_diff > 0,
         "the lanes' active words DIFFER — the mask is read per lane",
     )
+    # ⚠ THE GOAL WORDS DIFFER TOO, AND THEY SHOULD. Lane 0 runs `gather`
+    # (`Near`, two BODIES) and lane 1 runs `reach` (`AtRegion`, a SITE
+    # subject), so `goal_frame_ids` resolves different frames and both the
+    # subject and target vectors differ. Counting them is the assertion that
+    # the goal words are READ PER LANE from that lane's own tape — a hook that
+    # used lane 0's tape for everyone would leave these nine identical.
+    var goal_diff = 0
+    for j in range(NGOAL):
+        if obs.data[0 * OD + CFG.OBS_GOAL_BASE + j] != obs.data[
+            1 * OD + CFG.OBS_GOAL_BASE + j
+        ]:
+            goal_diff += 1
+    print("     ", goal_diff, "of", NGOAL, "goal words differ between lanes")
     ta.check(
-        word_diff == bit_diff + FREE_JOINT_NQ + FREE_JOINT_NV,
+        goal_diff > 0,
+        "the lanes' GOAL words differ — term 0 is read from each lane's own"
+        " tape",
+    )
+    ta.check(
+        word_diff == bit_diff + FREE_JOINT_NQ + FREE_JOINT_NV + goal_diff,
         "and they differ in exactly cube_a's "
         + String(FREE_JOINT_NQ + FREE_JOINT_NV) + " state words plus "
-        + String(bit_diff) + " active word(s)",
+        + String(bit_diff) + " active and " + String(goal_diff)
+        + " goal word(s)",
     )
 
     # ── 5. the CPU hook == the GPU hook, word for word ────────────────────
@@ -435,6 +504,16 @@ def main() raises:
             dd.qvel.data[i] = qvel.data[e * NV + i]
         for i in range(METADATA_SIZE):
             dd.meta.data[i] = meta.data[e * METADATA_SIZE + i]
+        # ⚠⚠ AND THE FRAMES THE GOAL WORDS READ. This loop copied qpos, qvel
+        # and meta only, so the CPU hook saw ZEROS where the GPU hook saw the
+        # positions set above — and the word-for-word comparison then failed
+        # on nine words for a reason that was in the TEST. It is also what
+        # made those nine words vacuous before they were populated: two hooks
+        # agreeing on nine zeros is not agreement about anything.
+        for i in range(NB * 3):
+            dd.xpos.data[i] = b3.data[e * NB * 3 + i]
+        for i in range(SD):
+            dd.site_xpos.data[i] = sxp.data[e * SD + i]
         var hobs = List[Scalar[DTYPE]]()
         var empty = List[Scalar[DTYPE]]()
         var handled = CFG.custom_extract_obs_cpu[DTYPE, DynDims](

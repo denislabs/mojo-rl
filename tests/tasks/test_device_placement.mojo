@@ -146,6 +146,14 @@ def main() raises:
             print("      region", i, f.regions[i].name, "rect drift")
     ta.check(ok_rect, "every region's rectangle matches the .family")
 
+    # ⚠ THE SITE ID BOTH OBSERVATION HOOKS USE. `custom_extract_obs_cpu` is
+    # handed no `curriculum`, so the region site it resolves a goal's TARGET
+    # against is a restated constant — and if it disagreed with the one the
+    # device evaluator reads out of `curriculum`, the observation and the
+    # reward would be describing different geometry.
+    ta.check(CFG.REGION_SITE_ID == rsites[0],
+             "REGION_SITE_ID is the family's region-0 site id")
+
     ta.check(CFG.MAX_PLACE_ATTEMPTS == MAX_PLACE_ATTEMPTS,
              "the attempt budget matches sampler.MAX_PLACE_ATTEMPTS")
     ta.check(CFG.PLACEMENT_SALT == PLACEMENT_SALT,
