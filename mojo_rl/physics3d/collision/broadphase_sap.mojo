@@ -453,6 +453,563 @@ struct _SapProbe(Copyable, Movable):
         self._n_mccd = 0
 
 
+
+@always_inline
+def _sap_plane_narrow[
+    DTYPE: DType,
+    BATCH: Int,
+    D: DimsLike,
+    EX_CAP: Int,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+    L_PAIRS: Layout,
+    L_MESH_META: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout,
+    HFIELD_ENABLED: Bool,
+](
+    env: Int,
+    dims: D,
+    gi: Int,
+    gj: Int,
+    gi_body: Int,
+    gi_contype: Int,
+    gi_conaffinity: Int,
+    plp_x: Scalar[DTYPE],
+    plp_y: Scalar[DTYPE],
+    plp_z: Scalar[DTYPE],
+    plq_x: Scalar[DTYPE],
+    plq_y: Scalar[DTYPE],
+    plq_z: Scalar[DTYPE],
+    plq_w: Scalar[DTYPE],
+    pn: InlineArray[Scalar[DTYPE], 3],
+    nbody: Int,
+    max_contacts: Int,
+    ex_sig: Scratch[Int, EX_CAP],
+    n_sig: Int,
+    mut pr: _SapProbe,
+    mut num_contacts: Int,
+    wpx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wpy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wpz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    wqw: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, L_BODIES, MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, L_MMETA, MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, L_EXCLUDES, MutAnyOrigin
+    ],
+    pairs: LayoutTensor[
+        DTYPE, L_PAIRS, MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        L_MESH_META,
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, L_CONTACTS,
+        MutAnyOrigin,
+    ],
+):
+    """ONE (plane, non-plane geom) candidate of the plane phase — filters,
+    contact parameters, the plane narrow phase and its emission — moved out
+    of `_detect_contacts_sap_env`'s `gj` loop verbatim (2026-09-07), after
+    the loop's `max_contacts` guard, which stays with the loop. Each
+    `continue` is a `return`; nothing followed the body inside the loop.
+
+    ⚠ THE CPU PATH CALLS THIS TOO — one plane narrow phase, both targets."""
+    var gj_type = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
+    )
+    if gj_type == GEOM_PLANE:
+        return
+    var gj_body = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
+    )
+    # `<contact><pair>` bypasses every filter below — see the same
+    # gate in `_detect_contacts_env`. A plane/geom pair is a normal
+    # thing to declare (it is the ONLY form ToddlerBot's scene files
+    # use), and the world plane's body is 0, so without this the
+    # `gj_body == 0` skip and the weld test would drop it.
+    var ipair = find_predefined_pair[DTYPE](
+        gi, gj, dims, pairs, mmeta
+    )
+    if ipair < 0:
+        if gj_body == 0:
+            return
+        # DEFECT 24 — this loop had NO body filter. MuJoCo runs the
+        # plane path through `filterBodyPair` like every other pair
+        # (`engine_collision_driver.c:1277`), which discards on
+        # `weldbody1 == weldbody2`; a jointless body welds to the
+        # world, so every static geom was colliding with the ground
+        # here while the O(N^2) path correctly emitted nothing. See
+        # `pair_body_filtered`.
+        if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+            gi_body, gj_body, bodies, mmeta, excludes,
+            ex_sig, n_sig, nbody,
+        ):
+            return
+        var gj_contype = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+        )
+        var gj_conaffinity = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+        )
+        if (gi_contype & gj_conaffinity) == 0 and (
+            gj_contype & gi_conaffinity
+        ) == 0:
+            return
+
+    # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+    # with `detect_contacts` so the two paths cannot drift, which is
+    # exactly how the SAP ellipsoid branch went missing. A predefined
+    # pair supplies its own parameters instead, unmixed.
+    var _n0 = num_contacts
+    var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
+    var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+    # Sum of the two geoms' margins, or the PAIR's own — never both.
+    var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
+    var cgp = (
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
+        + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
+    )
+    if ipair >= 0:
+        cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+        cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
+    # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
+    # is what the contact stores as its `includemargin`; 3.10.0 passes
+    # `margin + gap` to the collision function and `margin` alone to
+    # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
+    # and then EXCLUDED from the solver by
+    # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
+    # two are equal and every line below is what it always was.
+    var cm = cim + cgp
+
+    # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
+    # branch arithmetic is the same as it always was.
+    var lpj = to_plane_frame[DTYPE](
+        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+        wpx[gj], wpy[gj], wpz[gj],
+    )
+    var lqj = quat_to_plane_frame[DTYPE](
+        plq_x, plq_y, plq_z, plq_w,
+        wqx[gj], wqy[gj], wqz[gj], wqw[gj],
+    )
+    var pj_x = lpj[0]
+    var pj_y = lpj[1]
+    var pj_z = lpj[2]
+    var qj_x = lqj[0]
+    var qj_y = lqj[1]
+    var qj_z = lqj[2]
+    var qj_w = lqj[3]
+    var ground_z = Scalar[DTYPE](0)
+
+    # ── PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
+    # `mj_filterSphere` arm. In the plane's own frame `pj_z` IS
+    # `planeGeomDist`: the signed distance from the plane to the geom
+    # centre. If the geom's bounding sphere cannot reach the plane,
+    # nothing downstream can produce a contact.
+    #
+    # ⚠⚠ WITHOUT THIS, A PLANE PAIRED WITH A MESH SCANS EVERY HULL
+    # VERTEX, EVERY STEP, FOREVER. `_plane_mesh_contacts` has no early
+    # out — it transforms all `pm_vnum` vertices looking for the
+    # deepest. SO-ARM101 carries 30 mesh geoms totalling 33 076 hull
+    # vertices and a floor its arm never touches, and that scan was
+    # 72% of its entire physics step. It is also why the arm-to-arm
+    # cost ratio tracked HULL SIZE rather than anything physical.
+    #
+    #     SO-ARM101   1.86 -> 0.65 ms/env step   ( 539 -> 1544 Hz)
+    #     SO-ARM100   1.11 -> 1.04 ms/env step   ( 901 ->  959 Hz)
+    #
+    # ⚠ THE TWO ARMS SEPARATE HERE, AND THAT IS THE POINT. SO-ARM100
+    # barely moves: 2 551 hull vertices is a scan it could afford.
+    # SO-ARM101's 33 076 is not, and removing it INVERTS the pair —
+    # the arm with 13x the geometry is now the FASTER of the two,
+    # because what remains is no longer proportional to hull size.
+    # SO-ARM100's residual is elsewhere (its Newton solve is ~25% of
+    # its step, against ~0.5% of SO-ARM101's).
+    #
+    # ⚠ `+ cm` AGAIN, for the same silent reason as the geom-geom arm
+    # above: a geom hovering within its margin of the floor is a
+    # contact MuJoCo reports.
+    var rbound_j_pl = rebind[Scalar[DTYPE]](
+        geoms[gj, GEOM_IDX_RBOUND]
+    )
+    if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
+        return
+    # ⚠ MIXED AFTER THE REJECT, as the SAP pair loop below already
+    # does (its note above `mix_contact_params`): the mix is ~30
+    # tensor reads plus MuJoCo's priority/solref/solimp rules, for
+    # every geom against every plane — 391 a step on dog, of which
+    # the bounding test keeps ~15. Nothing above the test reads it.
+    # Same values for every survivor: bit-exact (PERFORMANCE.md §13.26).
+    var _mx = pair_params[DTYPE](
+        ipair, pairs
+    ) if ipair >= 0 else mix_contact_params[DTYPE](
+        Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+        Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+        Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+        Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
+    )
+    var cdim = Int(_mx[0])
+    var cf = _mx[1]
+    var cfs = _mx[2]
+    var cfr = _mx[3]
+
+    var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
+    var hlj = rebind[Scalar[DTYPE]](
+        geoms[gj, GEOM_IDX_HALF_LENGTH]
+    )
+
+    if gj_type == GEOM_SPHERE:
+        var dist = pj_z - rj - ground_z
+        if dist < cm and num_contacts < max_contacts:
+            var c_off = num_contacts * CONTACT_SIZE
+            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                gj_body
+            )
+            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                -1
+            )
+            var cw = from_plane_frame[DTYPE](
+                plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                pj_x, pj_y,
+                ground_z + dist * Scalar[DTYPE](0.5),
+            )
+            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist
+            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                cdim
+            )
+            num_contacts += 1
+
+    elif gj_type == GEOM_CAPSULE:
+        var axis_w = gpu_quat_rotate(
+            qj_x,
+            qj_y,
+            qj_z,
+            qj_w,
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](1),
+        )
+        # `axis_w` is in the PLANE'S frame (qj_* were rebased above),
+        # which is what the endpoint arithmetic below needs. The
+        # FRAME_T1 hint written into the record is read in WORLD space,
+        # so it goes back — see collision/contact_frame.mojo for what
+        # that slot is and is not.
+        var axis_wd = gpu_quat_rotate(
+            plq_x, plq_y, plq_z, plq_w,
+            axis_w[0], axis_w[1], axis_w[2],
+        )
+        var e1_x = pj_x + hlj * axis_w[0]
+        var e1_y = pj_y + hlj * axis_w[1]
+        var e1_z = pj_z + hlj * axis_w[2]
+        var dist1 = e1_z - rj - ground_z
+        if dist1 < cm and num_contacts < max_contacts:
+            var c_off = num_contacts * CONTACT_SIZE
+            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                gj_body
+            )
+            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                -1
+            )
+            var cw = from_plane_frame[DTYPE](
+                plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                e1_x, e1_y,
+                ground_z + dist1 * Scalar[DTYPE](0.5),
+            )
+            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist1
+            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                cdim
+            )
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
+            num_contacts += 1
+        var e2_x = pj_x - hlj * axis_w[0]
+        var e2_y = pj_y - hlj * axis_w[1]
+        var e2_z = pj_z - hlj * axis_w[2]
+        var dist2 = e2_z - rj - ground_z
+        if dist2 < cm and num_contacts < max_contacts:
+            var c_off = num_contacts * CONTACT_SIZE
+            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                gj_body
+            )
+            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                -1
+            )
+            var cw = from_plane_frame[DTYPE](
+                plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                e2_x, e2_y,
+                ground_z + dist2 * Scalar[DTYPE](0.5),
+            )
+            contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+            contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+            contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist2
+            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                cdim
+            )
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+            contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
+            num_contacts += 1
+
+    elif gj_type == GEOM_CYLINDER:
+        # Up to FOUR points — two rim, two triangle — not one.
+        # See `_plane_cylinder_contacts` in contact_detection.mojo;
+        # shared with the naive path so the two cannot drift, which
+        # is exactly how the ellipsoid branch below went missing.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _plane_cylinder_contacts[DTYPE, BATCH](
+            env,
+            gj_body,
+            pj_x, pj_y, pj_z,
+            qj_x, qj_y, qj_z, qj_w,
+            rj,
+            hlj,
+            ground_z,
+            plp_x, plp_y, plp_z,
+            plq_x, plq_y, plq_z, plq_w,
+            cm,
+            cf,
+            cfs,
+            cfr,
+            cdim,
+            -1,
+            dims,
+            contacts,
+            num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_pcyl += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_pcyl += 1
+
+    elif gj_type == GEOM_ELLIPSOID:
+        # ⚠ ADDED 2026-08-03. This branch did not exist, and
+        # `broadphase_sap.mojo` contained no mention of ELLIPSOID at
+        # all, so every ellipsoid geom was INVISIBLE TO COLLISION in
+        # any model that takes the SAP path — `detect_contacts_auto`
+        # switches to SAP at ngeom >= 16, and nothing warns.
+        #
+        # Shipped and silently wrong at the time of the fix:
+        #   quadruped     26 geoms, SAP, ellipsoid = `torso`
+        #   humanoid_CMU  50 geoms, SAP, ellipsoids = `lhand`, `rhand`
+        # i.e. the quadruped's TORSO never collided with the floor.
+        # fish (12 geoms, 7 ellipsoids) and swimmer (7, 1) sit under
+        # the threshold and take the naive path, which is why the
+        # ellipsoid narrow phase looked exercised.
+        #
+        # It hid because no test compared a plane's contact SET
+        # against MuJoCo — every plane in the suite is an axis-aligned
+        # floor and every gate read qacc at poses where the ellipsoid
+        # was not touching it. `test_oriented_plane_vs_mujoco` is what
+        # found it, and it found it on the AXIS-ALIGNED control rather
+        # than the tilted case it was written for.
+        #
+        # Body id is -1 here where `detect_contacts` writes 0 — the
+        # documented split between the two emit paths.
+        var hxje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+        var hyje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+        var hzje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+        # MuJoCo routes plane x ellipsoid through `mjc_PlaneConvex`,
+        # which reports the single deepest support point; a smooth
+        # strictly-convex surface meets a plane at one point, so unlike
+        # the box there is no second contact to look for.
+        var epe = ellipsoid_plane[DTYPE](
+            pj_x, pj_y, pj_z,
+            qj_x, qj_y, qj_z, qj_w,
+            hxje, hyje, hzje,
+            ground_z,
+        )
+        var diste = epe[0]
+        if diste < cm and num_contacts < max_contacts:
+            var c_off = num_contacts * CONTACT_SIZE
+            contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                gj_body
+            )
+            contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                -1
+            )
+            # `ellipsoid_plane` already returns the contact point in
+            # the PLANE frame, including the half-depth offset, so
+            # unlike the sphere branch there is nothing to add here.
+            var cwe = from_plane_frame[DTYPE](
+                plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                epe[1], epe[2], epe[3],
+            )
+            contacts[env, c_off + CONTACT_IDX_POS_X] = cwe[0]
+            contacts[env, c_off + CONTACT_IDX_POS_Y] = cwe[1]
+            contacts[env, c_off + CONTACT_IDX_POS_Z] = cwe[2]
+            contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+            contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+            contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+            contacts[env, c_off + CONTACT_IDX_DIST] = diste
+            contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
+            contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+            contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                cdim
+            )
+            num_contacts += 1
+
+    elif gj_type == GEOM_BOX:
+        var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+        var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+        var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+        # Up to FOUR corners, not one — see `_plane_box_contacts` and
+        # task #42. ⚠ This path writes -1 for the world body where
+        # `detect_contacts` writes 0, hence the explicit argument.
+        comptime if _COLL_PROBE:
+            pr._c_t0 = Int(perf_counter_ns())
+        _plane_box_contacts[DTYPE](
+            env,
+            gj_body,
+            pj_x, pj_y, pj_z,
+            qj_x, qj_y, qj_z, qj_w,
+            hxj, hyj, hzj,
+            ground_z,
+            plp_x, plp_y, plp_z,
+            plq_x, plq_y, plq_z, plq_w,
+            cm,
+            cf,
+            cfs,
+            cfr,
+            cdim,
+            -1,
+            dims,
+            contacts,
+            num_contacts,
+            cgp,
+        )
+        comptime if _COLL_PROBE:
+            pr._c_pbox += Int(perf_counter_ns()) - pr._c_t0
+            pr._n_pbox += 1
+
+    elif gj_type == GEOM_MESH:
+        # Plane-mesh. Was a verbatim copy of the O(N^2) path's vertex
+        # scan, and carried the same defect: one contact per hull
+        # vertex, uncapped. Both now go through the single
+        # `_plane_mesh_contacts`, so the fix cannot land on one path
+        # and miss the other — the duplication is what let a
+        # `maxplanemesh` cap be absent from BOTH for as long as it was.
+        #
+        # ⚠ SAP'S RECORD CONVENTIONS ARE PRESERVED, NOT UNIFIED: this
+        # path writes BODY_B = -1, stores `dist - margin` in DIST and
+        # has no INCLUDEMARGIN slot (see the module docstring). Those
+        # are gated bit-exactly elsewhere, so they are passed as
+        # parameters rather than quietly aligned with the other path.
+        comptime if may_exist[D.NMESH_VERTS]():
+            comptime if _COLL_PROBE:
+                pr._c_t0 = Int(perf_counter_ns())
+            _plane_mesh_contacts[
+                DTYPE,
+                -1, True, False](
+                env,
+                gj,
+                gj_body,
+                pj_x, pj_y, pj_z,
+                qj_x, qj_y, qj_z, qj_w,
+                ground_z,
+                plp_x, plp_y, plp_z,
+                plq_x, plq_y, plq_z, plq_w,
+                cm,
+                cf,
+                cfs,
+                cfr,
+                cdim,
+                dims,
+                geoms,
+                mesh_meta,
+                mesh_verts,
+                mesh_vert_edgeadr,
+                mesh_edges,
+                contacts,
+                num_contacts,
+                cgp,
+            )
+            comptime if _COLL_PROBE:
+                pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
+                pr._n_pmesh += 1
+
+    _fill_pair_solparams[DTYPE](
+        env, _n0, num_contacts, _mx, contacts
+    )
+
+
 @always_inline
 def _sap_pair_narrow[
     DTYPE: DType,
@@ -1907,472 +2464,14 @@ def _detect_contacts_sap_env[
                     num_contacts
                 )
                 return
-            var gj_type = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
-            )
-            if gj_type == GEOM_PLANE:
-                continue
-            var gj_body = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
-            )
-            # `<contact><pair>` bypasses every filter below — see the same
-            # gate in `_detect_contacts_env`. A plane/geom pair is a normal
-            # thing to declare (it is the ONLY form ToddlerBot's scene files
-            # use), and the world plane's body is 0, so without this the
-            # `gj_body == 0` skip and the weld test would drop it.
-            var ipair = find_predefined_pair[DTYPE](
-                gi, gj, dims, pairs, mmeta
-            )
-            if ipair < 0:
-                if gj_body == 0:
-                    continue
-                # DEFECT 24 — this loop had NO body filter. MuJoCo runs the
-                # plane path through `filterBodyPair` like every other pair
-                # (`engine_collision_driver.c:1277`), which discards on
-                # `weldbody1 == weldbody2`; a jointless body welds to the
-                # world, so every static geom was colliding with the ground
-                # here while the O(N^2) path correctly emitted nothing. See
-                # `pair_body_filtered`.
-                if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
-                    gi_body, gj_body, bodies, mmeta, excludes,
-                    ex_sig, n_sig, nbody,
-                ):
-                    continue
-                var gj_contype = Int(
-                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
-                )
-                var gj_conaffinity = Int(
-                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-                )
-                if (gi_contype & gj_conaffinity) == 0 and (
-                    gj_contype & gi_conaffinity
-                ) == 0:
-                    continue
-
-            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
-            # with `detect_contacts` so the two paths cannot drift, which is
-            # exactly how the SAP ellipsoid branch went missing. A predefined
-            # pair supplies its own parameters instead, unmixed.
-            var _n0 = num_contacts
-            var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
-            var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
-            # Sum of the two geoms' margins, or the PAIR's own — never both.
-            var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
-            var cgp = (
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
-                + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
-            )
-            if ipair >= 0:
-                cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
-                cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
-            # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
-            # is what the contact stores as its `includemargin`; 3.10.0 passes
-            # `margin + gap` to the collision function and `margin` alone to
-            # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
-            # and then EXCLUDED from the solver by
-            # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
-            # two are equal and every line below is what it always was.
-            var cm = cim + cgp
-
-            # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
-            # branch arithmetic is the same as it always was.
-            var lpj = to_plane_frame[DTYPE](
+            _sap_plane_narrow[
+                DTYPE, BATCH, D, EX_CAP, HFIELD_ENABLED=HFIELD_ENABLED
+            ](
+                env, dims, gi, gj, gi_body, gi_contype, gi_conaffinity,
                 plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                wpx[gj], wpy[gj], wpz[gj],
-            )
-            var lqj = quat_to_plane_frame[DTYPE](
-                plq_x, plq_y, plq_z, plq_w,
-                wqx[gj], wqy[gj], wqz[gj], wqw[gj],
-            )
-            var pj_x = lpj[0]
-            var pj_y = lpj[1]
-            var pj_z = lpj[2]
-            var qj_x = lqj[0]
-            var qj_y = lqj[1]
-            var qj_z = lqj[2]
-            var qj_w = lqj[3]
-            var ground_z = Scalar[DTYPE](0)
-
-            # ── PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
-            # `mj_filterSphere` arm. In the plane's own frame `pj_z` IS
-            # `planeGeomDist`: the signed distance from the plane to the geom
-            # centre. If the geom's bounding sphere cannot reach the plane,
-            # nothing downstream can produce a contact.
-            #
-            # ⚠⚠ WITHOUT THIS, A PLANE PAIRED WITH A MESH SCANS EVERY HULL
-            # VERTEX, EVERY STEP, FOREVER. `_plane_mesh_contacts` has no early
-            # out — it transforms all `pm_vnum` vertices looking for the
-            # deepest. SO-ARM101 carries 30 mesh geoms totalling 33 076 hull
-            # vertices and a floor its arm never touches, and that scan was
-            # 72% of its entire physics step. It is also why the arm-to-arm
-            # cost ratio tracked HULL SIZE rather than anything physical.
-            #
-            #     SO-ARM101   1.86 -> 0.65 ms/env step   ( 539 -> 1544 Hz)
-            #     SO-ARM100   1.11 -> 1.04 ms/env step   ( 901 ->  959 Hz)
-            #
-            # ⚠ THE TWO ARMS SEPARATE HERE, AND THAT IS THE POINT. SO-ARM100
-            # barely moves: 2 551 hull vertices is a scan it could afford.
-            # SO-ARM101's 33 076 is not, and removing it INVERTS the pair —
-            # the arm with 13x the geometry is now the FASTER of the two,
-            # because what remains is no longer proportional to hull size.
-            # SO-ARM100's residual is elsewhere (its Newton solve is ~25% of
-            # its step, against ~0.5% of SO-ARM101's).
-            #
-            # ⚠ `+ cm` AGAIN, for the same silent reason as the geom-geom arm
-            # above: a geom hovering within its margin of the floor is a
-            # contact MuJoCo reports.
-            var rbound_j_pl = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_RBOUND]
-            )
-            if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
-                continue
-            # ⚠ MIXED AFTER THE REJECT, as the SAP pair loop below already
-            # does (its note above `mix_contact_params`): the mix is ~30
-            # tensor reads plus MuJoCo's priority/solref/solimp rules, for
-            # every geom against every plane — 391 a step on dog, of which
-            # the bounding test keeps ~15. Nothing above the test reads it.
-            # Same values for every survivor: bit-exact (PERFORMANCE.md §13.26).
-            var _mx = pair_params[DTYPE](
-                ipair, pairs
-            ) if ipair >= 0 else mix_contact_params[DTYPE](
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
-            )
-            var cdim = Int(_mx[0])
-            var cf = _mx[1]
-            var cfs = _mx[2]
-            var cfr = _mx[3]
-
-            var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
-            var hlj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_HALF_LENGTH]
-            )
-
-            if gj_type == GEOM_SPHERE:
-                var dist = pj_z - rj - ground_z
-                if dist < cm and num_contacts < max_contacts:
-                    var c_off = num_contacts * CONTACT_SIZE
-                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                        gj_body
-                    )
-                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                        -1
-                    )
-                    var cw = from_plane_frame[DTYPE](
-                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                        pj_x, pj_y,
-                        ground_z + dist * Scalar[DTYPE](0.5),
-                    )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                    contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                        cdim
-                    )
-                    num_contacts += 1
-
-            elif gj_type == GEOM_CAPSULE:
-                var axis_w = gpu_quat_rotate(
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    Scalar[DTYPE](0),
-                    Scalar[DTYPE](0),
-                    Scalar[DTYPE](1),
-                )
-                # `axis_w` is in the PLANE'S frame (qj_* were rebased above),
-                # which is what the endpoint arithmetic below needs. The
-                # FRAME_T1 hint written into the record is read in WORLD space,
-                # so it goes back — see collision/contact_frame.mojo for what
-                # that slot is and is not.
-                var axis_wd = gpu_quat_rotate(
-                    plq_x, plq_y, plq_z, plq_w,
-                    axis_w[0], axis_w[1], axis_w[2],
-                )
-                var e1_x = pj_x + hlj * axis_w[0]
-                var e1_y = pj_y + hlj * axis_w[1]
-                var e1_z = pj_z + hlj * axis_w[2]
-                var dist1 = e1_z - rj - ground_z
-                if dist1 < cm and num_contacts < max_contacts:
-                    var c_off = num_contacts * CONTACT_SIZE
-                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                        gj_body
-                    )
-                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                        -1
-                    )
-                    var cw = from_plane_frame[DTYPE](
-                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                        e1_x, e1_y,
-                        ground_z + dist1 * Scalar[DTYPE](0.5),
-                    )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                    contacts[env, c_off + CONTACT_IDX_DIST] = dist1
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                        cdim
-                    )
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
-                    num_contacts += 1
-                var e2_x = pj_x - hlj * axis_w[0]
-                var e2_y = pj_y - hlj * axis_w[1]
-                var e2_z = pj_z - hlj * axis_w[2]
-                var dist2 = e2_z - rj - ground_z
-                if dist2 < cm and num_contacts < max_contacts:
-                    var c_off = num_contacts * CONTACT_SIZE
-                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                        gj_body
-                    )
-                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                        -1
-                    )
-                    var cw = from_plane_frame[DTYPE](
-                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                        e2_x, e2_y,
-                        ground_z + dist2 * Scalar[DTYPE](0.5),
-                    )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                    contacts[env, c_off + CONTACT_IDX_DIST] = dist2
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                        cdim
-                    )
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
-                    num_contacts += 1
-
-            elif gj_type == GEOM_CYLINDER:
-                # Up to FOUR points — two rim, two triangle — not one.
-                # See `_plane_cylinder_contacts` in contact_detection.mojo;
-                # shared with the naive path so the two cannot drift, which
-                # is exactly how the ellipsoid branch below went missing.
-                comptime if _COLL_PROBE:
-                    pr._c_t0 = Int(perf_counter_ns())
-                _plane_cylinder_contacts[DTYPE, BATCH](
-                    env,
-                    gj_body,
-                    pj_x, pj_y, pj_z,
-                    qj_x, qj_y, qj_z, qj_w,
-                    rj,
-                    hlj,
-                    ground_z,
-                    plp_x, plp_y, plp_z,
-                    plq_x, plq_y, plq_z, plq_w,
-                    cm,
-                    cf,
-                    cfs,
-                    cfr,
-                    cdim,
-                    -1,
-                    dims,
-                    contacts,
-                    num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    pr._c_pcyl += Int(perf_counter_ns()) - pr._c_t0
-                    pr._n_pcyl += 1
-
-            elif gj_type == GEOM_ELLIPSOID:
-                # ⚠ ADDED 2026-08-03. This branch did not exist, and
-                # `broadphase_sap.mojo` contained no mention of ELLIPSOID at
-                # all, so every ellipsoid geom was INVISIBLE TO COLLISION in
-                # any model that takes the SAP path — `detect_contacts_auto`
-                # switches to SAP at ngeom >= 16, and nothing warns.
-                #
-                # Shipped and silently wrong at the time of the fix:
-                #   quadruped     26 geoms, SAP, ellipsoid = `torso`
-                #   humanoid_CMU  50 geoms, SAP, ellipsoids = `lhand`, `rhand`
-                # i.e. the quadruped's TORSO never collided with the floor.
-                # fish (12 geoms, 7 ellipsoids) and swimmer (7, 1) sit under
-                # the threshold and take the naive path, which is why the
-                # ellipsoid narrow phase looked exercised.
-                #
-                # It hid because no test compared a plane's contact SET
-                # against MuJoCo — every plane in the suite is an axis-aligned
-                # floor and every gate read qacc at poses where the ellipsoid
-                # was not touching it. `test_oriented_plane_vs_mujoco` is what
-                # found it, and it found it on the AXIS-ALIGNED control rather
-                # than the tilted case it was written for.
-                #
-                # Body id is -1 here where `detect_contacts` writes 0 — the
-                # documented split between the two emit paths.
-                var hxje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
-                var hyje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
-                var hzje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
-                # MuJoCo routes plane x ellipsoid through `mjc_PlaneConvex`,
-                # which reports the single deepest support point; a smooth
-                # strictly-convex surface meets a plane at one point, so unlike
-                # the box there is no second contact to look for.
-                var epe = ellipsoid_plane[DTYPE](
-                    pj_x, pj_y, pj_z,
-                    qj_x, qj_y, qj_z, qj_w,
-                    hxje, hyje, hzje,
-                    ground_z,
-                )
-                var diste = epe[0]
-                if diste < cm and num_contacts < max_contacts:
-                    var c_off = num_contacts * CONTACT_SIZE
-                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                        gj_body
-                    )
-                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                        -1
-                    )
-                    # `ellipsoid_plane` already returns the contact point in
-                    # the PLANE frame, including the half-depth offset, so
-                    # unlike the sphere branch there is nothing to add here.
-                    var cwe = from_plane_frame[DTYPE](
-                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                        epe[1], epe[2], epe[3],
-                    )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cwe[0]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cwe[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cwe[2]
-                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                    contacts[env, c_off + CONTACT_IDX_DIST] = diste
-                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cim
-                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                        cdim
-                    )
-                    num_contacts += 1
-
-            elif gj_type == GEOM_BOX:
-                var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
-                var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
-                var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
-                # Up to FOUR corners, not one — see `_plane_box_contacts` and
-                # task #42. ⚠ This path writes -1 for the world body where
-                # `detect_contacts` writes 0, hence the explicit argument.
-                comptime if _COLL_PROBE:
-                    pr._c_t0 = Int(perf_counter_ns())
-                _plane_box_contacts[DTYPE](
-                    env,
-                    gj_body,
-                    pj_x, pj_y, pj_z,
-                    qj_x, qj_y, qj_z, qj_w,
-                    hxj, hyj, hzj,
-                    ground_z,
-                    plp_x, plp_y, plp_z,
-                    plq_x, plq_y, plq_z, plq_w,
-                    cm,
-                    cf,
-                    cfs,
-                    cfr,
-                    cdim,
-                    -1,
-                    dims,
-                    contacts,
-                    num_contacts,
-                    cgp,
-                )
-                comptime if _COLL_PROBE:
-                    pr._c_pbox += Int(perf_counter_ns()) - pr._c_t0
-                    pr._n_pbox += 1
-
-            elif gj_type == GEOM_MESH:
-                # Plane-mesh. Was a verbatim copy of the O(N^2) path's vertex
-                # scan, and carried the same defect: one contact per hull
-                # vertex, uncapped. Both now go through the single
-                # `_plane_mesh_contacts`, so the fix cannot land on one path
-                # and miss the other — the duplication is what let a
-                # `maxplanemesh` cap be absent from BOTH for as long as it was.
-                #
-                # ⚠ SAP'S RECORD CONVENTIONS ARE PRESERVED, NOT UNIFIED: this
-                # path writes BODY_B = -1, stores `dist - margin` in DIST and
-                # has no INCLUDEMARGIN slot (see the module docstring). Those
-                # are gated bit-exactly elsewhere, so they are passed as
-                # parameters rather than quietly aligned with the other path.
-                comptime if may_exist[D.NMESH_VERTS]():
-                    comptime if _COLL_PROBE:
-                        pr._c_t0 = Int(perf_counter_ns())
-                    _plane_mesh_contacts[
-                        DTYPE,
-                        -1, True, False](
-                        env,
-                        gj,
-                        gj_body,
-                        pj_x, pj_y, pj_z,
-                        qj_x, qj_y, qj_z, qj_w,
-                        ground_z,
-                        plp_x, plp_y, plp_z,
-                        plq_x, plq_y, plq_z, plq_w,
-                        cm,
-                        cf,
-                        cfs,
-                        cfr,
-                        cdim,
-                        dims,
-                        geoms,
-                        mesh_meta,
-                        mesh_verts,
-                        mesh_vert_edgeadr,
-                        mesh_edges,
-                        contacts,
-                        num_contacts,
-                        cgp,
-                    )
-                    comptime if _COLL_PROBE:
-                        pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
-                        pr._n_pmesh += 1
-
-            _fill_pair_solparams[DTYPE](
-                env, _n0, num_contacts, _mx, contacts
+                pn, nbody, max_contacts, ex_sig, n_sig, pr, num_contacts,
+                wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, contacts,
             )
 
     # ------------------------------------------------------------------
