@@ -3374,3 +3374,79 @@ pricing above puts the first at ~1.5× on every row and the second at
 3–15%. Neither is an optimisation inside the engine: the first is a
 decision to specialise hot loops on a few compile-time `nv` buckets, the
 second the standing decision above.
+
+### 13.38 MEASURED (2026-09-07): the campaign on NVIDIA — six of seven gates, and where the RTX 5090 step went
+
+The September CPU campaign (§13.20–13.37) edited solver code the batched
+GPU kernels share and matched every change on Apple only; the PYRAMIDAL +
+NVIDIA route goes through the blocked Newton kernel, which never launches
+on Metal. `tests/manifests/physics3d-gpu.txt` (`pixi run -e nvidia
+test-physics3d-gpu`, commit 99357b9d) names the seven gates. Run on a
+rented RTX 5090 box and on Apple, at HEAD a4b22e22 + 99357b9d:
+
+| gate | where | result |
+|---|---|---|
+| `test_newton_freejoint_vs_cpu` (blocked vs CPU oracle; Ant, Humanoid, ThreeTrees) | NVIDIA | PASS |
+| `test_newton_blocked_fields` (golden, walker2d) | NVIDIA | PASS |
+| `test_noslip_blocked_kernel` (dog: noslip on the blocked kernel) | NVIDIA | PASS — blocked-GPU vs per-env-GPU **0.0** with the pass off and on; vs per-env-CPU 2.1e-5 off, 4.6e-4 on (float32, the sensitivity arm prices it) |
+| `test_ldl_blocked` | CPU | 9/9 |
+| `test_fields_mt_parity` | Apple | bit-exact, 3 steps |
+| `test_cfrc_ext_batched_vs_cpu` | Apple | PASS |
+| `test_newton_blocked_tendon_fields` (ball_in_cup: tendon rows on the blocked kernel) | NVIDIA | **DOES NOT COMPILE** — killed after 30 min; builds on Apple in 106 s and passes there (§13.35). Parked, see below. |
+
+**The parked-slot probe, three sweeps side by side** (`scripts/p0_attrib.sh`,
+1024 lanes, per-step ms; Sep 4 is the `p0_lshoist_unpinned/` traces at
+377c8360, Sep 7 is HEAD):
+
+| k=13 term | Sep 3 | Sep 4 | Sep 7 |
+|---|---|---|---|
+| newton | 23.72 | 16.60 | 17.45 |
+| collision | 5.86 | 5.80 | **3.43** |
+| ldl_pair | 3.15 | 3.08 | **1.48** |
+| crba | 3.00 | 2.92 | 2.92 |
+| rne | 0.56 | 0.55 | 0.56 |
+| wall | 37.53 | 30.30 | **27.20** |
+
+k=0 wall 5.80 → 5.64 → **3.36**. Two wins, both inherited from the CPU
+campaign's shared code, both visible at the kernel level rather than as a
+statistical claim: the collision kernel per launch 552 → 266 µs at k=0
+and 725 → 428 µs at k=13 (§13.19–13.22's sweep, the plane loop and the
+body-pair filter), and the `compute_m_inv` launch — second of the three
+LDL launches in the Sep 4 trace, 195 µs at k=13 — absent from the Sep 7
+trace (§13.13/13.14's M⁻¹ skip, which was "inherited untested" until
+today). The LDL pair halved because of it, so the block ledger's F1 on
+`ldl_solve` now targets a 112 µs kernel.
+
+Newton did NOT move: 3–5% slower per launch than Sep 4 at k≥6 (2075 →
+2181 µs at k=13), inside the box's recorded noise band, and 62% slower at
+k=3 (205 → 332 µs) on a row that also carried a +3.5 ms host residual and a
+wall time nearly equal to k=6's — a perturbed process, not the kernel. Not
+chased: it is the term the block ledger already sends to a redesign
+(`THREADS = MAX_CONTACTS = 16`), and rebuilding a Sep 4 arm on a rented
+box to settle 3% is the wrong trade. `scripts/p0_ab.sh` exists for the
+day it is worth it.
+
+All three sweeps printed "NOT DECIDABLE" at k=9..13: nsys averages over
+every launch, warmup included, and with 200 warm + 300 timed the ramping
+warmup was 40% of the launches, 2% above the wall clock. `TIMED_STEPS` is
+1500 since 99357b9d (warmup share 12%); the next sweep is the clean
+baseline and every sweep after it compares to that one.
+
+**The tendon gate.** The blocked kernel compiles for walker2d, Ant and
+Humanoid on CUDA (gates 1–2), so the increment is the `NTENDON > 0` block
+— the spatial tendon length/Jacobian builders inlined into the cooperative
+kernel — through the NVPTX backend. Last known to compile on NVIDIA around
+2026-08-21; 35 commits touched the kernel since (§13.24–13.37 plus the
+block-diagonal campaign). The discriminating arm is a capped build of the
+Aug 27 tree's own copy (`3f3a3763`, the kernel before any of it):
+
+    git worktree add /workspace/mojo-rl-aug27 3f3a3763
+    time timeout 600 pixi run -e nvidia mojo build -I /workspace/mojo-rl-aug27 \
+        -o /tmp/tbt_aug27 /workspace/mojo-rl-aug27/tests/physics3d/test_newton_blocked_tendon_fields.mojo
+
+Exit 124 there = predates the campaign; a build = bisect the 35 at ten
+minutes per arm. Not on the parked-slot path (no tendons), so it gates
+nothing measured above; it gates the first tendon model anyone trains on
+GPU. Rented-box discipline learned today: a blocked-kernel test is ~15
+min of compile there (`test_noslip_blocked_kernel` 924 s), so run only the
+NVIDIA-only gates on the box and everything else on Apple.
