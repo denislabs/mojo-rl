@@ -600,6 +600,42 @@ def main() raises:
         remote.set_config("baseline_untrained_greedy", String(bl0[1]))
         remote.set_config("baseline_measured", String(bl0[2]))
         var logger = CompositeLogger(CsvLogger(csv_path), remote)
+
+        # ⚠⚠ THE CONFIG ALSO GOES OUT AS SCALARS AT STEP 0, SO THE CSV IS
+        # SELF-DESCRIBING. `set_config` reaches the dashboard and NOT the CSV
+        # — `CsvLogger` writes `step,wall_time_ms,name,value` and has nowhere
+        # to put a config field — so a CSV read later carries the curves and
+        # none of the settings that produced them.
+        #
+        # That cost a real conclusion. Two runs' shaped costs were decomposed
+        # into a goal distance and a reach distance under ASSUMED weights, and
+        # the two decompositions were mutually inconsistent: solving the pair
+        # gives a goal distance of -0.030 m, which is impossible. The
+        # arithmetic was fine; one of the weights I assumed was not what ran,
+        # and nothing in the file could say so.
+        #
+        # ⚠ AS `cfg/*` SO THEY SORT TOGETHER and cannot collide with a metric
+        # name. Emitted once, at step 0, before anything else is logged.
+        logger.log_scalar(String("cfg/shape_w_goal"), shape_goal, 0)
+        logger.log_scalar(String("cfg/shape_w_reach"), shape_reach, 0)
+        logger.log_scalar(
+            String("cfg/shape_clip"), So101TabletopConfig.SHAPE_CLIP, 0
+        )
+        logger.log_scalar(
+            String("cfg/target_entropy"), Float64(target_entropy), 0
+        )
+        logger.log_scalar(String("cfg/init_alpha"), Float64(init_alpha), 0)
+        logger.log_scalar(String("cfg/tau"), Float64(tau), 0)
+        logger.log_scalar(
+            String("cfg/updates_per_step"), Float64(updates_per_step), 0
+        )
+        logger.log_scalar(String("cfg/n_envs"), Float64(N_ENVS), 0)
+        logger.log_scalar(String("cfg/warmup"), Float64(warmup), 0)
+        logger.log_scalar(String("cfg/obs_dim"), Float64(OBS_DIM), 0)
+        logger.log_scalar(String("cfg/max_steps"),
+                          Float64(So101TabletopConfig.MAX_STEPS), 0)
+        logger.log_scalar(String("cfg/target_track_per_iter"), track, 0)
+
         var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
         var agent = AgentT(
