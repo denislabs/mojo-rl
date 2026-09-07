@@ -37,16 +37,27 @@ examples/solve_taxi.mojo
 # evaluates the goal and steps once, with no display.
 examples/tasks/task_viewer.mojo
 
-# ⚠ COMPILE-PROBED, NOT RUN — and not runnable on Apple at all. The family is
-# nv=24, exactly where the P0 park probe died on Metal ("Compute function
-# exceeds available stack space"): the physics kernels stack-allocate
-# per-thread arrays sized by nv. It builds here and launches only on NVIDIA:
-#   pixi run -e nvidia mojo run -I . examples/tasks/task_batched_gpu.mojo
-
-# ⚠ NVIDIA ONLY, same nv=24 reason. Three runs: frozen table at two reset
-# seeds (must agree, bit for bit) and a third that never applies the table
-# (must differ). Run it with:
-#   pixi run -e nvidia mojo run -I . examples/tasks/task_eval_frozen.mojo
+# ⚠⚠ THESE THREE RUN ON APPLE. The note here said "not runnable on Apple at
+# all — nv=24, exactly where the P0 park probe died on Metal (Compute function
+# exceeds available stack space)". That was inferred from the park probe's
+# failure and never TRIED, and it is wrong: all three launch on Metal at
+# N_ENVS up to 1024 and produce numbers BIT-IDENTICAL to a 5090's — P3's
+# parked-slot drift to the last ulp, P4's `A vs C 4224 of 6912`. Believing it
+# cost a round trip through somebody else's hardware to learn that a gate's
+# threshold was wrong.
+#
+#   pixi run mojo run -I . examples/tasks/task_batched_gpu.mojo
+#   pixi run mojo run -I . examples/tasks/task_eval_frozen.mojo
+#   pixi run mojo run -I . examples/tasks/sac_task_gpu.mojo --steps 20000
+#
+# ⚠ THE NVIDIA LEG IS STILL THE ONE THAT MATTERS FOR THROUGHPUT, and a long
+# training run belongs there. What changed is that the GATES can be iterated
+# locally, which is where a wrong threshold gets found.
+#
+# P3: 1024 lanes, two tasks, one monomorphisation — GPU reward vs the host
+# evaluator, the per-lane tape, the active mask, and Gap D's repark.
+# P4: three runs — frozen table at two reset seeds (must agree bit for bit)
+# and a third that never applies the table (must differ).
 
 # ⚠ Needs `references/LIBERO-master` (gitignored); SKIPS LOUDLY without it,
 # and a skip is not a pass. Reports what LIBERO needs that we do not have.
@@ -54,19 +65,17 @@ examples/tasks/libero_survey.mojo
 examples/tasks/task_eval_frozen.mojo
 examples/tasks/task_batched_gpu.mojo
 
-# ⚠⚠ THE FIRST POLICY THIS LAYER HAS EVER CARRIED. SAC on
-# `so101_reach_clear`; every P1-P5 number before it was a harness number.
+# ⚠⚠ THE FIRST POLICY THIS LAYER HAS EVER CARRIED. SAC on `so101_lift_brick`
+# (`--task` takes any of them); every P1-P5 number before it was a harness
+# number. Runs on Apple; a LONG run belongs on NVIDIA.
 #   pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo
 # ⚠ The reward is sparse and the episode TERMINATES on success, so a return
 # is 0 or 1 and `mean_return()` IS the success rate — no band table.
-# ⚠ IT REFUSES A TASK WITH AN ACTIVE FREE SLOT, and that refusal is the
-# finding: nothing places a free slot on the GPU reset path, so an active
-# prop starts every episode at its PARK pose 50 m up and falls through the
-# whole horizon with its qpos and qvel in the observation. The HOST places
-# them (`sampler` + `reset.reset_slots`), which is why eval and the viewer
-# are fine. Until `init_qpos_gpu` places them, `so101_reach_brick`,
-# `so101_lift_brick` and `so101_gather_bricks` are authorable, evaluable and
-# NOT trainable.
+# ⚠ THE MEASURED FLOORS ARE IN ITS HEADER and a rate has to be read against
+# them: `lift` and `gather` are 0.00 under random actions, an untrained greedy
+# actor AND every constant action, while `reach` is 0.25 random / 1.00 greedy
+# because a constant action SWEEPS the gripper through the region
+# (`task_null_action.mojo`). `settle` is the probe and is 1.00 by design.
 examples/tasks/sac_task_gpu.mojo
 
 # GPU device code — local-only probes (see note above):
