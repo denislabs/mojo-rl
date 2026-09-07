@@ -101,6 +101,7 @@ from .kernels import (
     pack3_t,
     pack2_t,
     axpy_t,
+    hinge_axpy_t,
     scale_t,
     sum3_scaled_t,
     min_scale_t,
@@ -111,6 +112,7 @@ from .kernels import (
     gaussian_t,
     gaussian_dev_t,
     mean_into_t,
+    mean_sq_into_t,
     scale_by_inv_mag_t,
 )
 
@@ -231,6 +233,14 @@ struct FBTrainer[
     var sink: Tensor
     var sink_a: Tensor
     var g_fin_a: Tensor
+    # Actor-gradient split, device-resident (no D2H in the step): mean-square
+    # of `g_pi` from the VALUE term alone, and after the regularisers were
+    # added. `read_actor_grad_split` returns their roots at flush cadence.
+    # Exists because run 2 of the online walker collapsed to a null policy
+    # and nothing in the log could say whether the penalty was too strong or
+    # the value term too weak — it was the latter, and only a probe showed it.
+    var acc_gv: Tensor
+    var acc_gt: Tensor
     # ── the batch itself ────────────────────────────────────────────────
     # Owned, not passed per step. `TensorRefs[N, o]` requires every tensor in
     # a pack to share ONE origin, so a `train_step(s, a, ...)` taking five
@@ -297,6 +307,24 @@ struct FBTrainer[
     # (§16.1 D), and its offline stand-in here is TD3+BC. This is the direct
     # form — penalise the quantity that is climbing.
     var act_l2_weight: Float64
+    # ⚠⚠ Hinge margin for the penalty above (0 = plain L2 on the whole box).
+    # With `margin > 0` the penalty is `w · mean(relu(|pi| - margin)^2)`:
+    # ZERO gradient inside the band, so it opposes the corner and nothing
+    # else — the interior is left to the value term.
+    #
+    # ⚠⚠ THE VALUE TERM MUST STAY RAW FOR THIS TO MEAN ANYTHING. The second
+    # online walker run (2026-09-07, plain L2 at 1.0) collapsed to a NULL
+    # policy (replay mean|a| 0.19, eval 0.10) and the first reading blamed the
+    # penalty. A probe with the margin at 0.999 — never crossed — still held
+    # mean|a| at 0.27 against 0.73 with no penalty: what suppressed the actor
+    # was the ADAPTIVE SCALE, which had been switched on for any regulariser
+    # and divides the value gradient by |mean F·z| (~200 on those runs). That
+    # scale is TD3+BC's, and it is correct ONLY with BC, whose target is the
+    # data action: "the regulariser wins" then means "sit near the data".
+    # With a penalty whose target is zero it means a dead actor. So the scale
+    # is applied iff `bc_weight > 0`, and the penalty competes with the raw
+    # value gradient — the split is measured, see `acc_gv` / `acc_gt`.
+    var act_l2_margin: Float64
     var steps: Int
     var _rng_seed: UInt64
     var _rng_offset: UInt64
@@ -353,6 +381,8 @@ struct FBTrainer[
         self.sink = Tensor()
         self.sink_a = Tensor()
         self.g_fin_a = Tensor()
+        self.acc_gv = Tensor()
+        self.acc_gt = Tensor()
         self.bs = Tensor()
         self.ba = Tensor()
         self.bsn = Tensor()
@@ -373,6 +403,7 @@ struct FBTrainer[
         self.max_grad_norm = 0.0
         self.bc_weight = 0.0
         self.act_l2_weight = 0.0
+        self.act_l2_margin = 0.0
         self.steps = 0
         self._rng_seed = UInt64(0x5EED)
         self._rng_offset = UInt64(0)
@@ -425,6 +456,8 @@ struct FBTrainer[
         self.sink = move.sink^
         self.sink_a = move.sink_a^
         self.g_fin_a = move.g_fin_a^
+        self.acc_gv = move.acc_gv^
+        self.acc_gt = move.acc_gt^
         self.bs = move.bs^
         self.ba = move.ba^
         self.bsn = move.bsn^
@@ -445,6 +478,7 @@ struct FBTrainer[
         self.max_grad_norm = move.max_grad_norm
         self.bc_weight = move.bc_weight
         self.act_l2_weight = move.act_l2_weight
+        self.act_l2_margin = move.act_l2_margin
         self.steps = move.steps
         self._rng_seed = move._rng_seed
         self._rng_offset = move._rng_offset
@@ -465,6 +499,7 @@ struct FBTrainer[
         bc_weight: Float64 = 0.0,
         lr_b: Float64 = -1.0,
         act_l2_weight: Float64 = 0.0,
+        act_l2_margin: Float64 = 0.0,
     ) raises -> Self:
         """`tau = 0.01` (EMA 0.99), `gamma = 0.98`, Adam 3e-4 — the published
         FB / Meta Motivo settings.
@@ -518,6 +553,7 @@ struct FBTrainer[
         t.max_grad_norm = max_grad_norm
         t.bc_weight = bc_weight
         t.act_l2_weight = act_l2_weight
+        t.act_l2_margin = act_l2_margin
         t._rng_seed = seed
         return t^
 
@@ -536,6 +572,8 @@ struct FBTrainer[
             d.synchronize()
             self._rng_off_dev = ob^
         ensure_t[T](self.acc_lam, 1, c)
+        ensure_t[T](self.acc_gv, 1, c)
+        ensure_t[T](self.acc_gt, 1, c)
         ensure_t[T](self.sink, Self.BATCH * Self.F_IN, c)
         ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
         ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
@@ -824,6 +862,24 @@ struct FBTrainer[
                 f2 = Float64(self.opt_f2.read_clip_norm(c))
                 b = Float64(self.opt_b.read_clip_norm(c))
 
+    def read_actor_grad_split(
+        mut self, mut g_value: Float64, mut g_total: Float64
+    ) raises:
+        """RMS of the actor's output gradient from the value term alone, and
+        after BC / the action penalty were added — the last step's. FLUSH
+        CADENCE ONLY (D2H). `g_total / g_value` near 1 means the regulariser
+        is negligible; far above 1 means it owns the actor."""
+        comptime T = Self.TARGET
+        g_value = 0.0
+        g_total = 0.0
+        if self.steps == 0:
+            return
+        comptime if T == "gpu":
+            self.acc_gv.download(self.ctx.value())
+            self.acc_gt.download(self.ctx.value())
+        g_value = sqrt(Float64(self.acc_gv.data[0]))
+        g_total = sqrt(Float64(self.acc_gt.data[0]))
+
     def train_device_kernels(mut self) raises:
         """The pure device-kernel train step — the body to hand to
         `maybe_capture_replay`.
@@ -905,9 +961,9 @@ struct FBTrainer[
         #
         # The magnitude now stays on device and the scale kernel reads it, so
         # the normalisation is unconditional AND capture-safe.
-        # The adaptive scale applies whenever ANY regulariser competes with the
-        # value term — the penalty below is a ratio for the same reason BC is.
-        if self.bc_weight > 0.0 or self.act_l2_weight > 0.0:
+        # ⚠ BC ONLY — see `act_l2_margin`. Normalising the value term against
+        # an action penalty leaves the actor with no drive at all.
+        if self.bc_weight > 0.0:
             scale_by_inv_mag_t[T, Self._ND](
                 self.g_fa, self.bz, self.acc_lam,
                 Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
@@ -931,6 +987,7 @@ struct FBTrainer[
         slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
             self.g_pi, self.g_fin_a, c
         )
+        mean_sq_into_t[T, Self._NA](self.g_pi, self.acc_gv, c)
         # + BC: d/dpi of `bc_weight · mean_i mean_k (pi - a_data)^2`.
         # `axpy` twice rather than a bespoke kernel: g_pi += w·pi, g_pi -= w·a.
         if self.bc_weight > 0.0:
@@ -948,7 +1005,13 @@ struct FBTrainer[
                 self.act_l2_weight * 2.0
                 / (Float64(Self.BATCH) * Float64(Self.ACT))
             )
-            axpy_t[T, Self._NA](self.g_pi, self.pi, w2, c)
+            if self.act_l2_margin > 0.0:
+                hinge_axpy_t[T, Self._NA](
+                    self.g_pi, self.pi, w2, Scalar[DT](self.act_l2_margin), c
+                )
+            else:
+                axpy_t[T, Self._NA](self.g_pi, self.pi, w2, c)
+        mean_sq_into_t[T, Self._NA](self.g_pi, self.acc_gt, c)
 
         call_vjp[T, Self.BATCH](
             self.actor.online, TensorRefs[1, MutAnyOrigin](self.ain), self.g_pi,

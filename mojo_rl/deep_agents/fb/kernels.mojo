@@ -327,6 +327,27 @@ def smooth_action_kernel[N: Int](
     dst[unsafe_offset=t] = v
 
 
+def hinge_axpy_kernel[N: Int](
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    alpha: Scalar[DT],
+    margin: Scalar[DT],
+):
+    """`y += alpha · sign(x) · max(|x| - margin, 0)` — the gradient of the
+    hinged action penalty `mean(relu(|pi| - margin)^2)`, zero inside the
+    band. See `FBTrainer.act_l2_margin` for why the band matters."""
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    var v = x[unsafe_offset=t]
+    var a = v if v >= 0 else -v
+    var e = a - margin
+    if e <= Scalar[DT](0):
+        return
+    var g = e if v >= 0 else -e
+    y[unsafe_offset=t] = y[unsafe_offset=t] + alpha * g
+
+
 def project_sphere_kernel[D: Int, BATCH: Int](
     z: Pointer[Scalar[DT], MutAnyOrigin], radius: Scalar[DT]
 ):
@@ -523,6 +544,26 @@ def axpy_t[target: StaticString, N: Int](
         )
 
 
+def hinge_axpy_t[target: StaticString, N: Int](
+    mut y: Tensor, mut x: Tensor, alpha: Scalar[DT], margin: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`y += alpha · sign(x) · relu(|x| - margin)`."""
+    comptime if target == "cpu":
+        for i in range(N):
+            var v = x.data[i]
+            var a = v if v >= 0 else -v
+            var e = a - margin
+            if e > Scalar[DT](0):
+                y.data[i] = y.data[i] + alpha * (e if v >= 0 else -e)
+    else:
+        var d = ctx.value()
+        d.enqueue_function[hinge_axpy_kernel[N]](
+            y.dev.value().unsafe_ptr(), x.dev.value().unsafe_ptr(), alpha, margin,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
 def scale_t[target: StaticString, N: Int](
     mut y: Tensor, mut x: Tensor, alpha: Scalar[DT],
     ctx: Optional[DeviceContext] = None,
@@ -645,6 +686,27 @@ def mean_sq_t[target: StaticString, N: Int](
         )
         acc.download(d)
         return Float64(acc.data[0])
+
+
+def mean_sq_into_t[target: StaticString, N: Int](
+    mut x: Tensor, mut acc: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """`acc[0] = mean(x^2)` — NO download, capture-safe. `mean_sq_t` is the
+    syncing sibling; use this one inside the train step and read `acc` at
+    flush cadence."""
+    ensure_t[target](acc, 1, ctx)
+    comptime if target == "cpu":
+        var s = Float64(0)
+        for i in range(N):
+            var v = Float64(x.data[i])
+            s += v * v
+        acc.data[0] = Scalar[DT](s / Float64(N))
+    else:
+        var d = ctx.value()
+        d.enqueue_function[sumsq_reduce_kernel[N]](
+            x.dev.value().unsafe_ptr(), acc.dev.value().unsafe_ptr(),
+            grid_dim=1, block_dim=TPB_REDUCE,
+        )
 
 
 def mean_into_t[target: StaticString, N: Int](

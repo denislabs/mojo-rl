@@ -10,7 +10,7 @@ that claim, because it changes nothing else: same `FBTrainer`, same nets as
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_online_walker_gpu.mojo \
         [--steps N] [--ups K] [--warmup N] [--z-hold N] [--bc X] [--ortho X] \
-        [--lr-b X] [--expl-std X] [--act-l2 X] [--tag NAME]
+        [--lr-b X] [--expl-std X] [--act-l2 X] [--act-margin X] [--tag NAME]
 
 Then score it — the online arm has its OWN eval, because the batched env's
 observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
@@ -36,12 +36,16 @@ observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
   64 updates/iter as a target that chased itself (§13's SAC note), so this
   starts at 8 and exposes it.
   `--z-hold` 150 and the 10 k ZBuffer are BFM-Zero's rollout rule.
-  `--bc` 0.0 and `--act-l2` 1.0: the FIRST run of this script (bc 0, no
-  penalty, 4.9 M env steps) went bang-bang from the first flush — mean|a|
-  0.82 → 0.88, 82–90 % saturated at eval, walk 0.71x / run 0.48x random.
-  The prediction that on-policy data corrects the corner was wrong; see
-  `FBTrainer.act_l2_weight`. Watch `mean|a|` at the first flush: at 1.0 it
-  must sit well below 0.8, or the penalty is in the wrong decade.
+  `--bc` 0.0, `--act-l2` 100 at `--act-margin` 0.8: two runs bracket it.
+  Run 1 (no penalty) went bang-bang — mean|a| 0.82 → 0.88, 82–90 %
+  saturated, walk 0.71x / run 0.48x random. Run 2 (plain L2 at 1.0) went
+  NULL — replay mean|a| 0.19, eval 0.10, walker lying still, all three
+  tasks ≤ random — and a probe showed the penalty was not the cause: the
+  adaptive scale (BC's) had been extended to it and left the value term at
+  ~1/200 of its size. See `FBTrainer.act_l2_margin`. Now the value gradient
+  is RAW, the hinge caps the corner, and the flush line prints `gA value
+  -> total`: the value-term RMS of the actor gradient and the RMS after the
+  penalty. Expect mean|a| near the margin; read `saturated` at eval.
   `--ortho` 100 and `--lr-b` 1e-5: the A2 winner (§18.6.1), which is the
   reference's own PAIR — each was null alone, together stand 1.57 / walk
   1.92 / run 1.63x random offline with every rung SIGNAL. That offline arm
@@ -112,7 +116,8 @@ comptime WARMUP_STEPS: Int = 25_600      # 100 iterations of random actions
 comptime Z_HOLD: Int = 150
 comptime EXPL_STD: Float64 = 0.2
 comptime BC_WEIGHT: Float64 = 0.0
-comptime ACT_L2: Float64 = 1.0
+comptime ACT_L2: Float64 = 100.0
+comptime ACT_MARGIN: Float64 = 0.8
 comptime ORTHO_WEIGHT: Float64 = 100.0
 comptime LR_B: Float64 = 1e-5
 comptime MAX_GRAD_NORM: Float64 = 1.0
@@ -144,6 +149,7 @@ def main() raises:
     var z_hold = atol(_flag(String("--z-hold"), String(Z_HOLD)))
     var bc_w = atof(_flag(String("--bc"), String(BC_WEIGHT)))
     var act_l2 = atof(_flag(String("--act-l2"), String(ACT_L2)))
+    var act_margin = atof(_flag(String("--act-margin"), String(ACT_MARGIN)))
     var ortho_w = atof(_flag(String("--ortho"), String(ORTHO_WEIGHT)))
     var lr_b = atof(_flag(String("--lr-b"), String(LR_B)))
     var expl = atof(_flag(String("--expl-std"), String(EXPL_STD)))
@@ -170,7 +176,7 @@ def main() raises:
     print("  updates / iteration =", ups, " (", ups * BATCH // N_ENVS, "samples per env step )")
     print("  warmup env steps    =", warmup)
     print("  z_hold / ZBUF       =", z_hold, "/", ZBUF)
-    print("  expl_std / bc / act_l2 / ortho / lr_b =", expl, "/", bc_w, "/", act_l2, "/", ortho_w, "/", lr_b)
+    print("  expl_std / bc / act_l2@margin / ortho / lr_b =", expl, "/", bc_w, "/", act_l2, "@", act_margin, "/", ortho_w, "/", lr_b)
     print("  CUDA graph (train)  =", USE_TRAIN_CUDA_GRAPH)
     print("  tag                 = '", tag, "'")
     print("=" * 70)
@@ -199,6 +205,7 @@ def main() raises:
         logger.set_config("expl_std", String(expl))
         logger.set_config("bc_weight", String(bc_w))
         logger.set_config("act_l2", String(act_l2))
+        logger.set_config("act_margin", String(act_margin))
         logger.set_config("ortho_weight", String(ortho_w))
         logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
         logger.set_config("max_grad_norm", String(MAX_GRAD_NORM))
@@ -213,6 +220,7 @@ def main() raises:
             max_grad_norm=MAX_GRAD_NORM,
             bc_weight=bc_w,
             act_l2_weight=act_l2,
+            act_l2_margin=act_margin,
             learning_starts=warmup,
             action_scale=1.0,
             expl_std=expl,

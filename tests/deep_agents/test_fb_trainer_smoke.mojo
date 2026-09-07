@@ -353,6 +353,63 @@ def test_act_l2_curbs_action_saturation() raises:
     )
 
 
+def test_act_l2_margin_leaves_the_band_alone() raises:
+    """[6b] The HINGED penalty must leave the interior to the value term.
+    Three runs on identical data: no penalty, hinge at 0.8, hinge at 0.999.
+      * a margin no action crosses must be INVISIBLE: the 0.999 run must
+        match the no-penalty run. This is the check that failed silently
+        before — the adaptive scale had been switched on by the penalty and
+        held mean|a| at 0.27 against 0.73, with the hinge itself doing
+        nothing (§18.7.1).
+      * the 0.8 hinge must not raise mean|a| and must leave fewer actions
+        above 0.9 than no penalty.
+    """
+    print("[6b] act_l2_margin: an uncrossed margin is invisible; 0.8 caps ...")
+    var probe = Tensor.alloc(BATCH * OBS)
+    for i in range(BATCH * OBS):
+        probe.data[i] = Scalar[DT](0.17 * Float64(i % 11) - 0.8)
+    var zp = _z_tensor(BATCH)
+    var means = List[Float64]()
+    var above = List[Int]()
+    for variant in range(3):
+        var w = 0.0 if variant == 0 else 2.0
+        var m = 0.999 if variant == 1 else 0.8
+        seed(SEED)
+        var t = Trainer.make(lr=3e-3, act_l2_weight=w, act_l2_margin=m)
+        seed(SEED + 9)
+        for _ in range(60):
+            var s = _rand_tensor(BATCH * OBS, 1.0)
+            var a = _rand_tensor(BATCH * ACT, 1.0)
+            var sn = _rand_tensor(BATCH * OBS, 1.0)
+            var sp = _rand_tensor(BATCH * OBS, 1.0)
+            var z = _z_tensor(BATCH)
+            t.load_batch(s, a, sn, sp, z)
+            _ = t.train_step(want_loss=False)
+        var out = Tensor()
+        t.act[BATCH](probe, zp, out)
+        var acc = Float64(0)
+        var n_above = 0
+        for i in range(BATCH * ACT):
+            var v = abs(Float64(out.data[i]))
+            acc += v
+            if v > 0.9:
+                n_above += 1
+        means.append(acc / Float64(BATCH * ACT))
+        above.append(n_above)
+    print("      mean|a|:  none ->", means[0], "  hinge@0.999 ->", means[1],
+          "  hinge@0.8 ->", means[2])
+    print("      |a|>0.9:  none ->", above[0], "  hinge@0.999 ->", above[1],
+          "  hinge@0.8 ->", above[2])
+    assert_true(
+        abs(means[1] - means[0]) < 1e-6,
+        "a margin no action crosses CHANGED the actor (" + String(means[0])
+        + " vs " + String(means[1]) + ") — something other than the hinge is"
+        " reacting to act_l2_weight > 0",
+    )
+    assert_true(means[2] <= means[0] + 1e-6, "the 0.8 hinge raised mean|a|")
+    assert_true(above[2] <= above[0], "the 0.8 hinge left more actions above 0.9")
+
+
 def main() raises:
     test_step_runs_and_reports()
     test_b_does_not_collapse()
@@ -360,4 +417,5 @@ def main() raises:
     test_bc_weight_curbs_action_saturation()
     test_actor_update_independent_of_want_loss()
     test_act_l2_curbs_action_saturation()
+    test_act_l2_margin_leaves_the_band_alone()
     print("\n[PASS] FB trainer smoke gate")

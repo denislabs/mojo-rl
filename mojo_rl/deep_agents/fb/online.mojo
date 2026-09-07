@@ -457,7 +457,8 @@ struct FBOnlineAgent[
         ortho_weight: Float64 = 1.0,
         max_grad_norm: Float64 = 1.0,
         bc_weight: Float64 = 0.0,
-        act_l2_weight: Float64 = 1.0,
+        act_l2_weight: Float64 = 100.0,
+        act_l2_margin: Float64 = 0.8,
         learning_starts: Int = 10_000,
         action_scale: Float64 = 1.0,
         expl_std: Float64 = 0.2,
@@ -472,15 +473,23 @@ struct FBOnlineAgent[
         """Defaults are BFM-Zero's rollout / relabel settings on top of
         `FBTrainer.make`'s (`gamma` 0.98, `tau` 0.01, Adam 3e-4).
 
-        `bc_weight = 0`, `act_l2_weight = 1.0`. The first online walker run
-        (2026-09-07, no BC, no penalty) went bang-bang from the first flush:
-        mean|a| 0.82 → 0.88, 82–90 % saturated at eval, walk/run below
-        random. The prediction that on-policy data would correct the corner
-        was WRONG — a bang-bang policy generates bang-bang data and `F` fits
-        it. BC toward the replay's own (saturated) actions cannot help; the
-        magnitude penalty is the direct form of what BFM-Zero's `Q_R`
-        action-rate term does. `mean|a|` at flush is the check that 1.0 is
-        in the right decade.
+        `bc_weight = 0`, `act_l2_weight = 100`, `act_l2_margin = 0.8`. Two
+        online walker runs (2026-09-07) bracket this: no penalty went
+        bang-bang from the first flush (mean|a| 0.82 → 0.88, 82–90 %
+        saturated, walk/run below random); a plain L2 at 1.0 went NULL
+        (replay mean|a| 0.19, eval 0.10, walker lying still). Both are the
+        same trap — whatever action regime the actor is in, the ring fills
+        with it, `F` fits it, and it becomes self-consistent — and the
+        plain L2 lost because the value term had been normalised by |F·z|
+        (the BC-only scale, wrongly extended to it) — see
+        `FBTrainer.act_l2_margin`. Now the value gradient is RAW and the
+        hinge caps the corner. The weight is deliberately STRONG: under Adam
+        only its ratio to the value gradient matters, too strong merely
+        hardens the wall at the margin (the interior stays the value term's),
+        too weak is run 1 again — on random data w = 2 moved mean|a| by 0.01.
+        Read `gA value -> total` at the first flush: the actor-gradient RMS
+        before and after the penalty; a total far above the value means the
+        wall is active, equal means no action reached it.
         """
         comptime assert Self.CAP >= Self.BATCH, (
             "FBOnlineAgent: CAP must be >= BATCH"
@@ -500,6 +509,7 @@ struct FBOnlineAgent[
             lr=lr, gamma=gamma, tau=tau, ortho_weight=ortho_weight,
             ctx=octx, seed=seed + 13, max_grad_norm=max_grad_norm,
             bc_weight=bc_weight, lr_b=lr_b, act_l2_weight=act_l2_weight,
+            act_l2_margin=act_l2_margin,
         )
         a.t.ensure_sized()
         a.tracker = EpisodeTracker.new(
@@ -1040,6 +1050,9 @@ struct FBOnlineAgent[
         var gf2 = Float64(0)
         var gb = Float64(0)
         self.t.read_grad_norms(gf1, gf2, gb)
+        var gv = Float64(0)
+        var gt = Float64(0)
+        self.t.read_actor_grad_split(gv, gt)
         var maa = Float64(self._mean_abs_action_dev.read["gpu"]())
         self._mean_abs_action_dev.reset["gpu"]()
         var n_upd = self._update_count
@@ -1060,6 +1073,8 @@ struct FBOnlineAgent[
             names.append(String("fb/grad_norm_f2")); vals.append(gf2)
             names.append(String("fb/grad_norm_b")); vals.append(gb)
             names.append(String("fb/mean_abs_action")); vals.append(maa)
+            names.append(String("fb/actor_grad_value")); vals.append(gv)
+            names.append(String("fb/actor_grad_total")); vals.append(gt)
             names.append(String("fb/replay_size")); vals.append(Float64(self.size))
             names.append(String("fb/train_steps"))
             vals.append(Float64(self._total_train_steps))
@@ -1069,7 +1084,7 @@ struct FBOnlineAgent[
         print(
             "   [fb] step", step, " measure", measure, " ortho", ortho,
             " actor", actor, " |F|", fnorm, " |B|", bnorm, " gF", gf1,
-            " mean|a|", maa, " replay", self.size,
+            " mean|a|", maa, " gA", gv, "->", gt, " replay", self.size,
         )
 
     # ── checkpoint ───────────────────────────────────────────────────────

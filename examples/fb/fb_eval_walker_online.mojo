@@ -334,4 +334,5 @@ def main() raises:
     print("")
     print("Offline bar (A2 winner, two seeds, §18.6.2): stand 1.51  walk 1.82  run 1.44")
     print("SAC expert returns in the store:             ~983      ~965      ~720")
-    print("A3 run 1 (bc 0, no act penalty): stand 2.06 walk 0.71 run 0.48 — 82-90% SATURATED")
+    print("A3 run 1 (no act penalty):  stand 2.06 walk 0.71 run 0.48 — 82-90% SATURATED")
+    print("A3 run 2 (plain L2 @ 1.0):  stand 0.93 walk 0.75 run 0.96 — NULL policy, mean|a| 0.10")
