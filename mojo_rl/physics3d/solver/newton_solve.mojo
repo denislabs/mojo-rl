@@ -491,6 +491,23 @@ comptime NEWTON_STOP_AFTER: Int = 0
 # was written to avoid at high contact counts.
 comptime NEWTON_FORCE_PER_ENV: Bool = False
 
+# ⚠ AN OCCUPANCY KNOB, BIT-IDENTICAL AT EVERY VALUE. It adds this many
+# scalars of THREADGROUP memory to the blocked kernel that nothing reads or
+# writes except one anti-elimination touch on thread 0, so the only thing it
+# changes is how many blocks an SM can hold. Why that is the question
+# (BLOCK_DIAGONAL_..., 2026-09-07): nsys's per-launch shared-memory column on
+# the baseline sweep reads 22.5 / 50.2 / 90.1 / 96.3 KB at k = 3 / 6 / 9 / 13,
+# i.e. 5 / 2 / 1 / 1 blocks per SM on a 128 KB SM, and the Newton launch
+# grows 11x over that range while the per-WAVE cost grows 2x. The three
+# dense `NV*NV` matrices are 85 of the 96 KB and are block-diagonal (2 KB
+# each packed at k=13). Before packing them, this knob PROVES the mechanism:
+# padding k=3 and k=6 to one block per SM should scale their Newton launch
+# by their wave ratio, and the k=3 ratio also says whether the SM is 128 or
+# 228 KB. 0 = production. `newton_shared_elems` does not count it — it must
+# not, because the spill decision is what a real footprint should drive, and
+# this footprint is a fake one.
+comptime NEWTON_SHARED_PAD: Int = 0
+
 # ⚠⚠ WITHOUT THIS THE PROBE MEASURES NOTHING AND SAYS SO CONVINCINGLY. Every
 # extra block writes memory the real pass overwrites on the very next lines, so
 # dead-store elimination is entitled to delete the whole thing — and the probe
@@ -4544,6 +4561,23 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(3), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    comptime if NEWTON_SHARED_PAD > 0:
+        # See the knob. Touched on thread 0 only, consumed through the same
+        # sentinel the probe terms use, so the allocation survives and the
+        # answer cannot move.
+        var pad_sh = LayoutTensor[
+            DTYPE, Layout.row_major(NEWTON_SHARED_PAD), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        if tid == 0:
+            pad_sh[0] = Scalar[DTYPE](0)
+            pad_sh[NEWTON_SHARED_PAD - 1] = Scalar[DTYPE](0)
+            if (
+                rebind[Scalar[DTYPE]](pad_sh[0])
+                + rebind[Scalar[DTYPE]](pad_sh[NEWTON_SHARED_PAD - 1])
+                == _probe_sentinel[DTYPE]()
+            ):
+                ctrl_sh[2] = Scalar[DTYPE](0)
 
     # === COOPERATIVE LOAD: M into shared ===
     if valid_env:
