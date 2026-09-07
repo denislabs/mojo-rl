@@ -74,7 +74,7 @@ is read from `tools/vla/`.
 | `SMOLVLA_STATS` | a local `meta/stats.json`. Optional — by default it is fetched from `SMOLVLA_REPO` |
 | `SMOLVLA_REPO` | the dataset repo the statistics come from; defaults to the recording named above |
 | `SMOLVLA_TASKS` | the tokenised instruction table; defaults to the checked-in one for this recording |
-| `SMOLVLA_STEPS` | optimizer steps, without a rebuild |
+| `SMOLVLA_STEPS` | optimizer steps, without a rebuild. ⚠ **A SHORT RUN IS NOT A GENTLE RUN** — see below |
 | `SMOLVLA_ACCUM` | observations per optimizer step (default 8) |
 | `SMOLVLA_LR` | default 1e-4 |
 | `SMOLVLA_NO_MONITOR` | force the metrics logger inert |
@@ -111,6 +111,14 @@ does forward and backward together, so a validation pass costs about twice what
 it should and leaves gradients that the next training step's
 `zero_trainable_grads` discards. Correct, wasteful, and named here rather than
 left to be discovered in a profile.
+
+⚠ **A short run is not a low-learning-rate run.** The reference's scheduler
+AUTO-SCALES: a run shorter than `num_decay_steps` compresses both the warmup
+and the cosine decay to fit it. `SMOLVLA_STEPS=3` therefore gets a 1-step
+warmup and runs at ~5e-05, essentially peak — not the gentle ramp a 3-step
+"smoke test" sounds like. The smoke run is for checking that it STARTS and
+what a step costs; the loss it prints is a full schedule crammed into three
+steps and means nothing.
 
 ⚠ **Gradient clipping is ABSENT and the reference sets `grad_clip_norm = 10`.**
 `Adam.clip_grads` needs one `ParamWalkable`, and the trainable set here is five
@@ -510,9 +518,36 @@ def main() raises:
     print("  val     " + String(VAL_GROUPS) + " fixed groups x "
           + String(accum) + " observations, drawn once")
 
-    var t0 = perf_counter_ns()
+    # ── the BASELINE, before a single update ─────────────────────────────
+    # ⚠ Without this every held-out number is post-update and "the loss fell"
+    # has nothing to fall FROM. It is also the only number that says anything
+    # about the published checkpoint on this recording, which is the thing a
+    # fine-tune has to beat.
     var ns_img = 0
     var ns_step = 0
+    var base_sum = 0.0
+    for vi in range(VAL_GROUPS):
+        for m in range(accum):
+            base_sum += run_one(
+                m, vgroups[vi], sam, tasks, pol, st, img_col, row, images,
+                scratch, acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
+                ns_img, ns_step,
+            )
+    var base_val = base_sum / Float64(VAL_GROUPS)
+    print("  BASELINE held-out (lerobot/smolvla_base, 0 updates): "
+          + String(base_val))
+    var bn = List[String]()
+    var bv = List[Float64]()
+    bn.append(String("val/loss"))
+    bv.append(base_val)
+    logger.log_scalars(bn, bv, -1)
+    # ⚠ The baseline ran a BACKWARD it does not need and left gradients in
+    # every trainable `.grd`. The loop's first `zero_trainable_grads` clears
+    # them — but only because it is the first statement in the loop. Moving
+    # the zero after the forward would fold the baseline's gradient into
+    # step 0's update.
+
+    var t0 = perf_counter_ns()
 
     for s in range(steps):
         # ⚠ Host-side, because `Adam.attach_warmup_schedule` is a NO-OP off
@@ -575,7 +610,11 @@ def main() raises:
                         x_t, u_t, ctx, ns_img, ns_step,
                     )
             var vloss = vsum / Float64(VAL_GROUPS)
-            print("  step " + String(s) + "   HELD-OUT " + String(vloss))
+            print(
+                "  step " + String(s) + "   HELD-OUT " + String(vloss)
+                + "   vs baseline " + String(base_val) + "  ("
+                + String(100.0 * (vloss - base_val) / base_val) + "%)"
+            )
             var vn = List[String]()
             var vv = List[Float64]()
             vn.append(String("val/loss"))
