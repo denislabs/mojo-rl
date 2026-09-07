@@ -3488,3 +3488,21 @@ profile is what makes the average a number; (3) the "1500 fixes the
 residual" claim above was half right — it fixed the cold-clock bias and
 exposed the drift the 500-step runs had been hiding. Same shape as
 `_the_sweep_was_not_the_distribution`.
+
+The k=13 trace of that sweep, binned (`p0_drift.py`, 170 steps per span):
+
+    steps     0- 170   2367 µs/launch  (max 5341: the cold first steps)
+    steps   170- 680   2035            <- the regime every 500-step sweep measured
+    steps   680-1020   5123, 3112      (max 21,156 / 23,750: single launches 10× the plateau)
+    steps  1020-1700  11,000 ±30       <- a second plateau, 5.4× the first, dead flat
+
+Two regimes and a transition, not a climb. The second plateau is the arms
+at rest on the table with joint limits and contacts all active; its 11 ms
+per launch is 88 ms per step at 1024 lanes — a real number for the kernel
+at that state, and the state an untrained policy that drives the arm into
+the table will visit. The spikes in the transition are single solves at
+10× the plateau, which is what an iteration cap being hit looks like; not
+chased today. The per-episode probe measures the first regime plus the
+reset; whoever trains a policy that lives in the second should know its
+Newton costs 5× and that the block ledger's `THREADS = 16` item is what
+addresses it.
