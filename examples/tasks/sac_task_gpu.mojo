@@ -367,6 +367,25 @@ def main() raises:
     # on this robot, pays a `tolerance` in [0, 1] every step.
     var shape_goal = So101TabletopConfig.SHAPE_W_GOAL
     var shape_reach = So101TabletopConfig.SHAPE_W_REACH
+    # ⚠⚠ THE TARGET NETWORK'S TRACKING RATE, WHICH `N_ENVS` SETS BY ACCIDENT.
+    # `updates_per_step = N_ENVS` keeps UTD at 1 — 64 transitions collected,
+    # 64 gradient steps — and that is the number people quote. It is not the
+    # number that governs the CRITIC's stability. Polyak runs ONCE PER UPDATE
+    # at `tau`, so a driver iteration moves the target by
+    #
+    #     1 - (1 - tau)^updates_per_step
+    #
+    # which at tau 0.005 is 27% for 64 updates and 15% for 32. A target that
+    # moves a quarter of the way to the online net between env steps is barely
+    # a target, and chasing it is what a runaway critic looks like:
+    # `mean_next_q` sat about +5 above `mean_q` at EVERY sample of run 3.
+    #
+    # ⚠ THIS IS WHY 64 ENVS VS 32 IS NOT THE NO-OP I SAID IT WAS. The UTD
+    # argument was right and the conclusion was wrong — the two examples that
+    # DO train on this stack (`sac_so_arm101_reach_training_gpu.mojo` and
+    # `sac_half_cheetah_training_gpu.mojo`) both run 32.
+    var updates_per_step = N_ENVS
+    var tau = Scalar[DT](0.005)
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -386,6 +405,10 @@ def main() raises:
             shape_goal = Float64(String(args[i + 1]))
         elif a == "--shape-reach" and i + 1 < len(args):
             shape_reach = Float64(String(args[i + 1]))
+        elif a == "--updates-per-step" and i + 1 < len(args):
+            updates_per_step = Int(String(args[i + 1]))
+        elif a == "--tau" and i + 1 < len(args):
+            tau = Scalar[DT](Float64(String(args[i + 1])))
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
@@ -419,6 +442,11 @@ def main() raises:
     print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
     print("  shape weights: goal", shape_goal, " reach", shape_reach,
           " clip", So101TabletopConfig.SHAPE_CLIP)
+    # ⚠ THE NUMBER THAT ACTUALLY GOVERNS CRITIC STABILITY, printed because it
+    # is derived and nobody sets it directly.
+    var track = 1.0 - (1.0 - Float64(tau)) ** Float64(updates_per_step)
+    print("  updates/step:", updates_per_step, " tau:", tau,
+          " -> the target moves", track, "per iteration")
 
     # ⚠⚠ AN ACTIVE FREE SLOT WOULD FALL FOR THE WHOLE EPISODE. Refused here
     # rather than trained around — see the header. The failure is not a crash:
@@ -476,6 +504,9 @@ def main() raises:
         remote.set_config("init_alpha", String(init_alpha))
         remote.set_config("shape_w_goal", String(shape_goal))
         remote.set_config("shape_w_reach", String(shape_reach))
+        remote.set_config("updates_per_step", String(updates_per_step))
+        remote.set_config("tau", String(tau))
+        remote.set_config("target_track_per_iter", String(track))
         # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
         # unreadable without it — 0.05 is nothing on `reach` and would be real
         # on `lift` — and a config field is the only part of a run that is
@@ -493,7 +524,7 @@ def main() raises:
             critic_lr=3e-4,
             alpha_lr=3e-4,
             gamma=0.99,
-            tau=0.005,
+            tau=tau,
             action_scale=ACTION_SCALE,
             init_alpha=init_alpha,
             target_entropy=target_entropy,
@@ -581,7 +612,7 @@ def main() raises:
             env,
             num_steps,
             rng_seed=UInt64(42),
-            updates_per_step=N_ENVS,
+            updates_per_step=updates_per_step,
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
