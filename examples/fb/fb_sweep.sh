@@ -72,17 +72,20 @@ FORCE=${FORCE:-0}
 # (ortho 1, lr_b -1) as the no-flag setting. From this commit the no-flag
 # setting IS the winner; an arm meant to reproduce `base_u` must now pass
 # `--ortho 1 --lr-b -1` explicitly (see `base_u_re`).
-declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re)
-declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1")
+declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3)
+declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907")
 
-# Round 3 — what still needs running: a REPLICATE of the winner at a second
-# seed (a 3-rung mean of one run has no error bar), and the winner + obsnorm.
+# Round 3 (§18.6.2): the pair REPLICATED at seed 2 (two-seed mean 1.51 /
+# 1.82 / 1.44, run carrying ±0.2); obsnorm on top of it HURT (run below
+# random on the final rung, |B| slipping to 11.23). A2 is CLOSED. The only
+# arm left queued is a THIRD seed of the winner, to tighten run's bar —
+# optional; A3 (online) is the next result that matters.
 # The 1 M-step question is a separate invocation, because RUNGS must move:
 #     STEPS=1000000 RUNGS="700000 850000 final" \
 #         ARMS="ortho100_lrb1e5_u" FORCE=1 bash examples/fb/fb_sweep.sh
 #   (⚠ FORCE re-trains and OVERWRITES that arm's 300 k checkpoints; copy
 #    them aside first, or run it with a fresh tag.)
-ARMS=${ARMS:-"ortho100_lrb1e5_u_s2 ortho100_lrb1e5_obsnorm_u"}
+ARMS=${ARMS:-"ortho100_lrb1e5_u_s3"}
 
 
 if [ ! -f "$STORE" ]; then
