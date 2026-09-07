@@ -56,6 +56,9 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.param import ParamVersionBump
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.checkpoint import (
+    save_params_multi, load_params_multi,
+)
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.linear import Linear
 
@@ -167,3 +170,84 @@ def adam_step_trainables[
     action_out.for_each_param[target](bump, ctx, String("action_out"))
     comptime if TRAIN_STATE_PROJ:
         state_proj.for_each_param[target](bump, ctx, String("state_proj"))
+
+
+def save_trainables[
+    target: StaticString,
+    LAYERS: Int, EW: Int, EFF: Int, W: Int, KVW: Int, ADIM: Int,
+    SDIM: Int = 32, VW: Int = 960, TRAIN_STATE_PROJ: Bool = False,
+](
+    path: String,
+    mut expert: SmolVLAExpert[LAYERS, EW, EFF, W, KVW, 2],
+    mut action_in: Linear[ADIM, EW],
+    mut time_mlp_in: Linear[2 * EW, EW],
+    mut time_mlp_out: Linear[EW, EW],
+    mut action_out: Linear[EW, ADIM],
+    mut state_proj: Linear[SDIM, VW],
+    save_moments: Bool = True,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Write the trainable set to one v3 checkpoint.
+
+    ⚠ **ONLY the trainable set** — the SigLIP tower, the sixteen VLM layers,
+    the connector and the token embedding are frozen and are already on disk
+    as `lerobot/smolvla_base`. Saving them again would triple the file to no
+    purpose and, worse, make a checkpoint that could silently disagree with
+    the base it was fine-tuned from. The reload path loads the base FIRST and
+    then this on top, so the two can never drift apart.
+
+    ⚠ `save_moments=True` writes Adam's per-parameter m/v alongside, which is
+    what makes a resume EXACT rather than a restart with a cold optimizer —
+    and a cold optimizer is precisely the thing whose first step damages a
+    pretrained model (see the runner's warmup note). It roughly triples the
+    file: ~98 M parameters is 393 MB of weights and 1.2 GB with moments.
+
+    ⚠ The SAME components, in the SAME order, as `zero_trainable_grads` and
+    `adam_step_trainables`. A fourth list is a fourth chance for one of them
+    to drift; `load_trainables` below reads them back in this order and the
+    v3 format VALIDATES each section's dotted name against the walk, so a
+    disagreement raises instead of loading a shifted model.
+    """
+    comptime if TRAIN_STATE_PROJ:
+        save_params_multi[target](
+            path, ctx, save_moments, expert, action_in, time_mlp_in,
+            time_mlp_out, action_out, state_proj,
+        )
+    else:
+        save_params_multi[target](
+            path, ctx, save_moments, expert, action_in, time_mlp_in,
+            time_mlp_out, action_out,
+        )
+
+
+def load_trainables[
+    target: StaticString,
+    LAYERS: Int, EW: Int, EFF: Int, W: Int, KVW: Int, ADIM: Int,
+    SDIM: Int = 32, VW: Int = 960, TRAIN_STATE_PROJ: Bool = False,
+](
+    path: String,
+    mut expert: SmolVLAExpert[LAYERS, EW, EFF, W, KVW, 2],
+    mut action_in: Linear[ADIM, EW],
+    mut time_mlp_in: Linear[2 * EW, EW],
+    mut time_mlp_out: Linear[EW, EW],
+    mut action_out: Linear[EW, ADIM],
+    mut state_proj: Linear[SDIM, VW],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Read back what `save_trainables` wrote, over an already-loaded base.
+
+    ⚠ Load the BASE checkpoint first. This file holds only the trainable set;
+    applying it to a freshly initialised policy leaves the vision tower and
+    the VLM at their initialiser, which produces finite actions from a random
+    prefix and no error anywhere.
+    """
+    comptime if TRAIN_STATE_PROJ:
+        load_params_multi[target](
+            path, ctx, expert, action_in, time_mlp_in, time_mlp_out,
+            action_out, state_proj,
+        )
+    else:
+        load_params_multi[target](
+            path, ctx, expert, action_in, time_mlp_in, time_mlp_out,
+            action_out,
+        )

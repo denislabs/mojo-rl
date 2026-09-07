@@ -77,6 +77,8 @@ is read from `tools/vla/`.
 | `SMOLVLA_STEPS` | optimizer steps, without a rebuild. ⚠ **A SHORT RUN IS NOT A GENTLE RUN** — see below |
 | `SMOLVLA_ACCUM` | observations per optimizer step (default 8) |
 | `SMOLVLA_LR` | default 1e-4 |
+| `SMOLVLA_CKPT` | checkpoint path prefix; default `/tmp/smolvla_so101` |
+| `SMOLVLA_INIT` | a `*_best.ckpt` to start from, applied ON TOP of the base checkpoint |
 | `SMOLVLA_NO_MONITOR` | force the metrics logger inert |
 
 ## What this run is, and what it is not
@@ -128,11 +130,24 @@ the `SmolVLATrainables` walkable already deferred once — which would also
 unlock Adam's grouped arena (~10% of all kernel launches in the ACT profile)
 and the on-device warmup. Three reasons, one refactor.
 
-⚠ **No checkpoint is written.** Deliberately: the trainable subset is ~100 M
-parameters and checkpoint v2 truncates at 2 GiB, so a save path needs thought
-rather than a hurried call. THIS RUN IS FOR ANSWERING "DOES THE LOSS FALL",
-and the answer does not need to be resumable. Do not start a multi-hour run
-expecting to keep the weights.
+### Checkpoints
+
+`$SMOLVLA_CKPT_best.ckpt` is written whenever the held-out loss improves and
+`..._last.ckpt` at every validation, so a killed run loses at most `VAL_EVERY`
+steps and never the best model. ⚠ `/tmp` by default — move them somewhere
+durable before rebooting a rented box.
+
+⚠ **Only the TRAINABLE set is saved**: the expert, the four action
+projections, and Adam's moments for them. The SigLIP tower, the sixteen VLM
+layers, the connector and the token embedding are frozen and already on disk
+as `lerobot/smolvla_base`. Saving them again would triple the file and create
+a second copy that could silently disagree with the base it was fine-tuned
+from — so `SMOLVLA_INIT` loads the base FIRST and this on top.
+
+⚠ The moments ride along (`save_moments=True`), which makes a resume EXACT
+rather than a restart with a cold optimizer — and a cold optimizer's first
+step is precisely what damages a pretrained model (see `VAL_SEED` and the
+warmup note). ~98 M parameters is 393 MB of weights, ~1.2 GB with moments.
 
 ### The obvious optimisation, and why it is not here
 
@@ -168,7 +183,8 @@ from mojo_rl.deep_agents.smolvla.dataset import SmolVLABatchSampler
 from mojo_rl.deep_agents.smolvla.observation import fill_store_images
 from mojo_rl.deep_agents.smolvla.train_step import SmolVLATrainStep
 from mojo_rl.deep_agents.smolvla.finetune import (
-    zero_trainable_grads, adam_step_trainables,
+    zero_trainable_grads, adam_step_trainables, save_trainables,
+    load_trainables,
 )
 from mojo_rl.deep_agents.smolvla.flow_loss import (
     build_xt_ut, sample_noise, sample_times,
@@ -437,6 +453,10 @@ def main() raises:
     pol.load_stats(stats_path)
     print("  policy  loaded")
 
+    var ckpt = getenv("SMOLVLA_CKPT")
+    if ckpt.byte_length() == 0:
+        ckpt = String("/tmp/smolvla_so101")
+
     var sam = Sampler(store_path, SmolVLAStats.from_stats_json(stats_path))
     var n_ep = sam.store.n_episodes()
     var n_val_ep = n_ep // 5
@@ -490,6 +510,21 @@ def main() raises:
     to the optimizer. That is what "frozen" means here — not a flag inside the
     optimizer but an object it never sees."""
 
+    # ⚠ AFTER the base checkpoint, never instead of it. This file carries the
+    # trainable set only; applying it to a fresh policy would leave the vision
+    # tower and the VLM at their initialiser and produce finite actions from a
+    # random prefix, with nothing to say so.
+    var init_from = getenv("SMOLVLA_INIT")
+    if init_from.byte_length() > 0:
+        load_trainables[
+            "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
+            SMOLLM_KV_W, PAD,
+        ](
+            init_from, pol.expert, pol.action_in, pol.time_mlp_in,
+            pol.time_mlp_out, pol.action_out, sp_frozen, Optional(ctx),
+        )
+        print("  resumed from " + init_from)
+
     var images = Tensor.alloc(N_CAM * 3 * 512 * 512)
     var scratch = List[Float32]()
     var state_t = Tensor.alloc(B * PAD)
@@ -534,6 +569,7 @@ def main() raises:
                 ns_img, ns_step,
             )
     var base_val = base_sum / Float64(VAL_GROUPS)
+    var best_val = base_val
     print("  BASELINE held-out (lerobot/smolvla_base, 0 updates): "
           + String(base_val))
     var bn = List[String]()
@@ -620,12 +656,41 @@ def main() raises:
             vn.append(String("val/loss"))
             vv.append(vloss)
             logger.log_scalars(vn, vv, s)
+
+            # ⚠ `last` every time, `best` only on an improvement. A kill then
+            # loses at most VAL_EVERY steps and never the best model — which
+            # matters here because the curve PLATEAUS and then drifts up, so
+            # the final weights are not the ones worth keeping.
+            save_trainables[
+                "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
+                SMOLLM_KV_W, PAD,
+            ](
+                ckpt + "_last.ckpt", pol.expert, pol.action_in,
+                pol.time_mlp_in, pol.time_mlp_out, pol.action_out, sp_frozen,
+                True, Optional(ctx),
+            )
+            if vloss < best_val:
+                best_val = vloss
+                save_trainables[
+                    "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF,
+                    SMOLLM_DIM, SMOLLM_KV_W, PAD,
+                ](
+                    ckpt + "_best.ckpt", pol.expert, pol.action_in,
+                    pol.time_mlp_in, pol.time_mlp_out, pol.action_out,
+                    sp_frozen, True, Optional(ctx),
+                )
+                print("      saved " + ckpt + "_best.ckpt")
             # ⚠ Validation ran `run_one`, which does a BACKWARD it does not
             # need — `SmolVLATrainStep.run` does both. The gradients it leaves
             # are discarded by the next step's `zero_trainable_grads`, above.
             # Correct, and about twice the cost it should be.
 
     logger.flush()
+    print("")
+    print("  best held-out " + String(best_val) + "  vs baseline "
+          + String(base_val) + "  ("
+          + String(100.0 * (best_val - base_val) / base_val) + "%)")
+    print("  weights: " + ckpt + "_best.ckpt  /  " + ckpt + "_last.ckpt")
     print("done")
 
 

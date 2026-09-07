@@ -58,7 +58,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Initializer
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, ParamWalkable
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
@@ -80,7 +80,7 @@ struct SmolVLAExpert[
     QW: Int = VLM_W,
     KVW: Int = VLM_KV_W,
     SELF_EVERY: Int = EXPERT_SELF_EVERY,
-](Movable):
+](Movable & ParamWalkable):
     """All 16 layers plus the final norm, walked under the CHECKPOINT's index."""
 
     comptime N_SELF: Int = (Self.LAYERS + Self.SELF_EVERY - 1) // Self.SELF_EVERY
@@ -159,3 +159,31 @@ struct SmolVLAExpert[
             else:
                 self.cross_layers[i // Self.SELF_EVERY].zero_grad[target](ctx)
         self.norm.zero_grad[target](ctx)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut vis: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        """The State walk, in the SAME order as `for_each_param`.
+
+        ⚠ Required by `ParamWalkable`, which the checkpoint needs and which
+        also unlocks `Adam`'s grouped arena and its global `clip_grads` — the
+        expert was the one component of the trainable set that was not one,
+        so all three were blocked on this walk.
+
+        No leaf here holds State today; see `DecoderMLP.walk_state` for why
+        the walk exists anyway.
+        """
+        for i in range(Self.LAYERS):
+            var name = join_name(prefix, String("layers." + String(i)))
+            if Self.is_self_layer(i):
+                self.self_layers[i // Self.SELF_EVERY].walk_state[target](
+                    vis, ctx, name
+                )
+            else:
+                self.cross_layers[i // Self.SELF_EVERY].walk_state[target](
+                    vis, ctx, name
+                )
+        self.norm.for_each_state[target](
+            vis, ctx, join_name(prefix, String("norm"))
+        )

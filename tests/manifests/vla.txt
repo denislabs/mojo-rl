@@ -86,3 +86,13 @@ tests/deep_agents/smolvla/test_prefill_backward.mojo
 # anywhere along it. 256 weights against central differences of that whole
 # chain, plus the property that rows 6..31 (the state padding) can never move.
 tests/deep_agents/smolvla/test_state_proj_grad.mojo
+
+# V2 — the checkpoint round trip. A 73-minute fine-tune that keeps nothing is
+# a measurement, not a model. Saves the TRAINABLE set only (the frozen tower
+# is already on disk as the base checkpoint), and gates that the weights come
+# back bit-identical, that the reloaded model computes the SAME loss, that
+# Adam's moments survive — a resume without them restarts with a cold
+# optimizer, whose first step is what damages a pretrained model — and, first,
+# that the destination DIFFERED beforehand, without which all of that passes
+# on a load that did nothing.
+tests/deep_agents/smolvla/test_finetune_checkpoint.mojo

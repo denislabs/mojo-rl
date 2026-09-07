@@ -88,6 +88,29 @@ struct DecoderMLP[W: Int, FF: Int](Movable):
         self.up.zero_grad[target](ctx)
         self.down.zero_grad[target](ctx)
 
+    def walk_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut v: V, ctx: Optional[DeviceContext], prefix: String
+    ) raises:
+        """The State walk the checkpoint runs right after the Param walk.
+
+        ⚠ These three leaves hold no State — `Linear` has weight and bias and
+        nothing running — so this is a no-op TODAY. It exists so the walk is
+        complete by construction: a leaf that later grows a State field would
+        otherwise be saved without it, and a checkpoint missing a running
+        statistic reloads to a model that behaves differently and says
+        nothing.
+        """
+        self.gate.for_each_state[target](
+            v, ctx, join_name(prefix, String("gate"))
+        )
+        self.up.for_each_state[target](
+            v, ctx, join_name(prefix, String("up"))
+        )
+        self.down.for_each_state[target](
+            v, ctx, join_name(prefix, String("down"))
+        )
+
 
 struct DecoderLayerWeights[
     W: Int, FF: Int, QW: Int, KVW: Int, KV_IN: Int
@@ -164,3 +187,21 @@ struct DecoderLayerWeights[
         self.o.zero_grad[target](ctx)
         self.post_attention_layernorm.zero_grad[target](ctx)
         self.mlp.zero_grad[target](ctx)
+
+    def walk_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut vis: V, ctx: Optional[DeviceContext], prefix: String
+    ) raises:
+        """⚠ The SAME seven children as `walk`. See `DecoderMLP.walk_state`."""
+        self.input_layernorm.for_each_state[target](
+            vis, ctx, join_name(prefix, String("input_layernorm"))
+        )
+        var sa = join_name(prefix, String("self_attn"))
+        self.q.for_each_state[target](vis, ctx, join_name(sa, String("q")))
+        self.k.for_each_state[target](vis, ctx, join_name(sa, String("k")))
+        self.v.for_each_state[target](vis, ctx, join_name(sa, String("v")))
+        self.o.for_each_state[target](vis, ctx, join_name(sa, String("o")))
+        self.post_attention_layernorm.for_each_state[target](
+            vis, ctx, join_name(prefix, String("post_attention_layernorm"))
+        )
+        self.mlp.walk_state[target](vis, ctx, join_name(prefix, String("mlp")))
