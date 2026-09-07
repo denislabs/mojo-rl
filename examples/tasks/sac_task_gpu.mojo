@@ -103,6 +103,11 @@ touches something, which on `gather` is the whole difficulty.
     shaped mean return, random actions, gather    -19.98   (weights .50/.25)
     success rate, greedy, untrained                 0.00
 
+⚠ THE BASELINES ABOVE WERE MEASURED AT 64 LANES and the greedy eval now runs
+32, so its rate is grainier — one lane is 1/32 = 0.031, and the 2-sigma band
+the verdict prints widens accordingly. The band is computed from `N_ENVS`, so
+it follows this automatically.
+
 ⚠ AND A HEALTHY RUN NOW HAS A SHAPE. At 16 updates/step the eval return went
 -28.7 -> -20.1 over 47k steps while `mean_reward` improved on 70 of 79
 consecutive samples. What to read FIRST is `mean_q`: it should converge toward
@@ -180,7 +185,19 @@ from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
 
 
-comptime N_ENVS = 64
+# ⚠⚠ 32, MATCHING THE TWO EXAMPLES THAT TRAIN ON THIS STACK.
+# `sac_so_arm101_reach_training_gpu.mojo` and
+# `sac_half_cheetah_training_gpu.mojo` both run 32 with
+# `updates_per_step = N_ENVS`, which is UTD 1 at a target tracking rate of
+# 14.8%. This file ran 64 with 64 — also UTD 1, but 27.4% tracking — and the
+# critic diverged in four consecutive runs before the tracking rate was the
+# thing anybody looked at.
+#
+# ⚠ COMPTIME, so this is an edit and not a flag: `N_ENVS` sizes `Layout`
+# parameters and the greedy eval's lane count. `--updates-per-step` is the
+# flag, and it is what varies the tracking rate WITHOUT changing how much
+# data an iteration collects.
+comptime N_ENVS = 32
 # ⚠⚠ `lift`, NOT `reach`. `reach` and `reach_clear` are both
 # `AtRegion(robot_gripperframe, table_top)` and
 # `examples/tasks/task_null_action.mojo` measured what that is worth: a
@@ -392,27 +409,24 @@ def main() raises:
     # argument was right and the conclusion was wrong — the two examples that
     # DO train on this stack (`sac_so_arm101_reach_training_gpu.mojo` and
     # `sac_half_cheetah_training_gpu.mojo`) both run 32.
-    # ⚠⚠ 16, NOT `N_ENVS`, AND THAT ONE CHANGE IS WHAT MADE THIS FAMILY
-    # TRAIN. Measured, same task, same everything else:
+    # ⚠⚠ `N_ENVS` AGAIN, WHICH IS UTD 1 — BUT AT 32 ENVS, NOT 64. The
+    # measured history, same task and same everything else:
     #
-    #                    64 updates (27.4%)      16 updates (7.7%)
-    #     mean_q          0 -> 14820             0 -> -6.63, converging
-    #     next_q - q      about +5               +0.048
-    #     critic_loss     190800                 0.0035
-    #     mean_reward     -0.115, FLAT           -0.112 -> -0.0889, improving
-    #                                            on 70 of 79 samples
-    #     eval return     -25 .. -51, no trend   -28.7 -> -20.1
+    #                    64 env / 64 upd     64 env / 16 upd
+    #                    (27.4% tracking)    (7.7% tracking)
+    #     mean_q          0 -> 14820          0 -> -6.63, converging
+    #     next_q - q      about +5            +0.048
+    #     critic_loss     190800              0.0035
+    #     mean_reward     -0.115, FLAT        -0.112 -> -0.0889, improving on
+    #                                         70 of 79 samples
+    #     eval return     -25 .. -51          -28.7 -> -20.1
     #
-    # The critic's fixed point is r/(1-gamma) = -8.9 and `mean_q` reached
-    # -6.63 descending toward it: right sign, right magnitude, first time in
-    # five runs.
-    #
-    # ⚠ IT COSTS SAMPLE EFFICIENCY, AND THAT IS THE TRADE. UTD drops from 1 to
-    # 16/64 = 0.25. The alternative that keeps UTD at 1 is what the two
-    # examples that train on this stack do — N_ENVS 32 with 32 updates, i.e.
-    # 15% tracking — but `N_ENVS` is comptime here and 64-with-16 is the
-    # configuration that has actually been measured.
-    var updates_per_step = 16
+    # The second column trains and costs sample efficiency: UTD 16/64 = 0.25.
+    # 32 envs with 32 updates is UTD 1 at 14.8% tracking — between the two,
+    # and exactly what the working references use. ⚠ THAT COMBINATION IS NOT
+    # YET MEASURED ON THIS FAMILY; the 7.7% column is. If the critic diverges
+    # again, `--updates-per-step 16` is the configuration known to hold.
+    var updates_per_step = N_ENVS
     var tau = Scalar[DT](0.005)
     var args = argv()
     for i in range(1, len(args)):
