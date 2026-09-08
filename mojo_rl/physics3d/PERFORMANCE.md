@@ -4049,10 +4049,12 @@ flat in k (269 µs a launch at k=0, 426 at k=13) and is therefore 63% of
 the k=0 step and 46% of k=3: it is the step's FIXED cost, and the lever
 for every small-k configuration. At k=13 the unlabelled bucket (0.663 ms,
 14.6%) is, by kernel: the five integrator kernels 0.232, the two
-kinematics kernels 0.135, `parser_mode…` 0.107 (a per-step kernel that
-lives under `parser/` — to be named), the sensor RNE pair 0.091,
+kinematics kernels 0.135, `parser_mode…` 0.107 (= `apply_actions_kernel_gpu`'s
+`apply_kernel` in `parser/model_def_from_xml.mojo`: ctrl → `qfrc`, 53.5 µs
+a launch at k=13 for 84 dofs × 1024 envs, 11 µs at k=0 — thread per env,
+serial over actuators; a candidate), the sensor RNE pair 0.091,
 subtree_com 0.047, the env kernel 0.039. Nothing in it is one kernel
-worth a cut on its own; the `parser_mode…` one is worth naming.
+worth a cut on its own; the actuator kernel is the first to look at.
 
 The LDL split reads "no CRBA launch in the trace to anchor on" at every k
 although the same report labels the CRBA kernel: a defect of the split
