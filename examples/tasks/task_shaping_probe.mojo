@@ -48,6 +48,16 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.core.cont_action import ContAction
+from mojo_rl.envs.dm_control.rewards import (
+    tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
+)
+from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.tasks.gpu_eval import region_table_words, tape_distance_gpu
+from mojo_rl.tasks.eval import region_rects, region_half_heights
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_CURRICULUM_SIZE, METADATA_SIZE,
+)
+from layout import Layout
 
 
 comptime DT = DType.float64
@@ -123,7 +133,39 @@ def main() raises:
     for i in range(NV):
         env.d.qvel.data[i] = Scalar[DT](v0[i])
 
-    comptime CLIP = 0.5  # the OLD clip, kept as a reference scale only
+    # ⚠⚠ THE GOAL DISTANCE COMES FROM `tape_distance_gpu`, THE FUNCTION THE
+    # KERNEL USES. This file computed `|subject - other| - param` inline — a
+    # 3D body-to-body distance — which is `Near`'s rule and ONLY `Near`'s.
+    # `Above`'s shortfall is z-only, and `On`/`In`/`AtRegion` take a REGION
+    # index as their second argument, so the inline form read body 0 (the
+    # world) and reported 0.33 m for `so101_settle_brick`, whose goal HOLDS AT
+    # RESET and whose distance is therefore zero. The margins in
+    # `So101TabletopConfig` were set from those numbers.
+    #
+    # ⚠ THE SAME DEFECT THIS TREE KEEPS PAYING FOR: a rule written inline
+    # beside the one place that already owns it.
+    comptime NB = So101TabletopModel.NBODY
+    comptime NS = So101TabletopModel.NSITE
+    comptime L_META = Layout.row_major(1, METADATA_SIZE)
+    comptime L_CUR = Layout.row_major(1, MODEL_CURRICULUM_SIZE)
+    comptime L_XP = Layout.row_major(1, NB * 3)
+    comptime L_XQ = Layout.row_major(1, NB * 4)
+    comptime L_SP = Layout.row_major(1, NS * 3)
+    var t_meta = TensorImpl[DT].alloc(METADATA_SIZE)
+    var t_cur = TensorImpl[DT].alloc(MODEL_CURRICULUM_SIZE)
+    var t_xp = TensorImpl[DT].alloc(NB * 3)
+    var t_xq = TensorImpl[DT].alloc(NB * 4)
+    var t_sp = TensorImpl[DT].alloc(NS * 3)
+    var rects = region_rects(f)
+    var rheights = region_half_heights(f)
+    var cw = region_table_words(
+        rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+        rheights[0], CFG.SHAPE_W_GOAL, CFG.SHAPE_W_REACH,
+    )
+    for i in range(MODEL_CURRICULUM_SIZE):
+        t_cur.data[i] = Scalar[DT](cw[i])
+    for w in range(TAPE_WORDS):
+        t_meta.data[META_IDX_TASK_PARAM_0 + w] = Scalar[DT](tape[w])
     var n = 0
     var sum_goal = 0.0
     var sum_reach = 0.0
@@ -154,26 +196,29 @@ def main() raises:
             (gx - sx) ** 2 + (gy - sy) ** 2 + (gz - sz) ** 2
         ) ** 0.5
         # `Near`'s distance: |a - b| - param, floored at zero
-        var gd = (
-            (sx - ox) ** 2 + (sy - oy) ** 2 + (sz - oz) ** 2
-        ) ** 0.5 - g.terms[0].param
-        if gd < 0.0:
-            gd = 0.0
+        for i in range(NB * 3):
+            t_xp.data[i] = env.d.xpos.data[i]
+        for i in range(NB * 4):
+            t_xq.data[i] = env.d.xquat.data[i]
+        for i in range(NS * 3):
+            t_sp.data[i] = env.d.site_xpos.data[i]
+        var gd = Float64(
+            tape_distance_gpu[DT, 1, NB, NS * 3](
+                t_meta.lt["cpu", L_META](), t_cur.lt["cpu", L_CUR](),
+                t_xp.lt["cpu", L_XP](), t_xq.lt["cpu", L_XQ](),
+                t_sp.lt["cpu", L_SP](), 0,
+            )
+        )
+        _ = ox
+        _ = oy
+        _ = oz
 
         sum_goal += gd
         sum_reach += reach
         if reach > max_reach:
             max_reach = reach
-        var gc = gd
-        if gc > CLIP:
-            gc = CLIP
-            clipped_goal += 1
-        var rc = reach
-        if rc > CLIP:
-            rc = CLIP
-            clipped_reach += 1
-        sum_goal_c += gc
-        sum_reach_c += rc
+        sum_goal_c += gd
+        sum_reach_c += reach
         n += 1
         _ = step
 
@@ -182,29 +227,39 @@ def main() raises:
     var mgc = sum_goal_c / Float64(n)
     var mrc = sum_reach_c / Float64(n)
     print()
-    print("  steps                :", n, " clip =", CLIP, "m")
-    print("  goal  distance  mean :", mg, "  clipped mean:", mgc)
-    print("  reach distance  mean :", mr, "  clipped mean:", mrc,
-          "  max:", max_reach)
-    print("  steps at the clip    : goal", clipped_goal, " reach",
-          clipped_reach, "of", n)
+    print("  steps                :", n)
+    print("  goal  distance  mean :", mg)
+    print("  reach distance  mean :", mr, "  max:", max_reach)
     print()
-    # ⚠⚠ THE FLAT SPOT, AS A FRACTION. Beyond the clip the term's gradient is
-    # exactly zero, so this is the share of the episode over which that half
-    # of the shaping says NOTHING about what to do.
-    var frac = Float64(clipped_reach) / Float64(n)
-    print("  reach term is FLAT on", frac, "of steps")
 
     print()
-    print("  per-step cost this implies, by weight pair:")
-    var wgs = List[Float64]()
-    var wrs = List[Float64]()
-    wgs.append(0.50); wrs.append(0.25)
-    wgs.append(0.10); wrs.append(0.70)
-    for i in range(len(wgs)):
-        print("     goal", wgs[i], " reach", wrs[i], " -> ",
-              wgs[i] * mgc + wrs[i] * mrc,
-              "  (episode return", -(wgs[i] * mgc + wrs[i] * mrc)
-              * Float64(CFG.MAX_STEPS), ")")
+    # ⚠⚠ WHAT THE REWARD ACTUALLY PAYS, THROUGH `tolerance` — because the
+    # weights multiply a SATURATING function, not the distance. Two tasks
+    # whose natural distance scales differ get very different reward
+    # magnitudes from the SAME weights and the SAME margins, and `curriculum`
+    # holds one weight pair for the whole batch.
+    # ⚠ THE REAL `tolerance`, not a re-derivation of it — same import the
+    # reward hook uses, so this cannot drift from what the kernel charges.
+    var gt = Float64(
+        tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+            Scalar[DT](mg), Scalar[DT](0), Scalar[DT](0),
+            Scalar[DT](CFG.GOAL_MARGIN),
+        )
+    )
+    var rt = Float64(
+        tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+            Scalar[DT](mr), Scalar[DT](0), Scalar[DT](CFG.REACH_RADIUS),
+            Scalar[DT](CFG.REACH_MARGIN),
+        )
+    )
+    print("  tolerance at those distances (margins", CFG.GOAL_MARGIN, "/",
+          CFG.REACH_MARGIN, "):")
+    print("     goal ", gt, "  reach ", rt)
+    print("  reward at weights", CFG.SHAPE_W_GOAL, "/", CFG.SHAPE_W_REACH,
+          ":  goal", CFG.SHAPE_W_GOAL * gt, " reach",
+          CFG.SHAPE_W_REACH * rt, " total",
+          CFG.SHAPE_W_GOAL * gt + CFG.SHAPE_W_REACH * rt)
+    print("  reach/goal contribution ratio:",
+          (CFG.SHAPE_W_REACH * rt) / (CFG.SHAPE_W_GOAL * gt))
     print()
     print("=== MEASURED ===")
