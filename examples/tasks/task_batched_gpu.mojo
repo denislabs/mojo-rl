@@ -60,8 +60,12 @@ from layout import Layout
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.envs.dm_control.rewards import (
+    tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
+)
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
+    META_IDX_GOAL_HELD,
     MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
@@ -193,7 +197,6 @@ def main() raises:
             rheights[0],
             So101TabletopConfig.SHAPE_W_GOAL,
             So101TabletopConfig.SHAPE_W_REACH,
-            So101TabletopConfig.SHAPE_CLIP,
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])
@@ -270,6 +273,11 @@ def main() raises:
         env.d.xpos.download(ctx)
         env.d.xquat.download(ctx)
         env.d.site_xpos.download(ctx)
+        # ⚠ `meta` TOO, because the goal bit is written INTO it by the reward
+        # hook on device now. Reading the host copy without this compares
+        # against whatever was uploaded before the loop — which is the tape
+        # and the mask, and a goal-held word of zero for every lane.
+        env.d.meta.download(ctx)
         ctx.synchronize()
 
         # ⚠⚠ `reward_ptr()` IS A **DEVICE** POINTER ON THIS ENV.
@@ -315,7 +323,14 @@ def main() raises:
                 sp.append(Float64(env.d.site_xpos.data[e * NS * 3 + i]))
             var is_a = (e % 2) == 0
             var host = eval_goal(ga if is_a else gb, f, xb, xq, sp, rsites)
-            var gpu = Float64(rew[e]) > 0.5
+            # ⚠⚠ THE GOAL BIT COMES FROM `META_IDX_GOAL_HELD`, NOT FROM THE
+            # REWARD. The reward is two `tolerance` terms now and carries no
+            # success bonus, so `reward > 0.5` is a statement about DISTANCE
+            # and not about the goal — it would read a lane hovering near the
+            # blocks as solved.
+            var gpu = Float64(
+                env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
+            ) > 0.5
             if host != gpu:
                 mismatch += 1
 
@@ -341,19 +356,25 @@ def main() raises:
                     e,
                 )
             )
-            if d_h > So101TabletopConfig.SHAPE_CLIP:
-                d_h = So101TabletopConfig.SHAPE_CLIP
             comptime GS = So101TabletopConfig.GRIPPER_SITE
             var sb = Int(tpa[1]) if is_a else Int(tpb[1])
             var rx = sp[GS * 3] - xb[sb * 3]
             var ry = sp[GS * 3 + 1] - xb[sb * 3 + 1]
             var rz = sp[GS * 3 + 2] - xb[sb * 3 + 2]
             var reach_h = (rx * rx + ry * ry + rz * rz) ** 0.5
-            if reach_h > So101TabletopConfig.SHAPE_CLIP:
-                reach_h = So101TabletopConfig.SHAPE_CLIP
-            var want = (1.0 if host else 0.0) - (
-                So101TabletopConfig.SHAPE_W_GOAL * d_h
-            ) - So101TabletopConfig.SHAPE_W_REACH * reach_h
+            var want = So101TabletopConfig.SHAPE_W_GOAL * Float64(
+                tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+                    Scalar[DT](d_h), Scalar[DT](0),
+                    Scalar[DT](So101TabletopConfig.GOAL_RADIUS),
+                    Scalar[DT](So101TabletopConfig.GOAL_MARGIN),
+                )
+            ) + So101TabletopConfig.SHAPE_W_REACH * Float64(
+                tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+                    Scalar[DT](reach_h), Scalar[DT](0),
+                    Scalar[DT](So101TabletopConfig.REACH_RADIUS),
+                    Scalar[DT](So101TabletopConfig.REACH_MARGIN),
+                )
+            )
             var err = Float64(rew[e]) - want
             if err < 0.0:
                 err = -err

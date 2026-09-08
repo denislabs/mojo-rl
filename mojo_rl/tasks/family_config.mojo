@@ -91,6 +91,7 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_INIT_REGION_0,
     META_IDX_INIT_REGION_1,
     META_IDX_INIT_REGION_2,
+    META_IDX_GOAL_HELD,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
@@ -101,6 +102,9 @@ from .gpu_eval import (
     CUR_IDX_SHAPE_W_GOAL, CUR_IDX_SHAPE_W_REACH,
 )
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
+from mojo_rl.envs.dm_control.rewards import (
+    tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
+)
 from .obs import (
     slot_active, write_free_slot_obs, write_free_slot_obs_host,
     FREE_JOINT_NV,
@@ -307,53 +311,61 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # ⚠⚠ SET EITHER WEIGHT TO 0.0 AND THE REWARD IS SPARSE AGAIN, exactly as
     # it was. That is not a courtesy: every baseline this family has recorded
     # was measured at 0.0, and a shaped run is not comparable with them.
-    comptime SHAPE_W_GOAL: Float64 = 0.50
-    """On the goal's own distance, from the tape — generic over the language.
+    comptime SHAPE_W_GOAL: Float64 = 1.00
+    """Weight on `tolerance(goal_distance)` — generic over the goal language.
 
-    ⚠⚠ THIS IS THE DEFAULT THE HOST WRITES INTO `curriculum`, NOT WHAT THE
-    KERNEL READS. The reward hook reads `curriculum[0, CUR_IDX_SHAPE_W_GOAL]`
-    so a run can sweep the scale without a rebuild — see `gpu_eval`.
+    ⚠⚠ THESE ARE NOW WEIGHTS ON A `tolerance` IN [0, 1], NOT ON A CLIPPED
+    LINEAR PENALTY, and the reward is POSITIVE. The old form was
+    `-w * min(distance, CLIP)`: linear everywhere, hard-clipped, and capped
+    below 0.5 in total so that `reward > 0.5` could keep meaning "solved".
+    That cap is gone — the goal bit lives in `META_IDX_GOAL_HELD` now — and
+    with it the reason the reward could not take the shape that demonstrably
+    trains this robot.
 
-    ⚠ IT WAS 0.10 AND THAT WAS 5x TOO SMALL, measured. Three 190k-step
-    `gather` runs at 0.10/0.05 held `mean_reward` at -0.024 from the first
-    diagnostic sample to the last, through an alpha fix and an observation
-    widening, while `mean_q` ran to 508 with `mean_done` at 8e-05 — nothing
-    anchors the value function except the reward, and at 0.024 per step it is
-    200x too small to. The env that DOES train on this robot,
-    `SoArm101ReachConfig`, pays a `tolerance` in [0, 1] EVERY step.
+    ⚠ WHAT THE OLD FORM COST, measured over ten runs on `so101_gather_bricks`:
+    a healthy critic at 0.50/0.25 plateaued at 13% better than random and did
+    not move again in 290k steps, and reweighting toward the reach term to
+    break that plateau DIVERGED the critic at an identical tracking rate. A
+    linear penalty pulls uniformly from any distance and never saturates, so
+    its variance is set by how fast the subject moves; `tolerance` saturates
+    at both ends, which bounds the per-step signal by construction.
 
-    ⚠ IT HAS NO GRADIENT UNTIL THE ARM TOUCHES SOMETHING, on the tasks that
-    move an object. `Near(brick, cube_a, 0.06)` depends only on where the two
-    props are, and the arm flailing in free space does not change that — so
-    this term alone rewards the OUTCOME of a lucky contact and says nothing
-    about how to make one. `SHAPE_W_REACH` is the term that does."""
+    ⚠ `SoArm101ReachConfig` pays exactly this shape and reaches 3.9 mm on real
+    hardware."""
 
-    comptime SHAPE_W_REACH: Float64 = 0.25
-    """On the gripper's distance to the body the goal names first.
+    comptime SHAPE_W_REACH: Float64 = 0.50
+    """Weight on `tolerance(gripper-to-subject distance)`.
 
-    ⚠⚠ MANIPULATION-SPECIFIC, AND DELIBERATELY SO. There is no general reason
-    a goal is easier when the gripper is near its subject — it is true of
-    every task in THIS family and it is the term that turns "flail until a
-    block moves" into "approach the block". Kept separate from
-    `SHAPE_W_GOAL`, with its own weight, so the generic half stays generic.
+    ⚠ HALF THE GOAL TERM, NOT SEVEN TIMES IT. The 0.10/0.70 pair that
+    destabilised the critic weighted the FAST-moving term heaviest; the goal
+    term leads here and the reach term is the assist that gets the arm to the
+    object at all. See `SHAPE_W_GOAL` for what the reweighting cost."""
 
-    ⚠ ZERO WHEN THE GOAL'S SUBJECT IS NOT A BODY. `AtRegion`'s subject is a
-    SITE, and the gripper's distance to itself is not a task."""
+    comptime GOAL_RADIUS: Float64 = 0.0
+    """`tolerance`'s upper bound for the goal term — inside it the value is 1.
 
-    comptime SHAPE_CLIP: Float64 = 0.5
-    """Metres past which neither term grows.
+    ⚠ ZERO, because the goal distance is ALREADY a shortfall:
+    `tape_distance_gpu` returns 0 exactly when the predicate holds, so the
+    band to be inside is `[0, 0]` and the margin does the rest. A nonzero
+    radius here would pay full reward for a goal that is not met."""
 
-    ⚠⚠ THE BOUND IS WHAT KEEPS `reward > 0.5` MEANING "SOLVED". Three places
-    read success out of the reward that way — `examples/tasks/
-    task_batched_gpu.mojo`, `task_eval_frozen.mojo` and this file's own
-    trainer — and shaping is subtracted from the same scalar. So the total
-    penalty must stay strictly below 0.5:
+    comptime GOAL_MARGIN: Float64 = 0.10
+    """Where the goal term has decayed to `value_at_margin`.
 
-        (SHAPE_W_GOAL + SHAPE_W_REACH) * SHAPE_CLIP = 0.15 * 0.5 = 0.075
+    ⚠ 0.10 m IS THE MEASURED SCALE OF THE PROBLEM, not a guess:
+    `task_shaping_probe.mojo` measures the goal distance at 0.115-0.139 m
+    under a random policy, so a margin of 0.10 puts the random state right in
+    the band where the sigmoid has gradient. A margin far below the state
+    distribution is the `tolerance` version of a clip in the wrong place — the
+    term saturates near zero and says nothing."""
 
-    `tests/tasks/test_goal_distance.mojo` asserts that product, because the
-    failure is silent: a lane that met its goal would report `reward = 0.4`
-    and every success counter in the tree would read it as a miss."""
+    comptime REACH_RADIUS: Float64 = 0.02
+    """Inside 2 cm of the subject the reach term is satisfied — the prop's own
+    half-size, so "the gripper is at the block" rather than at a point."""
+
+    comptime REACH_MARGIN: Float64 = 0.20
+    """Measured reach distance is 0.120-0.191 m under a random policy, so 0.20
+    keeps the whole random distribution on the sigmoid's slope."""
 
     comptime REGION_SITE_ID: Int = 2
     """`table_surface`'s site id — the site EVERY region in this family hangs
@@ -363,9 +375,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     evaluator reads the same id out of `curriculum[0, CUR_IDX_REGION_SITE]`,
     but `custom_extract_obs_cpu` is handed no `curriculum` — so having the GPU
     hook read the table and the CPU hook read a constant would put a
-    divergence between the two vectors a checkpoint is shaped by, which is
-    exactly what `test_active_mask` exists to prevent and what it would then
-    have to catch. Both hooks read THIS, and
+    divergence between the two vectors a checkpoint is shaped by.
     `tests/tasks/test_device_placement.mojo` asserts it equals
     `region_sites(f, fmd.site_names)[0]`."""
 
@@ -1012,49 +1022,60 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # exactly that and reported 0/128 on a task that holds at reset; the
         # eval reads `_reward` instead, which is this hook's other return and
         # needs no flag.
-        # ── the shaped terms ──────────────────────────────────────────────
+        # ── the shaped reward, and the goal bit that is no longer in it ──
         #
-        # ⚠⚠ THE SPARSE REWARD COULD NOT BE LEARNED, AND THAT IS MEASURED.
-        # `so101_gather_bricks` on a 5090: 125k env-steps, ~384 episodes, a
-        # success rate indistinguishable from random (0.00 .. 0.05, entirely
-        # inside the random baseline's 2-sigma band). At ~1.5% success that is
-        # about SIX rewarding transitions in 125,000 — 5e-05 of the replay
-        # buffer, which a batch of 256 contains 1.4% of the time. The critic
-        # almost never saw a success. No optimiser setting reaches that.
+        # ⚠⚠ `tolerance` IN [0, 1] PER TERM, POSITIVE, AND THE SUCCESS SIGNAL
+        # IS A SEPARATE `meta` WORD. The reward used to be `+1 if holds` minus
+        # a clipped linear penalty, so `reward > 0.5` meant "solved" and every
+        # shaping weight had to stay small enough to preserve that. Ten runs
+        # on `so101_gather_bricks` say what the linear form cost: a healthy
+        # critic plateaued at 13% over random and would not move in 290k
+        # steps, and reweighting to break the plateau diverged the critic at
+        # an identical tracking rate. A linear penalty pulls uniformly from
+        # any distance and never saturates; `tolerance` saturates at both
+        # ends, so the per-step signal is bounded by construction and the
+        # gradient concentrates where the margin puts it.
         #
-        # ⚠ SHAPING IS A PER-FAMILY CONCERN AND THIS IS WHERE IT BELONGS.
-        # §5.3 and the note above: a shaped reward is a research choice about
-        # one experiment, and putting it in a `.task` would make two runs
-        # incomparable while their files looked identical. Here it is one
-        # decision for the whole family, in the type every task shares.
+        # This is the shape `SoArm101ReachConfig` uses, which reaches 3.9 mm
+        # on real hardware on this arm.
         #
-        # ⚠⚠ AND IT CHANGES WHAT A RETURN MEANS. Sparse, with termination on
-        # success, an episode return was exactly 0 or 1 and `mean_return()`
-        # WAS the success rate. It is not any more. Every caller that wants
-        # the rate must count `reward > 0.5` itself — which stays valid only
-        # because `SHAPE_CLIP` bounds the penalty below 0.5.
+        # ⚠ THE GOAL BIT GOES TO `META_IDX_GOAL_HELD` AND NOT INTO `r`. Three
+        # files read success out of the reward; they read that word now. A
+        # success BONUS in the reward would also be fine, but it is a separate
+        # decision from how success is REPORTED, and conflating the two is
+        # what capped the shaping in the first place.
+        meta[env, META_IDX_GOAL_HELD] = (
+            Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
+        )
+
         var dist = tape_distance_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
             meta, curriculum, xpos, xquat, site_xpos, env
         )
-        # ⚠ THE WEIGHTS COME FROM `curriculum`, the config's constants are
-        # only the host's default. A run sweeping the scale changes two words
-        # of an upload, not the binary.
         var w_goal = rebind[Scalar[DTYPE]](
             curriculum[0, CUR_IDX_SHAPE_W_GOAL]
         )
         var w_reach = rebind[Scalar[DTYPE]](
             curriculum[0, CUR_IDX_SHAPE_W_REACH]
         )
-        comptime CLIP = Scalar[DTYPE](Self.SHAPE_CLIP)
-        if dist > CLIP:
-            dist = CLIP
+
+        # ⚠ `tape_distance_gpu` IS ALREADY A SHORTFALL — zero exactly when the
+        # predicate holds — so the band is [0, GOAL_RADIUS] and the margin
+        # does the shaping. `SIGMOID_GAUSSIAN` and the default
+        # `value_at_margin` match `SoArm101ReachConfig`.
+        var r = w_goal * tolerance[
+            SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+        ](
+            dist,
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](Self.GOAL_RADIUS),
+            Scalar[DTYPE](Self.GOAL_MARGIN),
+        )
 
         # ⚠ THE REACH TERM READS THE FIRST TERM'S SUBJECT OUT OF THE TAPE.
         # `meta[TASK_PARAM_1]` is term 0's `a`, which for `Near`, `Above`,
         # `On` and `In` is a BODY id — and for `AtRegion` is a SITE id, which
         # is why the op is checked before the distance is taken. A site id
         # read as a body id lands on a real, wrong body.
-        var reach = Scalar[DTYPE](0)
         var op0 = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0]))
         if op0 == OP_NEAR or op0 == OP_ABOVE or op0 == OP_ON or op0 == OP_IN:
             var sb = Int(
@@ -1070,13 +1091,15 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
             var ez = rebind[Scalar[DTYPE]](
                 site_xpos[env, GS * 3 + 2]
             ) - rebind[Scalar[DTYPE]](xpos[env, sb * 3 + 2])
-            reach = sqrt(ex * ex + ey * ey + ez * ez)
-            if reach > CLIP:
-                reach = CLIP
-
-        var r = Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
-        r = r - w_goal * dist
-        r = r - w_reach * reach
+            var reach = sqrt(ex * ex + ey * ey + ez * ez)
+            r = r + w_reach * tolerance[
+                SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+            ](
+                reach,
+                Scalar[DTYPE](0),
+                Scalar[DTYPE](Self.REACH_RADIUS),
+                Scalar[DTYPE](Self.REACH_MARGIN),
+            )
         _ = qpos
         _ = qvel
         _ = xipos

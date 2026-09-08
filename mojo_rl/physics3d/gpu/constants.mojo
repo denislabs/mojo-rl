@@ -122,7 +122,7 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 22
+comptime METADATA_SIZE: Int = 23
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
 `META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE` and
 `META_IDX_INIT_REGION_0..2`.
@@ -284,6 +284,26 @@ comptime META_IDX_INIT_REGION_2: Int = 21
 comptime INIT_REGION_NONE: Float64 = 0.0
 """What `META_IDX_INIT_REGION_*` holds for a slot with no `init=` — and what
 an untouched `meta` already holds. See the note above."""
+
+# ── DID THIS LANE'S GOAL HOLD ON THE LAST STEP — 1.0 or 0.0 ───────────────
+#
+# ⚠⚠ THE SUCCESS SIGNAL AND THE REWARD ARE DIFFERENT THINGS AND WERE ONE.
+# The reward started sparse — +1 exactly when the goal held — so `reward > 0.5`
+# WAS "solved", and three files came to read success that way. Then shaping
+# was subtracted from the same scalar, and the whole design had to be bent
+# around keeping the penalty under 0.5 so that test kept working: a comptime
+# `SHAPE_CLIP`, a bound checked at three call sites, a gate asserting the
+# product, and a ceiling on how large any shaping weight could ever be.
+#
+# That ceiling is what blocked the reward from taking the shape that works on
+# this robot — `tolerance` in [0, 1] EVERY step, which alone exceeds 0.5.
+#
+# So the goal bit gets its own word. The reward is then free to be any shape,
+# and success is read from the thing that means success.
+#
+# ⚠ WRITTEN BY THE REWARD HOOK, which is the one place that already evaluates
+# the goal — a second evaluation somewhere else would be a second answer.
+comptime META_IDX_GOAL_HELD: Int = 22
 
 
 # =============================================================================

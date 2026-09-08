@@ -89,14 +89,33 @@ def main() raises:
     var ta = Tally()
 
     # ── 2. the bound, first — it is a comptime fact and costs nothing ─────
-    var worst = (CFG.SHAPE_W_GOAL + CFG.SHAPE_W_REACH) * CFG.SHAPE_CLIP
-    print("  worst-case shaping penalty:", worst,
-          "= (", CFG.SHAPE_W_GOAL, "+", CFG.SHAPE_W_REACH, ") *",
-          CFG.SHAPE_CLIP)
+    # ⚠⚠ THE 0.5 PRODUCT CHECK THAT WAS HERE IS GONE WITH THE CONSTRAINT IT
+    # ENFORCED. Success used to be read out of the reward (`reward > 0.5`), so
+    # the shaping had to stay under it; the bit is `META_IDX_GOAL_HELD` now
+    # and a weight is just a weight. What is still worth asserting is that the
+    # weights are NON-NEGATIVE — they multiply a `tolerance` that is LARGER
+    # nearer the goal, so a negative one pays the policy to stay away and
+    # would train toward exactly that.
+    print("  shaping weights:", CFG.SHAPE_W_GOAL, "/", CFG.SHAPE_W_REACH,
+          " margins:", CFG.GOAL_MARGIN, "/", CFG.REACH_MARGIN)
     ta.check(
-        worst < 0.5,
-        "the shaping penalty stays below 0.5, so `reward > 0.5` still means"
-        " SOLVED (three files read success that way)",
+        CFG.SHAPE_W_GOAL >= 0.0 and CFG.SHAPE_W_REACH >= 0.0,
+        "the shaping weights are non-negative (they weight a tolerance that"
+        " REWARDS proximity)",
+    )
+    # ⚠ AND THAT THE MARGINS STRADDLE THE MEASURED STATE DISTRIBUTION.
+    # `task_shaping_probe.mojo` measures goal 0.115-0.139 m and reach
+    # 0.120-0.191 m under a random policy. A margin far below that is the
+    # `tolerance` version of a clip in the wrong place: the term saturates
+    # near zero over the states the policy actually occupies and says nothing.
+    ta.check(
+        CFG.GOAL_MARGIN >= 0.05 and CFG.GOAL_MARGIN <= 0.40,
+        "the goal margin brackets the measured goal distance (0.115-0.139 m)",
+    )
+    ta.check(
+        CFG.REACH_MARGIN >= 0.08 and CFG.REACH_MARGIN <= 0.60,
+        "the reach margin brackets the measured reach distance"
+        " (0.120-0.191 m)",
     )
 
     var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
@@ -116,7 +135,6 @@ def main() raises:
         rheights[0],
         So101TabletopConfig.SHAPE_W_GOAL,
         So101TabletopConfig.SHAPE_W_REACH,
-        So101TabletopConfig.SHAPE_CLIP,
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         cur.data[i] = Scalar[DTYPE](cw[i])

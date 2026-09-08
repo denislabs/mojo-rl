@@ -123,7 +123,7 @@ def main() raises:
     for i in range(NV):
         env.d.qvel.data[i] = Scalar[DT](v0[i])
 
-    comptime CLIP = CFG.SHAPE_CLIP
+    comptime CLIP = 0.5  # the OLD clip, kept as a reference scale only
     var n = 0
     var sum_goal = 0.0
     var sum_reach = 0.0

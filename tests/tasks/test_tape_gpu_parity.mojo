@@ -132,7 +132,6 @@ def main() raises:
         rheights[0],
         So101TabletopConfig.SHAPE_W_GOAL,
         So101TabletopConfig.SHAPE_W_REACH,
-        So101TabletopConfig.SHAPE_CLIP,
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         cur.data[i] = Scalar[DTYPE](cw[i])

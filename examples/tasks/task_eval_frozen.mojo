@@ -183,7 +183,7 @@ def run_eval(
     # instantiated with that flag, and `_done` carries only truncation at
     # `MAX_STEPS`. Over 40 steps of a 300-step horizon it is a constant zero.
     #
-    # ⚠ THE REWARD IS THE GOAL HERE, so `_reward > 0.5` is the same signal
+    # ⚠ THE GOAL BIT IS `META_IDX_GOAL_HELD` NOW, not the reward
     # P3's gate compares against the CPU evaluator, and it does not depend on
     # a flag this file does not set.
     var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
@@ -263,7 +263,6 @@ def main() raises:
             rheights[0],
             So101TabletopConfig.SHAPE_W_GOAL,
             So101TabletopConfig.SHAPE_W_REACH,
-            So101TabletopConfig.SHAPE_CLIP,
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])

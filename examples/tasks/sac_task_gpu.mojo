@@ -123,8 +123,7 @@ are logged as config fields — `shape_w_goal` and `shape_w_reach`.
 ⚠ SO THIS FILE PRINTS TWO NUMBERS. `mean_return` is what SAC optimises and
 moves smoothly; the SUCCESS RATE is measured separately by
 `greedy_success_rate` — one greedy episode per lane, counting `reward > 0.5`
-— because that test stays valid only while `SHAPE_CLIP` bounds the penalty
-below 0.5. `tests/tasks/test_goal_distance.mojo` asserts that bound.
+— reading `META_IDX_GOAL_HELD`, the word the reward hook writes. `tests/tasks/test_goal_distance.mojo` asserts that bound.
 
 ⚠ SET `SHAPE_W_GOAL` AND `SHAPE_W_REACH` TO 0.0 to get the sparse reward
 back. Every success-rate baseline above was measured there, and a shaped run
@@ -166,7 +165,7 @@ from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
-    META_IDX_INIT_REGION_0, MODEL_CURRICULUM_SIZE,
+    META_IDX_INIT_REGION_0, META_IDX_GOAL_HELD, MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
@@ -307,11 +306,12 @@ def greedy_success_rate(
     integrated distance and says nothing directly about success. The driver's
     own greedy eval returns that shaped mean too.
 
-    ⚠ `reward > 0.5` IS STILL THE SUCCESS TEST, and it is only valid because
-    `SHAPE_CLIP` bounds the total penalty at 0.075.
-    `tests/tasks/test_goal_distance.mojo` asserts that product for exactly
-    this reason — the same rule `task_eval_frozen.mojo` and
-    `task_batched_gpu.mojo` read success by.
+    ⚠⚠ SUCCESS COMES FROM `META_IDX_GOAL_HELD`, NOT FROM THE REWARD. It used
+    to be `reward > 0.5`, which held only while the reward was `+1 if holds`
+    minus a penalty capped below 0.5. The reward is two `tolerance` terms in
+    [0, 1] now and carries no success bonus, so that test would count a lane
+    hovering near the blocks as solved. The hook writes the bit; every reader
+    reads the bit.
 
     ⚠ NO `selective_reset_batch` IN THE LOOP, deliberately. A lane that
     succeeds TERMINATES and then keeps stepping with its done flag set; what
@@ -340,10 +340,17 @@ def greedy_success_rate(
             ),
         )
         env.step_batch[N_ENVS](ctx, UInt64(step + 1))
-        ctx.enqueue_copy(rew_h.unsafe_ptr(), env._reward)
+        # ⚠⚠ THE GOAL BIT, NOT THE REWARD. This read `reward > 0.5`, which
+        # was the same signal only while the reward was `+1 if holds` minus a
+        # bounded penalty. The reward is two `tolerance` terms now and carries
+        # no success bonus at all, so that test would count a lane hovering
+        # near the blocks as a success.
+        env.d.meta.download(ctx)
         ctx.synchronize()
         for e in range(N_ENVS):
-            if rew_h[e] > Scalar[DT](0.5):
+            if Float64(
+                env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
+            ) > 0.5:
                 solved[e] = True
 
     var n = 0
@@ -514,7 +521,8 @@ def main() raises:
     print("  action_scale:", ACTION_SCALE, "(NORMALIZED_ACTIONS is True)")
     print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
     print("  shape weights: goal", shape_goal, " reach", shape_reach,
-          " clip", So101TabletopConfig.SHAPE_CLIP)
+          " (tolerance margins", So101TabletopConfig.GOAL_MARGIN, "/",
+          So101TabletopConfig.REACH_MARGIN, "m)")
     # ⚠ THE NUMBER THAT ACTUALLY GOVERNS CRITIC STABILITY, printed because it
     # is derived and nobody sets it directly.
     var track = 1.0 - (1.0 - Float64(tau)) ** Float64(updates_per_step)
@@ -633,7 +641,10 @@ def main() raises:
         logger.log_scalar(String("cfg/shape_w_goal"), shape_goal, 0)
         logger.log_scalar(String("cfg/shape_w_reach"), shape_reach, 0)
         logger.log_scalar(
-            String("cfg/shape_clip"), So101TabletopConfig.SHAPE_CLIP, 0
+            String("cfg/goal_margin"), So101TabletopConfig.GOAL_MARGIN, 0
+        )
+        logger.log_scalar(
+            String("cfg/reach_margin"), So101TabletopConfig.REACH_MARGIN, 0
         )
         logger.log_scalar(
             String("cfg/target_entropy"), Float64(target_entropy), 0
@@ -683,7 +694,6 @@ def main() raises:
         var cw = region_table_words(
             rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
             rheights[0], shape_goal, shape_reach,
-            So101TabletopConfig.SHAPE_CLIP,
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])

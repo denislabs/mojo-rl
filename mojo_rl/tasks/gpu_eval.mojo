@@ -95,7 +95,7 @@ comptime MAX_CURRICULUM_REGIONS: Int = MODEL_CURRICULUM_SIZE // REGION_WORDS
 def region_table_words(
     site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
     half_height: Float64,
-    shape_w_goal: Float64, shape_w_reach: Float64, shape_clip: Float64,
+    shape_w_goal: Float64, shape_w_reach: Float64,
 ) raises -> List[Float64]:
     """The `curriculum` words for a one-region family. Host-side.
 
@@ -129,30 +129,23 @@ def region_table_words(
         )
     out[CUR_IDX_REGION_H] = half_height
 
-    # ⚠⚠ THE 0.5 BOUND IS CHECKED HERE BECAUSE THE WEIGHTS ARE RUNTIME NOW.
-    # `test_goal_distance` asserts the config's DEFAULTS satisfy it, and that
-    # is no longer enough once a `--shape-goal` flag can set anything: three
-    # files read "solved" as `reward > 0.5` and the shaping is subtracted from
-    # that same scalar, so a weight pair whose worst case reaches 0.5 makes a
-    # SOLVED lane report 0.4 and every success counter in the tree read it as
-    # a miss. Refused at the point the number enters the system.
+    # ⚠⚠ THE 0.5 BOUND THAT USED TO BE HERE IS GONE, AND THAT IS THE POINT.
+    # It existed because the reward carried the success bit — `reward > 0.5`
+    # meant "solved" in three files — so the shaping had to stay small enough
+    # not to mask it. The bit lives in `META_IDX_GOAL_HELD` now, so a weight
+    # is just a weight and the reward is free to be `tolerance` in [0, 1] per
+    # term, which is the shape that trains this robot and which alone exceeds
+    # the old ceiling.
+    #
+    # ⚠ NEGATIVE IS STILL REFUSED. These multiply a `tolerance` that is LARGER
+    # nearer the goal, so a negative weight pays the policy to stay away — and
+    # it would train perfectly well toward exactly that.
     if shape_w_goal < 0.0 or shape_w_reach < 0.0:
         raise Error(
             "tasks: negative shaping weight (" + String(shape_w_goal) + ", "
-            + String(shape_w_reach) + ") — that pays the policy to move AWAY"
-            " from the goal."
-        )
-    var worst = (shape_w_goal + shape_w_reach) * shape_clip
-    if worst >= 0.5:
-        raise Error(
-            "tasks: the shaping weights (" + String(shape_w_goal) + " + "
-            + String(shape_w_reach) + ") * clip " + String(shape_clip)
-            + " = " + String(worst) + ", which reaches the 0.5 that separates"
-            " SOLVED from not. `task_batched_gpu.mojo`,"
-            " `task_eval_frozen.mojo` and `sac_task_gpu.mojo` all read success"
-            " as `reward > 0.5`, so a solved lane would report less than that"
-            " and be counted as a miss — silently. Lower the weights or lower"
-            " SHAPE_CLIP."
+            + String(shape_w_reach) + "). These weight a `tolerance` that"
+            " REWARDS proximity, so a negative one pays the policy to move"
+            " away from the goal — and it would learn that."
         )
     out[CUR_IDX_SHAPE_W_GOAL] = shape_w_goal
     out[CUR_IDX_SHAPE_W_REACH] = shape_w_reach
