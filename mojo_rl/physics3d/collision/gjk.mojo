@@ -9,6 +9,8 @@ vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 """
 
 from std.time import perf_counter_ns
+from std.ffi import _Global
+from std.os import abort
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
 from .ccd_workspace import (
@@ -123,6 +125,100 @@ comptime EPA_DBG: Bool = False
 # iteration counts for the GJK loop, the polytope construction and the EPA
 # loop. Every timer block holds only timer lines (PERFORMANCE.md §13.16).
 comptime _GJK_PROBE: Bool = False
+
+
+# ⚠ A WALK-LENGTH PROBE FOR THE MESH HILL CLIMB, off and free by default (the
+# fifth of the family). On, `hillclimb_support_index` counts its calls and
+# the neighbourhood scans each walk takes (one scan = one dependent chain of
+# global loads on the GPU), split cold (no usable warm vertex) / warm, and —
+# when the driver has filled `ext` with a mesh's 27 grid extrema (MuJoCo
+# 3.12's `mesh_extrema`, commit 83e621d7) — replays the SAME walk from
+# 3.12's seed (the better of the warm vertex and the extremum of the query
+# direction quantised onto the (-1,0,1)^3 grid) and counts THAT walk's
+# scans and whether it landed on the same vertex. CPU only (`_Global`).
+comptime _HILL_PROBE: Bool = False
+
+
+struct _HillProbe(Movable):
+    var calls: Int
+    var scans: Int
+    var cold_calls: Int
+    var cold_scans: Int
+    var linear: Int
+    """Calls that fell back to the linear scan (no graph / tiny mesh)."""
+    var seeded_scans: Int
+    var seeded_cold_scans: Int
+    var seed_beat_warm: Int
+    var seed_mismatch: Int
+    """Seeded walk landed on a different vertex (a tie, or a defect)."""
+    var seed_mismatch_nontie: Int
+    """...and the two landings' dots differ by more than 1e-6 relative."""
+    var ordinal: Int
+    """Call ordinal within the step; the driver zeroes it each step."""
+    var prev_land: List[Int]
+    """Landing vertex of the same ordinal's call in the previous step."""
+    var xstep_scans: Int
+    """Scans a walk from `prev_land` (cross-step warm start) would take."""
+    var xstep_calls: Int
+    var ext_keys: List[Int]
+    """`vert_adr` of each mesh with extrema in `ext` (27 entries each)."""
+    var ext: List[Int]
+
+    def __init__(out self):
+        self.calls = 0
+        self.scans = 0
+        self.cold_calls = 0
+        self.cold_scans = 0
+        self.linear = 0
+        self.seeded_scans = 0
+        self.seeded_cold_scans = 0
+        self.seed_beat_warm = 0
+        self.seed_mismatch = 0
+        self.seed_mismatch_nontie = 0
+        self.ordinal = 0
+        self.prev_land = List[Int]()
+        for _ in range(256):
+            self.prev_land.append(-1)
+        self.xstep_scans = 0
+        self.xstep_calls = 0
+        self.ext_keys = List[Int]()
+        self.ext = List[Int]()
+
+    def reset_counts(mut self):
+        self.calls = 0
+        self.scans = 0
+        self.cold_calls = 0
+        self.cold_scans = 0
+        self.linear = 0
+        self.seeded_scans = 0
+        self.seeded_cold_scans = 0
+        self.seed_beat_warm = 0
+        self.seed_mismatch = 0
+        self.seed_mismatch_nontie = 0
+        self.xstep_scans = 0
+        self.xstep_calls = 0
+
+    def ext_offset(self, vert_adr: Int) -> Int:
+        for i in range(len(self.ext_keys)):
+            if self.ext_keys[i] == vert_adr:
+                return i * 27
+        return -1
+
+
+def _init_hill_probe() -> _HillProbe:
+    return _HillProbe()
+
+
+comptime _HILL_PROBE_SLOT = _Global[
+    "mojo_rl.physics3d.collision.hill_probe", _init_hill_probe
+]
+
+
+def hill_probe() -> Pointer[_HillProbe, MutUntrackedOrigin]:
+    try:
+        return _HILL_PROBE_SLOT.get_or_create_ptr()
+    except:
+        abort("hill_probe: the compiler runtime refused the global slot")
 
 
 @always_inline
@@ -462,7 +558,14 @@ def hillclimb_support_index[
     """
     var graph_head = Int(rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr]))
     if num_verts < _HILLCLIMB_MIN or graph_head < 0:
+        comptime if _HILL_PROBE:
+            hill_probe()[].linear += 1
         return -1
+    comptime if _HILL_PROBE:
+        var hp0 = hill_probe()
+        hp0[].calls += 1
+        if not (warm >= 0 and warm < num_verts):
+            hp0[].cold_calls += 1
 
     # Greedy walk. `imax` is a LOCAL vertex index; `mesh_edges` holds
     # GLOBAL ones, so neighbours are converted on the way in.
@@ -489,6 +592,10 @@ def hillclimb_support_index[
     while imax != prev and budget > 0:
         budget -= 1
         prev = imax
+        comptime if _HILL_PROBE:
+            hill_probe()[].scans += 1
+            if not (warm >= 0 and warm < num_verts):
+                hill_probe()[].cold_scans += 1
         var e = Int(
             rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + imax])
         )
@@ -507,6 +614,117 @@ def hillclimb_support_index[
                 best_dot = d
                 imax = nb - vert_adr
             e += 1
+    comptime if _HILL_PROBE:
+        # Replay from MuJoCo 3.12's seed, counting scans; the landing vertex
+        # must be the one above (a linear objective on a convex hull's
+        # vertex graph has one maximum; a difference is a tie).
+        var hp = hill_probe()
+        var off = hp[].ext_offset(vert_adr)
+        if off >= 0:
+            var cx = 1
+            if ld_x > Scalar[DTYPE](0.4):
+                cx = 2
+            elif ld_x < Scalar[DTYPE](-0.4):
+                cx = 0
+            var cy = 1
+            if ld_y > Scalar[DTYPE](0.4):
+                cy = 2
+            elif ld_y < Scalar[DTYPE](-0.4):
+                cy = 0
+            var cz = 1
+            if ld_z > Scalar[DTYPE](0.4):
+                cz = 2
+            elif ld_z < Scalar[DTYPE](-0.4):
+                cz = 0
+            var seed = hp[].ext[off + cx * 9 + cy * 3 + cz]
+            var cold = not (warm >= 0 and warm < num_verts)
+            var s_imax = seed
+            var s_best = (
+                ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + seed, 0])
+                + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + seed, 1])
+                + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + seed, 2])
+            )
+            if not cold:
+                var w_dot = (
+                    ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + warm, 0])
+                    + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + warm, 1])
+                    + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + warm, 2])
+                )
+                if s_best > w_dot:
+                    hp[].seed_beat_warm += 1
+                else:
+                    s_imax = warm
+                    s_best = w_dot
+            var s_prev = -1
+            var s_budget = num_verts
+            while s_imax != s_prev and s_budget > 0:
+                s_budget -= 1
+                s_prev = s_imax
+                hp[].seeded_scans += 1
+                if cold:
+                    hp[].seeded_cold_scans += 1
+                var se = Int(
+                    rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + s_imax])
+                )
+                if se < 0:
+                    break
+                while True:
+                    var snb = Int(rebind[Scalar[DTYPE]](mesh_edges[se]))
+                    if snb < 0:
+                        break
+                    var sd = (
+                        ld_x * rebind[Scalar[DTYPE]](mesh_verts[snb, 0])
+                        + ld_y * rebind[Scalar[DTYPE]](mesh_verts[snb, 1])
+                        + ld_z * rebind[Scalar[DTYPE]](mesh_verts[snb, 2])
+                    )
+                    if sd > s_best:
+                        s_best = sd
+                        s_imax = snb - vert_adr
+                    se += 1
+            if s_imax != imax:
+                hp[].seed_mismatch += 1
+                var dd = abs(Float64(s_best) - Float64(best_dot))
+                if dd > 1e-6 * (abs(Float64(best_dot)) + 1e-30):
+                    hp[].seed_mismatch_nontie += 1
+        # Cross-step warm start: replay from where this ordinal's call landed
+        # in the previous step.
+        var o = hp[].ordinal
+        hp[].ordinal += 1
+        if o < 256:
+            var pl = hp[].prev_land[o]
+            if pl >= 0 and pl < num_verts:
+                hp[].xstep_calls += 1
+                var x_imax = pl
+                var x_best = (
+                    ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + pl, 0])
+                    + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + pl, 1])
+                    + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + pl, 2])
+                )
+                var x_prev = -1
+                var x_budget = num_verts
+                while x_imax != x_prev and x_budget > 0:
+                    x_budget -= 1
+                    x_prev = x_imax
+                    hp[].xstep_scans += 1
+                    var xe = Int(
+                        rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + x_imax])
+                    )
+                    if xe < 0:
+                        break
+                    while True:
+                        var xnb = Int(rebind[Scalar[DTYPE]](mesh_edges[xe]))
+                        if xnb < 0:
+                            break
+                        var xd = (
+                            ld_x * rebind[Scalar[DTYPE]](mesh_verts[xnb, 0])
+                            + ld_y * rebind[Scalar[DTYPE]](mesh_verts[xnb, 1])
+                            + ld_z * rebind[Scalar[DTYPE]](mesh_verts[xnb, 2])
+                        )
+                        if xd > x_best:
+                            x_best = xd
+                            x_imax = xnb - vert_adr
+                        xe += 1
+            hp[].prev_land[o] = imax
     return imax
 
 

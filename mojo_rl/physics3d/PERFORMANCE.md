@@ -4130,3 +4130,61 @@ kinematics 3%, actuator apply 2.3%, sensor RNE 2%), LDL pair 8%, RNE
 with six dofs and a handful of geoms per env, nearly the same 426 at
 84 dofs. A kernel that costs the same at 8 bodies as at 100 is paying
 a fixed per-launch cost, not the model's — the next thing to read.
+
+### 13.48 MEASURED (2026-09-08): the mesh hill climb is cold on every call, and the previous step already knows the answer
+
+Context: MuJoCo 3.12 (now the pixi runtime, and `references/mujoco-3.12.0/`)
+seeds `mjc_hillclimbSupport` from a per-mesh table of 27 extreme vertices,
+one per direction of the (-1,0,1)³ grid (`mesh_extrema`, commit 83e621d7,
+"up to 2× on large-mesh convex collision"). The cold start used to be
+vertex 0, as ours still is. The park scene's hulls are 772–4,262 vertices
+(ten meshes with graphs), and §13.18's block-kernel bisect put 206 of the
+k=0 collision kernel's 270 µs in four GJK candidates — walks over these
+hulls, each scan of a neighbourhood a dependent chain of global loads on
+one thread. So before writing anything: how long are the walks, and what
+would each seed buy? `_HILL_PROBE` in `collision/gjk.mojo` counts, and
+replays each walk from 3.12's seed and from the previous step's landing;
+`benchmarks/physics3d_cpu/hill_probe.mojo` drives it on k=0 (CPU, Euler,
+the same code the GPU kernels inline).
+
+| per step, k=0 (500 steps, two windows) | now | 3.12 seed | previous step's landing |
+|---|---|---|---|
+| hill-climb calls | 9 | 9 | 9 |
+| of which cold (no warm vertex) | **9** | 9 | 0 after step 1 |
+| scans per call | **13.8** | **5.9** | **1.00** |
+| scans per step | 124 | 53 | 9 |
+| landing differs from now | — | 500 of 4,500, **all ties** | — |
+
+**Every call is cold.** The within-run warm start (`warm`, MuJoCo's
+`meshindex`) never fires on this scene: each candidate's GJK proves the
+pair apart on its FIRST support point and exits, so each mesh sees one
+support call per step and starts it from vertex 0, 13.8 scans from the
+answer. The warm start that pays here is ACROSS steps: the pose moves a
+little per step, and the vertex a candidate landed on last step is the
+answer this step in 4,491 of 4,491 replays (1.00 scans = the check that no
+neighbour improves). 3.12's grid seed cuts the cold walk 2.3×; the
+cross-step seed cuts it 14×. The 500 seeded landings that differ are one
+call per step landing on a vertex with the SAME dot to 1e-6 relative — a
+tie on a face perpendicular to the query direction — and 0 of 4,500 are
+not ties. A tie moves the support POINT to another point of the same
+face, so a seed can change a witness where the hull is flat; the
+goldens, not the argument, decide whether any of ours does. (3.12 accepted
+the same nondeterminism.)
+
+**What this bounds.** If the four candidates' 206 µs are their walks
+(28 scans each at ~1.8 µs, which is what a ~8-load dependent chain costs),
+a cross-step seed removes ~26 of the 28 and the k=0 collision kernel
+would read ~100 µs against 270; at k=13 the same candidates are the same
+walks, so ~150 µs of the 426. That is a ceiling from a CPU count, not a
+GPU time (§13.47's lesson stands): the A/B decides.
+
+**The design, when it is built:** a per-env table of warm vertices in
+`Data`, indexed by the candidate's ordinal in the serial emission order
+(`[BATCH, 2 · COLL_NCAND_CAP]`), read into `warm1`/`warm2` before
+`gjk_epa_witness` and written back after. An ordinal that shifts when the
+candidate set changes hands a vertex of another mesh to the walk, which
+the existing clamp turns into steps, never a wrong point. 3.12's extrema
+are the cold fallback for a new ordinal — 5.9 scans against 13.8 — and a
+model field the parser would fill; second, if the cold share after the
+first step ever matters. Both legs (serial per-env kernel, block kernel,
+CPU) share `_sap_pair_narrow`, so one threading serves all three.
