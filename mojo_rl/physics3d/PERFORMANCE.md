@@ -3942,3 +3942,15 @@ hash" flag on a kernel the change did not touch is the alarm, not a
 footnote. (3) Re-baseline after each landed change, and A/B a knob
 experiment against the SAME tree with the knob off, not against the last
 landed binary.
+
+**MEASURED (RTX 5090, 2026-09-08, `p0_ab.sh` stage 1 vs fab85f0a, three
+interleaved rounds, MIN): the LDL pair 0.498× at k=6 (0.287 → 0.143
+ms/step) and 0.522× at k=13 (0.710 → 0.371); the solve kernel 44.6 → ~8.6
+µs per launch at k=6 and 106.9 → ~22 at k=13 (the factor, 27.2 / 70.5, is
+the pair's larger kernel now); the step 2.455 → 2.306 (0.939) and 5.714 →
+5.385 (0.942). Newton 1.001 / 1.004 — the §13.45 shift is gone, which is
+the check this A/B existed for. Every other kernel 0.97–1.03.** k=13 is now
+5.3× baseline 2; 190 k env-steps/s at k=13, 444 k at k=6, 1024 lanes.
+fab85f0a is BASELINE 4: the full sweep of it (`p0_attrib.sh`, all six k)
+is the table every later A/B's numbers are read against. Shares at k=13
+from this A/B: Newton 46%, collision 16%, CRBA 14%, LDL pair 7%.
