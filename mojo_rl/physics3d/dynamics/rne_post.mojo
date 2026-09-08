@@ -362,9 +362,11 @@ def _rne_post_env[
         )
     # 1. cvel (into crb) + the qacc-free part of cacc, verbatim from RNE.
     for b in range(1, nbody):
-        _rne_fwd_body[DTYPE, JM_CAP=JM_CAP](
+        var j_lo = jnt_adr[b] if map_ok else 0
+        var j_hi = j_lo + jnt_num[b] if map_ok else njoint
+        _rne_fwd_body[DTYPE](
             env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, cacc,
-            jnt_adr, jnt_num, map_ok,
+            j_lo, j_hi, map_ok,
         )
 
     # 2. The cdof*qacc term, as its own forward sweep (see docstring).
