@@ -387,6 +387,20 @@ def main() raises:
     # is right, `mean_q` should fall roughly in proportion.
     var target_entropy = -Scalar[DT](ACT_DIM)
     var init_alpha = Scalar[DT](0.2)
+    # ⚠⚠ 0.50/0.25 IS THE ONLY PAIR THE CRITIC HAS SURVIVED. Measured, all at
+    # 32 envs / 32 updates / tau 0.0025 — the SAME 7.7% tracking rate:
+    #
+    #     0.50 / 0.25   mean_q -> -6.2 converging, alpha -> 0.0014, 290k steps
+    #     0.10 / 0.70   mean_q -> 5743, alpha -> 2.2, critic_loss 17640
+    #
+    # So the tracking rate is NECESSARY AND NOT SUFFICIENT, and the weights
+    # are the other axis. Hypothesis fitted to two points, recorded as such:
+    # the reach term is `|gripper - subject|` and moves as fast as the arm,
+    # while the goal term is a separation between two props that barely moves,
+    # so weighting the fast one at 7x the slow one raises the target's
+    # step-to-step variance. What is MEASURED is only that 0.10/0.70 diverges
+    # where 0.50/0.25 does not, at identical everything else.
+    #
     # ⚠⚠ THE REWARD SCALE IS THE OPEN QUESTION ON THIS FAMILY, so it is a flag.
     # Three 190k-step runs at 0.10/0.05 held `mean_reward` at -0.024 from the
     # first diagnostic sample to the last — through an alpha fix and an
