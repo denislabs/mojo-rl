@@ -4189,7 +4189,7 @@ model field the parser would fill; second, if the cold share after the
 first step ever matters. Both legs (serial per-env kernel, block kernel,
 CPU) share `_sap_pair_narrow`, so one threading serves all three.
 
-### 13.49 LANDED, UNPRICED ON THE GPU (2026-09-08): the mesh hill climb warm-starts across steps
+### 13.49 LANDED, collision kernel 0.50 at both k (2026-09-08): the mesh hill climb warm-starts across steps
 
 §13.48's design, built. The CCD workspace row (`Data.ccd_ws`, per env —
 per CCD lane in the block kernel) grows a tail of `HILL_WARM_SLOTS = 128`
@@ -4240,3 +4240,39 @@ collision kernel from 270 toward ~100 µs and k=13's 426 toward ~250. A
 CPU count, not a GPU time: the A/B decides, and the rows to read are
 collision and — the unlabelled env kernel aside — nothing else, since
 no other kernel touches `ccd_ws`.
+
+**Priced (5090, `p0_ab.sh`, ROUNDS=3, MIN over rounds, B = 89e64dff vs
+A = 019c2605 = §13.47's tree):**
+
+| k | term | A ms/step | B ms/step | B/A | largest kernel A → B µs |
+|---|------|-----------|-----------|-----|-------------------------|
+| 6 | collision | 0.711 | 0.357 | **0.501** | 355.7 → 178.3 |
+| 6 | wall | 2.058 | 1.720 | **0.835** | |
+| 13 | collision | 0.853 | 0.420 | **0.492** | 426.6 → 209.9 |
+| 13 | wall | 4.597 | 4.195 | **0.912** | |
+
+The collision kernel halved at both k, 3/3 rounds, its hash changed (the
+code path did). Every other row: Newton 1.010 / 1.003, LDL 0.989 / 0.998,
+RNE 1.003 / 1.012, CRBA, cdof, the env kernel 1.00, same hashes. The one
+stray is the warm-start kernel at k=13, 7.2 → 11.0 µs (1.538, 3/3): the
+same 11-µs kernel that read 11.0 → 7.1 in §13.46's A/B, untouched then
+and now, 0.008 ms of the step either way — it moves with something in the
+box's state, not with the tree, and it is not booked in either direction.
+
+§13.48's bound was 426 → ~250 at k=13 and 270 → ~100 at k=0; the kernel
+read 210 at k=13, past the bound, so the walks were more than the 206 µs
+the block-kernel bisect had charged to four candidates, or the serial
+kernel's lockstep paid the chain more dearly. What is left in the kernel
+at k=13 (210 µs) is the sweep, the AABB and body filters, the primitive
+pairs, the GJK setup and the one scan per support call the seed cannot
+remove; §13.18's CPU probe had the sweep and the per-pair filtering as
+the next items on this scene's cousin, and a 5090 bisect
+(`COLL_STOP_AFTER`, off knob, comptime-elided) would say which of them
+the GPU pays.
+
+**Baseline 6 = 89e64dff.** k=13 step 4.195 ms (1024 envs: 244 k
+env-steps/s, 6.8× baseline 2's 28.5 ms), k=6 1.720 ms. Shares at k=13:
+Newton 58.8%, unlabelled 15.8% (integrator ~5.5%, kinematics 3.2%,
+actuator apply 2.5%, sensor RNE 2.2%), collision 10.0%, LDL pair 8.7%,
+RNE 2.9%, CRBA 1.0%. The k=0 row of the sweep (collision was 63% of that
+step) has not been re-run; the full baseline-6 sweep is what gives it.
