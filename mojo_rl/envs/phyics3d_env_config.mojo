@@ -244,6 +244,22 @@ trait Phyics3dEnvConfig:
     ⚠ CHANGING THIS INVALIDATES CHECKPOINTS. The action means something
     different on each side of the flag."""
     comptime HAS_CUSTOM_ACTUATION_GPU: Bool = False
+    comptime CUSTOM_ACTIONS_EVERY_SUBSTEP: Bool = False
+    """Call `custom_apply_actions_cpu` at the top of EVERY substep, not once
+    per control step.
+
+    The CPU hook's documented cadence is once per control step, which is
+    right for action SEMANTICS (a mocap delta that must not compound) and
+    wrong for a state-dependent FORCE LAW: a PD controller evaluated once and
+    frozen for `FRAME_SKIP` substeps is a different controller from one that
+    reads `qpos`/`qvel` every substep, which is what the GPU hook already does
+    and what IsaacLab / MuJoCo do. Unitree G1 (BFM-Zero's torque-level PD at
+    200 Hz under 50 Hz control) is the first model where the two differ
+    measurably. With this True the CPU and GPU cadences match.
+
+    ⚠ The hook is still called once BEFORE the loop (that call is the first
+    substep's); the extra calls are substeps 2..FRAME_SKIP. A hook that is
+    not idempotent in its side effects must not set this."""
 
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod

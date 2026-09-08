@@ -581,7 +581,23 @@ struct Phyics3dEnv[
 
         # Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR) with
         # per-substep contact/limit solving.
-        for _ in range(self.frame_skip):
+        for k in range(self.frame_skip):
+            # A state-dependent custom force law (the G1's torque PD) reads
+            # qpos/qvel again at every substep — the GPU hook's cadence. See
+            # `Phyics3dEnvConfig.CUSTOM_ACTIONS_EVERY_SUBSTEP`.
+            comptime if Self.CONFIG.CUSTOM_ACTIONS_EVERY_SUBSTEP:
+                if k > 0:
+                    _ = Self.CONFIG.custom_apply_actions_cpu(
+                        self.d,
+                        self.mf.bodies.data,
+                        self.mf.joints.data,
+                        self.mf.geoms.data,
+                        self.mf.sites.data,
+                        self.mf.tendons.data,
+                        self.sf.actuators.data,
+                        self.sf.act_tendons.data,
+                        action_list,
+                    )
             # Actuator + tendon-spring forces are recomputed EVERY SUBSTEP,
             # as MuJoCo recomputes qfrc_actuator inside every mj_step. For a
             # `<motor>` this rewrites the same constant and is bit-identical
