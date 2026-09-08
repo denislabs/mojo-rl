@@ -30,6 +30,16 @@ segment env seed together — the ONE knob a replicate changes.
 offline 24-D pair 1.38 / 2.06 / 1.51 (three rungs). The FB file is
 unchanged in format, so `fb_eval_walker_online.mojo` scores it directly.
 
+Verdict (§18.9.6, two seeds x `reg 0.01` / `reg 0`, ten rungs a side):
+this arm is 1.58 / 1.93 / 1.51 and `--reg 0` is 1.66 / 1.14 / 0.89 —
+**the actor's style gradient is the ingredient**, on locomotion only
+(walk p 0.0093, run p 0.0106, stand null). `--reg 0` keeps D, Q_D and the
+z mixture, and against `a3c` it is null on walk and worse on run: the
+mixture alone buys nothing. The FB batch never holds an expert
+transition (`EXPERT_ROWS = 0`) — the store enters as D's positives and as
+`z` encodings, expert STATES only — and on that footing the arm matches
+the offline pair, which trains on the SAC transitions themselves.
+
 ⚠ `Qpi > Q` is NOT a signal here, contrary to what this header said
 before the first run: online the batch action IS the policy's own action
 plus exploration noise, so the two agree by construction. It was a real
