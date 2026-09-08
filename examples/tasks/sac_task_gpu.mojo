@@ -100,25 +100,28 @@ tape) and `SHAPE_W_REACH` on the gripper's distance to the body the goal
 names — the second because goal distance alone has NO gradient until the arm
 touches something, which on `gather` is the whole difficulty.
 
-    shaped mean return, random actions, gather    -19.98   (weights .50/.25)
-    success rate, greedy, untrained                 0.00
+    tolerance reward, random actions, gather, 32 envs   +70.7
+    success rate, greedy, untrained                       0.00
 
-⚠ THE BASELINES ABOVE WERE MEASURED AT 64 LANES and the greedy eval now runs
-32, so its rate is grainier — one lane is 1/32 = 0.031, and the 2-sigma band
-the verdict prints widens accordingly. The band is computed from `N_ENVS`, so
-it follows this automatically.
+⚠⚠ THE REWARD IS POSITIVE AND BOUNDED NOW — two `tolerance` terms in [0, 1]
+weighted 1.0 and 0.5, so an episode return lives in [0, 450] and random sits
+at 70.7: 16% of the ceiling with the rest reachable. The old clipped linear
+PENALTY put random at -31.5 against a ceiling of 0 — the same information with
+no room above it and no saturation below.
 
-⚠ AND A HEALTHY RUN NOW HAS A SHAPE. At 16 updates/step the eval return went
--28.7 -> -20.1 over 47k steps while `mean_reward` improved on 70 of 79
-consecutive samples. What to read FIRST is `mean_q`: it should converge toward
-`mean_reward / (1 - gamma)` — about -9 at these weights — with
-`mean_next_q - mean_q` under a tenth. Run 3's gap was +5 and its `mean_q` ran
-to 508; that is the shape of a critic chasing itself, and no return moves
-under one.
+⚠ EARLIER FIGURES ARE NOT COMPARABLE, and are recorded because the reasoning
+around them is: -31.5 (32 envs) and -19.98 (64 envs) were the linear form at
+weights 0.50/0.25, and -3.996 was 0.10/0.05. A return is comparable only
+within one reward SHAPE, one weight pair and one lane count. All three now
+travel with the run as `cfg/*` fields.
 
-⚠ THAT -19.98 IS AT THE CURRENT WEIGHTS AND WAS -3.996 AT THE OLD 0.10/0.05.
-A shaped return is only comparable within one weight pair, which is why they
-are logged as config fields — `shape_w_goal` and `shape_w_reach`.
+⚠ THE SUCCESS-RATE baselines are lane-count independent — a rate is per
+episode either way — so only the RETURN figures moved.
+
+⚠ AND A HEALTHY RUN HAS A SHAPE. What to read FIRST is `mean_q`: it should
+converge toward `mean_reward / (1 - gamma)` with `mean_next_q - mean_q` under
+a tenth. Run 3's gap was +5 and its `mean_q` ran to 508; run 10's was +35 at
+5743. That is a critic chasing itself, and no return moves under one.
 
 ⚠ SO THIS FILE PRINTS TWO NUMBERS. `mean_return` is what SAC optimises and
 moves smoothly; the SUCCESS RATE is measured separately by
