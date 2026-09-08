@@ -310,6 +310,25 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
     to 0.0 — which is a real claim, and the flattering one.
     """
     if task == "so101_lift_brick":
+        # ⚠⚠ AND IT HAS NOT BEEN TRAINED PAST NOISE. Two 1M-step runs, both
+        # with a textbook critic (`mean_q` 0.91x and 0.92x its fixed point):
+        #
+        #   margin 0.02   return  19.9 ->  56.2  (2.8x)   success 0.00000
+        #   margin 0.05   return 153.0 -> 197.6  (1.29x)  success 0.03125
+        #
+        # 1 lane of 32 is 0.031 against a rule-of-three band of 0.094, so the
+        # second is NOT significant. Decomposing the second run's reward: the
+        # gripper closed from 0.096 m to 0.050 m while the GOAL distance
+        # stayed at 0.030 m — its random value. The arm approaches the brick
+        # and never lifts it.
+        #
+        # ⚠ THAT IS A TASK PROPERTY, NOT A TUNING ONE. `Above(brick, table,
+        # 0.06)` only pays once the brick RISES, and the brick only rises once
+        # it is GRASPED — a discrete contact event with no partial credit. The
+        # reach term can walk the gripper in; nothing in a distance-shaped
+        # reward can manufacture a grasp. `Grasped` and `Touching` are Tier B
+        # (they read the contact array) and `predicates.require_tier_a` refuses
+        # them as goals, so the fix is not a weight.
         return (0.00, 0.00, True)
     if task == "so101_gather_bricks":
         # ⚠ NOT EXACTLY ZERO. Two 20k warmup-only runs gave 0.000 and 0.0156
