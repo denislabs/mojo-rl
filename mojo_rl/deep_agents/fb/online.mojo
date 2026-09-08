@@ -102,6 +102,7 @@ from .kernels import (
     project_sphere_kernel,
     gaussian_dev_t,
     uniform01_kernel,
+    uniform01_dev_kernel,
     mean_sq_t,
     ensure_t,
     _blocks,
@@ -111,23 +112,6 @@ from .kernels import (
 # ══════════════════════════════════════════════════════════════════════
 # Kernels
 # ══════════════════════════════════════════════════════════════════════
-
-
-def uniform01_dev_kernel[N: Int](
-    dst: Pointer[Scalar[DT], MutAnyOrigin],
-    seed: UInt64,
-    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
-):
-    """`dst[i] ~ U[0, 1)`, Philox, offset read FROM DEVICE (capture-safe).
-    Device-offset twin of `kernels.uniform01_kernel` — see its docstring for
-    why the mixture kernels must be fed UNIFORMS."""
-    var i = Int(global_idx.x)
-    if i >= N:
-        return
-    var philox = PhiloxRandom(
-        seed=seed + UInt64(i), offset=rebind[UInt64](offset_buf[0])
-    )
-    dst[unsafe_offset=i] = Scalar[DT](Float32(philox.step_uniform()[0]))
 
 
 def ring_store_kernel[

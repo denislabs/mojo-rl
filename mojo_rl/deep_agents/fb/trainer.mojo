@@ -115,6 +115,7 @@ from .kernels import (
     mean_into_t,
     mean_sq_into_t,
     scale_by_inv_mag_t,
+    axpy_by_mag_t,
 )
 
 
@@ -249,6 +250,18 @@ struct FBTrainer[
     # whose remaining rows are the policy's own (do not clone those: BC
     # toward the replay's own actions is circular). §18.7.2, A3.5.
     var bc_mask: Tensor
+    # ⚠ An EXTERNAL actor-output gradient, `[BATCH, ACT]`, added to `g_pi`
+    # when `has_pi_extra` is set — the slot FB-CPR's style critic plugs into
+    # (`fb/cpr.mojo`: `−reg_coeff · ∂Q_D/∂π`). Written by the consumer BEFORE
+    # `train_step` on the SAME batch; read here, never zeroed (the consumer
+    # overwrites it every step). With BC off the value gradient is raw, so
+    # the extra is scaled by `|mean F·z|` (BFM-Zero's `scale_reg`) to keep
+    # `reg_coeff` a ratio; with BC on the value gradient is already divided
+    # by that magnitude, so the extra is added as-is and the ratio is the
+    # same. `has_pi_extra` is set once at construction of the consumer, so
+    # the captured kernel sequence is fixed.
+    var g_pi_extra: Tensor
+    var has_pi_extra: Bool
     # ── the batch itself ────────────────────────────────────────────────
     # Owned, not passed per step. `TensorRefs[N, o]` requires every tensor in
     # a pack to share ONE origin, so a `train_step(s, a, ...)` taking five
@@ -392,6 +405,8 @@ struct FBTrainer[
         self.acc_gv = Tensor()
         self.acc_gt = Tensor()
         self.bc_mask = Tensor()
+        self.g_pi_extra = Tensor()
+        self.has_pi_extra = False
         self.bs = Tensor()
         self.ba = Tensor()
         self.bsn = Tensor()
@@ -468,6 +483,8 @@ struct FBTrainer[
         self.acc_gv = move.acc_gv^
         self.acc_gt = move.acc_gt^
         self.bc_mask = move.bc_mask^
+        self.g_pi_extra = move.g_pi_extra^
+        self.has_pi_extra = move.has_pi_extra
         self.bs = move.bs^
         self.ba = move.ba^
         self.bsn = move.bsn^
@@ -590,6 +607,7 @@ struct FBTrainer[
         comptime if T == "gpu":
             self.bc_mask.upload_resident(c.value())
         ensure_t[T](self.sink, Self.BATCH * Self.F_IN, c)
+        ensure_t[T](self.g_pi_extra, Self._NA, c)
         ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
         ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
         ensure_t[T](self.b_s, Self._ND, c)
@@ -1041,6 +1059,15 @@ struct FBTrainer[
                 )
             else:
                 axpy_t[T, Self._NA](self.g_pi, self.pi, w2, c)
+        # + the external term (FB-CPR's `−reg·∂Q_D/∂π`), see `g_pi_extra`.
+        # `acc_lam` holds THIS step's `mean F·z`, so the scale is not lagged.
+        if self.has_pi_extra:
+            if self.bc_weight > 0.0:
+                axpy_t[T, Self._NA](self.g_pi, self.g_pi_extra, Scalar[DT](1.0), c)
+            else:
+                axpy_by_mag_t[T, Self._NA](
+                    self.g_pi, self.g_pi_extra, self.acc_lam, Scalar[DT](1.0), c
+                )
         mean_sq_into_t[T, Self._NA](self.g_pi, self.acc_gt, c)
 
         call_vjp[T, Self.BATCH](

@@ -14,6 +14,11 @@ tests/nn/test_pairwise_dot.mojo
 # One FBTrainer step, CPU vs GPU: losses, B(s), and smooth_action_t bit-exact.
 tests/deep_agents/test_fb_trainer_gpu_parity.mojo
 
+# One FBCPRTrainer step, CPU vs GPU (gp 0, sigma 0): the BCE halves, the
+# style critic, the actor hook, D's logits and the expert encoding agree;
+# then the full device sequence at gp 10 runs (measured 1e-7 on Apple).
+tests/deep_agents/test_fb_cpr_gpu_parity.mojo
+
 # The captured train step allocates nothing per call — any per-call alloc is a
 # capture blocker, and the capture abort names only the FIRST one.
 tests/deep_agents/test_fb_cuda_graph_safety.mojo

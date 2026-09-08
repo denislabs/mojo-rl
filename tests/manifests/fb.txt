@@ -26,6 +26,12 @@ tests/deep_agents/test_fb_trainer_smoke.mojo
 # save_state / load_state round trip; targets equal their online nets after load.
 tests/deep_agents/test_fb_checkpoint.mojo
 
+# FB-CPR (A4): the CPR terms enter where they should and NOWHERE else — at
+# reg_coeff 0 the FB half is BIT-IDENTICAL to the plain trainer; reg moves
+# the actor only; the gradient penalty moves D; the expert window encoding
+# equals the projected mean of B; the .cpr sidecar round-trips.
+tests/deep_agents/test_fb_cpr_smoke.mojo
+
 # Fixed-statistics observation standardisation + the <ckpt>.norm sidecar:
 # training path and rollout path bit-identical, width mismatch RAISES.
 tests/deep_agents/test_fb_obs_norm.mojo

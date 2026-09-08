@@ -91,8 +91,15 @@ FORCE=${FORCE:-0}
 # (ortho 1, lr_b -1) as the no-flag setting. From this commit the no-flag
 # setting IS the winner; an arm meant to reproduce `base_u` must now pass
 # `--ortho 1 --lr-b -1` explicitly (see `base_u_re`).
-declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3                          pair                        pair_s2                                        pair_s3)
-declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907"     "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"      "--ortho 100 --lr-b 1e-5 --seed 20260907")
+declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3                          pair                        pair_s2                                        pair_s3                                        cpr                cpr_nobc           cpr_s2)
+declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907"     "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"      "--ortho 100 --lr-b 1e-5 --seed 20260907"      "--reg 0.01 --gp 10" "--reg 0.01 --gp 10 --bc 0" "--reg 0.01 --gp 10 --seed 20260906")
+
+# 2026-09-08, A4 (§18.9): `cpr*` arms run `fb_train_cpr_gpu.mojo` — the SAME
+# 24-D base (ortho 100, lr_b 1e-5, bc 1.0 by default) plus D(s,z), Q_D and
+# the style term, so `cpr` vs `pair` varies exactly the CPR terms. `cpr_nobc`
+# is the reference's own setting (CPR REPLACES BC); `cpr_s2` the replicate.
+# The bar is the six-rung two-seed mean of `pair`/`pair_s2`:
+# stand 1.50 (sd 0.40) / walk 2.19 (0.66) / run 1.62 (0.55).
 
 # 2026-09-08, `pair_s2` (§18.7.6): the 24-D base replicates on walk/run in the
 # MEAN (two seeds 1.50 / 2.19 / 1.62 vs 18-D 1.51 / 1.82 / 1.44) with 2-3x the
@@ -117,7 +124,7 @@ declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "
 #         ARMS="ortho100_lrb1e5_u" FORCE=1 bash examples/fb/fb_sweep.sh
 #   (⚠ FORCE re-trains and OVERWRITES that arm's 300 k checkpoints; copy
 #    them aside first, or run it with a fresh tag.)
-ARMS=${ARMS:-"pair_s3"}
+ARMS=${ARMS:-"cpr"}
 
 
 if [ ! -f "$STORE" ]; then
@@ -146,7 +153,8 @@ for i in "${!ARM_TAGS[@]}"; do
     else
         echo "=== arm '$tag' — training ${STEPS} steps  ${flags}"
         # shellcheck disable=SC2086
-        pixi run -e "$PIXI_ENV" mojo run -I . examples/fb/fb_train_gpu.mojo \
+        case "$tag" in cpr*) TRAIN=examples/fb/fb_train_cpr_gpu.mojo ;; *) TRAIN=examples/fb/fb_train_gpu.mojo ;; esac
+        pixi run -e "$PIXI_ENV" mojo run -I . "$TRAIN" \
             --tag "$tag" --steps "$STEPS" $flags \
             2>&1 | tee "fb_sweep_${tag}.train.log" | grep -E "^\[|^   step (0|[0-9]*000) " || true
     fi

@@ -25,7 +25,8 @@ pattern this project has already been bitten by on NVIDIA, where CUDA drops
 conditional RMW stores in reduction kernels.
 """
 
-from std.math import sqrt
+from std.math import sqrt, abs
+from std.random import random_float64
 from std.gpu import block_dim, block_idx, thread_idx, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -869,4 +870,372 @@ def gaussian_dev_t[target: StaticString, N: Int](
         comptime AMT = N + (N % 2)
         d.enqueue_function[advance_rng_offset_kernel[AMT]](
             off, grid_dim=1, block_dim=1
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# A4 / FB-CPR additions (`fb/cpr.mojo`). Same conventions as above: naive
+# one-thread-per-element kernels, and a `_t` host twin for each so the CPR
+# trainer is written once for both targets.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def uniform01_dev_kernel[N: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """`dst[i] ~ U[0, 1)`, Philox, offset read FROM DEVICE (capture-safe).
+    Device-offset twin of `uniform01_kernel` — see its docstring for why the
+    mixture kernels must be fed UNIFORMS. Lived in `online.mojo` first; the
+    CPR trainer's interpolation weights need it too, so it is here."""
+    var i = Int(global_idx.x)
+    if i >= N:
+        return
+    var philox = PhiloxRandom(
+        seed=seed + UInt64(i), offset=rebind[UInt64](offset_buf[0])
+    )
+    dst[unsafe_offset=i] = Scalar[DT](Float32(philox.step_uniform()[0]))
+
+
+def window_mean_kernel[SEQ: Int, D: Int, NW: Int](
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`dst[w·SEQ + j, k] = mean_{j'} src[w·SEQ + j', k]` for every `j` —
+    the per-window mean of `SEQ` consecutive rows, written back to ALL
+    `SEQ` rows of the window (`repeat_interleave`). One thread per
+    `(window, k)`. Renormalisation is NOT done here: `project_sphere_kernel`
+    follows, unconditionally, as it does for every other `z` producer."""
+    var t = Int(global_idx.x)
+    if t >= NW * D:
+        return
+    var w = t // D
+    var k = t - w * D
+    var acc: Scalar[DT] = 0
+    for j in range(SEQ):
+        acc += src[unsafe_offset=(w * SEQ + j) * D + k]
+    var m = acc / Scalar[DT](SEQ)
+    for j in range(SEQ):
+        dst[unsafe_offset=(w * SEQ + j) * D + k] = m
+
+
+def expand_windows_kernel[NW: Int, SEQ: Int](
+    starts: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    rows_s: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    rows_sn: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+):
+    """`rows_s[w·SEQ + j] = starts[w] + j`, `rows_sn[...] = starts[w] + j + 1`.
+    A window start is VALID only if `start + SEQ` is still inside its
+    episode; the caller's start table carries that guarantee (built from the
+    store's episode index), not this kernel."""
+    var t = Int(global_idx.x)
+    if t >= NW * SEQ:
+        return
+    var w = t // SEQ
+    var j = t - w * SEQ
+    var s = Int(starts[unsafe_offset=w])
+    rows_s[unsafe_offset=t] = Scalar[IDX_DT](s + j)
+    rows_sn[unsafe_offset=t] = Scalar[IDX_DT](s + j + 1)
+
+
+def z_mixture3_kernel[D: Int, BATCH: Int](
+    z: Pointer[Scalar[DT], MutAnyOrigin],
+    gauss: Pointer[Scalar[DT], MutAnyOrigin],
+    b_goal: Pointer[Scalar[DT], MutAnyOrigin],
+    z_expert: Pointer[Scalar[DT], MutAnyOrigin],
+    pick: Pointer[Scalar[DT], MutAnyOrigin],
+    p_goal: Scalar[DT],
+    p_expert: Scalar[DT],
+    n_goal: Int32,
+    n_expert: Int32,
+):
+    """BFM-Zero's training mixture (`sample_mixed_z`): a row is a GOAL
+    encoding `B(s+)` with probability `p_goal`, an EXPERT trajectory
+    encoding with probability `p_expert`, else Gaussian (uniform on the
+    sphere after projection). `pick[2i]` chooses the branch, `pick[2i+1]`
+    the source row — uniforms, drawn outside (see `uniform01_kernel`).
+    `project_sphere_kernel` must follow."""
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    var base = i * D
+    var u = pick[unsafe_offset=2 * i]
+    var r = pick[unsafe_offset=2 * i + 1]
+    var ng = Int(n_goal)
+    var ne = Int(n_expert)
+    if u < p_goal and ng > 0:
+        var src = Int(r * Scalar[DT](ng))
+        if src >= ng:
+            src = ng - 1
+        if src < 0:
+            src = 0
+        for k in range(D):
+            z[unsafe_offset=base + k] = b_goal[unsafe_offset=src * D + k]
+    elif u < p_goal + p_expert and ne > 0:
+        var src = Int(r * Scalar[DT](ne))
+        if src >= ne:
+            src = ne - 1
+        if src < 0:
+            src = 0
+        for k in range(D):
+            z[unsafe_offset=base + k] = z_expert[unsafe_offset=src * D + k]
+    else:
+        for k in range(D):
+            z[unsafe_offset=base + k] = gauss[unsafe_offset=base + k]
+
+
+def lerp_rows_kernel[BATCH: Int, W: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    alpha: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`dst[i, :] = alpha[i]·a[i, :] + (1 − alpha[i])·b[i, :]` — the WGAN-GP
+    interpolation between a real and a fake row, one weight per row."""
+    var t = Int(global_idx.x)
+    if t >= BATCH * W:
+        return
+    var i = t // W
+    var al = alpha[unsafe_offset=i]
+    dst[unsafe_offset=t] = al * a[unsafe_offset=t] + (Scalar[DT](1.0) - al) * b[unsafe_offset=t]
+
+
+def clamp_kernel[N: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    lo: Scalar[DT],
+    hi: Scalar[DT],
+):
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    var v = src[unsafe_offset=t]
+    if v < lo:
+        v = lo
+    elif v > hi:
+        v = hi
+    dst[unsafe_offset=t] = v
+
+
+def axpy_by_mag_kernel[N: Int](
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    mag: Pointer[Scalar[DT], MutAnyOrigin],
+    base: Scalar[DT],
+):
+    """`y += base·|mag[0]|·x` — the inverse of `scale_by_inv_mag_kernel`.
+    BFM-Zero's `scale_reg`: the CPR actor term is multiplied by the detached
+    magnitude of the FB value term so `reg_coeff` is a RATIO."""
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    var m = mag[unsafe_offset=0]
+    if m < Scalar[DT](0):
+        m = -m
+    y[unsafe_offset=t] = y[unsafe_offset=t] + base * m * x[unsafe_offset=t]
+
+
+def diff_scale_kernel[N: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    s: Scalar[DT],
+):
+    """`dst = s·(a − b)` — a TD residual scaled into a cotangent."""
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    dst[unsafe_offset=t] = s * (a[unsafe_offset=t] - b[unsafe_offset=t])
+
+
+# ── host twins ─────────────────────────────────────────────────────────
+
+
+def fill_t[target: StaticString, N: Int](
+    mut y: Tensor, v: Scalar[DT], ctx: Optional[DeviceContext] = None
+) raises:
+    ensure_t[target](y, N, ctx)
+    comptime if target == "cpu":
+        for i in range(N):
+            y.data[i] = v
+    else:
+        var d = ctx.value()
+        d.enqueue_function[fill_kernel[N]](
+            y.dev.value().unsafe_ptr(), v,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def uniform01_dev_t[target: StaticString, N: Int](
+    mut t: Tensor,
+    seed: UInt64,
+    ref [MutAnyOrigin] offset_buf: DeviceBuffer[DType.uint64],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`t[i] ~ U[0,1)`. GPU: Philox with a DEVICE offset, bumped in-sequence
+    (capture-safe, see `gaussian_dev_t`). CPU: the host RNG."""
+    ensure_t[target](t, N, ctx)
+    comptime if target == "cpu":
+        for i in range(N):
+            t.data[i] = Scalar[DT](random_float64())
+    else:
+        var d = ctx.value()
+        var off = LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin](
+            mptr(offset_buf.unsafe_ptr())
+        )
+        d.enqueue_function[uniform01_dev_kernel[N]](
+            t.dev.value().unsafe_ptr(), seed, off,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+        comptime AMT = 2 * N
+        d.enqueue_function[advance_rng_offset_kernel[AMT]](
+            off, grid_dim=1, block_dim=1
+        )
+
+
+def window_mean_t[target: StaticString, SEQ: Int, D: Int, NW: Int](
+    mut dst: Tensor, mut src: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    ensure_t[target](dst, NW * SEQ * D, ctx)
+    comptime if target == "cpu":
+        for w in range(NW):
+            for k in range(D):
+                var acc = Float64(0)
+                for j in range(SEQ):
+                    acc += Float64(src.data[(w * SEQ + j) * D + k])
+                var m = Scalar[DT](acc / Float64(SEQ))
+                for j in range(SEQ):
+                    dst.data[(w * SEQ + j) * D + k] = m
+    else:
+        var d = ctx.value()
+        d.enqueue_function[window_mean_kernel[SEQ, D, NW]](
+            src.dev.value().unsafe_ptr(), dst.dev.value().unsafe_ptr(),
+            grid_dim=_blocks(NW * D), block_dim=TPB,
+        )
+
+
+def project_sphere_t[target: StaticString, D: Int, BATCH: Int](
+    mut z: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """Rows of `z` onto the radius-sqrt(D) sphere; same degenerate-row rule
+    as `project_sphere_kernel` / `z_sampler._project_to_sphere`."""
+    comptime if target == "cpu":
+        var radius = sqrt(Float64(D))
+        for i in range(BATCH):
+            var acc = Float64(0)
+            for k in range(D):
+                var v = Float64(z.data[i * D + k])
+                acc += v * v
+            var n = sqrt(acc)
+            if n < 1e-12:
+                for k in range(D):
+                    z.data[i * D + k] = Scalar[DT](0)
+                z.data[i * D] = Scalar[DT](radius)
+            else:
+                var s = Scalar[DT](radius / n)
+                for k in range(D):
+                    z.data[i * D + k] = z.data[i * D + k] * s
+    else:
+        var d = ctx.value()
+        d.enqueue_function[project_sphere_kernel[D, BATCH]](
+            z.dev.value().unsafe_ptr(), Scalar[DT](sqrt(Float64(D))),
+            grid_dim=_blocks(BATCH), block_dim=TPB,
+        )
+
+
+def lerp_rows_t[target: StaticString, BATCH: Int, W: Int](
+    mut dst: Tensor, mut a: Tensor, mut b: Tensor, mut alpha: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    ensure_t[target](dst, BATCH * W, ctx)
+    comptime if target == "cpu":
+        for i in range(BATCH):
+            var al = alpha.data[i]
+            for k in range(W):
+                var t = i * W + k
+                dst.data[t] = al * a.data[t] + (Scalar[DT](1.0) - al) * b.data[t]
+    else:
+        var d = ctx.value()
+        d.enqueue_function[lerp_rows_kernel[BATCH, W]](
+            dst.dev.value().unsafe_ptr(), a.dev.value().unsafe_ptr(),
+            b.dev.value().unsafe_ptr(), alpha.dev.value().unsafe_ptr(),
+            grid_dim=_blocks(BATCH * W), block_dim=TPB,
+        )
+
+
+def clamp_t[target: StaticString, N: Int](
+    mut dst: Tensor, mut src: Tensor, lo: Scalar[DT], hi: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    ensure_t[target](dst, N, ctx)
+    comptime if target == "cpu":
+        for i in range(N):
+            var v = src.data[i]
+            if v < lo:
+                v = lo
+            elif v > hi:
+                v = hi
+            dst.data[i] = v
+    else:
+        var d = ctx.value()
+        d.enqueue_function[clamp_kernel[N]](
+            dst.dev.value().unsafe_ptr(), src.dev.value().unsafe_ptr(), lo, hi,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def axpy_by_mag_t[target: StaticString, N: Int](
+    mut y: Tensor, mut x: Tensor, mut mag: Tensor, base: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    comptime if target == "cpu":
+        var m = abs(Float64(mag.data[0]))
+        var a = Scalar[DT](Float64(base) * m)
+        for i in range(N):
+            y.data[i] = y.data[i] + a * x.data[i]
+    else:
+        var d = ctx.value()
+        d.enqueue_function[axpy_by_mag_kernel[N]](
+            y.dev.value().unsafe_ptr(), x.dev.value().unsafe_ptr(),
+            mag.dev.value().unsafe_ptr(), base,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def diff_scale_t[target: StaticString, N: Int](
+    mut dst: Tensor, mut a: Tensor, mut b: Tensor, s: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    ensure_t[target](dst, N, ctx)
+    comptime if target == "cpu":
+        for i in range(N):
+            dst.data[i] = s * (a.data[i] - b.data[i])
+    else:
+        var d = ctx.value()
+        d.enqueue_function[diff_scale_kernel[N]](
+            dst.dev.value().unsafe_ptr(), a.dev.value().unsafe_ptr(),
+            b.dev.value().unsafe_ptr(), s,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def sq_diff_mean_into_t[target: StaticString, N: Int](
+    mut a: Tensor, mut b: Tensor, mut acc: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`acc[0] = mean((a − b)^2)`, no D2H (capture-safe)."""
+    ensure_t[target](acc, 1, ctx)
+    comptime if target == "cpu":
+        var s = Float64(0)
+        for i in range(N):
+            var r = Float64(a.data[i]) - Float64(b.data[i])
+            s += r * r
+        acc.data[0] = Scalar[DT](s / Float64(N))
+    else:
+        var d = ctx.value()
+        d.enqueue_function[sq_diff_reduce_kernel[N]](
+            a.dev.value().unsafe_ptr(), b.dev.value().unsafe_ptr(),
+            acc.dev.value().unsafe_ptr(),
+            grid_dim=1, block_dim=TPB_REDUCE,
         )

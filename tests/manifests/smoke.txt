@@ -337,3 +337,5 @@ tests/nn/test_im2col_cpu.mojo
 # §18.8. Two oracles (parameter central differences, a closed form on a
 # linear D) plus the apply-first linearity contract. ~15 s.
 tests/nn/test_grad_penalty.mojo
+# BCE-with-logits: closed form, cotangent vs finite difference, finite at |l|=60.
+tests/nn/test_bce_logits.mojo
