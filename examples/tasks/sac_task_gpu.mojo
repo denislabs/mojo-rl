@@ -119,15 +119,26 @@ travel with the run as `cfg/*` fields.
 episode either way — so only the RETURN figures moved.
 
 ⚠⚠ THE CONFIGURATION THAT TRAINS, and the fourteen runs it took to find it.
-Measured on `so101_gather_bricks`, 290k steps, weights 1.0/0.21:
+`so101_gather_bricks`, 990k steps, weights 1.0/0.21, everything else default:
 
-    baseline (this run's own warmup)      48.2
-    eval return                34.7 -> 105.5, monotone
-    avg_reward                 40.7 -> 115.2, monotone       2.4x baseline
-    mean_reward               0.149 -> 0.229, monotone
-    mean_q         36.6 against a fixed point of 24.5        1.4x
-    next_q - mean_q                                        +0.243
-    critic_loss                                               0.72
+    baseline (this run's own warmup)      48.2      13% of the ceiling
+    eval return                34.7 -> 232.6        64% of the ceiling
+    avg_reward                 49.8 -> 217.2, best 242      4.5x baseline
+    mean_reward               0.177 -> 0.502, monotone over 990k
+    mean_q      49.0 against a fixed point of 50.2           0.98x
+    next_q - mean_q                                        +0.111
+    critic_loss                                              0.96
+
+The ceiling is `(w_goal + w_reach) * MAX_STEPS` = 363. `mean_q` converging to
+within 2% of `mean_reward / (1 - gamma)` is what a correct critic looks like,
+and it is the diagnostic to read before any return.
+
+⚠ 64% OF THE CEILING IS NOT 64% SUCCESS. The return is two `tolerance` terms
+and both pay for PROXIMITY. Inverting the reward at the final `mean_reward`,
+with the reach term near saturation, puts the goal distance around 0.071 m —
+so the blocks average about 0.131 m apart against a goal of 0.060. Real
+progress from the random 0.115 m of goal distance, and not the task solved.
+`eval/success_rate` is the number that says, and it is logged now.
 
 ⚠⚠ THE LAST CHANGE WAS `TERMINATE_ON_UNHEALTHY: True -> False`, ALONE. Run 13
 had every other setting identical — same weights, same tau, same entropy, same
