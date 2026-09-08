@@ -3955,7 +3955,7 @@ fab85f0a is BASELINE 4: the full sweep of it (`p0_attrib.sh`, all six k)
 is the table every later A/B's numbers are read against. Shares at k=13
 from this A/B: Newton 46%, collision 16%, CRBA 14%, LDL pair 7%.
 
-### 13.46 LANDED, UNPRICED (2026-09-08): the CRBA kernel builds its dof topology once per block, cooperatively
+### 13.46 LANDED, 18.5× on the kernel at k=13 (2026-09-08): the CRBA kernel builds its dof topology once per block, cooperatively
 
 `_mass_matrix_treewalk_fields_mt_kernel` (block per env, `NV` threads, the
 SO-101 path's CRBA at 376 µs per launch and 14% of the k=13 step) opened
@@ -3984,3 +3984,41 @@ fingerprint, the ThreeTrees oracle. What remains serial in the kernel:
 the thread-0 backward accumulation of the body composites (97 × 10
 shared read-modify-writes) — the next cut if this one moves the number.
 The box A/B prices it.
+
+**Priced (5090, `p0_ab.sh`, ROUNDS=3, MIN over rounds, B = c98948ac vs
+A = fab85f0a = baseline 4):**
+
+| k | term | A ms/step | B ms/step | B/A | largest kernel A → B µs |
+|---|------|-----------|-----------|-----|-------------------------|
+| 6 | crba | 0.154 | 0.018 | **0.116** | 76.9 → 8.9 |
+| 6 | wall | 2.309 | 2.065 | 0.894 | |
+| 13 | crba | 0.750 | 0.041 | **0.054** | 375.0 → 20.3 |
+| 13 | wall | 5.388 | 4.598 | 0.853 | |
+
+The kernel is 18.5× faster at k=13 and 8.6× at k=6: the preamble WAS the
+kernel. Newton 0.994 / 0.984, LDL pair 0.990 / 1.008, cdof 0.999 / 0.999,
+same kernel hashes throughout. CRBA is now 0.9% of the k=13 step; the
+thread-0 composite accumulation named above is not worth a cut.
+
+**Rows that moved without being touched — not booked to the change.**
+Three kernels whose code and hash are identical in A and B ran faster in
+B, 3/3 rounds: collision at k=6 0.896 (396 → 355 µs; at k=13 it is
+0.997), rne at k=13 0.897 (69.4 → 62.3), the warm-start kernel at k=13
+0.648 (11.0 → 7.1). At k=6 collision's move is a THIRD of the wall gain
+(0.083 of 0.244 ms); with only the CRBA row counted the k=6 wall is
+0.941, not 0.894. At k=13 the CRBA row is 0.709 of the 0.790 ms and the
+strays sum to 0.05. The three are the kernels that run beside or right
+after CRBA in the stream; a plausible mechanism is the box's clock and
+cache state after a 375 µs low-occupancy kernel was cut to 20, but that
+is a guess and the full baseline-5 sweep (all six k, `p0_attrib.sh`) is
+the measurement that settles what those rows cost on their own. Until
+then the change is booked as the CRBA row.
+
+**Baseline 5 = c98948ac.** k=13 step 4.598 ms (1024 envs: 223 k
+env-steps/s, 6.2× baseline 2's 28.5 ms), k=6 2.065 ms. Shares at k=13:
+Newton 53%, collision 18.5%, unlabelled (the batched env kernel, 91 µs)
+14%, LDL pair 8%, rne 2.7%, CRBA 0.9%. The levers left are the Newton
+(closed at stage 1, §13.43), collision (warp-cooperative GJK, unbuilt),
+the env kernel and the LDL factor (70 µs). Before any of those: grep
+the rne, cdof and env kernels for the SAME per-thread topology rebuild —
+this cut was one grep away for weeks.
