@@ -84,7 +84,7 @@ from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from ..dynamics.body_joint_map import body_joint_map
 from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
-    chol_solve_seg_p, _dot_seg, chol_update_seg,
+    chol_solve_seg_p, chol_factor_seg_p, _dot_seg, chol_update_seg,
 )
 from .newton_blocks import build_dof_segments, build_dof_segments_p
 
@@ -476,6 +476,21 @@ comptime NEWTON_STOP_AFTER: Int = 0
 # reference by 1 and the fingerprint reads 1.1e21. Debug only — never on in
 # a build that is timed.
 comptime NEWTON_STAGE1_CHECK: Bool = False
+
+# ⚠ STAGE 2 (2026-09-08): the Hessian factor on ONE THREAD PER DIAGONAL BLOCK
+# (`chol_factor_seg_p`, in place in `L_sh`) instead of the cooperative
+# column walk, whenever EVERY block is at most this many dofs. The blocks are
+# independent systems (the property the block campaign established) and the
+# solve already runs on this axis (F3b); the cooperative factor walks all
+# `nv` columns with two `barrier()`s each — 168 per Newton iteration at
+# nv=84 — to factor fourteen 6x6 blocks. A block wider than this keeps the
+# cooperative factor for the whole matrix (a 60x60 block on one thread would
+# be the serial floor the coop walk exists to avoid); the decision is per
+# solve, from the segment table, and block-uniform. 0 = always cooperative.
+# Bit-identical either way (see `chol_factor_seg_p`); gated by the golden
+# fingerprint (walker2d, one 9-dof block: per-block path) and the ThreeTrees
+# oracle (three 6-dof blocks), the dog/humanoid gates run the coop path.
+comptime NEWTON_FACTOR_PER_BLOCK_MAX_BN: Int = 12
 
 # ⚠ A ROUTING KNOB FOR PRICING THE TWO NVIDIA KERNELS AGAINST EACH OTHER.
 # `solve_newton` sends PYRAMIDAL + NVIDIA to the blocked kernel (one env per
@@ -5287,6 +5302,19 @@ def _newton_blocked_fields_kernel[
     comptime if NEWTON_STOP_AFTER == 4:
         return
     var num_edges_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+    # Stage 2: every block at most `NEWTON_FACTOR_PER_BLOCK_MAX_BN` dofs?
+    # Read from the segment table every thread sees the same way after the
+    # barrier above, so the branch below is block-uniform.
+    var factor_per_block = NEWTON_FACTOR_PER_BLOCK_MAX_BN > 0
+    if factor_per_block:
+        var fp = 0
+        while fp < NV:
+            var fe = Int(rebind[Scalar[DTYPE]](seg1_sh[fp]))
+            if fe <= fp:
+                fe = NV
+            if fe - fp > NEWTON_FACTOR_PER_BLOCK_MAX_BN:
+                factor_per_block = False
+            fp = fe
 
     # === Newton iterations — ALL threads execute the loop ===
     var iters_done = 0
@@ -5372,6 +5400,11 @@ def _newton_blocked_fields_kernel[
             # --- ALL threads: parallel Hessian assembly (inner edge-sum ascending
             # → bit-identical to the serial build) ---
             if valid_env:
+                # Stage 2: the rank flag the per-block factor sets, cleared
+                # before the barrier that publishes the build (the
+                # cooperative helper clears it again itself).
+                if tid == 0:
+                    ctrl_sh[2] = Scalar[DTYPE](0)
                 # ⚠⚠ ONLY THE DIAGONAL BLOCKS, AND THIS WAS THE LARGEST TERM LEFT
                 # AFTER PN2c. The build ran over every one of `NV*NV` entries with
                 # an inner sweep of the rows — `NV^2*(1+E)/THREADS` = 1,575 per
@@ -5434,10 +5467,33 @@ def _newton_blocked_fields_kernel[
                     bp = be
             barrier()
 
-            # --- Cooperative Cholesky factor of H into L_sh ---
-            _chol_factor_coop[DTYPE](
-                tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), L_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
-            )
+            if factor_per_block:
+                # --- Stage 2: one DIAGONAL BLOCK per thread, factored in
+                # place, no barrier inside. Same walk and the same thread
+                # assignment (`bidx % THREADS`) as the solve below, so a
+                # thread factors the block it will then solve. The flag is
+                # write-only here, and every writer writes the same 1.
+                if valid_env:
+                    var fsp = 0
+                    var fbidx = 0
+                    while fsp < NV:
+                        var fse = Int(rebind[Scalar[DTYPE]](seg1_sh[fsp]))
+                        if fse <= fsp:
+                            fse = NV
+                        if fbidx % THREADS == tid:
+                            var ok_b = chol_factor_seg_p[
+                                DTYPE, L_AS = AddressSpace.SHARED
+                            ](L_sh.ptr, NV, fsp, fse)
+                            if not ok_b:
+                                ctrl_sh[2] = Scalar[DTYPE](1)
+                        fsp = fse
+                        fbidx += 1
+                barrier()
+            else:
+                # --- Cooperative Cholesky factor of H into L_sh ---
+                _chol_factor_coop[DTYPE](
+                    tid, COOP, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), L_sh, L_sh, ctrl_sh, seg0_sh, seg1_sh
+                )
             if Int(rebind[Scalar[DTYPE]](ctrl_sh[2])) == 0:
                 break
         comptime if NEWTON_STAGE1_CHECK:

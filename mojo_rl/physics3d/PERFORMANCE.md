@@ -3716,3 +3716,31 @@ threads, **218 registers (was 255), 37.9 KB shared (was ~94)**, blocks per
 SM 3 by shared memory (was 1) and 4 by registers — the register bound is
 the binding one now, so the next block per SM is a register question, not
 a memory one.
+
+### 13.41 LANDED, UNPRICED (2026-09-08): Newton stage 2 — the Hessian factor on one thread per block
+
+The block ledger's own "stage 2" (pack `L_sh` by block) tops out at the
+register ceiling: after stage 1 the kernel sits at 3 blocks/SM by shared
+memory and 4 by registers, so packing buys at most 4/3 and stage 3 (registers)
+would have to come first. The larger term is the block's own latency: a k=13
+block-solve takes ~600 µs where one CPU core does it in 4.6 µs, with the
+line search at two evaluations (block ledger §5) and the loop at 61% of the
+kernel with its internal split unmeasured.
+
+Structurally the loop's cooperative Cholesky (`_chol_factor_coop`) walks
+every column of the whole matrix with two `barrier()`s each — 168 barriers
+per Newton iteration at nv=84 — to factor fourteen INDEPENDENT 6×6 blocks.
+The solve already went to one thread per block (F3b). The factor now does
+the same: `chol_factor_seg_p` (cholesky.mojo) factors a diagonal block in
+place on one thread, no barrier inside, the same walk and thread assignment
+as the solve, whenever every block is at most `NEWTON_FACTOR_PER_BLOCK_MAX_BN
+= 12` dofs (decided per solve from the segment table, block-uniform). Wider
+blocks keep the cooperative walk for the whole matrix — a 60-dof block on one
+thread is the serial floor the walk exists to avoid. Bit-identical by
+construction: the same ascending sums per entry, only the production order
+changes. Gates on Apple: golden (walker2d, one 9-dof block, per-block path;
+a mutant on the inner sum reads fingerprint 0.0), ThreeTrees oracle (three
+6-dof blocks), tendon 2/2, noslip dog 4/4 (coop path, nv=79), mt parity
+bit-exact. Barriers per iteration at k=13: ~175 → ~7. What it buys is the
+box's to say — the record on predicting this kernel's terms is four
+over-predictions running; the A/B is stage 1 vs stage 2, interleaved.
