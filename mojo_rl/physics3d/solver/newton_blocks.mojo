@@ -95,158 +95,6 @@ def build_dof_segments[
 
 
 @always_inline
-def seg_one_segment_p[
-    SO: MutOrigin,
-    EO: MutOrigin, //,
-    DTYPE: DType,
-    S_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    nv: Int,
-    seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
-    seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
-) -> Int:
-    """The degenerate partition: one segment spanning every dof. Returns 1."""
-    for i in range(nv):
-        seg_start[i] = Scalar[DTYPE](0)
-        seg_end[i] = Scalar[DTYPE](nv)
-    return 1
-
-
-@always_inline
-def seg_phase_trees_p[
-    TO: MutOrigin,
-    SO: MutOrigin,
-    EO: MutOrigin, //,
-    DTYPE: DType,
-    T_AS: AddressSpace = AddressSpace.GENERIC,
-    S_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    nv: Int,
-    ntree: Int,
-    trees: Pointer[Scalar[DTYPE], TO, address_space=T_AS],
-    seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
-    seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
-) -> Int:
-    """PHASE A of the segment build: validate the tree table, write the
-    tree of every dof into `seg_start[i]` and clear the per-tree merge flag
-    `seg_end[t]` for `t < nt`. Returns `nt`, the number of trees, or 0 when
-    the table is degenerate — the caller then writes ONE segment.
-
-    ⚠ THE THREE PHASES ARE ONE RULE (2026-09-08). `build_dof_segments_p`
-    below is A, then B (`seg_edge_span_dense_p` + `seg_span_mark_p`) once
-    per edge, then C (`seg_assemble_p`); the blocked Newton kernel runs A on
-    thread 0, B on ONE THREAD PER EDGE and C on thread 0, around two
-    barriers. B was `num_edges * nv` dependent global loads of the spilled
-    `Je` on one thread — the largest once-per-solve term the serial probe
-    found on Apple (~5 ms/step at k=9, the same size as the whole per-block
-    solve); per edge it is `nv` loads on each of `num_edges` threads. The
-    marks are set-valued (every writer writes 1), so the order edges are
-    marked in, or concurrently, cannot change the partition."""
-    if ntree <= 0 or nv <= 0:
-        return 0
-    var covered = 0
-    var nt = 0
-    for t in range(ntree):
-        var adr = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
-        var num = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
-        if num <= 0:
-            break
-        if adr != covered or adr + num > nv:
-            return 0
-        for i in range(adr, adr + num):
-            seg_start[i] = Scalar[DTYPE](t)
-        covered = adr + num
-        nt = t + 1
-    if covered != nv or nt <= 0:
-        return 0
-    for t in range(nt):
-        seg_end[t] = Scalar[DTYPE](0)
-    return nt
-
-
-@always_inline
-def seg_edge_span_dense_p[
-    JO: MutOrigin,
-    SO: MutOrigin, //,
-    DTYPE: DType,
-    J_AS: AddressSpace = AddressSpace.GENERIC,
-    S_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    e: Int,
-    nv: Int,
-    Je: Pointer[Scalar[DTYPE], JO, address_space=J_AS],
-    seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
-) -> Tuple[Int, Int]:
-    """PHASE B, one edge: the lowest and highest tree (as `seg_start` numbers
-    them after phase A) that row `e` of the dense `Je` touches; `(-1, -1)`
-    for an all-zero row. Reads only."""
-    var lo = -1
-    var hi = -1
-    for i in range(nv):
-        if Je[e * nv + i] != 0:
-            var t = Int(seg_start[i])
-            if lo < 0 or t < lo:
-                lo = t
-            if t > hi:
-                hi = t
-    return (lo, hi)
-
-
-@always_inline
-def seg_span_mark_p[
-    EO: MutOrigin, //,
-    DTYPE: DType,
-    S_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    lo: Int,
-    hi: Int,
-    seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
-):
-    """PHASE B, the mark: trees `lo..hi-1` merge with their successor. A
-    negative `lo` (an all-zero row) marks nothing."""
-    if lo < 0:
-        return
-    for t in range(lo, hi):
-        seg_end[t] = Scalar[DTYPE](1)
-
-
-@always_inline
-def seg_assemble_p[
-    TO: MutOrigin,
-    SO: MutOrigin,
-    EO: MutOrigin, //,
-    DTYPE: DType,
-    T_AS: AddressSpace = AddressSpace.GENERIC,
-    S_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    nv: Int,
-    nt: Int,
-    trees: Pointer[Scalar[DTYPE], TO, address_space=T_AS],
-    seg_start: Pointer[Scalar[DTYPE], SO, address_space=S_AS],
-    seg_end: Pointer[Scalar[DTYPE], EO, address_space=S_AS],
-) -> Int:
-    """PHASE C: walk the trees from the last, gather each run of merged
-    trees into one contiguous segment and write its `[d0, d1)` into every
-    dof's `seg_start`/`seg_end`. Returns the segment count."""
-    var nseg = 0
-    var t1 = nt - 1
-    while t1 >= 0:
-        var t0 = t1
-        while t0 - 1 >= 0 and Int(seg_end[t0 - 1]) == 1:
-            t0 -= 1
-        var d0 = Int(trees[t0 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
-        var d1 = Int(trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]) + Int(
-            trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]
-        )
-        for i in range(d0, d1):
-            seg_start[i] = Scalar[DTYPE](d0)
-            seg_end[i] = Scalar[DTYPE](d1)
-        nseg += 1
-        t1 = t0 - 1
-    return nseg
-
-
-@always_inline
 def build_dof_segments_p[
     TO: MutOrigin,
     JO: MutOrigin,
@@ -284,26 +132,97 @@ def build_dof_segments_p[
     already makes, for the same reason: a rule written twice drifts.
     """
 
-    var nt = seg_phase_trees_p[DTYPE, T_AS=T_AS, S_AS=S_AS](
-        nv, ntree, trees, seg_start, seg_end
-    )
-    if nt <= 0:
-        return seg_one_segment_p[DTYPE, S_AS=S_AS](nv, seg_start, seg_end)
+    @parameter
+    @always_inline
+    def one_segment() -> Int:
+        for i in range(nv):
+            seg_start[i] = Scalar[DTYPE](0)
+            seg_end[i] = Scalar[DTYPE](nv)
+        return 1
+
+    if ntree <= 0 or nv <= 0:
+        return one_segment()
+
+    # ── tree id per dof, parked in `seg_start` ───────────────────────────
+    #
+    # ⚠ AND VALIDATED WHILE BUILDING. The table must tile `[0, nv)` exactly:
+    # a gap would leave a dof with no tree and an overlap would give it two,
+    # and either way a segment bound computed from it is meaningless. Rather
+    # than trust it, walk it and fall back on anything unexpected.
+    var covered = 0
+    var nt = 0
+    for t in range(ntree):
+        var adr = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
+        var num = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
+        # Self-terminating: rows past `ntree` are (0, 0, 0).
+        if num <= 0:
+            break
+        if adr != covered or adr + num > nv:
+            return one_segment()
+        for i in range(adr, adr + num):
+            seg_start[i] = Scalar[DTYPE](t)
+        covered = adr + num
+        nt = t + 1
+    if covered != nv or nt <= 0:
+        return one_segment()
+
+    # ── merge flags, parked in `seg_end`: does tree t join tree t+1? ──────
+    for t in range(nt):
+        seg_end[t] = Scalar[DTYPE](0)
     for e in range(num_edges):
         var lo = -1
         var hi = -1
         comptime if SPARSE:
             var n_e = je_n[e]
             if n_e > 0:
+                # Ascending list, and `seg_start` is monotone in the dof
+                # index, so the first and last entries bound the trees.
                 lo = Int(seg_start[je_ix[e * nv]])
                 hi = Int(seg_start[je_ix[e * nv + n_e - 1]])
         else:
-            var span = seg_edge_span_dense_p[DTYPE, J_AS=J_AS, S_AS=S_AS](
-                e, nv, Je, seg_start
-            )
-            lo = span[0]
-            hi = span[1]
-        seg_span_mark_p[DTYPE, S_AS=S_AS](lo, hi, seg_end)
-    return seg_assemble_p[DTYPE, T_AS=T_AS, S_AS=S_AS](
-        nv, nt, trees, seg_start, seg_end
-    )
+            for i in range(nv):
+                if Je[e * nv + i] != 0:
+                    var t = Int(seg_start[i])
+                    if lo < 0 or t < lo:
+                        lo = t
+                    if t > hi:
+                        hi = t
+        # A row that touches nothing couples nothing. Not a defect: a limit
+        # row whose Jacobian is a single dof still has lo == hi.
+        if lo < 0:
+            continue
+        for t in range(lo, hi):
+            seg_end[t] = Scalar[DTYPE](1)
+
+    # ── runs of merged trees -> per-dof bounds, WALKED BACKWARDS ─────────
+    #
+    # ⚠⚠ REVERSE ORDER IS A CORRECTNESS REQUIREMENT, NOT A STYLE CHOICE.
+    # `seg_end[0 .. nt)` currently holds the merge flags indexed by TREE,
+    # while the writes below are indexed by DOF — and dof indices start at 0
+    # too. Forwards, the very first run (trees 0..0, dofs 0..5 on the park
+    # scene) writes `seg_end[0..5] = 6` and destroys the flags for trees 1..5
+    # before they are read: every later tree then reads `6 != 1` and is
+    # silently treated as unmerged. The bug produces a plausible partition —
+    # it would even be RIGHT on any scene with no coupling — which is exactly
+    # the kind that survives a weak gate.
+    #
+    # Backwards it cannot happen. A run ending at tree `t1` starts at tree
+    # `t0` and writes dofs from `d0` upwards, and every tree holds at least
+    # one dof, so `d0 >= t0`. The flags still to be read live at indices
+    # `<= t0 - 2`, which is strictly below anything this run writes.
+    var nseg = 0
+    var t1 = nt - 1
+    while t1 >= 0:
+        var t0 = t1
+        while t0 - 1 >= 0 and Int(seg_end[t0 - 1]) == 1:
+            t0 -= 1
+        var d0 = Int(trees[t0 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
+        var d1 = Int(trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]) + Int(
+            trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]
+        )
+        for i in range(d0, d1):
+            seg_start[i] = Scalar[DTYPE](d0)
+            seg_end[i] = Scalar[DTYPE](d1)
+        nseg += 1
+        t1 = t0 - 1
+    return nseg

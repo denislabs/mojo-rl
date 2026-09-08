@@ -3897,3 +3897,48 @@ golden fingerprint; `test_euler_finalize_gpu_parity`; `test_ldl_blocked`
 tiny grid on a latency chain (the same shape the ledger's
 `_row_per_thread_kernels_are_uncoalesced_and_tiny_grid` names), and the
 block-per-env factor is the measured precedent. The box A/B prices it.
+
+### 13.45 MEASURED (2026-09-08): a switched-off knob had moved the Newton kernel 1.11× — and three verdicts with it
+
+The F1 A/B (stage-1 binary vs e913a48b) read the LDL pair at 0.75 as
+expected, and **Newton at 1.108× (k=6) / 1.115× (k=13) slower with a
+changed kernel hash — in a build whose Newton knobs were all OFF.** Every
+A/B since stage 1 was built from HEAD, so the same shift sits inside three
+verdicts already recorded:
+
+| A/B (HEAD of the day vs stage 1) | Newton read | of which this shift | the change's own effect |
+|---|---|---|---|
+| stage 2, per-block factor ON (33a6e774) | 1.054 / 1.060 | ≤ that | ≤ 1.05, not separable |
+| in-place solve (7b6c126a) | 1.098 / 1.112 | ~1.11 | **~neutral**, not 1.10× slower |
+| pad, k=13 (f2aa8b79) | 1.122 | ~1.11 | **~1.01**: 3 → 2 blocks/SM costs ~nothing at k=13 |
+| pad, k=9 | 1.282 | unmeasured at k=9 | ≈ 1.15 if the shift is the k=6 one |
+
+So §13.42's in-place solve was not a loss, §13.43's occupancy elasticity at
+k=13 is ~1% rather than 12% (which makes the pack worth even less than
+recorded — Newton stays closed), and the k=9 elasticity stands at roughly
+1.15. What moved the kernel: with the knobs at their production values the
+body still carried the stage-2 decision variable and its dead branches, an
+extra flag store before the build barrier, and a segment build whose one
+function had become three inlined phases. Which of the three, the box can
+say for ~45 minutes; it is not worth it — none of them earns its place. All
+three are REMOVED (commit below): the kernel's body is stage 1's again,
+the file differing from d3a465b5 only by the Metal routing knob (outside
+the kernel) and two `comptime`-elided probe terms. `chol_factor_seg_p` and
+the phase split of `build_dof_segments_p` are gone with them; the numbers
+stay in §13.41–13.43.
+
+**F1 itself: 106.8 → ~62 µs per launch at k=13, not the ~10 the arithmetic
+said.** The first kernel walked `_dof_block` at every tree boundary, and
+that helper scans the table from the top — `ntree²` global loads on every
+thread before its own 42. The table is now read by index: a thread loads
+the two entries of the trees it owns. Priced with the Newton check in the
+same A/B.
+
+⚠ THE RULE THIS ADDS. An A/B arm is the WHOLE build, and a knob at its off
+value is not a no-op for a GPU kernel's compiled body. (1) Read every
+kernel's ratio in an A/B, not the one the change targets — Newton's 1.11
+was in the table three times before it was read. (2) A "different kernel
+hash" flag on a kernel the change did not touch is the alarm, not a
+footnote. (3) Re-baseline after each landed change, and A/B a knob
+experiment against the SAME tree with the knob off, not against the last
+landed binary.

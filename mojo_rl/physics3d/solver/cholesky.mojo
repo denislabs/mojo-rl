@@ -473,59 +473,6 @@ def chol_solve_seg[
 
 
 @always_inline
-def chol_factor_seg_p[
-    LO: MutOrigin, //,
-    DTYPE: DType,
-    L_AS: AddressSpace = AddressSpace.GENERIC,
-](
-    L: Pointer[Scalar[DTYPE], LO, address_space=L_AS],
-    nv: Int,
-    s0: Int,
-    s1: Int,
-) -> Bool:
-    """Factor the DIAGONAL SUB-BLOCK `[s0, s1)` of an `nv x nv` matrix IN
-    PLACE: `L` holds `H` on entry and its Cholesky factor (lower triangle)
-    on exit. Returns False if a pivot fell below `mjMINVAL` (clamped, as
-    `chol_factor_seg` does), True otherwise.
-
-    The blocked Newton kernel's per-block factor (stage 2, 2026-09-08):
-    ONE THREAD PER BLOCK, the same axis `chol_solve_seg_p` below already
-    runs on. The cooperative factor (`_chol_factor_coop`) walks every
-    column of the whole matrix with two `barrier()`s each — 168 barriers
-    per Newton iteration at nv=84 — to factor fourteen independent 6x6
-    systems; this runs a block's 21 entries on one thread with none.
-
-    ⚠ BIT-IDENTICAL to `chol_factor_seg` / `_chol_factor_coop`: each entry
-    is `(H[i,j] - sum_{k<j} L[i,k]*L[j,k]) / L[j,j]` with the sum ascending
-    in k from `s0`, and the diagonal `sqrt(H[j,j] - sum L[j,k]^2)` the same
-    way. The column order below is the cooperative helper's; the order in
-    which entries are produced does not change any entry's bits, only its
-    dependencies, and every read here is of an entry already final.
-
-    ⚠ IN PLACE IS SAFE for the same reason it is in the cooperative helper:
-    `H[i,j]` is read at the slot `L[i,j]` is then written to, and every
-    `L[.,k]` read (k < j) was finished when column k ran. Nothing above the
-    diagonal is read or written."""
-    var rank_ok = True
-    for j in range(s0, s1):
-        var s_d: Scalar[DTYPE] = 0
-        for k in range(s0, j):
-            var ljk = L[j * nv + k]
-            s_d += ljk * ljk
-        var diag = L[j * nv + j] - s_d
-        if diag < Scalar[DTYPE](_MJMINVAL):
-            rank_ok = False
-            diag = Scalar[DTYPE](_MJMINVAL)
-        var ljj = sqrt(diag)
-        L[j * nv + j] = ljj
-        for i in range(j + 1, s1):
-            var s: Scalar[DTYPE] = 0
-            for k in range(s0, j):
-                s += L[i * nv + k] * L[j * nv + k]
-            L[i * nv + j] = (L[i * nv + j] - s) / ljj
-    return rank_ok
-
-
 def chol_solve_seg_p[
     LO: MutOrigin,
     BO: MutOrigin,

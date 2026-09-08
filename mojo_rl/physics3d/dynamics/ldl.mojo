@@ -634,15 +634,28 @@ def _ldl_solve_fields_mt_kernel[
         return
     var y = InlineArray[L.element_type, NV](uninitialized=True)
     var z = InlineArray[L.element_type, NV](uninitialized=True)
-    var sp = 0
-    var bidx = 0
-    while sp < NV:
-        var bb = _dof_block(trees, NV, sp)
-        var b0 = bb[0]
-        var b1 = bb[1]
-        if b1 <= sp:
-            b1 = NV
-        if bidx % N_THREADS == tid:
+    # ⚠ THE TREE TABLE BY INDEX, NOT BY `_dof_block`. The first version
+    # walked `_dof_block(trees, NV, sp)` at every boundary — that helper scans
+    # the table from the top, so a thread paid `ntree^2` global loads before
+    # its own 42 — and the kernel measured 62 µs where the arithmetic said
+    # ten (PERFORMANCE.md §13.45). Tree `t` is two loads at `trees[t]`; a
+    # thread reads only the entries of the trees it owns. A degenerate table
+    # (`dof_num == 0` at t = 0, `Model` built without the parser) is the
+    # single block `[0, NV)` on thread 0, the serial kernel's behaviour.
+    var t0_num = Int(trees[TREE_IDX_DOF_NUM])
+    var ntree_eff = 0
+    if t0_num > 0:
+        for t in range(NV):
+            if Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]) <= 0:
+                break
+            ntree_eff = t + 1
+    for bidx in range(tid, ntree_eff if ntree_eff > 0 else 1, N_THREADS):
+        var b0 = 0
+        var b1 = NV
+        if ntree_eff > 0:
+            b0 = Int(trees[bidx * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
+            b1 = b0 + Int(trees[bidx * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
+        if True:
             for i in range(b0, b1):
                 var s = b[env, i]
                 for j in range(b0, i):
@@ -659,8 +672,6 @@ def _ldl_solve_fields_mt_kernel[
                 for j in range(i + 1, b1):
                     s = s - L[env, j * NV + i] * x[env, j]
                 x[env, i] = s
-        sp = b1
-        bidx += 1
 
 
 def ldl_factor[
