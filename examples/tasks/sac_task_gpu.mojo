@@ -969,18 +969,39 @@ def main() raises:
         var se = 0.0
         if n > 0.0:
             se = (p * (1.0 - p) / n) ** 0.5
-        print("  baseline se over", Int(n), "greedy episodes:", se,
-              " -> 2-sigma band ends at", p + 2.0 * se)
+        # ⚠⚠ A ZERO BASELINE GIVES A ZERO STANDARD ERROR, and then ANY nonzero
+        # rate clears the band — one lucky lane out of 32 would read as
+        # learning. `so101_lift_brick`'s measured random rate is 0.0 and this
+        # printed a 2-sigma band ending at 0.0.
+        #
+        # The rule of three: having seen 0 successes in n trials, the 95%
+        # upper bound on the true rate is about 3/n. That is the band a zero
+        # baseline deserves — at 32 lanes it is 0.094, so three lanes must
+        # succeed before the number means anything.
+        var band = p + 2.0 * se
+        if p <= 0.0:
+            band = 3.0 / n
+        if p <= 0.0:
+            print("  baseline is 0 over", Int(n), "greedy episodes -> the",
+                  "rule-of-three 95% upper bound is", band)
+        else:
+            print("  baseline se over", Int(n), "greedy episodes:", se,
+                  " -> 2-sigma band ends at", band)
 
-        if rate <= p + 2.0 * se:
-            print("  FLAT — the rate is inside the random baseline's 2-sigma")
-            print("  band. ⚠ READ THE SHAPED RETURN BEFORE CONCLUDING")
-            print("  ANYTHING: it is dense, so it moves long before the rate")
-            print("  does. Random actions score", -3.996, "on `gather`; a run")
-            print("  climbing toward 0 is learning to close the distance even")
-            print("  with no successes yet. If the shaped return is ALSO flat,")
-            print("  the shaping is not reaching the policy — check `mean_q`")
-            print("  and `alpha` in the logger before touching anything else.")
+        if rate <= band:
+            print("  FLAT — the rate is inside the random baseline's band.")
+            print("  ⚠ READ THE SHAPED RETURN AND `mean_q` BEFORE CONCLUDING")
+            print("  ANYTHING. The return is dense and moves long before the")
+            print("  rate does, and this run's own warmup carries its")
+            print("  baseline: while `episodes < 100` the printed avg_reward")
+            print("  is `true_mean * episodes / 100`.")
+            print("  If the return ROSE and then plateaued with a healthy")
+            print("  critic, the shaping ran out of gradient — decompose it")
+            print("  with `task_shaping_probe.mojo` and check the goal term's")
+            print("  tolerance at the measured distance. `so101_lift_brick`")
+            print("  plateaued at exactly that: margin 0.02 against a 0.030 m")
+            print("  distance is a tolerance of 0.006 and a gradient of 1.9")
+            print("  per metre, against 24 per metre at margin 0.05.")
         else:
             print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
             if task_name == "so101_gather_bricks":
