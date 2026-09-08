@@ -86,7 +86,10 @@ from .cholesky import (
     chol_factor_inline, chol_solve_inline, chol_factor_seg, chol_solve_seg,
     chol_solve_seg_p, chol_factor_seg_p, _dot_seg, chol_update_seg,
 )
-from .newton_blocks import build_dof_segments, build_dof_segments_p
+from .newton_blocks import (
+    build_dof_segments, build_dof_segments_p, seg_phase_trees_p,
+    seg_edge_span_dense_p, seg_span_mark_p, seg_assemble_p, seg_one_segment_p,
+)
 
 # MuJoCo's `mjMINVAL`; see `cholesky.mojo` on why `1e-10` was not the
 # reference's number for this guard.
@@ -378,6 +381,9 @@ comptime NEWTON_COOP_DIV: Int = 1
 #   --- inside the Newton LOOP (60.8% of newton, internally unmeasured) ---
 #   9 = ONE `_bl_peval`  (the line search's unit; x [lseval] = its total)
 #  10 = the H build
+#  11 = (retired: the segment build is cooperative now, barriers inside)
+#  12 = the warmstart read              (tid 0, NV global loads, read-only replica)
+#  14 = the joint-limit scan's loads    (tid 0, NJOINT global loads, read-only replica)
 comptime NEWTON_SERIAL_PROBE: Int = 0
 comptime SERIAL_PROBE_REPEAT: Int = 10
 
@@ -501,6 +507,18 @@ comptime NEWTON_STAGE1_CHECK: Bool = False
 # as a pricing knob (0 = production); PERFORMANCE.md §13.41.
 comptime NEWTON_FACTOR_PER_BLOCK_MAX_BN: Int = 0
 
+# ⚠ A PRICING KNOB, MEASURED AND OFF (2026-09-08). The segment build's phase
+# B — `num_edges * nv` reads of the (spilled) `Je` on thread 0 — on one
+# thread per edge, around two extra barriers; phases A and C stay on thread
+# 0 (`newton_blocks.mojo`, the three-phase split). Same partition, set-valued
+# marks. On Apple (Metal, `NEWTON_FORCE_BLOCKED`, k=9, interleaved three
+# ways) it is ~2.7 ms/step SLOWER than the serial call, although the serial
+# probe had priced that call at ~5 ms/step when repeated nine times: a
+# term's repeat cost is not its removal saving on a latency-hiding machine.
+# Unpriced on CUDA; one A/B arm if anyone wants the number. False = the
+# serial `build_dof_segments` on thread 0, as before.
+comptime NEWTON_SEG_BUILD_COOP: Bool = False
+
 # ⚠ A ROUTING KNOB FOR PRICING THE TWO NVIDIA KERNELS AGAINST EACH OTHER.
 # `solve_newton` sends PYRAMIDAL + NVIDIA to the blocked kernel (one env per
 # block, cooperative, threadgroup-resident matrices), the OOM-safe path at
@@ -524,6 +542,18 @@ comptime NEWTON_FACTOR_PER_BLOCK_MAX_BN: Int = 0
 # the per-env kernel's local-memory footprint is the OOM the blocked kernel
 # was written to avoid at high contact counts.
 comptime NEWTON_FORCE_PER_ENV: Bool = False
+
+# ⚠ A MEASUREMENT KNOB (2026-09-08). Route the PYRAMIDAL cone on ANY GPU —
+# i.e. Metal — to the blocked kernel, for models whose `nv` is at most
+# `NEWTON_FORCE_BLOCKED_MAX_NV` (Metal's threadgroup limit is 32 KB; the
+# kernel's footprint is `newton_shared_elems`, ~25 KB at nv=60 with `Je`
+# spilled and ~34 KB at nv=78). It exists so the blocked kernel's serial
+# split (`NEWTON_STOP_AFTER`, `NEWTON_SERIAL_PROBE`) can be measured on an
+# Apple laptop with the park probe instead of on a rented box, one build per
+# arm. Metal's latencies are not CUDA's; read the SPLIT, not the absolutes.
+# Production on Metal stays the one-thread-per-env kernel: False.
+comptime NEWTON_FORCE_BLOCKED: Bool = False
+comptime NEWTON_FORCE_BLOCKED_MAX_NV: Int = 60
 
 # ⚠ AN OCCUPANCY KNOB, BIT-IDENTICAL AT EVERY VALUE. It adds this many
 # scalars of THREADGROUP memory to the blocked kernel that nothing reads or
@@ -3925,7 +3955,12 @@ def solve_newton[
         # kernel (which only OOMs on NVIDIA, where PYRAMIDAL never takes it).
         var used_blocked = False
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
-            if has_nvidia_gpu_accelerator() and not NEWTON_FORCE_PER_ENV:
+            comptime FORCE_BLOCKED_HERE = (
+                NEWTON_FORCE_BLOCKED and D.NV <= NEWTON_FORCE_BLOCKED_MAX_NV
+            )
+            if (
+                has_nvidia_gpu_accelerator() or FORCE_BLOCKED_HERE
+            ) and not NEWTON_FORCE_PER_ENV:
                 solve_newton_blocked["gpu", DTYPE, CONE_TYPE=CONE_TYPE, BATCH=BATCH, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER, JE_WS=JE_WS](d, m, scratch, cscratch, ctx)
                 used_blocked = True
         if not used_blocked:
@@ -4763,6 +4798,26 @@ def _newton_blocked_fields_kernel[
             mmeta[MODEL_META_IDX_SOLIMP_LIMIT_4]
         )
 
+        comptime if NEWTON_SERIAL_PROBE == 14:
+            # Read-only replica of the limit scan below: the same global loads
+            # in the same order, the same early-outs, a checksum instead of a
+            # row. Measures the scan's LOAD LATENCY, not its row arithmetic.
+            for _r in range(SERIAL_PROBE_REPEAT - 1):
+                var p_ck: Scalar[DTYPE] = 0
+                for pj in range(NJOINT):
+                    var p_t = Int(rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_TYPE]))
+                    if p_t != JNT_HINGE and p_t != JNT_SLIDE:
+                        continue
+                    var p_qa = Int(rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_QPOS_ADR]))
+                    var p_rmin = rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_RANGE_MIN])
+                    var p_rmax = rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_RANGE_MAX])
+                    if p_rmin < Scalar[DTYPE](-1e9) or p_rmax > Scalar[DTYPE](1e9):
+                        continue
+                    p_ck += rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_SOLREF_LIMIT_0])
+                    p_ck += rebind[Scalar[DTYPE]](joints[pj, JOINT_IDX_SOLIMP_LIMIT_0])
+                    p_ck += rebind[Scalar[DTYPE]](qpos[env, p_qa]) - p_rmin
+                if p_ck == _probe_sentinel[DTYPE]():
+                    ctrl_sh[2] = Scalar[DTYPE](0)
         for j in range(NJOINT):
             var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
             if jtype != JNT_HINGE and jtype != JNT_SLIDE:
@@ -5109,6 +5164,59 @@ def _newton_blocked_fields_kernel[
         # do — so one partition serves the whole solve and is a superset of
         # every iteration's coupling. Computing it per iteration would let the
         # partition move under the factorisation.
+        comptime if not NEWTON_SEG_BUILD_COOP:
+            _ = build_dof_segments[
+                DTYPE, J_AS=JE_AS, S_AS = AddressSpace.SHARED
+            ](
+                NV,
+                Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])),
+                num_edges,
+                trees,
+                Je_sh,
+                seg0_sh,
+                seg1_sh,
+            )
+        else:
+            # ── Segment build, PHASE A on this thread: the tree table and
+            # the per-dof tree number; `nt` goes out through `ctrl_sh[1]`
+            # (free until the loop, which rewrites it every iteration).
+            # Phases B and C follow the barrier.
+            ctrl_sh[1] = Scalar[DTYPE](
+                seg_phase_trees_p[DTYPE, S_AS = AddressSpace.SHARED](
+                    NV,
+                    Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTREE])),
+                    trees.ptr,
+                    seg0_sh.ptr,
+                    seg1_sh.ptr,
+                )
+            )
+    comptime if NEWTON_SEG_BUILD_COOP:
+        barrier()
+        # ── PHASE B, one thread per EDGE: the row's tree span, marked into
+        # the per-tree flags. Every writer writes 1, so concurrent marks are
+        # benign and the partition is the same set the serial loop produced.
+        var seg_nt_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[1]))
+        if valid_env and seg_nt_b > 0:
+            var ne_seg = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+            for e in range(tid, ne_seg, THREADS):
+                var span = seg_edge_span_dense_p[
+                    DTYPE, J_AS=JE_AS, S_AS = AddressSpace.SHARED
+                ](e, NV, Je_sh.ptr, seg0_sh.ptr)
+                seg_span_mark_p[DTYPE, S_AS = AddressSpace.SHARED](
+                    span[0], span[1], seg1_sh.ptr
+                )
+        barrier()
+        if valid_env and tid == 0:
+            # ── PHASE C on this thread: gather the marked runs.
+            if seg_nt_b > 0:
+                _ = seg_assemble_p[DTYPE, S_AS = AddressSpace.SHARED](
+                    NV, seg_nt_b, trees.ptr, seg0_sh.ptr, seg1_sh.ptr
+                )
+            else:
+                _ = seg_one_segment_p[DTYPE, S_AS = AddressSpace.SHARED](
+                    NV, seg0_sh.ptr, seg1_sh.ptr
+                )
+    if valid_env and tid == 0:
         _ = build_dof_segments[
             DTYPE, J_AS=JE_AS, S_AS = AddressSpace.SHARED
         ](
@@ -5212,6 +5320,13 @@ def _newton_blocked_fields_kernel[
             # The trial acceleration goes to threadgroup memory for the
             # cooperative matvec after the cut (`search_sh` is free until the
             # loop).
+            comptime if NEWTON_SERIAL_PROBE == 12:
+                for _r in range(SERIAL_PROBE_REPEAT - 1):
+                    var p_ck: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        p_ck += rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
+                    if p_ck == _probe_sentinel[DTYPE]():
+                        ctrl_sh[2] = Scalar[DTYPE](0)
             for i in range(NV):
                 search_sh[i] = rebind[Scalar[DTYPE]](qacc_warmstart[env, i])
             ws_cost_w = 0

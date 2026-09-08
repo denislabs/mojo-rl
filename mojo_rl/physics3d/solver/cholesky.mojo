@@ -566,8 +566,10 @@ def chol_solve_seg_p[
     after the cooperative factorisation's last barrier.
     """
     # Forward substitution: L*y = b
-    var y = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
     comptime if VEC:
+        var y = Scratch[Scalar[DTYPE], V_CAP](
+            nv, uninitialized=Scalar[DTYPE](0)
+        )
         # Forward: row i of L against y, both contiguous over [s0, i).
         var yp = y.unsafe_ptr()
         for i in range(s0, s1):
@@ -587,16 +589,23 @@ def chol_solve_seg_p[
     for i in range(s0, s1):
         var s: Scalar[DTYPE] = 0
         for j in range(s0, i):
-            s += L[i * nv + j] * y[j]
-        y[i] = (b[i] - s) / L[i * nv + i]
+            s += L[i * nv + j] * x[j]
+        x[i] = (b[i] - s) / L[i * nv + i]
 
-    # Back substitution: L^T*x = y
+    # Back substitution: L^T*x = y, IN PLACE (2026-09-08): the forward pass
+    # wrote `y` into `x`; `x[j]` for `j > i` is final when row i reads it and
+    # row i reads its own forward value once before overwriting it. Same
+    # operations in the same order, so the same bits. The private `y` this
+    # replaces was a per-thread array with dynamic indexing — local memory on
+    # every GPU, device memory on Apple — and the serial probe put this solve
+    # at ~5 ms/step on Metal at k=9. An `x == b` caller stays safe: `b[i]` is
+    # read before `x[i]` is written and no later row reads `b`.
     for i_rev in range(s1 - s0):
         var i = s1 - 1 - i_rev
         var s: Scalar[DTYPE] = 0
         for j in range(i + 1, s1):
             s += L[j * nv + i] * x[j]
-        x[i] = (y[i] - s) / L[i * nv + i]
+        x[i] = (x[i] - s) / L[i * nv + i]
 
 
 @always_inline

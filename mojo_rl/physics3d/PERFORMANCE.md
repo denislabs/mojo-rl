@@ -3761,3 +3761,69 @@ per-thread `Scratch` locals in local memory, or the split has moved since
 that bisect (before the `Je` spill and stage 1). The block ledger's
 prediction record on this kernel is now five for five; the next move is a
 measurement of the current split, not a change.
+
+### 13.42 MEASURED (2026-09-08, Apple): the blocked kernel's serial split, priced at home — one small win, one loss, and what the probe cannot tell you
+
+With stage 2's negative in hand and the box priced per build, the split
+moved to the laptop: `NEWTON_FORCE_BLOCKED` (new, measurement only) routes
+Metal to the blocked kernel for `nv ≤ 60` (its threadgroup footprint fits
+Metal's 32 KB there), and the park probe at k=9 (600 timed steps, ~4 min a
+build, ~35 s a run) becomes one arm per `NEWTON_SERIAL_PROBE` term. Metal's
+latencies are not CUDA's, so the numbers below are a SPLIT, not a cost.
+Two new read-only terms: 12 = the warmstart read, 14 = the joint-limit
+scan's loads; 11 (the segment build) was measured once and then retired
+when the build went cooperative. Arm 9 (the line-search evaluator, an
+always-inlined closure) blows the compiler past 16 GB of host memory and
+was dropped — the line search is two evaluations here anyway (block ledger
+§5).
+
+⚠ Apple wall time drifts 10% between eras (baselines 58.0 / 52.7 / 58.2
+ms/step over the afternoon), so each arm reads against the baseline of its
+own era, and anything under ~1 ms/step is noise. Marginal cost of one
+instance = (arm − baseline)/9, ms per step, k=9, nv=60, 2 launches/step:
+
+| term | what | ms/step |
+|---|---|---|
+| 2 | the per-block Cholesky solve (`chol_solve_seg_p`, one thread per block) | **5.05** |
+| 11 | `build_dof_segments` on thread 0 (`num_edges·nv` reads of spilled `Je`) | **5.0–5.6** |
+| 10 | the H build (cooperative) | 1.5–2.1 |
+| 3 | the coop factor's `d_j` reduction (thread 0) | 1.58 |
+| 14 | the joint-limit scan's loads (thread 0) | 0.4–1.0 |
+| 1 | the gradient loop | 0.44 |
+| 5 | workspace init + edge zeroing | 0.45 |
+| 6 | the contact precompute | 0.12 |
+| 4, 12 | the read-back loop, the warmstart read | ~0 |
+
+Two changes followed, both bit-exact by construction, gated on Apple (golden
+fingerprint, ThreeTrees oracle, tendon 2/2, noslip 4/4, mt parity, the
+segment and Cholesky unit tests 22/22 + 7/7 + 9/9) and priced by
+interleaving three binaries at k=9:
+
+- **The solve without its private intermediate** (`chol_solve_seg_p`, the
+  scalar path): the forward pass writes `x` directly and the back
+  substitution runs in place. The `y` it drops was a per-thread array with
+  dynamic indexing — local memory on CUDA, device memory on Apple. **Kept:
+  ~1.2 ms/step faster on Apple** (old 57.4 / 52.6, new 58.8 / 54.2 against
+  a segment-only arm at 60.4 / 55.1 in the same rounds).
+- **The segment build's edge scan on one thread per edge**
+  (`newton_blocks.mojo` split into phases A/B/C, the kernel running B
+  cooperatively around two barriers): **~2.7 ms/step SLOWER on Apple**,
+  three rounds of three. Behind `NEWTON_SEG_BUILD_COOP = False`.
+
+⚠ WHAT THE PROBE CANNOT TELL YOU, and this is the finding. The serial probe
+priced the segment build at ~5 ms/step and the solve at ~5; taking the
+first off thread 0 cost 2.7 and the second's memory traffic bought 1.2. A
+term's REPEAT cost is the work its copies add, and that is paid in full; the
+term's own cost in context is mostly hidden by the other blocks resident on
+the core, so removing it saves little and re-mapping it across threads with
+barriers can cost more than it hides. This is the third structural change to
+this kernel in two days and the pattern is now clear: stage 1 won by
+occupancy (memory footprint), the in-place solve won by memory traffic, and
+both re-mappings of a serial chain across threads lost (the per-block factor
+on CUDA, the cooperative scan on Apple). Price a GPU change by an A/B of the
+change; a repeat probe ranks terms by work, not by what their removal saves.
+
+Unpriced on CUDA: the in-place solve (the box A/B, stage 1 vs HEAD). What
+is left in the kernel by mechanism, not by probe: registers (218/thread,
+the 4-block ceiling — stage 3), and the memory traffic of the thread-0
+setup (the joint scan's global loads, the per-thread `Scratch` locals).
