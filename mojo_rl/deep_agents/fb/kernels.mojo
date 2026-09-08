@@ -348,6 +348,22 @@ def hinge_axpy_kernel[N: Int](
     y[unsafe_offset=t] = y[unsafe_offset=t] + alpha * g
 
 
+def masked_rows_axpy_kernel[BATCH: Int, W: Int](
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    mask: Pointer[Scalar[DT], MutAnyOrigin],
+    alpha: Scalar[DT],
+):
+    """`y[i, :] += alpha · mask[i] · x[i, :]` — a per-ROW weighted axpy. The
+    BC term's form once a batch mixes rows that have a data action to clone
+    (mask 1) with rows that do not (mask 0)."""
+    var t = Int(global_idx.x)
+    if t >= BATCH * W:
+        return
+    var i = t // W
+    y[unsafe_offset=t] = y[unsafe_offset=t] + alpha * mask[unsafe_offset=i] * x[unsafe_offset=t]
+
+
 def project_sphere_kernel[D: Int, BATCH: Int](
     z: Pointer[Scalar[DT], MutAnyOrigin], radius: Scalar[DT]
 ):
@@ -561,6 +577,25 @@ def hinge_axpy_t[target: StaticString, N: Int](
         d.enqueue_function[hinge_axpy_kernel[N]](
             y.dev.value().unsafe_ptr(), x.dev.value().unsafe_ptr(), alpha, margin,
             grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def masked_rows_axpy_t[target: StaticString, BATCH: Int, W: Int](
+    mut y: Tensor, mut x: Tensor, mut mask: Tensor, alpha: Scalar[DT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`y[i, :] += alpha · mask[i] · x[i, :]`."""
+    comptime if target == "cpu":
+        for i in range(BATCH):
+            var m = alpha * mask.data[i]
+            for k in range(W):
+                y.data[i * W + k] = y.data[i * W + k] + m * x.data[i * W + k]
+    else:
+        var d = ctx.value()
+        d.enqueue_function[masked_rows_axpy_kernel[BATCH, W]](
+            y.dev.value().unsafe_ptr(), x.dev.value().unsafe_ptr(),
+            mask.dev.value().unsafe_ptr(), alpha,
+            grid_dim=_blocks(BATCH * W), block_dim=TPB,
         )
 
 

@@ -10,12 +10,22 @@ that claim, because it changes nothing else: same `FBTrainer`, same nets as
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_online_walker_gpu.mojo \
         [--steps N] [--ups K] [--warmup N] [--z-hold N] [--bc X] [--ortho X] \
-        [--lr-b X] [--expl-std X] [--act-l2 X] [--act-margin X] [--tag NAME]
+        [--lr-b X] [--expl-std X] [--act-l2 X] [--act-margin X] [--tag NAME] \
+        [--store PATH|""] [--expert-max N]
 
 Then score it — the online arm has its OWN eval, because the batched env's
 observation is dm_control's 24-D vector and not the store's `[qpos | qvel]`:
 
     pixi run mojo run -I . examples/fb/fb_eval_walker_online.mojo <ckpt>
+
+## A3.5 — the expert store in the replay (default ON)
+
+`--store fb_walker_all_sac.h5` (default) attaches the SAC ladder: 512 of
+every 1024 batch rows come from it (s, a, s', s+), BC clones its actions on
+those rows only, and the other 512 rows are the online ring. `--store ""`
+is the pure-online arm (run 3: stand 1.51, walk 0.97, run 0.94). The
+question: does online interaction ADD anything on top of the data — walk /
+run above the offline 1.82 / 1.44 — or merely match it? §18.7.2.
 
 ## What the numbers in the log mean
 
@@ -72,6 +82,10 @@ from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU, Tanh
 from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
 from mojo_rl.deep_agents.fb.online import FBOnlineAgent
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.data.store import TrajectoryStore
+from mojo_rl.data.resident import ResidentColumn, IDX_DT
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.deep_agents.training.driver_offpolicy import (
     run_offpolicy_train_batched,
 )
@@ -104,8 +118,17 @@ comptime BNet = Sequential[
 comptime ANet = Sequential[
     Linear[A_IN, HID], ReLU[HID], Linear[HID, NACT], Tanh[NACT]
 ]
+# A3.5 (§18.7.2): half of every batch from the SAC ladder store when one is
+# attached (`--store`), the other half from the online ring. With
+# `--store ""` the same binary is the pure-online arm of run 3.
+comptime EXPERT_ROWS: Int = 512
 comptime Agent = FBOnlineAgent[
-    FNet, BNet, ANet, OBS, NACT, D, BATCH, CAP, N_ENVS, ZBUF
+    FNet, BNet, ANet, OBS, NACT, D, BATCH, CAP, N_ENVS, ZBUF, EXPERT_ROWS
+]
+comptime NQ: Int = 9
+comptime NV: Int = 9
+comptime ScorerEnv = Phyics3dEnv[
+    DMWalkerModel, WalkerCfg, DType.float64, False
 ]
 
 # ── the run ──────────────────────────────────────────────────────────────
@@ -115,7 +138,11 @@ comptime UPDATES_PER_ITER: Int = 8
 comptime WARMUP_STEPS: Int = 25_600      # 100 iterations of random actions
 comptime Z_HOLD: Int = 150
 comptime EXPL_STD: Float64 = 0.2
-comptime BC_WEIGHT: Float64 = 0.0
+# -1 = auto: 1.0 when an expert store is attached (BC on its rows only, the
+# offline arm's value), 0 otherwise (BC toward the ring's own actions is
+# circular — §18.7). `--bc` overrides.
+comptime BC_WEIGHT: Float64 = -1.0
+comptime STORE_PATH: StaticString = "fb_walker_all_sac.h5"
 comptime ACT_L2: Float64 = 100.0
 comptime ACT_MARGIN: Float64 = 0.8
 comptime ORTHO_WEIGHT: Float64 = 100.0
@@ -147,7 +174,12 @@ def main() raises:
     var ups = atol(_flag(String("--ups"), String(UPDATES_PER_ITER)))
     var warmup = atol(_flag(String("--warmup"), String(WARMUP_STEPS)))
     var z_hold = atol(_flag(String("--z-hold"), String(Z_HOLD)))
+    var store_path = _flag(String("--store"), String(STORE_PATH))
+    var expert_max = atol(_flag(String("--expert-max"), String(0)))
+    var use_expert = store_path.byte_length() > 0
     var bc_w = atof(_flag(String("--bc"), String(BC_WEIGHT)))
+    if bc_w < 0.0:
+        bc_w = 1.0 if use_expert else 0.0
     var act_l2 = atof(_flag(String("--act-l2"), String(ACT_L2)))
     var act_margin = atof(_flag(String("--act-margin"), String(ACT_MARGIN)))
     var ortho_w = atof(_flag(String("--ortho"), String(ORTHO_WEIGHT)))
@@ -177,6 +209,8 @@ def main() raises:
     print("  warmup env steps    =", warmup)
     print("  z_hold / ZBUF       =", z_hold, "/", ZBUF)
     print("  expl_std / bc / act_l2@margin / ortho / lr_b =", expl, "/", bc_w, "/", act_l2, "@", act_margin, "/", ortho_w, "/", lr_b)
+    print("  expert store        =", store_path if use_expert else "(none — pure online)",
+          " rows/batch", EXPERT_ROWS if use_expert else 0)
     print("  CUDA graph (train)  =", USE_TRAIN_CUDA_GRAPH)
     print("  tag                 = '", tag, "'")
     print("=" * 70)
@@ -230,6 +264,92 @@ def main() raises:
             seed=UInt64(SEED),
         )
         var env = EnvT(ctx)
+
+        if use_expert:
+            # ── the expert store, in the ENV'S observation layout ─────────
+            # The store holds qpos/qvel; the batched env emits dm_control's
+            # 24-D vector. `obs_at` is the one producer of that vector on the
+            # CPU path (the eval uses it for the same reason) — feeding
+            # `[qpos | qvel]` here would train fine and evaluate to noise.
+            print("[expert] loading", store_path, "...")
+            var store = TrajectoryStore(store_path)
+            var n_all = store.n_rows()
+            var n_rows = n_all if expert_max <= 0 or expert_max > n_all else expert_max
+            var qpos = ResidentColumn[DType.float32].load(store, String("qpos"))
+            var qvel = ResidentColumn[DType.float32].load(store, String("qvel"))
+            var action = ResidentColumn[DType.float32].load(store, String("action"))
+            var scorer = ScorerEnv()
+            _ = scorer.reset()
+            var q = List[Float64](length=NQ, fill=0.0)
+            var v = List[Float64](length=NV, fill=0.0)
+            var eobs = Tensor.alloc(n_rows * OBS)
+            var t0 = perf_counter_ns()
+            for r in range(n_rows):
+                for k in range(NQ):
+                    q[k] = Float64(qpos.host[r * NQ + k])
+                for k in range(NV):
+                    v[k] = Float64(qvel.host[r * NV + k])
+                var o = scorer.obs_at(q, v)
+                for k in range(OBS):
+                    eobs.data[r * OBS + k] = Scalar[DT](Float64(o.data[k]))
+                if r % 250_000 == 0 and r > 0:
+                    print("[expert]   ", r, "/", n_rows, "rows through obs_at")
+            print("[expert] obs table:", n_rows, "rows in",
+                  Float64(perf_counter_ns() - t0) / 1e9, "s")
+            # ⚠ A constant table trains fine and evaluates to noise. Count the
+            # dimensions that actually vary across rows; walker's 24-D vector
+            # should move on all of them.
+            var moving = 0
+            for k in range(OBS):
+                var mn = Float64(1e30)
+                var mx = Float64(-1e30)
+                for r in range(n_rows):
+                    var x = Float64(eobs.data[r * OBS + k])
+                    if x < mn:
+                        mn = x
+                    if x > mx:
+                        mx = x
+                if mx - mn > 1e-6:
+                    moving += 1
+            print("[expert] obs dims that vary across rows:", moving, "/", OBS)
+            if moving < OBS - 2:
+                raise Error(
+                    "expert obs table: only " + String(moving) + " of "
+                    + String(OBS) + " dims vary — obs_at is not producing the"
+                    " env's observation"
+                )
+            var eact = Tensor.alloc(n_rows * NACT)
+            for i in range(n_rows * NACT):
+                eact.data[i] = Scalar[DT](Float64(action.host[i]))
+            # Episode-safe next-row table, from the store's OWN index — the
+            # same rule fb_train_gpu.mojo applies, for the same reason.
+            var nh = ctx.enqueue_create_host_buffer[IDX_DT](n_rows)
+            for r in range(n_rows):
+                nh[r] = Scalar[IDX_DT](r + 1 if r + 1 < n_rows else r)
+            var n_eps = store.episodes.n_episodes()
+            var marked = 0
+            for e in range(n_eps):
+                var off = Int(store.episodes.ep_offset[e])
+                var ln = Int(store.episodes.ep_len[e])
+                if ln <= 0:
+                    continue
+                var last = off + ln - 1
+                if last < n_rows:
+                    nh[last] = Scalar[IDX_DT](last)
+                    marked += 1
+            print("[expert]", n_eps, "episodes,", marked, "boundaries inside the",
+                  n_rows, "rows used")
+            var nd = ctx.enqueue_create_buffer[IDX_DT](n_rows)
+            ctx.enqueue_copy(nd, nh)
+            eobs.upload(ctx)
+            eact.upload(ctx)
+            ctx.synchronize()
+            agent.attach_expert(eobs^, eact^, nd^, n_rows)
+            logger.set_config("expert_store", store_path)
+            logger.set_config("expert_rows_used", String(n_rows))
+            logger.set_config("expert_rows_per_batch", String(EXPERT_ROWS))
+            print("[expert] attached:", n_rows, "rows,", EXPERT_ROWS, "of every",
+                  BATCH, "batch rows; BC on those rows at", bc_w)
 
         var t_start = perf_counter_ns()
         for s in range(n_segments):

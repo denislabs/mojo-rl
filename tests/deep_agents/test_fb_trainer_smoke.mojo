@@ -256,6 +256,49 @@ def test_bc_weight_curbs_action_saturation() raises:
     )
 
 
+def test_bc_mask_selects_rows() raises:
+    """[4b] `fill_bc_mask(0)` must switch BC off on every row while leaving
+    the adaptive scale on, and `fill_bc_mask(BATCH)` must be the full pull.
+    Data actions are a CONSTANT +0.9 so the pull's direction is unmistakable,
+    and the check is on the SIGNED mean action: the value term alone drives
+    this actor negative on the probe (~-0.5), BC toward +0.9 must drive it
+    positive. (|a| would not do: it conflates the two directions — the first
+    draft of this gate failed for exactly that reason.)"""
+    print("[4b] bc_mask: all-zero mask = no clone, all-one mask = full clone ...")
+    var probe = Tensor.alloc(BATCH * OBS)
+    for i in range(BATCH * OBS):
+        probe.data[i] = Scalar[DT](0.17 * Float64(i % 11) - 0.8)
+    var zp = _z_tensor(BATCH)
+    var res = List[Float64]()
+    for variant in range(2):
+        seed(SEED)
+        var t = Trainer.make(lr=3e-3, bc_weight=2.0)
+        t.fill_bc_mask(0 if variant == 0 else BATCH)
+        seed(SEED + 5)
+        for _ in range(60):
+            var s = _rand_tensor(BATCH * OBS, 1.0)
+            var a = Tensor.alloc(BATCH * ACT)
+            for i in range(BATCH * ACT):
+                a.data[i] = Scalar[DT](0.9)
+            var sn = _rand_tensor(BATCH * OBS, 1.0)
+            var sp = _rand_tensor(BATCH * OBS, 1.0)
+            var z = _z_tensor(BATCH)
+            t.load_batch(s, a, sn, sp, z)
+            _ = t.train_step(want_loss=False)
+        var out = Tensor()
+        t.act[BATCH](probe, zp, out)
+        var acc = Float64(0)
+        for i in range(BATCH * ACT):
+            acc += Float64(out.data[i])
+        res.append(acc / Float64(BATCH * ACT))
+    print("      mean(a):  mask all-zero ->", res[0], "  mask all-one ->", res[1])
+    assert_true(
+        res[1] > res[0] + 0.3,
+        "the BC mask did not select rows (all-one " + String(res[1])
+        + " vs all-zero " + String(res[0]) + ")",
+    )
+
+
 def test_actor_update_independent_of_want_loss() raises:
     """[5] The actor update must be IDENTICAL with and without `want_loss`.
 
@@ -415,6 +458,7 @@ def main() raises:
     test_b_does_not_collapse()
     test_ortho_weight_changes_the_update()
     test_bc_weight_curbs_action_saturation()
+    test_bc_mask_selects_rows()
     test_actor_update_independent_of_want_loss()
     test_act_l2_curbs_action_saturation()
     test_act_l2_margin_leaves_the_band_alone()

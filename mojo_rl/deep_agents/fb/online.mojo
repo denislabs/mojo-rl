@@ -97,6 +97,7 @@ from .trainer import FBTrainer
 from .loss import fb_measure_loss_into, fb_ortho_loss_into
 from .kernels import (
     gather_rows_kernel,
+    gather_idx_kernel,
     pack2_kernel,
     project_sphere_kernel,
     gaussian_dev_t,
@@ -230,8 +231,11 @@ def z_relabel_kernel[D: Int, BATCH: Int](
     pick: Pointer[Scalar[DT], MutAnyOrigin],
     keep_frac: Scalar[DT],
     uniform_frac: Scalar[DT],
+    keep_from: Int32,
 ):
     """BFM-Zero's `relabel_ratio`, one thread per ROW of the gathered batch.
+    Rows below `keep_from` NEVER keep: they were gathered from an expert
+    store that carries no z, so their `z` slot is stale and must be drawn.
 
     `z` arrives holding the STORED `z` of each transition. With probability
     `keep_frac` a row keeps it; otherwise it is overwritten by the training
@@ -243,7 +247,7 @@ def z_relabel_kernel[D: Int, BATCH: Int](
     if i >= BATCH:
         return
     var base = i * D
-    if pick[unsafe_offset=3 * i] < keep_frac:
+    if i >= Int(keep_from) and pick[unsafe_offset=3 * i] < keep_frac:
         return
     if pick[unsafe_offset=3 * i + 1] < uniform_frac:
         for k in range(D):
@@ -324,11 +328,20 @@ struct FBOnlineAgent[
     CAP: Int,
     LANES: Int,
     ZBUF: Int = 10_000,
+    EXPERT_ROWS: Int = 0,
 ](OffPolicyAgentGpu):
     """`OffPolicyAgentGpu` conformer around `FBTrainer[..., "gpu"]`.
 
     `LANES` is the env count the rollout state (`z` per lane) is sized for;
     the driver's `N_ENVS` must equal it, asserted at each entry point.
+
+    `EXPERT_ROWS` (A3.5, §18.7.2): when > 0 and an expert store is attached
+    with `attach_expert`, the first `EXPERT_ROWS` rows of every training
+    batch — `s`, `a`, `s'`, and `s+` — are gathered from that store and the
+    remaining `BATCH - EXPERT_ROWS` from the online ring. BC applies to the
+    expert rows ONLY (`FBTrainer.fill_bc_mask`); their `z` is always drawn
+    fresh (no stored z to keep). Without an attached store the agent samples
+    the ring alone, whatever `EXPERT_ROWS` says — one binary, both arms.
     """
 
     comptime AGENT_TRAIN_TARGET: StaticString = "gpu"
@@ -339,6 +352,7 @@ struct FBOnlineAgent[
         Self.OBS, Self.ACT, Self.D, Self.BATCH, "gpu",
     ]
     comptime A_IN: Int = Self.OBS + Self.D
+    comptime RING_ROWS: Int = Self.BATCH - Self.EXPERT_ROWS
 
     var t: Self.TrainerT
     var ctx: Optional[DeviceContext]
@@ -356,6 +370,16 @@ struct FBOnlineAgent[
     var samp_off: Optional[DeviceBuffer[DType.uint64]]
     var idx_s: Optional[DeviceBuffer[IDX_DT]]
     var idx_sp: Optional[DeviceBuffer[IDX_DT]]
+
+    # ── expert store (A3.5), device-resident; attached after `make` ───────
+    var exp_obs: Tensor
+    var exp_act: Tensor
+    var exp_nxt: Optional[DeviceBuffer[IDX_DT]]
+    var exp_size_dev: Optional[DeviceBuffer[DType.int32]]
+    var idx_e: Optional[DeviceBuffer[IDX_DT]]
+    var idx_esp: Optional[DeviceBuffer[IDX_DT]]
+    var idx_en: Optional[DeviceBuffer[IDX_DT]]
+    var _expert_n: Int
 
     # ── training-side RNG scratch (device offsets: captured path) ───────
     var rng_dev: Optional[DeviceBuffer[DType.uint64]]
@@ -414,6 +438,14 @@ struct FBOnlineAgent[
         self.samp_off = None
         self.idx_s = None
         self.idx_sp = None
+        self.exp_obs = Tensor()
+        self.exp_act = Tensor()
+        self.exp_nxt = None
+        self.exp_size_dev = None
+        self.idx_e = None
+        self.idx_esp = None
+        self.idx_en = None
+        self._expert_n = 0
         self.rng_dev = None
         self.gauss = Tensor()
         self.pick = Tensor()
@@ -497,6 +529,9 @@ struct FBOnlineAgent[
         comptime assert Self.ZBUF >= Self.BATCH, (
             "FBOnlineAgent: ZBUF must hold at least one training batch"
         )
+        comptime assert Self.EXPERT_ROWS >= 0 and Self.EXPERT_ROWS < Self.BATCH, (
+            "FBOnlineAgent: EXPERT_ROWS must be in [0, BATCH)"
+        )
         if learning_starts < Self.BATCH:
             raise Error(
                 "FBOnlineAgent.make: learning_starts must be >= BATCH — the"
@@ -571,6 +606,160 @@ struct FBOnlineAgent[
         a._resample_lanes(force=True)
         ctx.synchronize()
         return a^
+
+    # ── expert store (A3.5) ──────────────────────────────────────────────
+
+    def attach_expert(
+        mut self,
+        var obs: Tensor,
+        var act: Tensor,
+        var nxt: DeviceBuffer[IDX_DT],
+        n_rows: Int,
+    ) raises:
+        """Hand the agent a device-resident expert store: `obs` `[n_rows, OBS]`
+        and `act` `[n_rows, ACT]` already uploaded, `nxt` the episode-safe
+        next-row table (`nxt[r] = r` on an episode's last row — the same rule
+        `fb_train_gpu.mojo` builds). ⚠ Call BEFORE the driver: it writes the
+        BC mask in place, which must precede any capture.
+
+        ⚠ `obs` must be the SAME representation the batched env emits (for
+        walker, dm_control's 24-D vector via `Phyics3dEnv.obs_at`), not the
+        store's `[qpos | qvel]`; a wrong layout trains fine and evaluates to
+        noise."""
+        comptime assert Self.EXPERT_ROWS > 0, (
+            "FBOnlineAgent.attach_expert: EXPERT_ROWS is 0 on this agent"
+        )
+        if n_rows < Self.EXPERT_ROWS:
+            raise Error("attach_expert: fewer rows than EXPERT_ROWS")
+        if not obs.dev or not act.dev:
+            raise Error("attach_expert: obs/act must be uploaded to device")
+        var c = self.ctx.value()
+        self.exp_obs = obs^
+        self.exp_act = act^
+        self.exp_nxt = nxt^
+        var sz = c.enqueue_create_buffer[DType.int32](1)
+        sz.enqueue_fill(Int32(n_rows))
+        self.exp_size_dev = sz^
+        self.idx_e = c.enqueue_create_buffer[IDX_DT](Self.EXPERT_ROWS)
+        self.idx_esp = c.enqueue_create_buffer[IDX_DT](Self.EXPERT_ROWS)
+        self.idx_en = c.enqueue_create_buffer[IDX_DT](Self.EXPERT_ROWS)
+        self._expert_n = n_rows
+        self.t.fill_bc_mask(Self.EXPERT_ROWS)
+        c.synchronize()
+
+    def has_expert(self) -> Bool:
+        return self._expert_n > 0
+
+    def _gather_ring[ROWS: Int](mut self, row0: Int) raises:
+        """Two independent uniform draws over the ring's fill, gathered into
+        batch rows `[row0, row0 + ROWS)` of `s`, `a`, `s'`, `z` and `s+`."""
+        var c = self.ctx.value()
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.size_dev.value()
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.samp_off.value()
+        )
+        var is_lt = LayoutTensor[IDX_DT, Layout.row_major(ROWS)](
+            self.idx_s.value()
+        )
+        var isp_lt = LayoutTensor[IDX_DT, Layout.row_major(ROWS)](
+            self.idx_sp.value()
+        )
+        comptime nb = _blocks(ROWS)
+        c.enqueue_function[_uniform_indices_dev_kernel[ROWS]](
+            is_lt, size_lt, self._train_seed, off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        c.enqueue_function[_incr_offset_kernel[ROWS]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        c.enqueue_function[_uniform_indices_dev_kernel[ROWS]](
+            isp_lt, size_lt, self._train_seed, off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        c.enqueue_function[_incr_offset_kernel[ROWS]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        var ip_s = mptr(self.idx_s.value().unsafe_ptr())
+        var ip_sp = mptr(self.idx_sp.value().unsafe_ptr())
+        c.enqueue_function[gather_rows_kernel[Self.OBS, ROWS]](
+            mptr(self.r_obs.dev.value().unsafe_ptr()), ip_s,
+            mptr(self.t.bs.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.OBS),
+            grid_dim=_blocks(ROWS * Self.OBS), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.ACT, ROWS]](
+            mptr(self.r_act.dev.value().unsafe_ptr()), ip_s,
+            mptr(self.t.ba.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.ACT),
+            grid_dim=_blocks(ROWS * Self.ACT), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.OBS, ROWS]](
+            mptr(self.r_nxt.dev.value().unsafe_ptr()), ip_s,
+            mptr(self.t.bsn.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.OBS),
+            grid_dim=_blocks(ROWS * Self.OBS), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.D, ROWS]](
+            mptr(self.r_z.dev.value().unsafe_ptr()), ip_s,
+            mptr(self.t.bz.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.D),
+            grid_dim=_blocks(ROWS * Self.D), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.OBS, ROWS]](
+            mptr(self.r_obs.dev.value().unsafe_ptr()), ip_sp,
+            mptr(self.t.bsp.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.OBS),
+            grid_dim=_blocks(ROWS * Self.OBS), block_dim=TPB,
+        )
+
+    def _gather_expert(mut self) raises:
+        """Batch rows `[0, EXPERT_ROWS)` of `s`, `a`, `s'`, `s+` from the
+        expert store. `z` is left for the relabel to draw."""
+        comptime E = Self.EXPERT_ROWS
+        var c = self.ctx.value()
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.exp_size_dev.value()
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.samp_off.value()
+        )
+        var ie_lt = LayoutTensor[IDX_DT, Layout.row_major(E)](self.idx_e.value())
+        var iesp_lt = LayoutTensor[IDX_DT, Layout.row_major(E)](self.idx_esp.value())
+        comptime nb = _blocks(E)
+        c.enqueue_function[_uniform_indices_dev_kernel[E]](
+            ie_lt, size_lt, self._train_seed + 41, off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        c.enqueue_function[_incr_offset_kernel[E]](off_lt, grid_dim=1, block_dim=1)
+        c.enqueue_function[_uniform_indices_dev_kernel[E]](
+            iesp_lt, size_lt, self._train_seed + 41, off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        c.enqueue_function[_incr_offset_kernel[E]](off_lt, grid_dim=1, block_dim=1)
+        var ip_e = mptr(self.idx_e.value().unsafe_ptr())
+        var ip_esp = mptr(self.idx_esp.value().unsafe_ptr())
+        var ip_en = mptr(self.idx_en.value().unsafe_ptr())
+        c.enqueue_function[gather_idx_kernel[E]](
+            mptr(self.exp_nxt.value().unsafe_ptr()), ip_e, ip_en,
+            grid_dim=nb, block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.OBS, E]](
+            mptr(self.exp_obs.dev.value().unsafe_ptr()), ip_e,
+            mptr(self.t.bs.dev.value().unsafe_ptr()),
+            grid_dim=_blocks(E * Self.OBS), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.ACT, E]](
+            mptr(self.exp_act.dev.value().unsafe_ptr()), ip_e,
+            mptr(self.t.ba.dev.value().unsafe_ptr()),
+            grid_dim=_blocks(E * Self.ACT), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.OBS, E]](
+            mptr(self.exp_obs.dev.value().unsafe_ptr()), ip_en,
+            mptr(self.t.bsn.dev.value().unsafe_ptr()),
+            grid_dim=_blocks(E * Self.OBS), block_dim=TPB,
+        )
+        c.enqueue_function[gather_rows_kernel[Self.OBS, E]](
+            mptr(self.exp_obs.dev.value().unsafe_ptr()), ip_esp,
+            mptr(self.t.bsp.dev.value().unsafe_ptr()),
+            grid_dim=_blocks(E * Self.OBS), block_dim=TPB,
+        )
 
     # ── rollout ──────────────────────────────────────────────────────────
 
@@ -838,64 +1027,15 @@ struct FBOnlineAgent[
     # ── the training step ────────────────────────────────────────────────
 
     def _sample_batch(mut self) raises:
-        """Two INDEPENDENT uniform draws over the ring's fill, then the
-        gathers into `FBTrainer`'s owned batch. All device; capture-safe."""
-        var c = self.ctx.value()
-        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
-            self.size_dev.value()
-        )
-        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
-            self.samp_off.value()
-        )
-        var is_lt = LayoutTensor[IDX_DT, Layout.row_major(Self.BATCH)](
-            self.idx_s.value()
-        )
-        var isp_lt = LayoutTensor[IDX_DT, Layout.row_major(Self.BATCH)](
-            self.idx_sp.value()
-        )
-        comptime nb = _blocks(Self.BATCH)
-        c.enqueue_function[_uniform_indices_dev_kernel[Self.BATCH]](
-            is_lt, size_lt, self._train_seed, off_lt,
-            grid_dim=nb, block_dim=TPB,
-        )
-        c.enqueue_function[_incr_offset_kernel[Self.BATCH]](
-            off_lt, grid_dim=1, block_dim=1,
-        )
-        c.enqueue_function[_uniform_indices_dev_kernel[Self.BATCH]](
-            isp_lt, size_lt, self._train_seed, off_lt,
-            grid_dim=nb, block_dim=TPB,
-        )
-        c.enqueue_function[_incr_offset_kernel[Self.BATCH]](
-            off_lt, grid_dim=1, block_dim=1,
-        )
-
-        var ip_s = mptr(self.idx_s.value().unsafe_ptr())
-        var ip_sp = mptr(self.idx_sp.value().unsafe_ptr())
-        c.enqueue_function[gather_rows_kernel[Self.OBS, Self.BATCH]](
-            mptr(self.r_obs.dev.value().unsafe_ptr()), ip_s,
-            mptr(self.t.bs.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.OBS), block_dim=TPB,
-        )
-        c.enqueue_function[gather_rows_kernel[Self.ACT, Self.BATCH]](
-            mptr(self.r_act.dev.value().unsafe_ptr()), ip_s,
-            mptr(self.t.ba.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.ACT), block_dim=TPB,
-        )
-        c.enqueue_function[gather_rows_kernel[Self.OBS, Self.BATCH]](
-            mptr(self.r_nxt.dev.value().unsafe_ptr()), ip_s,
-            mptr(self.t.bsn.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.OBS), block_dim=TPB,
-        )
-        c.enqueue_function[gather_rows_kernel[Self.D, Self.BATCH]](
-            mptr(self.r_z.dev.value().unsafe_ptr()), ip_s,
-            mptr(self.t.bz.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.D), block_dim=TPB,
-        )
-        c.enqueue_function[gather_rows_kernel[Self.OBS, Self.BATCH]](
-            mptr(self.r_obs.dev.value().unsafe_ptr()), ip_sp,
-            mptr(self.t.bsp.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.OBS), block_dim=TPB,
-        )
+        """Assemble `FBTrainer`'s owned batch: expert rows first (if a store
+        is attached), the ring for the rest. All device; capture-safe. The
+        branch is on `_expert_n`, fixed before any capture."""
+        comptime if Self.EXPERT_ROWS > 0:
+            if self._expert_n > 0:
+                self._gather_expert()
+                self._gather_ring[Self.RING_ROWS](Self.EXPERT_ROWS)
+                return
+        self._gather_ring[Self.BATCH](0)
 
     def _relabel_z(mut self) raises:
         """`bz` holds the stored z; keep `keep_frac` of rows, overwrite the
@@ -917,12 +1057,14 @@ struct FBOnlineAgent[
         c.enqueue_function[advance_rng_offset_kernel[2 * NP]](
             off_lt, grid_dim=1, block_dim=1
         )
+        var keep_from = Int32(Self.EXPERT_ROWS) if self._expert_n > 0 else Int32(0)
         c.enqueue_function[z_relabel_kernel[Self.D, Self.BATCH]](
             mptr(self.t.bz.dev.value().unsafe_ptr()),
             mptr(self.gauss.dev.value().unsafe_ptr()),
             mptr(self.t.b_sp.dev.value().unsafe_ptr()),
             mptr(self.pick.dev.value().unsafe_ptr()),
             Scalar[DT](self.keep_frac), Scalar[DT](self.uniform_frac),
+            keep_from,
             grid_dim=_blocks(Self.BATCH), block_dim=TPB,
         )
         c.enqueue_function[project_sphere_kernel[Self.D, Self.BATCH]](
@@ -955,6 +1097,14 @@ struct FBOnlineAgent[
         self._relabel_z()
         _ = self.t.train_step(want_loss=False)
         self._push_zbuf()
+        # mean|a| over the POLICY'S rows only — the expert rows are not its.
+        comptime if Self.EXPERT_ROWS > 0:
+            if self._expert_n > 0:
+                comptime lr = Layout.row_major(Self.RING_ROWS * Self.ACT)
+                self._mean_abs_action_dev.accumulate_gpu_abs_lt[
+                    Self.RING_ROWS * Self.ACT
+                ](self.t.ba.lt_at["gpu", lr](Self.EXPERT_ROWS * Self.ACT))
+                return
         comptime lba = Layout.row_major(Self.BATCH * Self.ACT)
         self._mean_abs_action_dev.accumulate_gpu_abs_lt[Self.BATCH * Self.ACT](
             self.t.ba.lt["gpu", lba]()
@@ -1076,6 +1226,8 @@ struct FBOnlineAgent[
             names.append(String("fb/actor_grad_value")); vals.append(gv)
             names.append(String("fb/actor_grad_total")); vals.append(gt)
             names.append(String("fb/replay_size")); vals.append(Float64(self.size))
+            names.append(String("fb/expert_rows"))
+            vals.append(Float64(Self.EXPERT_ROWS if self._expert_n > 0 else 0))
             names.append(String("fb/train_steps"))
             vals.append(Float64(self._total_train_steps))
             names.append(String("fb/updates_since_flush"))

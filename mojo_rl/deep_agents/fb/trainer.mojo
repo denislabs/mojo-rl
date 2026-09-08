@@ -102,6 +102,7 @@ from .kernels import (
     pack2_t,
     axpy_t,
     hinge_axpy_t,
+    masked_rows_axpy_t,
     scale_t,
     sum3_scaled_t,
     min_scale_t,
@@ -241,6 +242,13 @@ struct FBTrainer[
     # the value term too weak — it was the latter, and only a probe showed it.
     var acc_gv: Tensor
     var acc_gt: Tensor
+    # Per-row BC weight, `[BATCH]`, all ones by default (multiplying by 1.0
+    # is exact, so the offline arithmetic is unchanged). `fill_bc_mask(n)`
+    # sets the first `n` rows to 1 and the rest to 0 — the shape of a batch
+    # whose first rows come from an EXPERT store (clone their actions) and
+    # whose remaining rows are the policy's own (do not clone those: BC
+    # toward the replay's own actions is circular). §18.7.2, A3.5.
+    var bc_mask: Tensor
     # ── the batch itself ────────────────────────────────────────────────
     # Owned, not passed per step. `TensorRefs[N, o]` requires every tensor in
     # a pack to share ONE origin, so a `train_step(s, a, ...)` taking five
@@ -383,6 +391,7 @@ struct FBTrainer[
         self.g_fin_a = Tensor()
         self.acc_gv = Tensor()
         self.acc_gt = Tensor()
+        self.bc_mask = Tensor()
         self.bs = Tensor()
         self.ba = Tensor()
         self.bsn = Tensor()
@@ -458,6 +467,7 @@ struct FBTrainer[
         self.g_fin_a = move.g_fin_a^
         self.acc_gv = move.acc_gv^
         self.acc_gt = move.acc_gt^
+        self.bc_mask = move.bc_mask^
         self.bs = move.bs^
         self.ba = move.ba^
         self.bsn = move.bsn^
@@ -574,6 +584,11 @@ struct FBTrainer[
         ensure_t[T](self.acc_lam, 1, c)
         ensure_t[T](self.acc_gv, 1, c)
         ensure_t[T](self.acc_gt, 1, c)
+        ensure_t[T](self.bc_mask, Self.BATCH, c)
+        for i in range(Self.BATCH):
+            self.bc_mask.data[i] = Scalar[DT](1.0)
+        comptime if T == "gpu":
+            self.bc_mask.upload_resident(c.value())
         ensure_t[T](self.sink, Self.BATCH * Self.F_IN, c)
         ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
         ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
@@ -619,6 +634,17 @@ struct FBTrainer[
         ensure_t[T](self.bsp, Self.BATCH * Self.OBS, c)
         ensure_t[T](self.bz, Self._ND, c)
         self._sized = True
+
+    def fill_bc_mask(mut self, n_ones: Int) raises:
+        """Rows `[0, n_ones)` get BC weight 1, the rest 0. Call BEFORE any
+        capture: the device buffer is written in place (`upload_resident`),
+        so the pointer a captured graph holds stays valid."""
+        comptime T = Self.TARGET
+        self._size_once()
+        for i in range(Self.BATCH):
+            self.bc_mask.data[i] = Scalar[DT](1.0 if i < n_ones else 0.0)
+        comptime if T == "gpu":
+            self.bc_mask.upload_resident(self.ctx.value())
 
     def ensure_sized(mut self) raises:
         """Allocate the owned batch + scratch without running a step.
@@ -995,8 +1021,12 @@ struct FBTrainer[
                 self.bc_weight * 2.0
                 / (Float64(Self.BATCH) * Float64(Self.ACT))
             )
-            axpy_t[T, Self._NA](self.g_pi, self.pi, w, c)
-            axpy_t[T, Self._NA](self.g_pi, self.ba, -w, c)
+            masked_rows_axpy_t[T, Self.BATCH, Self.ACT](
+                self.g_pi, self.pi, self.bc_mask, w, c
+            )
+            masked_rows_axpy_t[T, Self.BATCH, Self.ACT](
+                self.g_pi, self.ba, self.bc_mask, -w, c
+            )
         # + action magnitude: d/dpi of `act_l2_weight · mean(pi^2)` — the BC
         # term with the data action at 0. Same scale form, so the two knobs
         # read on the same axis.

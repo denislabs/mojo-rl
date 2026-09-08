@@ -34,6 +34,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.data.resident import IDX_DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU, Tanh
@@ -72,6 +73,10 @@ comptime Agent = FBOnlineAgent[
 ]
 comptime CpuTrainer = FBTrainer[FNet, BNet, ANet, OBS, ACT, D, BATCH, "cpu"]
 comptime EnvT = BatchedGpuEnv[PendulumV2[DT], LANES, OBS, ACT]
+comptime EXPERT = 32
+comptime AgentX = FBOnlineAgent[
+    FNet, BNet, ANet, OBS, ACT, D, BATCH, CAP, LANES, ZBUF, EXPERT
+]
 
 
 def _download_rows(
@@ -335,6 +340,69 @@ def test_episode_readback_at_sync_32(ctx: DeviceContext) raises:
     print("      OK")
 
 
+def test_expert_slice(ctx: DeviceContext) raises:
+    """[8] A3.5: with an expert store attached, batch rows [0, EXPERT) carry
+    the store's actions and rows [EXPERT, BATCH) the ring's; the BC mask is 1
+    on the store rows and 0 on the ring's; and the captured step runs."""
+    print("[8] expert slice: store rows first, ring rows after, mask split ...")
+    seed(SEED)
+    var a = AgentX.make(
+        ctx, lr=1e-3, learning_starts=LEARNING_STARTS, action_scale=2.0,
+        z_hold=Z_HOLD, window_size=8, seed=UInt64(SEED),
+    )
+    # Expert: 300 rows, random obs, CONSTANT action 0.37, identity next-row.
+    comptime NE = 300
+    var eobs = _rt(NE * OBS, ctx)
+    var eact = Tensor.alloc(NE * ACT)
+    for i in range(NE * ACT):
+        eact.data[i] = Scalar[DT](0.37)
+    eact.upload(ctx)
+    var nh = ctx.enqueue_create_host_buffer[IDX_DT](NE)
+    for r in range(NE):
+        nh[r] = Scalar[IDX_DT](r)
+    var nd = ctx.enqueue_create_buffer[IDX_DT](NE)
+    ctx.enqueue_copy(nd, nh)
+    a.attach_expert(eobs^, eact^, nd^, NE)
+    # Ring: one record of LANES transitions with CONSTANT action 0.11.
+    var ob = ctx.enqueue_create_buffer[DT](LANES * OBS)
+    ob.enqueue_fill(Scalar[DT](0.5))
+    var ac = ctx.enqueue_create_buffer[DT](LANES * ACT)
+    ac.enqueue_fill(Scalar[DT](0.11))
+    var rw = ctx.enqueue_create_buffer[DT](LANES)
+    rw.enqueue_fill(Scalar[DT](0.0))
+    var dn = ctx.enqueue_create_buffer[DT](LANES)
+    dn.enqueue_fill(Scalar[DT](0.0))
+    a.record_batch_gpu[LANES](ctx, ob, ac, rw, ob, dn)
+    a._sample_batch()
+    ctx.synchronize()
+    var ba = _download_rows(ctx, a.t.ba, BATCH * ACT)
+    var ok_e = 0
+    var ok_r = 0
+    for i in range(BATCH):
+        var v = Float64(ba.data[i * ACT])
+        if i < EXPERT and abs(v - 0.37) < 1e-6:
+            ok_e += 1
+        if i >= EXPERT and abs(v - 0.11) < 1e-6:
+            ok_r += 1
+    a.t.bc_mask.download(ctx)
+    var ok_m = 0
+    for i in range(BATCH):
+        var want = 1.0 if i < EXPERT else 0.0
+        if abs(Float64(a.t.bc_mask.data[i]) - want) < 1e-9:
+            ok_m += 1
+    print("      expert rows with the store's action:", ok_e, "/", EXPERT,
+          "  ring rows with the ring's:", ok_r, "/", BATCH - EXPERT,
+          "  mask rows right:", ok_m, "/", BATCH)
+    assert_true(ok_e == EXPERT, "an expert row did not carry the store's action")
+    assert_true(ok_r == BATCH - EXPERT, "a ring row did not carry the ring's action")
+    assert_true(ok_m == BATCH, "the BC mask does not split at EXPERT_ROWS")
+    # The captured-path step runs on the mixed batch, twice.
+    a.train_device_kernels()
+    a.train_device_kernels()
+    ctx.synchronize()
+    print("      OK")
+
+
 def main() raises:
     print("=" * 70)
     print("FB online agent smoke — Pendulum, 4 lanes")
@@ -344,4 +412,5 @@ def main() raises:
     test_relabel(ctx)
     test_driver_ring_and_capture(ctx)
     test_episode_readback_at_sync_32(ctx)
+    test_expert_slice(ctx)
     print("\n[PASS] FB online smoke")
