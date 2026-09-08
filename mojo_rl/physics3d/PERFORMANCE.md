@@ -3711,3 +3711,8 @@ k=13: Newton 44%, collision 15%, CRBA 13%, LDL pair 12.5%. Newton's
 thread-0 serial setup and line search, §13.38's latency term) is what is
 left in it. Note for the shape script: the trace truncates the kernel name
 to `solver_newt…`, so the filter is `newt`, not `newton`.
+Kernel shape at k=13 (`p0_kernel_shape.py … newt`): 1024 blocks × 64
+threads, **218 registers (was 255), 37.9 KB shared (was ~94)**, blocks per
+SM 3 by shared memory (was 1) and 4 by registers — the register bound is
+the binding one now, so the next block per SM is a register question, not
+a memory one.
