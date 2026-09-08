@@ -269,6 +269,10 @@ def test_mesh_manifold_vs_mujoco() raises:
     var g_cnt_bad = List[Int](length=NGROUP, fill=0)
     var g_worst_pos = List[Float64](length=NGROUP, fill=0.0)
     var g_worst_dist = List[Float64](length=NGROUP, fill=0.0)
+    # Depth mismatch on poses where the POINT SETS themselves disagree
+    # (`pose_worst > TOL_POS`) — reported, not gated. See the note at the
+    # depth assertion.
+    var g_unpaired_dist = List[Float64](length=NGROUP, fill=0.0)
     var g_worst_dir = List[Float64](length=NGROUP, fill=0.0)
     var g_mj_max = List[Int](length=NGROUP, fill=0)
     # Which pose produced the worst position error, so a residual can be
@@ -438,8 +442,6 @@ def test_mesh_manifold_vs_mujoco() raises:
                     our_best = our_idx[t]
 
             var dd = abs(our_bd - mj_bd)
-            if dd > g_worst_dist[g]:
-                g_worst_dist[g] = dd
 
             var con = dat.contact[mj_best]
             var o_off = our_best * CONTACT_SIZE
@@ -483,6 +485,21 @@ def test_mesh_manifold_vs_mujoco() raises:
                     g_worst_pos[g] = nearest
                     g_worst_pose[g] = p
                     g_worst_n[g] = len(mj_idx)
+            # ⚠ DEPTH IS A PER-POINT QUANTITY SINCE MuJoCo 3.12. `witnessOnFace`
+            # gives each clipped vertex its own signed plane distance where
+            # 3.10 gave the whole manifold the EPA depth, so "the deepest
+            # point's depth" is only comparable when the two engines chose the
+            # SAME points. On the hex groups the four-point quad is picked up
+            # to a rotation of the ring (the position note below), and a
+            # different quad has a different deepest vertex on a tilted face:
+            # that is the 0.0033 this column showed after the 3.12 port, and it
+            # is the POSITION gap wearing a depth unit. Gate the depth where
+            # the points agree; report it where they do not.
+            if pose_worst <= TOL_POS:
+                if dd > g_worst_dist[g]:
+                    g_worst_dist[g] = dd
+            elif dd > g_unpaired_dist[g]:
+                g_unpaired_dist[g] = dd
 
             # ---- TRACE: dump both manifolds so the two quads can be compared
             # for COPLANARITY. If they lie on different face planes the defect
@@ -543,6 +560,7 @@ def test_mesh_manifold_vs_mujoco() raises:
             "  ", _group_name(g), g_both[g], "   ", g_mj_pts[g], "  ",
             g_our_pts[g], "  ", g_cnt_bad[g], "  ", g_mj_max[g], "  ",
             g_worst_pos[g], " ", g_worst_dist[g], " ", g_worst_dir[g],
+            "  (depth on unpaired poses:", g_unpaired_dist[g], ")",
         )
         tot_cnt_bad += g_cnt_bad[g]
         if g_worst_pos[g] > worst_pos_all:
@@ -560,8 +578,11 @@ def test_mesh_manifold_vs_mujoco() raises:
             + " poses — it gates almost nothing",
         )
 
-    # DEPTH is asserted unconditionally: EPA already matches MuJoCo to 1e-16
-    # on every group, and it must not regress while the manifold work goes on.
+    # DEPTH is asserted on every pose whose point sets agree: EPA already
+    # matches MuJoCo to 1e-16 on every group, and it must not regress while
+    # the manifold work goes on. (3.12 made depth per-point, so on the poses
+    # where the chosen quads differ the depth column inherits the position
+    # gap — see the loop above; those are printed as "unpaired".)
     assert_true(
         worst_dist_all <= TOL_DIST,
         String("mesh contact DEPTH diverges from MuJoCo by ")

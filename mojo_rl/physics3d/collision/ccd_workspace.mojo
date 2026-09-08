@@ -208,8 +208,15 @@ comptime MC_WS_PD: Int = MC_WS_PN + MC_MAX_POLYVERT * 3
 # between two regions that are "obviously" disjoint in time is invisible in a
 # diff and fires only on the pose where the assumption breaks.
 #
-# EPA's 964 floats plus 28 * MC_MAX_POLYVERT.
-comptime HW_WS_OFF: Int = MC_WS_PD + MC_MAX_POLYVERT
+# MuJoCo 3.12's per-witness-point distance (`status->dist[i]`,
+# `witnessOnFace`): one signed plane distance per emitted manifold point,
+# aligned with `MC_WS_OUT`. 3.10 gave every point the EPA depth; 3.12 gives
+# each clipped vertex its own, and the solver sees a different penetration
+# per row. Sized like the OUT ring it annotates.
+comptime MC_WS_ODIST: Int = MC_WS_PD + MC_MAX_POLYVERT
+# EPA's 964 floats plus 28 * MC_MAX_POLYVERT, plus the 2 * MC_MAX_POLYVERT
+# per-point distances.
+comptime HW_WS_OFF: Int = MC_WS_ODIST + MC_CLIP_CAP
 
 # ── The cross-step warm start of the mesh hill climb (PERFORMANCE.md §13.48,
 # 2026-09-08). On the park scene every mesh support call was COLD: a

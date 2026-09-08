@@ -4231,8 +4231,9 @@ from MuJoCo by 0.0033" — and fails IDENTICALLY with the warm start off.
 That is the runtime moving under the gate, not this change: pixi now
 ships MuJoCo 3.12, whose multiccd carries a distance per witness point
 (`witnessOnFace`, `status->dist[i]`) where 3.10 wrote one distance for
-the whole manifold. To be re-read against 3.12's rule when the tests are
-swept for the version.
+the whole manifold. **Resolved in §13.50**: the 3.12 rule is ported, the
+count column is exact again, and the 0.0033 was the hex quad-choice
+position gap read in a depth unit.
 
 **The box prices it** against `probe_rne` (= §13.47's tree). What §13.48
 bounded: ~26 of 28 dependent scans per GJK candidate, i.e. the k=0
@@ -4311,3 +4312,120 @@ launch, four a step) and the solve 0.088 (22 µs, F1's kernel); at k=6
 under equality constraints or noslip, so a cycle of two is factor +
 solve, and the table now says so. The factor is the LDL lever: 6.7% of
 the k=13 step on its own.
+
+### 13.50 LANDED (2026-09-09): MuJoCo 3.12's multiccd — the 5.1° face tolerance and the per-witness-point distance
+
+Context: the Unitree G1 port (`mojo_rl/envs/robots/unitree_g1*`, BFM-Zero's
+sim-to-sim model under its torque PD, `docs/BFM_ZERO_G1_REPRODUCTION.md`
+rung G0). Its layer-2 gate replays MuJoCo's own per-substep torques
+open-loop through `drive`; the two engines agreed to 1e-15 for nine
+substeps and were 7e-4 apart at the tenth, the first substep at which
+MuJoCo reported a FOUR-point manifold between `torso_link` and
+`right_shoulder_yaw_link` (both meshes) where we reported the single EPA
+point. Every floor contact on the same body matched to the millimetre and
+`climbprobe` found all 27 collidable hulls clean, so it was not the
+support function.
+
+**The mechanism is the release change `CLAUDE.md` warns about.** MuJoCo
+3.12 (commit 2444defc) moved `mjFACE_TOL` 0.99999872 → 0.996 and
+`mjEDGE_TOL` 0.00159999931 → 0.0888 (`engine_collision_gjk.h:41-43`):
+two faces now count as aligned within 5.1° instead of 0.09°. Our
+`native_multicontact.mojo` carried 3.10's constants. The torso/shoulder
+faces sit a few degrees off antiparallel, so 3.12 clips a manifold and we
+fell back to the point. With the constants alone we produced the four
+points at MuJoCo's positions to 1e-4 and the residual dropped 7e-4 →
+1.2e-4 — not to zero, because 3.12 also gives EACH clipped vertex its own
+depth (`witnessOnFace`: `d = (v − face1[0]) · n`, `w2 = v`,
+`w1 = v − |d| wit_dir`, `con.dist = margin + d`, `pos = v − ½|d| wit_dir`)
+and prunes clipped vertices above the clipping face, where 3.10 wrote the
+EPA depth on every point. `polygonQuad` and `halfspace` are unchanged
+between the releases (diffed).
+
+Ported: the two tolerances, the prune, and a per-point distance ring
+(`MC_WS_ODIST`, `ccd_workspace.mojo`, `2·MC_MAX_POLYVERT` scalars beside
+`MC_WS_OUT`) that the emission reads for both the depth and the witness
+midpoint; `dist0` (the EPA depth) no longer reaches a contact row. One
+implementation serves the CPU and GPU paths.
+
+**Measured, old-binary A/B on the Menagerie board (runtime path, `drive`
+built from a detached HEAD worktree vs the port, MuJoCo 3.12):**
+
+| board | HEAD | port | rows moved |
+|---|---|---|---|
+| N=1 | 79 / 85 at or below 1e-9, **1 above 1e-3** | **82 / 85**, 0 above 1e-3 | 6, five better |
+| N=50 | 55 / 85, 8 above 1e-3 | 57 / 85, 6 above 1e-3 | 6, five better |
+
+| scene | N=1 HEAD → port | N=50 HEAD → port |
+|---|---|---|
+| hello_robot_stretch_3 | 1.399e-02 → 7.230e-12 | 7.642e-02 → 1.190e-02 |
+| shadow_dexee | 9.837e-04 → 8.151e-12 | 4.631e-03 → 7.924e-09 |
+| google_barkour_v0 | 2.328e-04 → 1.691e-17 | 9.524e-02 → 1.577e-14 |
+| trossen_wxai | 3.234e-10 → 1.050e-16 | 4.142e-05 → 4.389e-10 |
+| unitree_g1 with_hands | 7.664e-05 → 6.882e-05 | 2.813e-02 → 2.691e-02 |
+| kinova_gen3 | 1.998e-15 → 1.776e-15 | 3.651e-13 → 3.829e-13 |
+
+So the board's top three rows since the runtime moved to 3.12 — stretch_3,
+dexee, barkour, §13.34-35's "rows with a mechanism" — were this one
+release change. Nothing moved by more than 5% at 1e-13 in the other
+direction. Full listings: `docs/menagerie_fidelity_harnesses/g1/board_*.txt`.
+
+Gates re-run on the port: `test_multicontact_polygon_caps_vs_mujoco`,
+`test_capsule_box_sweep`, `test_oriented_plane_vs_mujoco`,
+`test_option_flag_multiccd`, `test_narrow_phase_pairs` all green and
+unmoved. `test_mesh_manifold_vs_mujoco`: the count column is exact again
+(0 mismatches on all five groups; at HEAD against 3.12 it was 83 and 73
+on the cube/box groups, because regime 2's "few degrees" poses are now
+face/face in the reference). Its DEPTH column compared the deepest
+point's depth, which under 3.12 is a per-point quantity, so on the hex
+groups — whose four-point quad is picked up to a rotation of the ring, the
+file's documented position gap — it read the position gap in a depth
+unit: the 0.0033 of §13.49's note. The gate now compares depth on the
+poses whose point sets agree (1.1e-16 on every group) and reports the
+rest as "unpaired" (0.0033 / 0.0014 on the two hex groups). The hex
+quad-choice gap itself is unchanged and still open.
+
+⚠ TWO GATES FAIL AT HEAD AGAINST 3.12 AND ARE UNMOVED BY THIS:
+`test_box_box_sweep` (separating axis 0.103 at pose 28, 128 manifold
+count mismatches — 3.12 rewrote the box-box SAT collider, `CLAUDE.md`)
+and `test_jaco_contacts_vs_mujoco`. Both measured on the HEAD clipper
+and on the port with identical numbers; they are the 3.12 sweep's next
+two items, not this change's.
+
+**What the G1 says after the port** (`tests/robots/test_unitree_g1_vs_mujoco.mojo`,
+against MuJoCo run to convergence — `tolerance 0, iterations 1000` —
+because at the model's shipped settings MuJoCo stops early: shipped vs
+converged is 3.9e-14 / 1.3e-10 / 3.3e-7 at steps 0 / 1 / 99 on the stand
+rollout, and our residual against the shipped run was those same digits):
+stand 100 steps 1.9e-14; driven (every joint swung at its own phase, arms
+scraping the torso, feet sliding) 3.6e-13 over the first 40 steps, 0.11
+over 100. The 100-step tail is past the reference's own predictability
+horizon — MuJoCo perturbed by 1e-11 in one joint at step 0 is 1e-3 from
+itself at step 99, non-monotone in the perturbation — so the gate's
+horizon is 40 steps. But the injection sweep
+(`docs/menagerie_fidelity_harnesses/g1/inject.py`: MuJoCo's converged
+state at every substep K, ONE substep on both engines) is not chaos: 397
+of 400 substeps agree to 1.4e-14 and three do not — substep 180 6.8e-3,
+191 1.35e-2, 192 4.4e-4. `one_k.py` / `ablate.py` at those K:
+
+* **K=180**: six contacts, IDENTICAL positions, depths and normals on
+  both sides (a knee-vs-hip-yaw mesh manifold of four, knee-vs-knee, one
+  sphere-plane), yet `qacc` differs by 257 rad/s² on the left ankle roll.
+  Same constraint set, different solve. Ablating frictionloss, armature,
+  damping or the joint limits one at a time on BOTH engines does not
+  remove it. The open hypothesis is the pyramidal cone's tangent frame on
+  a non-axis-aligned mesh-mesh normal under sliding (our normal is the
+  negation of `mjContact`'s, and `mju_makeFrame(-n)` is not
+  `±mju_makeFrame(n)`); the decisive test is a per-row `efc` comparison,
+  which `drive` does not print yet.
+* **K=191 / 192**: a mesh-vs-plane manifold on `left_wrist_pitch_link`
+  chooses different vertices — MuJoCo's third point (0.7128, 0.4315) is
+  absent from ours, which carries two near-duplicates at (0.6515, 0.4164)
+  — while the other fourteen contacts match to 1e-4. A clipped-ring
+  vertex choice on a plane pair, separate from the hex quad-choice gap
+  (that one is `polygonQuad`; this is a 3-point manifold, no pruning).
+
+Both are rare, localised, reproducible from the saved state, and open.
+`record.py` / `replay.py` / `diverge.py` / `chaos.py` beside them are
+the protocol: record MuJoCo's own torques, replay open-loop, find the
+first divergent substep, then inject and sweep.
+

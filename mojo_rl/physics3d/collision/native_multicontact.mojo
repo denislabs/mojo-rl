@@ -82,14 +82,27 @@ from .ccd_workspace import (
     MC_WS_CLIPPED,
     MC_WS_PN,
     MC_WS_PD,
+    MC_WS_ODIST,
 )
 
-# `mjFACE_TOL` / `mjEDGE_TOL` (`engine_collision_gjk.h:40`). FACE_TOL is a
-# cosine — two face normals count as opposed when their dot is below
-# -0.99999872, i.e. within ~0.09 deg of antiparallel — and EDGE_TOL is the
+# `mjFACE_TOL` / `mjEDGE_TOL` (`engine_collision_gjk.h:41-43`, **3.12**).
+# FACE_TOL is a cosine — two face normals count as opposed when their dot is
+# below -0.996, i.e. within 5.1 deg of antiparallel — and EDGE_TOL is the
 # matching sine for the perpendicularity test.
-comptime MC_FACE_TOL: Float64 = 0.99999872
-comptime MC_EDGE_TOL: Float64 = 0.00159999931
+#
+# ⚠⚠ THESE MOVED IN MuJoCo 3.12 (commit 2444defc, "multiccd with arbitrarily
+# large meshes"): 3.10 and 3.11 carry 0.99999872 / 0.00159999931 (0.09 deg),
+# and this file carried those until 2026-09-08. The runtime pixi ships is
+# 3.12, so at the old values a pair of faces 0.1-5 deg off antiparallel got
+# a four-point manifold from the reference and the single EPA point from us.
+# Found on the Unitree G1: torso_link against right_shoulder_yaw_link during
+# an arm swing, MuJoCo 4 contacts / ours 1, 2.5e-3 rad off after one control
+# step where the floor contacts on the same body were exact. Nothing on the
+# Menagerie board ever put two faces in that band, which is why 85/85 held.
+# `docs/PHYSICS3D_CONTACT_FIDELITY_REASSEMBLE5.md` §11.8.10 tightened the OLD
+# value as a control and is superseded here.
+comptime MC_FACE_TOL: Float64 = 0.996
+comptime MC_EDGE_TOL: Float64 = 0.0888
 
 # ⚠ `MC_MAX_POLYVERT` / `MC_MAX_DEG` / `MC_CLIP_CAP` NOW LIVE IN
 # `ccd_workspace.mojo`, beside the workspace row they size. MuJoCo carries the
@@ -597,6 +610,34 @@ def _polygon_clip[
     if npolygon < 1:
         return 0
 
+    # 3.12: prune the clipped vertices with POSITIVE distance from the
+    # clipping face (`polygonClip`, "prune out vertices with positive
+    # distance from the face") — a clipped vertex above face1's plane is
+    # separated along the normal and is not a witness. 3.10 kept them and
+    # gave every point the EPA depth; the reference now drops them and gives
+    # each survivor its own signed plane distance (`witnessOnFace`), which
+    # `MC_WS_ODIST` carries out alongside `MC_WS_OUT`.
+    var f0x = _wv(ws, wrow, o_face1, 0, 0)
+    var f0y = _wv(ws, wrow, o_face1, 0, 1)
+    var f0z = _wv(ws, wrow, o_face1, 0, 2)
+    var nkeep = 0
+    for i in range(npolygon):
+        var di = _dot3[DTYPE](
+            _wv(ws, wrow, MC_WS_POLY, i, 0) - f0x,
+            _wv(ws, wrow, MC_WS_POLY, i, 1) - f0y,
+            _wv(ws, wrow, MC_WS_POLY, i, 2) - f0z,
+            nx, ny, nz,
+        )
+        if di <= Scalar[DTYPE](0):
+            if nkeep != i:
+                ws[wrow, MC_WS_POLY + nkeep * 3 + 0] = _wv(ws, wrow, MC_WS_POLY, i, 0)
+                ws[wrow, MC_WS_POLY + nkeep * 3 + 1] = _wv(ws, wrow, MC_WS_POLY, i, 1)
+                ws[wrow, MC_WS_POLY + nkeep * 3 + 2] = _wv(ws, wrow, MC_WS_POLY, i, 2)
+            nkeep += 1
+    npolygon = nkeep
+    if npolygon < 1:
+        return 0
+
     comptime if MC_DEBUG_RING:
         print("  [ring] npolygon =", npolygon, " nface1 =", nface1,
               " nface2 =", nface2)
@@ -611,18 +652,10 @@ def _polygon_clip[
         var r2 = 0
         var r3 = 0
         _polygon_quad[DTYPE](ws, wrow, npolygon, r0, r1, r2, r3)
-        ws[wrow, MC_WS_OUT + 0] = _wv(ws, wrow, MC_WS_POLY, r0, 0)
-        ws[wrow, MC_WS_OUT + 1] = _wv(ws, wrow, MC_WS_POLY, r0, 1)
-        ws[wrow, MC_WS_OUT + 2] = _wv(ws, wrow, MC_WS_POLY, r0, 2)
-        ws[wrow, MC_WS_OUT + 3] = _wv(ws, wrow, MC_WS_POLY, r1, 0)
-        ws[wrow, MC_WS_OUT + 4] = _wv(ws, wrow, MC_WS_POLY, r1, 1)
-        ws[wrow, MC_WS_OUT + 5] = _wv(ws, wrow, MC_WS_POLY, r1, 2)
-        ws[wrow, MC_WS_OUT + 6] = _wv(ws, wrow, MC_WS_POLY, r2, 0)
-        ws[wrow, MC_WS_OUT + 7] = _wv(ws, wrow, MC_WS_POLY, r2, 1)
-        ws[wrow, MC_WS_OUT + 8] = _wv(ws, wrow, MC_WS_POLY, r2, 2)
-        ws[wrow, MC_WS_OUT + 9] = _wv(ws, wrow, MC_WS_POLY, r3, 0)
-        ws[wrow, MC_WS_OUT + 10] = _wv(ws, wrow, MC_WS_POLY, r3, 1)
-        ws[wrow, MC_WS_OUT + 11] = _wv(ws, wrow, MC_WS_POLY, r3, 2)
+        _emit_out[DTYPE](ws, wrow, 0, r0, f0x, f0y, f0z, nx, ny, nz)
+        _emit_out[DTYPE](ws, wrow, 1, r1, f0x, f0y, f0z, nx, ny, nz)
+        _emit_out[DTYPE](ws, wrow, 2, r2, f0x, f0y, f0z, nx, ny, nz)
+        _emit_out[DTYPE](ws, wrow, 3, r3, f0x, f0y, f0z, nx, ny, nz)
         return 4
 
     # A clipped EDGE keeps only its two extremes.
@@ -640,17 +673,39 @@ def _polygon_clip[
                     best = d2
                     b1 = i
                     b2 = j
-        ws[wrow, MC_WS_OUT + 0] = _wv(ws, wrow, MC_WS_POLY, b1, 0)
-        ws[wrow, MC_WS_OUT + 1] = _wv(ws, wrow, MC_WS_POLY, b1, 1)
-        ws[wrow, MC_WS_OUT + 2] = _wv(ws, wrow, MC_WS_POLY, b1, 2)
-        ws[wrow, MC_WS_OUT + 3] = _wv(ws, wrow, MC_WS_POLY, b2, 0)
-        ws[wrow, MC_WS_OUT + 4] = _wv(ws, wrow, MC_WS_POLY, b2, 1)
-        ws[wrow, MC_WS_OUT + 5] = _wv(ws, wrow, MC_WS_POLY, b2, 2)
+        _emit_out[DTYPE](ws, wrow, 0, b1, f0x, f0y, f0z, nx, ny, nz)
+        _emit_out[DTYPE](ws, wrow, 1, b2, f0x, f0y, f0z, nx, ny, nz)
         return 2
 
-    for k in range(npolygon * 3):
-        ws[wrow, MC_WS_OUT + k] = _wr(ws, wrow, MC_WS_POLY + k)
+    for i in range(npolygon):
+        _emit_out[DTYPE](ws, wrow, i, i, f0x, f0y, f0z, nx, ny, nz)
     return npolygon
+
+
+@always_inline
+def _emit_out[
+    DTYPE: DType, L_WS: Layout
+](
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    k: Int,
+    src: Int,
+    f0x: Scalar[DTYPE], f0y: Scalar[DTYPE], f0z: Scalar[DTYPE],
+    nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
+) :
+    """Copy clipped vertex `src` to output slot `k`, with its signed plane
+    distance from the clipping face (`witnessOnFace`'s `dist`) beside it in
+    `MC_WS_ODIST`. The witness pair itself is reconstructed at emission:
+    `w2 = v`, `w1 = v - |dist| * wit_dir`."""
+    var vx = _wv(ws, wrow, MC_WS_POLY, src, 0)
+    var vy = _wv(ws, wrow, MC_WS_POLY, src, 1)
+    var vz = _wv(ws, wrow, MC_WS_POLY, src, 2)
+    ws[wrow, MC_WS_OUT + k * 3 + 0] = vx
+    ws[wrow, MC_WS_OUT + k * 3 + 1] = vy
+    ws[wrow, MC_WS_OUT + k * 3 + 2] = vz
+    ws[wrow, MC_WS_ODIST + k] = _dot3[DTYPE](
+        vx - f0x, vy - f0y, vz - f0z, nx, ny, nz
+    )
 
 
 @always_inline
@@ -1678,26 +1733,42 @@ def native_multicontact_contacts[
         rny = -rny
         rnz = -rnz
 
+    # 3.12 `witnessOnFace` + `mjc_penetration`: per clipped vertex `v` with
+    # its own signed plane distance `d`, the witnesses are `w2 = v` and
+    # `w1 = v - |d| * wit_dir`, so `pos = (w1 + w2) / 2 = v - 0.5 |d| wit_dir`
+    # and `con.dist = margin + d`. `ad` is `wit_dir` scaled by the EPA depth
+    # (3.10's `approx_dir`, kept for the normal), so `wit_dir = ad / |ad|`.
+    # 3.10 used the EPA depth for every point; the solver then saw one
+    # penetration per manifold instead of one per row.
+    #
+    # `dist0` (the EPA depth) no longer reaches a contact row; it stays in
+    # the signature so the two narrow phases keep one call shape.
+    _ = dist0
+    var udx = adx / rl
+    var udy = ady / rl
+    var udz = adz / rl
     var written = 0
     for k in range(nx_out):
         if num_contacts >= max_contacts:
             break
         var off = num_contacts * CONTACT_SIZE
+        var dk = _wr(ws, wrow, MC_WS_ODIST + k)
+        var half = Scalar[DTYPE](0.5) * (-dk if dk < Scalar[DTYPE](0) else dk)
         contacts[env, off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
         contacts[env, off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
         contacts[env, off + CONTACT_IDX_POS_X] = (
-            _wv(ws, wrow, MC_WS_OUT, k, 0) - Scalar[DTYPE](0.5) * adx
+            _wv(ws, wrow, MC_WS_OUT, k, 0) - half * udx
         )
         contacts[env, off + CONTACT_IDX_POS_Y] = (
-            _wv(ws, wrow, MC_WS_OUT, k, 1) - Scalar[DTYPE](0.5) * ady
+            _wv(ws, wrow, MC_WS_OUT, k, 1) - half * udy
         )
         contacts[env, off + CONTACT_IDX_POS_Z] = (
-            _wv(ws, wrow, MC_WS_OUT, k, 2) - Scalar[DTYPE](0.5) * adz
+            _wv(ws, wrow, MC_WS_OUT, k, 2) - half * udz
         )
         contacts[env, off + CONTACT_IDX_NX] = rnx
         contacts[env, off + CONTACT_IDX_NY] = rny
         contacts[env, off + CONTACT_IDX_NZ] = rnz
-        contacts[env, off + CONTACT_IDX_DIST] = dist0
+        contacts[env, off + CONTACT_IDX_DIST] = contact_margin + dk
         contacts[
             env, off + CONTACT_IDX_INCLUDEMARGIN
         ] = contact_margin - contact_gap
