@@ -3845,3 +3845,27 @@ changes after stage 1 — per-block factor, cooperative scan, in-place solve
 stands after stage 1 (d3a465b5) is the one to beat, and by mechanism the
 candidates left are registers (stage 3) and the setup's memory traffic,
 each priced on the box before anything is built on it.
+
+### 13.43 MEASURED (2026-09-08): the occupancy lever priced at the operating point — and Newton closed for now
+
+`NEWTON_SHARED_PAD = 2600` (10.4 KB of fake threadgroup memory, bit-identical
+arithmetic) against the stage-1 binary, `p0_ab.sh`, three interleaved rounds,
+MIN: **k=13 3 → 2 blocks/SM, Newton 1.122× slower (1231 → 1382 µs); k=9
+~5 → 3, 1.282× (562 → 721)**; every other kernel 1.00. So occupancy is still
+elastic at k=13, but the slope is flattening — 1 → 3 blocks bought 1.8× (stage
+1), 3 → 2 costs 1.12×. The block ledger's pack (`L_sh` by diagonal block,
+~38 → ~14 KB) plus a register cap (218 → 170, the CUDA-only `nvvm.minctasm`
+annotation — it crashes the Metal compile, so it needs its own entry point)
+would take k=13 from 3 to ~6 blocks/SM: about 1.2–1.3× on Newton, i.e.
+~10% of the step at k=13, less at k=9, nothing at k ≤ 6 where the kernel is
+already unbound and the SO-101 tasks live. It needs a comptime cap on the
+packed size, a fallback for envs whose coupled blocks overflow it, block-local
+indexing at every factor and solve site, and the second entry point.
+
+**Newton is closed at stage 1 (d3a465b5).** The week's ledger on this kernel:
+one win by occupancy (1.8× at k=13), three bit-exact re-mappings of serial
+chains measured and not shipped (§13.41–13.42), the remaining occupancy priced
+at ~10% of the step at the wide end only. Next by share at k=13 — collision
+15%, CRBA 13%, the LDL pair 12.5% — and by the mechanisms that won (memory
+footprint, memory traffic): `ldl_solve` (block ledger F1) and CRBA's dense
+write (F2).
