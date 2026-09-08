@@ -19,6 +19,12 @@ tests/deep_agents/test_fb_trainer_gpu_parity.mojo
 # then the full device sequence at gp 10 runs (measured 1e-7 on Apple).
 tests/deep_agents/test_fb_cpr_gpu_parity.mojo
 
+# FB-CPR ONLINE (the reference's setting) on the batched Pendulum: the driver
+# runs through the CPR agent; D's negatives are the STORED z of the sampled
+# ring rows (0.0) while the FB batch is relabelled; expert windows match the
+# store row for row; two device steps move D; FB file + .cpr sidecar. ~4 min.
+tests/deep_agents/test_fb_cpr_online_smoke.mojo
+
 # The captured train step allocates nothing per call — any per-call alloc is a
 # capture blocker, and the capture abort names only the FIRST one.
 tests/deep_agents/test_fb_cuda_graph_safety.mojo

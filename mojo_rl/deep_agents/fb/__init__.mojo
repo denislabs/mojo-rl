@@ -14,13 +14,15 @@ Milestone A3 (`docs/BFM_ZERO_SHOT_RL.md` §18.3): `FBOnlineAgent` runs the same
 trainer ONLINE on a batched GPU env with no dataset at all — the coverage
 experiment §16.2 asks for.
 
-Milestone A4 (§18.3): `FBCPRTrainer` — FB-CPR, the z-conditioned
+Milestone A4 (§18.3): `FBCPRHead` — FB-CPR, the z-conditioned
 discriminator + style critic of Meta Motivo / BFM-Zero, composed AROUND an
-unchanged `FBTrainer`.
+unchanged `FBTrainer`: `FBCPRTrainer` offline (§18.9.1: the style critic is
+a constant there), `FBCPROnlineAgent` online (the reference's own setting).
 """
 
 from .online import FBOnlineAgent
-from .cpr import FBCPRTrainer, FBCPRLosses
+from .cpr import FBCPRHead, FBCPRTrainer, FBCPRLosses
+from .online_cpr import FBCPROnlineAgent
 from .z_sampler import (
     sample_z,
     sample_z_uniform,

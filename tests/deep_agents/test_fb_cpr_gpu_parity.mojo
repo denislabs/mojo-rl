@@ -129,9 +129,9 @@ def main() raises:
         seed=UInt64(SEED),
     )
     tc.t.policy_noise = 0.0
-    tc.policy_noise = 0.0
+    tc.head.policy_noise = 0.0
     tg.t.policy_noise = 0.0
-    tg.policy_noise = 0.0
+    tg.head.policy_noise = 0.0
 
     print("[1] one step, gp 0, sigma 0: CPR terms agree ...")
     var s1 = _clone(s, BATCH * OBS)
@@ -176,8 +176,8 @@ def main() raises:
     assert_true(_rel(lc.fb.measure, lg.fb.measure) < 1e-4, "measure differs")
 
     print("[2] expert encoding, D logits and the actor after the step ...")
-    tg.ez.download(ctx)
-    var wz = _worst(tc.ez, tg.ez, BATCH * D)
+    tg.head.ez.download(ctx)
+    var wz = _worst(tc.head.ez, tg.head.ez, BATCH * D)
     print("      worst |ez cpu − gpu| =", wz)
     assert_true(wz < 1e-4, "expert encoding differs")
 

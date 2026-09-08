@@ -1239,3 +1239,52 @@ def sq_diff_mean_into_t[target: StaticString, N: Int](
             acc.dev.value().unsafe_ptr(),
             grid_dim=1, block_dim=TPB_REDUCE,
         )
+
+
+def z_relabel3_kernel[D: Int, BATCH: Int](
+    z: Pointer[Scalar[DT], MutAnyOrigin],
+    gauss: Pointer[Scalar[DT], MutAnyOrigin],
+    b_goal: Pointer[Scalar[DT], MutAnyOrigin],
+    z_expert: Pointer[Scalar[DT], MutAnyOrigin],
+    pick: Pointer[Scalar[DT], MutAnyOrigin],
+    keep_frac: Scalar[DT],
+    p_goal: Scalar[DT],
+    p_expert: Scalar[DT],
+    n_goal: Int32,
+    n_expert: Int32,
+):
+    """The ONLINE relabel with BFM-Zero's three-way mixture: `z` arrives
+    holding each row's STORED z; a row keeps it with probability
+    `keep_frac`, else it is overwritten by `z_mixture3_kernel`'s draw
+    (goal `B(s+)` / expert window encoding / Gaussian). Three uniforms per
+    row in `pick` (keep, branch, source row). `project_sphere_kernel` must
+    follow. `online.z_relabel_kernel` is the two-way (no expert) form."""
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    var base = i * D
+    if pick[unsafe_offset=3 * i] < keep_frac:
+        return
+    var u = pick[unsafe_offset=3 * i + 1]
+    var r = pick[unsafe_offset=3 * i + 2]
+    var ng = Int(n_goal)
+    var ne = Int(n_expert)
+    if u < p_goal and ng > 0:
+        var src = Int(r * Scalar[DT](ng))
+        if src >= ng:
+            src = ng - 1
+        if src < 0:
+            src = 0
+        for k in range(D):
+            z[unsafe_offset=base + k] = b_goal[unsafe_offset=src * D + k]
+    elif u < p_goal + p_expert and ne > 0:
+        var src = Int(r * Scalar[DT](ne))
+        if src >= ne:
+            src = ne - 1
+        if src < 0:
+            src = 0
+        for k in range(D):
+            z[unsafe_offset=base + k] = z_expert[unsafe_offset=src * D + k]
+    else:
+        for k in range(D):
+            z[unsafe_offset=base + k] = gauss[unsafe_offset=base + k]

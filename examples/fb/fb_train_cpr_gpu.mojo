@@ -445,12 +445,12 @@ def main() raises:
         )
         ctx.enqueue_function[gather_rows_kernel[OBS, BATCH]](
             obs_host.dev.value().unsafe_ptr(), idx_e.unsafe_ptr(),
-            t.es.dev.value().unsafe_ptr(),
+            t.head.es.dev.value().unsafe_ptr(),
             grid_dim=_blocks(BATCH * OBS), block_dim=TPB,
         )
         ctx.enqueue_function[gather_rows_kernel[OBS, BATCH]](
             obs_host.dev.value().unsafe_ptr(), idx_en.unsafe_ptr(),
-            t.esn.dev.value().unsafe_ptr(),
+            t.head.esn.dev.value().unsafe_ptr(),
             grid_dim=_blocks(BATCH * OBS), block_dim=TPB,
         )
 
@@ -470,7 +470,7 @@ def main() raises:
             t.t.bz.dev.value().unsafe_ptr(),
             gauss.dev.value().unsafe_ptr(),
             t.t.b_sp.dev.value().unsafe_ptr(),
-            t.ez.dev.value().unsafe_ptr(),
+            t.head.ez.dev.value().unsafe_ptr(),
             pick.dev.value().unsafe_ptr(),
             Scalar[DT](p_goal), Scalar[DT](p_expert),
             Int32(BATCH), Int32(BATCH),

@@ -164,7 +164,7 @@ def _make_cpr(reg: Float64, gp: Float64, bc: Float64) raises -> CPR:
     # moves the host RNG, so the inner's noise VALUES differ from a plain
     # trainer's; with sigma = 0 they multiply to exactly 0 on both.
     c.t.policy_noise = 0.0
-    c.policy_noise = 0.0
+    c.head.policy_noise = 0.0
     return c^
 
 
@@ -232,14 +232,14 @@ def test_expert_encoding(ref b: _Batch) raises:
         for j in range(SEQ):
             var rn = Float64(0)
             for k in range(D):
-                var got = Float64(c.ez.data[(w * SEQ + j) * D + k])
+                var got = Float64(c.head.ez.data[(w * SEQ + j) * D + k])
                 var want = m[k] * radius / n
                 var d = abs(got - want)
                 if d > worst:
                     worst = d
                 rn += got * got
                 # identical across the window
-                assert_true(c.ez.data[(w * SEQ + j) * D + k] == c.ez.data[w * SEQ * D + k],
+                assert_true(c.head.ez.data[(w * SEQ + j) * D + k] == c.head.ez.data[w * SEQ * D + k],
                             "window rows differ")
             assert_true(abs(sqrt(rn) - radius) < 1e-4, "expert z off the sphere")
     print("      worst |ez − project(mean B)| =", worst)
@@ -323,18 +323,18 @@ def test_gp_contributes(ref b: _Batch) raises:
     _load(c0, b)
     _ = c0.train_step()
     var d0 = _ReadVals()
-    c0.disc.for_each_param["cpu"](d0, None)
+    c0.head.disc.for_each_param["cpu"](d0, None)
     var c1 = _make_cpr(0.01, 10.0, 1.0)
     _load(c1, b)
     _ = c1.train_step()
     var d1 = _ReadVals()
-    c1.disc.for_each_param["cpu"](d1, None)
+    c1.head.disc.for_each_param["cpu"](d1, None)
     assert_true(not _same(d0, d1), "gp_coef had no effect on D")
     var c2 = _make_cpr(0.01, 10.0, 1.0)
     _load(c2, b)
     _ = c2.train_step()
     var d2 = _ReadVals()
-    c2.disc.for_each_param["cpu"](d2, None)
+    c2.head.disc.for_each_param["cpu"](d2, None)
     assert_true(_same(d1, d2), "same seed, different D — a hidden RNG")
     print("      ok")
 
