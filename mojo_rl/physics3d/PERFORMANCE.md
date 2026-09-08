@@ -3695,3 +3695,19 @@ before and after any block removed by pattern. `NEWTON_STAGE1_CHECK` (a
 knob, off) now recomputes all four moved pieces on thread 0 and poisons
 `qacc[0]` with a magnitude per failing check — one run names the cut;
 positive control 1.1e21.
+
+**MEASURED (RTX 5090, 2026-09-08): the Newton launch 1.47× at k=6, 2.3× at
+k=9, 2.2× at k=12, 1.81× at k=13; the step k=6 2.77 → 2.46 ms (1.13×),
+k=13 7.71 → 5.72 (1.35×).** Per launch: k=0 33 µs, k=3 138, k=6 347, k=9
+562, k=12 905, k=13 1235 (was 2240). k=0 and k=3 do not move (35/160 µs
+before): at nv ≤ 24 the block never was shared-memory bound, so removing
+two arrays buys nothing there — the gain is the occupancy the ledger
+predicted, and it lands above the 1.1–1.6× estimate from k=9 on. Residual
++0.07 ms at every k (the divisor is right). Whole sweep, ms/step: 0.92 /
+1.39 / 2.46 / 3.36 / 4.86 / 5.72 at k = 0/3/6/9/12/13; 1.11 M env-steps/s
+at k=0, 179 k at k=13, 1024 lanes; k=13 is 5.0× baseline 2. Shares at
+k=13: Newton 44%, collision 15%, CRBA 13%, LDL pair 12.5%. Newton's
+`d/dnv²` is 0.00040, still the highest, three times CRBA's: stage 2 (the
+thread-0 serial setup and line search, §13.38's latency term) is what is
+left in it. Note for the shape script: the trace truncates the kernel name
+to `solver_newt…`, so the filter is `newt`, not `newton`.
