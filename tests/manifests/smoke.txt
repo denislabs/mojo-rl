@@ -332,3 +332,8 @@ tests/soarm/test_span_guard.mojo
 # fixture, no GPU. It is 60% of ACT's CPU forward, so it is worth a gate that
 # runs on every tier.
 tests/nn/test_im2col_cpu.mojo
+
+# Gradient penalty (WGAN-GP / R1) at first order — docs/BFM_ZERO_SHOT_RL.md
+# §18.8. Two oracles (parameter central differences, a closed form on a
+# linear D) plus the apply-first linearity contract. ~15 s.
+tests/nn/test_grad_penalty.mojo

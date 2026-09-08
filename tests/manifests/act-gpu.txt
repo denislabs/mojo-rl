@@ -37,3 +37,6 @@ tests/deep_agents/act/test_act_dataset_gpu.mojo
 # equal what `_read_terms`/`read_clip_norm` download off the same forward.
 # Self-contained (stub backbone, synthetic batch) — no store, no fixture.
 tests/deep_agents/act/test_act_device_metrics.mojo
+
+# GradPenalty device path against the host path (same net, same input).
+tests/nn/test_grad_penalty_gpu.mojo
