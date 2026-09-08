@@ -118,27 +118,27 @@ travel with the run as `cfg/*` fields.
 ⚠ THE SUCCESS-RATE baselines are lane-count independent — a rate is per
 episode either way — so only the RETURN figures moved.
 
-⚠⚠ THE CONFIGURATION THAT TRAINS, and the fourteen runs it took to find it.
-`so101_gather_bricks`, 990k steps, weights 1.0/0.21, everything else default:
+⚠⚠ THE CONFIGURATION THAT TRAINS, AND THE TASK IS SOLVED MORE THAN HALF THE
+TIME. `so101_gather_bricks`, 1M steps, weights 1.0/0.21, everything else
+default, 3328 episodes in 34 minutes on a 5090:
 
-    baseline (this run's own warmup)      48.2      13% of the ceiling
-    eval return                34.7 -> 232.6        64% of the ceiling
-    avg_reward                 49.8 -> 217.2, best 242      4.5x baseline
-    mean_reward               0.177 -> 0.502, monotone over 990k
-    mean_q      49.0 against a fixed point of 50.2           0.98x
-    next_q - mean_q                                        +0.111
-    critic_loss                                              0.96
+    SUCCESS RATE                          0.5625   greedy, 32 lanes
+      against a random baseline of          0.02   2-sigma band ends 0.069
+    eval return                  35 -> 207, best 238   ceiling 363
+    avg_reward                   44 -> 224, monotone, best = last
+    mean_reward               0.186 -> 0.451, monotone over 1M
+    mean_q       48.9 against a fixed point of 48.8            1.00x
+    next_q - mean_q                                          +0.112
+    critic_loss                                                0.83
 
-The ceiling is `(w_goal + w_reach) * MAX_STEPS` = 363. `mean_q` converging to
-within 2% of `mean_reward / (1 - gamma)` is what a correct critic looks like,
-and it is the diagnostic to read before any return.
+Eighteen of thirty-two lanes bring the blocks within 6 cm, from a policy that
+was handed nothing but a `.task` file. `mean_q` landing ON its fixed point is
+what a correct critic looks like — read that before any return.
 
-⚠ 64% OF THE CEILING IS NOT 64% SUCCESS. The return is two `tolerance` terms
-and both pay for PROXIMITY. Inverting the reward at the final `mean_reward`,
-with the reach term near saturation, puts the goal distance around 0.071 m —
-so the blocks average about 0.131 m apart against a goal of 0.060. Real
-progress from the random 0.115 m of goal distance, and not the task solved.
-`eval/success_rate` is the number that says, and it is logged now.
+⚠ THE RETURN AND THE RATE ARE DIFFERENT CLAIMS and only the rate is the task.
+Both reward terms pay for PROXIMITY, so a high return can mean "hovering near"
+rather than "solved" — which is exactly what 990k steps at 64% of the ceiling
+turned out to be worth: 0.56 success, not 0.64.
 
 ⚠⚠ THE LAST CHANGE WAS `TERMINATE_ON_UNHEALTHY: True -> False`, ALONE. Run 13
 had every other setting identical — same weights, same tau, same entropy, same
@@ -318,6 +318,10 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # ⚠ THESE ARE SUCCESS RATES AND ARE LANE-COUNT INDEPENDENT, unlike the
         # shaped RETURN — a rate is per episode either way. The return
         # baselines in the header are not, and mixing the two cost two rounds.
+        # ⚠ AND THE TRAINED REFERENCE IS 0.5625, at 1M steps with weights
+        # 1.0/0.21 and `TERMINATE_ON_UNHEALTHY=False`. A run that lands far
+        # below that is not "learning slowly", it is configured differently —
+        # check `cfg/*` against the header's table before tuning anything.
         return (0.02, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         return (0.25, 1.00, True)
@@ -945,4 +949,7 @@ def main() raises:
             print("  and `alpha` in the logger before touching anything else.")
         else:
             print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
+            if task_name == "so101_gather_bricks":
+                print("  the trained reference at 1M steps is 0.5625 —",
+                      "this run is", rate / 0.5625, "of it")
         print("=" * 72)
