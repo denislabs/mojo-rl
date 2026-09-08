@@ -48,7 +48,12 @@ examples/tasks/task_viewer.mojo
 #
 #   pixi run mojo run -I . examples/tasks/task_batched_gpu.mojo
 #   pixi run mojo run -I . examples/tasks/task_eval_frozen.mojo
-#   pixi run mojo run -I . examples/tasks/sac_task_gpu.mojo --steps 20000
+#   pixi run mojo run -I . # ⚠ WHAT THE SHAPED TERMS ACTUALLY MEASURE, under a random policy. The two
+# distances the reward charges for, against `SHAPE_CLIP` — because
+# `mean_reward` is their weighted SUM and neither can be recovered from it.
+# Measured on `gather`: goal 0.139 m, reach 0.120 m, 0 of 300 steps clipped.
+examples/tasks/task_shaping_probe.mojo
+examples/tasks/sac_task_gpu.mojo --steps 20000
 #
 # ⚠ THE NVIDIA LEG IS STILL THE ONE THAT MATTERS FOR THROUGHPUT, and a long
 # training run belongs there. What changed is that the GATES can be iterated

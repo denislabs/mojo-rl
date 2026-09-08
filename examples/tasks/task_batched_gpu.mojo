@@ -56,6 +56,7 @@ it.
 """
 
 from std.random import seed as seed_rng
+from layout import Layout
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -75,7 +76,9 @@ from mojo_rl.tasks.eval import (
     eval_goal, region_sites, region_rects, region_half_heights,
 )
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
+from mojo_rl.tasks.gpu_eval import (
+    region_table_words, require_gpu_regions, tape_distance_gpu,
+)
 from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
 from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
 from mojo_rl.tasks.active import active_mask
@@ -287,6 +290,13 @@ def main() raises:
         var rew = rew_h.unsafe_ptr()
 
         var mismatch = 0
+        var shaped_bad = 0
+        var shaped_worst = 0.0
+        comptime L_META_H = Layout.row_major(N_ENVS, METADATA_SIZE)
+        comptime L_CUR_H = Layout.row_major(1, MODEL_CURRICULUM_SIZE)
+        comptime L_XP_H = Layout.row_major(N_ENVS, NB * 3)
+        comptime L_XQ_H = Layout.row_major(N_ENVS, NB * 4)
+        comptime L_SP_H = Layout.row_major(N_ENVS, NS * 3)
         var a_true = 0
         var b_true = 0
         var first_bad = -1
@@ -308,6 +318,53 @@ def main() raises:
             var gpu = Float64(rew[e]) > 0.5
             if host != gpu:
                 mismatch += 1
+
+            # ⚠⚠ AND THE SHAPED VALUE, NOT JUST THE GOAL BIT. This compared
+            # only `reward > 0.5` against `eval_goal`, so the two SHAPED terms
+            # the reward subtracts had never been checked against a host
+            # computation at all — and a run whose per-step cost was 3.4x
+            # larger than any legal weight pair can produce went unexplained
+            # for a round because nothing could say what the device actually
+            # charged.
+            #
+            # The host recomputes it from the SAME downloaded state, through
+            # the same `tape_distance_gpu` the kernel uses, plus the reach
+            # term spelled out here. A disagreement is a defect in the reward,
+            # which is the one quantity every curve in every run is made of.
+            var d_h = Float64(
+                tape_distance_gpu[DT, N_ENVS, NB, NS * 3](
+                    env.d.meta.lt["cpu", L_META_H](),
+                    env.mf.curriculum.lt["cpu", L_CUR_H](),
+                    env.d.xpos.lt["cpu", L_XP_H](),
+                    env.d.xquat.lt["cpu", L_XQ_H](),
+                    env.d.site_xpos.lt["cpu", L_SP_H](),
+                    e,
+                )
+            )
+            if d_h > So101TabletopConfig.SHAPE_CLIP:
+                d_h = So101TabletopConfig.SHAPE_CLIP
+            comptime GS = So101TabletopConfig.GRIPPER_SITE
+            var sb = Int(tpa[1]) if is_a else Int(tpb[1])
+            var rx = sp[GS * 3] - xb[sb * 3]
+            var ry = sp[GS * 3 + 1] - xb[sb * 3 + 1]
+            var rz = sp[GS * 3 + 2] - xb[sb * 3 + 2]
+            var reach_h = (rx * rx + ry * ry + rz * rz) ** 0.5
+            if reach_h > So101TabletopConfig.SHAPE_CLIP:
+                reach_h = So101TabletopConfig.SHAPE_CLIP
+            var want = (1.0 if host else 0.0) - (
+                So101TabletopConfig.SHAPE_W_GOAL * d_h
+            ) - So101TabletopConfig.SHAPE_W_REACH * reach_h
+            var err = Float64(rew[e]) - want
+            if err < 0.0:
+                err = -err
+            if err > shaped_worst:
+                shaped_worst = err
+            if err > 1e-6:
+                shaped_bad += 1
+                if shaped_bad <= 3:
+                    print("      lane", e, "reward", Float64(rew[e]),
+                          "but the host computes", want,
+                          " (goal_d", d_h, " reach_d", reach_h, ")")
                 if first_bad < 0:
                     first_bad = e
             if is_a and gpu:
@@ -327,6 +384,19 @@ def main() raises:
                 + " read the same state and must agree."
             )
         print("  ok: every lane's GPU reward equals the CPU evaluation")
+
+        print("  shaped-value mismatches:", shaped_bad, "of", N_ENVS,
+              " worst |error|:", shaped_worst)
+        if shaped_bad != 0:
+            raise Error(
+                "P3: " + String(shaped_bad) + " lanes' GPU reward differs from"
+                " the host's recomputation of the SHAPED value (worst "
+                + String(shaped_worst) + "). The goal BIT agrees, so this is"
+                " the two shaped terms — `SHAPE_W_GOAL * goal_distance` and"
+                " `SHAPE_W_REACH * gripper_to_subject` — and the reward is the"
+                " one quantity every curve in every run is made of."
+            )
+        print("  ok: and the SHAPED value agrees to", shaped_worst)
 
         # ⚠⚠ THE NEGATIVE LEG. Without it a tape misindexed by lane passes
         # everything above — the CPU leg reads the same misindexed tape and
