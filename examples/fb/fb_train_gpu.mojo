@@ -67,6 +67,8 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
 from mojo_rl.deep_agents.fb.kernels import (
     gather_rows_kernel,
@@ -84,7 +86,18 @@ comptime STORE_PATH: StaticString = "fb_walker_all_sac.h5"
 comptime NQ: Int = 9
 comptime NV: Int = 9
 comptime NACT: Int = 6
-comptime OBS: Int = NQ + NV
+# ⚠ THE OBSERVATION REPRESENTATION IS A COMPTIME SWITCH — rebuild to change.
+# False: `[qpos | qvel]` (18-D), every §13 / A2 number. True: dm_control's
+# 24-D vector rebuilt through `obs_at`, the representation the ONLINE agent
+# trains on (§18.7). The control §18.7.4 asks for: the offline pair at equal
+# data on the online arm's representation, scored by
+# `fb_eval_walker_online.mojo` (which expects 24-D). Tag and checkpoint
+# names get an `_envobs` suffix so the two cannot be confused.
+comptime ENV_OBS: Bool = False
+comptime OBS: Int = DMWalkerModel.OBS_DIM if ENV_OBS else NQ + NV
+comptime ScorerEnv = Phyics3dEnv[
+    DMWalkerModel, DMWalkerConfig[1.0], DType.float64, False
+]
 # ⚠ There is deliberately NO `EP_LEN` here. It used to be one, and it was a
 # silent correctness bug: `next_row` marked a boundary at every multiple of a
 # COMPTIME 250 while the collected store runs 1000-step episodes, so 3 of every
@@ -262,6 +275,8 @@ def main() raises:
     var ckpt_path = String(CKPT_PATH)
     var csv_path = String(CSV_PATH)
     var run_name = String(RUN_NAME)
+    comptime if ENV_OBS:
+        tag = tag + "_envobs" if tag.byte_length() > 0 else String("envobs")
     if tag.byte_length() > 0:
         ckpt_path = "fb_walker_" + tag + ".ckpt"
         csv_path = "fb_walker_" + tag + "_metrics.csv"
@@ -321,15 +336,46 @@ def main() raises:
     # obs = [qpos | qvel], built on the host because it is a one-off.
     var obs_host = Tensor()
     obs_host.ensure(n_rows * OBS)
-    for r in range(n_rows):
-        for k in range(NQ):
-            obs_host.data[r * OBS + k] = Scalar[DT](
-                Float64(qpos.host[r * NQ + k])
-            )
-        for k in range(NV):
-            obs_host.data[r * OBS + NQ + k] = Scalar[DT](
-                Float64(qvel.host[r * NV + k])
-            )
+    comptime if ENV_OBS:
+        # The env's own 24-D vector for every row, through `obs_at` — the
+        # same producer the online run script and its eval use.
+        var scorer = ScorerEnv()
+        _ = scorer.reset()
+        var q = List[Float64](length=NQ, fill=0.0)
+        var v = List[Float64](length=NV, fill=0.0)
+        for r in range(n_rows):
+            for k in range(NQ):
+                q[k] = Float64(qpos.host[r * NQ + k])
+            for k in range(NV):
+                v[k] = Float64(qvel.host[r * NV + k])
+            var o = scorer.obs_at(q, v)
+            for k in range(OBS):
+                obs_host.data[r * OBS + k] = Scalar[DT](Float64(o.data[k]))
+        var moving = 0
+        for k in range(OBS):
+            var mn = Float64(1e30)
+            var mx = Float64(-1e30)
+            for r in range(n_rows):
+                var x = Float64(obs_host.data[r * OBS + k])
+                if x < mn:
+                    mn = x
+                if x > mx:
+                    mx = x
+            if mx - mn > 1e-6:
+                moving += 1
+        print("       ENV_OBS: 24-D env observation via obs_at;", moving, "/", OBS, "dims vary")
+        if moving < OBS - 2:
+            raise Error("ENV_OBS obs table: too few varying dims")
+    else:
+        for r in range(n_rows):
+            for k in range(NQ):
+                obs_host.data[r * OBS + k] = Scalar[DT](
+                    Float64(qpos.host[r * NQ + k])
+                )
+            for k in range(NV):
+                obs_host.data[r * OBS + NQ + k] = Scalar[DT](
+                    Float64(qvel.host[r * NV + k])
+                )
     # ⚠⚠ Standardise BEFORE the upload, so every consumer on device — the
     # gather kernels, B, F, the actor — sees one representation. Normalising
     # after upload, or in only some of the three gathers, is the kind of split
@@ -446,6 +492,7 @@ def main() raises:
     logger.set_config("ortho_weight", String(ortho_w))
     logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
     logger.set_config("obs_norm", String(obs_norm_on))
+    logger.set_config("env_obs", String(ENV_OBS))
     logger.set_config("tag", tag)
     logger.set_config("seed", String(seed_v))
     logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
