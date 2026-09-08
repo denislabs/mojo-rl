@@ -375,6 +375,16 @@ def test_three_trees_ldl() raises:
     sp.m_inv.download(ctx)
     _cmp("trees M^-1", ss.m_inv, sp.m_inv, BATCH * TNV * TNV)
 
+    # RNE on the multi-tree model (§13.47): three bodies hang off the world,
+    # so the cooperative kernel's level-parallel backward pass has to skip
+    # body 0 as the serial pass does, and the free joints exercise the
+    # 6-dof branch of the forward pass under the shared body -> joint map.
+    compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH](ds, mf, ss, ctx)
+    compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, sp, ctx)
+    ss.bias.download(ctx)
+    sp.bias.download(ctx)
+    _cmp("trees RNE bias", ss.bias, sp.bias, BATCH * TNV)
+
     # ⚠⚠ NON-VACUITY: the model must actually HAVE more than one tree, or this
     # whole arm is Walker2D again with different numbers. `M` must be BLOCK
     # DIAGONAL — the slider's 2 dofs and the two boxes' 6 each never couple —

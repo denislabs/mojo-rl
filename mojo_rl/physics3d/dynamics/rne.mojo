@@ -12,6 +12,7 @@ NBODY*10 tensor); `cinert` stays a per-thread InlineArray."""
 
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -72,7 +73,6 @@ def _rne_fwd_body[
     L_CDOF: Layout,
     L_CVEL: Layout,
     L_CACC: Layout,
-    JM_CAP: Int = 1,
 ](
     env: Int,
     b: Int,
@@ -94,11 +94,12 @@ def _rne_fwd_body[
     cacc: LayoutTensor[
         DTYPE, L_CACC, MutAnyOrigin
     ],
-    # Body → joint map (`body_joint_map`), optional: with `map_ok` the joint
-    # loop runs over this body's contiguous run instead of scanning all
-    # `njoint` rows for `JOINT_IDX_BODY_ID == b`. Same joints, same order.
-    jnt_adr: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
-    jnt_num: Scratch[Int, JM_CAP] = Scratch[Int, JM_CAP](1, fill=0),
+    # This body's joints as a contiguous run `[j_lo, j_hi)` of the joint
+    # table (`body_joint_map` on the CPU, the block's shared map on the
+    # cooperative kernel). With `map_ok` False the loop scans all `njoint`
+    # rows for `JOINT_IDX_BODY_ID == b` instead. Same joints, same order.
+    j_lo: Int = 0,
+    j_hi: Int = -1,
     map_ok: Bool = False,
 ):
     """Forward-pass cvel/cacc for one body (verbatim from rne_fwd_body;
@@ -124,12 +125,9 @@ def _rne_fwd_body[
         for k in range(6):
             cacc[env, b * 6 + k] = cacc[env, parent * 6 + k]
 
-    var j_lo = 0
-    var j_hi = njoint
-    if map_ok:
-        j_lo = jnt_adr[b]
-        j_hi = j_lo + jnt_num[b]
-    for j in range(j_lo, j_hi):
+    var lo = j_lo if map_ok else 0
+    var hi = j_hi if map_ok else njoint
+    for j in range(lo, hi):
         if not map_ok:
             var jnt_body = Int(
                 rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
@@ -584,8 +582,9 @@ def _rne_env[
     L_CRB: Layout,
     L_RNE_CACC: Layout,
     # CPU dispatcher only: derive the body → joint map once per env and hand
-    # it to the per-body forward pass (see `body_joint_map`). The GPU legs
-    # keep the scan — untouched, and no per-thread table.
+    # it to the per-body forward pass (see `body_joint_map`). The serial GPU
+    # kernel keeps the scan (no per-thread table); the cooperative kernel
+    # builds the map once per block in threadgroup memory.
     JMAP: Bool = False,
 ](
     env: Int,
@@ -668,9 +667,11 @@ def _rne_env[
             njoint, nbody, joints, jnt_adr, jnt_num
         )
     for b in range(1, nbody):
-        _rne_fwd_body[DTYPE, JM_CAP=JM_CAP](
+        var j_lo = jnt_adr[b] if map_ok else 0
+        var j_hi = j_lo + jnt_num[b] if map_ok else njoint
+        _rne_fwd_body[DTYPE](
             env, b, gx, gy, gz, dims, qvel, bodies, joints, cdof, crb, rne_cacc,
-            jnt_adr, jnt_num, map_ok,
+            j_lo, j_hi, map_ok,
         )
 
     # Step 2: Spatial forces per body: cfrc = I*cacc + cvel x* (I*cvel)
@@ -739,9 +740,11 @@ def _rne_fields_kernel[
 # init; cinert flat-striped into a PER-THREAD InlineArray; forward
 # cvel/cacc level-parallel (same `_rne_fwd_body` helper, barrier per
 # level); cfrc flat-striped with the SAME body->thread mapping as cinert
-# (so cinert_g[b] is thread-local); backward pass serial on tid 0; joint
-# projection flat-striped (joints own disjoint DOFs). All helpers are the
-# ones the serial kernel calls -> bit-exact. Grid is exact (one block per
+# (so cinert_g[b] is thread-local); backward pass level-parallel in gather
+# form (§13.47; serial on tid 0 before); joint projection flat-striped
+# (joints own disjoint DOFs). The forward/cfrc/projection helpers are the
+# ones the serial kernel calls; the backward pass reproduces the serial
+# summation order -> bit-exact. Grid is exact (one block per
 # env) -> legacy valid_env guards dropped; trailing barrier dropped.
 def _rne_fields_mt_kernel[
     DTYPE: DType,
@@ -787,15 +790,37 @@ def _rne_fields_mt_kernel[
     var gy = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Y])
     var gz = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_GRAVITY_Z])
 
-    # Body tree depth (level) for the forward pass — model-only reads,
-    # identical in every thread -> identical barrier count.
-    var level = InlineArray[Int, NBODY](fill=0)
-    var max_level = 0
-    for b in range(1, NBODY):
-        var pp = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
-        level[b] = level[pp] + 1
-        if level[b] > max_level:
-            max_level = level[b]
+    # ⚠ THE MODEL'S TOPOLOGY, ONCE PER BLOCK, IN THREADGROUP MEMORY. Before
+    # §13.47 every thread rebuilt the body-level table from `NBODY` global
+    # parent reads, every body scanned all `NJOINT` rows of the joint table
+    # for its joints on every level of the forward pass, and the backward
+    # accumulation ran on thread 0 as `NBODY` chained read-modify-writes of
+    # GLOBAL memory — the CRBA kernel's shape (§13.46), which paid 18×.
+    # Layout: `[0, NBODY)` parent body, `[NBODY, 2·NBODY)` first joint of
+    # the body, `[2·NBODY, 3·NBODY)` its joint count — or -1 when the
+    # body's joints are not one contiguous run, in which case that body
+    # scans (`body_joint_map`'s rule, decided per body). Built by a thread
+    # per body: one parent read, one pass over the joint table.
+    var topo_sh = LayoutTensor[
+        DType.int32, Layout.row_major(3 * NBODY), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var topo = topo_sh.ptr
+    for b in range(tid, NBODY, N_THREADS):
+        topo[unsafe_offset=b] = Int32(Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT])))
+        var adr = -1
+        var num = 0
+        var contiguous = True
+        for j in range(NJOINT):
+            var jb = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
+            if jb == b:
+                if adr < 0:
+                    adr = j
+                elif adr + num != j:
+                    contiguous = False
+                num += 1
+        topo[unsafe_offset=NBODY + b] = Int32(adr)
+        topo[unsafe_offset=2 * NBODY + b] = Int32(num if contiguous else -1)
 
     # Init bias / cvel(crb) / cacc / cfrc (distributed).
     for i in range(tid, NV, N_THREADS):
@@ -805,6 +830,15 @@ def _rne_fields_mt_kernel[
         rne_cacc[env, i] = Scalar[DTYPE](0)
         rne_cfrc[env, i] = Scalar[DTYPE](0)
     barrier()
+
+    # Body tree depth (level) — from the shared parent table, identical in
+    # every thread -> identical barrier count.
+    var level = InlineArray[Int, NBODY](fill=0)
+    var max_level = 0
+    for b in range(1, NBODY):
+        level[b] = level[Int(topo[unsafe_offset=b])] + 1
+        if level[b] > max_level:
+            max_level = level[b]
 
     # Step 0: cinert (flat, my bodies -> per-thread cinert_g slots).
     comptime CINERT_GPU_SIZE = cap[NBODY]() * 10
@@ -816,13 +850,16 @@ def _rne_fields_mt_kernel[
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
-    # Step 1: forward cvel/cacc (level-parallel, shared helper).
+    # Step 1: forward cvel/cacc (level-parallel, shared helper; each body's
+    # joints from the shared map).
     for lvl in range(1, max_level + 1):
         for b in range(1 + tid, NBODY, N_THREADS):
             if level[b] == lvl:
+                var num = Int(topo[unsafe_offset=2 * NBODY + b])
+                var j_lo = Int(topo[unsafe_offset=NBODY + b])
                 _rne_fwd_body[DTYPE](
                     env, b, gx, gy, gz, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), qvel, bodies, joints, cdof, crb,
-                    rne_cacc,
+                    rne_cacc, j_lo, j_lo + num, num >= 0,
                 )
         barrier()
 
@@ -833,10 +870,38 @@ def _rne_fields_mt_kernel[
         )
     barrier()
 
-    # Step 3: backward cfrc accumulation (cheap, tid 0 serial).
-    if tid == 0:
-        _rne_backward_env[DTYPE](env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT](), bodies, rne_cfrc)
-    barrier()
+    # Step 3: backward cfrc accumulation, leaves to root, level-parallel in
+    # GATHER form: a body at level `lvl` adds its children (all at `lvl+1`,
+    # complete after the previous barrier) into its own row, in DECREASING
+    # child index — the order in which the serial pass (`_rne_backward_env`:
+    # `for b in nbody-1..1: cfrc[parent[b]] += cfrc[b]`) delivered them to
+    # this parent, each child's row final at that moment there as here. Same
+    # additions, same order, same rounding: bit-exact. World (body 0) is
+    # never a target, as in the serial pass's `parent > 0`.
+    for lvl in range(max_level, 0, -1):
+        for b in range(1 + tid, NBODY, N_THREADS):
+            if level[b] == lvl:
+                var f0 = rne_cfrc[env, b * 6 + 0]
+                var f1 = rne_cfrc[env, b * 6 + 1]
+                var f2 = rne_cfrc[env, b * 6 + 2]
+                var f3 = rne_cfrc[env, b * 6 + 3]
+                var f4 = rne_cfrc[env, b * 6 + 4]
+                var f5 = rne_cfrc[env, b * 6 + 5]
+                for c in range(NBODY - 1, b, -1):
+                    if Int(topo[unsafe_offset=c]) == b:
+                        f0 = f0 + rne_cfrc[env, c * 6 + 0]
+                        f1 = f1 + rne_cfrc[env, c * 6 + 1]
+                        f2 = f2 + rne_cfrc[env, c * 6 + 2]
+                        f3 = f3 + rne_cfrc[env, c * 6 + 3]
+                        f4 = f4 + rne_cfrc[env, c * 6 + 4]
+                        f5 = f5 + rne_cfrc[env, c * 6 + 5]
+                rne_cfrc[env, b * 6 + 0] = f0
+                rne_cfrc[env, b * 6 + 1] = f1
+                rne_cfrc[env, b * 6 + 2] = f2
+                rne_cfrc[env, b * 6 + 3] = f3
+                rne_cfrc[env, b * 6 + 4] = f4
+                rne_cfrc[env, b * 6 + 5] = f5
+        barrier()
 
     # Step 4: qfrc projection (flat per joint; disjoint DOFs).
     for j in range(tid, NJOINT, N_THREADS):

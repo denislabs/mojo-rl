@@ -4022,3 +4022,82 @@ Newton 53%, collision 18.5%, unlabelled (the batched env kernel, 91 µs)
 the env kernel and the LDL factor (70 µs). Before any of those: grep
 the rne, cdof and env kernels for the SAME per-thread topology rebuild —
 this cut was one grep away for weeks.
+
+### 13.46b Baseline 5, the full sweep (5090, 2026-09-08, `p0_attrib.sh`, 1500 timed steps)
+
+Run on c98948ac (the CRBA row, 20.5 µs and hash `9339336f`, is the tree's
+signature; the directory was named `p0_base4` before the CRBA A/B came
+back). Per-step ms by term; `unlabelled` is every kernel the labeller
+cannot prove a term for (integrator, kinematics, the post-constraint RNE
+sensor pair, subtree_com, the env kernel, `parser_mode…`).
+
+| k | nv | wall | GPU | newton | collision | ldl_pair | rne | unlabelled | crba | cdof |
+|---|----|------|-----|--------|-----------|----------|-----|------------|------|------|
+| 0 | 6 | 0.918 | 0.848 | 0.066 | 0.538 | 0.031 | 0.032 | 0.158 | 0.010 | 0.011 |
+| 3 | 24 | 1.311 | 1.233 | 0.277 | 0.561 | 0.077 | 0.044 | 0.247 | 0.012 | 0.011 |
+| 6 | 42 | 2.069 | 1.998 | 0.681 | 0.713 | 0.145 | 0.061 | 0.357 | 0.018 | 0.013 |
+| 9 | 60 | 2.856 | 2.786 | 1.120 | 0.821 | 0.213 | 0.095 | 0.484 | 0.025 | 0.015 |
+| 12 | 78 | 3.883 | 3.809 | 1.814 | 0.843 | 0.328 | 0.119 | 0.632 | 0.037 | 0.017 |
+| 13 | 84 | 4.607 | 4.542 | 2.460 | 0.852 | 0.367 | 0.125 | 0.663 | 0.041 | 0.018 |
+
+Residual (wall − GPU) is a flat 0.07 ms at every k: host gaps, not a
+divisor. The Newton kernel's span table is flat (last/first 1.00) with a
+per-launch max of 1.95 ms against a 1.24 mean — the contact-count tail.
+
+**What the sweep says that the k=13 shares hid.** Collision is nearly
+flat in k (269 µs a launch at k=0, 426 at k=13) and is therefore 63% of
+the k=0 step and 46% of k=3: it is the step's FIXED cost, and the lever
+for every small-k configuration. At k=13 the unlabelled bucket (0.663 ms,
+14.6%) is, by kernel: the five integrator kernels 0.232, the two
+kinematics kernels 0.135, `parser_mode…` 0.107 (a per-step kernel that
+lives under `parser/` — to be named), the sensor RNE pair 0.091,
+subtree_com 0.047, the env kernel 0.039. Nothing in it is one kernel
+worth a cut on its own; the `parser_mode…` one is worth naming.
+
+The LDL split reads "no CRBA launch in the trace to anchor on" at every k
+although the same report labels the CRBA kernel: a defect of the split
+reader (`disambiguate_by_launch_order` anchors on `label(nm) == "crba"`
+over the trace's `Name` column), harmless because the factor (69.8 µs at
+k=13) and the solve (22.0) are already separate rows above it. To be
+looked at with a trace file at hand.
+
+### 13.47 LANDED, UNPRICED (2026-09-08): the RNE kernel — topology once per block, backward pass level-parallel
+
+The same grep §13.46 ended on. `_rne_fields_mt_kernel` (block per env,
+`NV` threads; 62.7 µs a launch at k=13, 2.8% of the step; 16 µs at k=0)
+had three pieces of the CRBA kernel's shape:
+
+- every thread rebuilt the body-level table from `NBODY` global parent
+  reads before any arithmetic;
+- the forward pass called `_rne_fwd_body` with the SCAN form — each body
+  read all `NJOINT` rows of the joint table to find its own joints, on
+  every level of the level-serial pass (the CPU leg had used
+  `body_joint_map` since §13.26; the GPU legs "kept the scan — no
+  per-thread table", which was the right call for a per-thread table and
+  the wrong one for a per-block table);
+- the backward accumulation of `cfrc` ran on thread 0 as `NBODY`
+  iterations of six read-modify-writes of GLOBAL memory, each chained
+  through the parent's row — a ~100-deep dependent chain in a kernel at
+  a quarter of a wave, the LDL solve's shape (§13.44).
+
+Now: one `3·NBODY` int32 table in threadgroup memory — parent, first
+joint, joint count (−1 = not one contiguous run, that body scans) —
+built by a thread per body (one parent read, one pass over the joint
+table) before the first barrier; the level table computed from it; the
+forward pass handed each body its `[j_lo, j_hi)`; and the backward pass
+level-parallel in GATHER form: a body at level `lvl` adds its children
+(all at `lvl+1`, complete after the previous barrier) into its own row
+in DECREASING child index, which is the order the serial pass delivered
+them to that parent with each child's row final at that moment — same
+additions, same order, same rounding. The serial GPU kernel and the CPU
+leg are untouched (the forward helper takes the range instead of the
+map; the CPU leg passes what its map gave it).
+
+Gates on Apple: `test_fields_mt_parity` — walker2d RNE bias bit-exact,
+and a NEW ThreeTrees RNE compare (three bodies hang off the world, two of
+them on free joints) bit-exact; the mutant that gathers children in
+ASCENDING order fails the walker2d compare at the last bit
+(−13.804855 vs −13.804854), so the gate sees the ordering claim; arm C
+(RK4 with contacts, three steps) bit-exact; the Newton blocked golden
+fingerprint; SO101Tabletop blocked vs the CPU oracle; the ThreeTrees
+block oracle 115/115. The box A/B prices it against `probe_crba`.
