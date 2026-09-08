@@ -122,10 +122,10 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 23
+comptime METADATA_SIZE: Int = 27
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
-`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE` and
-`META_IDX_INIT_REGION_0..2`.
+`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`,
+`META_IDX_INIT_REGION_0..2`, `META_IDX_GOAL_HELD` and the four shaping words.
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
 five-entry orders — `desired_order` and `initial_order`, the second because its
@@ -304,6 +304,39 @@ an untouched `meta` already holds. See the note above."""
 # ⚠ WRITTEN BY THE REWARD HOOK, which is the one place that already evaluates
 # the goal — a second evaluation somewhere else would be a second answer.
 comptime META_IDX_GOAL_HELD: Int = 22
+
+# ── THE SHAPED REWARD'S PARAMETERS, PER LANE ──────────────────────────────
+#
+# ⚠⚠ PER LANE BECAUSE A BATCH RUNS MORE THAN ONE TASK. They lived in
+# `curriculum`, which is `[1, MODEL_CURRICULUM_SIZE]` — ONE row for the whole
+# batch — and that is right for the region table (a region belongs to the
+# FAMILY) and wrong for shaping, because what a weight is worth depends on the
+# task's own distance scale. Measured on `so101_tabletop` at identical weights
+# and margins:
+#
+#     task     op      goal dist   goal term   total reward
+#     gather   Near        0.139       0.011          0.292
+#     lift     Above       0.030       0.811          1.171
+#     settle   On          0.000       1.000          1.360
+#
+# A 4.7x spread in the reward and 91x in the goal term, from the SAME numbers.
+# A two-task batch would hand its lanes a bimodal reward, which on this family
+# is how a critic is destabilised.
+#
+# ⚠ ZERO IS "NO SHAPING", AND THAT IS WHAT AN UNTOUCHED `meta` HOLDS. `Data`
+# uploads a zero-filled `meta`, so a driver that never writes these gets the
+# SPARSE reward — the goal bit and nothing else — rather than a shaped one
+# with meaningless parameters. The same bias-toward-safe the init-region words
+# use, for the same reason.
+#
+# ⚠ A MARGIN OF ZERO IS A HARD INDICATOR, not an error: `tolerance` with
+# `margin == 0` returns 1 inside the bounds and 0 outside. So a nonzero weight
+# with a zero margin is a SPARSE term, which is legible but almost certainly
+# not what the caller meant — `tasks.shaping.shaping_words` refuses it.
+comptime META_IDX_SHAPE_W_GOAL: Int = 23
+comptime META_IDX_SHAPE_W_REACH: Int = 24
+comptime META_IDX_GOAL_MARGIN: Int = 25
+comptime META_IDX_REACH_MARGIN: Int = 26
 
 
 # =============================================================================

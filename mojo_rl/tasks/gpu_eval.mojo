@@ -74,28 +74,16 @@ comptime CUR_IDX_REGION_Y1: Int = 4
 comptime CUR_IDX_REGION_H: Int = 5
 comptime REGION_WORDS: Int = 6
 
-# ── the two shaping weights, words 6 and 7 ────────────────────────────────
-#
-# ⚠⚠ RUNTIME, NOT COMPTIME, AND THE REASON IS THAT THEY NEEDED SWEEPING. They
-# were `comptime` on `So101TabletopConfig`, so trying a different scale meant a
-# rebuild — and reward SCALE is the open question on this family, not a
-# setting anybody knows. `curriculum` is already the host-written,
-# device-shared channel the region table lives in and it had exactly two words
-# left.
-#
-# ⚠ THE HOST STILL OWNS THE DEFAULTS. The config's `SHAPE_W_*` constants are
-# what `region_table_words` writes when a caller does not override, so a
-# driver that never heard of these gets the family's chosen scale rather than
-# zero — which would silently be the sparse reward again.
-comptime CUR_IDX_SHAPE_W_GOAL: Int = 6
-comptime CUR_IDX_SHAPE_W_REACH: Int = 7
+# ⚠ WORDS 6 AND 7 ARE FREE. They briefly held the two shaping weights, which
+# moved to `meta` when a multi-task batch showed that `curriculum` — one row
+# for every lane — cannot carry a per-TASK quantity. See `tasks/shaping.mojo`.
+
 comptime MAX_CURRICULUM_REGIONS: Int = MODEL_CURRICULUM_SIZE // REGION_WORDS
 
 
 def region_table_words(
     site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
     half_height: Float64,
-    shape_w_goal: Float64, shape_w_reach: Float64,
 ) raises -> List[Float64]:
     """The `curriculum` words for a one-region family. Host-side.
 
@@ -129,26 +117,6 @@ def region_table_words(
         )
     out[CUR_IDX_REGION_H] = half_height
 
-    # ⚠⚠ THE 0.5 BOUND THAT USED TO BE HERE IS GONE, AND THAT IS THE POINT.
-    # It existed because the reward carried the success bit — `reward > 0.5`
-    # meant "solved" in three files — so the shaping had to stay small enough
-    # not to mask it. The bit lives in `META_IDX_GOAL_HELD` now, so a weight
-    # is just a weight and the reward is free to be `tolerance` in [0, 1] per
-    # term, which is the shape that trains this robot and which alone exceeds
-    # the old ceiling.
-    #
-    # ⚠ NEGATIVE IS STILL REFUSED. These multiply a `tolerance` that is LARGER
-    # nearer the goal, so a negative weight pays the policy to stay away — and
-    # it would train perfectly well toward exactly that.
-    if shape_w_goal < 0.0 or shape_w_reach < 0.0:
-        raise Error(
-            "tasks: negative shaping weight (" + String(shape_w_goal) + ", "
-            + String(shape_w_reach) + "). These weight a `tolerance` that"
-            " REWARDS proximity, so a negative one pays the policy to move"
-            " away from the goal — and it would learn that."
-        )
-    out[CUR_IDX_SHAPE_W_GOAL] = shape_w_goal
-    out[CUR_IDX_SHAPE_W_REACH] = shape_w_reach
     return out^
 
 

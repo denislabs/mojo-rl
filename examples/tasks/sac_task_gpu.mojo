@@ -207,7 +207,8 @@ from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
-    META_IDX_INIT_REGION_0, META_IDX_GOAL_HELD, MODEL_CURRICULUM_SIZE,
+    META_IDX_INIT_REGION_0, META_IDX_GOAL_HELD,
+    META_IDX_SHAPE_W_GOAL, MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
@@ -224,6 +225,7 @@ from mojo_rl.tasks.eval import (
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
+from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
 
 
 # ⚠⚠ 32, MATCHING THE TWO EXAMPLES THAT TRAIN ON THIS STACK.
@@ -632,6 +634,13 @@ def main() raises:
     # from `META_IDX_INIT_REGION_*`, gated against the host sampler coordinate
     # for coordinate by `tests/tasks/test_device_placement.mojo`.
     var iw = init_region_words(t, f)
+    # ⚠ VALIDATED HERE, not at the write. `shaping_words` refuses a nonzero
+    # weight with a zero margin — `tolerance` with margin 0 is a HARD
+    # indicator, so the term goes sparse while the run still looks shaped.
+    var sw = shaping_words(
+        shape_goal, shape_reach,
+        So101TabletopConfig.GOAL_MARGIN, So101TabletopConfig.REACH_MARGIN,
+    )
     var n_active_free = 0
     for j in range(len(iw)):
         if iw[j] > 0.0:      # the word is region_index + 1; 0 = not placed
@@ -768,7 +777,7 @@ def main() raises:
         # the region's own band — a CPU/GPU disagreement inside the reward.
         var cw = region_table_words(
             rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
-            rheights[0], shape_goal, shape_reach,
+            rheights[0],
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])
@@ -789,6 +798,15 @@ def main() raises:
                 env.d.meta.data[
                     e * METADATA_SIZE + META_IDX_INIT_REGION_0 + j
                 ] = Scalar[DT](iw[j])
+            # ⚠⚠ PER LANE, EVEN THOUGH EVERY LANE RUNS THE SAME TASK HERE.
+            # They are per-lane words because a multi-task batch needs them
+            # to be — writing them the same way whether or not the run
+            # happens to be single-task is what stops the multi-task driver
+            # being a different code path.
+            for j in range(SHAPING_WORDS):
+                env.d.meta.data[
+                    e * METADATA_SIZE + META_IDX_SHAPE_W_GOAL + j
+                ] = Scalar[DT](sw[j])
         env.d.meta.upload(ctx)
 
         # ── a SECOND env, for greedy eval ─────────────────────────────────
@@ -816,6 +834,10 @@ def main() raises:
                 eval_env.d.meta.data[
                     e * METADATA_SIZE + META_IDX_INIT_REGION_0 + j
                 ] = Scalar[DT](iw[j])
+            for j in range(SHAPING_WORDS):
+                eval_env.d.meta.data[
+                    e * METADATA_SIZE + META_IDX_SHAPE_W_GOAL + j
+                ] = Scalar[DT](sw[j])
         eval_env.d.meta.upload(ctx)
         print("  ok: region table, tape and active mask uploaded to BOTH envs")
 

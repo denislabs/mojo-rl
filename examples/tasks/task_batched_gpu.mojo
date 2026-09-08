@@ -65,7 +65,7 @@ from mojo_rl.envs.dm_control.rewards import (
 )
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
-    META_IDX_GOAL_HELD,
+    META_IDX_GOAL_HELD, META_IDX_SHAPE_W_GOAL,
     MODEL_CURRICULUM_SIZE,
 )
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
@@ -86,6 +86,7 @@ from mojo_rl.tasks.gpu_eval import (
 from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
 from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
 from mojo_rl.tasks.active import active_mask
+from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
 
 
 comptime N_ENVS = 1024
@@ -173,6 +174,10 @@ def main() raises:
     var tpb = encode_goal(gb)
     var mka = active_mask(ta, f)
     var mkb = active_mask(tb, f)
+    # ⚠ DELIBERATELY UNEQUAL. If both groups shared one pair, the per-lane
+    # read would be indistinguishable from a global one.
+    var swa = shaping_words(1.0, 0.25, 0.10, 0.20)
+    var swb = shaping_words(0.40, 0.60, 0.05, 0.30)
     print("  even lanes:", ta.name, "|", ta.goal)
     print("  odd  lanes:", tb.name, "|", tb.goal)
 
@@ -195,8 +200,6 @@ def main() raises:
         var cw = region_table_words(
             rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
             rheights[0],
-            So101TabletopConfig.SHAPE_W_GOAL,
-            So101TabletopConfig.SHAPE_W_REACH,
         )
         for i in range(MODEL_CURRICULUM_SIZE):
             env.mf.curriculum.data[i] = Scalar[DT](cw[i])
@@ -239,6 +242,17 @@ def main() raises:
             env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_ACTIVE] = (
                 Scalar[DT](mka) if is_a else Scalar[DT](mkb)
             )
+            # ⚠⚠ THE TWO TASK GROUPS GET DIFFERENT SHAPING ON PURPOSE. These
+            # words are per-lane precisely so a batch can run tasks whose
+            # distance scales differ — `settle`'s goal distance is 0 at reset
+            # and `lift`'s is a 0.03 m z-shortfall, so one weight pair cannot
+            # serve both. Giving them DIFFERENT weights here is what makes the
+            # shaped-value check below a test of per-lane shaping rather than
+            # of a constant.
+            for j in range(SHAPING_WORDS):
+                env.d.meta.data[
+                    e * METADATA_SIZE + META_IDX_SHAPE_W_GOAL + j
+                ] = Scalar[DT](swa[j]) if is_a else Scalar[DT](swb[j])
             var qpos = List[Float64]()
             for i in range(NQ):
                 qpos.append(Float64(env.d.qpos.data[e * NQ + i]))
@@ -362,17 +376,24 @@ def main() raises:
             var ry = sp[GS * 3 + 1] - xb[sb * 3 + 1]
             var rz = sp[GS * 3 + 2] - xb[sb * 3 + 2]
             var reach_h = (rx * rx + ry * ry + rz * rz) ** 0.5
-            var want = So101TabletopConfig.SHAPE_W_GOAL * Float64(
+            # ⚠ EACH LANE'S OWN FOUR WORDS. Using the config's constants here
+            # would agree with the kernel only while every lane shares them,
+            # which is the case this gate exists to break.
+            var wg = swa[0] if is_a else swb[0]
+            var wr = swa[1] if is_a else swb[1]
+            var mg_ = swa[2] if is_a else swb[2]
+            var mr_ = swa[3] if is_a else swb[3]
+            var want = wg * Float64(
                 tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
                     Scalar[DT](d_h), Scalar[DT](0),
                     Scalar[DT](So101TabletopConfig.GOAL_RADIUS),
-                    Scalar[DT](So101TabletopConfig.GOAL_MARGIN),
+                    Scalar[DT](mg_),
                 )
-            ) + So101TabletopConfig.SHAPE_W_REACH * Float64(
+            ) + wr * Float64(
                 tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
                     Scalar[DT](reach_h), Scalar[DT](0),
                     Scalar[DT](So101TabletopConfig.REACH_RADIUS),
-                    Scalar[DT](So101TabletopConfig.REACH_MARGIN),
+                    Scalar[DT](mr_),
                 )
             )
             var err = Float64(rew[e]) - want

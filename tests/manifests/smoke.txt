@@ -216,6 +216,28 @@ tests/tasks/test_device_placement.mojo
 # 0 while the goal is FALSE.
 tests/tasks/test_goal_distance.mojo
 
+# ── mojo_rl/tasks: PER-LANE shaping, in `meta` and not `curriculum` ─────
+# ⚠⚠ THE WEIGHTS AND MARGINS ARE PER TASK, NOT PER RUN. They lived in
+# `curriculum`, which is ONE row for the whole batch — right for the region
+# table, wrong for shaping, because what a weight is WORTH depends on the
+# task's own distance scale. Measured at identical weights and margins:
+#   gather  Near   goal dist 0.139 -> goal term 0.011 -> reward 0.292
+#   lift    Above  goal dist 0.030 -> goal term 0.811 -> reward 1.171
+#   settle  On     goal dist 0.000 -> goal term 1.000 -> reward 1.360
+# A 4.7x spread in reward and 91x in the goal term. A two-task batch under one
+# pair hands its lanes a bimodal reward, which is how this family's critic is
+# destabilised.
+# ⚠ ZERO IS "NO SHAPING" and is what an untouched `meta` holds, so a driver
+# that forgets these gets the SPARSE reward rather than meaningless
+# parameters. `shaping_words` refuses a nonzero weight with a ZERO margin —
+# `tolerance` with margin 0 is a hard indicator, so the term goes sparse while
+# the run still looks shaped (verified: 2 of 2 refused).
+# The gate is in `examples/tasks/task_batched_gpu.mojo`, whose two task groups
+# now carry DIFFERENT weights and margins: the host recomputes each lane's
+# shaped value from that lane's own four words and agrees to 7.7e-08 over 1024
+# lanes. ABLATED by using lane 0's words for everyone: 512 of 1024 mismatch,
+# worst |error| 0.577.
+
 # ── mojo_rl/tasks: is a task solved by a CONSTANT action ────────────────
 # ⚠⚠ THE DEGENERACY `test_task_reset_steps` CANNOT SEE. That gate asserts a
 # goal is false AT RESET and every task passes it; `so101_reach_brick` passed

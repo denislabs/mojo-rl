@@ -92,6 +92,10 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_INIT_REGION_1,
     META_IDX_INIT_REGION_2,
     META_IDX_GOAL_HELD,
+    META_IDX_SHAPE_W_GOAL,
+    META_IDX_SHAPE_W_REACH,
+    META_IDX_GOAL_MARGIN,
+    META_IDX_REACH_MARGIN,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
@@ -99,7 +103,6 @@ from mojo_rl.physics3d.gpu.constants import (
 
 from .gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
-    CUR_IDX_SHAPE_W_GOAL, CUR_IDX_SHAPE_W_REACH,
 )
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from mojo_rl.envs.dm_control.rewards import (
@@ -1051,12 +1054,19 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         var dist = tape_distance_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
             meta, curriculum, xpos, xquat, site_xpos, env
         )
-        var w_goal = rebind[Scalar[DTYPE]](
-            curriculum[0, CUR_IDX_SHAPE_W_GOAL]
-        )
-        var w_reach = rebind[Scalar[DTYPE]](
-            curriculum[0, CUR_IDX_SHAPE_W_REACH]
-        )
+        # ⚠⚠ PER LANE, OUT OF `meta` — `curriculum` is ONE row for the whole
+        # batch and what a weight is worth depends on the TASK's distance
+        # scale. At identical weights and margins the three shipped tasks get
+        # a 4.7x spread in reward and 91x in the goal term; see
+        # `tasks/shaping.mojo` for the table.
+        #
+        # ⚠ ZERO IS "NO SHAPING" and is what an untouched `meta` holds, so a
+        # driver that never writes these gets the SPARSE reward rather than a
+        # shaped one with meaningless parameters.
+        var w_goal = rebind[Scalar[DTYPE]](meta[env, META_IDX_SHAPE_W_GOAL])
+        var w_reach = rebind[Scalar[DTYPE]](meta[env, META_IDX_SHAPE_W_REACH])
+        var m_goal = rebind[Scalar[DTYPE]](meta[env, META_IDX_GOAL_MARGIN])
+        var m_reach = rebind[Scalar[DTYPE]](meta[env, META_IDX_REACH_MARGIN])
 
         # ⚠ `tape_distance_gpu` IS ALREADY A SHORTFALL — zero exactly when the
         # predicate holds — so the band is [0, GOAL_RADIUS] and the margin
@@ -1068,7 +1078,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
             dist,
             Scalar[DTYPE](0),
             Scalar[DTYPE](Self.GOAL_RADIUS),
-            Scalar[DTYPE](Self.GOAL_MARGIN),
+            m_goal,
         )
 
         # ⚠ THE REACH TERM READS THE FIRST TERM'S SUBJECT OUT OF THE TAPE.
@@ -1098,7 +1108,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
                 reach,
                 Scalar[DTYPE](0),
                 Scalar[DTYPE](Self.REACH_RADIUS),
-                Scalar[DTYPE](Self.REACH_MARGIN),
+                m_reach,
             )
         _ = qpos
         _ = qvel

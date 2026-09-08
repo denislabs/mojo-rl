@@ -160,7 +160,7 @@ def main() raises:
     var rheights = region_half_heights(f)
     var cw = region_table_words(
         rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
-        rheights[0], CFG.SHAPE_W_GOAL, CFG.SHAPE_W_REACH,
+        rheights[0],
     )
     for i in range(MODEL_CURRICULUM_SIZE):
         t_cur.data[i] = Scalar[DT](cw[i])
