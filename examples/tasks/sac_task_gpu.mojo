@@ -118,33 +118,33 @@ travel with the run as `cfg/*` fields.
 ⚠ THE SUCCESS-RATE baselines are lane-count independent — a rate is per
 episode either way — so only the RETURN figures moved.
 
-⚠⚠ CRITIC HEALTH TRACKS WHICH TERM DOMINATES, not the magnitude and not the
-shape. Five runs, all at 32 env / 32 upd / tau 0.0025 — the same 7.7%:
+⚠⚠ THE CONFIGURATION THAT TRAINS, and the fourteen runs it took to find it.
+Measured on `so101_gather_bricks`, 290k steps, weights 1.0/0.21:
 
-    run   shape      weights    goal    reach   reach/goal   critic
-    7/8   linear     0.5/0.25   0.0575  0.0478        0.83   healthy
-     10   linear     0.1/0.70   0.0115  0.1337       11.63   DIVERGED
-     11   tolerance  1.0/0.50   0.0476  0.0929        1.95   DIVERGED
-     12   tolerance  0.43/0.21  0.0205  0.0390        1.91   DIVERGED
+    baseline (this run's own warmup)      48.2
+    eval return                34.7 -> 105.5, monotone
+    avg_reward                 40.7 -> 115.2, monotone       2.4x baseline
+    mean_reward               0.149 -> 0.229, monotone
+    mean_q         36.6 against a fixed point of 24.5        1.4x
+    next_q - mean_q                                        +0.243
+    critic_loss                                               0.72
 
-The two columns are each term's contribution at the MEASURED random distances
-(goal 0.115 m, reach 0.191 m — `task_shaping_probe.mojo`). Every run whose
-reach term outweighs its goal term diverged; the one where it does not is the
-only configuration that has ever held.
+⚠⚠ THE LAST CHANGE WAS `TERMINATE_ON_UNHEALTHY: True -> False`, ALONE. Run 13
+had every other setting identical — same weights, same tau, same entropy, same
+tolerance margins, confirmed by its own `cfg/*` — and its `mean_q` sat 12x
+above its fixed point with the eval swinging 25..69 around a baseline of 48.
 
-⚠ MAGNITUDE AND SHAPE ARE BOTH RULED OUT BY RUN 12, which matched the stable
-|r| of 0.105 exactly (0.10 measured) with the tolerance shape and diverged
-anyway — `mean_q` to 2008 against a fixed point of 10.2.
+Why it matters is a value CLIFF. A lane that succeeds gets `done = 1`, so the
+critic masks the bootstrap and its target is the one-step reward alone —
+about 0.25 — while every neighbouring state carries Q near 24. Successes are
+order 1.5% of episodes, so a handful of transitions in the buffer disagree by
+sixty-fold with everything around them, and the critic chases that.
 
-⚠ THE MECHANISM IS A HYPOTHESIS OVER FOUR POINTS. `|gripper - subject|` moves
-as fast as the arm; the goal term is a separation between two props that only
-changes on CONTACT. A bootstrap target dominated by the fast-varying term has
-the variance of the fast one, and a noisy target is what a critic chases.
-
-⚠ AND THE SHAPE IS EARNING ITS KEEP REGARDLESS. Run 11's eval peaked at 130
-against a random 69 — 1.9x — where the linear form's best was 13% over its own
-baseline in 290k steps. Both tolerance runs swung wildly with no trend, which
-is what a policy riding a diverging value function looks like.
+⚠ FIVE REWARD HYPOTHESES CAME FIRST AND EACH EXPLAINED PART OF IT: magnitude,
+shape, the reach/goal ratio, the entropy target, the tracking rate. Only the
+tracking rate and this were real. The rest fitted the runs after the fact —
+which is what a table of partial correlations looks like, and the reason to
+prefer a STRUCTURAL difference from a working reference over another curve.
 
 ⚠ AND A HEALTHY RUN HAS A SHAPE. What to read FIRST is `mean_q`: it should
 converge toward `mean_reward / (1 - gamma)` with `mean_next_q - mean_q` under
@@ -709,6 +709,14 @@ def main() raises:
         logger.log_scalar(String("cfg/n_envs"), Float64(N_ENVS), 0)
         logger.log_scalar(String("cfg/warmup"), Float64(warmup), 0)
         logger.log_scalar(String("cfg/obs_dim"), Float64(OBS_DIM), 0)
+        # ⚠⚠ THE ONE SETTING THAT WAS NOT RECORDED WAS THE DECISIVE ONE.
+        # `TERMINATE_ON_UNHEALTHY` is a comptime env parameter, not a flag, so
+        # it never went into `cfg/*` — and it is what separated fourteen runs
+        # of a diverging critic from the first one that trained.
+        logger.log_scalar(
+            String("cfg/terminate_on_unhealthy"),
+            1.0 if EnvT.TERMINATE_ON_UNHEALTHY else 0.0, 0,
+        )
         logger.log_scalar(String("cfg/max_steps"),
                           Float64(So101TabletopConfig.MAX_STEPS), 0)
         logger.log_scalar(String("cfg/target_track_per_iter"), track, 0)
@@ -847,6 +855,11 @@ def main() raises:
         print("  episodes           :", agent.ep_count())
         print("  shaped mean return :", shaped, "(last 100 episodes)")
         print("  SUCCESS RATE       :", rate, "(greedy,", N_ENVS, "lanes)")
+        # ⚠ LOGGED, NOT ONLY PRINTED. It is the criterion the whole family is
+        # judged by and it was reaching stdout and nothing else, so no chart
+        # ever carried it and no two runs could be compared on it.
+        logger.log_scalar(String("eval/success_rate"), rate, num_steps)
+        logger.log_scalar(String("eval/shaped_return"), shaped, num_steps)
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)
 
