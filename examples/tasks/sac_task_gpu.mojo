@@ -486,6 +486,20 @@ def main() raises:
     # on this robot, pays a `tolerance` in [0, 1] every step.
     var shape_goal = So101TabletopConfig.SHAPE_W_GOAL
     var shape_reach = So101TabletopConfig.SHAPE_W_REACH
+    # ⚠⚠ THE MARGINS ARE FLAGS TOO, AND THEY HAVE TO BE. They became per-lane
+    # `meta` words precisely because they are a per-TASK quantity, and a
+    # per-task quantity that needs a rebuild to change is not one. Measured
+    # goal distances under a random policy — `task_shaping_probe.mojo <task>`:
+    #
+    #     gather   Near    0.139 m     lift  Above  0.030 m     settle  On  0
+    #
+    # so one margin cannot serve them. `gather` trained at 0.10 against 0.139,
+    # a margin/distance ratio of 0.72 and a tolerance of 0.012 at random —
+    # the goal term contributing almost nothing at first and the reach term
+    # doing the early work. Reproducing that ratio on `lift` is a margin of
+    # about 0.02.
+    var goal_margin = So101TabletopConfig.GOAL_MARGIN
+    var reach_margin = So101TabletopConfig.REACH_MARGIN
     # ⚠⚠ THE TARGET NETWORK'S TRACKING RATE, WHICH `N_ENVS` SETS BY ACCIDENT.
     # `updates_per_step = N_ENVS` keeps UTD at 1 — 64 transitions collected,
     # 64 gradient steps — and that is the number people quote. It is not the
@@ -554,6 +568,10 @@ def main() raises:
             shape_goal = Float64(String(args[i + 1]))
         elif a == "--shape-reach" and i + 1 < len(args):
             shape_reach = Float64(String(args[i + 1]))
+        elif a == "--goal-margin" and i + 1 < len(args):
+            goal_margin = Float64(String(args[i + 1]))
+        elif a == "--reach-margin" and i + 1 < len(args):
+            reach_margin = Float64(String(args[i + 1]))
         elif a == "--updates-per-step" and i + 1 < len(args):
             updates_per_step = Int(String(args[i + 1]))
         elif a == "--tau" and i + 1 < len(args):
@@ -590,8 +608,7 @@ def main() raises:
     print("  action_scale:", ACTION_SCALE, "(NORMALIZED_ACTIONS is True)")
     print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
     print("  shape weights: goal", shape_goal, " reach", shape_reach,
-          " (tolerance margins", So101TabletopConfig.GOAL_MARGIN, "/",
-          So101TabletopConfig.REACH_MARGIN, "m)")
+          " (tolerance margins", goal_margin, "/", reach_margin, "m)")
     # ⚠ THE NUMBER THAT ACTUALLY GOVERNS CRITIC STABILITY, printed because it
     # is derived and nobody sets it directly.
     var track = 1.0 - (1.0 - Float64(tau)) ** Float64(updates_per_step)
@@ -638,8 +655,7 @@ def main() raises:
     # weight with a zero margin — `tolerance` with margin 0 is a HARD
     # indicator, so the term goes sparse while the run still looks shaped.
     var sw = shaping_words(
-        shape_goal, shape_reach,
-        So101TabletopConfig.GOAL_MARGIN, So101TabletopConfig.REACH_MARGIN,
+        shape_goal, shape_reach, goal_margin, reach_margin
     )
     var n_active_free = 0
     for j in range(len(iw)):
@@ -716,12 +732,8 @@ def main() raises:
         # name. Emitted once, at step 0, before anything else is logged.
         logger.log_scalar(String("cfg/shape_w_goal"), shape_goal, 0)
         logger.log_scalar(String("cfg/shape_w_reach"), shape_reach, 0)
-        logger.log_scalar(
-            String("cfg/goal_margin"), So101TabletopConfig.GOAL_MARGIN, 0
-        )
-        logger.log_scalar(
-            String("cfg/reach_margin"), So101TabletopConfig.REACH_MARGIN, 0
-        )
+        logger.log_scalar(String("cfg/goal_margin"), goal_margin, 0)
+        logger.log_scalar(String("cfg/reach_margin"), reach_margin, 0)
         logger.log_scalar(
             String("cfg/target_entropy"), Float64(target_entropy), 0
         )
