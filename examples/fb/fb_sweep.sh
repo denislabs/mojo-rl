@@ -91,8 +91,8 @@ FORCE=${FORCE:-0}
 # (ortho 1, lr_b -1) as the no-flag setting. From this commit the no-flag
 # setting IS the winner; an arm meant to reproduce `base_u` must now pass
 # `--ortho 1 --lr-b -1` explicitly (see `base_u_re`).
-declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3                          pair                        pair_s2                                        pair_s3                                        cpr                cpr_nobc           cpr_s2)
-declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907"     "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"      "--ortho 100 --lr-b 1e-5 --seed 20260907"      "--reg 0.01 --gp 10" "--reg 0.01 --gp 10 --bc 0" "--reg 0.01 --gp 10 --seed 20260906")
+declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3                          pair                        pair_s2                                        pair_s3                                        cpr                cpr_nobc           cpr_s2                                cpr_basemix                                   cpr_reg0)
+declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907"     "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"      "--ortho 100 --lr-b 1e-5 --seed 20260907"      "--reg 0.01 --gp 10" "--reg 0.01 --gp 10 --bc 0" "--reg 0.01 --gp 10 --seed 20260906"  "--reg 0.01 --gp 10 --p-goal 0.5 --p-expert 0"  "--reg 0 --gp 10")
 
 # 2026-09-08, A4 (§18.9): `cpr*` arms run `fb_train_cpr_gpu.mojo` — the SAME
 # 24-D base (ortho 100, lr_b 1e-5, bc 1.0 by default) plus D(s,z), Q_D and
@@ -100,6 +100,17 @@ declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "
 # is the reference's own setting (CPR REPLACES BC); `cpr_s2` the replicate.
 # The bar is the six-rung two-seed mean of `pair`/`pair_s2`:
 # stand 1.50 (sd 0.40) / walk 2.19 (0.66) / run 1.62 (0.55).
+#
+# ⚠ 2026-09-08 `cpr` READ-OUT (§18.9.1): 1.08 / 1.18 / 1.11 over five rungs —
+# BELOW the bar on walk (−1.0) and run (−0.5), one seed. D learned (BCE
+# 0.17 / 0.22), but Q_D sat at r/(1−γ) ≈ −156 with Q_D(s, π) == Q_D(s, a_data)
+# to four figures: the style critic carries no action information offline,
+# and the policy's own F·z fell 30 % (fb/actor −24 vs −34). AND the arm
+# varied TWO axes: the style term and the z MIXTURE (0.2/0.6/0.2 vs the
+# base's 0.5 goal / 0.5 uniform). The two arms below split them:
+#   cpr_basemix  CPR terms on the BASE mixture     -> CPR alone vs `pair`
+#   cpr_reg0     the new mixture, actor untouched  -> mixture alone vs `pair`
+ARMS_NEXT="cpr_basemix cpr_reg0"
 
 # 2026-09-08, `pair_s2` (§18.7.6): the 24-D base replicates on walk/run in the
 # MEAN (two seeds 1.50 / 2.19 / 1.62 vs 18-D 1.51 / 1.82 / 1.44) with 2-3x the
@@ -124,7 +135,7 @@ declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "
 #         ARMS="ortho100_lrb1e5_u" FORCE=1 bash examples/fb/fb_sweep.sh
 #   (⚠ FORCE re-trains and OVERWRITES that arm's 300 k checkpoints; copy
 #    them aside first, or run it with a fresh tag.)
-ARMS=${ARMS:-"cpr"}
+ARMS=${ARMS:-"cpr_basemix cpr_reg0"}
 
 
 if [ ! -f "$STORE" ]; then
