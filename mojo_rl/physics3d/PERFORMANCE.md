@@ -3954,3 +3954,33 @@ the check this A/B existed for. Every other kernel 0.97–1.03.** k=13 is now
 fab85f0a is BASELINE 4: the full sweep of it (`p0_attrib.sh`, all six k)
 is the table every later A/B's numbers are read against. Shares at k=13
 from this A/B: Newton 46%, collision 16%, CRBA 14%, LDL pair 7%.
+
+### 13.46 LANDED, UNPRICED (2026-09-08): the CRBA kernel builds its dof topology once per block, cooperatively
+
+`_mass_matrix_treewalk_fields_mt_kernel` (block per env, `NV` threads, the
+SO-101 path's CRBA at 376 µs per launch and 14% of the k=13 step) opened
+with a per-thread rebuild of the model's dof topology — dof → body, dof →
+parent dof, body → first/last dof — from the joint and body tables: a loop
+over every joint with three global loads each (97 joints at k=13) and a
+parent walk per dof, on EVERY thread of every env, every step, before any
+arithmetic. The block ledger's F2 named the dense zeroing of `M` as the
+kernel's cost; the zeroing is 84 coalesced stores per thread and cannot be
+376 µs, while this preamble is a ~500-step chain of dependent global loads
+in a kernel that runs a quarter of a wave (1024 blocks against ~24 per SM
+on 170 SMs) and therefore pays its per-block latency in full — the LDL
+solve's shape, which just paid 5× (§13.44).
+
+The tables are model constants. They are now built once per block into
+threadgroup memory (`topo`, 2·NV + 2·NBODY int32) by the same rule split
+by what can be written without a race: a thread per JOINT writes the dofs
+it owns; a thread per BODY scans that map for its first and last dof (the
+serial min/max over its joints, read off the map); a thread per DOF walks
+its parent; three barriers. The CPU leg runs the same body at one thread,
+so its tables — and `M` — are what they were. Gates on Apple: the
+treewalk goldens (walker2d, Ant: bit-match; a parent-walk mutant reads
+9181.8 vs 5823.4), the parity test's CRBA arms A and D (serial vs
+PARALLEL bit-exact, ThreeTrees included) and arm C, the golden
+fingerprint, the ThreeTrees oracle. What remains serial in the kernel:
+the thread-0 backward accumulation of the body composites (97 × 10
+shared read-modify-writes) — the next cut if this one moves the number.
+The box A/B prices it.

@@ -447,7 +447,8 @@ def _mm_treewalk_env[
     # ("expression must be mutable in assignment"). Putting the marker after
     # the explicit parameters instead makes ALL of them inferred-only and every
     # call site stops compiling.
-    CO: MutOrigin, //,
+    CO: MutOrigin,
+    TO: MutOrigin, //,
     DTYPE: DType,
     N_THREADS: Int,
     GPU: Bool,
@@ -489,6 +490,7 @@ def _mm_treewalk_env[
     # observed 32x growth from k=0 to k=13 to within 6%), while the dense
     # `nv*nv` zeroing this term was ASSUMED to be about is 5%.
     comp: Pointer[Scalar[DTYPE], CO, address_space=CMP_AS],
+    topo: Pointer[Int32, TO, address_space=CMP_AS],
 ):
     """Tree-walk CRBA for ONE env — O(nv*depth), shared by CPU and GPU.
 
@@ -502,15 +504,32 @@ def _mm_treewalk_env[
     var nv = dims.get_nv()
     var nbody = dims.get_nbody()
     var njoint = dims.get_njoint()
-    comptime NV_S = cap[D.NV]()
-    comptime NB_S = cap[D.NBODY]()
-    var dof_body = Scratch[Int, NV_S](nv, 0)
-    var dof_parent = Scratch[Int, NV_S](nv, -1)
-    var body_first = Scratch[Int, NB_S](nbody, -1)
-    var body_last = Scratch[Int, NB_S](nbody, -1)
-
-    # --- dof_body + per-body dof range ---
-    for j in range(njoint):
+    # ── The dof topology, built COOPERATIVELY into `topo` (2026-09-08).
+    # `topo` holds four int tables back to back: dof -> body [nv], dof ->
+    # parent dof [nv], body -> first dof [nbody], body -> last dof [nbody].
+    # They are model constants, and this body used to rebuild them on EVERY
+    # thread: a loop over all joints (three global loads each — 97 joints at
+    # k=13) and a parent walk per dof, before any arithmetic, in a kernel
+    # that runs a quarter of a wave and so pays its per-block latency in
+    # full (PERFORMANCE.md §13.46). The same rule, split by what can be
+    # written without a race: a thread per JOINT writes the dofs it owns;
+    # a thread per BODY scans that map for its first and last dof (the
+    # serial min/max over the body's joints, read off the map instead); a
+    # thread per DOF walks its parent. `N_THREADS == 1` runs the same code
+    # serially, so the CPU leg produces the same tables and the same `M`.
+    var t_body = 0
+    var t_parent = nv
+    var t_first = 2 * nv
+    var t_last = 2 * nv + nbody
+    for d in range(tid, nv, N_THREADS):
+        topo[t_body + d] = 0
+        topo[t_parent + d] = -1
+    for b in range(tid, nbody, N_THREADS):
+        topo[t_first + b] = -1
+        topo[t_last + b] = -1
+    comptime if GPU:
+        barrier()
+    for j in range(tid, njoint, N_THREADS):
         var jb = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
         var dadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
@@ -520,25 +539,34 @@ def _mm_treewalk_env[
         elif jt == JNT_BALL:
             ndof = 3
         for d in range(ndof):
-            dof_body[dadr + d] = jb
-        if body_first[jb] < 0 or dadr < body_first[jb]:
-            body_first[jb] = dadr
-        if dadr + ndof - 1 > body_last[jb]:
-            body_last[jb] = dadr + ndof - 1
-
-    # --- dof_parent: within body = d-1; at body's first dof = last dof of the
-    #     nearest ancestor body that has DOFs (else -1) ---
-    for d in range(nv):
-        var b = dof_body[d]
-        if d > body_first[b]:
-            dof_parent[d] = d - 1
+            topo[t_body + dadr + d] = Int32(jb)
+    comptime if GPU:
+        barrier()
+    for b in range(tid, nbody, N_THREADS):
+        var f = -1
+        var l = -1
+        for d in range(nv):
+            if Int(topo[t_body + d]) == b:
+                if f < 0:
+                    f = d
+                l = d
+        topo[t_first + b] = Int32(f)
+        topo[t_last + b] = Int32(l)
+    comptime if GPU:
+        barrier()
+    for d in range(tid, nv, N_THREADS):
+        var b = Int(topo[t_body + d])
+        if d > Int(topo[t_first + b]):
+            topo[t_parent + d] = Int32(d - 1)
         else:
             var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
             while p > 0:
-                if body_last[p] >= 0:
-                    dof_parent[d] = body_last[p]
+                if Int(topo[t_last + p]) >= 0:
+                    topo[t_parent + d] = topo[t_last + p]
                     break
                 p = Int(rebind[Scalar[DTYPE]](bodies[p, BODY_IDX_PARENT]))
+    comptime if GPU:
+        barrier()
 
     # --- per-body composite contribution about P = stcom[rootid] ---
     # ⚠ STRIDED, AND BIT-EXACT BECAUSE IT IS. Each `b` writes only its own ten
@@ -630,7 +658,7 @@ def _mm_treewalk_env[
 
     # per-DOF row, distributed: f_i = comp[body_i]·cdof_i, walk ancestor DOFs
     for i in range(tid, nv, N_THREADS):
-        var bi = dof_body[i]
+        var bi = Int(topo[t_body + i])
         var ai0 = cdof[env, i * 6 + 0]
         var ai1 = cdof[env, i * 6 + 1]
         var ai2 = cdof[env, i * 6 + 2]
@@ -670,7 +698,7 @@ def _mm_treewalk_env[
             M[env, i * nv + j] = mij
             if i != j:
                 M[env, j * nv + i] = mij
-            j = dof_parent[j]
+            j = Int(topo[t_parent + j])
     comptime if GPU:
         barrier()
 
@@ -711,10 +739,15 @@ def _mass_matrix_treewalk_fields_mt_kernel[
         DTYPE, Layout.row_major(NBODY * 10), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    var topo_sh = LayoutTensor[
+        DType.int32, Layout.row_major(2 * NV + 2 * NBODY), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
     _mm_treewalk_env[DTYPE, N_THREADS, True, CMP_AS = AddressSpace.SHARED](
         Int(block_idx.x), Int(thread_idx.x),
         Dims[nv=NV, nbody=NBODY, njoint=NJOINT](),
         xquat, xipos, subtree_com, bodies, joints, cdof, M, comp_sh.ptr,
+        topo_sh.ptr,
     )
 
 
@@ -813,12 +846,16 @@ def compute_mass_matrix[
             var comp_s = Scratch[Scalar[DTYPE], cap[D.NBODY]() * 10](
                 dm.get_nbody() * 10, 0
             )
+            var topo_s = Scratch[Int32, 2 * cap[D.NV]() + 2 * cap[D.NBODY]()](
+                2 * dm.get_nv() + 2 * dm.get_nbody(), 0
+            )
             for e in range(BATCH):
                 _mm_treewalk_env[DTYPE, 1, False](
                     e, 0,
                     dm,
                     xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
                     comp_s.unsafe_ptr(),
+                    topo_s.unsafe_ptr(),
                 )
         else:
             for e in range(BATCH):
