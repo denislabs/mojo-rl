@@ -3827,3 +3827,21 @@ Unpriced on CUDA: the in-place solve (the box A/B, stage 1 vs HEAD). What
 is left in the kernel by mechanism, not by probe: registers (218/thread,
 the 4-block ceiling — stage 3), and the memory traffic of the thread-0
 setup (the joint scan's global loads, the per-thread `Scratch` locals).
+
+**MEASURED (RTX 5090, 2026-09-08, `p0_ab.sh` stage 1 vs the in-place solve,
+three interleaved rounds, MIN): Newton 1.098× SLOWER at k=6 (346 → 380 µs
+per launch) and 1.112× at k=13 (1234 → 1372), behind in every round; every
+other kernel 0.97–1.00. REVERTED (7b6c126a's solve change; the phase split
+and the knobs stay).** Apple had the same binary pair 1.2 ms/step the other
+way. So the laptop proxy does not carry the SIGN for this kernel, not only
+the size: on CUDA the forward pass's store into shared `x` and the inner
+loop's reads of it back cost a shared round trip per row that the
+local-memory `y` did not, and Apple's device-memory private arrays made the
+opposite trade. Two lessons on top of §13.42's: (1) Apple prices Apple;
+the blocked kernel is a CUDA kernel and only the box's A/B decides; (2) the
+ledger's count on this kernel is now three losses in three structural
+changes after stage 1 — per-block factor, cooperative scan, in-place solve
+— all bit-exact, all gated, all measured, none shipped. The kernel as it
+stands after stage 1 (d3a465b5) is the one to beat, and by mechanism the
+candidates left are registers (stage 3) and the setup's memory traffic,
+each priced on the box before anything is built on it.
