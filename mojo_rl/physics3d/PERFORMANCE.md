@@ -3869,3 +3869,31 @@ at ~10% of the step at the wide end only. Next by share at k=13 — collision
 15%, CRBA 13%, the LDL pair 12.5% — and by the mechanisms that won (memory
 footprint, memory traffic): `ldl_solve` (block ledger F1) and CRBA's dense
 write (F2).
+
+### 13.44 LANDED, UNPRICED (2026-09-08): the LDL solve kernel gets a block per env — F1's launch shape
+
+`ldl_solve`'s GPU kernel ran one THREAD per env: 1024 envs are 16 blocks of
+64 on a 170-SM part, each thread a dependent chain of ~600 global loads
+(the block-restricted forward/backward substitution over 14 trees at k=13)
+with nothing resident to hide it — 106.6 µs per launch, four launches a
+step under Euler (the unconstrained solve's and `M_hat`'s), 7.5% of the
+k=13 step and the largest of the LDL kernels. Its sibling `ldl_factor`
+already had a block-per-env cooperative kernel (`PARALLEL`), 70.5 µs on
+the same matrix.
+
+`_ldl_solve_fields_mt_kernel`: a block per env, one warp, ONE THREAD PER
+KINEMATIC TREE — the tree blocks are independent systems, so a thread runs
+the serial body restricted to its own `[b0, b1)`: the same loops, the same
+per-row accumulation order, the same bits (a column-cooperative form would
+reverse the back substitution's order per row). `ldl_solve[PARALLEL=True]`
+selects it; the Euler and RK4 integrators pass `PARALLEL_GPU` to it as they
+do to the factor. Gates on Apple: `test_fields_mt_parity` arms A (walker2d)
+and D (ThreeTrees, the multi-tree one) extended with the solve, serial vs
+PARALLEL bit-exact on a non-zero right-hand side (a mutant skipping each
+block's first row reads 1.088 vs 0.0 at i=0); arm C (RK4 with every
+cooperative kernel vs every serial one, 3 steps with contacts) bit-exact;
+golden fingerprint; `test_euler_finalize_gpu_parity`; `test_ldl_blocked`
+9/9; `test_task_reset_steps`. Mechanism, not probe: the kernel's cost is a
+tiny grid on a latency chain (the same shape the ledger's
+`_row_per_thread_kernels_are_uncoalesced_and_tiny_grid` names), and the
+block-per-env factor is the measured precedent. The box A/B prices it.

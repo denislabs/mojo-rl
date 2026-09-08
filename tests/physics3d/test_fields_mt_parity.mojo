@@ -32,6 +32,7 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
 )
 from mojo_rl.physics3d.dynamics.ldl import (
     ldl_factor,
+    ldl_solve,
     compute_m_inv,
 )
 from mojo_rl.physics3d.dynamics.rne import (
@@ -259,6 +260,22 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d LDL L", ss.L, sp.L, BATCH * NV * NV)
     _cmp("walker2d LDL D", ss.D, sp.D, BATCH * NV)
 
+    # LDL solve (F1's launch shape, 2026-09-08): serial thread-per-env vs a
+    # block per env with a thread per kinematic tree. A deterministic,
+    # non-zero right-hand side on BOTH scratches; `qacc_ws` bit-exact.
+    for e in range(BATCH):
+        for i in range(NV):
+            var f_i = Scalar[DTYPE]((e * 7 + i * 5) % 11 - 5) / 3.0
+            ss.fnet.data[e * NV + i] = f_i
+            sp.fnet.data[e * NV + i] = f_i
+    ss.fnet.upload(ctx)
+    sp.fnet.upload(ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.qacc_ws.download(ctx)
+    sp.qacc_ws.download(ctx)
+    _cmp("walker2d LDL solve x", ss.qacc_ws, sp.qacc_ws, BATCH * NV)
+
     # 7. M^-1 from LDL
     compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
     compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, 
@@ -335,6 +352,22 @@ def test_three_trees_ldl() raises:
     sp.D.download(ctx)
     _cmp("trees LDL L", ss.L, sp.L, BATCH * TNV * TNV)
     _cmp("trees LDL D", ss.D, sp.D, BATCH * TNV)
+
+    # LDL solve (F1's launch shape, 2026-09-08): serial thread-per-env vs a
+    # block per env with a thread per kinematic tree. A deterministic,
+    # non-zero right-hand side on BOTH scratches; `qacc_ws` bit-exact.
+    for e in range(BATCH):
+        for i in range(TNV):
+            var f_i = Scalar[DTYPE]((e * 7 + i * 5) % 11 - 5) / 3.0
+            ss.fnet.data[e * TNV + i] = f_i
+            sp.fnet.data[e * TNV + i] = f_i
+    ss.fnet.upload(ctx)
+    sp.fnet.upload(ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.qacc_ws.download(ctx)
+    sp.qacc_ws.download(ctx)
+    _cmp("trees LDL solve x", ss.qacc_ws, sp.qacc_ws, BATCH * TNV)
 
     compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
     compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)

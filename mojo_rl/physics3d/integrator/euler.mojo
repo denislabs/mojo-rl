@@ -966,7 +966,7 @@ struct EulerIntegrator[
             var _e_now = Int(perf_counter_ns())
             _e_fnet += _e_now - _e_last
             _e_last = _e_now
-        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_ldls += _e_now - _e_last
@@ -1179,7 +1179,7 @@ struct EulerIntegrator[
                 # `scratch.M` is `M_hat` now; the step's own factor and solve,
                 # on the fields they already read and write.
                 ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
-                ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](m, self.scratch, ctx)
+                ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](m, self.scratch, ctx)
             c.enqueue_function[
                 _finalize_integrate_kernel[
                     Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH

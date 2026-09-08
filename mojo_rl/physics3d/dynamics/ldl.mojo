@@ -22,6 +22,7 @@ to a single whole-`nv` block, not to zero work."""
 
 from std.sys import simd_width_of
 from std.gpu import thread_idx, block_idx, block_dim
+from std.collections import InlineArray
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -585,6 +586,83 @@ def _ldl_solve_fields_kernel[
     _ldl_solve_env(env, Dims[nv=NV](), L, D, b, x, trees)
 
 
+comptime LDL_SOLVE_MT_T: Int = 32
+"""Threads per env-block of `_ldl_solve_fields_mt_kernel`: one warp. A
+thread owns one kinematic-tree block (its `bidx % LDL_SOLVE_MT_T`), so at
+14 trees (k=13) 14 lanes work and the rest exit; more lanes would only idle."""
+
+
+def _ldl_solve_fields_mt_kernel[
+    DTYPE: DType,
+    NV: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    b: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    x: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    trees: LayoutTensor[
+        DTYPE, Layout.row_major(NV * MODEL_TREE_SIZE), MutAnyOrigin
+    ],
+):
+    """`x = M^-1 b`, one BLOCK PER ENV and one THREAD PER KINEMATIC TREE
+    (2026-09-08, block ledger F1's launch shape).
+
+    ⚠ WHY A SECOND LAUNCH SHAPE. `_ldl_solve_fields_kernel` runs one thread
+    per env: 1024 envs are 16 blocks of 64 on a 170-SM part, a dependent
+    chain of ~600 global loads per thread with nothing resident to hide it —
+    106 µs per launch at k=13 (PERFORMANCE.md §13.40), the largest of the
+    LDL kernels and 7.5% of the step, four launches a step under Euler. Its
+    sibling `_ldl_factor_fields_mt_kernel` already runs a block per env.
+
+    ⚠ ONE THREAD PER TREE, NOT ONE PER COLUMN. The forward and backward
+    substitutions of the tree blocks are INDEPENDENT systems (`L` has no
+    entry linking two trees — the property the block campaign established),
+    so a thread runs the serial body below on its own block: the SAME loops
+    as `_ldl_solve_env` restricted to `[b0, b1)`, the same accumulation order
+    per row, so the same bits. A column-cooperative form would reverse the
+    back substitution's accumulation order (j descending per row) and change
+    them. The private `y`/`z` are what the serial body uses.
+
+    Blocks are walked from the tree table exactly as `_ldl_solve_env` walks
+    them (`_dof_block` at each boundary); a degenerate table is one block on
+    thread 0, i.e. the serial kernel's body, unchanged."""
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    if env >= BATCH:
+        return
+    var y = InlineArray[L.element_type, NV](uninitialized=True)
+    var z = InlineArray[L.element_type, NV](uninitialized=True)
+    var sp = 0
+    var bidx = 0
+    while sp < NV:
+        var bb = _dof_block(trees, NV, sp)
+        var b0 = bb[0]
+        var b1 = bb[1]
+        if b1 <= sp:
+            b1 = NV
+        if bidx % N_THREADS == tid:
+            for i in range(b0, b1):
+                var s = b[env, i]
+                for j in range(b0, i):
+                    s = s - L[env, i * NV + j] * y[j]
+                y[i] = s
+            for i in range(b0, b1):
+                var d_i = D[env, i]
+                if d_i > 1e-14 or d_i < -1e-14:
+                    z[i] = y[i] / d_i
+                else:
+                    z[i] = 0
+            for i in range(b1 - 1, b0 - 1, -1):
+                var s = z[i]
+                for j in range(i + 1, b1):
+                    s = s - L[env, j * NV + i] * x[env, j]
+                x[env, i] = s
+        sp = b1
+        bidx += 1
+
+
 def ldl_factor[
     target: StaticString,
     DTYPE: DType,
@@ -656,12 +734,21 @@ def ldl_factor[
         )
 
 
-def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
+def ldl_solve[
+    target: StaticString,
+    DTYPE: DType,
+    D: DimsLike,
+    BATCH: Int = 1,
+    PARALLEL: Bool = False,
+](
     mut m: Model[DTYPE, D],
     mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets."""
+    """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets.
+    PARALLEL=True (GPU only): a block per env, a thread per kinematic tree
+    (`_ldl_solve_fields_mt_kernel`), bit-exact vs the serial kernel. CPU
+    ignores PARALLEL."""
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_NV = Layout.row_major(BATCH, D.NV)
     comptime L_TREE = Layout.row_major(D.NV * MODEL_TREE_SIZE)
@@ -685,6 +772,19 @@ def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
                 _ldl_solve_tree_env(e, dm, L_v, D_v, b_v, x_v, P_v)
             else:
                 _ldl_solve_env(e, dm, L_v, D_v, b_v, x_v, T_v)
+    elif PARALLEL:
+        var c = ctx.value()
+        c.enqueue_function[
+            _ldl_solve_fields_mt_kernel[DTYPE, D.NV, BATCH, LDL_SOLVE_MT_T]
+        ](
+            scratch.L.lt["gpu", L_M](),
+            scratch.D.lt["gpu", L_NV](),
+            scratch.fnet.lt["gpu", L_NV](),
+            scratch.qacc_ws.lt["gpu", L_NV](),
+            m.trees.lt["gpu", L_TREE](),
+            grid_dim=(BATCH,),
+            block_dim=(LDL_SOLVE_MT_T,),
+        )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
