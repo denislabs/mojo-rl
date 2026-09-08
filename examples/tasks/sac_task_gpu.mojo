@@ -847,17 +847,12 @@ def main() raises:
             eval_max_steps=So101TabletopConfig.MAX_STEPS + 1,
         )
         var secs = Float64(perf_counter_ns() - t0) / 1e9
-        # ⚠ `close()` IS NOT OPTIONAL on the remote half — it drains the queue
-        # and joins the POST thread, and whatever is still queued at process
-        # exit is otherwise lost. It also prints the sink's drop tally.
-        logger.close()
-        _ = logger        # keeps `logger_ptr` alive to here
 
         # ⚠⚠ TWO DIFFERENT NUMBERS NOW, AND THEY USED TO BE ONE. `mean_return`
         # is the SHAPED return — dominated by integrated distance, and what
         # SAC actually optimises. The success rate has to be measured, and
         # `greedy_success_rate` is that measurement: one greedy episode per
-        # lane, counting `reward > 0.5`.
+        # lane, counting `META_IDX_GOAL_HELD`.
         var shaped = Float64(agent.mean_return())
         var rate = greedy_success_rate(agent, eval_env, ctx)
         print("-" * 72)
@@ -871,6 +866,21 @@ def main() raises:
         # ever carried it and no two runs could be compared on it.
         logger.log_scalar(String("eval/success_rate"), rate, num_steps)
         logger.log_scalar(String("eval/shaped_return"), shaped, num_steps)
+
+        # ⚠⚠ `close()` GOES **AFTER** THE LAST `log_scalar`, AND IT DID NOT.
+        # It sat above the greedy eval, so the two metrics this run exists to
+        # produce were logged to a CLOSED logger and dropped — `close()`
+        # drains the queue and joins the POST thread, and anything queued
+        # afterwards has nothing to carry it. The 990k-step run's
+        # `eval/success_rate` is missing from its CSV for exactly this reason
+        # and NOT because the export was early, which is what I assumed.
+        #
+        # ⚠ IT IS SILENT. `log_scalar` after `close` neither raises nor warns;
+        # the metric simply never appears, and a missing key reads as "the run
+        # did not get that far".
+        logger.close()
+        _ = logger        # keeps `logger_ptr` alive to here
+
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)
 
