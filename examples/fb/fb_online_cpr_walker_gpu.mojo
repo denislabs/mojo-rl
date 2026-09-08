@@ -17,16 +17,23 @@ episode end (valid-start table from the store's episode index).
 
 Flags: `--steps --ups --warmup --z-hold --store --expert-frac --reg --gp
 --lr-d --lr-q --bc --act-l2 --act-margin --ortho --lr-b --expl-std
---p-goal --p-expert --tag`. Defaults: `bc 0` (CPR replaces BC — the
-reference's setting; the FB batch is the ring, which has no expert action
-to clone), hinge 100 @ 0.8 (A3 run 3's stabiliser), `reg 0.01`, `gp 10`.
+--p-goal --p-expert --seed --tag`. Defaults: `bc 0` (CPR replaces BC —
+the reference's setting; the FB batch is the ring, which has no expert
+action to clone), hinge 100 @ 0.8 (A3 run 3's stabiliser), `reg 0.01`,
+`gp 10`. `--seed` sets the host RNG, the agent and the driver's per-
+segment env seed together — the ONE knob a replicate changes.
 
-Bars (all measured, §18.7 / §18.9.1): A3.5 online without D 0.93 / 0.80 /
-1.09; offline 24-D pair 1.50 / 2.19 / 1.62 (sd 0.4–0.7). Score with
-`fb_eval_walker_online.mojo <ckpt>` — the FB file is unchanged in format.
+⚠⚠ Score with `fb_rescore.sh`, never one checkpoint: seed 20260908 ran
+1.74 / 1.87 / 1.28 over five late rungs and its FINAL rung alone read
+2.53 / 3.12 / 2.06 (§18.9.3–4). Bars at the same five-rung protocol:
+`a3c` online without D 1.59 / 0.93 / 0.99, `a35` 0.97 / 0.77 / 0.96,
+offline 24-D pair 1.38 / 2.06 / 1.51 (three rungs). The FB file is
+unchanged in format, so `fb_eval_walker_online.mojo` scores it directly.
 
-⚠ Read `[cpr]` lines BEFORE the eval: `Qpi > Q` is the sign the actor
-raises the style value — offline they were equal to four figures.
+⚠ `Qpi > Q` is NOT a signal here, contrary to what this header said
+before the first run: online the batch action IS the policy's own action
+plus exploration noise, so the two agree by construction. It was a real
+null offline, where the batch action is the store's.
 """
 
 from max.gpu.host import DeviceContext
@@ -169,6 +176,7 @@ def main() raises:
     var p_goal = atof(_flag(String("--p-goal"), String(P_GOAL)))
     var p_expert = atof(_flag(String("--p-expert"), String(P_EXPERT)))
     var tag = _flag(String("--tag"), String(""))
+    var seed_v = atol(_flag(String("--seed"), String(SEED)))
     var ckpt = String(CKPT_PATH)
     var csv_path = String(CSV_PATH)
     var run_name = String(RUN_NAME)
@@ -182,7 +190,7 @@ def main() raises:
         raise Error("--store is required: CPR needs an expert set for D")
     var seg = SEGMENT_STEPS if SEGMENT_STEPS < total else total
     var n_segments = (total + seg - 1) // seg
-    seed(SEED)
+    seed(seed_v)
     print("=" * 70)
     print("FB-CPR ONLINE — dm_control walker, batched GPU")
     print("=" * 70)
@@ -197,6 +205,7 @@ def main() raises:
     print("  mixture goal / expert / uniform =", p_goal, "/", p_expert, "/", 1.0 - p_goal - p_expert)
     print("  expert store        =", store_path, " top", expert_frac, "per task")
     print("  CUDA graph (train)  =", USE_TRAIN_CUDA_GRAPH)
+    print("  seed                =", seed_v)
     print("  tag                 = '", tag, "'")
     print("=" * 70)
     with DeviceContext() as ctx:
@@ -211,6 +220,7 @@ def main() raises:
             ),
         )
         logger.set_config("algorithm", "FB-CPR-online")
+        logger.set_config("seed", String(seed_v))
         logger.set_config("env", "dm_control/walker-walk (coverage readout)")
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("d", String(D))
@@ -245,7 +255,7 @@ def main() raises:
             reg_coeff=reg, gp_coef=gp,
             learning_starts=warmup, action_scale=1.0, expl_std=expl,
             z_hold=z_hold, p_goal=p_goal, p_expert=p_expert,
-            window_size=100, initial_episode_fill=0.0, seed=UInt64(SEED),
+            window_size=100, initial_episode_fill=0.0, seed=UInt64(seed_v),
         )
         var env = EnvT(ctx)
 
@@ -344,7 +354,7 @@ def main() raises:
                 L=LoggerT,
             ](
                 Optional(ctx), agent, env, this_seg,
-                rng_seed=UInt64(SEED + s),
+                rng_seed=UInt64(seed_v + s),
                 updates_per_step=ups,
                 print_every=PRINT_EVERY,
                 verbose=True,
