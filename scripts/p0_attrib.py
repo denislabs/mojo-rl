@@ -47,6 +47,7 @@ import os
 import re
 import sys
 import csv
+import io
 from collections import defaultdict
 
 OUT = os.environ.get("OUT", "p0_attrib")
@@ -323,8 +324,19 @@ def disambiguate_by_launch_order(k, names):
     tgt = set(names)
     seq = []
     try:
-        with open(p, newline="", errors="replace") as fh:
-            for row in csv.DictReader(fh):
+        # ⚠ THE HEADER IS NOT THE FIRST LINE. `nsys stats --format csv` writes
+        # banner lines before the `Start (ns),...,Name` header, and a
+        # DictReader started at line 1 takes the banner as the header, finds
+        # no `Name` column and yields NO rows — which this function reported
+        # as "no CRBA launch in the trace to anchor on" at every k of two
+        # sweeps while the same report labelled the CRBA kernel three lines
+        # up. `p0_drift.py` had the header scan; this reader now shares it.
+        lines = open(p, errors="replace").read().splitlines()
+        hdr = [i for i, l in enumerate(lines) if l.startswith("Start (ns)")]
+        if not hdr:
+            return {}, "no 'Start (ns)' header in the trace csv"
+        if True:
+            for row in csv.DictReader(io.StringIO("\n".join(lines[hdr[0]:]))):
                 nm = (row.get("Name") or row.get("name") or "").strip()
                 if not nm:
                     continue

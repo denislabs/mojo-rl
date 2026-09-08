@@ -4276,3 +4276,31 @@ Newton 58.8%, unlabelled 15.8% (integrator ~5.5%, kinematics 3.2%,
 actuator apply 2.5%, sensor RNE 2.2%), collision 10.0%, LDL pair 8.7%,
 RNE 2.9%, CRBA 1.0%. The k=0 row of the sweep (collision was 63% of that
 step) has not been re-run; the full baseline-6 sweep is what gives it.
+
+### 13.49b Baseline 6, the full sweep (5090, 2026-09-08, `p0_attrib.sh`, 1500 timed steps, tree 89e64dff)
+
+| k | nv | wall | GPU | newton | collision | ldl_pair | rne | unlabelled | crba | cdof |
+|---|----|------|-----|--------|-----------|----------|-----|------------|------|------|
+| 0 | 6 | **0.635** | 0.569 | 0.066 | **0.262** | 0.031 | 0.027 | 0.159 | 0.010 | 0.011 |
+| 3 | 24 | 1.026 | 0.945 | 0.275 | 0.282 | 0.076 | 0.036 | 0.248 | 0.012 | 0.011 |
+| 6 | 42 | 1.730 | 1.656 | 0.690 | 0.358 | 0.143 | 0.052 | 0.372 | 0.018 | 0.013 |
+| 9 | 60 | 2.408 | 2.337 | 1.116 | 0.390 | 0.215 | 0.084 | 0.481 | 0.025 | 0.015 |
+| 12 | 78 | 3.415 | 3.332 | 1.762 | 0.412 | 0.328 | 0.113 | 0.632 | 0.037 | 0.031 |
+| 13 | 84 | **4.197** | 4.123 | 2.467 | 0.420 | 0.368 | 0.122 | 0.664 | 0.041 | 0.018 |
+
+Against baseline 5 (§13.46b) the collision kernel is 0.49–0.50 at EVERY
+k (131 µs a launch at k=0 against 269, 210 at k=13 against 426) and no
+other term moved: the change is the collision row and nothing else. The
+k=0 step is 0.635 ms against 0.918 (0.69), k=3 1.026 against 1.311
+(0.78), k=13 4.197 against 4.607 (0.91). Collision's share of the k=0
+step fell from 63% to 46%; it is still the fixed cost of the small-k
+step, still nearly flat in k (131 → 210 µs across 6 → 84 dofs), and its
+next cut needs the kernel's own bisect on the box. The residual stays a
+flat 0.07 ms.
+
+The LDL split's "no CRBA launch in the trace to anchor on" was the split
+reader starting its `DictReader` at line 1 of the nsys csv, where a
+banner line precedes the `Start (ns),…,Name` header, so it saw no `Name`
+column and no rows; `p0_drift.py` had the header scan, the split reader
+now shares it. Not re-run; the factor and solve rows were already
+separate above it.
