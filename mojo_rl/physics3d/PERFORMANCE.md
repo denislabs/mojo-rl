@@ -4063,7 +4063,7 @@ over the trace's `Name` column), harmless because the factor (69.8 µs at
 k=13) and the solve (22.0) are already separate rows above it. To be
 looked at with a trace file at hand.
 
-### 13.47 LANDED, UNPRICED (2026-09-08): the RNE kernel — topology once per block, backward pass level-parallel
+### 13.47 LANDED, 0.97 at k=13 (2026-09-08): the RNE kernel — topology once per block, backward pass level-parallel
 
 The same grep §13.46 ended on. `_rne_fields_mt_kernel` (block per env,
 `NV` threads; 62.7 µs a launch at k=13, 2.8% of the step; 16 µs at k=0)
@@ -4103,3 +4103,30 @@ ASCENDING order fails the walker2d compare at the last bit
 (RK4 with contacts, three steps) bit-exact; the Newton blocked golden
 fingerprint; SO101Tabletop blocked vs the CPU oracle; the ThreeTrees
 block oracle 115/115. The box A/B prices it against `probe_crba`.
+
+**Priced (5090, `p0_ab.sh`, ROUNDS=3, MIN over rounds, B = 019c2605 vs
+A = c98948ac = baseline 5):** rne kernel 30.7 → 25.8 µs at k=6
+(**0.841**, 3/3), 62.2 → 60.4 at k=13 (**0.972**, 3/3); wall 0.996 /
+0.999; every other row 0.99–1.005. Kept: bit-exact, gated, and the kernel
+no longer scans the joint table per body per level. But the shape did
+NOT transfer with its magnitude. The CRBA preamble was ~500 DEPENDENT
+global loads per thread in a kernel with little other work; the RNE's
+was ~100 independent loads plus a 100-deep backward chain, in a kernel
+whose 60 µs are elsewhere — the level-serial forward pass (a barrier
+and a global round trip per tree level, ~9 levels on the arm, the same
+at every k, which is why the kernel costs 16 µs at k=0 already), cinert,
+the projection. I had the bound in hand and reasoned past it: cdof does
+the same per-body joint scan and costs 9 µs in total at k=13, so the
+scan could not have been more than ~9 of RNE's 62, a ceiling of ~15%
+for the whole cut; the thread-0 backward was named by analogy with the
+LDL solve, not measured. §13.47's lesson: before landing a sibling of a
+cut that paid, bound the term against a kernel that already does it.
+RNE is 2.6% of the k=13 step; no further cut here.
+
+**Where the step is now (k=13, 4.60 ms):** Newton 53% (closed at
+stage 1, §13.43), collision 18.5%, unlabelled 14% (integrator 5%,
+kinematics 3%, actuator apply 2.3%, sensor RNE 2%), LDL pair 8%, RNE
+2.6%, CRBA 0.9%. And at k=0 (0.92 ms) collision is 63%: 269 µs a launch
+with six dofs and a handful of geoms per env, nearly the same 426 at
+84 dofs. A kernel that costs the same at 8 bodies as at 100 is paying
+a fixed per-launch cost, not the model's — the next thing to read.
