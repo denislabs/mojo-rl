@@ -14,6 +14,7 @@ from std.os import abort
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
 from .ccd_workspace import (
+    HW_WS_OFF,
     EPA_ITER_CAP,
     EPA_V_CAP,
     EPA_F_CAP,
@@ -160,6 +161,8 @@ struct _HillProbe(Movable):
     var xstep_scans: Int
     """Scans a walk from `prev_land` (cross-step warm start) would take."""
     var xstep_calls: Int
+    var plane_calls: Int
+    """Calls from the plane-mesh path (`_plane_mesh_contacts`)."""
     var ext_keys: List[Int]
     """`vert_adr` of each mesh with extrema in `ext` (27 entries each)."""
     var ext: List[Int]
@@ -181,6 +184,7 @@ struct _HillProbe(Movable):
             self.prev_land.append(-1)
         self.xstep_scans = 0
         self.xstep_calls = 0
+        self.plane_calls = 0
         self.ext_keys = List[Int]()
         self.ext = List[Int]()
 
@@ -197,6 +201,7 @@ struct _HillProbe(Movable):
         self.seed_mismatch_nontie = 0
         self.xstep_scans = 0
         self.xstep_calls = 0
+        self.plane_calls = 0
 
     def ext_offset(self, vert_adr: Int) -> Int:
         for i in range(len(self.ext_keys)):
@@ -1562,6 +1567,166 @@ def gjk_epa_witness[
     prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
+    warm_slot: Int = -1,
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """`_gjk_epa_witness_run` with the mesh hill climb's warm vertices
+    seeded from, and written back to, warm slot `warm_slot` of the CCD
+    workspace row (`HW_WS_OFF + 2 * warm_slot`, object 1 then object 2) — the
+    cross-step warm start of `ccd_workspace.mojo`. `warm_slot < 0` (the
+    default, and every caller but `_sap_pair_narrow`) runs cold, as before.
+    Only a MESH's slot is read or written: a box keeps `warm` as a corner
+    code for EPA's repeated-support test and must start from -1.
+    """
+    var warm1 = -1
+    var warm2 = -1
+    var off = HW_WS_OFF + 2 * warm_slot
+    if warm_slot >= 0:
+        if type1 == GEOM_MESH:
+            var f = rebind[Scalar[DTYPE]](ws[wrow, off])
+            if f >= Scalar[DTYPE](0) and f < Scalar[DTYPE](1e8):
+                warm1 = Int(f)
+        if type2 == GEOM_MESH:
+            var f2 = rebind[Scalar[DTYPE]](ws[wrow, off + 1])
+            if f2 >= Scalar[DTYPE](0) and f2 < Scalar[DTYPE](1e8):
+                warm2 = Int(f2)
+    var r = _gjk_epa_witness_run[DTYPE, NPRISM=NPRISM](
+        type1,
+        p1x,
+        p1y,
+        p1z,
+        q1x,
+        q1y,
+        q1z,
+        q1w,
+        r1,
+        hl1,
+        hx1,
+        hy1,
+        hz1,
+        mesh_verts,
+        mesh_vert_edgeadr,
+        mesh_edges,
+        va1,
+        mnv1,
+        type2,
+        p2x,
+        p2y,
+        p2z,
+        q2x,
+        q2y,
+        q2z,
+        q2w,
+        r2,
+        hl2,
+        hx2,
+        hy2,
+        hz2,
+        va2,
+        mnv2,
+        wf1,
+        wf2,
+        wx,
+        wf_ok,
+        ws,
+        wrow,
+        warm1,
+        warm2,
+        ccd_tol,
+        ccd_iter,
+        ccd_margin,
+        dist_cutoff,
+        prism,
+    )
+    if warm_slot >= 0:
+        if type1 == GEOM_MESH:
+            ws[wrow, off] = Scalar[DTYPE](warm1)
+        if type2 == GEOM_MESH:
+            ws[wrow, off + 1] = Scalar[DTYPE](warm2)
+    return r^
+
+
+def _gjk_epa_witness_run[
+    DTYPE: DType,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_WS: Layout,
+    NPRISM: Int = 1,
+](
+    type1: Int,
+    p1x: Scalar[DTYPE],
+    p1y: Scalar[DTYPE],
+    p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE],
+    q1y: Scalar[DTYPE],
+    q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE],
+    hy1: Scalar[DTYPE],
+    hz1: Scalar[DTYPE],
+    mesh_verts: LayoutTensor[
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
+    ],
+    va1: Int,
+    mnv1: Int,
+    type2: Int,
+    p2x: Scalar[DTYPE],
+    p2y: Scalar[DTYPE],
+    p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE],
+    q2y: Scalar[DTYPE],
+    q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE],
+    hy2: Scalar[DTYPE],
+    hz2: Scalar[DTYPE],
+    va2: Int,
+    mnv2: Int,
+    mut wf1: InlineArray[Scalar[DTYPE], 9],
+    mut wf2: InlineArray[Scalar[DTYPE], 9],
+    mut wx: InlineArray[Scalar[DTYPE], 6],
+    mut wf_ok: Int,
+    # ⚠ EPA'S POLYTOPE — MuJoCo's `config->buffer`. `ws[wrow, ...]` is the
+    # caller's scratch row and is written unconditionally; nothing in it is
+    # read across calls, so no caller has to clear it. One row per ENV is what
+    # keeps it thread-local in the collision kernels. See `ccd_workspace`.
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    wrow: Int,
+    mut warm1: Int,
+    mut warm2: Int,
+    ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
+    ccd_iter: Int = MJ_CCD_ITERATIONS,
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # ⚠⚠ OPT-IN, AND THE DEFAULT MUST STAY "DISABLED". Negative means
+    # "converge to the true distance", which is what every distance gate in the
+    # tree asserts on (`test_gjk_float32_no_phantom_contacts` compares
+    # separations of 7-17 cm). Only a caller that uses the result SOLELY for a
+    # `dist < margin` contact test may pass a cutoff. See the exit in the loop.
+    dist_cutoff: Scalar[DTYPE] = Scalar[DTYPE](-1),
+    # ⚠ DEFAULTED SO THE TWELVE EXISTING CALL SITES ARE UNTOUCHED. Only
+    # `hfield_convex.mojo` passes it, and only with `type1 == GEOM_HFIELD`;
+    # every other caller collides two real geoms and never reads it.
+    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+        Scalar[DTYPE], NPRISM
+    ](fill=Scalar[DTYPE](0)),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1609,8 +1774,10 @@ def gjk_epa_witness[
     # them is not a correctness bug (the guard in `_support_mesh` clamps an
     # out-of-range seed, and any in-range seed still converges) but it throws
     # the speed-up away silently, which is the worse failure to debug.
-    var warm1 = -1
-    var warm2 = -1
+    # The seeds the caller handed in (the cross-step slot, or -1): every
+    # phase of the run starts its walks there.
+    var seed1 = warm1
+    var seed2 = warm2
     # ===== GJK Phase =====
     # ⚠⚠ TWO PHASES, AND THE FIRST IS WHERE EVERY SPHERE AND CAPSULE PAIR IS
     # ACTUALLY SOLVED. `mjc_ccd` opens with
@@ -1708,8 +1875,8 @@ def gjk_epa_witness[
     # `MC_MAX_DEG` there changes nothing — so this was never a size problem.
     for _phase in range(2):
         nsimplex = 0
-        warm1 = -1
-        warm2 = -1
+        warm1 = seed1
+        warm2 = seed2
         vx = p1x - p2x
         vy = p1y - p2y
         vz = p1z - p2z

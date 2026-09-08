@@ -185,6 +185,7 @@ def _hf_len(n: Int) -> Int:
 from .hfield_convex import hfield_convex_contacts
 from .ccd_workspace import CCD_WS_SIZE, COLL_CCD_LANES
 from .gjk import gjk_epa, gjk_epa_witness, hillclimb_support_index
+from .gjk import _HILL_PROBE, hill_probe
 from .native_multicontact import (
     native_multicontact_contacts,
     MC_ENABLED,
@@ -340,6 +341,10 @@ def _plane_mesh_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    # The mesh hill climb's warm vertex, in and out (`hillclimb_support_index`):
+    # -1 = cold. The SAP plane phase hands in the pair's cross-step slot
+    # (`ccd_workspace.mojo`); the O(N^2) detector stays cold.
+    mut warm: Int,
     # ⚠ THE GAP HALF OF THE PAIR'S MARGIN, DEFAULTED TO 0 SO EVERY
     # EXISTING CALL SITE IS UNCHANGED. `contact_margin` is the narrowphase
     # CUTOFF (`margin + gap`); what a contact STORES as its
@@ -503,12 +508,15 @@ def _plane_mesh_contacts[
         q_x, q_y, q_z, q_w,
         Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](-1),
     )
+    comptime if _HILL_PROBE:
+        hill_probe()[].plane_calls += 1
     var hc = hillclimb_support_index[DTYPE](
         ld[0], ld[1], ld[2],
         mesh_verts, mesh_vert_edgeadr, mesh_edges,
-        pm_vadr, pm_vnum, -1,
+        pm_vadr, pm_vnum, warm,
     )
     if hc >= 0:
+        warm = hc
         var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 0])
         var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 1])
         var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 2])
@@ -2638,6 +2646,7 @@ def _detect_contacts_env[
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
                     comptime if may_exist[D.NMESH_VERTS]():
+                        var pmw = -1
                         _plane_mesh_contacts[
                             DTYPE,
                             0, False, True](
@@ -2667,6 +2676,7 @@ def _detect_contacts_env[
                             mesh_edges,
                             contacts,
                             num_contacts,
+                            pmw,
                             contact_gap,
                         )
                 _fill_pair_solparams[DTYPE](
@@ -2973,6 +2983,7 @@ def _detect_contacts_env[
                     )
                 elif gi_type == GEOM_MESH:
                     comptime if may_exist[D.NMESH_VERTS]():
+                        var pmw = -1
                         _plane_mesh_contacts[
                             DTYPE,
                             0, False, True](
@@ -3002,6 +3013,7 @@ def _detect_contacts_env[
                             mesh_edges,
                             contacts,
                             num_contacts,
+                            pmw,
                             contact_gap,
                         )
                 _fill_pair_solparams[DTYPE](

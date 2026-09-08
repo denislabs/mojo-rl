@@ -167,6 +167,7 @@ def _hf_len(n: Int) -> Int:
 
 from .ccd_workspace import (
     CCD_WS_SIZE, COLL_TPB, COLL_CCD_LANES, COLL_NCAND_CAP, COLL_STAGE_MAXC,
+    HILL_WARM_ACROSS_STEPS, HILL_WARM_SLOTS, HW_WS_OFF,
     COLL_STAGE_SLOTS, COLL_BLOCK_KERNEL,
 )
 from max.gpu.sync import barrier
@@ -475,6 +476,7 @@ def _sap_plane_narrow[
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
     L_CONTACTS: Layout,
+    L_WS: Layout,
     HFIELD_ENABLED: Bool,
 ](
     env: Int,
@@ -544,6 +546,7 @@ def _sap_plane_narrow[
         DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
+    ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
 ):
     """ONE (plane, non-plane geom) candidate of the plane phase — filters,
     contact parameters, the plane narrow phase and its emission — moved out
@@ -988,6 +991,17 @@ def _sap_plane_narrow[
         comptime if may_exist[D.NMESH_VERTS]():
             comptime if _COLL_PROBE:
                 pr._c_t0 = Int(perf_counter_ns())
+            # The pair's cross-step warm slot (ccd_workspace.mojo), as for
+            # the GJK pairs: the plane's lowest vertex last step is this
+            # step's answer.
+            var pm_slot = (
+                (gi * 131 + gj) % HILL_WARM_SLOTS
+            ) if HILL_WARM_ACROSS_STEPS else -1
+            var pmw = -1
+            if pm_slot >= 0:
+                var pf = rebind[Scalar[DTYPE]](ws[wrow, HW_WS_OFF + 2 * pm_slot])
+                if pf >= Scalar[DTYPE](0) and pf < Scalar[DTYPE](1e8):
+                    pmw = Int(pf)
             _plane_mesh_contacts[
                 DTYPE,
                 -1, True, False](
@@ -1012,9 +1026,12 @@ def _sap_plane_narrow[
                 mesh_edges,
                 contacts,
                 num_contacts,
+                pmw,
                 cgp,
                 max_contacts_in=max_contacts,
             )
+            if pm_slot >= 0:
+                ws[wrow, HW_WS_OFF + 2 * pm_slot] = Scalar[DTYPE](pmw)
             comptime if _COLL_PROBE:
                 pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
                 pr._n_pmesh += 1
@@ -1948,6 +1965,12 @@ def _sap_pair_narrow[
                 fill=Scalar[DTYPE](0)
             )
             var wf_ok = 0
+            # The pair's warm slot for the mesh hill climb (ccd_workspace.mojo):
+            # a hash of the sorted geom pair, so the state follows the PAIR
+            # across steps whatever the candidate set does around it.
+            var hw_slot = (
+                (si * 131 + sj) % HILL_WARM_SLOTS
+            ) if HILL_WARM_ACROSS_STEPS else -1
             comptime if _COLL_PROBE:
                 pr._c_t0 = Int(perf_counter_ns())
             comptime if _COLL_REPEAT_GJK > 1:
@@ -1975,6 +1998,7 @@ def _sap_pair_narrow[
                         ws, wrow,
                         ccd_tol, ccd_iter, cm,
                         cm,
+                        warm_slot=hw_slot,
                     )
                     if rq[0] == Scalar[DTYPE](-1.0e30):
                         dist = rq[0]
@@ -1994,6 +2018,7 @@ def _sap_pair_narrow[
                 # by `if dist < cm`, and everything that consumes the
                 # witness sits inside that branch.
                 cm,
+                warm_slot=hw_slot,
             )
             comptime if _COLL_PROBE:
                 pr._c_gjk += Int(perf_counter_ns()) - pr._c_t0
@@ -2500,7 +2525,7 @@ def _detect_contacts_sap_env[
                 plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
                 pn, nbody, max_contacts, ex_sig, n_sig, pr, num_contacts,
                 wpx, wpy, wpz, wqx, wqy, wqz, wqw,
-                geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, contacts,
+                geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, contacts, ws,
             )
 
     # ------------------------------------------------------------------
@@ -3233,7 +3258,7 @@ def _detect_contacts_sap_block_kernel[
                     wpx[a], wpy[a], wpz[a], plq_x, plq_y, plq_z, plq_w,
                     pn, nbody, win_end, ex_sig, n_sig, pr, num_contacts,
                     wpx, wpy, wpz, wqx, wqy, wqz, wqw,
-                    geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, stage,
+                    geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, stage, ccd_ws,
                 )
             else:
                 _sap_pair_narrow[

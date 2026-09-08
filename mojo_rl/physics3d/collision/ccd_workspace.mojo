@@ -209,7 +209,33 @@ comptime MC_WS_PD: Int = MC_WS_PN + MC_MAX_POLYVERT * 3
 # diff and fires only on the pose where the assumption breaks.
 #
 # EPA's 964 floats plus 28 * MC_MAX_POLYVERT.
-comptime CCD_WS_SIZE: Int = MC_WS_PD + MC_MAX_POLYVERT
+comptime HW_WS_OFF: Int = MC_WS_PD + MC_MAX_POLYVERT
+
+# ── The cross-step warm start of the mesh hill climb (PERFORMANCE.md §13.48,
+# 2026-09-08). On the park scene every mesh support call was COLD: a
+# candidate's GJK proves the pair apart on its first support point and
+# exits, so the run-scoped warm vertex (`warm1`/`warm2`, MuJoCo's
+# `meshindex`) never fired and each walk started from vertex 0, 13.8
+# neighbourhood scans from the answer — each scan a dependent chain of
+# global loads on one GPU thread. The vertex the SAME candidate landed on in
+# the previous step is the answer in 4,491 of 4,491 replays (1.00 scans).
+# So the row keeps, after the polygon regions, `HILL_WARM_SLOTS` pairs of
+# vertex indices keyed by a hash of the geom pair (`_sap_pair_narrow`):
+# `gjk_epa_witness` seeds both walks from the slot and writes the landings
+# back. The row is per env (per CCD lane in the block kernel), so the state
+# persists across steps exactly where the pair recurs.
+#
+# ⚠ ANY VALUE IN A SLOT IS SAFE. A stale, crossed or garbage index costs
+# steps, never a point: `hillclimb_support_index` clamps an out-of-range
+# seed to 0, and on a convex hull the walk converges from any vertex. A hash
+# collision between two pairs hands one the other's vertex — steps again.
+# What a seed CAN change is a tie: on a face perpendicular to the query
+# direction two vertices share the maximum and the walk stops at whichever
+# it reaches first, so the support POINT can move along that face. MuJoCo
+# 3.12 accepted the same (its `mesh_extrema` seed); the goldens are the gate.
+comptime HILL_WARM_ACROSS_STEPS: Bool = True
+comptime HILL_WARM_SLOTS: Int = 128
+comptime CCD_WS_SIZE: Int = HW_WS_OFF + 2 * HILL_WARM_SLOTS
 
 # ── The block-per-env collision kernel (`broadphase_sap.mojo`,
 # `_detect_contacts_sap_block_kernel`), 2026-09-07 ────────────────────────

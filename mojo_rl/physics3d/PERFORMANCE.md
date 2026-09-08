@@ -4188,3 +4188,55 @@ are the cold fallback for a new ordinal — 5.9 scans against 13.8 — and a
 model field the parser would fill; second, if the cold share after the
 first step ever matters. Both legs (serial per-env kernel, block kernel,
 CPU) share `_sap_pair_narrow`, so one threading serves all three.
+
+### 13.49 LANDED, UNPRICED ON THE GPU (2026-09-08): the mesh hill climb warm-starts across steps
+
+§13.48's design, built. The CCD workspace row (`Data.ccd_ws`, per env —
+per CCD lane in the block kernel) grows a tail of `HILL_WARM_SLOTS = 128`
+pairs of vertex indices (`HW_WS_OFF`, `ccd_workspace.mojo`), keyed by a
+hash of the geom pair (`(gi·131 + gj) mod 128`) in `_sap_pair_narrow` and
+in the SAP plane phase. `gjk_epa_witness` became a thin wrapper over
+`_gjk_epa_witness_run`: it seeds `warm1`/`warm2` from the pair's slot
+(mesh objects only — a box keeps `warm` as EPA's corner code and must start
+at -1), the run starts BOTH of its phases from those seeds instead of -1,
+and the wrapper writes the landings back. `_plane_mesh_contacts` takes the
+warm vertex in and out (`mut warm`); the SAP plane phase hands it the slot,
+the O(N²) detector (ngeom < 16, no scene of ours with large hulls) passes
+-1 and is byte-for-byte what it was. Every other caller of the witness
+function runs cold through the default `warm_slot = -1`.
+
+**What the probe reads now (k=0, CPU, the same 9 calls a step):**
+
+| | before | after |
+|---|---|---|
+| cold calls per step | 9 | **0** (after step 1) |
+| scans per call | 13.8 | **1.00** |
+| scans per step | 124 | **9** |
+
+**Exact where it was measured.** `bench_so101` over 3,000 steps from
+qpos0, warm start on vs off (`HILL_WARM_ACROSS_STEPS`): park_k0 `qsum`
+2.1029078364372253 both, park_k3 502.05773257916786 both — the
+trajectories are bit-identical, so no tie moved a witness on these scenes.
+CPU step (Euler, one env): k=0 8.60 → **4.03 µs**, k=3 18.4 → **12.1 µs**
+(same session, not interleaved — the direction is not in doubt, the third
+digit is). GPU gates on Apple, all green: `test_plane_mesh_fields` (both
+detectors vs golden), `test_sap_fields` (humanoid, sawyer mesh leg,
+walker2d dispatch goldens), `test_newton_blocked_fields` (fingerprint),
+`test_newton_freejoint_vs_cpu` (SO101Tabletop blocked vs CPU oracle),
+`test_fields_mt_parity` arm C (contacts, three steps bit-exact),
+`test_mesh_manifold_gpu_parity`.
+
+⚠ `test_mesh_manifold_vs_mujoco` FAILS — "mesh contact DEPTH diverges
+from MuJoCo by 0.0033" — and fails IDENTICALLY with the warm start off.
+That is the runtime moving under the gate, not this change: pixi now
+ships MuJoCo 3.12, whose multiccd carries a distance per witness point
+(`witnessOnFace`, `status->dist[i]`) where 3.10 wrote one distance for
+the whole manifold. To be re-read against 3.12's rule when the tests are
+swept for the version.
+
+**The box prices it** against `probe_rne` (= §13.47's tree). What §13.48
+bounded: ~26 of 28 dependent scans per GJK candidate, i.e. the k=0
+collision kernel from 270 toward ~100 µs and k=13's 426 toward ~250. A
+CPU count, not a GPU time: the A/B decides, and the rows to read are
+collision and — the unlabelled env kernel aside — nothing else, since
+no other kernel touches `ccd_ws`.
