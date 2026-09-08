@@ -81,6 +81,9 @@ MODELS = [
     ("mojo_rl/envs/metaworld/sawyer_reach_xml.mojo", ["sawyer_reach_xml"]),
     ("mojo_rl/envs/robots/so_arm100_xml.mojo", ["SO_ARM100_XML"]),
     ("mojo_rl/envs/robots/so_arm101_xml.mojo", ["SO_ARM101_XML"]),
+    # Unitree G1 29-DoF, baked from the BFM-Zero sim-to-sim model by
+    # `tests/robots/g1_bake.py` (meshes + PD tables come with it).
+    ("mojo_rl/envs/robots/unitree_g1_xml.mojo", ["UNITREE_G1_XML"]),
     # ⚠ THE P0 SCENE-BUDGET PROBE MODELS, and they are here on purpose.
     # `assets/so101_park_k*.xml` are emitted by
     # `tools/tasks/gen_park_scenes.py`; listing them here makes their

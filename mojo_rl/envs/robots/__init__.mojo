@@ -18,6 +18,11 @@ between them (different joint-axis conventions). `docs/SO_ARM101_PORT_ASSESSMENT
 §3 has the measured comparison; §5 says to pick which one the POLICY trains on
 before training, not after.
 
+    Unitree G1 BFM-Zero's sim-to-sim `g1_29dof` model — 29 DoF humanoid under
+               the reference's torque-level PD. The baseline body for the
+               G1 reproduction (`docs/BFM_ZERO_G1_REPRODUCTION.md`); GPU
+               path is NVIDIA-only at nv 35.
+
 ⚠ ToddlerBot is NOT here yet — see `docs/TODDLERBOT_PORT_PLAN.md`. It is
 blocked on `<inertial fullinertia>` at parse time, which these two arms sidestep
 with a labelled bake (`tests/robots/so_arm_bake.py`).
@@ -28,3 +33,6 @@ from .so_arm101_xml import SoArm101Model
 from .so_arm_reach_config import SoArmReachConfig
 from .so_arm100 import SoArm100Reach, SoArm100ReachConfig
 from .so_arm101 import SoArm101Reach, SoArm101ReachConfig
+from .unitree_g1_xml import UnitreeG1Model
+from .unitree_g1_config import UnitreeG1Config
+from .unitree_g1 import UnitreeG1, UnitreeG1Batched
