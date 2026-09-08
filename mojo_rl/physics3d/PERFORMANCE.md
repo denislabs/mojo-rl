@@ -3744,3 +3744,20 @@ a mutant on the inner sum reads fingerprint 0.0), ThreeTrees oracle (three
 bit-exact. Barriers per iteration at k=13: ~175 → ~7. What it buys is the
 box's to say — the record on predicting this kernel's terms is four
 over-predictions running; the A/B is stage 1 vs stage 2, interleaved.
+
+**MEASURED (RTX 5090, 2026-09-08, `p0_ab.sh` stage 1 vs stage 2 at
+`MAX_BN = 12`, three interleaved rounds, MIN): Newton 1.054× SLOWER at k=6
+(347 → 366 µs per launch) and 1.060× at k=13 (1231 → 1305), behind in
+every round; every other kernel 1.000 (the A/B is clean). Off by default
+(`NEWTON_FACTOR_PER_BLOCK_MAX_BN = 0`, kept as a pricing knob).** What the
+negative says is more useful than the change would have been: ~168
+barriers per iteration removed and the kernel got slower, so the
+cooperative factor was never a term of the loop. Written down, the
+arithmetic agrees — a 6×6 factor on one thread is ~2k cycles, the
+84-column walk with its barriers ~25k, both under 10 µs against a ~600 µs
+block-solve. The loop's 61% (pinned STOP bisect, block ledger) is therefore
+in its THREAD-0 passes — gradient, read-back, line search, update — on
+per-thread `Scratch` locals in local memory, or the split has moved since
+that bisect (before the `Je` spill and stage 1). The block ledger's
+prediction record on this kernel is now five for five; the next move is a
+measurement of the current split, not a change.

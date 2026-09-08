@@ -490,7 +490,16 @@ comptime NEWTON_STAGE1_CHECK: Bool = False
 # Bit-identical either way (see `chol_factor_seg_p`); gated by the golden
 # fingerprint (walker2d, one 9-dof block: per-block path) and the ThreeTrees
 # oracle (three 6-dof blocks), the dog/humanoid gates run the coop path.
-comptime NEWTON_FACTOR_PER_BLOCK_MAX_BN: Int = 12
+#
+# ⚠⚠ MEASURED AND OFF (2026-09-08, RTX 5090, `p0_ab.sh` stage 1 vs this at
+# 12, three interleaved rounds, MIN): Newton 1.054x SLOWER at k=6 and 1.060x
+# at k=13, behind in every round, every other kernel 1.000. Removing ~168
+# barriers per iteration did nothing, so the cooperative factor was never a
+# term — the arithmetic agrees once written down (a 6x6 factor is ~2k cycles,
+# the 84-column walk ~25k, the block-solve 600 µs), and the 5% is the cost
+# of the serial per-thread chain against a walk whose loads pipeline. Kept
+# as a pricing knob (0 = production); PERFORMANCE.md §13.41.
+comptime NEWTON_FACTOR_PER_BLOCK_MAX_BN: Int = 0
 
 # ⚠ A ROUTING KNOB FOR PRICING THE TWO NVIDIA KERNELS AGAINST EACH OTHER.
 # `solve_newton` sends PYRAMIDAL + NVIDIA to the blocked kernel (one env per
