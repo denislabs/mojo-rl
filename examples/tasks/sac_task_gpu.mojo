@@ -118,6 +118,27 @@ travel with the run as `cfg/*` fields.
 ⚠ THE SUCCESS-RATE baselines are lane-count independent — a rate is per
 episode either way — so only the RETURN figures moved.
 
+⚠⚠ CRITIC HEALTH TRACKS THE REWARD'S MAGNITUDE, and the tracking rate is not
+enough on its own. All four of these ran at 32 env / 32 upd / tau 0.0025, the
+SAME 7.7%:
+
+    run  weights    shape       mean |r|   critic
+      7  0.5/0.25   linear         0.105   healthy,  mean_q  -3.1
+      8  0.5/0.25   linear         0.105   healthy,  mean_q  -6.2  (290k)
+     10  0.1/0.70   linear         0.145   DIVERGED, mean_q 5743
+     11  1.0/0.50   tolerance      0.246   DIVERGED, mean_q  833
+
+Only 0.105 has ever held. Runs 10 and 11 each changed a second thing as well —
+the weight RATIO and the reward SHAPE — so magnitude is the simplest factor
+covering both and not a proven one. The single-variable test is the tolerance
+shape at the stable magnitude: `--shape-goal 0.43 --shape-reach 0.21`, which
+is 1.0/0.5 scaled by 0.105/0.246.
+
+⚠ AND THE SHAPE IS WORKING EVEN ON A BROKEN CRITIC. Run 11's eval peaked at
+130 against a random baseline of 69 — 1.9x — where the linear form's best was
+13% over its own baseline in 290k steps. It also swung 44..130 with no trend,
+which is what a policy riding a diverging value function looks like.
+
 ⚠ AND A HEALTHY RUN HAS A SHAPE. What to read FIRST is `mean_q`: it should
 converge toward `mean_reward / (1 - gamma)` with `mean_next_q - mean_q` under
 a tenth. Run 3's gap was +5 and its `mean_q` ran to 508; run 10's was +35 at
