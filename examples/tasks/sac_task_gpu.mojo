@@ -242,11 +242,32 @@ comptime N_ENVS = 32
 comptime DEFAULT_TASK = "so101_lift_brick"
 comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
 
-# ⚠⚠ `TERMINATE_ON_UNHEALTHY=True` — see the header. This is the flag, and it
-# is the only place in this file where success termination is expressible.
+# ⚠⚠ `False`, MATCHING BOTH EXAMPLES THAT TRAIN ON THIS STACK. It was True —
+# the config's reward hook asks to terminate on success and that ask is
+# discarded without this flag — and True is a STRUCTURAL difference from
+# `sac_so_arm101_reach_training_gpu.mojo` and
+# `sac_half_cheetah_training_gpu.mojo`, both of which run False.
+#
+# ⚠ WHAT SUCCESS-TERMINATION DOES TO A VALUE FUNCTION. A lane that succeeds
+# gets `done = 1`, so the critic masks the bootstrap and its target for that
+# transition is the one-step reward alone — about 0.25 here — while its
+# neighbours in state space carry Q near the fixed point of 16. The critic has
+# to fit a cliff at the success boundary, and it is a RARE cliff: successes
+# are order 1.5% of episodes, so a handful of transitions in the buffer
+# disagree by 60x with everything around them.
+#
+# That is a candidate for the divergence that five reward hypotheses each
+# explained partly and none explained fully — and unlike them it is
+# structural, not fitted to the runs after the fact.
+#
+# ⚠ IT COSTS THE EPISODE BOUNDARY ON SUCCESS. A solved lane now keeps running
+# to `MAX_STEPS`, accruing reward that is HIGHEST near the goal — so holding
+# the blocks together pays, which is the behaviour the task wants anyway and
+# what both working examples do. `greedy_success_rate` is unaffected: it reads
+# `META_IDX_GOAL_HELD` and asks whether the goal held at ANY step.
 comptime EnvT = Phyics3dBatchedEnv[
     So101TabletopModel, So101TabletopConfig, N_ENVS,
-    TERMINATE_ON_UNHEALTHY=True,
+    TERMINATE_ON_UNHEALTHY=False,
 ]
 
 comptime OBS_DIM = EnvT.OBS_DIM      # 54 = NQ(27) + NV(24) + N_FREE(3)
