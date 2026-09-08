@@ -48,6 +48,20 @@ PIXI_ENV=${PIXI_ENV:-nvidia}
 # arm train on one dataset and infer z from another, and the ratios would still
 # print. Change the store by editing both constants, together.
 STORE=${STORE:-fb_walker_all_sac.h5}
+# ⚠ `fb_train_gpu.mojo` carries a COMPTIME observation switch (`ENV_OBS`).
+# When it is True the trainer suffixes every tag with `_envobs` and writes a
+# 24-D checkpoint, which only `fb_eval_walker_online.mojo` can score. Read
+# the switch off the source so the checkpoint names and the eval agree with
+# whatever is about to be compiled — an eval on the wrong representation
+# fails on shape at best, and at worst scores a plausible number.
+if grep -q "^comptime ENV_OBS: Bool = True" examples/fb/fb_train_gpu.mojo; then
+    SUF="_envobs"
+    EVAL=examples/fb/fb_eval_walker_online.mojo
+else
+    SUF=""
+    EVAL=examples/fb/fb_eval_walker.mojo
+fi
+echo "obs representation: ${SUF:-qpos|qvel (18-D)}  eval: $EVAL"
 OUT=${OUT:-fb_sweep_results.csv}
 # Late region only. At CKPT_EVERY=50000 a 300 k run writes 50k..250k plus
 # `.final`; the first rungs are still moving and averaging them in would
@@ -72,8 +86,15 @@ FORCE=${FORCE:-0}
 # (ortho 1, lr_b -1) as the no-flag setting. From this commit the no-flag
 # setting IS the winner; an arm meant to reproduce `base_u` must now pass
 # `--ortho 1 --lr-b -1` explicitly (see `base_u_re`).
-declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3)
-declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907")
+declare -a ARM_TAGS=(base       ortho100      lrb1e5          obsnorm          bc0p3      bc3p0      base_u                 ortho100_u              ortho100_obsnorm_u                     ortho100_lrb1e5_u           ortho100_lrb1e5_u_s2                          ortho100_lrb1e5_obsnorm_u                 base_u_re              ortho100_lrb1e5_u_s3                          pair                        pair_s2)
+declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "--bc 0.3" "--bc 3.0" "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b -1" "--ortho 100 --lr-b -1 --obs-norm 1"   "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906"     "--ortho 100 --lr-b 1e-5 --obs-norm 1"    "--ortho 1 --lr-b -1"  "--ortho 100 --lr-b 1e-5 --seed 20260907"     "--ortho 100 --lr-b 1e-5"   "--ortho 100 --lr-b 1e-5 --seed 20260906")
+
+# 2026-09-08 (§18.7.5): with ENV_OBS=True, `pair` (= pair_envobs, one seed)
+# scored 1.62 / 2.32 / 1.72 — the 24-D env observation beats [qpos|qvel]'s
+# 1.51 / 1.82 / 1.44 on every task. It is the new base; `pair_s2` is its
+# replicate. ⚠ Arms before `pair` were trained at ENV_OBS=False; their
+# checkpoints carry no suffix and the summary mixes representations if you
+# list both — compare envobs arms against `pair`, not `base_u`.
 
 # Round 3 (§18.6.2): the pair REPLICATED at seed 2 (two-seed mean 1.51 /
 # 1.82 / 1.44, run carrying ±0.2); obsnorm on top of it HURT (run below
@@ -85,7 +106,7 @@ declare -a ARM_FLAG=(""         "--ortho 100" "--lr-b 1e-5"   "--obs-norm 1"   "
 #         ARMS="ortho100_lrb1e5_u" FORCE=1 bash examples/fb/fb_sweep.sh
 #   (⚠ FORCE re-trains and OVERWRITES that arm's 300 k checkpoints; copy
 #    them aside first, or run it with a fresh tag.)
-ARMS=${ARMS:-"ortho100_lrb1e5_u_s3"}
+ARMS=${ARMS:-"pair_s2"}
 
 
 if [ ! -f "$STORE" ]; then
@@ -108,7 +129,7 @@ for i in "${!ARM_TAGS[@]}"; do
     flags="${ARM_FLAG[$i]}"
     case " $ARMS " in *" $tag "*) ;; *) continue ;; esac
 
-    ckpt="fb_walker_${tag}.ckpt"
+    ckpt="fb_walker_${tag}${SUF}.ckpt"
     if [ -f "${ckpt}.final" ] && [ "$FORCE" != "1" ]; then
         echo "=== arm '$tag' — already trained (${ckpt}.final exists), skipping training"
     else
@@ -130,7 +151,7 @@ for i in "${!ARM_TAGS[@]}"; do
             continue
         fi
         echo "    -- eval $ck"
-        pixi run mojo run -I . examples/fb/fb_eval_walker.mojo "$ck" \
+        pixi run mojo run -I . "$EVAL" "$ck" \
             > "fb_sweep_${tag}.${rung}.eval.log" 2>&1 || {
                 echo "    !! eval FAILED for $ck — see fb_sweep_${tag}.${rung}.eval.log" >&2
                 continue
@@ -156,7 +177,7 @@ PARSE
     echo ""
 done
 
-echo "=== summary (mean ratio over the late rungs, delta vs base_u if present, else base) ==="
+echo "=== summary (mean ratio over the late rungs, delta vs pair / base_u / base, whichever is present first) ==="
 python3 - "$OUT" "$skipped_rungs" <<'SUMMARY'
 import csv, sys
 from collections import defaultdict
@@ -178,7 +199,7 @@ for (a, t) in agg:
     if t not in tasks:
         tasks.append(t)
 tasks = [t for t in ("stand", "walk", "run") if t in tasks]
-ref = "base_u" if "base_u" in arms else "base"
+ref = "pair" if "pair" in arms else ("base_u" if "base_u" in arms else "base")
 if ref in arms:
     arms = [ref] + [a for a in arms if a != ref]
 

@@ -89,11 +89,17 @@ comptime NACT: Int = 6
 # ⚠ THE OBSERVATION REPRESENTATION IS A COMPTIME SWITCH — rebuild to change.
 # False: `[qpos | qvel]` (18-D), every §13 / A2 number. True: dm_control's
 # 24-D vector rebuilt through `obs_at`, the representation the ONLINE agent
-# trains on (§18.7). The control §18.7.4 asks for: the offline pair at equal
-# data on the online arm's representation, scored by
-# `fb_eval_walker_online.mojo` (which expects 24-D). Tag and checkpoint
-# names get an `_envobs` suffix so the two cannot be confused.
-comptime ENV_OBS: Bool = False
+# trains on. Tag and checkpoint names get an `_envobs` suffix so the two
+# cannot be confused, and a 24-D checkpoint is scored by
+# `fb_eval_walker_online.mojo` (`fb_eval_walker.mojo` expects 18-D).
+#
+# ⚠⚠ MEASURED 2026-09-08 (§18.7.5), the pair at 300 k on the same store:
+#     18-D, two seeds   stand 1.51  walk 1.82  run 1.44
+#     24-D, one seed    stand 1.62  walk 2.32  run 1.72   (walk t 5-8, all rungs)
+# The env's own observation is the BETTER representation for FB on walker,
+# by the widest margin any knob has moved walk. It is the default from here;
+# a second seed is queued in `fb_sweep.sh`.
+comptime ENV_OBS: Bool = True
 comptime OBS: Int = DMWalkerModel.OBS_DIM if ENV_OBS else NQ + NV
 comptime ScorerEnv = Phyics3dEnv[
     DMWalkerModel, DMWalkerConfig[1.0], DType.float64, False
