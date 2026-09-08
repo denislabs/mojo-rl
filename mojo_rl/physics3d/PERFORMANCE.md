@@ -4302,5 +4302,12 @@ The LDL split's "no CRBA launch in the trace to anchor on" was the split
 reader starting its `DictReader` at line 1 of the nsys csv, where a
 banner line precedes the `Start (ns),…,Name` header, so it saw no `Name`
 column and no rows; `p0_drift.py` had the header scan, the split reader
-now shares it. Not re-run; the factor and solve rows were already
-separate above it.
+now shares it. Re-run on the same traces, the split names the two
+kernels by launch order in every cycle (18,800/18,800 at k=0,
+5,400/5,400 at k=13): at k=13 the FACTOR is 0.280 ms/step (70 µs a
+launch, four a step) and the solve 0.088 (22 µs, F1's kernel); at k=6
+0.109 / 0.034. The first run named the second kernel `compute_m_inv`
+— the role table assumed all three kernels; the inverse launches only
+under equality constraints or noslip, so a cycle of two is factor +
+solve, and the table now says so. The factor is the LDL lever: 6.7% of
+the k=13 step on its own.

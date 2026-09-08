@@ -371,7 +371,14 @@ def disambiguate_by_launch_order(k, names):
     if n < 0.9 * total:
         return {}, (f"order not stable ({n}/{total} cycles agree; "
                     f"{len(votes)} distinct orders)")
-    return ({nm: LDL_ROLES[i] for i, nm in enumerate(order)},
+    # ⚠ TWO KERNELS ARE FACTOR + SOLVE, NOT FACTOR + M^-1. `compute_m_inv`
+    # launches only under equality constraints or noslip iterations
+    # (euler.mojo, `need_minv`), and the solve launches on every path, so a
+    # cycle of two can only be [factor, solve]; the first version of this
+    # named the second kernel `compute_m_inv` on the park scene, where it is
+    # the 22-us solve of F1 (§13.44).
+    roles = LDL_ROLES if len(order) == 3 else ["ldl_factor", "ldl_solve"]
+    return ({nm: roles[i] for i, nm in enumerate(order)},
             f"{n}/{total} cycles"
             + (f", {ragged} ragged ignored" if ragged else ""))
 
