@@ -243,6 +243,15 @@ skills-lock.json
 
 # Training artifacts (large; not source)
 checkpoints/
+
+# Run directories (`core/run.mojo`). One per execution: run.kv, metrics.csv and
+# checkpoints/.
+#
+# ⚠ THE RECORD IS IGNORED, THE DEFINITION IS NOT — see docs/PROJECT_LAYER_PLAN.md
+# §4. When the project layer lands (P1) the definition (`project.kv`, `.family`,
+# `.task`, dataset/asset pointers) is TRACKED under `projects/<name>/` and only
+# `projects/*/runs/` is ignored, exactly as this line ignores the P0 root.
+/runs/
 *.mp4
 # ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
 # this 3 KB file is a committed test fixture, and without it a fresh checkout

@@ -111,10 +111,18 @@ symbol longer than the new linker accepts. Healthy source, toolchain limit;
 
 ### Resuming, and what a killed run leaves
 
-`/tmp/act_so101_last_gpu.ckpt` is rewritten at every validation and
-`..._best_gpu.ckpt` whenever validation improves, so a kill loses at most
-`VAL_EVERY` steps of progress and never the best model. ⚠ `/tmp` — copy them
-somewhere durable before rebooting a rented box.
+`runs/<id>/checkpoints/last.ckpt` is rewritten at every validation and
+`best.ckpt` whenever validation improves, so a kill loses at most `VAL_EVERY`
+steps of progress and never the best model. The run prints its directory at
+startup and `run.kv` beside the checkpoints records what the run was and how
+it ended.
+
+⚠⚠ THEY USED TO LIVE IN `/tmp` UNDER A `comptime` CONSTANT, which meant every
+run of this driver overwrote the previous run's checkpoints by construction —
+`docs/PROJECT_LAYER_PLAN.md` §1.1 quotes this file as the example. They are now
+under the run's own directory and no two runs can collide. ⚠ That directory is
+still on the box: copy it somewhere durable before releasing a rented one,
+until P3 uploads artifacts during the run.
 
 ## What this configuration is, and what it is not
 
@@ -264,6 +272,7 @@ from mojo_rl.deep_agents.act.trainer import (
 )
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
+from mojo_rl.core.run import RunContext, register_run
 
 
 
@@ -461,9 +470,23 @@ def main() raises:
         String("") if no_monitor.byte_length() > 0
         else env_vars.get("RL_MONITOR_URL", "")
     )
+    # ⚠⚠ `run_name="ACT SO-ARM101 (GPU)"` WAS IDENTICAL ON EVERY RUN of this
+    # driver — the dashboard showed a column of indistinguishable rows, which
+    # is pain 2 of `docs/PROJECT_LAYER_PLAN.md` exactly. The run's id is unique
+    # and sortable; grouping comes back with project scoping in P2.
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/so101/act_so101_train_gpu.mojo"),
+        slug=String("act-so101"),
+        env=String("builtin:so_arm101"),
+        dataset=path,
+        device=String(ctx.name()),
+    )
+    print("  run     " + run.dir)
     var logger = RemoteLogger(
         server_url=monitor_url,
-        run_name="ACT SO-ARM101 (GPU)",
+        run_name=run.name(),
+        run_id=run.id,
         buffer_size=64,
         api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
     )
@@ -569,8 +592,8 @@ def main() raises:
     var best_step = -1
     var stale = 0
     """Validations since the best. See PATIENCE."""
-    var best_ckpt = String("/tmp/act_so101_best_gpu.ckpt")
-    var last_ckpt = String("/tmp/act_so101_last_gpu.ckpt")
+    var best_ckpt = run.checkpoint_path(String("best"))
+    var last_ckpt = run.checkpoint_path(String("last"))
 
     var train_frames = 0
     for i in range(len(ds.train_eps)):
@@ -899,6 +922,14 @@ def main() raises:
                 break
 
     logger.close()
+    # ⚠ THE RUN RECORDS ITS OWN VERDICT — `outcome=` is what pain 1 asks for,
+    # and no naming convention supplies it. `best/val_l1` against the 0.4076
+    # line is this configuration's comparison.
+    run.set_outcome(
+        String("best_val_l1=") + String(best_val)
+        + " best_step=" + String(best_step)
+    )
+    run.close()
 
     print("")
     print(
@@ -912,6 +943,7 @@ def main() raises:
     )
     print("  best -> " + best_ckpt)
     print("  last -> " + last_ckpt)
+    print("  run  -> " + run.kv_path())
     print("")
     print(
         "  ⚠ validation L1 rising while training L1 falls is what a"

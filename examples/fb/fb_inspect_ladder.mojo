@@ -81,6 +81,12 @@ comptime ANet = Sequential[
 comptime Trainer = FBTrainer[FNet, BNet, ANet, OBS, NACT, D, BATCH, "cpu"]
 
 comptime CKPT_DIR: StaticString = "checkpoints/"
+# ⚠⚠ THIS READS THE HISTORICAL LADDER IN `checkpoints/`, WHICH NEW RUNS NO LONGER
+# WRITE. Since 2026-09-09 (`docs/PROJECT_LAYER_PLAN.md` P0d) the FB trainers write
+# `runs/<id>/checkpoints/step_<n>.ckpt` instead — a unique directory per run, so
+# two arms at the same `--tag` cannot overwrite each other. The files this points
+# at still exist and still load; a ladder from a NEW run has to be named
+# explicitly.
 comptime CKPT_STEM: StaticString = "fb_walker_all_d128.ckpt."
 comptime N_CKPT: Int = 10
 comptime FIRST_STEP: Int = 50_000

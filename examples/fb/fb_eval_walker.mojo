@@ -83,6 +83,12 @@ comptime BATCH: Int = 1024          # must match the trained checkpoint
 # That BNet carries gamma/beta Params this architecture does not have, so the
 # load either fails or silently skips them — and a silently-skipped norm layer
 # is exactly the failure this file's own BNet comment warns about.
+# ⚠⚠ THIS READS THE HISTORICAL LADDER IN `checkpoints/`, WHICH NEW RUNS NO LONGER
+# WRITE. Since 2026-09-09 (`docs/PROJECT_LAYER_PLAN.md` P0d) the FB trainers write
+# `runs/<id>/checkpoints/step_<n>.ckpt` instead — a unique directory per run, so
+# two arms at the same `--tag` cannot overwrite each other. The files this points
+# at still exist and still load; a ladder from a NEW run has to be named
+# explicitly.
 comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.1200000"
 # ⚠ MUST be the store the checkpoint TRAINED on. §13 records an eval that
 # computed z from a local 10 k store while the checkpoint had trained on 1 M —

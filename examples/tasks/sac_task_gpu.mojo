@@ -201,6 +201,7 @@ from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
@@ -364,13 +365,18 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # asks, and barely moved the gripper (0.096 m -> 0.089 m).
         return (1.00, 1.00, True)
     return (0.0, 0.0, False)
-# ⚠⚠ PER TASK, AND IT WAS NOT. Both of these were fixed strings from when
-# this file trained one task, so the first `gather` run on a 5090 wrote
-# `sac_task_reach.ckpt` — and a `lift` run after it would have OVERWRITTEN
-# that checkpoint with weights for a different task, silently, under a name
-# naming a third. `--task` made the name a lie; these make it the task's.
-comptime CKPT_PREFIX = "sac_task_"
-comptime CSV_PREFIX = "/tmp/mojo_rl_sac_"
+# ⚠⚠ THE PREFIXES ARE GONE, AND THE PAIN THEY FIXED IS WORTH KEEPING WRITTEN
+# DOWN. Both were fixed strings from when this file trained one task, so the
+# first `gather` run on a 5090 wrote `sac_task_reach.ckpt` — and a `lift` run
+# after it would have OVERWRITTEN that checkpoint with weights for a different
+# task, silently, under a name naming a third. Adding the task to the name
+# fixed the collision BETWEEN tasks and left the one that matters more: two
+# runs of the SAME task still overwrote each other, which is every sweep arm
+# this file has ever produced.
+#
+# `RunContext` (`core/run.mojo`) is the general form. Every path below comes
+# from it, so no two runs can collide and each one carries a record saying
+# what it was and whether it worked.
 
 # See wiring fact 2 in the header. NORMALIZED_ACTIONS is True on this config.
 comptime ACTION_SCALE = Scalar[DT](1.0)
@@ -650,8 +656,6 @@ def main() raises:
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
-    var ckpt_path = String(CKPT_PREFIX) + task_name + ".ckpt"
-    var csv_path = String(CSV_PREFIX) + task_name + ".csv"
     print("=" * 72)
 
     # ── the task, on the host ─────────────────────────────────────────────
@@ -662,6 +666,22 @@ def main() raises:
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
     var rheights = region_half_heights(f)
+
+    # ⚠ AFTER `load_family`, so the env reference is the family's OWN name
+    # rather than a second copy of it written by hand here — the typed
+    # `family:<name>` form the project layer resolves.
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/tasks/sac_task_gpu.mojo"),
+        slug=String("sac-") + task_name,
+        env=String("family:") + f.name,
+        task=task_name,
+        seed=seed,
+        device=String("gpu"),
+    )
+    var ckpt_path = run.checkpoint_path(String("last"))
+    var csv_path = run.metrics_path()
+    print("  run:", run.dir)
 
     var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
     require_tier_a(g, t.name)
@@ -753,7 +773,8 @@ def main() raises:
         var env_vars = load_dotenv()
         var remote = RemoteLogger(
             server_url=env_vars.get("RL_MONITOR_URL", ""),
-            run_name=String("SAC task ") + task_name,
+            run_name=run.name(),
+            run_id=run.id,
             buffer_size=64,
             api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         )
@@ -785,6 +806,13 @@ def main() raises:
         remote.set_config("baseline_untrained_greedy", String(bl0[1]))
         remote.set_config("baseline_measured", String(bl0[2]))
         var logger = CompositeLogger(CsvLogger(csv_path), remote)
+        # ⚠ AFTER the config and before step 0 — `register_run` seeds the
+        # dashboard's config from the run (id, project, task, commit, seed,
+        # host) and then POSTs `/runs`. Registering any earlier would ship an
+        # empty config; registering lazily on the first metric batch — which is
+        # what `flush` still does for drivers that never call this — means a run
+        # that dies before step 0 never appears at all.
+        register_run(run, logger)
 
         # ⚠⚠ THE CONFIG ALSO GOES OUT AS SCALARS AT STEP 0, SO THE CSV IS
         # SELF-DESCRIBING. `set_config` reaches the dashboard and NOT the CSV
@@ -1000,8 +1028,19 @@ def main() raises:
         logger.close()
         _ = logger        # keeps `logger_ptr` alive to here
 
+        # ⚠⚠ THE RUN RECORDS ITS OWN VERDICT. "I forgot if the checkpoint was
+        # successful" is pain 1, and no naming convention fixes it — a written
+        # `outcome=` does. ⚠ `success_rate` is NOT the return: this family's
+        # `RETURN != SUCCESS`, and it is the rate the whole family is judged by.
+        run.set_outcome(
+            String("success_rate=") + String(rate)
+            + " success_rate_final=" + String(rate_final)
+            + " shaped_return=" + String(shaped)
+        )
+
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)
+        print("  run record         :", run.kv_path())
 
         # ⚠⚠ READ AFTER `close()`, WHICH IS THE ONLY POINT THE CSV IS WHOLE.
         # `CsvLogger` streams rows as they happen but the last of them are
@@ -1118,4 +1157,9 @@ def main() raises:
             if task_name == "so101_gather_bricks":
                 print("  the trained reference at 1M steps is 0.5625 —",
                       "this run is", rate / 0.5625, "of it")
+        # ⚠ `status=done` IS WRITTEN HERE AND NOWHERE ELSE. A record still
+        # saying `running` with an old `started` IS a crashed run, which is
+        # information no directory listing has ever carried here — so nothing
+        # may infer the status on this run's behalf.
+        run.close()
         print("=" * 72)

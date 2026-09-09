@@ -345,6 +345,12 @@ tests/core/test_kv_write.mojo
 # run.kv on disk at t=0 saying `running`, the status transitions, and the
 # unknown-key REFUSAL on read. Writes under /tmp, never the repo's runs/.
 tests/core/test_run_context.mojo
+# The P0d retrofit, as a SOURCE gate: the four drivers open and close a run and
+# carry no legacy checkpoint constant in code. Three of them cannot be built on
+# a laptop (two NVIDIA-only, one dies in ld at HEAD), so this is the only check
+# that runs everywhere. Comment lines are excluded — the ⚠ notes keep the old
+# names deliberately.
+tests/core/test_drivers_use_runcontext.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.

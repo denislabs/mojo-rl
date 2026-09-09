@@ -53,7 +53,8 @@ z-buffer 8192, seq 8. No aux critic (G4), no noise, no DR, no history.
 Ring: CAP 2 M rows × (527 + 29 + 527 + 256 + 1) floats = 10.7 GB; expert
 table 441 k × 527 = 0.93 GB; tracking rows 512 × 250 × 527 = 0.27 GB.
 
-Checkpoints `<tag>.<batched step>` (FB file + `.cpr` + `.norm`), scored
+Checkpoints `runs/<id>/checkpoints/step_<batched step>.ckpt` (FB file + `.cpr`
++ `.norm` sidecars), scored
 by the G3.4 eval, never one alone.
 """
 
@@ -72,6 +73,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.ptr import mptr
+from mojo_rl.core.run import RunContext
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.data.resident import IDX_DT
 from mojo_rl.deep_agents.fb import FBCPROnlineAgent
@@ -297,6 +299,29 @@ def main() raises:
     var lie_prob = atof(_flag(String("--lie-prob"), String(G1_LIE_DOWN_PROB)))
     var track_on = not _has("--no-track")
     seed(seed_v)
+
+    # ⚠⚠ `agent.save_state(tag + "." + String(s))` WAS THE SECOND HAND-ROLLED
+    # TAG MECHANISM IN THIS TREE, beside the one `examples/fb/fb_train_gpu.mojo`
+    # carried. Two copies of a rule is the shape `_a_rule_written_inline_twice_drifts`
+    # names as the most frequent defect here, so both are replaced by
+    # `RunContext` in one change — removing only one would have made the
+    # survivor the third copy.
+    #
+    # ⚠ CHECKPOINTS MOVE. They used to land as `g3_priv.2000` in the working
+    # directory; they now land in `runs/<id>/checkpoints/step_2000.ckpt`, with
+    # the `.cpr` and `.norm` sidecars beside them. `bfm_zero_eval_tracking`
+    # already takes `--ckpt <path>` and needs no change; the paths this run
+    # writes are printed below so the next command is copy-pasteable.
+    var run = RunContext(
+        project=String("g1"),
+        driver=String("examples/g1/bfm_zero_train_gpu.mojo"),
+        slug=String("bfm-zero") + ("-" + tag if tag.byte_length() > 0 else ""),
+        env=String("builtin:unitree_g1"),
+        dataset=store_path,
+        seed=seed_v,
+    )
+    run.set_tag(tag)
+    print("run:", run.dir)
 
     var ctx = DeviceContext()
     print("BFM-Zero G1 privileged arm: lanes", N_ENVS, " obs", OBS, " act", ACT, " d", D, " h", H, " L", L)
@@ -531,10 +556,15 @@ def main() raises:
                 " measure", measure, " ortho", ortho, " actor", actor, " |F|", f_norm, " |B|", b_norm,
             )
         if ckpt_every > 0 and s > 0 and s % ckpt_every == 0:
-            agent.save_state(tag + "." + String(s))
-            print("  checkpoint", tag + "." + String(s))
+            var p = run.checkpoint_path(String("step_") + String(s))
+            agent.save_state(p)
+            print("  checkpoint", p)
     ctx.synchronize()
-    agent.save_state(tag + "." + String(n_batched))
+    var final_ckpt = run.checkpoint_path(String("step_") + String(n_batched))
+    agent.save_state(final_ckpt)
     var el = Float64(perf_counter_ns() - t0) * 1e-9
     print("done:", n_batched, "batched steps,", agent.total_train_steps(), "updates in", el, "s;", Float64(n_batched * N_ENVS) / el, "env st/s")
+    print("final checkpoint:", final_ckpt)
+    print("run record      :", run.kv_path())
+    run.close()
     _ = lie_total

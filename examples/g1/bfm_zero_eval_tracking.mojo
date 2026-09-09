@@ -1,7 +1,13 @@
 """Tracking evaluation of OUR checkpoints with OUR B — G3.4, on the CPU.
 
     pixi run mojo build -I . -Xlinker -ld_classic examples/g1/bfm_zero_eval_tracking.mojo -o /tmp/g1eval
-    pixi run /tmp/g1eval --ckpt g3_priv.2000 [--clips 7 25] [--segments 3] [--out g3_priv.2000.csv]
+    pixi run /tmp/g1eval --ckpt runs/<id>/checkpoints/step_2000.ckpt \
+        [--clips 7 25] [--segments 3] [--out step_2000.csv]
+
+⚠ CHECKPOINTS MOVED (2026-09-09). The trainer used to write `g3_priv.2000`
+in the working directory; it now writes `runs/<id>/checkpoints/step_2000.ckpt`
+and prints its run directory on the first line. This file needs no change —
+`--ckpt` has always taken a path, and `<ckpt>.norm` is read beside it.
     pixi run /tmp/g1eval --random                     # the null baseline: a fresh init
 
 The reference's `tracking_inference` with the checkpoint's networks in place

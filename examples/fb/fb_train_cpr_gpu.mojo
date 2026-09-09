@@ -62,6 +62,7 @@ from mojo_rl.data.sampler import UniformDeviceSampler
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.fb.cpr import FBCPRTrainer, FBCPRLosses
 from mojo_rl.deep_agents.fb.trainer import FBLosses
@@ -112,8 +113,9 @@ comptime EXPERT_FRAC: Float64 = 0.2
 comptime P_GOAL: Float64 = 0.2
 comptime P_EXPERT: Float64 = 0.6
 comptime USE_TRAIN_CUDA_GRAPH: Bool = True
-comptime CSV_PATH: StaticString = "fb_walker_cpr_metrics.csv"
-comptime RUN_NAME: StaticString = "FB-CPR walker d128"
+# ⚠ NO PATH CONSTANTS HERE ANY MORE. Every path this driver writes comes
+# from `RunContext` in `main`, so two runs cannot collide — see
+# `core/run.mojo` and docs/PROJECT_LAYER_PLAN.md P0d.
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -183,9 +185,21 @@ def main() raises:
     var tag = _flag(String("--tag"), String("cpr"))
     var seed_v = atol(_flag(String("--seed"), String(SEED)))
     tag = tag + "_envobs"
-    var ckpt_path = "fb_walker_" + tag + ".ckpt"
-    var csv_path = "fb_walker_" + tag + "_metrics.csv"
-    var run_name = String(RUN_NAME) + " [" + tag + "]"
+    # ⚠⚠ ONE OF **FIVE** COPIES OF THIS BLOCK IN THE FB FAMILY, all replaced by
+    # `RunContext` together. Deriving three paths from a `--tag` a human has to
+    # remember to vary is one forgotten flag away from a run silently
+    # overwriting the previous one. The tag survives as the SLUG so sweep arms
+    # stay legible in a directory listing; uniqueness comes from the id now.
+    var run = RunContext(
+        project=String("fb"),
+        driver=String("examples/fb/fb_train_cpr_gpu.mojo"),
+        slug=String("fb-cpr-") + tag,
+        env=String("builtin:dm_control/walker-all"),
+        seed=seed_v,
+    )
+    run.set_tag(tag)
+    var csv_path = run.metrics_path()
+    print("run:", run.dir)
     if p_goal + p_expert > 1.0 or p_goal < 0.0 or p_expert < 0.0:
         raise Error("--p-goal + --p-expert must lie in [0, 1]")
     if expert_frac <= 0.0 or expert_frac > 1.0:
@@ -360,7 +374,8 @@ def main() raises:
         CsvLogger(csv_path, buffer_size=64),
         RemoteLogger(
             server_url=env_vars.get("RL_MONITOR_URL", ""),
-            run_name=run_name,
+            run_name=run.name(),
+            run_id=run.id,
             buffer_size=64,
             api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         ),
@@ -394,6 +409,9 @@ def main() raises:
 
     var train_graph = Optional[CUDAGraph](None)
     comptime SQRT_D = sqrt(Float64(D))
+    # ⚠ AFTER the config, before step 0 — see `core/run.register_run`.
+    register_run(run, logger)
+
     var t_log = perf_counter_ns()
     var last_log_step = 0
     var gn_f1 = Float64(0)
@@ -544,14 +562,16 @@ def main() raises:
             # trains on a constant and Q_D says nothing. The healthy band
             # is in between and MOVING; `gp` should settle near its floor.
         if step > 0 and (step % CKPT_EVERY) == 0:
-            var p = ckpt_path + "." + String(step)
+            var p = run.checkpoint_path(String("step_") + String(step))
             t.save_state(p)
             print("      checkpoint ->", p, "(+ .cpr)")
-    var pf = ckpt_path + ".final"
+    var pf = run.checkpoint_path(String("final"))
     t.save_state(pf)
     logger.close()
     print("[3] done. final checkpoint ->", pf, "(+ .cpr)")
+    run.close()
     print("      metrics CSV ->", csv_path)
+    print("      run record  ->", run.kv_path())
 
 
 def _zero_losses() raises -> FBCPRLosses:

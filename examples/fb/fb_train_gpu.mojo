@@ -65,6 +65,7 @@ from mojo_rl.data.sampler import UniformDeviceSampler
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
@@ -119,7 +120,9 @@ comptime HID: Int = 1024
 comptime TRAIN_STEPS: Int = 2_000_000
 comptime LOG_EVERY: Int = 2000  # see the want_loss note in the header
 comptime CKPT_EVERY: Int = 50_000
-comptime CKPT_PATH: StaticString = "fb_walker_all_d128.ckpt"
+# ⚠ THERE IS NO `CKPT_PATH` CONSTANT ANY MORE, AND THAT IS THE POINT. Every
+# path this driver writes comes from `RunContext` in `main`, so a second run
+# cannot overwrite the first one's checkpoints. See `core/run.mojo`.
 
 # ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
 # was measured spiking to +2559 on walker at 1 M rows; the gradients spike with
@@ -185,8 +188,10 @@ comptime USE_TRAIN_CUDA_GRAPH: Bool = True
 # output was lost mid-arc and the interesting window went with it, because the
 # only record was a terminal scrollback. The CSV survives a dropped ssh session,
 # a killed monitor, and a laptop reboot.
-comptime CSV_PATH: StaticString = "fb_walker_all_d128_metrics.csv"
-comptime RUN_NAME: StaticString = "FB walker all-tasks d128"
+#
+# ⚠ BOTH DESTINATIONS ARE NAMED BY THE RUN, not by a constant. The CSV is
+# `run.metrics_path()` and the dashboard name is `run.name()`, so the local
+# file, the remote row and the checkpoints all carry one identifier.
 # `--seed` overrides it: a replicate arm at a second seed is the only way to
 # put an error bar on a 3-rung mean (§18.6.1 — the winner is ONE run).
 comptime SEED: Int = 20260805
@@ -278,15 +283,31 @@ def main() raises:
                                  String(Int(OBS_NORM)))) != 0
     var tag = _flag(String("--tag"), String(""))
     var seed_v = atol(_flag(String("--seed"), String(SEED)))
-    var ckpt_path = String(CKPT_PATH)
-    var csv_path = String(CSV_PATH)
-    var run_name = String(RUN_NAME)
     comptime if ENV_OBS:
         tag = tag + "_envobs" if tag.byte_length() > 0 else String("envobs")
-    if tag.byte_length() > 0:
-        ckpt_path = "fb_walker_" + tag + ".ckpt"
-        csv_path = "fb_walker_" + tag + "_metrics.csv"
-        run_name = String(RUN_NAME) + " [" + tag + "]"
+
+    # ⚠⚠ THIS BLOCK USED TO DERIVE THREE PATHS BY HAND, AND `RunContext` IS
+    # THAT GENERALISED. It was written here first because the pain is real —
+    # one identifier deriving the checkpoint path, the CSV path and the
+    # dashboard name together, so the three cannot drift apart. What it could
+    # not carry is what a directory listing of `checkpoints/` shows: no status,
+    # no outcome, no commit, no seed in the name, and a `--tag` a human had to
+    # remember to pass AND to vary. 26 `fb_walker_*` files accumulated there,
+    # including a step ladder `.100000 … .1200000` — one run's history flattened
+    # into a shared namespace with no record of which rung was the good one.
+    #
+    # ⚠ THE TAG SURVIVES AS THE SLUG, deliberately. Sweep arms have to stay
+    # legible in a directory listing, which is what the block above was for;
+    # uniqueness now comes from the id instead of from the human.
+    var run = RunContext(
+        project=String("fb"),
+        driver=String("examples/fb/fb_train_gpu.mojo"),
+        slug=String("fb-walker") + ("-" + tag if tag.byte_length() > 0 else ""),
+        env=String("builtin:dm_control/walker-all"),
+        dataset=String(STORE_PATH),
+        seed=seed_v,
+    )
+    run.set_tag(tag)
     print(
         "[0] arm: steps", train_steps, " ortho", ortho_w, " lr_b", lr_b,
         " bc", bc_w, " obs_norm", obs_norm_on, " seed", seed_v, " tag '", tag, "'",
@@ -474,10 +495,11 @@ def main() raises:
     # ─── logging ─────────────────────────────────────────────────────────
     var env_vars = load_dotenv()
     var logger = CompositeLogger(
-        CsvLogger(csv_path, buffer_size=64),
+        CsvLogger(run.metrics_path(), buffer_size=64),
         RemoteLogger(
             server_url=env_vars.get("RL_MONITOR_URL", ""),
-            run_name=run_name,
+            run_name=run.name(),
+            run_id=run.id,
             buffer_size=64,
             api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         ),
@@ -503,6 +525,10 @@ def main() raises:
     logger.set_config("seed", String(seed_v))
     logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
     logger.set_config("epochs_over_dataset", String(epochs))
+    # ⚠ AFTER the config, and before step 0 — see `core/run.register_run`. The
+    # `/runs` payload carries the config, and a run that dies before its first
+    # metric batch would otherwise never appear on the dashboard at all.
+    register_run(run, logger)
 
     # Lazily captured on the first non-logging step; replayed thereafter.
     var train_graph = Optional[CUDAGraph](None)
@@ -697,7 +723,7 @@ def main() raises:
             # ends holding its WORST state and the good early one is gone. That
             # happened: a stable 50 k checkpoint was replaced by a 100 k one
             # from the oscillating phase before it could be evaluated.
-            var p = ckpt_path + "." + String(step)
+            var p = run.checkpoint_path(String("step_") + String(step))
             t.save_state(p)
             # ⚠⚠ The normalisation statistics travel WITH the checkpoint, one
             # sidecar per rung. `fb_eval_walker` loads `<ckpt>.norm` and applies
@@ -706,7 +732,7 @@ def main() raises:
             if obs_norm_on:
                 onorm.save(p + ".norm")
             print("      checkpoint ->", p)
-    var pf = ckpt_path + ".final"
+    var pf = run.checkpoint_path(String("final"))
     t.save_state(pf)
     if obs_norm_on:
         onorm.save(pf + ".norm")
@@ -714,5 +740,7 @@ def main() raises:
     # `buffer_size`, so up to 63 entries (the most recent ones) would never
     # reach disk on a clean exit.
     logger.close()
+    run.close()
     print("[3] done. final checkpoint ->", pf)
-    print("      metrics CSV ->", csv_path)
+    print("      metrics CSV ->", run.metrics_path())
+    print("      run record   ->", run.kv_path())

@@ -53,6 +53,7 @@ from std.time import perf_counter_ns
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
@@ -133,9 +134,15 @@ comptime MAX_GRAD_NORM: Float64 = 1.0
 comptime DIAG_EVERY: Int = N_ENVS * 100
 comptime PRINT_EVERY: Int = N_ENVS * 500
 comptime USE_TRAIN_CUDA_GRAPH: Bool = True
-comptime CKPT_PATH: StaticString = "fb_online_cpr_walker_d128.ckpt"
-comptime CSV_PATH: StaticString = "fb_online_cpr_walker_d128_metrics.csv"
-comptime RUN_NAME: StaticString = "FB-CPR online walker d128"
+# ⚠ ON APPLE, BUILD WITH `-Xlinker -ld_classic`. The fully-expanded graph
+# type mangles to a symbol longer than the new macOS linker accepts:
+#   ld: Assertion failed: (name.size() <= maxLength)
+# Healthy source, toolchain limit — `act_so101_train_gpu.mojo` carries the
+# same note. `mojo run` JITs and never invokes ld; NVIDIA needs no flag.
+#
+# ⚠ NO PATH CONSTANTS HERE ANY MORE. Every path this driver writes comes
+# from `RunContext` in `main`, so two runs cannot collide — see
+# `core/run.mojo` and docs/PROJECT_LAYER_PLAN.md P0d.
 comptime SEED: Int = 20260908
 comptime LoggerT = CompositeLogger[CsvLogger, RemoteLogger]
 
@@ -187,13 +194,24 @@ def main() raises:
     var p_expert = atof(_flag(String("--p-expert"), String(P_EXPERT)))
     var tag = _flag(String("--tag"), String(""))
     var seed_v = atol(_flag(String("--seed"), String(SEED)))
-    var ckpt = String(CKPT_PATH)
-    var csv_path = String(CSV_PATH)
-    var run_name = String(RUN_NAME)
-    if tag.byte_length() > 0:
-        ckpt = "fb_online_walker_" + tag + ".ckpt"
-        csv_path = "fb_online_walker_" + tag + "_metrics.csv"
-        run_name = String(RUN_NAME) + " [" + tag + "]"
+    # ⚠⚠ ONE OF **FIVE** COPIES OF THIS BLOCK IN THE FB FAMILY, all replaced by
+    # `RunContext` together. Deriving three paths from a `--tag` a human has to
+    # remember to vary is one forgotten flag away from a run silently
+    # overwriting the previous one; `checkpoints/` holds 26 `fb_walker_*` files
+    # because of it. The tag survives as the SLUG so sweep arms stay legible in
+    # a directory listing — uniqueness now comes from the id, not the human.
+    var run = RunContext(
+        project=String("fb"),
+        driver=String("examples/fb/fb_online_cpr_walker_gpu.mojo"),
+        slug=String("fb-cpr-online")
+             + ("-" + tag if tag.byte_length() > 0 else ""),
+        env=String("builtin:dm_control/walker-walk"),
+        dataset=store_path,
+        seed=seed_v,
+    )
+    run.set_tag(tag)
+    var csv_path = run.metrics_path()
+    print("run:", run.dir)
     if warmup < BATCH:
         raise Error("--warmup must be >= BATCH (" + String(BATCH) + ")")
     if store_path.byte_length() == 0:
@@ -224,7 +242,8 @@ def main() raises:
             CsvLogger(csv_path, buffer_size=64),
             RemoteLogger(
                 server_url=env_vars.get("RL_MONITOR_URL", ""),
-                run_name=run_name,
+                run_name=run.name(),
+                run_id=run.id,
                 buffer_size=64,
                 api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
             ),
@@ -353,6 +372,12 @@ def main() raises:
         logger.set_config("expert_episodes", String(expert_eps))
         logger.set_config("expert_window_starts", String(n_starts))
 
+        # ⚠ AFTER the config, before step 0 — `register_run` seeds the
+        # dashboard config from the run and POSTs `/runs`. Registering lazily on
+        # the first metric batch (which `flush` still does for drivers that never
+        # call this) means a run that dies before step 0 never appears at all.
+        register_run(run, logger)
+
         var t_start = perf_counter_ns()
         for s in range(n_segments):
             var done_steps = s * seg
@@ -375,7 +400,7 @@ def main() raises:
                 progress_label="fb-cpr-online",
             )
             var at = done_steps + this_seg
-            var path = ckpt + "." + String(at)
+            var path = run.checkpoint_path(String("step_") + String(at))
             agent.save_state(path)
             var el = Float64(perf_counter_ns() - t_start) / 1e9
             print(
@@ -385,9 +410,10 @@ def main() raises:
                 "  replay", agent.replay_size(), "  ", Float64(at) / el, "env st/s",
                 " ->", path, "(+ .cpr)",
             )
-        var pf = ckpt + ".final"
+        var pf = run.checkpoint_path(String("final"))
         agent.save_state(pf)
         logger.close()
+        run.close()
         _ = logger
         print("=" * 70)
         print("done. final checkpoint ->", pf, "   metrics ->", csv_path)
