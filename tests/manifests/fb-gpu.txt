@@ -38,3 +38,10 @@ tests/deep_agents/test_fb_online_smoke.mojo
 # The batched GPU walker raises `done` at MAX_STEPS on every lane — the env
 # side of the `episodes 0` symptom of the first online run (§18.7). ~2 min.
 tests/dm_control/test_walker_batched_truncation_gpu.mojo
+
+# G3.2: the CPR agent with BFM-Zero's residual towers at the G1's dimensions
+# (obs 527 / act 29 / d 256) driven on random rows — instantiates, trains
+# finite, lane z on the sphere, normaliser moving. ⚠ On macOS the nested
+# generics exceed Apple's ld symbol-name limit: build it by hand with
+# `-Xlinker -ld_classic` (see its header). Links as is on Linux.
+tests/fb/test_bfm_agent_g1_dims_smoke.mojo

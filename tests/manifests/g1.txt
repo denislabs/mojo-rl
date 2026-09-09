@@ -1,0 +1,28 @@
+# Unitree G1 / BFM-Zero reproduction manifest — `pixi run test-g1`
+#
+# CPU gates of docs/BFM_ZERO_G1_REPRODUCTION.md (G0-G3), all against an
+# external reference: MuJoCo run to convergence, the reference's own motion
+# library dump, the reference's observation function in numpy. They need
+# the repo-root artefacts a fresh clone does not have:
+#
+#   mojo_rl/envs/robots/assets/unitree_g1.xml + unitree_g1/   (tests/robots/g1_bake.py)
+#   lafan_g1_50hz.h5                                        (tools/g1/lafan_to_store.py)
+#
+# Not in the smoke tier for that reason. The GPU-vs-CPU gate is NVIDIA-only
+# (physics3d-gpu.txt); the released-actor gate (G2) is an example with its
+# own artefacts (examples/g1/bfm_zero_tracking_gate.mojo).
+
+# G0: the env against MuJoCo (six gates: tables, order, ctrlrange, stand,
+# driven rollout, reset observation)
+tests/robots/test_unitree_g1_vs_mujoco.mojo
+
+# G1: the LAFAN1 store against our FK, every row; the reference's slerp
+# artefact bounded, not hidden
+tests/robots/test_unitree_g1_lafan_store.mojo
+
+# G3.0: the live 463-D privileged observation against the reference's
+# function fed our raw body states (numpy, certified against torch)
+tests/robots/test_unitree_g1_privileged_obs.mojo
+
+# G3.1: the reset-from-store table (body-frame omega, lie-down transform)
+tests/robots/test_g1_rsi_table.mojo
