@@ -40,10 +40,27 @@ exhausted Metal's per-thread stack in the Newton solver; on Apple this
 SKIPS with a message. Until it has run green on the 5090 the G1's GPU
 hooks are compiled but NOT VALUE-GATED.
 
-⚠ THE BOUND IS PROVISIONAL AND MEASURED, NOT INHERITED. The device column
-is gated at `ATOL_DEV + RTOL_DEV * |cpu32|`; the first run prints all
-three columns and the bound is pinned from that print. A TF32 path would
-show up as a device column 1e3 wider than the precision floor
+⚠⚠ A FLOAT32 STEP CAN SIT ON A KNIFE-EDGE, AND THEN THE SAME-DTYPE TWIN
+IS NOT A REFERENCE EITHER. Second run on the 5090 (2026-09-09, this
+protocol): 58 of 60 steps agree across all three columns to 1e-5 (1e-4 at
+step 1), lanes exact. Step 44: the float32 CPU env is 0.73 off float64 on
+a joint velocity FROM THE SAME INJECTED STATE while the GPU is 1e-5 from
+float64 — a contact decision that float32 rounding flipped on the host
+and not on the device. Step 11: the mirror, GPU 0.0675 off float64 and
+the float32 CPU with it. Neither is a device defect; both are the
+reference's contact discontinuities resolved by the last bit of a
+float32 solve. So the rule is:
+
+    a device step PASSES if it reproduces the float64 answer OR the
+    same-dtype CPU answer within `ATOL + RTOL * |cpu64|`;
+    the float64 agreement must hold on at least `MIN_F64_FRACTION` of
+    the steps, so the escape cannot carry a broken device path;
+    every step where float32 and float64 part by more than the band is
+    printed as a KNIFE-EDGE and counted — that count (2 of 60 here) is
+    the number a trainer on the device should know.
+
+The band is measured, not inherited: 10x the 1e-4 the normal steps show.
+A TF32 path would show up as every step wide, not two
 (`_a_gpu_vs_cpu_band_written_on_metal_is_a_tf32_trap_on_cuda`).
 """
 
@@ -60,10 +77,12 @@ from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model
 
 comptime N_ENVS = 2
 comptime N_STEPS = 60
-# The device column (GPU vs CPU32): provisional, pinned from the first
-# NVIDIA print.
+# Measured on the 5090: normal one-step disagreement 1e-5, 1e-4 at step 1.
 comptime ATOL_DEV = 1e-3
 comptime RTOL_DEV = 1e-2
+# Steps on which the device must agree with FLOAT64 inside the band —
+# the knife-edge steps are excused from this, a broken device path is not.
+comptime MIN_F64_FRACTION = 0.9
 
 
 def _action(t: Int, j: Int) -> Float64:
@@ -95,6 +114,8 @@ def _run(ctx: DeviceContext) raises:
     var worst_dev_k = -1
     var worst_lane = 0.0
     var n_bad = 0
+    var n_f64_ok = 0
+    var n_knife = 0
     var obs_lo = 1e30
     var obs_hi = -1e30
 
@@ -137,6 +158,8 @@ def _run(ctx: DeviceContext) raises:
         var step_gpu64 = 0.0
         var step_3264 = 0.0
         var step_dev = 0.0
+        var step_f64_ok = True
+        var step_knife = False
         for k in range(OBS_DIM):
             var v64 = Float64(r64[0].data[k])
             var v32 = Float64(r32[0].data[k])
@@ -158,16 +181,33 @@ def _run(ctx: DeviceContext) raises:
                 worst_dev = d_dev
                 worst_dev_step = t
                 worst_dev_k = k
-            if d_dev > ATOL_DEV + RTOL_DEV * abs(v32):
+            var band = ATOL_DEV + RTOL_DEV * abs(v64)
+            if d_gpu64 > band:
+                step_f64_ok = False
+            if d_3264 > band:
+                step_knife = True
+            # The device step is wrong only if it matches NEITHER solve.
+            if d_gpu64 > band and d_dev > band:
                 print(
                     "  DEVICE MISMATCH step=", t, " k=", k, " gpu=", vg,
-                    " cpu32=", v32, " cpu64=", v64, " |gpu-cpu32|=", d_dev,
+                    " cpu32=", v32, " cpu64=", v64, " |gpu-cpu64|=", d_gpu64,
+                    " |gpu-cpu32|=", d_dev,
                 )
                 n_bad += 1
             for e in range(1, N_ENVS):
                 var dl = abs(Float64(h_obs[e * OBS_DIM + k]) - vg)
                 if dl > worst_lane:
                     worst_lane = dl
+        if step_f64_ok:
+            n_f64_ok += 1
+        if step_knife or not step_f64_ok:
+            n_knife += 1
+            print(
+                "  KNIFE-EDGE step", t, " |gpu-cpu64|", step_gpu64,
+                " |cpu32-cpu64|", step_3264, " |gpu-cpu32|", step_dev,
+                "  (float32 and float64 parted on a contact decision;"
+                " device sides with", "cpu64" if step_f64_ok else "cpu32", ")",
+            )
         if step_gpu64 > worst_gpu64:
             worst_gpu64 = step_gpu64
         if step_3264 > worst_3264:
@@ -191,6 +231,10 @@ def _run(ctx: DeviceContext) raises:
     )
     print("    lane-to-lane worst", worst_lane, "   cpu64 obs range [",
           obs_lo, ",", obs_hi, "]")
+    print(
+        "    device agreed with float64 on", n_f64_ok, "of", N_STEPS,
+        "steps; float32 knife-edge steps:", n_knife,
+    )
     assert_true(
         worst_lane == 0.0,
         "the lanes disagree by " + String(worst_lane)
@@ -203,8 +247,14 @@ def _run(ctx: DeviceContext) raises:
     )
     assert_true(
         n_bad == 0,
-        String(n_bad) + " element(s) of the device column outside"
-        " atol+rtol*|cpu32| — see the DEVICE MISMATCH lines above",
+        String(n_bad) + " element(s) where the device matched NEITHER the"
+        " float64 nor the float32 CPU step — see the DEVICE MISMATCH lines",
+    )
+    assert_true(
+        Float64(n_f64_ok) >= MIN_F64_FRACTION * Float64(N_STEPS),
+        "the device agreed with float64 on only " + String(n_f64_ok)
+        + " of " + String(N_STEPS) + " steps — more than the knife-edge"
+        " allowance; the device path is off, not the dtype",
     )
 
 
