@@ -347,6 +347,20 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         return (0.25, 1.00, True)
     if task == "so101_settle_brick":
+        # ⚠⚠ THE ANY-STEP RATE IS 1.00 BY CONSTRUCTION and says nothing. Its
+        # goal holds at reset — two GPU gates need that — so the number to
+        # read is the END-OF-EPISODE one, and the shaped return.
+        #
+        # Measured, 1M steps at 1.0/0.21 with margins 0.05/0.20:
+        #
+        #   held at the END   0.96875   (31 of 32 — one lane lost the brick)
+        #   shaped return     314.2 -> 354.3 of a 363 ceiling, 82% of the
+        #                     available headroom, critic at 1.02x fixed point
+        #
+        # Decomposed, the gain is almost all the GOAL term — 0.896 -> 1.022
+        # per step, worth 38 of return — against 2.4 from the reach term. The
+        # policy learned to KEEP the brick on the table, which is what settle
+        # asks, and barely moved the gripper (0.096 m -> 0.089 m).
         return (1.00, 1.00, True)
     return (0.0, 0.0, False)
 # ⚠⚠ PER TASK, AND IT WAS NOT. Both of these were fixed strings from when
