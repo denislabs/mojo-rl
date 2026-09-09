@@ -2,8 +2,10 @@
 # | Temporal ensembling — combining overlapping action chunks
 # +--------------------------------------------------------------------------+ #
 """ACT queries the policy at EVERY timestep, so at step `t` there are up to `K`
-chunks that each predicted an action for `t`. Temporal ensembling combines them
-with an exponential weighting (paper Algorithm 2, `imitate_episodes.py:248`):
+chunks that each predicted an action for `t`.
+
+Temporal ensembling combines them with an exponential weighting (paper
+Algorithm 2, `imitate_episodes.py:248`):
 
     a_t = sum_i w_i * A_t[i] / sum_i w_i,     w_i = exp(-m * i)
 

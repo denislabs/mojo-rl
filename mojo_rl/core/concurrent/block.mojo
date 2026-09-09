@@ -60,8 +60,11 @@ def _cell(
 ) -> Pointer[Scalar[DType.int64], MutAnyOrigin]:
     """Address of cell `index`, typed for `std.atomic`."""
     return (
-        Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=addr) + index
-    ).unsafe_bitcast[Scalar[DType.int64]]().as_unsafe_any_origin()
+        Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=addr)
+        .unsafe_offset(index)
+        .unsafe_bitcast[Scalar[DType.int64]]()
+        .as_unsafe_any_origin()
+    )
 
 
 @fieldwise_init
@@ -200,7 +203,7 @@ struct ControlBlock(Movable & Deinitable):
 
 
 struct SharedBlock(ImplicitlyCopyable, Movable):
-    """A refcounted `ControlBlock`. **This is the type to hand to a worker.**
+    """A refcounted `ControlBlock` — **the type to hand to a worker**.
 
     Same reason as `SharedRing` in `ring.mojo`: a `ControlBlockView` is one
     `Int`, so a worker holding one keeps nothing alive, and the owner is freed

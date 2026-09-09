@@ -994,9 +994,11 @@ def _sap_plane_narrow[
             # The pair's cross-step warm slot (ccd_workspace.mojo), as for
             # the GJK pairs: the plane's lowest vertex last step is this
             # step's answer.
-            var pm_slot = (
-                (gi * 131 + gj) % HILL_WARM_SLOTS
-            ) if HILL_WARM_ACROSS_STEPS else -1
+            var pm_slot: Int
+            comptime if HILL_WARM_ACROSS_STEPS:
+                pm_slot = (gi * 131 + gj) % HILL_WARM_SLOTS
+            else:
+                pm_slot = -1
             var pmw = -1
             if pm_slot >= 0:
                 var pf = rebind[Scalar[DTYPE]](ws[wrow, HW_WS_OFF + 2 * pm_slot])
@@ -1968,9 +1970,11 @@ def _sap_pair_narrow[
             # The pair's warm slot for the mesh hill climb (ccd_workspace.mojo):
             # a hash of the sorted geom pair, so the state follows the PAIR
             # across steps whatever the candidate set does around it.
-            var hw_slot = (
-                (si * 131 + sj) % HILL_WARM_SLOTS
-            ) if HILL_WARM_ACROSS_STEPS else -1
+            var hw_slot: Int
+            comptime if HILL_WARM_ACROSS_STEPS:
+                hw_slot = (si * 131 + sj) % HILL_WARM_SLOTS
+            else:
+                hw_slot = -1
             comptime if _COLL_PROBE:
                 pr._c_t0 = Int(perf_counter_ns())
             comptime if _COLL_REPEAT_GJK > 1:

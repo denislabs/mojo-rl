@@ -155,7 +155,7 @@ struct SO101Calibration(Copyable, Movable):
         return self.degrees(i, raw) * pi / 180.0
 
     def range_m100_100(self, i: Int, raw: Int32) -> Float64:
-        """lerobot's OTHER body-joint mode: percent of calibrated travel.
+        """`lerobot`'s OTHER body-joint mode: percent of calibrated travel.
 
         ⚠⚠ WHICH MODE A DATASET USED IS A RECORDING-TIME FLAG, NOT A PROPERTY
         OF THIS ARM. `so_follower.py` picks

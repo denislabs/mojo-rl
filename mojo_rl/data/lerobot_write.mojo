@@ -96,7 +96,7 @@ comptime STATS_STRIDE = 4
 every pixel cost 45.8 ms of a 33.3 ms tick."""
 
 comptime N_STATS = 10
-"""min, max, mean, std, count, q01, q10, q50, q90, q99 — in that order, which
+"""Min, max, mean, std, count, q01, q10, q50, q90, q99 — in that order, which
 is the order a real `meta/episodes/*.parquet` carries them."""
 
 

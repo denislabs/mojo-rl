@@ -417,7 +417,11 @@ def _axpy_self[
     var av = SIMD[DTYPE, W](alpha)
     var k = 0
     while k + W <= n:
-        p.store(xo + k, p.load[width=W](xo + k) + av * p.load[width=W](ao + k))
+        p.unsafe_store(
+            xo + k,
+            p.unsafe_load[width=W](xo + k)
+            + av * p.unsafe_load[width=W](ao + k),
+        )
         k += W
     while k < n:
         p[unsafe_offset = xo + k] = p[unsafe_offset = xo + k] + alpha * p[unsafe_offset = ao + k]
@@ -443,7 +447,7 @@ def _dot_self[
     var acc = SIMD[DTYPE, W](0)
     var k = 0
     while k + W <= n:
-        acc += p.load[width=W](ao + k) * p.load[width=W](bo + k)
+        acc += p.unsafe_load[width=W](ao + k) * p.unsafe_load[width=W](bo + k)
         k += W
     var r = acc.reduce_add()
     while k < n:
@@ -590,29 +594,35 @@ def _minv_apply[
             # its pointer: the same per-element operation order as
             # `_ldl_solve_tree_env` (bit-exact with the chase, §13.26).
             var xp = x.unsafe_ptr()
-            var Lp = ldl_L.ptr + env * nv * nv
+            var Lp = ldl_L.ptr.unsafe_offset(env * nv * nv)
             for i in range(nv):
-                xp[i] = b[i]
+                xp[unsafe_offset=i] = b[i]
             for i in range(nv - 1, -1, -1):
-                var yi = xp[i]
+                var yi = xp[unsafe_offset=i]
                 if yi != Scalar[DTYPE](0):
                     var ri = i * nv
                     for a in range(dep[i]):
                         var j = anc[ri + a]
-                        xp[j] = xp[j] - Lp[ri + j] * yi
+                        xp[unsafe_offset=j] = (
+                            xp[unsafe_offset=j]
+                            - Lp[unsafe_offset=ri + j] * yi
+                        )
             for i in range(nv):
                 var d_i = rebind[Scalar[DTYPE]](ldl_D[env, i])
                 if d_i > Scalar[DTYPE](1e-14) or d_i < Scalar[DTYPE](-1e-14):
-                    xp[i] = xp[i] / d_i
+                    xp[unsafe_offset=i] = xp[unsafe_offset=i] / d_i
                 else:
-                    xp[i] = Scalar[DTYPE](0)
+                    xp[unsafe_offset=i] = Scalar[DTYPE](0)
             for i in range(nv):
                 var ri = i * nv
-                var acc_i = xp[i]
+                var acc_i = xp[unsafe_offset=i]
                 for a in range(dep[i] - 1, -1, -1):
                     var j = anc[ri + a]
-                    acc_i = acc_i - Lp[ri + j] * xp[j]
-                xp[i] = acc_i
+                    acc_i = (
+                        acc_i
+                        - Lp[unsafe_offset=ri + j] * xp[unsafe_offset=j]
+                    )
+                xp[unsafe_offset=i] = acc_i
             return
     for i in range(nv):
         var acc = Scalar[DTYPE](0)
@@ -822,7 +832,7 @@ def noslip_pyramidal[
         comptime if TREE:
             tree_path = tree_ok
         if tree_path:
-            var Lp = ldl_L.ptr + env * nv * nv
+            var Lp = ldl_L.ptr.unsafe_offset(env * nv * nv)
             var dis = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=ZERO)
             for k in range(nv):
                 var d_k = rebind[Scalar[DTYPE]](ldl_D[env, k])
@@ -846,27 +856,33 @@ def noslip_pyramidal[
             comptime W_Z = 2 * simd_width_of[DTYPE]()
             var qz = 0
             while qz + W_Z <= nv * ns:
-                wp.store(qz, SIMD[DTYPE, W_Z](0))
+                wp.unsafe_store(qz, SIMD[DTYPE, W_Z](0))
                 qz += W_Z
             while qz < nv * ns:
-                wp[qz] = ZERO
+                wp[unsafe_offset=qz] = ZERO
                 qz += 1
             for s in range(ns):
                 var e = sw_ix[s]
                 comptime if SPARSE:
                     for a in range(je_n[e]):
                         var k = je_ix[e * nv + a]
-                        wp[k * ns + s] = Je[unsafe_offset = e * nv + k]
+                        wp[unsafe_offset=k * ns + s] = Je[
+                            unsafe_offset = e * nv + k
+                        ]
                 else:
                     for k in range(nv):
-                        wp[k * ns + s] = Je[unsafe_offset = e * nv + k]
+                        wp[unsafe_offset=k * ns + s] = Je[
+                            unsafe_offset = e * nv + k
+                        ]
             # `L⁻ᵀ`: for `i` descending, push block `i` up its ancestors —
             # the first half of `mj_solveLD`, `ns` lanes wide.
             for i in range(nv - 1, -1, -1):
                 var ri = i * nv
                 var j = par[i]
                 while j >= 0:
-                    _axpy_self[DTYPE](wp, j * ns, i * ns, -Lp[ri + j], ns)
+                    _axpy_self[DTYPE](
+                        wp, j * ns, i * ns, -Lp[unsafe_offset=ri + j], ns
+                    )
                     j = par[j]
             # `D^-½`, then back to row-major `zj[s*nv + k]`.
             var zp0 = zj.unsafe_ptr()
@@ -874,7 +890,9 @@ def noslip_pyramidal[
                 var dk = dis[k]
                 var kb = k * ns
                 for s in range(ns):
-                    zp0[s * nv + k] = wp[kb + s] * dk
+                    zp0[unsafe_offset=s * nv + k] = (
+                        wp[unsafe_offset=kb + s] * dk
+                    )
             var zp = zj.unsafe_ptr()
             for s in range(ns):
                 var zs = s * nv
@@ -1524,7 +1542,7 @@ def noslip_elliptic[
             comptime W = 2 * simd_width_of[DTYPE]()
             var q = 0
             while q + W <= n_live:
-                wp.store(q, SIMD[DTYPE, W](0))
+                wp.unsafe_store(q, SIMD[DTYPE, W](0))
                 q += W
             while q < n_live:
                 wp[unsafe_offset=q] = ZERO

@@ -325,15 +325,17 @@ def _im2col_cpu[
                     var c_base = c_ic + kh * K
                     if ih < 0 or ih >= H:
                         for kw in range(K):
-                            _cp[c_base + kw] = Scalar[DT](0)
+                            _cp[unsafe_offset=c_base + kw] = Scalar[DT](0)
                         continue
                     var x_row = x_ic + ih * W + iw0
                     for kw in range(kw_lo):
-                        _cp[c_base + kw] = Scalar[DT](0)
+                        _cp[unsafe_offset=c_base + kw] = Scalar[DT](0)
                     for kw in range(kw_lo, kw_hi):
-                        _cp[c_base + kw] = _xp[x_row + kw]
+                        _cp[unsafe_offset=c_base + kw] = _xp[
+                            unsafe_offset = x_row + kw
+                        ]
                     for kw in range(kw_hi, K):
-                        _cp[c_base + kw] = Scalar[DT](0)
+                        _cp[unsafe_offset=c_base + kw] = Scalar[DT](0)
 
     comptime if im2col_uses_threads[OH, OH * OW * CK]():
         parallelize[_row](OH)

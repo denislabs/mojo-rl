@@ -522,11 +522,11 @@ def _mm_treewalk_env[
     var t_first = 2 * nv
     var t_last = 2 * nv + nbody
     for d in range(tid, nv, N_THREADS):
-        topo[t_body + d] = 0
-        topo[t_parent + d] = -1
+        topo[unsafe_offset=t_body + d] = 0
+        topo[unsafe_offset=t_parent + d] = -1
     for b in range(tid, nbody, N_THREADS):
-        topo[t_first + b] = -1
-        topo[t_last + b] = -1
+        topo[unsafe_offset=t_first + b] = -1
+        topo[unsafe_offset=t_last + b] = -1
     comptime if GPU:
         barrier()
     for j in range(tid, njoint, N_THREADS):
@@ -539,30 +539,32 @@ def _mm_treewalk_env[
         elif jt == JNT_BALL:
             ndof = 3
         for d in range(ndof):
-            topo[t_body + dadr + d] = Int32(jb)
+            topo[unsafe_offset=t_body + dadr + d] = Int32(jb)
     comptime if GPU:
         barrier()
     for b in range(tid, nbody, N_THREADS):
         var f = -1
         var l = -1
         for d in range(nv):
-            if Int(topo[t_body + d]) == b:
+            if Int(topo[unsafe_offset=t_body + d]) == b:
                 if f < 0:
                     f = d
                 l = d
-        topo[t_first + b] = Int32(f)
-        topo[t_last + b] = Int32(l)
+        topo[unsafe_offset=t_first + b] = Int32(f)
+        topo[unsafe_offset=t_last + b] = Int32(l)
     comptime if GPU:
         barrier()
     for d in range(tid, nv, N_THREADS):
-        var b = Int(topo[t_body + d])
-        if d > Int(topo[t_first + b]):
-            topo[t_parent + d] = Int32(d - 1)
+        var b = Int(topo[unsafe_offset=t_body + d])
+        if d > Int(topo[unsafe_offset=t_first + b]):
+            topo[unsafe_offset=t_parent + d] = Int32(d - 1)
         else:
             var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
             while p > 0:
-                if Int(topo[t_last + p]) >= 0:
-                    topo[t_parent + d] = topo[t_last + p]
+                if Int(topo[unsafe_offset=t_last + p]) >= 0:
+                    topo[unsafe_offset=t_parent + d] = topo[
+                        unsafe_offset=t_last + p
+                    ]
                     break
                 p = Int(rebind[Scalar[DTYPE]](bodies[p, BODY_IDX_PARENT]))
     comptime if GPU:
@@ -619,16 +621,16 @@ def _mm_treewalk_env[
             xipos[env, b * 3 + 2]
         ) - rebind[Scalar[DTYPE]](subtree_com[env, rootb * 3 + 2])
         var dd = dx * dx + dy * dy + dz * dz
-        comp[b * 10 + 0] = mass
-        comp[b * 10 + 1] = mass * dx
-        comp[b * 10 + 2] = mass * dy
-        comp[b * 10 + 3] = mass * dz
-        comp[b * 10 + 4] = Iw_xx + mass * (dd - dx * dx)
-        comp[b * 10 + 5] = Iw_yy + mass * (dd - dy * dy)
-        comp[b * 10 + 6] = Iw_zz + mass * (dd - dz * dz)
-        comp[b * 10 + 7] = Iw_xy - mass * dx * dy
-        comp[b * 10 + 8] = Iw_xz - mass * dx * dz
-        comp[b * 10 + 9] = Iw_yz - mass * dy * dz
+        comp[unsafe_offset=b * 10 + 0] = mass
+        comp[unsafe_offset=b * 10 + 1] = mass * dx
+        comp[unsafe_offset=b * 10 + 2] = mass * dy
+        comp[unsafe_offset=b * 10 + 3] = mass * dz
+        comp[unsafe_offset=b * 10 + 4] = Iw_xx + mass * (dd - dx * dx)
+        comp[unsafe_offset=b * 10 + 5] = Iw_yy + mass * (dd - dy * dy)
+        comp[unsafe_offset=b * 10 + 6] = Iw_zz + mass * (dd - dz * dz)
+        comp[unsafe_offset=b * 10 + 7] = Iw_xy - mass * dx * dy
+        comp[unsafe_offset=b * 10 + 8] = Iw_xz - mass * dx * dz
+        comp[unsafe_offset=b * 10 + 9] = Iw_yz - mass * dy * dz
 
     comptime if GPU:
         barrier()
@@ -646,7 +648,10 @@ def _mm_treewalk_env[
             var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
             if p > 0:
                 for e in range(10):
-                    comp[p * 10 + e] = comp[p * 10 + e] + comp[b * 10 + e]
+                    comp[unsafe_offset=p * 10 + e] = (
+                        comp[unsafe_offset=p * 10 + e]
+                        + comp[unsafe_offset=b * 10 + e]
+                    )
     comptime if GPU:
         barrier()
 
@@ -658,23 +663,23 @@ def _mm_treewalk_env[
 
     # per-DOF row, distributed: f_i = comp[body_i]·cdof_i, walk ancestor DOFs
     for i in range(tid, nv, N_THREADS):
-        var bi = Int(topo[t_body + i])
+        var bi = Int(topo[unsafe_offset=t_body + i])
         var ai0 = cdof[env, i * 6 + 0]
         var ai1 = cdof[env, i * 6 + 1]
         var ai2 = cdof[env, i * 6 + 2]
         var li0 = cdof[env, i * 6 + 3]
         var li1 = cdof[env, i * 6 + 4]
         var li2 = cdof[env, i * 6 + 5]
-        var Mc = comp[bi * 10 + 0]
-        var hx = comp[bi * 10 + 1]
-        var hy = comp[bi * 10 + 2]
-        var hz = comp[bi * 10 + 3]
-        var Cxx = comp[bi * 10 + 4]
-        var Cyy = comp[bi * 10 + 5]
-        var Czz = comp[bi * 10 + 6]
-        var Cxy = comp[bi * 10 + 7]
-        var Cxz = comp[bi * 10 + 8]
-        var Cyz = comp[bi * 10 + 9]
+        var Mc = comp[unsafe_offset=bi * 10 + 0]
+        var hx = comp[unsafe_offset=bi * 10 + 1]
+        var hy = comp[unsafe_offset=bi * 10 + 2]
+        var hz = comp[unsafe_offset=bi * 10 + 3]
+        var Cxx = comp[unsafe_offset=bi * 10 + 4]
+        var Cyy = comp[unsafe_offset=bi * 10 + 5]
+        var Czz = comp[unsafe_offset=bi * 10 + 6]
+        var Cxy = comp[unsafe_offset=bi * 10 + 7]
+        var Cxz = comp[unsafe_offset=bi * 10 + 8]
+        var Cyz = comp[unsafe_offset=bi * 10 + 9]
         # f_ang = Ic_rot·a_i + hc×l_i
         var fa0 = Cxx * ai0 + Cxy * ai1 + Cxz * ai2 + (hy * li2 - hz * li1)
         var fa1 = Cxy * ai0 + Cyy * ai1 + Cyz * ai2 + (hz * li0 - hx * li2)
@@ -698,7 +703,7 @@ def _mm_treewalk_env[
             M[env, i * nv + j] = mij
             if i != j:
                 M[env, j * nv + i] = mij
-            j = Int(topo[t_parent + j])
+            j = Int(topo[unsafe_offset=t_parent + j])
     comptime if GPU:
         barrier()
 

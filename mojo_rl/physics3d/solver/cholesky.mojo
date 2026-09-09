@@ -165,11 +165,11 @@ def _dot_seg[
     var acc = SIMD[DTYPE, W](0)
     var k = 0
     while k + W <= n:
-        acc += a.load[width=W](ao + k) * b.load[width=W](bo + k)
+        acc += a.unsafe_load[width=W](ao + k) * b.unsafe_load[width=W](bo + k)
         k += W
     var s = acc.reduce_add()
     while k < n:
-        s += a[ao + k] * b[bo + k]
+        s += a[unsafe_offset=ao + k] * b[unsafe_offset=bo + k]
         k += 1
     return s
 
@@ -192,11 +192,11 @@ def _dot_rows[
     var acc = SIMD[DTYPE, W](0)
     var k = 0
     while k + W <= n:
-        acc += a.load[width=W](ao + k) * a.load[width=W](bo + k)
+        acc += a.unsafe_load[width=W](ao + k) * a.unsafe_load[width=W](bo + k)
         k += W
     var s = acc.reduce_add()
     while k < n:
-        s += a[ao + k] * a[bo + k]
+        s += a[unsafe_offset=ao + k] * a[unsafe_offset=bo + k]
         k += 1
     return s
 
@@ -221,10 +221,16 @@ def _axpy_seg[
     var av = SIMD[DTYPE, W](alpha)
     var k = 0
     while k + W <= n:
-        x.store(xo + k, x.load[width=W](xo + k) + av * a.load[width=W](ao + k))
+        x.unsafe_store(
+            xo + k,
+            x.unsafe_load[width=W](xo + k)
+            + av * a.unsafe_load[width=W](ao + k),
+        )
         k += W
     while k < n:
-        x[xo + k] = x[xo + k] + alpha * a[ao + k]
+        x[unsafe_offset=xo + k] = (
+            x[unsafe_offset=xo + k] + alpha * a[unsafe_offset=ao + k]
+        )
         k += 1
 
 
@@ -407,14 +413,18 @@ def chol_update_seg[
         # pass. Same operations per entry — bit-exact with the two-pass form.
         if plus:
             for i in range(k + 1, s1):
-                var l = (Lp[i * nv + k] + sc * xp[i]) * cinv
-                Lp[i * nv + k] = l
-                xp[i] = c * xp[i] - sc * l
+                var l = (
+                    Lp[unsafe_offset=i * nv + k] + sc * xp[unsafe_offset=i]
+                ) * cinv
+                Lp[unsafe_offset=i * nv + k] = l
+                xp[unsafe_offset=i] = c * xp[unsafe_offset=i] - sc * l
         else:
             for i in range(k + 1, s1):
-                var l = (Lp[i * nv + k] - sc * xp[i]) * cinv
-                Lp[i * nv + k] = l
-                xp[i] = c * xp[i] - sc * l
+                var l = (
+                    Lp[unsafe_offset=i * nv + k] - sc * xp[unsafe_offset=i]
+                ) * cinv
+                Lp[unsafe_offset=i * nv + k] = l
+                xp[unsafe_offset=i] = c * xp[unsafe_offset=i] - sc * l
     return rank_ok
 
 
@@ -527,31 +537,31 @@ def chol_solve_seg_p[
         var yp = y.unsafe_ptr()
         for i in range(s0, s1):
             var s = _dot_seg[DTYPE](L, i * nv + s0, yp, s0, i - s0)
-            y[i] = (b[i] - s) / L[i * nv + i]
+            y[i] = (b[unsafe_offset=i] - s) / L[unsafe_offset=i * nv + i]
         # Backward, in AXPY form so the walk stays along rows: the scalar
         # loop gathers a COLUMN of L (stride nv); here x[i] is finished first
         # and then subtracted from every earlier entry along row i.
         for i in range(s0, s1):
-            x[i] = y[i]
+            x[unsafe_offset=i] = y[i]
         for i_rev in range(s1 - s0):
             var i = s1 - 1 - i_rev
-            var xi = x[i] / L[i * nv + i]
-            x[i] = xi
+            var xi = x[unsafe_offset=i] / L[unsafe_offset=i * nv + i]
+            x[unsafe_offset=i] = xi
             _axpy_seg[DTYPE](x, s0, L, i * nv + s0, -xi, i - s0)
         return
     for i in range(s0, s1):
         var s: Scalar[DTYPE] = 0
         for j in range(s0, i):
-            s += L[i * nv + j] * y[j]
-        y[i] = (b[i] - s) / L[i * nv + i]
+            s += L[unsafe_offset=i * nv + j] * y[j]
+        y[i] = (b[unsafe_offset=i] - s) / L[unsafe_offset=i * nv + i]
 
     # Back substitution: L^T*x = y
     for i_rev in range(s1 - s0):
         var i = s1 - 1 - i_rev
         var s: Scalar[DTYPE] = 0
         for j in range(i + 1, s1):
-            s += L[j * nv + i] * x[j]
-        x[i] = (y[i] - s) / L[i * nv + i]
+            s += L[unsafe_offset=j * nv + i] * x[unsafe_offset=j]
+        x[unsafe_offset=i] = (y[i] - s) / L[unsafe_offset=i * nv + i]
 
 
 @always_inline

@@ -324,14 +324,14 @@ def _ldl_factor_tree_env[
     var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
     _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
     var nn = nv * nv
-    var Lp = L.ptr + env * nn
-    var Mp = M.ptr + env * nn
+    var Lp = L.ptr.unsafe_offset(env * nn)
+    var Mp = M.ptr.unsafe_offset(env * nn)
     var Lc = Scratch[Scalar[DTYPE], A_CAP](nn, uninitialized=0)
     for k in range(nv):
         var rk = k * nv
         for a in range(dep[k]):
-            Lc[rk + a] = Mp[rk + anc[rk + a]]
-        Lc[rk + dep[k]] = Mp[rk + k]
+            Lc[rk + a] = Mp[unsafe_offset=rk + anc[rk + a]]
+        Lc[rk + dep[k]] = Mp[unsafe_offset=rk + k]
     var cp = Lc.unsafe_ptr()
     comptime W = 2 * simd_width_of[DTYPE]()
     for k in range(nv - 1, -1, -1):
@@ -348,13 +348,16 @@ def _ldl_factor_tree_env[
             var cv = SIMD[DTYPE, W](coef)
             var q = 0
             while q + W <= n_up:
-                cp.store(
+                cp.unsafe_store(
                     ri + q,
-                    cp.load[width=W](ri + q) + cv * cp.load[width=W](rk + q),
+                    cp.unsafe_load[width=W](ri + q)
+                    + cv * cp.unsafe_load[width=W](rk + q),
                 )
                 q += W
             while q < n_up:
-                cp[ri + q] = cp[ri + q] + coef * cp[rk + q]
+                cp[unsafe_offset=ri + q] = (
+                    cp[unsafe_offset=ri + q] + coef * cp[unsafe_offset=rk + q]
+                )
                 q += 1
         D[env, k] = dk
         for a in range(dep[k]):
@@ -363,16 +366,16 @@ def _ldl_factor_tree_env[
     # Dense `L` for the solves: zero, then scatter the compact rows.
     var q = 0
     while q + W <= nn:
-        Lp.store(q, SIMD[DTYPE, W](0))
+        Lp.unsafe_store(q, SIMD[DTYPE, W](0))
         q += W
     while q < nn:
-        Lp[q] = 0
+        Lp[unsafe_offset=q] = 0
         q += 1
     for k in range(nv):
         var rk = k * nv
         for a in range(dep[k]):
-            Lp[rk + anc[rk + a]] = Lc[rk + a]
-        Lp[rk + k] = 1
+            Lp[unsafe_offset=rk + anc[rk + a]] = Lc[rk + a]
+        Lp[unsafe_offset=rk + k] = 1
 
 
 @always_inline
@@ -408,16 +411,18 @@ def _ldl_solve_tree_env[
     _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
     var y = Scratch[L.element_type, V_CAP](nv, uninitialized=0)
     var yp = y.unsafe_ptr()
-    var Lp = L.ptr + env * nv * nv
+    var Lp = L.ptr.unsafe_offset(env * nv * nv)
     for i in range(nv):
         y[i] = b[env, i]
     for i in range(nv - 1, -1, -1):
-        var yi = yp[i]
+        var yi = yp[unsafe_offset=i]
         if yi != 0:
             var ri = i * nv
             for a in range(dep[i]):
                 var j = anc[ri + a]
-                yp[j] = yp[j] - Lp[ri + j] * yi
+                yp[unsafe_offset=j] = (
+                    yp[unsafe_offset=j] - Lp[unsafe_offset=ri + j] * yi
+                )
     for i in range(nv):
         var d_i = D[env, i]
         if d_i > 1e-14 or d_i < -1e-14:
@@ -426,11 +431,11 @@ def _ldl_solve_tree_env[
             y[i] = 0
     for i in range(nv):
         var ri = i * nv
-        var s = yp[i]
+        var s = yp[unsafe_offset=i]
         for a in range(dep[i] - 1, -1, -1):
             var j = anc[ri + a]
-            s = s - Lp[ri + j] * yp[j]
-        yp[i] = s
+            s = s - Lp[unsafe_offset=ri + j] * yp[unsafe_offset=j]
+        yp[unsafe_offset=i] = s
         x[env, i] = s
 
 
@@ -655,23 +660,22 @@ def _ldl_solve_fields_mt_kernel[
         if ntree_eff > 0:
             b0 = Int(trees[bidx * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
             b1 = b0 + Int(trees[bidx * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
-        if True:
-            for i in range(b0, b1):
-                var s = b[env, i]
-                for j in range(b0, i):
-                    s = s - L[env, i * NV + j] * y[j]
-                y[i] = s
-            for i in range(b0, b1):
-                var d_i = D[env, i]
-                if d_i > 1e-14 or d_i < -1e-14:
-                    z[i] = y[i] / d_i
-                else:
-                    z[i] = 0
-            for i in range(b1 - 1, b0 - 1, -1):
-                var s = z[i]
-                for j in range(i + 1, b1):
-                    s = s - L[env, j * NV + i] * x[env, j]
-                x[env, i] = s
+        for i in range(b0, b1):
+            var s = b[env, i]
+            for j in range(b0, i):
+                s = s - L[env, i * NV + j] * y[j]
+            y[i] = s
+        for i in range(b0, b1):
+            var d_i = D[env, i]
+            if d_i > 1e-14 or d_i < -1e-14:
+                z[i] = y[i] / d_i
+            else:
+                z[i] = 0
+        for i in range(b1 - 1, b0 - 1, -1):
+            var s = z[i]
+            for j in range(i + 1, b1):
+                s = s - L[env, j * NV + i] * x[env, j]
+            x[env, i] = s
 
 
 def ldl_factor[

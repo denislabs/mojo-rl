@@ -1188,7 +1188,7 @@ struct ACTTrainer[
     # ── checkpoints ──────────────────────────────────────────────────────
 
     def save(mut self, path: String, save_moments: Bool = True) raises:
-        """v3 binary named checkpoint: Param sections (+ Adam moments) then
+        """A v3 binary named checkpoint: Param sections (+ Adam moments) then
         State sections (BatchNorm running statistics).
 
         ⚠ The State pass is not optional. Without the running statistics a

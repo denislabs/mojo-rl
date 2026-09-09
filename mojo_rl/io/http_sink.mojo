@@ -166,8 +166,8 @@ struct HttpPostWorker(BackgroundWorker):
             self.ring.end_pop()
             return POLL_DID_WORK
 
-        var url = String("")
-        var body = String("")
+        var url: String
+        var body: String
         try:
             url, body = _unframe(claim.data(), claim.len)
         except:

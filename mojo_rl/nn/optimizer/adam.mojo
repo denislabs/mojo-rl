@@ -633,7 +633,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         return self._clip_norm.data[0]
 
     def has_clip_norm_dev(self) -> Bool:
-        """Is there a device-resident pre-clip norm? (GPU + `adopt` only.)
+        """Is there a device-resident pre-clip norm (GPU + `adopt` only)?
 
         The guard for `clip_norm_dev`: off the grouped-arena path
         `clip_grads_device` falls back to `clip_grads`, which computes the norm

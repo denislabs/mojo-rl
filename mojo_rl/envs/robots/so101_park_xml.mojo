@@ -183,12 +183,12 @@ comptime SLOT_NV: Int = 6
 
 
 @always_inline
-fn slot_qpos_adr(slot: Int) -> Int:
+def slot_qpos_adr(slot: Int) -> Int:
     """First `qpos` index of parked slot `slot`."""
     return ARM_NQ + slot * SLOT_NQ
 
 
 @always_inline
-fn slot_qvel_adr(slot: Int) -> Int:
+def slot_qvel_adr(slot: Int) -> Int:
     """First `qvel` index of parked slot `slot`."""
     return ARM_NV + slot * SLOT_NV

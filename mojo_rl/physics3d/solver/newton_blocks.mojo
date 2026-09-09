@@ -136,8 +136,8 @@ def build_dof_segments_p[
     @always_inline
     def one_segment() -> Int:
         for i in range(nv):
-            seg_start[i] = Scalar[DTYPE](0)
-            seg_end[i] = Scalar[DTYPE](nv)
+            seg_start[unsafe_offset=i] = Scalar[DTYPE](0)
+            seg_end[unsafe_offset=i] = Scalar[DTYPE](nv)
         return 1
 
     if ntree <= 0 or nv <= 0:
@@ -152,15 +152,19 @@ def build_dof_segments_p[
     var covered = 0
     var nt = 0
     for t in range(ntree):
-        var adr = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
-        var num = Int(trees[t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM])
+        var adr = Int(
+            trees[unsafe_offset = t * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]
+        )
+        var num = Int(
+            trees[unsafe_offset = t * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]
+        )
         # Self-terminating: rows past `ntree` are (0, 0, 0).
         if num <= 0:
             break
         if adr != covered or adr + num > nv:
             return one_segment()
         for i in range(adr, adr + num):
-            seg_start[i] = Scalar[DTYPE](t)
+            seg_start[unsafe_offset=i] = Scalar[DTYPE](t)
         covered = adr + num
         nt = t + 1
     if covered != nv or nt <= 0:
@@ -168,7 +172,7 @@ def build_dof_segments_p[
 
     # ── merge flags, parked in `seg_end`: does tree t join tree t+1? ──────
     for t in range(nt):
-        seg_end[t] = Scalar[DTYPE](0)
+        seg_end[unsafe_offset=t] = Scalar[DTYPE](0)
     for e in range(num_edges):
         var lo = -1
         var hi = -1
@@ -177,12 +181,12 @@ def build_dof_segments_p[
             if n_e > 0:
                 # Ascending list, and `seg_start` is monotone in the dof
                 # index, so the first and last entries bound the trees.
-                lo = Int(seg_start[je_ix[e * nv]])
-                hi = Int(seg_start[je_ix[e * nv + n_e - 1]])
+                lo = Int(seg_start[unsafe_offset=je_ix[e * nv]])
+                hi = Int(seg_start[unsafe_offset=je_ix[e * nv + n_e - 1]])
         else:
             for i in range(nv):
-                if Je[e * nv + i] != 0:
-                    var t = Int(seg_start[i])
+                if Je[unsafe_offset=e * nv + i] != 0:
+                    var t = Int(seg_start[unsafe_offset=i])
                     if lo < 0 or t < lo:
                         lo = t
                     if t > hi:
@@ -192,7 +196,7 @@ def build_dof_segments_p[
         if lo < 0:
             continue
         for t in range(lo, hi):
-            seg_end[t] = Scalar[DTYPE](1)
+            seg_end[unsafe_offset=t] = Scalar[DTYPE](1)
 
     # ── runs of merged trees -> per-dof bounds, WALKED BACKWARDS ─────────
     #
@@ -214,15 +218,19 @@ def build_dof_segments_p[
     var t1 = nt - 1
     while t1 >= 0:
         var t0 = t1
-        while t0 - 1 >= 0 and Int(seg_end[t0 - 1]) == 1:
+        while t0 - 1 >= 0 and Int(seg_end[unsafe_offset=t0 - 1]) == 1:
             t0 -= 1
-        var d0 = Int(trees[t0 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR])
-        var d1 = Int(trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]) + Int(
-            trees[t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]
+        var d0 = Int(
+            trees[unsafe_offset = t0 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]
+        )
+        var d1 = Int(
+            trees[unsafe_offset = t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_ADR]
+        ) + Int(
+            trees[unsafe_offset=t1 * MODEL_TREE_SIZE + TREE_IDX_DOF_NUM]
         )
         for i in range(d0, d1):
-            seg_start[i] = Scalar[DTYPE](d0)
-            seg_end[i] = Scalar[DTYPE](d1)
+            seg_start[unsafe_offset=i] = Scalar[DTYPE](d0)
+            seg_end[unsafe_offset=i] = Scalar[DTYPE](d1)
         nseg += 1
         t1 = t0 - 1
     return nseg

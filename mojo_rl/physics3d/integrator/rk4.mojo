@@ -46,7 +46,6 @@ Deliberately NOT yet ported (raise / absent by design):
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
-from std.memory import UnsafePointer
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
 from ..kinematics.forward_kinematics import (
@@ -803,7 +802,7 @@ struct RK4Integrator[
         # `apply_actions_fields` is typed on `Data[DTYPE, D2, 1]`; with
         # BATCH asserted 1 the two types are the same bytes, and the cast is
         # the no-op the assert makes it.
-        var d1 = UnsafePointer(to=d).bitcast[Data[Self.DTYPE, Self.D, 1]]()
+        var d1 = Pointer(to=d).unsafe_bitcast[Data[Self.DTYPE, Self.D, 1]]()
 
         comptime for s in range(4):
             self._stage_setup[target, s](dt, d, m, ctx)

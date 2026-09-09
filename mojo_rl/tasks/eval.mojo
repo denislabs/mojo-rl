@@ -44,7 +44,7 @@ than folded into the arithmetic: when a task needs a real containment volume,
 the fix is a `height=` on the region, not a tuned constant here.
 """
 
-from math import sqrt
+from std.math import sqrt
 
 from .spec import FamilySpec
 from .predicates import (

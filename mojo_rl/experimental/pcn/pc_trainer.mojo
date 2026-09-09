@@ -1030,7 +1030,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         T_infer: Int,
         lr_e: Scalar[Self.dtype],
     ) -> PCTrainResult:
-        """ePC counterpart of `compute_grads_only`.
+        """The ePC counterpart of `compute_grads_only`.
 
         ε starts at ZERO, which by `x_i = μ_i + ε_i` is exactly the forward
         sweep `init_latents` performs — the two initializations agree, and

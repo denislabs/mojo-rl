@@ -1795,7 +1795,7 @@ def _newton_solve_env[
                 var base = e_idx * nv
                 var i = 0
                 while i + W_SCAN <= nv:
-                    var chunk = jep.load[width=W_SCAN](base + i)
+                    var chunk = jep.unsafe_load[width=W_SCAN](base + i)
                     if chunk.ne(SIMD[DTYPE, W_SCAN](0)).reduce_or():
                         for q in range(W_SCAN):
                             if chunk[q] != Scalar[DTYPE](0):
@@ -1845,14 +1845,14 @@ def _newton_solve_env[
         # between trees, so every in-segment value is what the restricted
         # copy read, and the rest is exact zeros instead of uninitialized.
         var mlp = M_local.unsafe_ptr()
-        var msrc = M.ptr + env * nv * nv
+        var msrc = M.ptr.unsafe_offset(env * nv * nv)
         comptime W_CP = 2 * simd_width_of[DTYPE]()
         var kk = 0
         while kk + W_CP <= nv * nv:
-            mlp.store(kk, msrc.load[width=W_CP](kk))
+            mlp.unsafe_store(kk, msrc.unsafe_load[width=W_CP](kk))
             kk += W_CP
         while kk < nv * nv:
-            mlp[kk] = msrc[kk]
+            mlp[unsafe_offset=kk] = msrc[unsafe_offset=kk]
             kk += 1
 
         for i in range(nv):
@@ -2119,10 +2119,10 @@ def _newton_solve_env[
                 var mlp2 = M_local.unsafe_ptr()
                 var hk = 0
                 while hk + W_CP <= nv * nv:
-                    hp.store(hk, mlp2.load[width=W_CP](hk))
+                    hp.unsafe_store(hk, mlp2.unsafe_load[width=W_CP](hk))
                     hk += W_CP
                 while hk < nv * nv:
-                    hp[hk] = mlp2[hk]
+                    hp[unsafe_offset=hk] = mlp2[unsafe_offset=hk]
                     hk += 1
                 for e_idx in range(num_edges):
                     if state_e[e_idx] == SROW_QUADRATIC:

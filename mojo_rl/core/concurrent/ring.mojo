@@ -592,7 +592,7 @@ struct SpscRing(Movable & Deinitable):
 
 
 struct SharedRing(ImplicitlyCopyable, Movable):
-    """A refcounted `SpscRing`. **This is the type to hand to a worker.**
+    """A refcounted `SpscRing` — **the type to hand to a worker**.
 
     `SpscRing` alone is not enough, and the reason is the last-use rule again.
     Given

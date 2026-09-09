@@ -61,7 +61,7 @@ from ..core.amp import AMPPolicy, NoAMP
 def build_rope_tables[
     SEQ: Int, HEAD_DIM: Int, THETA: Float64, POS_OFFSET: Int
 ]() -> Tuple[List[Scalar[DT]], List[Scalar[DT]]]:
-    """cos/sin of shape `[SEQ, HEAD_DIM/2]`, row-major by position."""
+    """`cos`/`sin` of shape `[SEQ, HEAD_DIM/2]`, row-major by position."""
     comptime H = HEAD_DIM // 2
     var cs = List[Scalar[DT]]()
     var sn = List[Scalar[DT]]()

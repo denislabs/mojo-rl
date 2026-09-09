@@ -90,11 +90,11 @@ struct PageHeader(Copyable, ImplicitlyCopyable, Movable):
     var def_encoding: Int
     var rep_encoding: Int
     var num_nulls: Int
-    """v2 only; -1 on a v1 page."""
+    """`v2` only; -1 on a v1 page."""
     var def_bytes: Int
-    """v2 only: uncompressed definition-level byte count."""
+    """`v2` only: uncompressed definition-level byte count."""
     var rep_bytes: Int
-    """v2 only: uncompressed repetition-level byte count."""
+    """`v2` only: uncompressed repetition-level byte count."""
     var v2_compressed: Bool
 
 

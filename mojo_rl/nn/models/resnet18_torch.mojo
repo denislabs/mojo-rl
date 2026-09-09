@@ -55,7 +55,7 @@ from mojo_rl.nn.core.torch_names import TorchNameMap, TN_PLAIN, TN_ZEROS
 
 
 comptime RESNET18_TV_REPO = "timm/resnet18.tv_in1k"
-"""torchvision's ImageNet-1k weights, republished with a safetensors file."""
+"""`torchvision`'s ImageNet-1k weights, republished with a safetensors file."""
 comptime RESNET18_TV_FILE = "model.safetensors"
 
 comptime RESNET18_MAP_ENTRIES = 120

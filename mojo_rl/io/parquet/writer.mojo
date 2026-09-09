@@ -115,7 +115,7 @@ struct PqColumn(Copyable, ImplicitlyCopyable, Movable):
     var depth: Int
     """0 scalar, 1 `list<T>`, 3 `list<list<list<T>>>`."""
     var d0: Int
-    """depth 1: elements per row, or 0 for variable (use `counts`).
+    """`depth` 1: elements per row, or 0 for variable (use `counts`).
     depth 3: the outermost fixed dimension."""
     var d1: Int
     var d2: Int

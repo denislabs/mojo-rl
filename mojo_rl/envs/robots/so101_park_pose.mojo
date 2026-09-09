@@ -36,6 +36,6 @@ comptime SLOT_MASS: Float64 = 0.05
 
 
 @always_inline
-fn park_pos_x(slot: Int) -> Float64:
+def park_pos_x(slot: Int) -> Float64:
     """The x of parked slot `slot` — the scene's own arithmetic, once."""
     return PARK_X + Float64(slot) * PARK_SPACING

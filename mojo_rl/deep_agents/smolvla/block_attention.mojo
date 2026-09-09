@@ -503,7 +503,8 @@ struct BlockCrossAttention[
         mut dq: Tensor, mut dk: Tensor, mut dv: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """dQ, dK, dV from the forward's own inputs and the output gradient.
+        """`dQ`, `dK` and `dV` from the forward's own inputs and its output
+        gradient.
 
         `q`, `k` and `v` must be the SAME tensors the forward saw — this leaf
         keeps nothing from the forward and recomputes the softmax from them.

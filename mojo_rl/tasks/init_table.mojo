@@ -49,7 +49,7 @@ loader that adapted a mismatched table would produce a run that reports a
 number, which is worse than one that fails.
 """
 
-from std.memory import alloc
+from std.memory.alloc import unsafe_alloc
 
 from mojo_rl.data.column import ColumnSpec
 from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
@@ -253,14 +253,16 @@ def write_init_table(
         if task_names[i] != "":
             w.add_task(i, String(task_names[i]))
 
-    var sb = alloc[Scalar[DType.float64]](n * words).as_unsafe_any_origin()
-    var tb = alloc[Scalar[DType.int32]](n).as_unsafe_any_origin()
-    var mb = alloc[Scalar[DType.float64]](n).as_unsafe_any_origin()
+    var sb = unsafe_alloc[Scalar[DType.float64]](
+        n * words
+    ).as_unsafe_any_origin()
+    var tb = unsafe_alloc[Scalar[DType.int32]](n).as_unsafe_any_origin()
+    var mb = unsafe_alloc[Scalar[DType.float64]](n).as_unsafe_any_origin()
     for i in range(n * words):
-        sb[i] = Scalar[DType.float64](state[i])
+        sb[unsafe_offset=i] = Scalar[DType.float64](state[i])
     for i in range(n):
-        tb[i] = task_index[i]
-        mb[i] = Scalar[DType.float64](mask[i])
+        tb[unsafe_offset=i] = task_index[i]
+        mb[unsafe_offset=i] = Scalar[DType.float64](mask[i])
     w.append[DType.float64](String(INIT_COLUMN), sb, n)
     w.append[DType.int32](String(TASK_COLUMN), tb, n)
     w.append[DType.float64](String(MASK_COLUMN), mb, n)

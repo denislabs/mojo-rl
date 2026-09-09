@@ -442,26 +442,26 @@ def _finalize_tree_env[
     var dep = Scratch[Int, V_CAP](nv, uninitialized=0)
     var anc = Scratch[Int, A_CAP](nv * nv, uninitialized=0)
     _dof_ancestors[V_CAP, A_CAP](nv, par, dep, anc)
-    var Mp = M.ptr + env * nv * nv
+    var Mp = M.ptr.unsafe_offset(env * nv * nv)
     var fq = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
     var qc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
     var fp = fq.unsafe_ptr()
     var qp = qc.unsafe_ptr()
     for i in range(nv):
-        qp[i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
-        fp[i] = Mp[i * nv + i] * qp[i]
+        qp[unsafe_offset=i] = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        fp[unsafe_offset=i] = Mp[unsafe_offset=i * nv + i] * qp[unsafe_offset=i]
     for i in range(nv):
-        var qi = qp[i]
+        var qi = qp[unsafe_offset=i]
         var ri = i * nv
-        var acc = fp[i]
+        var acc = fp[unsafe_offset=i]
         for a in range(dep[i] - 1, -1, -1):
             var j = anc[ri + a]
-            var mij = Mp[ri + j]
-            acc = acc + mij * qp[j]
-            fp[j] = fp[j] + mij * qi
-        fp[i] = acc
+            var mij = Mp[unsafe_offset=ri + j]
+            acc = acc + mij * qp[unsafe_offset=j]
+            fp[unsafe_offset=j] = fp[unsafe_offset=j] + mij * qi
+        fp[unsafe_offset=i] = acc
     for i in range(nv):
-        fnet[env, i] = fp[i]
+        fnet[env, i] = fp[unsafe_offset=i]
     _finalize_damping_env[DTYPE](env, dt, dims, joints, M)
     _ldl_factor_tree_env(env, dims, M, L, D, dofp)
     _ldl_solve_tree_env(env, dims, L, D, fnet, qacc_ws, dofp)
