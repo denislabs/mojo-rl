@@ -260,6 +260,22 @@ soarm-diag = { cmd = "mojo run -I . tools/soarm/so101_mojo_diag.mojo", depends-o
 # running its cleanup (a kill, a crash). A follower left holding a pose
 # resists being moved and heats up.
 soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", depends-on = ["build-serial"], description = "Release torque on both SO-101 arms" }
+# ── the project layer (docs/PROJECT_LAYER_PLAN.md) ───────────────────────
+# A project is a directory + `project.kv`: a container and a naming authority.
+# ⚠ THE DEFINITION IS TRACKED, THE RUNS ARE NOT — `git add projects/<n>/project.kv`.
+# Everything here is LOCAL and complete; §10's paid half is push/pull, not these.
+project-init = { cmd = "mojo run -I . tools/project/project_cli.mojo init", description = "Create projects/<name>/ + project.kv. Pass the name, then --description" }
+project-list = { cmd = "mojo run -I . tools/project/project_cli.mojo list", description = "Every project, with its run count" }
+# Refs, their drift against `git log -1 -- <path>`, and every run's status/outcome/tag.
+project-show = { cmd = "mojo run -I . tools/project/project_cli.mojo show", description = "One project: pinned refs, drift, and its runs" }
+# ⚠ DRY RUN BY DEFAULT — needs `--apply`. Never deletes a run that is `running`,
+# tagged, or holding a `:local` artifact (that last one would be the "lost the
+# files" pain reintroduced by the fix for it).
+project-prune = { cmd = "mojo run -I . tools/project/project_cli.mojo prune", description = "Delete old untagged runs. DRY RUN unless --apply" }
+# The one field a human has to write, and what makes runs searchable at all:
+#   grep -l 'tag=.*reach' projects/*/runs/*/run.kv
+run-tag = { cmd = "mojo run -I . tools/project/project_cli.mojo tag", description = 'Tag a run: run-tag <run_id> "free text"' }
+
 # Record teleoperation into a LeRobot v3 dataset. ⚠ SAFE BY DEFAULT: without
 # `--arm` the follower is never energised. Pass `-- --arm --out DIR --task "..."`.
 soarm-record = { cmd = "mojo run -I . examples/so101/record.mojo", depends-on = ["build-serial", "build-opencv"], description = "Record SO-101 teleop (terminal). Add --arm to move the follower" }

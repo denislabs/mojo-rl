@@ -252,6 +252,17 @@ checkpoints/
 # `.task`, dataset/asset pointers) is TRACKED under `projects/<name>/` and only
 # `projects/*/runs/` is ignored, exactly as this line ignores the P0 root.
 /runs/
+
+# Project directories (`core/project.mojo`). ⚠⚠ THE DEFINITION IS TRACKED AND
+# THE DATA IS NOT — docs/PROJECT_LAYER_PLAN.md §4. `project.kv` and the pointers
+# beside it are a few KB of text saying exactly what a run was: that is the
+# reproducibility story, and ignoring it would leave the recipe on one laptop's
+# filesystem, which is the pain being fixed one level up. So these rules name
+# the run data, never `projects/` itself.
+projects/*/runs/
+projects/*/artifacts/
+projects/*/**/*.h5
+projects/*/**/*.mp4
 *.mp4
 # ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
 # this 3 KB file is a committed test fixture, and without it a fresh checkout
