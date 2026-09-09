@@ -37,6 +37,21 @@ examples/solve_taxi.mojo
 # evaluates the goal and steps once, with no display.
 examples/tasks/task_viewer.mojo
 
+# ⚠ THE SAME VIEWER WITH A TRAINED ACTOR IN IT. Compile-probed here (SDL3
+# window); its HEADLESS half is the better smoke and cross-checks the viewer
+# against the TRAINER:
+#   pixi run mojo run -I . examples/tasks/task_policy_viewer.mojo <task> --check
+# sweeps 12 lanes with the task's own checkpoint and reports met-at-any-step
+# and held-at-the-end. Measured against `sac_task_gpu.mojo`'s 32-lane GPU
+# rates: gather 0.333/0.250 vs 0.5625 (1.6 sigma at n=12), settle 1.0/1.0 vs
+# 1.0/0.969, lift 0.0 vs ~0. So GPU-trained weights reproduce on CPU physics.
+# ⚠ IT RAISES IF `so101_settle_brick` IS NOT 1.0 — that goal HOLDS AT RESET by
+# construction, so anything less is the viewer's wiring (observation layout,
+# action scale, an unwritten `meta` channel) and not the policy. Without that
+# leg a mis-wired viewer reads 0 everywhere, which is also what `lift`
+# legitimately reads.
+examples/tasks/task_policy_viewer.mojo
+
 # ⚠⚠ THESE THREE RUN ON APPLE. The note here said "not runnable on Apple at
 # all — nv=24, exactly where the P0 park probe died on Metal (Compute function
 # exceeds available stack space)". That was inferred from the park probe's
