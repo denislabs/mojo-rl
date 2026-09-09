@@ -382,8 +382,22 @@ comptime AgentT = SACAgent[
 
 def greedy_success_rate(
     mut agent: AgentT, mut env: EnvT, ctx: DeviceContext
-) raises -> Float64:
-    """Fraction of lanes whose goal is met at ANY step of one greedy episode.
+) raises -> Tuple[Float64, Float64]:
+    """`(met at ANY step, met at the FINAL step)` over one greedy episode.
+
+    ## ⚠⚠ "AT ANY STEP" IS VACUOUS FOR A GOAL THAT HOLDS AT RESET
+
+    `so101_settle_brick`'s goal is true at step 0 by construction — two GPU
+    gates depend on it — so an any-step rate reports 1.0 for that task
+    whatever the policy does, including one that knocks the brick straight off
+    the table. A criterion a task satisfies before the first action is not a
+    criterion.
+
+    ⚠ AND IT IS WEAKER THAN IT LOOKS ON THE OTHERS TOO. `so101_gather_bricks`
+    scored 0.5625 at any-step: the blocks came within 6 cm at some point in
+    the episode. Whether they were STILL there at the end is a different
+    claim, and the one a person means by "solved". The two are returned
+    together so the gap between them is visible rather than assumed away.
 
     ## ⚠⚠ WHY THIS EXISTS: THE RETURN STOPPED BEING THE SUCCESS RATE
 
@@ -441,11 +455,19 @@ def greedy_success_rate(
             ) > 0.5:
                 solved[e] = True
 
+    # ⚠ THE FINAL-STEP READ IS THE `meta` STILL ON THE HOST FROM THE LAST
+    # ITERATION — the loop downloads it every step, so this is the last step's
+    # bit and needs no extra transfer.
     var n = 0
+    var nf = 0
     for e in range(N_ENVS):
         if solved[e]:
             n += 1
-    return Float64(n) / Float64(N_ENVS)
+        if Float64(
+            env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
+        ) > 0.5:
+            nf += 1
+    return (Float64(n) / Float64(N_ENVS), Float64(nf) / Float64(N_ENVS))
 
 
 def main() raises:
@@ -911,17 +933,26 @@ def main() raises:
         # `greedy_success_rate` is that measurement: one greedy episode per
         # lane, counting `META_IDX_GOAL_HELD`.
         var shaped = Float64(agent.mean_return())
-        var rate = greedy_success_rate(agent, eval_env, ctx)
+        var rates = greedy_success_rate(agent, eval_env, ctx)
+        var rate = rates[0]
+        var rate_final = rates[1]
         print("-" * 72)
         print("  env steps          :", num_steps)
         print("  elapsed            :", secs, "s")
         print("  episodes           :", agent.ep_count())
         print("  shaped mean return :", shaped, "(last 100 episodes)")
-        print("  SUCCESS RATE       :", rate, "(greedy,", N_ENVS, "lanes)")
+        print("  SUCCESS RATE       :", rate, "(greedy,", N_ENVS,
+              "lanes, met at ANY step)")
+        print("  held at the END    :", rate_final,
+              "— the stronger claim; for a goal that holds at RESET the"
+              " any-step rate is 1.0 by construction")
         # ⚠ LOGGED, NOT ONLY PRINTED. It is the criterion the whole family is
         # judged by and it was reaching stdout and nothing else, so no chart
         # ever carried it and no two runs could be compared on it.
         logger.log_scalar(String("eval/success_rate"), rate, num_steps)
+        logger.log_scalar(
+            String("eval/success_rate_final"), rate_final, num_steps
+        )
         logger.log_scalar(String("eval/shaped_return"), shaped, num_steps)
 
         # ⚠⚠ `close()` GOES **AFTER** THE LAST `log_scalar`, AND IT DID NOT.
