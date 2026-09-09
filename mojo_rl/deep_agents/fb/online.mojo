@@ -302,6 +302,20 @@ def explore_action_kernel[N: Int](
 # ══════════════════════════════════════════════════════════════════════
 
 
+def z_pin_kernel[D: Int, LANES: Int](
+    z_lane: Pointer[Scalar[DT], MutAnyOrigin],
+    z_pin: Pointer[Scalar[DT], MutAnyOrigin],
+    mask: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`z_lane[l] = z_pin[l]` where `mask[l] > 0` — the driver-pinned lanes."""
+    var i = Int(global_idx.x)
+    if i >= LANES * D:
+        return
+    var l = i // D
+    if mask[unsafe_offset=l] > Scalar[DT](0):
+        z_lane[unsafe_offset=i] = z_pin[unsafe_offset=i]
+
+
 struct FBOnlineAgent[
     FNET: Module,
     BNET: Module,
@@ -410,6 +424,15 @@ struct FBOnlineAgent[
     # rows and the rollout observation. Raw rows stay in the ring.
     var obs_ema: ObsEma[Self.OBS]
     var _obs_scratch: Tensor   # LANES * OBS, the normalised rollout obs
+    # ── driver-pinned lane z (opt-in, `enable_z_pin`): BFM-Zero's expert
+    # rollouts drive half the lanes along a tracking-z SEQUENCE for 250
+    # steps (`fb/agent.py::maybe_update_rollout_context`). The driver
+    # writes `z_pin` / `z_pin_mask` on device every step; `_resample_lanes`
+    # applies them AFTER its own draw, so a pinned lane's stored z (what
+    # the ring records and D's negatives carry) is the pinned one.
+    var z_pin: Tensor          # LANES * D
+    var z_pin_mask: Tensor     # LANES, 1 = pinned
+    var z_pin_on: Bool
 
     def __init__(out self):
         self.t = Self.TrainerT()
@@ -468,6 +491,9 @@ struct FBOnlineAgent[
         self._z_lane_resamples = 0
         self.obs_ema = ObsEma[Self.OBS]()
         self._obs_scratch = Tensor()
+        self.z_pin = Tensor()
+        self.z_pin_mask = Tensor()
+        self.z_pin_on = False
 
     @staticmethod
     def make[
@@ -798,7 +824,27 @@ struct FBOnlineAgent[
             Scalar[DT](sqrt(Float64(Self.D))),
             grid_dim=_blocks(Self.LANES), block_dim=TPB,
         )
+        if self.z_pin_on:
+            c.enqueue_function[z_pin_kernel[Self.D, Self.LANES]](
+                mptr(self.z_lane.dev.value().unsafe_ptr()),
+                mptr(self.z_pin.dev.value().unsafe_ptr()),
+                mptr(self.z_pin_mask.dev.value().unsafe_ptr()),
+                grid_dim=_blocks(Self.LANES * Self.D), block_dim=TPB,
+            )
         self._z_lane_resamples += 1
+
+    def enable_z_pin(mut self) raises:
+        """Allocate the pin buffers (mask zero: nothing pinned until the
+        driver writes it). Before any capture."""
+        ensure_t["gpu"](self.z_pin, Self.LANES * Self.D, self.ctx)
+        ensure_t["gpu"](self.z_pin_mask, Self.LANES, self.ctx)
+        for i in range(Self.LANES * Self.D):
+            self.z_pin.data[i] = Scalar[DT](0)
+        for i in range(Self.LANES):
+            self.z_pin_mask.data[i] = Scalar[DT](0)
+        self.z_pin.upload(self.ctx.value())
+        self.z_pin_mask.upload(self.ctx.value())
+        self.z_pin_on = True
 
     def _policy_into(
         mut self,
