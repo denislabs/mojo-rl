@@ -27,6 +27,24 @@ the wall-clock, not the simulator — so the bar for the simulator is only
 ~3 000 physics substeps per second. This sweep tells us which lane count
 clears that with room, and where the per-lane cost stops falling.
 
+MEASURED (RTX 5090, 2026-09-09, 200 timed control steps after 20 warmup,
+driven action, the reference's 4 substeps of 1/200 s):
+
+    lanes   control steps/s   physics substeps/s   us / control step / lane
+      64          4 386             17 545                 228
+     128          8 666             34 664                 115
+     256         16 015             64 061                  62
+     512         25 480            101 920                  39
+    1024         36 494            145 977                  27
+
+At 1024 lanes that is 48x BFM-Zero's whole-pipeline rate and 49x the bar;
+sixteen gradient steps per batched control step at this rate would need
+570 learner steps per second, so the learner sets G3's pace, as it did
+theirs. The per-lane cost is still falling at 1024 (27 vs 39 at 512):
+2048 is worth one run when a config wants it. Each lane count compiled and
+ran in ~114 s on the box — the kernel instantiation is two minutes, not
+the fifteen the blocked-kernel gates cost.
+
 ⚠ TWO PHASES ARE TIMED SEPARATELY. The first `WARMUP` steps include kernel
 launch and any lazy allocation; only the `MEASURE` steps after them are
 reported. Do not build anything else on the box while this runs — a
