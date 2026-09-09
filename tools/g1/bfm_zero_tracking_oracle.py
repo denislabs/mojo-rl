@@ -128,27 +128,35 @@ def wxyz_to_xyzw(q):
 class Protocol:
     """The store, the released z and actor, and the released CSV to compare with."""
 
-    def __init__(self, store: Path = STORE, released: Path = RELEASED):
+    def __init__(self, store: Path = STORE, released: Path | None = RELEASED, with_actor: bool = True):
+        """`released=None` (or `with_actor=False`): no ONNX, no released z —
+        the segment data, the reset state and the metrics only, for an eval
+        that brings its OWN policy and z (`examples/g1/bfm_zero_eval_tracking.mojo`).
+        The released CSV is still read when present, as the comparison column."""
         self.f = h5py.File(store, "r")
         self.keys = [k.decode() for k in self.f["motion_key"][:]]
         self.ep_off = self.f["ep_offset"][:].astype(np.int64)
         self.ep_len = self.f["ep_len"][:].astype(np.int64)
         self.default = self.f["default_dof_pos"][:].astype(np.float64)
         assert abs(float(self.f["env_dt"][()]) - ENV_DT) < 1e-12
-        self.released = Path(released)
+        self.released = Path(released) if released is not None else None
         self.zs = {}
-        for clip, name in RELEASED_ZS.items():
-            z = np.load(self.released / "exported" / name).astype(np.float32)
-            assert z.shape == (self.ep_len[clip] - 1, Z_DIM), (clip, z.shape, self.ep_len[clip])
-            self.zs[clip] = z
-        import onnxruntime as ort
+        self.sess = None
+        self.csv = {}
+        if self.released is not None and with_actor:
+            for clip, name in RELEASED_ZS.items():
+                z = np.load(self.released / "exported" / name).astype(np.float32)
+                assert z.shape == (self.ep_len[clip] - 1, Z_DIM), (clip, z.shape, self.ep_len[clip])
+                self.zs[clip] = z
+            import onnxruntime as ort
 
-        self.sess = ort.InferenceSession(
-            str(self.released / "exported" / "FBcprAuxModel.onnx"), providers=["CPUExecutionProvider"]
-        )
-        inp = self.sess.get_inputs()[0]
-        assert list(inp.shape) == [1, ACTOR_OBS_DIM], inp.shape
-        self.csv = self._read_csv(self.released / "humanoidverse_tracking_eval.csv")
+            self.sess = ort.InferenceSession(
+                str(self.released / "exported" / "FBcprAuxModel.onnx"), providers=["CPUExecutionProvider"]
+            )
+            inp = self.sess.get_inputs()[0]
+            assert list(inp.shape) == [1, ACTOR_OBS_DIM], inp.shape
+        if self.released is not None and (self.released / "humanoidverse_tracking_eval.csv").exists():
+            self.csv = self._read_csv(self.released / "humanoidverse_tracking_eval.csv")
 
     @staticmethod
     def _read_csv(path):
@@ -160,12 +168,19 @@ class Protocol:
         return sorted(self.zs.keys())
 
     def n_segments(self, clip):
-        """Segments the released evaluation scored for this clip (the CSV's own count)."""
+        """Segments of this clip: the CSV's own count when it lists the clip,
+        else every 500-row start whose 499 rows fit — the same number for
+        every clip the CSV covers (checked on all 40)."""
         key = self.keys[clip]
         n = sum(1 for k in self.csv if k.startswith(key + "_clip"))
+        if n == 0:
+            n = int((self.ep_len[clip] - SEG_ROWS) // SEG_STRIDE) + 1
         assert n > 0, key
-        assert n * SEG_STRIDE - 1 <= self.ep_len[clip], (key, n, self.ep_len[clip])
+        assert (n - 1) * SEG_STRIDE + SEG_ROWS <= self.ep_len[clip], (key, n, self.ep_len[clip])
         return n
+
+    def all_clips(self):
+        return list(range(len(self.keys)))
 
     def csv_row(self, clip, seg):
         return self.csv.get(f"{self.keys[clip]}_clip{seg}")
@@ -188,14 +203,26 @@ class Episode:
         self.T = SEG_ROWS
         self.qpos_ref = proto.f["qpos"][r0 : r0 + self.T].astype(np.float64)
         self.qvel_ref = proto.f["qvel"][r0 : r0 + self.T].astype(np.float64)
-        self.z = proto.zs[clip][seg * SEG_STRIDE : seg * SEG_STRIDE + self.T - 1]
-        assert self.z.shape[0] == self.T - 1
+        if clip in proto.zs:
+            self.z = proto.zs[clip][seg * SEG_STRIDE : seg * SEG_STRIDE + self.T - 1]
+            assert self.z.shape[0] == self.T - 1
+        else:
+            self.z = None  # the caller's (`set_z`) — an eval with its own B
         self.target = self.qpos_ref[:, 7:].copy()  # (T, 29) joint angles
         self.default = proto.default
         self.last_action = np.zeros(N_DOF)
         self.hist = {k: np.zeros((HIST_LEN, HIST_DIMS[k])) for k in HIST_KEYS}
         self.joint_pos = []
         self.t = 0
+
+    def set_z(self, z_flat):
+        """z for steps 0 .. T−2 as a flat list of (T−1)·256 floats."""
+        z = np.asarray([float(v) for v in z_flat], dtype=np.float32).reshape(self.T - 1, Z_DIM)
+        self.z = z
+
+    def first_row(self):
+        """The store row index of this segment's first row."""
+        return int(self.proto.ep_off[self.clip] + self.seg * SEG_STRIDE)
 
     # ── state ────────────────────────────────────────────────────────────
     def init_state(self):
@@ -363,6 +390,19 @@ class Tally:
             1 for c, s, m, ref, mj in self.rows
             if c == int(clip) and (column == "ours" or (column == "mujoco" and mj is not None) or (column == "isaac" and ref is not None))
         )
+
+    def write_csv(self, path):
+        """Per-segment rows: ours, the MuJoCo column and the released Isaac
+        number where present."""
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["clip", "key", "seg", "distance", "emd", "proximity", "obs_state_distance",
+                        "mujoco_distance", "mujoco_emd", "isaac_distance", "isaac_emd"])
+            for c, sg, m, ref, mj in self.rows:
+                w.writerow([c, self.proto.keys[c], sg, m["distance"], m["emd"], m["proximity"], m["obs_state_distance"],
+                            mj["distance"] if mj else "", mj["emd"] if mj else "",
+                            float(ref["distance"]) if ref else "", float(ref["emd"]) if ref else ""])
+        return len(self.rows)
 
     def report(self, clip):
         c = int(clip)
