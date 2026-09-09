@@ -226,6 +226,7 @@ from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
 from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
+from mojo_rl.tasks.critic_health import critic_health
 
 
 # ⚠⚠ 32, MATCHING THE TWO EXAMPLES THAT TRAIN ON THIS STACK.
@@ -985,6 +986,36 @@ def main() raises:
 
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)
+
+        # ⚠⚠ READ AFTER `close()`, WHICH IS THE ONLY POINT THE CSV IS WHOLE.
+        # `CsvLogger` streams rows as they happen but the last of them are
+        # only guaranteed on disk once the queue is drained, and `close()` is
+        # what drains it. This also means the check costs one file read of a
+        # file the run wrote anyway — no per-iteration hook in the shared
+        # driver, which is where these metrics are actually produced.
+        var health = critic_health(csv_path, 0.99)
+        var peak_q = health[0]
+        var peak_loss = health[1]
+        var q_fp = health[2]
+        print("  Q fixed point      :", q_fp, "(this run's own"
+              " mean_reward / (1 - gamma))")
+        print("  peak mean_q        :", peak_q,
+              "(" + String(peak_q / q_fp) + "x the fixed point)"
+              if q_fp > 0.0 else "")
+        print("  peak critic_loss   :", peak_loss)
+        # ⚠ 10x IS A DIVERGENCE, NOT A WIDE BAND. The converged run peaked at
+        # 1.00x and the destroyed one at 89x; nothing observed on this family
+        # has landed between 2x and 80x, so the threshold is not fitted to the
+        # gap so much as placed in the middle of an empty decade.
+        if q_fp > 0.0 and peak_q > 10.0 * q_fp:
+            print("  ⚠⚠ THE CRITIC DIVERGED. `mean_q` reached", peak_q,
+                  "against a fixed point of", q_fp, "— the policy was")
+            print("     trained against that critic for however long it took")
+            print("     to decay back, so the rate above is NOT a measurement")
+            print("     of the task. Re-run; if it recurs, the configuration")
+            print("     has no stability margin — `--updates-per-step 16`")
+            print("     halves the target tracking rate and is the setting")
+            print("     this file's own table records as converging.")
 
         # ⚠⚠ THE ANTI-VACUITY CHECK, AND IT IS NOT THE SUCCESS CRITERION.
         # Zero completed episodes reports `mean_return` as the fill value and
