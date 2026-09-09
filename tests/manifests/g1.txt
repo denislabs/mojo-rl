@@ -6,7 +6,8 @@
 # the repo-root artefacts a fresh clone does not have:
 #
 #   mojo_rl/envs/robots/assets/unitree_g1.xml + unitree_g1/   (tests/robots/g1_bake.py)
-#   lafan_g1_50hz.h5                                        (tools/g1/lafan_to_store.py)
+#   lafan_g1_50hz.h5                                        (examples/g1/lafan_import.mojo)
+#   lafan_g1_50hz_oracle.h5     the reference's own dump, G1b's oracle (tools/g1/lafan_to_store.py)
 #
 # Not in the smoke tier for that reason. The GPU-vs-CPU gate is NVIDIA-only
 # (physics3d-gpu.txt); the released-actor gate (G2) is an example with its
@@ -26,3 +27,7 @@ tests/robots/test_unitree_g1_privileged_obs.mojo
 
 # G3.1: the reset-from-store table (body-frame omega, lie-down transform)
 tests/robots/test_g1_rsi_table.mojo
+
+# G1b: the native importer against the reference's own dump, two clips,
+# every column, each band a measured mechanism of the reference's code
+tests/robots/test_lafan_import_vs_oracle.mojo

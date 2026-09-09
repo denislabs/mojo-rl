@@ -3,7 +3,7 @@
     pixi run mojo run -I . tests/robots/test_unitree_g1_lafan_store.mojo
     G1_LAFAN_STORE=/path/to/store.h5 pixi run mojo run -I . tests/robots/test_unitree_g1_lafan_store.mojo
 
-The store (`tools/g1/lafan_to_store.py`, default `lafan_g1_50hz.h5` in the
+The store (`examples/g1/lafan_import.mojo`, default `lafan_g1_50hz.h5` in the
 repo root) carries what BFM-Zero's OWN motion library produced for every
 clip at 50 Hz: `qpos` in MuJoCo's layout, the 31 body poses its torch FK
 computed, and the two observations its `compute_humanoid_observations_max`

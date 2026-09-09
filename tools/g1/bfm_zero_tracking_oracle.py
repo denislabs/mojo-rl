@@ -125,6 +125,48 @@ def wxyz_to_xyzw(q):
     return np.array([q[1], q[2], q[3], q[0]], dtype=np.float64)
 
 
+
+def _unescape_task_text(v: str) -> str:
+    """The inverse of `manifest.escape_task_text`: strip the quotes, undo the
+    five escapes, byte-wise."""
+    b = v.encode("utf-8", errors="surrogateescape")
+    assert len(b) >= 2 and b[0] == 0x22 and b[-1] == 0x22, v
+    out = bytearray()
+    i = 1
+    while i < len(b) - 1:
+        c = b[i]
+        if c == 0x5C:
+            i += 1
+            n = b[i]
+            out.append({0x6E: 0x0A, 0x72: 0x0D, 0x74: 0x09}.get(n, n))
+        else:
+            out.append(c)
+        i += 1
+    return out.decode("utf-8", errors="surrogateescape")
+
+
+def store_clip_names(f):
+    """The clip names, in episode order.
+
+    The Python dump wrote them as a `motion_key` dataset; the native importer
+    (`examples/g1/lafan_import.mojo`) records them as the store's task table
+    in the manifest (`task=<clip>\t"<name>"`, `data/manifest.mojo`), the
+    place a `TrajectoryStore` keeps per-index text. Either layout reads."""
+    if "motion_key" in f:
+        return [k.decode() for k in f["motion_key"][:]]
+    text = bytes(np.asarray(f["__manifest__"][...], dtype=np.uint8)).decode("utf-8", errors="surrogateescape")
+    tasks = {}
+    for line in text.split("\n"):
+        if not line.startswith("task="):
+            continue
+        idx, val = line[len("task="):].split("\t", 1)
+        tasks[int(idx)] = _unescape_task_text(val)
+    n = int(f["ep_len"].shape[0])
+    missing = [i for i in range(n) if i not in tasks]
+    assert not missing, f"the store's task table lacks clips {missing[:5]}"
+    return [tasks[i] for i in range(n)]
+
+
 class Protocol:
     """The store, the released z and actor, and the released CSV to compare with."""
 
@@ -134,11 +176,11 @@ class Protocol:
         that brings its OWN policy and z (`examples/g1/bfm_zero_eval_tracking.mojo`).
         The released CSV is still read when present, as the comparison column."""
         self.f = h5py.File(store, "r")
-        self.keys = [k.decode() for k in self.f["motion_key"][:]]
+        self.keys = store_clip_names(self.f)
         self.ep_off = self.f["ep_offset"][:].astype(np.int64)
         self.ep_len = self.f["ep_len"][:].astype(np.int64)
-        self.default = self.f["default_dof_pos"][:].astype(np.float64)
-        assert abs(float(self.f["env_dt"][()]) - ENV_DT) < 1e-12
+        self.default = np.asarray(self.f["default_dof_pos"][...]).reshape(-1).astype(np.float64)
+        assert abs(float(np.asarray(self.f["env_dt"][...]).reshape(-1)[0]) - ENV_DT) < 1e-12
         self.released = Path(released) if released is not None else None
         self.zs = {}
         self.sess = None
