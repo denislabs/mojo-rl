@@ -55,6 +55,7 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
     LEFT_HAND_BODY_IDX,
     RIGHT_HAND_BODY_IDX,
     UNITREE_G1_OBS_DIM,
+    UNITREE_G1_STATE_DIM,
 )
 from mojo_rl.envs.robots.unitree_g1_pd import (
     G1_N_DOF,
@@ -311,7 +312,10 @@ def test_reset_observation() raises:
     var env = UnitreeG1[DType.float64]()
     var obs = env.reset()
     var worst = 0.0
-    for i in range(UNITREE_G1_OBS_DIM):
+    # The proprio slice only: since G3.0 the observation continues with the
+    # 463-D privileged block, whose stand-pose values are body geometry, not
+    # zeros (`test_unitree_g1_privileged_obs` gates that block).
+    for i in range(UNITREE_G1_STATE_DIM):
         var want = 0.0
         if i == 2 * G1_N_DOF + 2:
             want = -1.0

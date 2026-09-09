@@ -43,8 +43,14 @@ comptime _pm = UNITREE_G1_DIMS
 
 # BFM-Zero's proprioceptive `state`: `[q - q_default (29), qdot (29),
 # projected gravity (3), root angular velocity / 4 (3)]`
-# (`humanoidverse_isaac.py:404-450`; the ONNX exporter pins `state_end = 64`).
-comptime UNITREE_G1_OBS_DIM: Int = 64
+# (`humanoidverse_isaac.py:404-450`; the ONNX exporter pins `state_end = 64`),
+# followed since G3.0 by the 463-D privileged `max_local_self`
+# (`unitree_g1_priv_obs.mojo`): `[state 64 | privileged 463]` = 527, the
+# observation every net of the paper's "priv" arm consumes. Consumers of
+# the proprio part alone read the first `UNITREE_G1_STATE_DIM` entries.
+comptime UNITREE_G1_STATE_DIM: Int = 64
+comptime UNITREE_G1_PRIV_DIM: Int = 463
+comptime UNITREE_G1_OBS_DIM: Int = UNITREE_G1_STATE_DIM + UNITREE_G1_PRIV_DIM
 comptime UNITREE_G1_ACTION_DIM: Int = 29
 
 comptime UnitreeG1Model = ModelDefFromXML[

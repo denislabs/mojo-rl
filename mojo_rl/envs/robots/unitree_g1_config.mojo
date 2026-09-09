@@ -68,8 +68,21 @@ from ..phyics3d_env_config import Phyics3dEnvConfig
 from .unitree_g1_xml import (
     UNITREE_G1_NMESH_VERTS,
     UNITREE_G1_OBS_DIM,
+    UNITREE_G1_STATE_DIM,
     ROOT_QPOS_SIZE,
     ROOT_QVEL_SIZE,
+    TORSO_BODY_IDX,
+)
+from .unitree_g1_priv_obs import (
+    G1_PRIV_DIM,
+    G1_N_SKELETON,
+    G1_PRIV_OFF_HEIGHT,
+    g1_skeleton_body,
+    g1_heading_inv,
+    g1_origin_velocity,
+    g1_priv_body,
+    g1_priv_scatter,
+    g1_head_pose_vel,
 )
 from .unitree_g1_pd import (
     G1_N_DOF,
@@ -153,7 +166,10 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
     # The 64-D obs reads qpos/qvel only; FK products are not consulted yet.
     # Flip to True when the privileged body-frame features arrive.
-    comptime SYNC_FK_AFTER_STEP: Bool = False
+    # G3.0: the privileged observation reads xpos/xquat/xipos/xvel/xangvel
+    # AFTER the control step, so the FK products and body velocities must
+    # describe the integrated state, not the one before the last substep.
+    comptime SYNC_FK_AFTER_STEP: Bool = True
     comptime HAS_GPU_HOOKS: Bool = True
     comptime HAS_CUSTOM_ACTUATION_GPU: Bool = True
     comptime CUSTOM_ACTIONS_EVERY_SUBSTEP: Bool = True
@@ -243,6 +259,63 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
         obs.append(Scalar[DTYPE](g[2]))
         for k in range(3):
             obs.append(d.qvel.data[3 + k] * Scalar[DTYPE](G1_ANG_VEL_SCALE))
+
+        # ── privileged `max_local_self` (463): the simulator's 30 bodies
+        # + the virtual head, in the heading frame (G3.0) ────────────────
+        var priv = InlineArray[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
+        var rb = g1_skeleton_body(0)
+        var rootx = d.xpos.data[rb * 3 + 0]
+        var rooty = d.xpos.data[rb * 3 + 1]
+        var rootz = d.xpos.data[rb * 3 + 2]
+        var h = g1_heading_inv[DTYPE](
+            d.xquat.data[rb * 4 + 0], d.xquat.data[rb * 4 + 1],
+            d.xquat.data[rb * 4 + 2], d.xquat.data[rb * 4 + 3],
+        )
+        priv[G1_PRIV_OFF_HEIGHT] = rootz
+        var tp = InlineArray[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))  # torso origin pose + vel
+        for s in range(G1_N_SKELETON):
+            var b = g1_skeleton_body(s)
+            var vo = g1_origin_velocity[DTYPE](
+                d.xvel.data[b * 3 + 0], d.xvel.data[b * 3 + 1], d.xvel.data[b * 3 + 2],
+                d.xangvel.data[b * 3 + 0], d.xangvel.data[b * 3 + 1], d.xangvel.data[b * 3 + 2],
+                d.xpos.data[b * 3 + 0], d.xpos.data[b * 3 + 1], d.xpos.data[b * 3 + 2],
+                d.xipos.data[b * 3 + 0], d.xipos.data[b * 3 + 1], d.xipos.data[b * 3 + 2],
+            )
+            var f = g1_priv_body[DTYPE](
+                h[0], h[1], h[2], h[3], rootx, rooty, rootz,
+                d.xpos.data[b * 3 + 0], d.xpos.data[b * 3 + 1], d.xpos.data[b * 3 + 2],
+                d.xquat.data[b * 4 + 0], d.xquat.data[b * 4 + 1],
+                d.xquat.data[b * 4 + 2], d.xquat.data[b * 4 + 3],
+                vo[0], vo[1], vo[2],
+                d.xangvel.data[b * 3 + 0], d.xangvel.data[b * 3 + 1], d.xangvel.data[b * 3 + 2],
+            )
+            g1_priv_scatter[DTYPE](s, f, priv)
+            if b == TORSO_BODY_IDX:
+                tp[0] = d.xpos.data[b * 3 + 0]
+                tp[1] = d.xpos.data[b * 3 + 1]
+                tp[2] = d.xpos.data[b * 3 + 2]
+                tp[3] = d.xquat.data[b * 4 + 0]
+                tp[4] = d.xquat.data[b * 4 + 1]
+                tp[5] = d.xquat.data[b * 4 + 2]
+                tp[6] = d.xquat.data[b * 4 + 3]
+                tp[7] = vo[0]
+                tp[8] = vo[1]
+                tp[9] = vo[2]
+                tp[10] = d.xangvel.data[b * 3 + 0]
+                tp[11] = d.xangvel.data[b * 3 + 1]
+                tp[12] = d.xangvel.data[b * 3 + 2]
+        var hd = g1_head_pose_vel[DTYPE](
+            tp[0], tp[1], tp[2], tp[3], tp[4], tp[5], tp[6],
+            tp[7], tp[8], tp[9], tp[10], tp[11], tp[12],
+        )
+        var fh = g1_priv_body[DTYPE](
+            h[0], h[1], h[2], h[3], rootx, rooty, rootz,
+            hd[0], hd[1], hd[2], tp[3], tp[4], tp[5], tp[6],
+            hd[3], hd[4], hd[5], tp[10], tp[11], tp[12],
+        )
+        g1_priv_scatter[DTYPE](G1_N_SKELETON, fh, priv)
+        for i in range(G1_PRIV_DIM):
+            obs.append(priv[i])
         return True
 
     @staticmethod
@@ -438,7 +511,11 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
     ) -> Bool:
         """Byte-for-byte the CPU observation's order — the batched trainer's
         checkpoint is what the single-env eval loads."""
-        for i in range(G1_N_DOF):
+        # ⚠ Unrolled at compile time so `g1_default_pos(i)` — a float64
+        # constant table — folds into float32 immediates: a Metal kernel
+        # cannot carry a double at all (`select double -0.2` failed IR
+        # verification once this kernel grew past what LLVM unrolled alone).
+        comptime for i in range(G1_N_DOF):
             obs[env, i] = qpos[env, ROOT_QPOS_SIZE + i] - Scalar[DTYPE](
                 g1_default_pos(i)
             )
@@ -458,6 +535,74 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
             obs[env, b + 3 + k] = qvel[env, 3 + k] * Scalar[DTYPE](
                 G1_ANG_VEL_SCALE
             )
+
+        # ── privileged `max_local_self` (463), the CPU hook's arithmetic on
+        # the lane's field tensors (G3.0) ──────────────────────────────────
+        var priv = InlineArray[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
+        var rb = g1_skeleton_body(0)
+        var rootx = rebind[Scalar[DTYPE]](xpos[env, rb * 3 + 0])
+        var rooty = rebind[Scalar[DTYPE]](xpos[env, rb * 3 + 1])
+        var rootz = rebind[Scalar[DTYPE]](xpos[env, rb * 3 + 2])
+        var h = g1_heading_inv[DTYPE](
+            rebind[Scalar[DTYPE]](xquat[env, rb * 4 + 0]),
+            rebind[Scalar[DTYPE]](xquat[env, rb * 4 + 1]),
+            rebind[Scalar[DTYPE]](xquat[env, rb * 4 + 2]),
+            rebind[Scalar[DTYPE]](xquat[env, rb * 4 + 3]),
+        )
+        priv[G1_PRIV_OFF_HEIGHT] = rootz
+        var tp = InlineArray[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))
+        for s in range(G1_N_SKELETON):
+            var bb = g1_skeleton_body(s)
+            var px = rebind[Scalar[DTYPE]](xpos[env, bb * 3 + 0])
+            var py = rebind[Scalar[DTYPE]](xpos[env, bb * 3 + 1])
+            var pz = rebind[Scalar[DTYPE]](xpos[env, bb * 3 + 2])
+            var qx = rebind[Scalar[DTYPE]](xquat[env, bb * 4 + 0])
+            var qy = rebind[Scalar[DTYPE]](xquat[env, bb * 4 + 1])
+            var qz = rebind[Scalar[DTYPE]](xquat[env, bb * 4 + 2])
+            var qw = rebind[Scalar[DTYPE]](xquat[env, bb * 4 + 3])
+            var wx = rebind[Scalar[DTYPE]](xangvel[env, bb * 3 + 0])
+            var wy = rebind[Scalar[DTYPE]](xangvel[env, bb * 3 + 1])
+            var wz = rebind[Scalar[DTYPE]](xangvel[env, bb * 3 + 2])
+            var vo = g1_origin_velocity[DTYPE](
+                rebind[Scalar[DTYPE]](xvel[env, bb * 3 + 0]),
+                rebind[Scalar[DTYPE]](xvel[env, bb * 3 + 1]),
+                rebind[Scalar[DTYPE]](xvel[env, bb * 3 + 2]),
+                wx, wy, wz, px, py, pz,
+                rebind[Scalar[DTYPE]](xipos[env, bb * 3 + 0]),
+                rebind[Scalar[DTYPE]](xipos[env, bb * 3 + 1]),
+                rebind[Scalar[DTYPE]](xipos[env, bb * 3 + 2]),
+            )
+            var f = g1_priv_body[DTYPE](
+                h[0], h[1], h[2], h[3], rootx, rooty, rootz,
+                px, py, pz, qx, qy, qz, qw, vo[0], vo[1], vo[2], wx, wy, wz,
+            )
+            g1_priv_scatter[DTYPE](s, f, priv)
+            if bb == TORSO_BODY_IDX:
+                tp[0] = px
+                tp[1] = py
+                tp[2] = pz
+                tp[3] = qx
+                tp[4] = qy
+                tp[5] = qz
+                tp[6] = qw
+                tp[7] = vo[0]
+                tp[8] = vo[1]
+                tp[9] = vo[2]
+                tp[10] = wx
+                tp[11] = wy
+                tp[12] = wz
+        var hd = g1_head_pose_vel[DTYPE](
+            tp[0], tp[1], tp[2], tp[3], tp[4], tp[5], tp[6],
+            tp[7], tp[8], tp[9], tp[10], tp[11], tp[12],
+        )
+        var fh = g1_priv_body[DTYPE](
+            h[0], h[1], h[2], h[3], rootx, rooty, rootz,
+            hd[0], hd[1], hd[2], tp[3], tp[4], tp[5], tp[6],
+            hd[3], hd[4], hd[5], tp[10], tp[11], tp[12],
+        )
+        g1_priv_scatter[DTYPE](G1_N_SKELETON, fh, priv)
+        for i in range(G1_PRIV_DIM):
+            obs[env, UNITREE_G1_STATE_DIM + i] = priv[i]
         return True
 
     @always_inline
