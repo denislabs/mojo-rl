@@ -117,6 +117,12 @@ shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platfor
 hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
 hdf5plugin = ">=7.0.0,<8"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
 h5py = ">=3.16.0,<4"             # used by inspection script + parity test (not by the Mojo loader)
+# GATE-ONLY. `examples/g1/bfm_zero_tracking_gate.mojo` runs the RELEASED
+# BFM-Zero actor (`FBcprAuxModel.onnx`, CC BY-NC) through Python interop to
+# score our G1 physics against the paper's sim-to-sim row; nothing under
+# `mojo_rl/` imports it (docs/BFM_ZERO_G1_REPRODUCTION.md, G2).
+onnxruntime = ">=1.17"
+scipy = ">=1.12"                 # same gate: `linear_sum_assignment` is the reference's `ot.emd2` for uniform weights
 # ⚠ GATE-ONLY AS OF THE NATIVE-NET WORK. Nothing under `mojo_rl/` imports
 # these three any more: `nn/datasets/cifar10.mojo` reads the HF parquet with
 # `io/parquet` + `io/png`, and `nn/datasets/lewm_pusht.mojo` streams its
@@ -257,6 +263,14 @@ soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", de
 soarm-record = { cmd = "mojo run -I . examples/so101/record.mojo", depends-on = ["build-serial", "build-opencv"], description = "Record SO-101 teleop (terminal). Add --arm to move the follower" }
 # The same, with live camera views and buttons — what LeRobot uses Rerun for.
 soarm-record-ui = { cmd = "mojo run -I . examples/so101/record_ui.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Record SO-101 teleop with a live UI. Add --arm to move the follower" }
+# Solve WHERE a camera is, in the robot's frame, with the arm as the ruler:
+# a marker on the gripper, seen by the camera and located by FK, N times, then
+# Kabsch. ⚠⚠ IT NEVER ENERGISES THE ARM and has no flag that does — it
+# releases torque so the gripper can be moved BY HAND, which is both safer and
+# the only practical way to reach the workspace corners. Needs an INTRINSICS
+# calibration first (`pixi run camera-studio`). Pass
+# `-- --camera front --marker-mm 30 --offset X Y Z`.
+soarm-calibrate-extrinsics = { cmd = "mojo run -I . examples/so101/calibrate_camera_extrinsics.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Fit the camera -> robot-base transform (never energises the arm)" }
 # Run a trained ACT policy on the follower, from the two live cameras.
 # ⚠ SAFE BY DEFAULT: without `--arm` nothing is energised. `--store` is
 # REQUIRED (the normalization statistics live there, not in the checkpoint).
