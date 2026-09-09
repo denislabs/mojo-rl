@@ -351,6 +351,12 @@ tests/core/test_run_context.mojo
 # that runs everywhere. Comment lines are excluded — the ⚠ notes keep the old
 # names deliberately.
 tests/core/test_drivers_use_runcontext.mojo
+# project.kv: the `ref=<kind>:<name>:<path>@<commit>` grammar (paths may carry
+# both a `:` and an `@`, so the splits are once-from-left then once-from-right),
+# the unknown-key refusal, drift against `git log -1 -- <path>` rather than HEAD,
+# and that a run falls back to the flat `runs/` root until its project exists.
+# Mutation-checked. Writes under /tmp.
+tests/core/test_project.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.

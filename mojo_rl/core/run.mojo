@@ -42,6 +42,7 @@ from mojo_rl.core.concurrent.thread import OpaquePtr, null_opaque
 
 from mojo_rl.core.kv import KvWriter, kv_lines
 from mojo_rl.core.logger import Logger
+from mojo_rl.core.project import runs_root_for
 from mojo_rl.io.fileio import file_size, write_text_atomic
 from mojo_rl.io.proc import quote_arg, run_capture
 from mojo_rl.io.sha256 import sha256_file, sha256_string
@@ -49,8 +50,13 @@ from mojo_rl.io.sha256 import sha256_file, sha256_string
 
 comptime SCHEMA_VERSION = 1
 comptime DEFAULT_ROOT = "runs"
-"""⚠ P0's root. The project layer moves this to `projects/<p>/runs/` in P1;
-`MOJO_RL_RUNS` overrides it in the meantime."""
+"""The flat root, used when the named project does not exist yet.
+
+⚠⚠ `runs_root_for` (P1) IS WHAT DECIDES, AND IT FALLS BACK HERE ON PURPOSE. A
+driver names its project; the project layer becomes active for it the moment
+someone runs `project-init`, and until then the run lands in this flat root. No
+driver has to know which world it is in, which is why the seven retrofitted in
+P0d needed no second edit."""
 
 
 # =============================================================================
@@ -317,7 +323,7 @@ struct RunContext(Movable):
             process_id(),
             perf_counter_ns(),
         )
-        var base = root if root.byte_length() > 0 else String(DEFAULT_ROOT)
+        var base = root if root.byte_length() > 0 else runs_root_for(project)
         self.dir = base + "/" + self.id
         self._status = String("running")
         self._outcome = String("")
