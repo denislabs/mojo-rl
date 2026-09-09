@@ -194,6 +194,7 @@ struct FBCPROnlineAgent[
         window_size: Int = 100,
         initial_episode_fill: Float64 = 0.0,
         seed: UInt64 = UInt64(0x5EED_0C),
+        normalize_obs: Bool = False,
     ) raises -> Self:
         """The reference's online CPR setting on top of `FBOnlineAgent`'s
         rollout defaults: `bc_weight 0` (CPR is BC's replacement; the FB
@@ -215,7 +216,7 @@ struct FBCPROnlineAgent[
             action_scale=action_scale, expl_std=expl_std, z_hold=z_hold,
             zbuf_frac=zbuf_frac, keep_frac=keep_frac, uniform_frac=0.5,
             window_size=window_size, initial_episode_fill=initial_episode_fill,
-            seed=seed,
+            seed=seed, normalize_obs=normalize_obs,
         )
         a.head = Self.Head.make[INIT](
             octx, lr_d=lr_d, lr_q=lr_q, gamma=gamma, tau_q=tau_q,
@@ -356,6 +357,11 @@ struct FBCPROnlineAgent[
             self.head.z_neg, self.base.t.bz, Scalar[DT](1.0), self.ctx
         )
         self._gather_expert_windows()
+        if self.base.obs_ema.enabled:
+            # expert rows are normalised with the running statistics and
+            # never update them (the reference's eval-mode pass)
+            self.base.obs_ema.apply[Self.BATCH](self.head.es)
+            self.base.obs_ema.apply[Self.BATCH](self.head.esn)
         self.head.encode_expert(self.base.t)
         self._relabel_z3()
         _ = self.head.step(self.base.t, want_loss=False)

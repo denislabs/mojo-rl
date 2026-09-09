@@ -94,6 +94,7 @@ from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks.action_select import warmup_uniform_batched
 from .trainer import FBTrainer
+from .obs_ema import ObsEma
 from .loss import fb_measure_loss_into, fb_ortho_loss_into
 from .kernels import (
     gather_rows_kernel,
@@ -403,6 +404,12 @@ struct FBOnlineAgent[
     var _total_train_steps: Int
     var _mean_abs_action_dev: DeviceMeanAccum
     var _z_lane_resamples: Int
+    # ── observation normaliser (opt-in, `normalize_obs`): BFM-Zero's
+    # BatchNorm1d run the reference's way — stats updated from every
+    # training batch's `s` and `s'`, applied to `s`, `s'`, `s+`, the expert
+    # rows and the rollout observation. Raw rows stay in the ring.
+    var obs_ema: ObsEma[Self.OBS]
+    var _obs_scratch: Tensor   # LANES * OBS, the normalised rollout obs
 
     def __init__(out self):
         self.t = Self.TrainerT()
@@ -459,6 +466,8 @@ struct FBOnlineAgent[
         self._total_train_steps = 0
         self._mean_abs_action_dev = DeviceMeanAccum()
         self._z_lane_resamples = 0
+        self.obs_ema = ObsEma[Self.OBS]()
+        self._obs_scratch = Tensor()
 
     @staticmethod
     def make[
@@ -485,6 +494,7 @@ struct FBOnlineAgent[
         window_size: Int = 100,
         initial_episode_fill: Float64 = 0.0,
         seed: UInt64 = UInt64(0x5EED_0B),
+        normalize_obs: Bool = False,
     ) raises -> Self:
         """Defaults are BFM-Zero's rollout / relabel settings on top of
         `FBTrainer.make`'s (`gamma` 0.98, `tau` 0.01, Adam 3e-4).
@@ -524,6 +534,9 @@ struct FBOnlineAgent[
         var a = Self()
         var octx = Optional[DeviceContext](ctx)
         a.ctx = octx
+        if normalize_obs:
+            a.obs_ema = ObsEma[Self.OBS].make(ctx)
+            ensure_t["gpu"](a._obs_scratch, Self.LANES * Self.OBS, octx)
         a.t = Self.TrainerT.make[INIT](
             lr=lr, gamma=gamma, tau=tau, ortho_weight=ortho_weight,
             ctx=octx, seed=seed + 13, max_grad_norm=max_grad_norm,
@@ -796,8 +809,12 @@ struct FBOnlineAgent[
         """`action = clamp(pi_z(obs, z_lane) + std·n) · scale` for all lanes."""
         var c = self.ctx.value()
         comptime NA = Self.LANES * Self.ACT
+        var src = obs_ptr
+        if self.obs_ema.enabled:
+            self.obs_ema.apply_into[Self.LANES](obs_ptr, self._obs_scratch)
+            src = mptr(self._obs_scratch.dev.value().unsafe_ptr())
         c.enqueue_function[pack2_kernel[Self.OBS, Self.D, Self.LANES]](
-            obs_ptr,
+            src,
             mptr(self.z_lane.dev.value().unsafe_ptr()),
             mptr(self._ain.dev.value().unsafe_ptr()),
             grid_dim=_blocks(Self.LANES * Self.A_IN), block_dim=TPB,
@@ -896,6 +913,9 @@ struct FBOnlineAgent[
         var x = Tensor.alloc(Self.A_IN)
         for k in range(Self.OBS):
             x.data[k] = obs[k]
+        if self.obs_ema.enabled:
+            self.obs_ema.sync_host()
+            self.obs_ema.apply_host_tensor(x)
         for k in range(Self.D):
             x.data[Self.OBS + k] = zl.data[k]
         x.upload(c)
@@ -1012,14 +1032,31 @@ struct FBOnlineAgent[
 
     def _sample_batch(mut self) raises:
         """Assemble `FBTrainer`'s owned batch: expert rows first (if a store
-        is attached), the ring for the rest. All device; capture-safe. The
-        branch is on `_expert_n`, fixed before any capture."""
+        is attached), the ring for the rest, then the observation
+        normaliser if enabled. All device; capture-safe. The branches are on
+        `_expert_n` and `obs_ema.enabled`, both fixed before any capture."""
+        self._gather_batch()
+        self._normalize_batch()
+
+    def _gather_batch(mut self) raises:
         comptime if Self.EXPERT_ROWS > 0:
             if self._expert_n > 0:
                 self._gather_expert()
                 self._gather_ring[Self.RING_ROWS](Self.EXPERT_ROWS)
                 return
         self._gather_ring[Self.BATCH](0)
+
+    def _normalize_batch(mut self) raises:
+        """The reference's order: the batch's `s` and `s'` update the running
+        statistics (train mode), then `s`, `s'`, `s+` are normalised with the
+        updated statistics (eval mode). `a` and `z` are untouched."""
+        if not self.obs_ema.enabled:
+            return
+        self.obs_ema.update[Self.BATCH](self.t.bs)
+        self.obs_ema.update[Self.BATCH](self.t.bsn)
+        self.obs_ema.apply[Self.BATCH](self.t.bs)
+        self.obs_ema.apply[Self.BATCH](self.t.bsn)
+        self.obs_ema.apply[Self.BATCH](self.t.bsp)
 
     def _relabel_z(mut self) raises:
         """`bz` holds the stored z; keep `keep_frac` of rows, overwrite the
@@ -1226,8 +1263,14 @@ struct FBOnlineAgent[
     # ── checkpoint ───────────────────────────────────────────────────────
 
     def save_state(mut self, path: String) raises:
-        """`FBTrainer`'s own format — the offline eval scripts load it."""
+        """`FBTrainer`'s own format — the offline eval scripts load it — plus
+        the `.norm` sidecar when the normaliser is on (`ObsNorm`'s format,
+        so `ObsNorm.try_load` applies it at eval)."""
         self.t.save_state(path)
+        if self.obs_ema.enabled:
+            self.obs_ema.save(path + ".norm")
 
     def load_state(mut self, path: String) raises:
         self.t.load_state(path)
+        if self.obs_ema.enabled:
+            self.obs_ema.load(path + ".norm")
