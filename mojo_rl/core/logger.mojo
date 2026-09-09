@@ -48,8 +48,16 @@ Usage:
     )
 
     logger.set_config("algorithm", "PPO")
+    logger.register()                      # announce the run BEFORE step 0
     logger.log_scalar("reward", avg_reward, step)
-    logger.close()
+    logger.close()                         # sends status=done on the way out
+
+⚠ THE RUN'S LIFE IS THREE CALLS: `register`, the metrics, `close`. `register`
+is what makes a run that dies at step 0 visible at all — the remote backend
+used to announce itself on the first flush, so a run that never got that far
+never existed as far as the dashboard was concerned. `close` reports how it
+ended; a driver that ended some other way says so with `finish("killed", ...)`
+first, and the first call wins.
 """
 
 from std.time import perf_counter_ns
@@ -124,6 +132,38 @@ trait Logger(Copyable, Deinitable, Movable):
     def flush(mut self) raises:
         ...
 
+    def register(mut self) raises:
+        """Announce the run to the backend NOW, before the first metric.
+
+        ⚠⚠ THE REMOTE BACKEND USED TO REGISTER ON THE FIRST FLUSH, AND THAT IS
+        A HOLE. A run that dies before it logs anything — a bad config, an OOM
+        while building the model, a compile that never reaches step 0 — never
+        appeared on the dashboard at all, so the failure a liveness signal most
+        needs to show is the one case with no row to mark. This is the call
+        that closes it.
+
+        ⚠ CALL IT AFTER `set_config`, NOT BEFORE. The registration payload
+        carries the config, and every driver fills that in after constructing
+        the logger; registering from a constructor would ship an empty config
+        on every run and trade this hole for a different one.
+
+        Idempotent. A backend with nothing to register does nothing.
+        """
+        ...
+
+    def finish(mut self, status: String, outcome: String) raises:
+        """Record how the run ENDED. `status` is the terminal state; `outcome`
+        is the run's own summary of whether it was any good.
+
+        ⚠ `close()` CALLS THIS WITH `done` IF THE DRIVER DID NOT, because
+        reaching `close()` at all is a clean end. A run the kernel killed never
+        arrives here, which is exactly the case only the server can conclude.
+
+        Idempotent: the first call wins, so a driver that reports `killed` does
+        not have it overwritten by the `done` from `close()`.
+        """
+        ...
+
     def close(mut self) raises:
         ...
 
@@ -159,6 +199,12 @@ struct NoOpLogger(Logger):
         pass
 
     def flush(mut self) raises:
+        pass
+
+    def register(mut self) raises:
+        pass
+
+    def finish(mut self, status: String, outcome: String) raises:
         pass
 
     def close(mut self) raises:
@@ -261,6 +307,19 @@ struct CsvLogger(Logger):
             f.write(content)
         self.entries.clear()
 
+    def register(mut self) raises:
+        """Nothing to announce — the file IS the registration, and it is created
+        by the first `flush`."""
+        pass
+
+    def finish(mut self, status: String, outcome: String) raises:
+        """A CSV has no room for a terminal state.
+
+        ⚠ THIS IS NOT THE PLACE TO RECORD IT. `run.kv`'s `status=` is, and it
+        is written by the run directory rather than smuggled into a metrics
+        column that every reader of this file would then have to skip."""
+        pass
+
     def close(mut self) raises:
         self.flush()
 
@@ -325,6 +384,13 @@ struct RemoteLogger(Logger):
     var _reported: Bool
     """Whether a transport problem has been printed. Once per run, not once
     per flush."""
+    var _finished: Bool
+    """Whether the terminal state has been sent.
+
+    ⚠ THE FIRST `finish` WINS. `close()` sends `done` for any run that reaches
+    it, so without this latch a driver that reported `killed` on its way out
+    would have that overwritten by the `done` behind it — and a killed run
+    filed as clean is worse than no record at all."""
 
     def __init__(
         out self,
@@ -350,6 +416,7 @@ struct RemoteLogger(Logger):
         self._total_logged = 0
         self._sink = None
         self._reported = False
+        self._finished = False
 
     def __init__(out self, *, deinit move: Self):
         self.run_id = move.run_id^
@@ -365,6 +432,7 @@ struct RemoteLogger(Logger):
         self._total_logged = move._total_logged
         self._sink = move._sink^
         self._reported = move._reported
+        self._finished = move._finished
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         if self.server_url.byte_length() == 0:
@@ -420,8 +488,46 @@ struct RemoteLogger(Logger):
         w.end_array()
         w.end_object()
 
-        self._post(self.server_url.removesuffix("/") + "/ingest", w.done())
+        self._post(self._ingest_url(), w.done())
         self.entries.clear()
+
+    def register(mut self) raises:
+        """POST `/runs` now, before the first metric. See the trait.
+
+        ⚠ THIS IS THE ONLY WAY THE DASHBOARD LEARNS ABOUT A RUN THAT NEVER
+        LOGS. `flush` keeps registering lazily for the drivers that never call
+        this, so nothing regresses — but a lazily registered run is invisible
+        until its first batch, and a run that dies before then stays invisible
+        forever.
+        """
+        if self.server_url.byte_length() == 0 or self._run_registered:
+            return
+        self._register_run()
+        self._run_registered = True
+
+    def finish(mut self, status: String, outcome: String) raises:
+        """POST the terminal state to `/runs/<id>/finish`. See the trait.
+
+        ⚠ INERT FOR A RUN THAT WAS NEVER REGISTERED. There is no server row to
+        finish, and inventing one at the end would advertise a run whose whole
+        history is the fact that it stopped.
+
+        ⚠ THE EMPTY-URL CLAUSE BELOW IS UNREACHABLE AND KEPT ANYWAY. A run with
+        no `server_url` can never register, so the registration guard already
+        covers it — `tests/core/test_run_lifecycle.mojo` confirms deleting the
+        clause changes nothing observable. It stays because every public method
+        here opens with the same inert check, and the one method that did not
+        would be the one a later refactor trips over.
+        """
+        if (
+            self.server_url.byte_length() == 0
+            or self._finished
+            or not self._run_registered
+        ):
+            return
+        self.flush()
+        self._finished = True
+        self._post(self._finish_url(), self._finish_payload(status, outcome))
 
     def close(mut self) raises:
         """Flush, then drain the sink and join its thread.
@@ -429,8 +535,20 @@ struct RemoteLogger(Logger):
         ⚠ THE DRAIN IS BOUNDED. `drain_ms` is a budget, not a promise — see
         `HttpPostSink`. A hung dashboard is bounded by the worker's `dead`
         latch instead, at one client timeout rather than one per payload.
+
+        ⚠⚠ REACHING HERE IS ITSELF THE END SIGNAL. A run that arrives at
+        `close()` finished cleanly, so it reports `done` unless the driver
+        already said otherwise. The runs that never arrive — SIGKILL, OOM, a
+        released instance — are the ones only the server can conclude anything
+        about, and it does so from the heartbeat rather than from silence here.
+
+        ⚠ THE FINISH IS QUEUED BEFORE THE DRAIN, NOT AFTER. One ring and one
+        worker means it lands behind the last metric batch and ahead of the
+        join; sending it after the drain would race the join it was meant to
+        precede.
         """
         self.flush()
+        self.finish(String("done"), String(""))
         if self._sink:
             self._report_transport_once()
             var line = self.sink_report()
@@ -452,7 +570,39 @@ struct RemoteLogger(Logger):
     def is_active(self) -> Bool:
         return self.server_url.byte_length() > 0
 
-    def _register_run(mut self) raises:
+    def _base(self) -> String:
+        return String(self.server_url.removesuffix("/"))
+
+    def _ingest_url(self) -> String:
+        return self._base() + "/ingest"
+
+    def _runs_url(self) -> String:
+        return self._base() + "/runs"
+
+    def _finish_url(self) -> String:
+        """`/runs/<id>/finish`.
+
+        ⚠ THE ID IS INTERPOLATED, NOT ESCAPED, AND THAT IS A CONSTRAINT ON THE
+        ID RATHER THAN A BUG HERE. Both shapes this tree mints are URL-safe by
+        construction — `run_<ns>` from the fallback below, and the project
+        layer's `<date>_<slug>_<hash8>`. A future id that is not must be
+        rejected where it is minted, because a path segment repaired at the
+        last moment stops matching the one written into `run.kv`.
+        """
+        return self._runs_url() + "/" + self.run_id + "/finish"
+
+    def _finish_payload(
+        self, status: String, outcome: String
+    ) raises -> String:
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("run_id"), self.run_id)
+        w.member(String("status"), status)
+        w.member(String("outcome"), outcome)
+        w.end_object()
+        return w.done()
+
+    def _register_payload(self) raises -> String:
         var w = JsonWriter()
         w.begin_object()
         w.member(String("run_id"), self.run_id)
@@ -463,7 +613,10 @@ struct RemoteLogger(Logger):
             w.member(self._config_keys[i], self._config_vals[i])
         w.end_object()
         w.end_object()
-        self._post(self.server_url.removesuffix("/") + "/runs", w.done())
+        return w.done()
+
+    def _register_run(mut self) raises:
+        self._post(self._runs_url(), self._register_payload())
 
     def _post(mut self, url: String, payload: String):
         """Queue a JSON POST. Returns immediately; the network happens on the
@@ -545,6 +698,25 @@ struct RemoteLogger(Logger):
     def pending(self) -> Int:
         return len(self.entries)
 
+    def posts_attempted(self) -> Int:
+        """Payloads the worker has accounted for — delivered, failed, dropped
+        or abandoned. The four terms `sink_report` prints, as one number.
+
+        ⚠ IT IS ONLY FINAL AFTER `close()`. Before the drain it is a snapshot of
+        a live counter and says nothing about what is still in flight."""
+        if not self._sink:
+            return 0
+        var s = self._sink.value()
+        return s.sent() + s.failed() + s.dropped() + s.abandoned()
+
+    def registered(self) -> Bool:
+        """Whether `/runs` has been queued. Diagnostics and gates."""
+        return self._run_registered
+
+    def finished(self) -> Bool:
+        """Whether a terminal state has been queued. Diagnostics and gates."""
+        return self._finished
+
 
 # =============================================================================
 # CompositeLogger — fan-out to two loggers
@@ -589,6 +761,14 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
     def flush(mut self) raises:
         self.a.flush()
         self.b.flush()
+
+    def register(mut self) raises:
+        self.a.register()
+        self.b.register()
+
+    def finish(mut self, status: String, outcome: String) raises:
+        self.a.finish(status, outcome)
+        self.b.finish(status, outcome)
 
     def close(mut self) raises:
         self.a.close()

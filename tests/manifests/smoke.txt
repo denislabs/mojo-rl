@@ -330,6 +330,11 @@ tests/concurrent/test_worker.mojo
 
 tests/io/test_sha256.mojo
 tests/io/test_http_sink.mojo
+# A run's END is a signal it sends, and its START is not its first metric.
+# Offline like test_http_sink beside it: routes and payloads by value, plus the
+# idempotence latches and the inertness that a `close()` which now POSTs could
+# have broken. Mutation-checked — see the file's header.
+tests/core/test_run_lifecycle.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.
