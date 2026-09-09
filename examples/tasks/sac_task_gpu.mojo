@@ -486,7 +486,10 @@ def greedy_success_rate(
 
 
 def main() raises:
-    seed_rng(42)
+    # ⚠⚠ THE SEED IS SET AFTER THE PARSE, NOT HERE. `--seed` cannot be read
+    # by a call that runs before the flags are read, and this line used to be
+    # `seed_rng(42)` on the first line of `main`.
+    var seed = 42
 
     # ⚠ `--warmup` EXISTS FOR THE BASELINE, not for tuning. Setting it at or
     # above `--steps` runs the whole loop on UNIFORM RANDOM actions with no
@@ -632,6 +635,18 @@ def main() raises:
             updates_per_step = Int(String(args[i + 1]))
         elif a == "--tau" and i + 1 < len(args):
             tau = Scalar[DT](Float64(String(args[i + 1])))
+        elif a == "--seed" and i + 1 < len(args):
+            seed = Int(String(args[i + 1]))
+
+    # ⚠⚠ ONE SEED FOR BOTH RNGs — the host's (uniform warmup actions, network
+    # init) and the env's per-lane device stream. They were two separate 42s,
+    # so there was no single knob to turn and every run was the same draw.
+    #
+    # ⚠ A RUN OF THIS CONFIGURATION IS ONE SAMPLE. Two `gather` runs at an
+    # identical `cfg/*` block reached 0.5625 and 0.0, the second by a critic
+    # that peaked 273x its fixed point and decayed back. Read `critic_health`
+    # at the end of BOTH before comparing their rates.
+    seed_rng(seed)
 
     print("=" * 72)
     print("SAC on the task family —", task_name, "(GPU)")
@@ -800,6 +815,7 @@ def main() raises:
         )
         logger.log_scalar(String("cfg/n_envs"), Float64(N_ENVS), 0)
         logger.log_scalar(String("cfg/warmup"), Float64(warmup), 0)
+        logger.log_scalar(String("cfg/seed"), Float64(seed), 0)
         logger.log_scalar(String("cfg/obs_dim"), Float64(OBS_DIM), 0)
         # ⚠⚠ THE ONE SETTING THAT WAS NOT RECORDED WAS THE DECISIVE ONE.
         # `TERMINATE_ON_UNHEALTHY` is a comptime env parameter, not a flag, so
@@ -920,7 +936,7 @@ def main() raises:
         ](
             env,
             num_steps,
-            rng_seed=UInt64(42),
+            rng_seed=UInt64(seed),
             updates_per_step=updates_per_step,
             print_every=PRINT_EVERY,
             verbose=True,
