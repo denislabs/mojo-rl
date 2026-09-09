@@ -293,3 +293,6 @@ mojo_rl/physics3d/collision/libmrl_qhull.so
 # Generated printable markers and other local scratch output
 # (tools/vision/make_printable_marker.py writes here).
 scratch/
+
+# G1 rung: the LAFAN1 TrajectoryStore (1.7 GB, rebuilt by tools/g1/lafan_to_store.py)
+/lafan_g1_50hz.h5
