@@ -335,6 +335,11 @@ tests/io/test_http_sink.mojo
 # idempotence latches and the inertness that a `close()` which now POSTs could
 # have broken. Mutation-checked — see the file's header.
 tests/core/test_run_lifecycle.mojo
+# The `key=value` writer, against the .task/.family files already in the tree:
+# parsed-form round trip + fixpoint, repeating keys in order, and the ten
+# refusals (a newline splits the record; leading/trailing whitespace does not
+# survive the reader's strip). Mutation-checked. Self-contained.
+tests/core/test_kv_write.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.

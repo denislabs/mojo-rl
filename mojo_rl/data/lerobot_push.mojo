@@ -43,7 +43,7 @@ from std.os import listdir
 from std.os.path import exists, isdir
 
 from mojo_rl.io.hf_push import HubPush, HubUpload
-from mojo_rl.io.fileio import write_file_atomic
+from mojo_rl.io.fileio import write_text_atomic
 from mojo_rl.io.json import JsonDoc, load_json
 
 
@@ -143,10 +143,7 @@ def write_dataset_card(root: String, repo: String) raises:
         " — no Python in the capture or the upload path.\n"
     )
 
-    var bytes = List[UInt8]()
-    for i in range(text.byte_length()):
-        bytes.append(text.as_bytes()[i])
-    write_file_atomic(root + "/README.md", bytes)
+    write_text_atomic(root + "/README.md", text)
 
 
 def push_lerobot_dataset(

@@ -85,6 +85,29 @@ def write_file_atomic(var path: String, ref content: List[UInt8]) raises:
     rename_over(tmp^, path^)
 
 
+def write_text_atomic(var path: String, text: String) raises:
+    """Write `text` to `path` atomically. The String half of the call above.
+
+    ⚠⚠ THIS EXISTS BECAUSE THE THREE-LINE COPY WAS WRITTEN FIVE TIMES. Every
+    caller with a String to persist reached for the same loop —
+    `robot/so101/calibration`, `data/lerobot_push`, `data/lerobot_write` twice,
+    and a private `_bytes` in `tools/hf/probe_push`. That is the shape
+    `_a_rule_written_inline_twice_drifts` names as this repo's most frequent
+    defect, and the drift it invites here is real: one copy re-derived
+    `as_bytes()` inside the loop, so the cost was quadratic in the span lookup
+    for anyone who copied that one next.
+
+    ⚠ IT IS A COPY, NOT A VIEW, AND THAT IS FORCED. `write_file_atomic` takes an
+    owned `List[UInt8]`; a `Span` over the String's storage would not outlive
+    the chunked write below it.
+    """
+    var b = List[UInt8]()
+    var src = text.as_bytes()
+    for i in range(text.byte_length()):
+        b.append(src[i])
+    write_file_atomic(path^, b)
+
+
 def read_file_bytes(path: String) raises -> List[UInt8]:
     """Read the whole file, looping until `read_bytes` returns nothing."""
     var out = List[UInt8]()

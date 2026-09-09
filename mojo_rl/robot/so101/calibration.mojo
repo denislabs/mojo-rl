@@ -19,7 +19,7 @@ The JSON is `lerobot-calibrate`'s own shape, so a file written here restores
 with lerobot's tooling and vice versa.
 """
 
-from mojo_rl.io.fileio import read_file_bytes, write_file_atomic
+from mojo_rl.io.fileio import read_file_bytes, write_text_atomic
 from mojo_rl.io.json import JsonWriter, parse_json
 
 from mojo_rl.robot.so101.arm import SO101_N, joint_name
@@ -122,10 +122,7 @@ def save_calibration_json(path: String, ref c: CalibrationRecord) raises:
         w.end_object()
     w.end_object()
     var text = w.done()
-    var b = List[UInt8]()
-    for i in range(text.byte_length()):
-        b.append(text.as_bytes()[i])
-    write_file_atomic(path, b)
+    write_text_atomic(path, text)
 
 
 def load_calibration_json(path: String) raises -> CalibrationRecord:

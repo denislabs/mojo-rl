@@ -75,7 +75,7 @@ from std.math import sqrt
 from std.os import makedirs
 from std.os.path import exists
 
-from mojo_rl.io.fileio import file_size, write_file_atomic
+from mojo_rl.io.fileio import file_size, write_text_atomic
 from mojo_rl.io.json import JsonWriter
 from mojo_rl.io.parquet.writer import (
     ParquetWriter, PQ_F32, PQ_F64, PQ_I64, PQ_STR, PqColumn, pq_list,
@@ -1031,11 +1031,7 @@ struct LeRobotWriter(Movable):
         w.end_object()
         w.end_object()
 
-        var text = w.done()
-        var bytes = List[UInt8]()
-        for i in range(text.byte_length()):
-            bytes.append(text.as_bytes()[i])
-        write_file_atomic(self.root + "/meta/info.json", bytes)
+        write_text_atomic(self.root + "/meta/info.json", w.done())
 
     def _write_stats_json(mut self) raises:
         """Dataset-level aggregate stats.
@@ -1082,8 +1078,4 @@ struct LeRobotWriter(Movable):
             w.end_object()
         w.end_object()
 
-        var text = w.done()
-        var bytes = List[UInt8]()
-        for i in range(text.byte_length()):
-            bytes.append(text.as_bytes()[i])
-        write_file_atomic(self.root + "/meta/stats.json", bytes)
+        write_text_atomic(self.root + "/meta/stats.json", w.done())
