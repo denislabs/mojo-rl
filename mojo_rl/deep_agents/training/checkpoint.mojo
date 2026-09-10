@@ -33,6 +33,34 @@ running a RUN; the trainer does not.
 from ...io.artifact_sink import ArtifactSink, KIND_CHECKPOINT
 
 
+def offered_path(path: String, run_dir: String) -> String:
+    """The artifact path a checkpoint should be filed under, or "" to drop it.
+
+    ⚠⚠ THE DECISION IS SPLIT OUT FROM THE EFFECT SO IT CAN BE GATED. A source
+    gate can prove that all eighteen sites CALL `announce_checkpoint`; it
+    cannot prove the call does anything, and a mutant that emptied the body
+    survived exactly that gate. This function is pure, so the rule it encodes
+    is checkable with no sink, no fixture and no network.
+
+    ⚠ THE PATH IS MADE RELATIVE TO THE RUN DIRECTORY. The drivers work in
+    absolute paths — `checkpoint_path` is whatever the caller passed — while
+    the artifact's identity is its path WITHIN the run, because that is what
+    the monitor keys on and what `run.kv` records.
+
+    ⚠ A PATH OUTSIDE THE RUN DIRECTORY IS DROPPED. A driver still writing to a
+    `comptime` constant (one that P0d did not retrofit) would otherwise land
+    its checkpoint under a run it does not belong to, and a misfiled artifact
+    is worse than an absent one — the whole value of the layer is that
+    `run.kv` can be trusted.
+    """
+    if path.byte_length() == 0 or run_dir.byte_length() == 0:
+        return String("")
+    var prefix = run_dir + "/"
+    if not path.startswith(prefix):
+        return String("")
+    return String(path[byte = prefix.byte_length() :])
+
+
 def announce_checkpoint(
     path: String,
     artifacts: Optional[ArtifactSink],
@@ -44,26 +72,12 @@ def announce_checkpoint(
     ring; the transfer happens on the sink's own thread. A driver must not pay
     for the dashboard being slow, and must not stop because it is down.
 
-    ⚠ THE PATH IS MADE RELATIVE TO THE RUN DIRECTORY HERE. The drivers work in
-    absolute paths — `checkpoint_path` is whatever the caller passed — while
-    the artifact's identity is its path WITHIN the run, because that is what
-    the monitor keys on and what `run.kv` records. Converting at one place
-    means a driver never has to know the difference.
-
-    ⚠ A PATH OUTSIDE THE RUN DIRECTORY IS DROPPED, NOT UPLOADED. A driver still
-    writing to a `comptime` constant (one that P0d did not retrofit) would
-    otherwise land its checkpoint under a run it does not belong to, and a
-    misfiled artifact is worse than an absent one — the whole value of the
-    layer is that `run.kv` can be trusted.
+    The path decision — relative to the run, or dropped — is `offered_path`,
+    which is pure and gated on its own.
     """
     if not artifacts:
         return
-    if path.byte_length() == 0 or run_dir.byte_length() == 0:
-        return
-    var prefix = run_dir + "/"
-    if not path.startswith(prefix):
-        return
-    var rel = String(path[byte = prefix.byte_length() :])
+    var rel = offered_path(path, run_dir)
     if rel.byte_length() == 0:
         return
     var sink = artifacts.value()

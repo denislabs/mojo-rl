@@ -3,6 +3,7 @@
 # +--------------------------------------------------------------------------+ #
 """A SOURCE gate over `mojo_rl/deep_agents/training/`.
 
+    pixi run build-http                              # ONCE
     pixi run mojo run -I . tests/deep_agents/test_checkpoints_announce.mojo
 
 ## ⚠⚠ Why a source gate rather than a behavioural one
@@ -31,6 +32,11 @@ written down, and the count of scanned save sites is PRINTED beside the count
 of failures — "0 violations" is also what scanning nothing prints.
 """
 
+from mojo_rl.deep_agents.training.checkpoint import (
+    announce_checkpoint,
+    offered_path,
+)
+from mojo_rl.io.artifact_sink import ArtifactSink
 from mojo_rl.io.fileio import read_file_bytes
 
 
@@ -159,4 +165,132 @@ def main() raises:
         )
     print("  and no driver inlines the offer; the rule has one home")
 
+    # ── the rule the source gate CANNOT see ─────────────────────────
+    #
+    # ⚠⚠ A SOURCE GATE PROVES THE CALL IS THERE, NOT THAT IT DOES ANYTHING.
+    # A mutant that emptied `announce_checkpoint`'s body survived everything
+    # above — eighteen sites still called it, and it still did nothing. So the
+    # path decision is split into `offered_path`, which is pure, and gated
+    # here by value.
+    var run = String("/tmp/p/runs/2026-09-10_sac_abcd1234")
+    var cases = [
+        # (checkpoint path, run dir, expected artifact path)
+        (run + "/checkpoints/best.ckpt", run, String("checkpoints/best.ckpt")),
+        (run + "/checkpoints/last.ckpt", run, String("checkpoints/last.ckpt")),
+        (run + "/metrics.csv", run, String("metrics.csv")),
+        # ⚠ Outside the run: DROPPED. A driver still writing to a comptime
+        # constant would otherwise file its checkpoint under a run it does not
+        # belong to.
+        (String("/tmp/other/best.ckpt"), run, String("")),
+        (String("checkpoints/best.ckpt"), run, String("")),
+        # ⚠ A path that merely SHARES A PREFIX with the run dir is not inside
+        # it. Without the trailing separator, `<run>_2/best.ckpt` would be
+        # filed under `<run>` as `_2/best.ckpt`.
+        (run + "_2/checkpoints/best.ckpt", run, String("")),
+        # The run dir itself is not an artifact.
+        (run, run, String("")),
+        (run + "/", run, String("")),
+        # No run dir at all — a driver with no RunContext.
+        (run + "/checkpoints/best.ckpt", String(""), String("")),
+        (String(""), run, String("")),
+    ]
+    var compared = 0
+    var wrong = 0
+    for c in cases:
+        compared += 1
+        var got = offered_path(c[0], c[1])
+        if got != c[2]:
+            wrong += 1
+            print(
+                "    offered_path("
+                + c[0]
+                + ", "
+                + c[1]
+                + ") = '"
+                + got
+                + "', want '"
+                + c[2]
+                + "'"
+            )
+    print(
+        "  offered_path: "
+        + String(compared)
+        + " compared, "
+        + String(wrong)
+        + " differing"
+    )
+    if wrong != 0 or compared != 10:
+        raise Error(
+            "offered_path: " + String(wrong) + " of " + String(compared)
+            + " wrong"
+        )
+
+    # ── and the three lines that JOIN the two ───────────────────────
+    #
+    # ⚠⚠ `offered_path` is gated by value and the eighteen call sites are
+    # gated by source, and a mutant that emptied `announce_checkpoint`'s body
+    # still survived BOTH. Nothing above reaches the plumbing between them.
+    #
+    # The sink points at the discard port, so the upload fails immediately and
+    # deterministically — what is being measured is that the artifact reached
+    # the sink AT ALL, which the failure count proves and a no-op cannot fake.
+    var dead_run = String("/tmp/mojo_rl_announce_gate")
+    var s1 = ArtifactSink(
+        run_id=String("gate"),
+        run_dir=dead_run,
+        base_url=String("http://127.0.0.1:9"),
+        api_key=String("k"),
+    )
+    announce_checkpoint(dead_run + "/checkpoints/best.ckpt", s1, dead_run)
+    s1.close(drain_ms=4000)
+    if s1.failed() + s1.abandoned() != 1:
+        raise Error(
+            "announce_checkpoint did not reach the sink: failed="
+            + String(s1.failed())
+            + " abandoned="
+            + String(s1.abandoned())
+            + " (want exactly 1 accounted for)"
+        )
+
+    # ...and the same call with a path OUTSIDE the run reaches it not at all.
+    var s2 = ArtifactSink(
+        run_id=String("gate"),
+        run_dir=dead_run,
+        base_url=String("http://127.0.0.1:9"),
+        api_key=String("k"),
+    )
+    announce_checkpoint(String("/tmp/elsewhere/best.ckpt"), s2, dead_run)
+    s2.close(drain_ms=2000)
+    if s2.failed() + s2.abandoned() + s2.uploaded() != 0:
+        raise Error(
+            "a checkpoint outside the run directory was offered anyway:"
+            " failed="
+            + String(s2.failed())
+            + " abandoned="
+            + String(s2.abandoned())
+        )
+    print(
+        "  announce_checkpoint reaches the sink for a path inside the run,"
+        " and not at all for one outside it"
+    )
+
     print("[PASS] checkpoints announce (" + String(sites) + " sites)")
+
+
+# MUTANTS THIS FILE WAS CHECKED AGAINST (each must turn it red):
+#   C1  a save site drops its announce            -> the source scan
+#   C2  a driver inlines .offer() instead         -> the source scan
+#   C3  announce_checkpoint's body is emptied     -> the sink check
+#   C4  offered_path returns the ABSOLUTE path    -> offered_path by value
+#   C5  the trailing-separator guard is removed   -> offered_path by value
+#   C6  a path outside the run is kept anyway     -> offered_path by value
+#
+# ⚠⚠ C3 SURVIVED TWICE, AND THE FILE GREW TWICE BECAUSE OF IT. A SOURCE gate
+# proves the call is THERE; it cannot prove the call DOES anything. Splitting
+# `offered_path` out made the decision checkable by value and killed C4-C6 —
+# and C3 survived even that, because the three lines JOINING the pure decision
+# to `sink.offer` were still covered by nothing. Only pointing a real sink at
+# the discard port and counting what reached it closes that.
+#
+# The general shape: a gate that checks structure and a gate that checks a pure
+# function can both be green while the wire between them is cut.
