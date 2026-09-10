@@ -5,6 +5,7 @@
     pixi run project-show so101
     pixi run run-tag <run_id> "meilleur reach à ce jour, testé 8/10"
     pixi run project-prune so101 --older-than 30 [--apply]
+    pixi run project-promote <run_id> best --as reach --note "8/10 on the arm"
     pixi run project-push so101 [<run_id>] [--kind checkpoint]
     pixi run project-pull so101 <run_id> [--kind checkpoint]
 
@@ -32,6 +33,13 @@ from mojo_rl.core.project import (
     load_project,
     projects_root,
     project_exists,
+)
+from mojo_rl.core.policy import (
+    PolicyRecord,
+    load_policy,
+    policy_ckpt_path,
+    policy_kv_path,
+    write_policy,
 )
 from mojo_rl.core.run import RunRecord, epoch_seconds, iso8601_utc, load_run
 from mojo_rl.data.remote import RemoteCatalog
@@ -163,6 +171,31 @@ def cmd_show() raises:
         "   ", rep.checked, "checked,", rep.missing, "missing,", rep.drifted,
         "drifted",
     )
+    print()
+    # ⚠ POLICIES BEFORE RUNS. "Which checkpoint is deployed right now?" is the
+    # question a person opens this for, and it is answered by three lines; the
+    # run listing below can be hundreds.
+    var pols = _ls(p.policies_dir())
+    var n_pol = 0
+    for f in pols:
+        if not String(f).endswith(".kv"):
+            continue
+        n_pol += 1
+        var rec = load_policy(p.policies_dir() + "/" + String(f))
+        print(
+            "  policy " + rec.name + " -> " + rec.run + " (" + rec.checkpoint
+            + ")  promoted " + rec.promoted
+        )
+        if rec.note.byte_length() > 0:
+            print("      " + rec.note)
+        if rec.supersedes.byte_length() > 0:
+            print("      supersedes " + rec.supersedes)
+        if not exists(policy_ckpt_path(p.dir(), rec.name)):
+            # ⚠ A RECORD WITHOUT ITS WEIGHTS IS THE ONE FAILURE THIS LAYER MUST
+            # NOT HIDE — a deploy would find nothing at the role.
+            print("      ⚠ MISSING WEIGHTS at " + policy_ckpt_path(p.dir(), rec.name))
+    if n_pol == 0:
+        print("  policies: none — `pixi run project-promote <run_id> best --as <name>`")
     print()
     var runs = _ls(p.runs_dir())
     print("  runs:", len(runs))
@@ -312,6 +345,158 @@ def _du_bytes(path: String) raises -> Int:
     )
     var v = String(s.strip())
     return (atol(v) * 1024) if v.byte_length() > 0 else 0
+
+
+# =============================================================================
+# promote — the only way a checkpoint leaves runs/
+# =============================================================================
+
+
+def _find_run(rid: String) raises -> Tuple[String, String]:
+    """`(run_dir, project)` for a run id, searching both roots.
+
+    ⚠ SEARCH THE FLAT `runs/` TOO. A run made before its project existed lives
+    there and its id is the same either way — the same rule `run-tag` follows.
+    A flat run has no project, and promoting from one is refused below rather
+    than guessed at.
+    """
+    var root = projects_root()
+    if exists(String("runs/") + rid + "/run.kv"):
+        return (String("runs/") + rid, String(""))
+    for n in _ls(root):
+        var d = root + "/" + n + "/runs/" + rid
+        if exists(d + "/run.kv"):
+            return (d, String(n))
+    raise Error("no run '" + rid + "' under runs/ or " + root + "/*/runs/")
+
+
+def cmd_promote() raises:
+    """Give a run's checkpoint a NAME, and make that name the deploy target.
+
+    ⚠⚠ THIS IS THE ONLY WAY A CHECKPOINT LEAVES `runs/` (§8). Deployment points
+    at `policies/<name>.ckpt`, a ROLE, and never at a run id — so a better
+    checkpoint is one `project-promote` away and no deploy script is edited.
+
+    ⚠ HARD-LINK, FALLING BACK TO COPY, NEVER SYMLINK. A symlink into `runs/`
+    breaks on `project-pull` to another machine, breaks under rsync/sftp, and
+    becomes a dead pointer the moment `project-prune` removes the run.
+    """
+    var rid = _positional(1)
+    var which = _positional(2)
+    if which.byte_length() == 0:
+        which = String("best")
+    var name = _flag(String("--as"), String(""))
+    var note = _flag(String("--note"), String(""))
+    if rid.byte_length() == 0 or name.byte_length() == 0:
+        raise Error(
+            'usage: project-promote <run_id> [best|last|step_N] --as <name>'
+            ' [--note "why"]'
+        )
+
+    var found = _find_run(rid)
+    var run_dir = found[0]
+    var project = found[1]
+    var rec = load_run(run_dir + "/run.kv")
+    if project.byte_length() == 0:
+        project = rec.project
+    if project.byte_length() == 0:
+        raise Error(
+            "run '" + rid + "' belongs to no project, so there is no"
+            " policies/ to promote into. Give it one, or promote a run made"
+            " under a project."
+        )
+
+    var src = run_dir + "/checkpoints/" + which + ".ckpt"
+    if not exists(src):
+        # ⚠ NAME WHAT IS ACTUALLY THERE. "not found" on a checkpoint the user
+        # is sure they saved is the least useful message a tool can print.
+        var have = _ls(run_dir + "/checkpoints")
+        var listing = String("")
+        for h in have:
+            listing += ("\n    " + String(h))
+        raise Error(
+            "no checkpoint '" + which + "' in " + run_dir + "/checkpoints"
+            + ("; that directory holds:" + listing if len(have) > 0
+               else " (the directory is empty)")
+        )
+
+    var pdir = projects_root() + "/" + project
+    _ = run_capture("mkdir -p " + quote_arg(pdir + "/policies"))
+    var dst = policy_ckpt_path(pdir, name)
+
+    # ⚠ THE PREVIOUS HOLDER OF THE ROLE, read BEFORE it is overwritten. That is
+    # what `supersedes=` records, and it is a history nobody has to maintain.
+    var previous = String("")
+    var kv = policy_kv_path(pdir, name)
+    if exists(kv):
+        previous = load_policy(kv).run
+
+    var sha = sha256_file(src)
+    var size = file_size(src)
+
+    # ⚠ `ln` FIRST, `cp` ONLY IF IT FAILS (a different filesystem). `ln -f`
+    # replaces an existing role atomically enough for this purpose; a symlink
+    # is never attempted, deliberately.
+    _ = run_capture(
+        "rm -f " + quote_arg(dst) + " && ln " + quote_arg(src) + " "
+        + quote_arg(dst) + " 2>/dev/null || cp " + quote_arg(src) + " "
+        + quote_arg(dst)
+    )
+    if not exists(dst):
+        raise Error("could not materialise " + dst + " from " + src)
+    # ⚠ VERIFY THE MATERIALISED BYTES, not the source's. A hard link cannot
+    # differ, but a `cp` fallback can be short, and a policy whose weights are
+    # truncated is the worst possible thing to hand a real robot.
+    var dst_sha = sha256_file(dst)
+    if dst_sha != sha:
+        raise Error(
+            "the materialised policy does not match its source:\n  " + src
+            + "  " + sha + "\n  " + dst + "  " + dst_sha
+        )
+
+    var pol = PolicyRecord(name)
+    pol.run = rec.run_id if rec.run_id else rid
+    pol.checkpoint = which
+    pol.sha256 = sha
+    pol.bytes = size
+    pol.promoted = iso8601_utc(epoch_seconds())
+    pol.note = note
+    # ⚠ A RUN DOES NOT SUPERSEDE ITSELF. Re-promoting the same run — a
+    # corrected note, a different checkpoint of it — would otherwise write
+    # `supersedes=<its own id>`, which reads as a history and is not one.
+    pol.supersedes = String("") if previous == pol.run else previous
+    write_policy(pdir, pol)
+
+    # And name the policy in project.kv, so `project-show` finds it without
+    # listing a directory.
+    #
+    # ⚠ BOTH CALLS TAKE THE ROOT. They default to `projects/` in the CWD, not to
+    # `projects_root()` — so omitting it silently reads a DIFFERENT project
+    # than the one being promoted into, or fails to find one at all under
+    # MOJO_RL_PROJECTS. That is exactly what the first version of this did.
+    var root_dir = projects_root()
+    if project_exists(project, root_dir):
+        var spec = load_project(project, root_dir)
+        var known = False
+        for i in range(len(spec.policies)):
+            if spec.policies[i] == name:
+                known = True
+                break
+        if not known:
+            spec.policies.append(name)
+            spec.write()
+
+    print("promoted " + rid + " (" + which + ") as '" + name + "'")
+    print("  role     " + dst)
+    print("  record   " + policy_kv_path(pdir, name))
+    print("  sha256   " + sha + "  (" + String(size // 1_000_000) + " MB)")
+    # ⚠ PRINT WHAT WAS WRITTEN, NOT WHAT WAS READ. These differ for a
+    # re-promotion of the same run, and a summary that disagrees with the
+    # record it just wrote is worse than no summary.
+    if pol.supersedes.byte_length() > 0:
+        print("  supersedes " + pol.supersedes)
+    if rec.outcome.byte_length() > 0:
+        print("  the run said: " + rec.outcome)
 
 
 # =============================================================================
@@ -510,10 +695,15 @@ def main() raises:
         cmd_tag()
     elif cmd == "prune":
         cmd_prune()
+    elif cmd == "promote":
+        cmd_promote()
     elif cmd == "push":
         cmd_push()
     elif cmd == "pull":
         cmd_pull()
     else:
-        print("usage: project_cli <init|list|show|tag|prune|push|pull> ...")
+        print(
+            "usage: project_cli"
+            " <init|list|show|tag|prune|promote|push|pull> ..."
+        )
         print("  see the module docstring, or docs/PROJECT_LAYER_PLAN.md §10")
