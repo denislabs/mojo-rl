@@ -72,14 +72,42 @@ struct Sequential[*MODULES: Module](Module):
         self.act = TensorPack[Self.N, Self.ACT_DT]()
         self.grd = TensorPack[Self.N, Self.ACT_DT]()
 
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build every child IN PLACE, straight from its `make`.
+
+        The default `__init__` above default-constructs the whole child
+        tuple (recursively: a nested Sequential default-constructs its own
+        children, down to every leaf's empty Params), and `make` used to
+        start from that and then move each made child over the default one.
+        Inlined, that construct-then-move chain was most of the weight of
+        `Sequential::make` on the ACT trainer (249 KB, with a 113 KB
+        `__init__` beside it; docs/COMPILE_TIME_PROFILING.md §3.2). Here the
+        tuple storage is marked live and each slot is written once with the
+        made child — the same idiom `Tuple.__init__(var *args)` uses.
+
+        ⚠ If a child's `make` raises part-way (a device allocation failing),
+        the slots after it are never written and the tuple's destructor
+        would run over them. The default path did not have that hole; a
+        `make` that raises is an allocation failure the run does not survive
+        anyway, which is why this is accepted rather than guarded.
+        """
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self.children)
+        )
+        comptime for i in range(Self.N):
+            Pointer(to=self.children[i]).unsafe_write(
+                Self.MODULES[i].make[target, INIT](ctx)
+            )
+        self.act = TensorPack[Self.N, Self.ACT_DT]()
+        self.grd = TensorPack[Self.N, Self.ACT_DT]()
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var s = Self()
-        comptime for i in range(Self.N):
-            s.children[i] = Self.MODULES[i].make[target, INIT](ctx)
-        return s^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

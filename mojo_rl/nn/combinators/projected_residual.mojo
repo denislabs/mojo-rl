@@ -59,14 +59,39 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         self.gi_inner = TensorImpl[Self.ACT_DT]()
         self.gi_skip = TensorImpl[Self.ACT_DT]()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        comptime assert (
+            Self.Inner.IN_DIMS[0] == Self.Skip.IN_DIMS[0]
+        ), "ProjectedResidual requires Inner.IN_DIMS[0] == Skip.IN_DIMS[0]"
+        comptime assert (
+            Self.Inner.OUT_DIM == Self.Skip.OUT_DIM
+        ), "ProjectedResidual requires Inner.OUT_DIM == Skip.OUT_DIM"
+        comptime assert (
+            Self.Skip.ACT_DT == Self.ACT_DT
+        ), "ProjectedResidual requires Inner.ACT_DT == Skip.ACT_DT"
+        self.inner = Self.Inner.make[target, INIT](ctx)
+        self.skip = Self.Skip.make[target, INIT](ctx)
+        self.inner_out = TensorImpl[Self.ACT_DT]()
+        self.skip_out = TensorImpl[Self.ACT_DT]()
+        self.gi_inner = TensorImpl[Self.ACT_DT]()
+        self.gi_skip = TensorImpl[Self.ACT_DT]()
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var r = Self()
-        r.inner = Self.Inner.make[target, INIT](ctx)
-        r.skip = Self.Skip.make[target, INIT](ctx)
-        return r^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

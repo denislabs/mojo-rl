@@ -51,15 +51,27 @@ struct InitWith[INNER: Module, INIT_OVR: Initializer](Module):
     def __init__(out self):
         self.inner = Self.INNER()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        self.inner = Self.INNER.make[target, Self.INIT_OVR](ctx)
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         # The ONE behavior: ignore the propagated `INIT`, build INNER with the
         # override. (INNER threads INIT_OVR down to its own leaves as usual.)
-        var s = Self()
-        s.inner = Self.INNER.make[target, Self.INIT_OVR](ctx)
-        return s^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

@@ -81,13 +81,19 @@ struct StopGradParams[Inner: Module](Module):
     def __init__(out self):
         self.inner = Self.Inner()
 
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build `inner` IN PLACE from its `make` — same idiom and reason as
+        `Sequential.__init__[target, INIT]` (docs/COMPILE_TIME_PROFILING.md
+        §3.2)."""
+        self.inner = Self.Inner.make[target, INIT](ctx)
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var s = Self()
-        s.inner = Self.Inner.make[target, INIT](ctx)
-        return s^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

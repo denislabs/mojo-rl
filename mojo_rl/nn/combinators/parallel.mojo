@@ -167,14 +167,38 @@ struct Parallel[*BRANCHES: Module](Module):
         self.slabs = TensorPack[Self.N, Self.ACT_DT]()
         self.gi_temp = TensorImpl[Self.ACT_DT]()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make` — same
+        idiom and same reason as `Sequential.__init__[target, INIT]`
+        (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        comptime assert Self.N >= 1, "Parallel requires >= 1 branch"
+        comptime for i in range(Self.N):
+            comptime assert (
+                Self.BRANCHES[i].IN_DIMS[0] == Self.BRANCHES[0].IN_DIMS[0]
+            ), "Parallel: all BRANCHES must share IN_DIM"
+        comptime for i in range(Self.N):
+            comptime assert (
+                Self.BRANCHES[i].ACT_DT == Self.ACT_DT
+            ), "Parallel: all BRANCHES must share ACT_DT (one activation dtype)"
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self.branches)
+        )
+        comptime for i in range(Self.N):
+            Pointer(to=self.branches[i]).unsafe_write(
+                Self.BRANCHES[i].make[target, INIT](ctx)
+            )
+        self.slabs = TensorPack[Self.N, Self.ACT_DT]()
+        self.gi_temp = TensorImpl[Self.ACT_DT]()
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var p = Self()
-        comptime for i in range(Self.N):
-            p.branches[i] = Self.BRANCHES[i].make[target, INIT](ctx)
-        return p^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

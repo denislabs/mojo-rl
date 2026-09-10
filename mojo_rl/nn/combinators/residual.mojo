@@ -56,13 +56,29 @@ struct Residual[Inner: Module](Module):
         self.inner = Self.Inner()
         self.mid = TensorImpl[Self.ACT_DT]()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        comptime assert (
+            Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
+        ), "Residual requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
+        self.inner = Self.Inner.make[target, INIT](ctx)
+        self.mid = TensorImpl[Self.ACT_DT]()
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var r = Self()
-        r.inner = Self.Inner.make[target, INIT](ctx)
-        return r^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

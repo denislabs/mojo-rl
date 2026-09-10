@@ -154,6 +154,20 @@ struct ResNet18Backbone[
     def __init__(out self):
         self.net = Self.Net()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        self.net = Self.Net.make[target, INIT](ctx)
+
     def __init__(out self, *, deinit move: Self):
         self.net = move.net^
 
@@ -161,9 +175,7 @@ struct ResNet18Backbone[
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var b = Self()
-        b.net = Self.Net.make[target, INIT](ctx)
-        return b^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP

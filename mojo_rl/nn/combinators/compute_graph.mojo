@@ -116,14 +116,41 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
         self.tmp = TensorPack[Self.MAXARITY, Self.ACT_DT]()
         self.slot_n = List[Int](length=Self.N, fill=0)
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make` — same
+        idiom and same reason as `Sequential.__init__[target, INIT]`
+        (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        comptime assert Self.N >= 1, "ComputeGraph needs >= 1 node"
+        comptime assert Self.DECLS[Self.N - 1].KIND > 0, (
+            "ComputeGraph: the last decl must be a compute/external node"
+            " (the graph output), not an InputSlot"
+        )
+        comptime for i in range(Self.N):
+            comptime if Self.DECLS[i].KIND > 0:
+                comptime assert Self.DECLS[i].ACT_DT == Self.ACT_DT, (
+                    "ComputeGraph: all compute nodes must share one ACT_DT"
+                )
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self.children)
+        )
+        comptime for i in range(Self.N):
+            Pointer(to=self.children[i]).unsafe_write(
+                Self.DECLS[i].make[target, INIT](ctx)
+            )
+        self.pool = TensorPack[Self.N, Self.ACT_DT]()
+        self.gpool = TensorPack[Self.N, Self.ACT_DT]()
+        self.tmp = TensorPack[Self.MAXARITY, Self.ACT_DT]()
+        self.slot_n = List[Int](length=Self.N, fill=0)
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var g = Self()
-        comptime for i in range(Self.N):
-            g.children[i] = Self.DECLS[i].make[target, INIT](ctx)
-        return g^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     @staticmethod
     def _slot_of[nm: StaticString]() -> Int:

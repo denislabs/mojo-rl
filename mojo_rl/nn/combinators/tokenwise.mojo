@@ -38,13 +38,26 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         comptime assert Self.SEQ_LEN >= 1, "Tokenwise requires SEQ_LEN >= 1"
         self.inner = Self.Inner()
 
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        comptime assert Self.SEQ_LEN >= 1, "Tokenwise requires SEQ_LEN >= 1"
+        self.inner = Self.Inner.make[target, INIT](ctx)
+
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        var t = Self()
-        t.inner = Self.Inner.make[target, INIT](ctx)
-        return t^
+        return Self.__init__[target, INIT](ctx=ctx)
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         """Forward runtime attrs into the wrapped module. Without this the
