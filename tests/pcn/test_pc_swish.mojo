@@ -158,7 +158,12 @@ def main() raises:
                 max_err_gpu = efp
         print("GPU vs CPU max abs diff:", max_err_gpu, " (tol", TOL, ")")
         if max_err_gpu > TOL:
-            print("FAIL: GPU diverges from CPU")
-            return
+            # ⚠ RAISE, NEVER `return`: `scripts/run_tests.sh` reads the EXIT
+            # CODE and nothing else, so a printed FAIL followed by a normal
+            # return is reported by the manifest as a PASS.
+            raise (
+                String("pc_swish: GPU diverges from CPU by ")
+                + String(max_err_gpu)
+            )
 
     print("\n=== PASS ===")

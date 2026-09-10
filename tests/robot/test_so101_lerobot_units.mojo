@@ -207,3 +207,8 @@ def main() raises:
     else:
         print("FAIL —", failures, "rows")
     print("=" * 70)
+    # ⚠⚠ THE RAISE IS THE GATE, AND THIS FILE IS IN `smoke.txt`.
+    # `scripts/run_tests.sh` reads the EXIT CODE and nothing else, so until
+    # this landed the gate could not turn the smoke tier red.
+    if failures != 0:
+        raise String("so101 lerobot units: ") + String(failures) + " rows differ"

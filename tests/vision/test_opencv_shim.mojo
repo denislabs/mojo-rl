@@ -652,3 +652,16 @@ def main() raises:
     else:
         print("FAIL —", failures, "of", checks, "checks")
     print("=" * 70)
+    # ⚠⚠ THE RAISE IS THE GATE, AND ITS ABSENCE MADE THIS FILE BLIND.
+    # `scripts/run_tests.sh` reads the EXIT CODE and nothing else, so printing
+    # "FAIL" and returning normally was reported by the manifest as a PASS —
+    # for all 36 checks, including the six injected defects this shim's scope
+    # document records as having "gone red". They went red on the CONSOLE.
+    if failures != 0:
+        raise (
+            String("opencv shim: ")
+            + String(failures)
+            + " of "
+            + String(checks)
+            + " checks failed"
+        )

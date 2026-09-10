@@ -93,6 +93,6 @@ def main() raises:
     print("state_accessors_checksum =", checksum)
     print("alias_ok =", alias_ok)
     if not alias_ok:
-        print("FAIL: offset views do not alias state")
-        return
+        # ⚠ RAISE, NEVER `return` — the runner reads the exit code only.
+        raise String("state accessors: offset views do not alias state")
     print("PhysicsStateOwned accessors smoke: OK")

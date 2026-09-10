@@ -62,18 +62,31 @@ def main() raises:
     # count should have advanced by N_BATCHES * BATCH from the 1e3 prior.
     var expected_count = 1e3 + Float64(N_BATCHES * BATCH)
     if abs(stats.host_count - expected_count) > 1e-3:
-        print("FAIL: count", stats.host_count, "!=", expected_count)
-        return
+        # ⚠ RAISE, NEVER `return` — the runner reads the exit code only.
+        raise (
+            String("obs_norm: count ")
+            + String(stats.host_count)
+            + " != "
+            + String(expected_count)
+        )
 
     # Mean for dim d across all data = mean over (e in 0..BATCH, it in 0..N) of
     # (e + d + it). E[e]=3.5, E[it]=1.0 -> per-dim mean contribution ~ 4.5 + d,
     # but blended with the 1e3 count_prior(mean 0) it stays small/positive.
     for d in range(OBS_DIM):
         if stats.host_mean[d] <= 0.0:
-            print("FAIL: mean[", d, "] not positive:", stats.host_mean[d])
-            return
+            raise (
+                String("obs_norm: mean[")
+                + String(d)
+                + "] not positive: "
+                + String(stats.host_mean[d])
+            )
         if stats.host_var[d] <= 0.0:
-            print("FAIL: var[", d, "] not positive:", stats.host_var[d])
-            return
+            raise (
+                String("obs_norm: var[")
+                + String(d)
+                + "] not positive: "
+                + String(stats.host_var[d])
+            )
 
     print("ObsNormStats GPU smoke: OK")

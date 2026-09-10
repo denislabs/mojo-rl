@@ -156,3 +156,10 @@ def main() raises:
     else:
         print("FAIL —", failures, "checks")
     print("=" * 70)
+    # ⚠⚠ THE RAISE IS THE GATE, AND ITS ABSENCE MADE THIS FILE BLIND.
+    # `scripts/run_tests.sh` reads the EXIT CODE and nothing else, so printing
+    # "FAIL" and returning normally was reported by the manifest as a PASS.
+    # The injected defects in `docs/OPENCV_SHIM_SCOPE.md` were read off the
+    # console by a human; through the runner they would all have been green.
+    if failures != 0:
+        raise String("act preprocess: ") + String(failures) + " checks failed"

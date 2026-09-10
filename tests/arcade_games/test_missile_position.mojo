@@ -62,3 +62,5 @@ def main() raises:
         print("PASS: cycle missile position tracks eol within 1px across sweep")
     else:
         print("FAILED: " + String(fails) + " positions drift >1px")
+        # ⚠ THE RAISE IS THE GATE — the runner reads the exit code only.
+        raise String(fails) + " missile positions drift >1px"

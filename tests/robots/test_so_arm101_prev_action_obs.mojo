@@ -146,3 +146,5 @@ def main() raises:
         print("  both devices, at the same step index, and a reset clears it.")
     else:
         print("  ", fails, "FAILURE(S)")
+        # ⚠ THE RAISE IS THE GATE — the runner reads the exit code only.
+        raise String("prev-action obs: ") + String(fails) + " failure(s)"
