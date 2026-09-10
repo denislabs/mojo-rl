@@ -429,20 +429,31 @@ def main() raises:
 #   B4  policy: `last` has no rate limit           -> check 3
 #   B5  policy: `step_` allowed without keep_every -> check 3
 #   B6  policy: `step_` refused even WITH it       -> check 4
-#   B7  close() does not wait (drain_ms = 0)       -> check 5 (needs the
-#                                                      SLOW fixture; see below)
+#   B7  close() waits 1 ms, not its budget         -> checks 1 and 5
 #   B8  a failed upload is not counted             -> check 6
 #   B9  report() omits abandoned/dropped           -> check 6 (needs ALL
 #                                                      five counts asserted)
 #   B10 a failure latches the whole sink dead      -> check 7
 #   B11 offer() queues even when disabled          -> check 8
 #
-# ⚠⚠ B7 AND B9 SURVIVED THE FIRST SWEEP, and checks 5 and 6 were rewritten
-# because of it — neither failure was visible by reading. Check 5 held because
-# the worker had already finished before `close()` was called, so it measured
-# nothing; check 6 asked whether the report said "failed" and a report that
-# dropped `abandoned` and `dropped` still said it. A check whose outcome does
-# not depend on the code under test is not a gate.
+# ⚠⚠ B7 AND B9 SURVIVED THE FIRST SWEEP, and the two causes were DIFFERENT —
+# which is the reason to write both down rather than just re-running.
+#
+#   B9 was a weak CHECK. It asked whether the report said "failed", so a
+#   report that had silently dropped `abandoned` and `dropped` still passed —
+#   and those two are precisely the artifacts still sitting only on this box.
+#   All five counts are asserted now.
+#
+#   B7 was a wrong MUTANT, twice over. `stop(drain_ms)` mutated to `stop(0)`
+#   does not mean "do not wait": `worker.mojo` documents 0 as UNLIMITED, so it
+#   expressed "wait forever" and the check was right all along. `stop(1)` is
+#   the real defect, and it dies at check 1. Separately, check 5 WAS vacuous
+#   until the fixture could be slow — over loopback the worker had finished
+#   before close() was called, so it measured nothing.
+#
+# A surviving mutant is a question, not a verdict: it can mean the check is
+# blind, or that the mutant does not express the defect. Assuming the first
+# would have led to weakening a gate that was already correct.
 #
 # ⚠ B2 IS NOT GATED AND THAT IS RECORDED RATHER THAN PAPERED OVER. Which
 # `kind` survives a collapse is unobservable from the fixture's log, because
