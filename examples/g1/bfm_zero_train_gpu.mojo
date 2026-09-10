@@ -287,6 +287,7 @@ def _upload_floats(ctx: DeviceContext, xs: List[Int]) raises -> Tensor:
 
 def main() raises:
     var smoke = _has("--smoke")
+    var no_graph = _has("--no-graph")
     var total_env_steps = atol(_flag(String("--steps"), String(192_000_000)))
     if smoke:
         total_env_steps = N_ENVS * 40
@@ -536,7 +537,13 @@ def main() raises:
         agent.record_batch_gpu[N_ENVS](ctx, prev_obs, env._action, reward0, env._obs, done0)
 
         if env_steps >= SEED_STEPS:
-            maybe_capture_replay[_captured_updates](train_graph, ctx)
+            if no_graph:
+                # `--no-graph`: the 16 updates as plain launches, so
+                # `MODULAR_DEBUG=device-sync-mode` can name a faulting kernel
+                # (a graph replay reports its fault only at the next check)
+                _captured_updates()
+            else:
+                maybe_capture_replay[_captured_updates](train_graph, ctx)
             for _ in range(ups):
                 agent.note_train_update()
 
