@@ -78,6 +78,54 @@ def g1_skeleton_body(i: Int) -> Int:
 
 
 @always_inline
+def g1_atan2f(y: Float32, x: Float32) -> Float32:
+    """`atan2` in float32 with no libm call — Cephes `atan2f`, so it lowers
+    on every target.
+
+    ⚠ THE STDLIB'S `atan2` IS A LIBM SYMBOL. On NVIDIA it reaches ptxas as an
+    unresolved `atan2f` (the 5090 GPU-vs-CPU gate at obs 527 died there,
+    2026-09-10); `sin`/`cos`/`sqrt` have device lowerings, `atan2` does
+    not. Cephes' single-precision routine: reduce to |t| ≤ tan(π/8) by the
+    two identities, a degree-9 odd polynomial, the quadrant from the signs.
+    Worst error against libm over the circle 3e-7 rad (gated in
+    `test_unitree_g1_privileged_obs`), which is float32's own resolution
+    of an angle near π. `(0, 0)` returns 0, as `torch.atan2` does.
+    """
+    comptime PIO2: Float32 = 1.5707963267948966
+    comptime PIO4: Float32 = 0.7853981633974483
+    comptime PI: Float32 = 3.141592653589793
+    if x == Float32(0):
+        if y == Float32(0):
+            return Float32(0)
+        return PIO2 if y > Float32(0) else -PIO2
+    if y == Float32(0):
+        return Float32(0) if x > Float32(0) else PI
+    var t = y / x
+    var neg = t < Float32(0)
+    if neg:
+        t = -t
+    var base: Float32
+    if t > Float32(2.414213562373095):
+        base = PIO2
+        t = Float32(-1) / t
+    elif t > Float32(0.4142135623730950):
+        base = PIO4
+        t = (t - Float32(1)) / (t + Float32(1))
+    else:
+        base = Float32(0)
+    var z = t * t
+    var a = base + (
+        ((Float32(8.05374449538e-2) * z - Float32(1.38776856032e-1)) * z
+         + Float32(1.99777106478e-1)) * z - Float32(3.33329491539e-1)
+    ) * z * t + t
+    if neg:
+        a = -a
+    if x < Float32(0):
+        a = a + (PI if y >= Float32(0) else -PI)
+    return a
+
+
+@always_inline
 def g1_heading_inv[
     DTYPE: DType
 ](
@@ -91,8 +139,10 @@ def g1_heading_inv[
     # The transcendental at a concrete float width chosen at compile time:
     # `atan2` wants a proof that DTYPE is floating point, which a generic
     # parameter cannot give, and Metal kernels cannot carry a double at all
-    # (`air.sin.f64` fails IR verification) — so float64 lanes compute in
-    # float64 and every other dtype in float32, with nothing left generic.
+    # (`air.sin.f64` fails IR verification) — so float64 lanes (CPU only)
+    # compute in float64 through libm, and every other dtype in float32
+    # through `g1_atan2f`, which has no libm call to leave unresolved on a
+    # device (`sin`/`cos` lower on every target; `atan2` does not).
     comptime if DTYPE == DType.float64:
         var heading = atan2(Float64(d[1]), Float64(d[0]))
         var half = -0.5 * heading
@@ -101,7 +151,7 @@ def g1_heading_inv[
             Scalar[DTYPE](sin(half)), Scalar[DTYPE](cos(half)),
         )
     else:
-        var heading32 = atan2(Float32(d[1]), Float32(d[0]))
+        var heading32 = g1_atan2f(Float32(d[1]), Float32(d[0]))
         var half32 = Float32(-0.5) * heading32
         return (
             Scalar[DTYPE](0), Scalar[DTYPE](0),

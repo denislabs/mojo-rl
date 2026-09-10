@@ -30,7 +30,7 @@ velocities, not the reference's finite differences.
 ⚠ RUN FROM THE REPO ROOT, like every gate that loads `unitree_g1.xml`.
 """
 
-from std.math import abs, sin
+from std.math import abs, sin, cos, atan2
 from std.os import getenv
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -42,7 +42,7 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_STATE_DIM, UNITREE_G1_OBS_DIM,
 )
 from mojo_rl.envs.robots.unitree_g1_priv_obs import (
-    G1_N_SKELETON, G1_PRIV_DIM, g1_skeleton_body,
+    G1_N_SKELETON, G1_PRIV_DIM, g1_skeleton_body, g1_atan2f,
 )
 
 
@@ -153,6 +153,48 @@ def test_privileged_obs_matches_reference_function() raises:
     assert_true(n_rows >= 50, "too few rows to gate anything")
     assert_true(worst_set < TOL, "privileged obs after set_state differs by " + String(worst_set))
     assert_true(worst_step < TOL, "privileged obs after a step differs by " + String(worst_step))
+
+
+def test_device_atan2_matches_libm() raises:
+    """`g1_atan2f` (the device path's heading) against the stdlib's `atan2`
+    around the whole circle at four radii, plus the axes and the origin:
+    worst error below 5e-7 rad, float32's own resolution near π."""
+    var worst = 0.0
+    var n = 0
+    for k in range(4):
+        var r: Float32
+        if k == 0:
+            r = Float32(1e-3)
+        elif k == 1:
+            r = Float32(1.0)
+        elif k == 2:
+            r = Float32(37.5)
+        else:
+            r = Float32(1e4)
+        for i in range(200001):
+            var ang = Float64(i) / 200000.0 * 2.0 * 3.141592653589793 - 3.141592653589793
+            var y = Float32(Float64(r) * sin(ang))
+            var x = Float32(Float64(r) * cos(ang))
+            var got = Float64(g1_atan2f(y, x))
+            var want = atan2(Float64(y), Float64(x))
+            var e = abs(got - want)
+            if e > 6.0:
+                e = abs(e - 2.0 * 3.141592653589793)   # ±π at the branch cut
+            if e > worst:
+                worst = e
+            n += 1
+    var axes = List[Float32]()
+    axes.append(Float32(1)); axes.append(Float32(0))
+    axes.append(Float32(0)); axes.append(Float32(1))
+    axes.append(Float32(-1)); axes.append(Float32(0))
+    axes.append(Float32(0)); axes.append(Float32(-1))
+    for k in range(4):
+        var e = abs(Float64(g1_atan2f(axes[2 * k + 1], axes[2 * k])) - atan2(Float64(axes[2 * k + 1]), Float64(axes[2 * k])))
+        if e > worst:
+            worst = e
+    assert_true(g1_atan2f(Float32(0), Float32(0)) == Float32(0), "atan2(0, 0) is 0, as torch")
+    print("  g1_atan2f vs libm: worst", worst, "rad over", n + 4, "points")
+    assert_true(worst < 5e-7, "device atan2 differs from libm by " + String(worst))
 
 
 def main() raises:
