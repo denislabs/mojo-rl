@@ -330,6 +330,12 @@ tests/concurrent/test_worker.mojo
 
 tests/io/test_sha256.mojo
 tests/io/test_http_sink.mojo
+# The §7b heartbeat, against a RECORDING fixture rather than a status code:
+# the questions are WHEN and HOW OFTEN, which no status can express. The
+# decisive leg is that a BUSY run sends ZERO pings — a "did it fire?" check
+# passes just as happily for a worker that pings every millisecond, so the
+# interval has an upper bound too. Needs `pixi run build-http`.
+tests/io/test_http_sink_heartbeat.mojo
 # A run's END is a signal it sends, and its START is not its first metric.
 # Offline like test_http_sink beside it: routes and payloads by value, plus the
 # idempotence latches and the inertness that a `close()` which now POSTs could

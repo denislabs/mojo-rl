@@ -55,6 +55,7 @@ three payloads, versus 5.0 s for eight with the latch
 """
 
 from std.memory import ArcPointer, Pointer, unsafe_memcpy
+from std.time import perf_counter_ns
 
 from ..core.concurrent.block import SharedBlock
 from ..core.concurrent.ring import SharedRing
@@ -83,10 +84,22 @@ comptime STAT_DEAD: Int = 4
 """1 once the worker has given up. See the class warning."""
 comptime STAT_NO_SHIM: Int = 5
 """1 if `libmrl_http` was missing when the worker started."""
+comptime STAT_PINGS: Int = 6
+"""Heartbeats this worker sent of its own accord. ⚠ REPORT THIS BESIDE `sent()`:
+a run whose only traffic is pings is silent for a reason worth knowing."""
 comptime STAT_CELLS: Int = 8
 
 
 comptime DEFAULT_CAPACITY: Int = 16
+comptime DEFAULT_PING_INTERVAL_MS: Int = 60_000
+"""How long the worker stays silent before saying "still here".
+
+⚠ THIS IS THE CLOCK'S RESOLUTION, NOT ITS THRESHOLD. The server calls a run
+`stale` after ~3 min and `lost` after 30 — three missed pings and ten times
+that. One minute is chosen so that a legitimate silence (an eval pass, a ~15
+minute physics3d kernel build on the 5090) never approaches even the first
+boundary."""
+
 comptime DEFAULT_SLOT_BYTES: Int = 256 * 1024
 """256 KB per slot. A `RemoteLogger` flush of 200 metrics is ~20 KB, so this
 has generous headroom; an over-long payload is refused and counted in
@@ -117,6 +130,14 @@ struct HttpPostWorker(BackgroundWorker):
     var dead: Bool
     """Latched on the first failure. Thread-local: only this thread reads or
     writes it, and it is mirrored into `STAT_DEAD` for the owner."""
+    var ping_url: String
+    """Empty disables the heartbeat entirely. A sink with no run to speak for
+    must stay a pure queue."""
+    var ping_body: String
+    var ping_interval_ns: Int64
+    var last_send_ns: Int64
+    """When this thread last put bytes on the wire, successfully or not.
+    Thread-local, like `dead` — nobody else reads it."""
 
     def __init__(
         out self,
@@ -124,6 +145,9 @@ struct HttpPostWorker(BackgroundWorker):
         stats: SharedBlock,
         api_key: String,
         timeout_ms: Int,
+        ping_url: String = String(""),
+        ping_body: String = String("{}"),
+        ping_interval_ms: Int = DEFAULT_PING_INTERVAL_MS,
     ):
         self.ring = ring
         self.stats = stats
@@ -131,6 +155,10 @@ struct HttpPostWorker(BackgroundWorker):
         self.timeout_ms = timeout_ms
         self.client = None
         self.dead = False
+        self.ping_url = ping_url
+        self.ping_body = ping_body
+        self.ping_interval_ns = Int64(ping_interval_ms) * 1_000_000
+        self.last_send_ns = 0
 
     def __init__(out self, *, deinit move: Self):
         self.ring = move.ring
@@ -139,8 +167,16 @@ struct HttpPostWorker(BackgroundWorker):
         self.timeout_ms = move.timeout_ms
         self.client = move.client^
         self.dead = move.dead
+        self.ping_url = move.ping_url^
+        self.ping_body = move.ping_body^
+        self.ping_interval_ns = move.ping_interval_ns
+        self.last_send_ns = move.last_send_ns
 
     def on_start(mut self, ctl: WorkerCtl):
+        # The heartbeat is measured from the START of the run, not from zero:
+        # otherwise the first `poll` would find itself infinitely overdue and
+        # ping before the registration it is supposed to follow.
+        self.last_send_ns = Int64(perf_counter_ns())
         if not http_shim_available():
             self.dead = True
             self.stats.release_store(STAT_NO_SHIM, Int64(1))
@@ -158,7 +194,7 @@ struct HttpPostWorker(BackgroundWorker):
     def poll(mut self, ctl: WorkerCtl) -> Int:
         var claim = self.ring.begin_pop()
         if not claim.ok():
-            return POLL_IDLE
+            return self._maybe_ping(ctl)
 
         # Discard rather than try, when trying cannot help or cannot finish.
         if self.dead or not self.client or ctl.drain_deadline_passed():
@@ -175,6 +211,11 @@ struct HttpPostWorker(BackgroundWorker):
             self.ring.end_pop()
             return POLL_DID_WORK
 
+        # ⚠ THE HEARTBEAT'S STAMP MOVES ON EVERY REAL SEND. A run that is
+        # logging has already proved it is alive; a ping on top of that is a
+        # POST that says nothing new. This one line is the difference between
+        # a stamp and a free-running timer.
+        self.last_send_ns = Int64(perf_counter_ns())
         try:
             var r = self.client.value().post_json(url, body)
             self.stats.release_store(STAT_LAST_STATUS, Int64(r.status))
@@ -193,6 +234,57 @@ struct HttpPostWorker(BackgroundWorker):
             self.stats.release_store(STAT_DEAD, Int64(1))
 
         self.ring.end_pop()
+        return POLL_DID_WORK
+
+    def _maybe_ping(mut self, ctl: WorkerCtl) -> Int:
+        """The §7b heartbeat, sent from the idle branch of the poll loop.
+
+        ⚠⚠ IT IS POSTED DIRECTLY, NOT PUSHED ONTO THE RING. `SharedRing` is
+        SPSC and this thread is its CONSUMER; a producer here would be a second
+        writer against a queue whose whole correctness argument is that there
+        is one. So the ping goes straight out through the client this thread
+        already owns — which is also why it can only happen while the ring is
+        empty, and therefore can never reorder ahead of a metric batch.
+
+        ⚠ IT IS A STAMP COMPARISON, NOT A TIMEOUT. `worker.mojo`'s loop is a
+        1 ms poll with nothing to parameterise, so there is no blocking wait to
+        shorten. This costs one `perf_counter_ns` per idle lap and adds no
+        argument to `BackgroundThread`, which four other things depend on.
+
+        ⚠ THE STAMP MOVES ON EVERY ATTEMPT, INCLUDING FAILURES. Otherwise a
+        dashboard answering 500 would be pinged every millisecond forever.
+
+        Returns `POLL_IDLE` when it sends nothing, which is the ring's true
+        state and what lets a stopping worker conclude it has drained.
+        """
+        if self.ping_url.byte_length() == 0:
+            return POLL_IDLE
+        if self.dead or not self.client:
+            return POLL_IDLE
+        # A run that is shutting down has nothing to prove about being alive,
+        # and `close()` has already queued the finish that says so properly.
+        if ctl.should_stop():
+            return POLL_IDLE
+        var now = Int64(perf_counter_ns())
+        if now - self.last_send_ns < self.ping_interval_ns:
+            return POLL_IDLE
+
+        self.last_send_ns = now
+        try:
+            var r = self.client.value().post_json(self.ping_url, self.ping_body)
+            self.stats.release_store(STAT_LAST_STATUS, Int64(r.status))
+            if r.ok():
+                _ = self.stats.fetch_add(STAT_PINGS, Int64(1))
+            else:
+                _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+        except:
+            self.stats.release_store(STAT_LAST_STATUS, Int64(-1))
+            _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+            self.dead = True
+            self.stats.release_store(STAT_DEAD, Int64(1))
+        # ⚠ POLL_DID_WORK, NOT POLL_IDLE: the loop must take another lap to
+        # find the ring genuinely empty. Reporting idle here would be true of
+        # the ring but would also skip the 1 ms sleep, spinning a core.
         return POLL_DID_WORK
 
     def on_stop(mut self, ctl: WorkerCtl):
@@ -283,6 +375,9 @@ struct HttpPostSink(ImplicitlyCopyable, Movable):
         timeout_ms: Int = 5000,
         capacity: Int = DEFAULT_CAPACITY,
         slot_bytes: Int = DEFAULT_SLOT_BYTES,
+        ping_url: String = String(""),
+        ping_body: String = String("{}"),
+        ping_interval_ms: Int = DEFAULT_PING_INTERVAL_MS,
     ) raises:
         """Allocate the queue and START THE THREAD.
 
@@ -297,7 +392,15 @@ struct HttpPostSink(ImplicitlyCopyable, Movable):
         self._stats.release_store(STAT_LAST_STATUS, Int64(0))
         self._bg = ArcPointer(
             BackgroundThread(
-                HttpPostWorker(self._ring, self._stats, api_key, timeout_ms)
+                HttpPostWorker(
+                    self._ring,
+                    self._stats,
+                    api_key,
+                    timeout_ms,
+                    ping_url,
+                    ping_body,
+                    ping_interval_ms,
+                )
             )
         )
         self._closed = ArcPointer(False)
@@ -360,6 +463,11 @@ struct HttpPostSink(ImplicitlyCopyable, Movable):
     def last_status(self) -> Int:
         """Status of the last completed POST; -1 for a transport error."""
         return Int(self._stats.acquire_load(STAT_LAST_STATUS))
+
+    @always_inline
+    def pings(self) -> Int:
+        """Heartbeats the worker sent because nothing else was queued."""
+        return Int(self._stats.acquire_load(STAT_PINGS))
 
     @always_inline
     def dead(self) -> Bool:

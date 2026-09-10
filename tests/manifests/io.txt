@@ -80,6 +80,12 @@ tests/io/test_resize_nearest.mojo
 # hold the process open. Delivery against a live dashboard is validated by
 # running a real job — see docs/CONCURRENCY_BACKBONE.md step 2.
 tests/io/test_http_sink.mojo
+# The §7b heartbeat, against a RECORDING fixture rather than a status code:
+# the questions are WHEN and HOW OFTEN, which no status can express. The
+# decisive leg is that a BUSY run sends ZERO pings — a "did it fire?" check
+# passes just as happily for a worker that pings every millisecond, so the
+# interval has an upper bound too. Needs `pixi run build-http`.
+tests/io/test_http_sink_heartbeat.mojo
 
 # ── abandoning an ffmpeg decode mid-file ──────────────────────────────
 # The importer rolls over to the next episode without draining the mp4, so a

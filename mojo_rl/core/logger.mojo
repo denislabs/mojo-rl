@@ -591,6 +591,24 @@ struct RemoteLogger(Logger):
         """
         return self._runs_url() + "/" + self.run_id + "/finish"
 
+    def _ping_url(self) -> String:
+        """`/runs/<id>/ping` — see `_finish_url` on why the id is interpolated.
+
+        ⚠⚠ THE HEARTBEAT IS WHAT MAKES A SIGKILLED RUN KNOWABLE. `finish` covers
+        a clean end and `status=killed` covers a Ctrl-C that reaches `close()`;
+        neither runs for an OOM, a released instance, or a power cut. Those the
+        server can only conclude from silence, and it can only do that if
+        silence means something — which is what this route establishes.
+        """
+        return self._runs_url() + "/" + self.run_id + "/ping"
+
+    def _ping_payload(self) raises -> String:
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("run_id"), self.run_id)
+        w.end_object()
+        return w.done()
+
     def _finish_payload(
         self, status: String, outcome: String
     ) raises -> String:
@@ -634,8 +652,17 @@ struct RemoteLogger(Logger):
         """
         try:
             if not self._sink:
+                # ⚠ THE HEARTBEAT IS CONFIGURED HERE, at the one place the sink
+                # is built, because the thread reads its ping URL once at start
+                # and never again. A run with no `server_url` never reaches
+                # this line, so it never acquires a heartbeat either.
                 self._sink = Optional(
-                    HttpPostSink(api_key=self.api_key, timeout_ms=5000)
+                    HttpPostSink(
+                        api_key=self.api_key,
+                        timeout_ms=5000,
+                        ping_url=self._ping_url(),
+                        ping_body=self._ping_payload(),
+                    )
                 )
             _ = self._sink.value().post(url, payload)
         except e:
@@ -677,7 +704,9 @@ struct RemoteLogger(Logger):
         if not self._sink:
             return String("")
         var s = self._sink.value()
-        var total = s.sent() + s.failed() + s.dropped() + s.abandoned()
+        var total = (
+            s.sent() + s.failed() + s.dropped() + s.abandoned() + s.pings()
+        )
         if total == 0:
             return String("")
         return (
@@ -690,6 +719,11 @@ struct RemoteLogger(Logger):
             + " dropped (queue full), "
             + String(s.abandoned())
             + " abandoned at close"
+            + (
+                ", " + String(s.pings()) + " heartbeats"
+                if s.pings() > 0
+                else String("")
+            )
         )
 
     def total_logged(self) -> Int:
