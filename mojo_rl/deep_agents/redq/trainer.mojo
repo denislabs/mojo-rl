@@ -27,6 +27,7 @@ trait-default no-ops).
 Dimensions (OBS / ACT / BATCH) derive from `SAMPLE`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -877,10 +878,9 @@ struct REDQTrainer[
     def save_state(mut self, path: String) raises:
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
+        walk_params[Self.train_target](self.actor, w, self.ctx, "actor")
         for i in range(Self.N):
-            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
-                w, self.ctx, "critic" + String(i)
+            walk_params[Self.train_target](self.ensemble.pairs[i].online, w, self.ctx, "critic" + String(i)
             )
         w.mode = 1
         self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
@@ -903,10 +903,9 @@ struct REDQTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
+        walk_params[Self.train_target](self.actor, r, self.ctx, "actor")
         for i in range(Self.N):
-            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
-                r, self.ctx, "critic" + String(i)
+            walk_params[Self.train_target](self.ensemble.pairs[i].online, r, self.ctx, "critic" + String(i)
             )
         r.mode = 1
         self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")

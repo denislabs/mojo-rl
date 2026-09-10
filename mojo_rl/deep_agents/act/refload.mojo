@@ -37,7 +37,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRT
 
 
 struct RefDump(Movable & Deinitable):
@@ -137,7 +137,7 @@ struct RefDump(Movable & Deinitable):
         return out^
 
 
-struct LoadRefParams[PREFIX: StaticString](ParamVisitor):
+struct LoadRefParams[PREFIX: StaticString](ParamVisitor, ParamVisitorRT):
     """`ParamVisitor` filling each param from `<PREFIX><dotted name>`.
 
     Records what it touched so the caller can assert full coverage. A param the
@@ -160,9 +160,31 @@ struct LoadRefParams[PREFIX: StaticString](ParamVisitor):
         self.loaded = move.loaded^
         self.missing = move.missing^
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        var key = String(Self.PREFIX) + name
+        if not self.dump.has(key):
+            self.missing.append(key^)
+            return
+        var vals = self.dump.get(key)
+        if len(vals) != n:
+            raise Error(
+                "LoadRefParams: '" + key + "' has " + String(len(vals))
+                + " values but the param holds " + String(n)
+            )
+        _fill(param, vals, ctx)
+        self.loaded.append(key^)
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -172,20 +194,7 @@ struct LoadRefParams[PREFIX: StaticString](ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        var key = String(Self.PREFIX) + name
-        if not self.dump.has(key):
-            self.missing.append(key^)
-            return
-        var vals = self.dump.get(key)
-        if len(vals) != N:
-            raise Error(
-                "LoadRefParams: '" + key + "' has " + String(len(vals))
-                + " values but the param holds " + String(N)
-            )
-        _fill(param, vals, ctx)
-        self.loaded.append(key^)
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 struct LoadPrefixedParams[GRAPH_PREFIX: StaticString, DUMP_PREFIX: StaticString](
     ParamVisitor
 ):
@@ -227,15 +236,14 @@ struct LoadPrefixedParams[GRAPH_PREFIX: StaticString, DUMP_PREFIX: StaticString]
         self.missing = move.missing^
         self.skipped = move.skipped
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -250,15 +258,25 @@ struct LoadPrefixedParams[GRAPH_PREFIX: StaticString, DUMP_PREFIX: StaticString]
             self.missing.append(key^)
             return
         var vals = self.dump.get(key)
-        if len(vals) != N:
+        if len(vals) != n:
             raise Error(
                 "LoadPrefixedParams: '" + key + "' has " + String(len(vals))
-                + " values but the param holds " + String(N)
+                + " values but the param holds " + String(n)
             )
         _fill(param, vals, ctx)
         self.loaded.append(key^)
 
-
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def _fill(
     mut param: Tensor,
     ref vals: List[Scalar[DT]],
@@ -278,7 +296,7 @@ def _fill(
         param.upload_resident(ctx.value())
 
 
-struct ListParams(ParamVisitor):
+struct ListParams(ParamVisitor, ParamVisitorRT):
     """Collects `(name, size)` for every param — used to author the dump's name
     mapping and to check it stays in step."""
 
@@ -293,9 +311,21 @@ struct ListParams(ParamVisitor):
         self.names = move.names^
         self.sizes = move.sizes^
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.names.append(String(name))
+        self.sizes.append(n)
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -305,9 +335,7 @@ struct ListParams(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        self.names.append(String(name))
-        self.sizes.append(N)
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
     def show(self) raises:
         for i in range(len(self.names)):
             print("  " + self.names[i] + "\t" + String(self.sizes[i]))

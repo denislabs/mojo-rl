@@ -36,7 +36,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRef
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.call import call_forward, call_vjp
@@ -362,7 +362,8 @@ struct Dreamer4Agent[
         mut w: BinaryCheckpointWriter, mut m: M, ctx: Optional[DeviceContext]
     ) raises:
         w.mode = 0
-        m.for_each_param[tgt](w, ctx)
+        var _ref1 = ParamVisitorRef.of[type_of(w), tgt](w)
+        m.for_each_param[tgt](_ref1, ctx)
         w.mode = 1
         m.for_each_state[tgt](w, ctx)
 
@@ -371,7 +372,8 @@ struct Dreamer4Agent[
         mut r: BinaryCheckpointReader, mut m: M, ctx: Optional[DeviceContext]
     ) raises:
         r.mode = 0
-        m.for_each_param[tgt](r, ctx)
+        var _ref2 = ParamVisitorRef.of[type_of(r), tgt](r)
+        m.for_each_param[tgt](_ref2, ctx)
         r.mode = 1
         m.for_each_state[tgt](r, ctx)
 
@@ -389,7 +391,8 @@ struct Dreamer4Agent[
             Self._wsec[TOK, "cpu"](w, tok, None)
             Self._wsec[Self.DYN, "cpu"](w, self.dyn, None)
         w.mode = 0                          # te: param-only (no state section)
-        self.te.for_each_param["cpu"](w, None)
+        var _ref3 = ParamVisitorRef.of[type_of(w), "cpu"](w)
+        self.te.for_each_param["cpu"](_ref3, None)
         Self._wsec[Self.PH, "cpu"](w, self.ph, None)
         Self._wsec[Self.RH, "cpu"](w, self.rh, None)
         Self._wsec[Self.VH, "cpu"](w, self.vh, None)
@@ -411,7 +414,8 @@ struct Dreamer4Agent[
             Self._rsec[TOK, "cpu"](r, tok, None)
             Self._rsec[Self.DYN, "cpu"](r, self.dyn, None)
         r.mode = 0                          # te: param-only
-        self.te.for_each_param["cpu"](r, None)
+        var _ref4 = ParamVisitorRef.of[type_of(r), "cpu"](r)
+        self.te.for_each_param["cpu"](_ref4, None)
         Self._rsec[Self.PH, "cpu"](r, self.ph, None)
         Self._rsec[Self.RH, "cpu"](r, self.rh, None)
         Self._rsec[Self.VH, "cpu"](r, self.vh, None)

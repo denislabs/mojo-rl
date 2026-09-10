@@ -26,6 +26,7 @@ This is the driver the online CarRacing lighthouse calls; a stub-env smoke gate
 lives in `tests/nn/test_dreamer4_train_online.mojo`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.os.path import exists
 from std.math import sqrt, log, cos
 from max.gpu.host import DeviceContext
@@ -720,10 +721,10 @@ def run_online_dreamer4[
                 # params with the Adam visitor directly.
                 dopt.step["gpu"](agent.dyn, dctx)
                 hopt.begin_step()
-                agent.ph.for_each_param["cpu"](hopt, None)
-                agent.rh.for_each_param["cpu"](hopt, None)
-                agent.te.for_each_param["cpu"](hopt, None)
-                agent.ph_prior.for_each_param["cpu"](hopt, None)  # BC anchor
+                walk_params["cpu"](agent.ph, hopt, None)
+                walk_params["cpu"](agent.rh, hopt, None)
+                walk_params["cpu"](agent.te, hopt, None)
+                walk_params["cpu"](agent.ph_prior, hopt, None)  # BC anchor
                 last_video = losses[0]
                 last_bc = losses[1]
 
@@ -788,8 +789,8 @@ def run_online_dreamer4[
                 # value + policy heads under a SINGLE iopt advance (see WM
                 # note in the gpu branch).
                 iopt.begin_step()
-                agent.vh.for_each_param["cpu"](iopt, None)
-                agent.ph.for_each_param["cpu"](iopt, None)
+                walk_params["cpu"](agent.vh, iopt, None)
+                walk_params["cpu"](agent.ph, iopt, None)
                 last_v = il[0]
                 last_p = il[1]
             else:
@@ -804,8 +805,8 @@ def run_online_dreamer4[
                 )
                 # value + policy heads under a SINGLE iopt advance (see WM note).
                 iopt.begin_step()
-                agent.vh.for_each_param["cpu"](iopt, None)
-                agent.ph.for_each_param["cpu"](iopt, None)
+                walk_params["cpu"](agent.vh, iopt, None)
+                walk_params["cpu"](agent.ph, iopt, None)
                 last_v = il[0]
                 last_p = il[1]
             did_imag = True

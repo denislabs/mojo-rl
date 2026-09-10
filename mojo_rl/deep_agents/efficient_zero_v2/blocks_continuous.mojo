@@ -22,6 +22,7 @@ owned-Tensor scratch, TensorRefs forward/vjp, per-net clip_grad_norm + begin_ste
 + for_each_param). The persistent device scratch is `EZV2UnrollContScratch`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu import global_idx
@@ -320,19 +321,19 @@ def ezv2_unroll_train_step_continuous_cpu[
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
     _ = clip_grad_norm["cpu", PRED](pred, Scalar[DT](max_grad_norm), None)
     opred.begin_step()
-    pred.for_each_param["cpu"](opred, None)
+    walk_params["cpu"](pred, opred, None)
     _ = clip_grad_norm["cpu", DYN](dyn, Scalar[DT](max_grad_norm), None)
     odyn.begin_step()
-    dyn.for_each_param["cpu"](odyn, None)
+    walk_params["cpu"](dyn, odyn, None)
     _ = clip_grad_norm["cpu", REP](rep, Scalar[DT](max_grad_norm), None)
     orep.begin_step()
-    rep.for_each_param["cpu"](orep, None)
+    walk_params["cpu"](rep, orep, None)
     _ = clip_grad_norm["cpu", PROJM](proj, Scalar[DT](max_grad_norm), None)
     oproj.begin_step()
-    proj.for_each_param["cpu"](oproj, None)
+    walk_params["cpu"](proj, oproj, None)
     _ = clip_grad_norm["cpu", PREDH](predh, Scalar[DT](max_grad_norm), None)
     opredh.begin_step()
-    predh.for_each_param["cpu"](opredh, None)
+    walk_params["cpu"](predh, opredh, None)
 
     if loss_parts:
         var lp = loss_parts.value()
@@ -686,15 +687,15 @@ def ezv2_unroll_train_step_continuous_gpu[
 
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
     _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
-    opred.begin_step(); pred.for_each_param["gpu"](opred, octx)
+    opred.begin_step(); walk_params["gpu"](pred, opred, octx)
     _ = clip_grad_norm["gpu", DYN](dyn, Scalar[DT](max_grad_norm), octx)
-    odyn.begin_step(); dyn.for_each_param["gpu"](odyn, octx)
+    odyn.begin_step(); walk_params["gpu"](dyn, odyn, octx)
     _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
-    orep.begin_step(); rep.for_each_param["gpu"](orep, octx)
+    orep.begin_step(); walk_params["gpu"](rep, orep, octx)
     _ = clip_grad_norm["gpu", PROJM](proj, Scalar[DT](max_grad_norm), octx)
-    oproj.begin_step(); proj.for_each_param["gpu"](oproj, octx)
+    oproj.begin_step(); walk_params["gpu"](proj, oproj, octx)
     _ = clip_grad_norm["gpu", PREDH](predh, Scalar[DT](max_grad_norm), octx)
-    opredh.begin_step(); predh.for_each_param["gpu"](opredh, octx)
+    opredh.begin_step(); walk_params["gpu"](predh, opredh, octx)
 
     # ── reduce loss (D2H once) — 4 [B] blocks: policy|value|reward|consistency ──
     ctx.enqueue_copy(h_loss, loss_d.dev.value())

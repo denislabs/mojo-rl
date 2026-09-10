@@ -16,7 +16,7 @@ compose from combinator child indices + field names (e.g. "0.weight",
 from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamVisitorRT, walk_params
 from .param import ParamWalkable
 
 
@@ -31,7 +31,7 @@ struct NamedParam(Copyable):
         self.decay = decay
 
 
-struct _NamedCollector(ParamVisitor):
+struct _NamedCollector(ParamVisitor, ParamVisitorRT):
     """Appends one `NamedParam` metadata record per visited param/state.
     Touches neither the value/grad buffers nor the device, so it is
     target-agnostic (no `ctx` needed)."""
@@ -41,9 +41,20 @@ struct _NamedCollector(ParamVisitor):
     def __init__(out self):
         self.items = List[NamedParam]()
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.items.append(NamedParam(name, n, apply_decay))
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -53,16 +64,14 @@ struct _NamedCollector(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        self.items.append(NamedParam(name, N, apply_decay))
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def named_params[
     target: StaticString, M: ParamWalkable
 ](mut model: M, ctx: Optional[DeviceContext] = None) raises -> List[NamedParam]:
     """Flat (name, size, decay) list of every trainable Param, in
     `for_each_param` walk order with dotted names."""
     var c = _NamedCollector()
-    model.for_each_param[target](c, ctx)
+    walk_params[target](model, c, ctx)
     return c.items.copy()
 
 

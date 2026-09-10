@@ -34,22 +34,19 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, walk_params, ParamVisitorRT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import GraphDecl
 
 
-def _scale_k[
-    N: Int
-](dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], scale: Scalar[DT]):
-    """Runtime-length device in-place scale (one param slab)."""
+def _scale_k_rt(dst: Pointer[Scalar[DT], MutAnyOrigin], n_arg: Int64, scale: Scalar[DT]):
     var i = Int(global_idx.x)
-    if i < N:
-        dst[i] = scale * rebind[Scalar[DT]](dst[i])
+    if i < Int(n_arg):
+        dst[i] = scale * dst[i]
 
 
-struct _ScaleOutVisitor(ParamVisitor):
+struct _ScaleOutVisitor(ParamVisitor, ParamVisitorRT):
     """Scales the two named output-layer params (weight + bias) in place;
     branches on `target` internally (host loop on CPU, scale kernel on GPU)."""
 
@@ -62,6 +59,32 @@ struct _ScaleOutVisitor(ParamVisitor):
         self.bname = bname
         self.scale = scale
 
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        if name == self.wname or name == self.bname:
+            comptime if target == "cpu":
+                for k in range(n):
+                    param.data[k] = self.scale * param.data[k]
+            else:
+                var c = ctx.value()
+                var nblk = (n + TPB - 1) // TPB
+                c.enqueue_function[_scale_k_rt](
+                    param.dev.value(),
+                    Int64(n),
+                    self.scale,
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
+
     def visit[target: StaticString, N: Int](
         mut self,
         name: String,
@@ -72,20 +95,7 @@ struct _ScaleOutVisitor(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        if name == self.wname or name == self.bname:
-            comptime if target == "cpu":
-                for k in range(N):
-                    param.data[k] = self.scale * param.data[k]
-            else:
-                var c = ctx.value()
-                comptime layout = Layout.row_major(N)
-                comptime nblk = (N + TPB - 1) // TPB
-                c.enqueue_function[_scale_k[N]](
-                    param.lt["gpu", layout](),
-                    self.scale,
-                    grid_dim=nblk,
-                    block_dim=TPB,
-                )
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 
 
 def scale_output_module[
@@ -100,7 +110,7 @@ def scale_output_module[
     """Scale the output-layer params (`wname`/`bname`) of a Sequential head by
     `scale` (0.0 == exact zero-init)."""
     var v = _ScaleOutVisitor(wname, bname, scale)
-    m.for_each_param[target](v, ctx)
+    walk_params[target](m, v, ctx)
 
 
 def scale_output_graph[
@@ -116,4 +126,4 @@ def scale_output_graph[
     `scale` (0.0 == exact zero-init). Names are prefixed by the node name
     (e.g. `rew.3.weight` / `rew.3.bias`)."""
     var v = _ScaleOutVisitor(wname, bname, scale)
-    g.for_each_param[target](v, ctx)
+    walk_params[target](g, v, ctx)

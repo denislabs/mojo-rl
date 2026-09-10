@@ -43,7 +43,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.io.safetensors import SafeTensors, SafeTensorsWriter
 from mojo_rl.nn.constants import DT
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamVisitorRT
 from .safetensors_io import fill_param
 from .tensor import Tensor
 
@@ -154,7 +154,7 @@ def transpose_2d(ref src: List[Float32], rows: Int, cols: Int) -> List[Float32]:
     return out^
 
 
-struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
+struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor, ParamVisitorRT):
     """Fill one subtree of a model from a PyTorch-named safetensors file.
 
     Safe to run over `for_each_param` AND `for_each_state` in turn — the same
@@ -195,15 +195,14 @@ struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
         self.unmapped = move.unmapped^
         self.skipped = move.skipped
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -218,8 +217,8 @@ struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
             return
 
         if self.map.kind[i] == TN_ZEROS:
-            var zeros = List[Float32](unsafe_uninit_length=N)
-            for k in range(N):
+            var zeros = List[Float32](unsafe_uninit_length=n)
+            for k in range(n):
                 zeros[k] = Float32(0.0)
             fill_param(param, zeros, ctx)
             self.zeroed.append(local^)
@@ -246,15 +245,26 @@ struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
 
         if self.map.kind[i] == TN_TRANSPOSE:
             var t = transpose_2d(vals, want[0], want[1])
-            if len(t) != N:
-                raise Error(_size_err(key, local, len(t), N))
+            if len(t) != n:
+                raise Error(_size_err(key, local, len(t), n))
             fill_param(param, t, ctx)
         else:
-            if len(vals) != N:
-                raise Error(_size_err(key, local, len(vals), N))
+            if len(vals) != n:
+                raise Error(_size_err(key, local, len(vals), n))
             fill_param(param, vals, ctx)
         self.loaded.append(local^)
 
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
     def report(self, what: String) raises:
         """Raise unless every mapped tensor under the prefix was filled."""
         if len(self.unmapped) > 0:
@@ -340,7 +350,7 @@ struct LoadTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
         )
 
 
-struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
+struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor, ParamVisitorRT):
     """Collect one subtree into a `SafeTensorsWriter` under PyTorch names,
     shapes and layout — a file `load_state_dict` can take.
 
@@ -368,15 +378,14 @@ struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
         self.unmapped = move.unmapped^
         self.skipped = move.skipped
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -396,9 +405,9 @@ struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
             param.download(ctx.value())
 
         var shape = self.map.their_shape(i)
-        if self.map.numel(i) != N:
+        if self.map.numel(i) != n:
             raise Error(
-                "SaveTorchNamed: '" + local + "' holds " + String(N)
+                "SaveTorchNamed: '" + local + "' holds " + String(n)
                 + " values but the map declares " + _shape_str(shape) + " = "
                 + String(self.map.numel(i))
             )
@@ -407,18 +416,29 @@ struct SaveTorchNamed[GRAPH_PREFIX: StaticString](ParamVisitor):
             # Ours is [C, R]; theirs is [R, C]. One permutation, read the
             # other way round -- the same `transpose_2d` the loader uses, so
             # an export and a re-import cannot disagree.
-            var src = List[Float32](unsafe_uninit_length=N)
-            for k in range(N):
+            var src = List[Float32](unsafe_uninit_length=n)
+            for k in range(n):
                 src[k] = Float32(param.data[k])
             var t = transpose_2d(src, shape[1], shape[0])
-            self.writer.add_f32(key^, shape, t, N)
+            self.writer.add_f32(key^, shape, t, n)
         else:
-            var src = List[Float32](unsafe_uninit_length=N)
-            for k in range(N):
+            var src = List[Float32](unsafe_uninit_length=n)
+            for k in range(n):
                 src[k] = Float32(param.data[k])
-            self.writer.add_f32(key^, shape, src, N)
+            self.writer.add_f32(key^, shape, src, n)
         self.written.append(local^)
 
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
     def report(self, what: String) raises:
         if len(self.unmapped) > 0:
             raise Error(

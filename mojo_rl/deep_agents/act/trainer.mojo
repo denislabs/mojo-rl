@@ -95,7 +95,7 @@ from layout import Layout
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn import Adam, Kaiming, Tensor
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRT, walk_params
 from mojo_rl.nn.models.resnet18 import (
     RESNET18_OUT_CH,
     ResNet18Backbone,
@@ -140,7 +140,7 @@ from .refload import LoadPrefixedParams, RefDump
 # scale. Mirrors `lewm/trainer.mojo`'s `_SumSqV`, CPU-only.
 
 
-struct _SumSq(ParamVisitor):
+struct _SumSq(ParamVisitor, ParamVisitorRT):
     """Sum of squared gradients over every parameter.
 
     ⚠ CPU ONLY now. On GPU this DOWNLOADS each gradient slab to sum it on the
@@ -162,9 +162,24 @@ struct _SumSq(ParamVisitor):
     def __init__(out self, *, deinit move: Self):
         self.sum_sq = move.sum_sq
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target != "cpu":
+            grad.download(ctx.value())
+        for i in range(n):
+            var g = Float64(grad.data[i])
+            self.sum_sq += g * g
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -174,14 +189,8 @@ struct _SumSq(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target != "cpu":
-            grad.download(ctx.value())
-        for i in range(N):
-            var g = Float64(grad.data[i])
-            self.sum_sq += g * g
-
-
-struct _ScaleGrads(ParamVisitor):
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _ScaleGrads(ParamVisitor, ParamVisitorRT):
     var scale: Scalar[DT]
 
     def __init__(out self):
@@ -193,9 +202,29 @@ struct _ScaleGrads(ParamVisitor):
     def __init__(out self, *, deinit move: Self):
         self.scale = move.scale
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target != "cpu":
+            # ⚠ Unreachable: the GPU clip is the optimizer's arena path. Kept
+            # only so the visitor stays target-generic — and `upload` here
+            # would DETACH the param from the arena (see the header).
+            for i in range(n):
+                grad.data[i] = grad.data[i] * self.scale
+            grad.upload_resident(ctx.value())
+        else:
+            for i in range(n):
+                grad.data[i] = grad.data[i] * self.scale
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -205,18 +234,7 @@ struct _ScaleGrads(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target != "cpu":
-            # ⚠ Unreachable: the GPU clip is the optimizer's arena path. Kept
-            # only so the visitor stays target-generic — and `upload` here
-            # would DETACH the param from the arena (see the header).
-            for i in range(N):
-                grad.data[i] = grad.data[i] * self.scale
-            grad.upload_resident(ctx.value())
-        else:
-            for i in range(N):
-                grad.data[i] = grad.data[i] * self.scale
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 @fieldwise_init
 struct ACTStepResult(ImplicitlyCopyable):
     """What one step produced. `l1` is the reference's model-selection metric;
@@ -1105,7 +1123,7 @@ struct ACTTrainer[
         var gn: Float64
         comptime if Self.target == "cpu":
             var ss = _SumSq()
-            self.graph.for_each_param[Self.target](ss, self.ctx, String(""))
+            walk_params[Self.target](self.graph, ss, self.ctx, String(""))
             gn = ss.sum_sq ** 0.5
             if self.max_grad_norm > Scalar[DT](0.0) and gn > Float64(
                 self.max_grad_norm
@@ -1117,8 +1135,7 @@ struct ACTTrainer[
                 if gn == gn:
                     sc = self.max_grad_norm / Scalar[DT](gn)
                 var scaler = _ScaleGrads(sc)
-                self.graph.for_each_param[Self.target](
-                    scaler, self.ctx, String("")
+                walk_params[Self.target](self.graph, scaler, self.ctx, String("")
                 )
         else:
             # Same clip, on device: sum-of-squares over the grad arena →
@@ -1198,7 +1215,7 @@ struct ACTTrainer[
         """
         var w = BinaryCheckpointWriter(save_moments)
         w.mode = 0
-        self.graph.for_each_param[Self.target, BinaryCheckpointWriter](w, self.ctx)
+        walk_params[Self.target](self.graph, w, self.ctx)
         w.mode = 1
         self.graph.for_each_state[Self.target, BinaryCheckpointWriter](w, self.ctx)
         _write_file_bytes(path, w.content)
@@ -1376,6 +1393,6 @@ struct ACTTrainer[
             )
         var r = BinaryCheckpointReader(bytes^)
         r.mode = 0
-        self.graph.for_each_param[Self.target, BinaryCheckpointReader](r, self.ctx)
+        walk_params[Self.target](self.graph, r, self.ctx)
         r.mode = 1
         self.graph.for_each_state[Self.target, BinaryCheckpointReader](r, self.ctx)

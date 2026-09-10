@@ -35,6 +35,7 @@ CUDA-graph capture (`train_device_kernels` / `note_train_update` /
 defaults raise, never reached with `USE_TRAIN_CUDA_GRAPH=False`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import tanh as ftanh
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -690,11 +691,9 @@ struct DDPGTrainer[
         NOT persisted (resume re-warms)."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor_pair.online.for_each_param[Self.train_target](
-            w, self.ctx, "actor"
+        walk_params[Self.train_target](self.actor_pair.online, w, self.ctx, "actor"
         )
-        self.critic_pair.online.for_each_param[Self.train_target](
-            w, self.ctx, "critic"
+        walk_params[Self.train_target](self.critic_pair.online, w, self.ctx, "critic"
         )
         w.mode = 1
         self.actor_pair.online.for_each_state[Self.train_target](
@@ -720,11 +719,9 @@ struct DDPGTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor_pair.online.for_each_param[Self.train_target](
-            r, self.ctx, "actor"
+        walk_params[Self.train_target](self.actor_pair.online, r, self.ctx, "actor"
         )
-        self.critic_pair.online.for_each_param[Self.train_target](
-            r, self.ctx, "critic"
+        walk_params[Self.train_target](self.critic_pair.online, r, self.ctx, "critic"
         )
         r.mode = 1
         self.actor_pair.online.for_each_state[Self.train_target](

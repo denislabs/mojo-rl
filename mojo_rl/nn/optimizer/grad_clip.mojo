@@ -29,7 +29,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamVisitorRT, walk_params
 from ..core.param import ParamWalkable
 from .param_arena import ParamArena
 
@@ -37,19 +37,19 @@ from .param_arena import ParamArena
 comptime GC_TPB: Int = 128  # single-block reduction width
 
 
-def _sum_sq_kernel[
-    N: Int
-](
-    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    out_sum: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+def _sum_sq_kernel_rt(
+    grad: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
+    out_sum: Pointer[Scalar[DT], MutAnyOrigin],
 ):
-    """Single-block GC_TPB-thread tree reduction of Σ grad²; thread 0 writes
-    the total to `out_sum[0]`. (Same block.sum primitive LayerNorm uses.)"""
+    """Single-block sum of squares over `[0, n)`, runtime length: one
+    kernel for every Param instead of one instantiation per size."""
+    var n = Int(n_arg)
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
-    while k < N:
-        var g = rebind[Scalar[DT]](grad[k])
+    while k < n:
+        var g = grad[k]
         my_sum += g * g
         k += GC_TPB
     var total = block.sum[block_size=GC_TPB, broadcast=False](val=my_sum)
@@ -57,58 +57,73 @@ def _sum_sq_kernel[
         out_sum[0] = total[0]
 
 
-def _scale_kernel[
-    N: Int
-](
-    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _scale_kernel_rt(
+    grad: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
     scale: Scalar[DT],
 ):
-    """`grad[i] *= scale`, one thread per element. `scale == 0` hard-writes 0
-    (non-finite-norm sentinel)."""
     var i = Int(global_idx.x)
-    if i < N:
+    if i < Int(n_arg):
         var s = scale
-        grad[i] = rebind[Scalar[DT]](grad[i]) * s if s != Scalar[DT](
-            0.0
-        ) else Scalar[DT](0.0)
+        grad[i] = grad[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
 
 
-struct _SumSqCPU(ParamVisitor):
+struct _SumSqCPU(ParamVisitor, ParamVisitorRT):
     var sum_sq: Scalar[DT]
 
     def __init__(out self):
         self.sum_sq = Scalar[DT](0.0)
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        for i in range(N):
+        for i in range(n):
             var g = grad.data[i]
             self.sum_sq += g * g
 
-
-struct _ScaleCPU(ParamVisitor):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _ScaleCPU(ParamVisitor, ParamVisitorRT):
     var scale: Scalar[DT]
 
     def __init__(out self, scale: Scalar[DT]):
         self.scale = scale
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         if self.scale == Scalar[DT](0.0):
-            for i in range(N):
+            for i in range(n):
                 grad.data[i] = Scalar[DT](0.0)
         else:
-            for i in range(N):
+            for i in range(n):
                 grad.data[i] = grad.data[i] * self.scale
 
-
-struct _SumSqGPU(ParamVisitor):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _SumSqGPU(ParamVisitor, ParamVisitorRT):
     var sum_sq: Scalar[DT]  # host accumulator across params
     var psum: Tensor  # reusable [1] device scalar
 
@@ -116,44 +131,68 @@ struct _SumSqGPU(ParamVisitor):
         self.sum_sq = Scalar[DT](0.0)
         self.psum = Tensor()
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         var c = ctx.value()
         self.psum.ensure_gpu(c, 1)
-        comptime lg = Layout.row_major(N)
-        c.enqueue_function[_sum_sq_kernel[N]](
-            grad.lt["gpu", lg](),
-            self.psum.lt["gpu", Layout.row_major(1)](),
+        c.enqueue_function[_sum_sq_kernel_rt](
+            grad.dev.value(),
+            Int64(n),
+            self.psum.dev.value(),
             grid_dim=1,
             block_dim=GC_TPB,
         )
         self.psum.download(c)
         self.sum_sq += self.psum.data[0]
 
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 
-struct _ScaleGPU(ParamVisitor):
+
+struct _ScaleGPU(ParamVisitor, ParamVisitorRT):
     var scale: Scalar[DT]
 
     def __init__(out self, scale: Scalar[DT]):
         self.scale = scale
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         var c = ctx.value()
-        comptime lg = Layout.row_major(N)
-        comptime nblk = (N + TPB - 1) // TPB
-        c.enqueue_function[_scale_kernel[N]](
-            grad.lt["gpu", lg](),
+        var nblk = (n + TPB - 1) // TPB
+        c.enqueue_function[_scale_kernel_rt](
+            grad.dev.value(),
+            Int64(n),
             self.scale,
             grid_dim=nblk,
             block_dim=TPB,
         )
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 
 
 def _scale_from_norm(
@@ -180,21 +219,21 @@ def clip_grad_norm[
     var norm: Scalar[DT]
     comptime if target == "cpu":
         var ss = _SumSqCPU()
-        model.for_each_param[target](ss, ctx)
+        walk_params[target](model, ss, ctx)
         norm = sqrt(ss.sum_sq)
         if max_norm > Scalar[DT](0.0):
             var sc = _ScaleCPU(_scale_from_norm(norm, max_norm, eps))
             if sc.scale < Scalar[DT](1.0):  # scale==1 → no-op skip
-                model.for_each_param[target](sc, ctx)
+                walk_params[target](model, sc, ctx)
     else:
         var ss = _SumSqGPU()
-        model.for_each_param[target](ss, ctx)
+        walk_params[target](model, ss, ctx)
         norm = sqrt(ss.sum_sq)
         if max_norm > Scalar[DT](0.0):
             var scale = _scale_from_norm(norm, max_norm, eps)
             if scale < Scalar[DT](1.0):
                 var sc = _ScaleGPU(scale)
-                model.for_each_param[target](sc, ctx)
+                walk_params[target](model, sc, ctx)
     return norm
 
 

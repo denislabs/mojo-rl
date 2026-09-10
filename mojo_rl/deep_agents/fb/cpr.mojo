@@ -59,6 +59,7 @@ layout (so `fb_eval_walker_online.mojo` loads it unchanged) and `D` +
 `Q_D` to the sidecar `p + ".cpr"`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64
@@ -778,9 +779,9 @@ struct FBCPRHead[
         the FB file unchanged."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.disc.for_each_param[Self.TARGET](w, self.ctx, "disc")
-        self.qd1.online.for_each_param[Self.TARGET](w, self.ctx, "qd1")
-        self.qd2.online.for_each_param[Self.TARGET](w, self.ctx, "qd2")
+        walk_params[Self.TARGET](self.disc, w, self.ctx, "disc")
+        walk_params[Self.TARGET](self.qd1.online, w, self.ctx, "qd1")
+        walk_params[Self.TARGET](self.qd2.online, w, self.ctx, "qd2")
         w.mode = 1
         self.disc.for_each_state[Self.TARGET](w, self.ctx, "disc")
         self.qd1.online.for_each_state[Self.TARGET](w, self.ctx, "qd1")
@@ -807,9 +808,9 @@ struct FBCPRHead[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.disc.for_each_param[Self.TARGET](r, self.ctx, "disc")
-        self.qd1.online.for_each_param[Self.TARGET](r, self.ctx, "qd1")
-        self.qd2.online.for_each_param[Self.TARGET](r, self.ctx, "qd2")
+        walk_params[Self.TARGET](self.disc, r, self.ctx, "disc")
+        walk_params[Self.TARGET](self.qd1.online, r, self.ctx, "qd1")
+        walk_params[Self.TARGET](self.qd2.online, r, self.ctx, "qd2")
         r.mode = 1
         self.disc.for_each_state[Self.TARGET](r, self.ctx, "disc")
         self.qd1.online.for_each_state[Self.TARGET](r, self.ctx, "qd1")

@@ -21,6 +21,7 @@ once per iteration. `learning_starts` warmup needs no sync — the mirror is syn
 once before the loop so it matches the device nets from step 0.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
 from std.memory import alloc
@@ -61,9 +62,9 @@ def mz_sync_gpu_to_cpu[M: Module](
     The CPU net's param buffers are overwritten, so any MCTS adapter holding
     `Pointer(to=cpu_net)` sees the updated weights with no rebind."""
     var c = _CollectVisitor()
-    gpu.for_each_param["gpu"](c, Optional(ctx))
+    walk_params["gpu"](gpu, c, Optional(ctx))
     var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
-    cpu.for_each_param["cpu"](inj, None)
+    walk_params["cpu"](cpu, inj, None)
 
 
 def run_muzero_selfplay_gpu[

@@ -21,12 +21,12 @@ from ..core.initializer import Initializer
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamVisitorRT
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
 
 
-struct _GradStash(ParamVisitor):
+struct _GradStash(ParamVisitor, ParamVisitorRT):
     """Two-pass param-grad save/restore over PERSISTENT buffers. First walk
     (restoring=False) copies each param's grad into `saved`; second walk
     (restoring=True) copies it back.
@@ -51,9 +51,9 @@ struct _GradStash(ParamVisitor):
         self.idx = 0
         self.slot = 0
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         if not self.restoring:
@@ -63,31 +63,41 @@ struct _GradStash(ParamVisitor):
             if self.slot >= len(self.saved):
                 self.saved.append(Tensor())
             comptime if target == "cpu":
-                self.saved[self.slot].ensure(N)
-                for k in range(N):
+                self.saved[self.slot].ensure(n)
+                for k in range(n):
                     self.saved[self.slot].data[k] = grad.data[k]
             else:
-                self.saved[self.slot].ensure_gpu(ctx.value(), N)
-                # Size-exact sub-buffer copy — `grad` may be larger than N
+                self.saved[self.slot].ensure_gpu(ctx.value(), n)
+                # Size-exact sub-buffer copy — `grad` may be larger than n
                 # (monotone ensure_gpu); whole-buffer copies error on the
                 # size mismatch. Mirrors compute_graph's fix.
-                var g_src = grad.dev.value().create_sub_buffer[DT](0, N)
+                var g_src = grad.dev.value().create_sub_buffer[DT](0, n)
                 var t_dst = self.saved[self.slot].dev.value(
-                ).create_sub_buffer[DT](0, N)
+                ).create_sub_buffer[DT](0, n)
                 ctx.value().enqueue_copy(t_dst, g_src)
             self.slot += 1
         else:
             comptime if target == "cpu":
-                for k in range(N):
+                for k in range(n):
                     grad.data[k] = self.saved[self.idx].data[k]
             else:
                 var s_src = self.saved[self.idx].dev.value(
-                ).create_sub_buffer[DT](0, N)
-                var g_dst = grad.dev.value().create_sub_buffer[DT](0, N)
+                ).create_sub_buffer[DT](0, n)
+                var g_dst = grad.dev.value().create_sub_buffer[DT](0, n)
                 ctx.value().enqueue_copy(g_dst, s_src)
             self.idx += 1
 
-
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 struct StopGradParams[Inner: Module](Module):
     comptime ARITY = Self.Inner.ARITY
     comptime IN_DIMS = Self.Inner.IN_DIMS

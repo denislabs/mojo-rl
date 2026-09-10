@@ -23,11 +23,11 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamVisitorRT, walk_params
 from .module import Module
 
 
-struct _CollectVisitor(ParamVisitor):
+struct _CollectVisitor(ParamVisitor, ParamVisitorRT):
     """Reads each visited Param/State's values into an owned host `List`, in
     walk order. GPU params download first. Moments/grad are ignored."""
 
@@ -38,9 +38,26 @@ struct _CollectVisitor(ParamVisitor):
         self.names = List[String]()
         self.vals = List[List[Scalar[DT]]]()
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        var buf = List[Scalar[DT]](capacity=n)
+        for i in range(n):
+            buf.append(param.data[i])
+        self.names.append(name)
+        self.vals.append(buf^)
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -50,16 +67,8 @@ struct _CollectVisitor(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target == "gpu":
-            param.download(ctx.value())
-        var buf = List[Scalar[DT]](capacity=N)
-        for i in range(N):
-            buf.append(param.data[i])
-        self.names.append(name)
-        self.vals.append(buf^)
-
-
-struct _InjectVisitor(ParamVisitor):
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _InjectVisitor(ParamVisitor, ParamVisitorRT):
     """Writes collected values into each visited Param/State in the same walk
     order, validating name + size. GPU params upload after."""
 
@@ -74,15 +83,14 @@ struct _InjectVisitor(ParamVisitor):
         self.vals = vals^
         self.cur = 0
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -97,22 +105,32 @@ struct _InjectVisitor(ParamVisitor):
                 + "' (topology drift)"
             )
         ref buf = self.vals[self.cur]
-        if len(buf) != N:
+        if len(buf) != n:
             raise Error(
                 "hard_copy: size mismatch for '"
                 + name
                 + "' — src "
                 + String(len(buf))
                 + ", dst "
-                + String(N)
+                + String(n)
             )
-        for i in range(N):
+        for i in range(n):
             param.data[i] = buf[i]
         comptime if target == "gpu":
             param.upload(ctx.value())
         self.cur += 1
 
-
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def hard_copy[
     target: StaticString, M: Module
 ](mut src: M, mut dst: M, ctx: Optional[DeviceContext] = None) raises:
@@ -120,12 +138,12 @@ def hard_copy[
     moments are NOT copied. Stateless models do a params-only copy (empty state
     walk = no-op)."""
     var c = _CollectVisitor()
-    src.for_each_param[target](c, ctx)
+    walk_params[target](src, c, ctx)
     src.for_each_state[target](c, ctx)
     # Copy the small collected lists (arena promotion is infrequent); moving
     # individual fields out of `c` would partially destroy it.
     var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
-    dst.for_each_param[target](inj, ctx)
+    walk_params[target](dst, inj, ctx)
     dst.for_each_state[target](inj, ctx)
     if inj.cur != len(inj.vals):
         raise Error("hard_copy: src has more params/states than dst")

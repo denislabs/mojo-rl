@@ -15,6 +15,7 @@ weight for control. It is loaded only when something wants it.
 prefix of the same length whose block structure no longer matches the mask.
 """
 
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import sqrt
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
@@ -810,7 +811,8 @@ struct SmolVLAPolicy[
         )
 
         var vl = LoadTorchNamed[""](SafeTensors(weights), vision_name_map())
-        self.vision.for_each_param[target](vl, ctx)
+        var _ref1 = ParamVisitorRef.of[type_of(vl), target](vl)
+        self.vision.for_each_param[target](_ref1, ctx)
         vl.report(String("vision"))
         _claimed_every_entry(
             String("vision"), len(vl.loaded) + len(vl.zeroed),
@@ -818,7 +820,8 @@ struct SmolVLAPolicy[
         )
 
         var tl = LoadTorchNamed[""](SafeTensors(weights), text_name_map())
-        self.tower.for_each_param[target](tl, ctx)
+        var _ref2 = ParamVisitorRef.of[type_of(tl), target](tl)
+        self.tower.for_each_param[target](_ref2, ctx)
         tl.report(String("text"))
         _claimed_every_entry(
             String("text"), len(tl.loaded) + len(tl.zeroed),
@@ -826,7 +829,8 @@ struct SmolVLAPolicy[
         )
 
         var el = LoadTorchNamed[""](SafeTensors(weights), expert_name_map())
-        self.expert.for_each_param[target](el, ctx)
+        var _ref3 = ParamVisitorRef.of[type_of(el), target](el)
+        self.expert.for_each_param[target](_ref3, ctx)
         el.report(String("expert"))
         _claimed_every_entry(
             String("expert"), len(el.loaded) + len(el.zeroed),
@@ -844,18 +848,22 @@ struct SmolVLAPolicy[
         # the connector is applied per token, not part of the checkpoint's
         # naming. Walking the wrapper leaves the connector at its initialiser
         # and reports it as `unmapped`.
-        self.connector.inner.for_each_param[target](
-            ml, ctx, String("connector")
+        var _ref4 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.connector.inner.for_each_param[target](_ref4, ctx, String("connector")
         )
-        self.embed.for_each_param[target](ml, ctx, String("embed"))
-        self.state_proj.for_each_param[target](ml, ctx, String("state_proj"))
-        self.action_in.for_each_param[target](ml, ctx, String("action_in"))
-        self.action_out.for_each_param[target](ml, ctx, String("action_out"))
-        self.time_mlp_in.for_each_param[target](
-            ml, ctx, String("time_mlp_in")
+        var _ref5 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.embed.for_each_param[target](_ref5, ctx, String("embed"))
+        var _ref6 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.state_proj.for_each_param[target](_ref6, ctx, String("state_proj"))
+        var _ref7 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.action_in.for_each_param[target](_ref7, ctx, String("action_in"))
+        var _ref8 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.action_out.for_each_param[target](_ref8, ctx, String("action_out"))
+        var _ref9 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.time_mlp_in.for_each_param[target](_ref9, ctx, String("time_mlp_in")
         )
-        self.time_mlp_out.for_each_param[target](
-            ml, ctx, String("time_mlp_out")
+        var _ref10 = ParamVisitorRef.of[type_of(ml), target](ml)
+        self.time_mlp_out.for_each_param[target](_ref10, ctx, String("time_mlp_out")
         )
         ml.report(String("heads"))
         # ⚠ TWO entries skipped by design — `lm_head.weight` (file-backed) and

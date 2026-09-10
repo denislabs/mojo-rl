@@ -47,11 +47,11 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.io.safetensors import SafeTensors, SafeTensorsWriter
 from mojo_rl.nn.constants import DT
-from .param import ParamVisitor, ParamWalkable
+from .param import ParamVisitor, ParamWalkable, ParamVisitorRT, walk_params
 from .tensor import Tensor
 
 
-struct SafeTensorsSaver(ParamVisitor):
+struct SafeTensorsSaver(ParamVisitor, ParamVisitorRT):
     """Collects every visited tensor into a `SafeTensorsWriter` as rank-1 f32.
 
     ⚠ GPU params are DOWNLOADED first. Without that the file holds whatever
@@ -70,9 +70,24 @@ struct SafeTensorsSaver(ParamVisitor):
         self.writer = move.writer^
         self.count = move.count
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        var shape: List[Int] = [n]
+        self.writer.add_f32(String(name), shape, param.data, n)
+        self.count += 1
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -82,14 +97,8 @@ struct SafeTensorsSaver(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target == "gpu":
-            param.download(ctx.value())
-        var shape: List[Int] = [N]
-        self.writer.add_f32(String(name), shape, param.data, N)
-        self.count += 1
-
-
-struct SafeTensorsLoader(ParamVisitor):
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct SafeTensorsLoader(ParamVisitor, ParamVisitorRT):
     """Fills every visited tensor from `file[name]`.
 
     Records `loaded` / `missing` so the caller can decide, rather than assuming
@@ -112,9 +121,31 @@ struct SafeTensorsLoader(ParamVisitor):
         self.loaded = move.loaded^
         self.missing = move.missing^
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        if not self.file.has(name):
+            self.missing.append(String(name))
+            return
+        var vals = self.file.read_f32(name)
+        if len(vals) != n:
+            raise Error(
+                "load_safetensors: '" + name + "' holds " + String(len(vals))
+                + " values but the model's param has " + String(n)
+                + " (shape " + self.file.shape_str(name) + ")"
+            )
+        fill_param(param, vals, ctx)
+        self.loaded.append(String(name))
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -124,20 +155,7 @@ struct SafeTensorsLoader(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        if not self.file.has(name):
-            self.missing.append(String(name))
-            return
-        var vals = self.file.read_f32(name)
-        if len(vals) != N:
-            raise Error(
-                "load_safetensors: '" + name + "' holds " + String(len(vals))
-                + " values but the model's param has " + String(N)
-                + " (shape " + self.file.shape_str(name) + ")"
-            )
-        fill_param(param, vals, ctx)
-        self.loaded.append(String(name))
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def fill_param(
     mut param: Tensor, ref vals: List[Float32], ctx: Optional[DeviceContext]
 ) raises:
@@ -168,7 +186,7 @@ def save_safetensors[
     reserves that member for exactly this and consumers ignore what they do not
     recognise."""
     var s = SafeTensorsSaver()
-    model.for_each_param[target, SafeTensorsSaver](s, ctx)
+    walk_params[target](model, s, ctx)
     if include_state:
         model.for_each_state[target, SafeTensorsSaver](s, ctx)
     if s.count == 0:
@@ -196,7 +214,7 @@ def load_safetensors[
     does not name is an error: a partial load is the failure mode that looks
     like a working one."""
     var pl = SafeTensorsLoader(SafeTensors(String(path)))
-    model.for_each_param[target, SafeTensorsLoader](pl, ctx)
+    walk_params[target](model, pl, ctx)
     var n = len(pl.loaded)
     var missing = len(pl.missing)
     var first_missing = String("") if missing == 0 else pl.missing[0]

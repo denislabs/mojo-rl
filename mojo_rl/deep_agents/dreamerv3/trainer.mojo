@@ -35,7 +35,7 @@ from mojo_rl.nn.core.checkpoint import (
     BinaryCheckpointWriter, BinaryCheckpointReader,
     _write_file_bytes, _read_file_bytes, _is_v3_header,
 )
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, walk_params
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
@@ -757,14 +757,14 @@ struct DreamerV3Trainer[
         truncated at the 2 GiB single-write(2) cap."""
         var w = BinaryCheckpointWriter(save_moments=False)
         w.mode = 0
-        self.enc.for_each_param[Self.train_target](w, self.ctx, "enc")
-        self.core.for_each_param[Self.train_target](w, self.ctx, "core")
-        self.dec.for_each_param[Self.train_target](w, self.ctx, "dec")
-        self.rew.for_each_param[Self.train_target](w, self.ctx, "rew")
-        self.con.for_each_param[Self.train_target](w, self.ctx, "con")
-        self.value.for_each_param[Self.train_target](w, self.ctx, "value")
-        self.slowvalue.for_each_param[Self.train_target](w, self.ctx, "slowvalue")
-        self.policy.for_each_param[Self.train_target](w, self.ctx, "policy")
+        walk_params[Self.train_target](self.enc, w, self.ctx, "enc")
+        walk_params[Self.train_target](self.core, w, self.ctx, "core")
+        walk_params[Self.train_target](self.dec, w, self.ctx, "dec")
+        walk_params[Self.train_target](self.rew, w, self.ctx, "rew")
+        walk_params[Self.train_target](self.con, w, self.ctx, "con")
+        walk_params[Self.train_target](self.value, w, self.ctx, "value")
+        walk_params[Self.train_target](self.slowvalue, w, self.ctx, "slowvalue")
+        walk_params[Self.train_target](self.policy, w, self.ctx, "policy")
         w.mode = 1
         self.enc.for_each_state[Self.train_target](w, self.ctx, "enc")
         self.core.for_each_state[Self.train_target](w, self.ctx, "core")

@@ -32,6 +32,7 @@ both targets; CUDA-graph capture DEFERRED (host control flow). Dimensions
 (OBS / ACT / BATCH) derive from `SAMPLE`; PHI_S_DIM from SB; PHI_SA_DIM from AB.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -778,19 +779,15 @@ struct REDQOFETrainer[
     def save_state(mut self, path: String) raises:
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
+        walk_params[Self.train_target](self.actor, w, self.ctx, "actor")
         for i in range(Self.N):
-            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
-                w, self.ctx, "critic" + String(i)
+            walk_params[Self.train_target](self.ensemble.pairs[i].online, w, self.ctx, "critic" + String(i)
             )
-        self.state_branch.for_each_param[Self.train_target](
-            w, self.ctx, "state_branch"
+        walk_params[Self.train_target](self.state_branch, w, self.ctx, "state_branch"
         )
-        self.action_branch.for_each_param[Self.train_target](
-            w, self.ctx, "action_branch"
+        walk_params[Self.train_target](self.action_branch, w, self.ctx, "action_branch"
         )
-        self.predictor.for_each_param[Self.train_target](
-            w, self.ctx, "predictor"
+        walk_params[Self.train_target](self.predictor, w, self.ctx, "predictor"
         )
         w.mode = 1
         self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
@@ -822,19 +819,15 @@ struct REDQOFETrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
+        walk_params[Self.train_target](self.actor, r, self.ctx, "actor")
         for i in range(Self.N):
-            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
-                r, self.ctx, "critic" + String(i)
+            walk_params[Self.train_target](self.ensemble.pairs[i].online, r, self.ctx, "critic" + String(i)
             )
-        self.state_branch.for_each_param[Self.train_target](
-            r, self.ctx, "state_branch"
+        walk_params[Self.train_target](self.state_branch, r, self.ctx, "state_branch"
         )
-        self.action_branch.for_each_param[Self.train_target](
-            r, self.ctx, "action_branch"
+        walk_params[Self.train_target](self.action_branch, r, self.ctx, "action_branch"
         )
-        self.predictor.for_each_param[Self.train_target](
-            r, self.ctx, "predictor"
+        walk_params[Self.train_target](self.predictor, r, self.ctx, "predictor"
         )
         r.mode = 1
         self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")

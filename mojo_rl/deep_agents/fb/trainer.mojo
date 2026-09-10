@@ -71,6 +71,7 @@ the GRADIENTS are identical either way, because the loss value never enters the
 update. Log every few hundred steps, not every step.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import abs, sqrt
 from std.random import random_float64
@@ -1100,10 +1101,10 @@ struct FBTrainer[
         """
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.bnet.online.for_each_param[Self.TARGET](w, self.ctx, "b")
-        self.f1.online.for_each_param[Self.TARGET](w, self.ctx, "f1")
-        self.f2.online.for_each_param[Self.TARGET](w, self.ctx, "f2")
-        self.actor.online.for_each_param[Self.TARGET](w, self.ctx, "actor")
+        walk_params[Self.TARGET](self.bnet.online, w, self.ctx, "b")
+        walk_params[Self.TARGET](self.f1.online, w, self.ctx, "f1")
+        walk_params[Self.TARGET](self.f2.online, w, self.ctx, "f2")
+        walk_params[Self.TARGET](self.actor.online, w, self.ctx, "actor")
         w.mode = 1
         self.bnet.online.for_each_state[Self.TARGET](w, self.ctx, "b")
         self.f1.online.for_each_state[Self.TARGET](w, self.ctx, "f1")
@@ -1132,10 +1133,10 @@ struct FBTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.bnet.online.for_each_param[Self.TARGET](r, self.ctx, "b")
-        self.f1.online.for_each_param[Self.TARGET](r, self.ctx, "f1")
-        self.f2.online.for_each_param[Self.TARGET](r, self.ctx, "f2")
-        self.actor.online.for_each_param[Self.TARGET](r, self.ctx, "actor")
+        walk_params[Self.TARGET](self.bnet.online, r, self.ctx, "b")
+        walk_params[Self.TARGET](self.f1.online, r, self.ctx, "f1")
+        walk_params[Self.TARGET](self.f2.online, r, self.ctx, "f2")
+        walk_params[Self.TARGET](self.actor.online, r, self.ctx, "actor")
         r.mode = 1
         self.bnet.online.for_each_state[Self.TARGET](r, self.ctx, "b")
         self.f1.online.for_each_state[Self.TARGET](r, self.ctx, "f1")

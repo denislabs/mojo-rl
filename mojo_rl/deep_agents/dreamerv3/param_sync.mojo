@@ -23,14 +23,14 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRT, walk_params
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import GraphDecl
 
 
 # Snapshot visitor: copy each param's values into the dict by name (downloads
 # on GPU first so `param.data` is current).
-struct _SnapshotVisitor(Movable, ParamVisitor):
+struct _SnapshotVisitor(Movable, ParamVisitor, ParamVisitorRT):
     var d: Dict[String, List[Scalar[DT]]]
 
     def __init__(out self):
@@ -39,20 +39,21 @@ struct _SnapshotVisitor(Movable, ParamVisitor):
     def take(deinit self) -> Dict[String, List[Scalar[DT]]]:
         return self.d^
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
             param.download(ctx.value())
-        var vals = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
-        for i in range(N):
+        var vals = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+        for i in range(n):
             vals[i] = param.data[i]
         self.d[name] = vals^
 
@@ -60,13 +61,6 @@ struct _SnapshotVisitor(Movable, ParamVisitor):
 # Named-import visitor: for each dst param, if its name is in the snapshot,
 # copy the values into the slab (uploads on GPU). Names not present are left
 # at their current value (the dst-only params with no source match).
-struct _NamedImportVisitor(ParamVisitor):
-    var d: Dict[String, List[Scalar[DT]]]
-    var missing: Int
-
-    def __init__(out self, var d: Dict[String, List[Scalar[DT]]]):
-        self.d = d^
-        self.missing = 0
 
     def visit[target: StaticString, N: Int](
         mut self,
@@ -78,19 +72,49 @@ struct _NamedImportVisitor(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _NamedImportVisitor(ParamVisitor, ParamVisitorRT):
+    var d: Dict[String, List[Scalar[DT]]]
+    var missing: Int
+
+    def __init__(out self, var d: Dict[String, List[Scalar[DT]]]):
+        self.d = d^
+        self.missing = 0
+
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
         if name not in self.d:
             self.missing += 1
             return
         ref vals = self.d[name]
-        param.ensure(N)
-        var nn = len(vals) if len(vals) < N else N
+        param.ensure(n)
+        var nn = len(vals) if len(vals) < n else n
         for i in range(nn):
             param.data[i] = vals[i]
-        param.n = N
+        param.n = n
         comptime if target == "gpu":
             param.upload(ctx.value())
 
-
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def collect_graph_params[
     target: StaticString, *DECLS: GraphDecl
 ](
@@ -100,7 +124,7 @@ def collect_graph_params[
     """Snapshot every param of `src` into a `name → values` Dict (downloads
     on GPU). Target-agnostic result (host values either way)."""
     var v = _SnapshotVisitor()
-    src.for_each_param[target](v, ctx)
+    walk_params[target](src, v, ctx)
     return v^.take()
 
 
@@ -114,7 +138,7 @@ def apply_graph_params[
     """Copy every shared-name param value from the snapshot into `dst` (skips
     names with no match; uploads on GPU)."""
     var v = _NamedImportVisitor(snap.copy())
-    dst.for_each_param[target](v, ctx)
+    walk_params[target](dst, v, ctx)
 
 
 # ── Device-direct variant (Stage 3 P5; GPU capture path) ──────────────────
@@ -128,7 +152,7 @@ def apply_graph_params[
 # train_step is unchanged.
 
 
-struct _DevSnapshotVisitor(Movable, ParamVisitor):
+struct _DevSnapshotVisitor(Movable, ParamVisitor, ParamVisitorRT):
     """name → source param DEVICE pointer (GPU-only; no host download)."""
 
     var d: Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]
@@ -138,6 +162,22 @@ struct _DevSnapshotVisitor(Movable, ParamVisitor):
 
     def take(deinit self) -> Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]:
         return self.d^
+
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            self.d[name] = rebind[
+                Pointer[Scalar[DT], MutUntrackedOrigin]
+            ](param.dev.value().unsafe_ptr())
 
     def visit[target: StaticString, N: Int](
         mut self,
@@ -149,13 +189,8 @@ struct _DevSnapshotVisitor(Movable, ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target == "gpu":
-            self.d[name] = rebind[
-                Pointer[Scalar[DT], MutUntrackedOrigin]
-            ](param.dev.value().unsafe_ptr())
-
-
-struct _DevImportVisitor(ParamVisitor):
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct _DevImportVisitor(ParamVisitor, ParamVisitorRT):
     """For each dst param whose name is in the snapshot, device→device copy the
     source buffer in (no host upload). Names with no match are left as-is."""
 
@@ -170,6 +205,22 @@ struct _DevImportVisitor(ParamVisitor):
         self.d = d^
         self.ctx = ctx
 
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            if name not in self.d:
+                return
+            param.copy_from_device(self.ctx, self.d[name].as_unsafe_any_origin(), n)
+
     def visit[target: StaticString, N: Int](
         mut self,
         name: String,
@@ -180,12 +231,7 @@ struct _DevImportVisitor(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target == "gpu":
-            if name not in self.d:
-                return
-            param.copy_from_device(self.ctx, self.d[name].as_unsafe_any_origin(), N)
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def collect_graph_params_device[
     target: StaticString, *DECLS: GraphDecl
 ](
@@ -194,7 +240,7 @@ def collect_graph_params_device[
 ) raises -> Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]:
     """Snapshot each `src` param's DEVICE pointer by name (GPU; no download)."""
     var v = _DevSnapshotVisitor()
-    src.for_each_param[target](v, ctx)
+    walk_params[target](src, v, ctx)
     return v^.take()
 
 
@@ -208,4 +254,4 @@ def apply_graph_params_device[
     """Device→device copy each shared-name source buffer into `dst` (GPU; no
     upload). Capture-safe core→imagine mirror."""
     var v = _DevImportVisitor(snap^, ctx)
-    dst.for_each_param[target](v, Optional[DeviceContext](ctx))
+    walk_params[target](dst, v, Optional[DeviceContext](ctx))

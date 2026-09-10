@@ -25,6 +25,7 @@ MCTS device buffers stay category-B raw `DeviceBuffer`s. The training batch is
 bridged into storage Tensors by `sample_batch_tensors` + `upload`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
@@ -192,7 +193,7 @@ def run_alphazero_selfplay[
                 graph.forward[BATCH, "gpu"](loss_t, octx, net)
                 graph.vjp[BATCH, "gpu"](grad_t, octx, net)
                 opt.begin_step()
-                net.for_each_param["gpu"](opt, octx)
+                walk_params["gpu"](net, opt, octx)
             loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):

@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamVisitorRT, walk_params
 from ..core.param import ParamWalkable
 from ..core.named_params import named_params
 
@@ -62,7 +62,7 @@ def align_param_off(off: Int) -> Int:
     return ((off + PARAM_ALIGN - 1) // PARAM_ALIGN) * PARAM_ALIGN
 
 
-struct ParamArena(Movable & ParamVisitor):
+struct ParamArena(Movable & ParamVisitor & ParamVisitorRT):
     var val: Tensor  # contiguous param-value arena
     var grd: Tensor  # contiguous gradient arena
     var decay_mask: Tensor  # per-element 0/1 weight-decay gate
@@ -78,15 +78,14 @@ struct ParamArena(Movable & ParamVisitor):
         self.adopted = False
         self._off = 0
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -97,15 +96,26 @@ struct ParamArena(Movable & ParamVisitor):
         comptime if target == "gpu":
             var c = ctx.value()
             self._off = align_param_off(self._off)
-            var vsub = self.val.dev.value().create_sub_buffer[DT](self._off, N)
+            var vsub = self.val.dev.value().create_sub_buffer[DT](self._off, n)
             c.enqueue_copy(vsub, param.dev.value())  # preserve init values
             param.dev = Optional(vsub)
-            param.n = N
-            var gsub = self.grd.dev.value().create_sub_buffer[DT](self._off, N)
+            param.n = n
+            var gsub = self.grd.dev.value().create_sub_buffer[DT](self._off, n)
             grad.dev = Optional(gsub)
-            grad.n = N
-            self._off += N
+            grad.n = n
+            self._off += n
 
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
     def adopt[
         target: StaticString, M: ParamWalkable
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
@@ -133,7 +143,7 @@ struct ParamArena(Movable & ParamVisitor):
             self.val = Tensor.alloc_gpu(c, total)  # zeroed
             self.grd = Tensor.alloc_gpu(c, total)
             self._off = 0
-            model.for_each_param["gpu"](self, Optional(c))
+            walk_params["gpu"](model, self, Optional(c))
             self.adopted = True
 
     def adopt_multi[
@@ -183,7 +193,7 @@ struct ParamArena(Movable & ParamVisitor):
             # that is the whole difference from calling `adopt` N times.
             self._off = 0
             comptime for i in range(models.__len__()):
-                models[i].for_each_param["gpu"](self, Optional(c))
+                walk_params["gpu"](models[i], self, Optional(c))
             self.adopted = True
 
     def zero_grad(mut self) raises:

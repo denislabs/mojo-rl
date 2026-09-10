@@ -61,7 +61,7 @@ than being merely faster.
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.param import ParamVersionBump
+from mojo_rl.nn.core.param import ParamVersionBump, walk_params
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.checkpoint import (
@@ -225,22 +225,21 @@ def adam_step_trainables[
             # ONE grouped kernel over the whole trainable set.
             opt.arena_step(ctx.value())
             var b = ParamVersionBump()
-            expert.for_each_param[target](b, ctx, String("expert"))
-            action_in.for_each_param[target](b, ctx, String("action_in"))
-            time_mlp_in.for_each_param[target](b, ctx, String("time_mlp_in"))
-            time_mlp_out.for_each_param[target](
-                b, ctx, String("time_mlp_out")
+            walk_params[target](expert, b, ctx, String("expert"))
+            walk_params[target](action_in, b, ctx, String("action_in"))
+            walk_params[target](time_mlp_in, b, ctx, String("time_mlp_in"))
+            walk_params[target](time_mlp_out, b, ctx, String("time_mlp_out")
             )
-            action_out.for_each_param[target](b, ctx, String("action_out"))
+            walk_params[target](action_out, b, ctx, String("action_out"))
             return
     opt.begin_step()
-    expert.for_each_param[target](opt, ctx, String("expert"))
-    action_in.for_each_param[target](opt, ctx, String("action_in"))
-    time_mlp_in.for_each_param[target](opt, ctx, String("time_mlp_in"))
-    time_mlp_out.for_each_param[target](opt, ctx, String("time_mlp_out"))
-    action_out.for_each_param[target](opt, ctx, String("action_out"))
+    walk_params[target](expert, opt, ctx, String("expert"))
+    walk_params[target](action_in, opt, ctx, String("action_in"))
+    walk_params[target](time_mlp_in, opt, ctx, String("time_mlp_in"))
+    walk_params[target](time_mlp_out, opt, ctx, String("time_mlp_out"))
+    walk_params[target](action_out, opt, ctx, String("action_out"))
     comptime if TRAIN_STATE_PROJ:
-        state_proj.for_each_param[target](opt, ctx, String("state_proj"))
+        walk_params[target](state_proj, opt, ctx, String("state_proj"))
 
     # ⚠ The version bump `Adam.step` does after its walk, which is NOT
     # cosmetic: leaves that cache a derived form of a weight (the bf16 cast,
@@ -248,13 +247,13 @@ def adam_step_trainables[
     # never happens leaves the forward reading pre-update weights forever.
     # That exact defect has been shipped here before.
     var bump = ParamVersionBump()
-    expert.for_each_param[target](bump, ctx, String("expert"))
-    action_in.for_each_param[target](bump, ctx, String("action_in"))
-    time_mlp_in.for_each_param[target](bump, ctx, String("time_mlp_in"))
-    time_mlp_out.for_each_param[target](bump, ctx, String("time_mlp_out"))
-    action_out.for_each_param[target](bump, ctx, String("action_out"))
+    walk_params[target](expert, bump, ctx, String("expert"))
+    walk_params[target](action_in, bump, ctx, String("action_in"))
+    walk_params[target](time_mlp_in, bump, ctx, String("time_mlp_in"))
+    walk_params[target](time_mlp_out, bump, ctx, String("time_mlp_out"))
+    walk_params[target](action_out, bump, ctx, String("action_out"))
     comptime if TRAIN_STATE_PROJ:
-        state_proj.for_each_param[target](bump, ctx, String("state_proj"))
+        walk_params[target](state_proj, bump, ctx, String("state_proj"))
 
 
 def save_trainables[

@@ -15,7 +15,7 @@ storage `Module` surface (`forward[target,B](TensorRefs[1](in), out, ctx)` /
 (WMCore/WMImagine/Dec/Rew/Con) own their params and drive through the storage
 `ComputeGraph` surface (`set_input` / `forward[B,target]` / `vjp[B,target]` /
 `node_output` / `grad_input`); DreamerOpt drives Modules via `step[target,M]` and
-graphs via `begin_step(); graph.for_each_param[target](opt, ctx)`.
+graphs via `begin_step(); walk_params[target](graph, opt, ctx)`.
 
 The Phase-1 host loss helpers (`imag_loss_*` / `repl_loss_backward` /
 `twohot_pred` / `bounded_std` / `cat_sample`) are unchanged free functions taking
@@ -33,6 +33,7 @@ noise/bins upload, ONE `ret` download for the percentile retnorm, and the
 CPU↔GPU parity gates hold.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.memory import alloc
 from std.math import tanh, exp, sqrt, log, cos
 from std.random import random_float64
@@ -1949,13 +1950,13 @@ struct WMStep[
         # optimizer steps
         oe.step[target, M=Self.EncT](enc, None)
         ocore.begin_step()
-        core.for_each_param[target](ocore, None)
+        walk_params[target](core, ocore, None)
         odec.begin_step()
-        dec.for_each_param[target](odec, None)
+        walk_params[target](dec, odec, None)
         orew.begin_step()
-        rew.for_each_param[target](orew, None)
+        walk_params[target](rew, orew, None)
         ocon.begin_step()
-        con.for_each_param[target](ocon, None)
+        walk_params[target](con, ocon, None)
         var _nbt = Scalar[DT](Self.B * Self.T)
         st.dbg_dyn_kl = acc_dyn / _nbt
         st.dbg_rep_kl = acc_rep / _nbt
@@ -2226,13 +2227,13 @@ struct WMStep[
         # optimizer steps (device bias-correction advance — capture-safe)
         oe.step[target, M=Self.EncT](enc, ctx)
         ocore.begin_step_gpu(ctx)
-        core.for_each_param[target](ocore, ctx)
+        walk_params[target](core, ocore, ctx)
         odec.begin_step_gpu(ctx)
-        dec.for_each_param[target](odec, ctx)
+        walk_params[target](dec, odec, ctx)
         orew.begin_step_gpu(ctx)
-        rew.for_each_param[target](orew, ctx)
+        walk_params[target](rew, orew, ctx)
         ocon.begin_step_gpu(ctx)
-        con.for_each_param[target](ocon, ctx)
+        walk_params[target](con, ocon, ctx)
         # ── end-of-step readout (Stage 3 P3). ──
         # Carry handoff: copy the scan carry straight into the shared DreamerState
         # device buffers the device-resident AC reads — for BOTH discrete

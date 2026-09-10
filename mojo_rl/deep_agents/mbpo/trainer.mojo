@@ -20,6 +20,7 @@ CPU is behaviorally equivalent to the prior CPU MBPOTrainer. Conforms to
 `OffPolicyAgentGpu`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp as fexp, sqrt as fsqrt, log as flog, tanh as ftanh
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
@@ -1262,16 +1263,13 @@ struct MBPOTrainer[
         + elite indices NOT persisted (resume re-warms the dynamics)."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
-        self.pair1.online.for_each_param[Self.train_target](
-            w, self.ctx, "critic1"
+        walk_params[Self.train_target](self.actor, w, self.ctx, "actor")
+        walk_params[Self.train_target](self.pair1.online, w, self.ctx, "critic1"
         )
-        self.pair2.online.for_each_param[Self.train_target](
-            w, self.ctx, "critic2"
+        walk_params[Self.train_target](self.pair2.online, w, self.ctx, "critic2"
         )
         for i in range(Self.N_ENSEMBLE):
-            self.ensemble.members[i].for_each_param[Self.train_target](
-                w, self.ctx, "dyn_member" + String(i)
+            walk_params[Self.train_target](self.ensemble.members[i], w, self.ctx, "dyn_member" + String(i)
             )
         w.mode = 1
         self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
@@ -1300,16 +1298,13 @@ struct MBPOTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
-        self.pair1.online.for_each_param[Self.train_target](
-            r, self.ctx, "critic1"
+        walk_params[Self.train_target](self.actor, r, self.ctx, "actor")
+        walk_params[Self.train_target](self.pair1.online, r, self.ctx, "critic1"
         )
-        self.pair2.online.for_each_param[Self.train_target](
-            r, self.ctx, "critic2"
+        walk_params[Self.train_target](self.pair2.online, r, self.ctx, "critic2"
         )
         for i in range(Self.N_ENSEMBLE):
-            self.ensemble.members[i].for_each_param[Self.train_target](
-                r, self.ctx, "dyn_member" + String(i)
+            walk_params[Self.train_target](self.ensemble.members[i], r, self.ctx, "dyn_member" + String(i)
             )
         r.mode = 1
         self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")

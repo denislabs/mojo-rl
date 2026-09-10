@@ -17,6 +17,7 @@ replay stay category-B raw host buffers (the env/replay interop boundary); the
 batch is bridged into storage Tensors by `sample_batch_tensors`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from mojo_rl.nn.core.ptr import untracked
 from std.memory import Pointer
 
@@ -204,7 +205,7 @@ def run_alphazero_selfplay_cpu[
                 graph.forward[BATCH, "cpu"](loss_t, None, net)
                 graph.vjp[BATCH, "cpu"](grad_t, None, net)
                 opt.begin_step()
-                net.for_each_param["cpu"](opt, None)
+                walk_params["cpu"](net, opt, None)
             var ml: Float64 = 0.0
             for b in range(BATCH):
                 ml += Float64(loss_t.data[b])

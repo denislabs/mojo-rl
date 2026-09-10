@@ -26,6 +26,7 @@ CPU + GPU bodies share one `_train_step_impl[POLICY]`. No D2H/H2D in the GPU
 train step (all gather/scatter on-device).
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.random import random_float64
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -849,8 +850,7 @@ struct DQNTrainer[
         loads). The target net is hard-copied from online on load."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.pair.online.for_each_param[Self.train_target](
-            w, self.ctx, "q_net"
+        walk_params[Self.train_target](self.pair.online, w, self.ctx, "q_net"
         )
         w.mode = 1
         self.pair.online.for_each_state[Self.train_target](
@@ -880,8 +880,7 @@ struct DQNTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.pair.online.for_each_param[Self.train_target](
-            r, self.ctx, "q_net"
+        walk_params[Self.train_target](self.pair.online, r, self.ctx, "q_net"
         )
         r.mode = 1
         self.pair.online.for_each_state[Self.train_target](

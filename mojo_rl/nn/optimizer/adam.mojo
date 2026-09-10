@@ -26,7 +26,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor, ParamVersionBump, ParamVisitorRT, ParamVisitorRef
+from ..core.param import ParamVisitor, ParamVersionBump, ParamVisitorRT, ParamVisitorRef, walk_params
 from ..core.param import ParamWalkable
 from .param_arena import ParamArena, align_param_off
 from .grad_clip import (
@@ -190,7 +190,7 @@ def _grouped_adam_kernel_devlr(
 # ── arena moment placement ───────────────────────────────────────────────
 
 
-struct _MomentPlacer(ParamVisitor):
+struct _MomentPlacer(ParamVisitor, ParamVisitorRT):
     """Rebind every Param's `m`/`v` Tensors to slices of the arena moments.
 
     ⚠ Without this, arena mode SILENTLY DROPS the optimizer moments from every
@@ -220,9 +220,28 @@ struct _MomentPlacer(ParamVisitor):
         self.v_arena = move.v_arena
         self.off = move.off
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            # Same rounding as `ParamArena` — the moments alias val/grd BY
+            # OFFSET, so the two walks must land on identical boundaries.
+            self.off = align_param_off(self.off)
+            m.dev = Optional(self.m_arena.create_sub_buffer[DT](self.off, n))
+            m.n = n
+            v.dev = Optional(self.v_arena.create_sub_buffer[DT](self.off, n))
+            v.n = n
+            self.off += n
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -232,17 +251,7 @@ struct _MomentPlacer(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        comptime if target == "gpu":
-            # Same rounding as `ParamArena` — the moments alias val/grd BY
-            # OFFSET, so the two walks must land on identical boundaries.
-            self.off = align_param_off(self.off)
-            m.dev = Optional(self.m_arena.create_sub_buffer[DT](self.off, N))
-            m.n = N
-            v.dev = Optional(self.v_arena.create_sub_buffer[DT](self.off, N))
-            v.n = N
-            self.off += N
-
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 struct Adam(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -365,7 +374,7 @@ struct Adam(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
             var mp = _MomentPlacer(
                 self.m_arena.dev.value(), self.v_arena.dev.value()
             )
-            model.for_each_param["gpu"](mp, ctx)
+            walk_params["gpu"](model, mp, ctx)
 
     def adopt_multi[
         target: StaticString, *Ms: ParamWalkable
@@ -399,7 +408,7 @@ struct Adam(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
                 self.m_arena.dev.value(), self.v_arena.dev.value()
             )
             comptime for i in range(models.__len__()):
-                models[i].for_each_param["gpu"](mp, ctx)
+                walk_params["gpu"](models[i], mp, ctx)
 
     def arena_step(mut self, c: DeviceContext) raises:
         """One grouped update over an arena adopted with `adopt_multi`.

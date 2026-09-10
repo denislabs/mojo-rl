@@ -42,6 +42,7 @@ With the defaults (`OPP*=RandomOpponent`, `L=NoOpLogger`, `report_every=0`,
 behaviour.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp, log, tanh
 from std.memory import Pointer
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -532,7 +533,7 @@ def run_alphazero_selfplay_arena[
                     learner, Scalar[DT](max_grad_norm), octx
                 )
                 opt.begin_step()
-                learner.for_each_param["gpu"](opt, octx)
+                walk_params["gpu"](learner, opt, octx)
             loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):

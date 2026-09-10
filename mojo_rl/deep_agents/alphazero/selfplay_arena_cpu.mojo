@@ -11,6 +11,7 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 `net` is the *best* and holds the final weights on return.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from mojo_rl.nn.core.ptr import untracked
 from std.memory import Pointer
 
@@ -282,7 +283,7 @@ def run_alphazero_selfplay_arena_cpu[
                     learner, Scalar[DT](max_grad_norm), None
                 )
                 opt.begin_step()
-                learner.for_each_param["cpu"](opt, None)
+                walk_params["cpu"](learner, opt, None)
             var ml: Float64 = 0.0
             for b in range(BATCH):
                 ml += Float64(loss_t.data[b])

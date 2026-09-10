@@ -15,28 +15,26 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor, ParamVersionBump
+from ..core.param import ParamVisitor, ParamVersionBump, ParamVisitorRT, walk_params
 from ..core.param import ParamWalkable
 from .param_arena import ParamArena
 from .grad_clip import clip_grad_norm, clip_arena_grads
 from .optimizer import Optimizer
 
 
-def _sgd_kernel[
-    N: Int
-](
-    param: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _sgd_kernel_rt(
+    param: Pointer[Scalar[DT], MutAnyOrigin],
+    grad: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
     lr: Scalar[DT],
     wd: Scalar[DT],
     apply_decay_arg: Int64,
 ):
-    """Per-param update (one Param, comptime size N)."""
-    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
-    # a fixed-width `Int64` and re-binds the original name here.
+    """Per-param SGD update with the length at RUNTIME (one kernel for every
+    Param; reached through `ParamVisitorRef`)."""
     var apply_decay = Int(apply_decay_arg)
     var i = Int(global_idx.x)
-    if i < N:
+    if i < Int(n_arg):
         var d = grad[i]
         if apply_decay != 0:
             d += wd * param[i]
@@ -64,7 +62,7 @@ def _grouped_sgd_kernel(
     val[unsafe_offset=i] -= lr * d
 
 
-struct SGD(Movable, ParamVisitor, Optimizer):
+struct SGD(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
     var lr: Scalar[DT]
     var wd: Scalar[DT]
     var arena: ParamArena
@@ -89,16 +87,16 @@ struct SGD(Movable, ParamVisitor, Optimizer):
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """GPU+adopted → one arena kernel; CPU or un-adopted GPU → per-param."""
         comptime if target == "cpu":
-            model.for_each_param["cpu"](self, ctx)
+            walk_params["cpu"](model, self, ctx)
         else:
             if self.arena.adopted:
                 self._grouped_step(ctx.value())
             else:
-                model.for_each_param["gpu"](self, ctx)
+                walk_params["gpu"](model, self, ctx)
         # AMP: invalidate cached bf16 weights (see Adam.step). Host-only walk;
         # covers per-param AND arena paths.
         var _bump = ParamVersionBump()
-        model.for_each_param[target](_bump, ctx)
+        walk_params[target](model, _bump, ctx)
 
     def _grouped_step(mut self, c: DeviceContext) raises:
         if self.arena.total == 0:
@@ -144,20 +142,19 @@ struct SGD(Movable, ParamVisitor, Optimizer):
                 return clip_arena_grads(self.arena, max_norm, ctx.value())
         return clip_grad_norm[target](model, max_norm, ctx)
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,  # unused (SGD is stateless)
         mut v: Tensor,  # unused
+        n: Int,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "cpu":
-            for i in range(N):
+            for i in range(n):
                 var p = param.data[i]
                 var d = grad.data[i]
                 if apply_decay:
@@ -165,19 +162,27 @@ struct SGD(Movable, ParamVisitor, Optimizer):
                 param.data[i] = p - self.lr * d
         else:
             var c = ctx.value()
-            comptime layout = Layout.row_major(N)
-            comptime nblk = (N + TPB - 1) // TPB
-            c.enqueue_function[_sgd_kernel[N]](
-                param.lt["gpu", layout](),
-                grad.lt["gpu", layout](),
+            var nblk = (n + TPB - 1) // TPB
+            c.enqueue_function[_sgd_kernel_rt](
+                param.dev.value(),
+                grad.dev.value(),
+                Int64(n),
                 self.lr,
                 self.wd,
                 Int64(apply_decay),
                 grid_dim=nblk,
                 block_dim=256,
             )
-        # The write is here, so the cache invalidation is too — see the same
-        # note in `Adam.visit`. A caller that drives this visitor directly gets
-        # no `ParamVersionBump` walk, and `Linear.w_pad` / `w_bf` would then
-        # serve a stale weight forever.
         param.version += 1
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)

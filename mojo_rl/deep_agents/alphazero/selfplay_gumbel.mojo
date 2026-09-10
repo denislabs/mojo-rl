@@ -19,6 +19,7 @@ GPU; the improved policy is pulled to host only to sample the action, which this
 driver does on the host by design).
 """
 
+from mojo_rl.nn.core.param import walk_params
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
@@ -205,7 +206,7 @@ def run_alphazero_gumbel_selfplay[
                 graph.forward[BATCH, "gpu"](loss_t, octx, net)
                 graph.vjp[BATCH, "gpu"](grad_t, octx, net)
                 opt.begin_step()
-                net.for_each_param["gpu"](opt, octx)
+                walk_params["gpu"](net, opt, octx)
             loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):

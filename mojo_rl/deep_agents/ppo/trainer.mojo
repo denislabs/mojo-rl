@@ -30,6 +30,7 @@ the per-sample / EV kernels read/write owned `Tensor`s via `.lt["gpu", layout]()
 views (no raw pointers).
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -913,8 +914,8 @@ struct PPOTrainer[
         Optimizer moments are NOT persisted (on-policy resume re-rolls)."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
-        self.critic.for_each_param[Self.train_target](w, self.ctx, "critic")
+        walk_params[Self.train_target](self.actor, w, self.ctx, "actor")
+        walk_params[Self.train_target](self.critic, w, self.ctx, "critic")
         w.mode = 1
         self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
         self.critic.for_each_state[Self.train_target](w, self.ctx, "critic")
@@ -939,8 +940,8 @@ struct PPOTrainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
-        self.critic.for_each_param[Self.train_target](r, self.ctx, "critic")
+        walk_params[Self.train_target](self.actor, r, self.ctx, "actor")
+        walk_params[Self.train_target](self.critic, r, self.ctx, "critic")
         r.mode = 1
         self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
         self.critic.for_each_state[Self.train_target](r, self.ctx, "critic")

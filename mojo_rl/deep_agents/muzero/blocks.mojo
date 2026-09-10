@@ -29,6 +29,7 @@ follows. The min-max latent scaling lives inside the nets (`MZRepNet`/`MZDynNet`
 ``MinMaxNorm`` tails), so it is already in the autodiff graph — no separate scale.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 from std.gpu import global_idx
@@ -330,13 +331,13 @@ def mz_unroll_train_step_cpu[
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
     _ = clip_grad_norm["cpu", PRED](pred, Scalar[DT](max_grad_norm), None)
     opred.begin_step()
-    pred.for_each_param["cpu"](opred, None)
+    walk_params["cpu"](pred, opred, None)
     _ = clip_grad_norm["cpu", DYN](dyn, Scalar[DT](max_grad_norm), None)
     odyn.begin_step()
-    dyn.for_each_param["cpu"](odyn, None)
+    walk_params["cpu"](dyn, odyn, None)
     _ = clip_grad_norm["cpu", REP](rep, Scalar[DT](max_grad_norm), None)
     orep.begin_step()
-    rep.for_each_param["cpu"](orep, None)
+    walk_params["cpu"](rep, orep, None)
 
     if loss_parts:
         var lp = loss_parts.value()
@@ -985,13 +986,13 @@ def mz_unroll_train_step_gpu[
     # `_mz_arena_opt_step_gpu` instead (arena, capture-safe).
     _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
     opred.begin_step()
-    pred.for_each_param["gpu"](opred, octx)
+    walk_params["gpu"](pred, opred, octx)
     _ = clip_grad_norm["gpu", DYN](dyn, Scalar[DT](max_grad_norm), octx)
     odyn.begin_step()
-    dyn.for_each_param["gpu"](odyn, octx)
+    walk_params["gpu"](dyn, odyn, octx)
     _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
     orep.begin_step()
-    rep.for_each_param["gpu"](orep, octx)
+    walk_params["gpu"](rep, orep, octx)
 
     return _mz_train_epilogue_gpu[B, K, OBS, ACT, LATENT, BINS](
         ctx, scratch, want_prio, loss_parts, out_prio

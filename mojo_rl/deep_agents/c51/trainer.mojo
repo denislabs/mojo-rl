@@ -20,6 +20,7 @@ unsafe_ptr). CPU + GPU; CUDA-graph capture surface preserved.
 Conforms to `OffPolicyDiscreteAgentGpu`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.math import exp as fexp, log as flog
 from std.random import random_float64
 from std.gpu import global_idx
@@ -903,7 +904,7 @@ struct C51Trainer[
         online on load."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.pair.online.for_each_param[Self.train_target](w, self.ctx, "q_net")
+        walk_params[Self.train_target](self.pair.online, w, self.ctx, "q_net")
         w.mode = 1
         self.pair.online.for_each_state[Self.train_target](w, self.ctx, "q_net")
         w.content += "eps.epsilon=" + String(self.epsilon) + "\n"
@@ -929,7 +930,7 @@ struct C51Trainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.pair.online.for_each_param[Self.train_target](r, self.ctx, "q_net")
+        walk_params[Self.train_target](self.pair.online, r, self.ctx, "q_net")
         r.mode = 1
         self.pair.online.for_each_state[Self.train_target](r, self.ctx, "q_net")
         self.epsilon = self._scan_scalar(content, "eps.epsilon=", self.epsilon)

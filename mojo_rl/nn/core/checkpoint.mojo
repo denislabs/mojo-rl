@@ -40,7 +40,7 @@ from std.sys.info import size_of
 from mojo_rl.io.fileio import read_file_bytes, write_file_atomic
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamVisitorRT, walk_params
 from .param import ParamWalkable
 
 def _write_file_bytes(var path: String, content: List[UInt8]) raises:
@@ -106,7 +106,7 @@ def _split_lines(content: String) -> List[String]:
     return lines^
 
 
-struct CheckpointWriter(ParamVisitor):
+struct CheckpointWriter(ParamVisitor, ParamVisitorRT):
     """Appends a named section per visited Param/State. `mode`: 0 = Param (P,
     with optional moments), 1 = State (S). `save_moments` gates m/v output."""
     var content: String
@@ -118,37 +118,47 @@ struct CheckpointWriter(ParamVisitor):
         self.mode = 0
         self.save_moments = save_moments
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
             param.download(ctx.value())
         if self.mode == 1:  # State
-            self.content += "S " + name + " " + String(N) + "\n"
-            for i in range(N):
+            self.content += "S " + name + " " + String(n) + "\n"
+            for i in range(n):
                 self.content += String(param.data[i]) + "\n"
             return
         # Param: include moments when populated (optimizer has stepped).
-        var has_m = self.save_moments and m.n >= N and v.n >= N
+        var has_m = self.save_moments and m.n >= n and v.n >= n
         comptime if target == "gpu":
             if has_m:
                 m.download(ctx.value())
                 v.download(ctx.value())
         self.content += (
-            "P " + name + " " + String(N) + " " + ("1" if has_m else "0") + "\n"
+            "P " + name + " " + String(n) + " " + ("1" if has_m else "0") + "\n"
         )
-        for i in range(N):
+        for i in range(n):
             self.content += String(param.data[i]) + "\n"
         if has_m:
-            for i in range(N):
+            for i in range(n):
                 self.content += String(m.data[i]) + "\n"
-            for i in range(N):
+            for i in range(n):
                 self.content += String(v.data[i]) + "\n"
 
-
-struct CheckpointReader(ParamVisitor):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct CheckpointReader(ParamVisitor, ParamVisitorRT):
     """Consumes one named section per visited Param/State, validating the
     section kind + dotted name + size against the in-memory walk (topology-drift
     catch). Restores values and, for Params, the m/v moments if present."""
@@ -168,9 +178,9 @@ struct CheckpointReader(ParamVisitor):
         self.cur += 1
         return s
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         var hdr = self._next()
@@ -186,12 +196,12 @@ struct CheckpointReader(ParamVisitor):
                 "checkpoint: name mismatch — model expects `" + name
                 + "`, checkpoint has `" + toks[1] + "` (topology drift)"
             )
-        if atol(toks[2]) != N:
+        if atol(toks[2]) != n:
             raise Error(
                 "checkpoint: size mismatch for `" + name + "` — model "
-                + String(N) + ", checkpoint " + toks[2]
+                + String(n) + ", checkpoint " + toks[2]
             )
-        for i in range(N):
+        for i in range(n):
             param.data[i] = Scalar[DT](atof(self._next()))
         # ⚠ RESTORING A WEIGHT IS A WRITE, so it must advance `version` — the
         # same contract the optimizer honours via `ParamVersionBump`. Leaves
@@ -203,11 +213,11 @@ struct CheckpointReader(ParamVisitor):
         # already acted hits exactly that.
         param.version += 1
         if self.mode == 0 and len(toks) >= 4 and toks[3] == "1":
-            m.ensure(N)
-            v.ensure(N)
-            for i in range(N):
+            m.ensure(n)
+            v.ensure(n)
+            for i in range(n):
                 m.data[i] = Scalar[DT](atof(self._next()))
-            for i in range(N):
+            for i in range(n):
                 v.data[i] = Scalar[DT](atof(self._next()))
             comptime if target == "gpu":
                 m.upload_resident(ctx.value())
@@ -222,8 +232,18 @@ struct CheckpointReader(ParamVisitor):
             # synchronizations per parameter.
             param.upload_resident(ctx.value())
 
-
-struct BinaryCheckpointWriter(ParamVisitor):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct BinaryCheckpointWriter(ParamVisitor, ParamVisitorRT):
     """V3 twin of `CheckpointWriter`: text section headers, raw-byte payloads.
     `mode`: 0 = Param (P, with optional moments), 1 = State (S)."""
     var content: List[UInt8]
@@ -236,36 +256,46 @@ struct BinaryCheckpointWriter(ParamVisitor):
         self.mode = 0
         self.save_moments = save_moments
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
             param.download(ctx.value())
         if self.mode == 1:  # State
             _bytes_append_str(
-                self.content, "S " + name + " " + String(N) + "\n"
+                self.content, "S " + name + " " + String(n) + "\n"
             )
-            _bytes_append_vals(self.content, param, N)
+            _bytes_append_vals(self.content, param, n)
             return
-        var has_m = self.save_moments and m.n >= N and v.n >= N
+        var has_m = self.save_moments and m.n >= n and v.n >= n
         comptime if target == "gpu":
             if has_m:
                 m.download(ctx.value())
                 v.download(ctx.value())
         _bytes_append_str(
             self.content,
-            "P " + name + " " + String(N) + " "
+            "P " + name + " " + String(n) + " "
             + ("1" if has_m else "0") + "\n",
         )
-        _bytes_append_vals(self.content, param, N)
+        _bytes_append_vals(self.content, param, n)
         if has_m:
-            _bytes_append_vals(self.content, m, N)
-            _bytes_append_vals(self.content, v, N)
+            _bytes_append_vals(self.content, m, n)
+            _bytes_append_vals(self.content, v, n)
 
-
-struct BinaryCheckpointReader(ParamVisitor):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
+struct BinaryCheckpointReader(ParamVisitor, ParamVisitorRT):
     """V3 twin of `CheckpointReader`: byte-cursor over the whole file, same
     name/size/topology validation as v2."""
     var bytes: List[UInt8]
@@ -306,9 +336,9 @@ struct BinaryCheckpointReader(ParamVisitor):
         )
         self.cur += n * SB
 
-    def visit[target: StaticString, N: Int](
+    def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         var hdr = self._next_line()
@@ -324,21 +354,21 @@ struct BinaryCheckpointReader(ParamVisitor):
                 "checkpoint: name mismatch — model expects `" + name
                 + "`, checkpoint has `" + toks[1] + "` (topology drift)"
             )
-        if atol(toks[2]) != N:
+        if atol(toks[2]) != n:
             raise Error(
                 "checkpoint: size mismatch for `" + name + "` — model "
-                + String(N) + ", checkpoint " + toks[2]
+                + String(n) + ", checkpoint " + toks[2]
             )
-        self._take_vals(param, N)
+        self._take_vals(param, n)
         # See the note in `CheckpointReader.visit` — restoring a weight must
         # advance `version` or the version-gated derived caches (`w_pad`,
         # `w_bf`) keep serving the pre-load weight.
         param.version += 1
         if self.mode == 0 and len(toks) >= 4 and toks[3] == "1":
-            m.ensure(N)
-            v.ensure(N)
-            self._take_vals(m, N)
-            self._take_vals(v, N)
+            m.ensure(n)
+            v.ensure(n)
+            self._take_vals(m, n)
+            self._take_vals(v, n)
             comptime if target == "gpu":
                 m.upload_resident(ctx.value())
                 v.upload_resident(ctx.value())
@@ -352,7 +382,17 @@ struct BinaryCheckpointReader(ParamVisitor):
             # synchronizations per parameter.
             param.upload_resident(ctx.value())
 
-
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
 def save_params[
     target: StaticString, M: ParamWalkable
 ](
@@ -363,7 +403,7 @@ def save_params[
     """Write a v3 named checkpoint: Params (+ moments if populated) then States."""
     var w = BinaryCheckpointWriter(save_moments)
     w.mode = 0
-    model.for_each_param[target](w, ctx)
+    walk_params[target](model, w, ctx)
     w.mode = 1
     model.for_each_state[target](w, ctx)
     _write_file_bytes(path, w.content)
@@ -378,7 +418,7 @@ def load_params[
     if _is_v3_header(bytes):
         var r = BinaryCheckpointReader(bytes^)
         r.mode = 0
-        model.for_each_param[target](r, ctx)
+        walk_params[target](model, r, ctx)
         r.mode = 1
         model.for_each_state[target](r, ctx)
         return
@@ -395,7 +435,7 @@ def load_params[
         body.append(lines[li])
     var r = CheckpointReader(body^)
     r.mode = 0
-    model.for_each_param[target](r, ctx)
+    walk_params[target](model, r, ctx)
     r.mode = 1
     model.for_each_state[target](r, ctx)
 
@@ -417,7 +457,7 @@ def save_params_multi[
 
     comptime for i in range(models.__len__()):
         w.mode = 0
-        models[i].for_each_param[target](w, ctx)
+        walk_params[target](models[i], w, ctx)
         w.mode = 1
         models[i].for_each_state[target](w, ctx)
     _write_file_bytes(path, w.content)
@@ -438,7 +478,7 @@ def load_params_multi[
         var rb = BinaryCheckpointReader(bytes^)
         comptime for i in range(models.__len__()):
             rb.mode = 0
-            models[i].for_each_param[target](rb, ctx)
+            walk_params[target](models[i], rb, ctx)
             rb.mode = 1
             models[i].for_each_state[target](rb, ctx)
         return
@@ -455,6 +495,6 @@ def load_params_multi[
 
     comptime for i in range(models.__len__()):
         r.mode = 0
-        models[i].for_each_param[target](r, ctx)
+        walk_params[target](models[i], r, ctx)
         r.mode = 1
         models[i].for_each_state[target](r, ctx)

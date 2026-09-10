@@ -9,7 +9,7 @@
     var v = LoadTorchNamed["feat.0."](
         SafeTensors(path), resnet18_torch_map(3)
     )
-    model.for_each_param[target, ...](v, ctx)
+    walk_params[target](model, v, ctx)
     model.for_each_state[target, ...](v, ctx)
     v.report(String("load_backbone"))
 
@@ -51,6 +51,7 @@ sides. The `TN_ZEROS` conv biases are the only entry that is not a plain
 rename, and they are the reason a "just rename it" loader would be wrong.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from mojo_rl.nn.core.torch_names import TorchNameMap, TN_PLAIN, TN_ZEROS
 
 

@@ -31,6 +31,7 @@ CUDA-graph capture (`train_device_kernels` / `note_train_update` /
 raise, never reached with `USE_TRAIN_CUDA_GRAPH=False`.
 """
 
+from mojo_rl.nn.core.param import walk_params
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
@@ -734,14 +735,11 @@ struct TD3Trainer[
         Optimizer moments NOT persisted (resume re-warms)."""
         var w = CheckpointWriter(save_moments=False)
         w.mode = 0
-        self.actor_pair.online.for_each_param[Self.train_target](
-            w, self.ctx, "actor"
+        walk_params[Self.train_target](self.actor_pair.online, w, self.ctx, "actor"
         )
-        self.pair1.online.for_each_param[Self.train_target](
-            w, self.ctx, "critic1"
+        walk_params[Self.train_target](self.pair1.online, w, self.ctx, "critic1"
         )
-        self.pair2.online.for_each_param[Self.train_target](
-            w, self.ctx, "critic2"
+        walk_params[Self.train_target](self.pair2.online, w, self.ctx, "critic2"
         )
         w.mode = 1
         self.actor_pair.online.for_each_state[Self.train_target](
@@ -770,14 +768,11 @@ struct TD3Trainer[
             body.append(lines[li])
         var r = CheckpointReader(body^)
         r.mode = 0
-        self.actor_pair.online.for_each_param[Self.train_target](
-            r, self.ctx, "actor"
+        walk_params[Self.train_target](self.actor_pair.online, r, self.ctx, "actor"
         )
-        self.pair1.online.for_each_param[Self.train_target](
-            r, self.ctx, "critic1"
+        walk_params[Self.train_target](self.pair1.online, r, self.ctx, "critic1"
         )
-        self.pair2.online.for_each_param[Self.train_target](
-            r, self.ctx, "critic2"
+        walk_params[Self.train_target](self.pair2.online, r, self.ctx, "critic2"
         )
         r.mode = 1
         self.actor_pair.online.for_each_state[Self.train_target](

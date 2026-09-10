@@ -40,7 +40,7 @@ slot across the sequential per-param walk.
 
 For graph-owned params (DreamerV3's WM/AC loss graphs own params as ComputeGraph
 nodes — a ComputeGraph is NOT a Module), drive it as
-`opt.begin_step(); graph.for_each_param[target, DreamerOpt](prefix, opt, ctx)`.
+`opt.begin_step(); walk_params[target](graph, prefix, opt, ctx)`.
 
 Drive the warmup schedule from the trainer via `opt.lr = sched.lr_at(step)`
 before each step (see `schedules.LinearWarmupSchedule`). No CUDA-graph / arena
@@ -55,7 +55,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, walk_params, ParamVisitorRT
 from ..core.param import ParamWalkable
 from .optimizer import Optimizer
 
@@ -70,26 +70,27 @@ comptime AGC_MAXB: Int = 256  # blocks for the multi-block grad/param-norm reduc
 # big leaves (a ~14M-element Linear took ~16 ms). It is now a two-pass reduction:
 # `_agc_partials_kernel` (AGC_MAXB blocks across all SMs → AGC_MAXB partial sums)
 # then `_agc_finalize_kernel` (1 block reduces the partials → agc_scale).
-def _agc_partials_kernel[
-    N: Int
-](
-    param: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _agc_partials_kernel_rt(
+    param: Pointer[Scalar[DT], MutAnyOrigin],
+    grad: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
     partials: LayoutTensor[DT, Layout.row_major(2 * AGC_MAXB), MutAnyOrigin],
 ):
-    """Pass A: AGC_MAXB blocks each strided-sum a chunk of ‖grad‖²/‖param‖² →
-    partials[block] (g²) and partials[AGC_MAXB+block] (p²)."""
+    """Pass A with the length at RUNTIME (one kernel for every Param; reached
+    through `ParamVisitorRef`): AGC_MAXB blocks each strided-sum a chunk of
+    ‖grad‖²/‖param‖² → partials[block] (g²) and partials[AGC_MAXB+block] (p²)."""
+    var n = Int(n_arg)
     var t = Int(thread_idx.x)
     var b = Int(block_idx.x)
     comptime STRIDE = AGC_MAXB * AGC_TPB
     var g_sum: Scalar[DT] = 0.0
     var p_sum: Scalar[DT] = 0.0
     var k = b * AGC_TPB + t
-    while k < N:
-        var g = rebind[Scalar[DT]](grad[k])
-        var p = rebind[Scalar[DT]](param[k])
+    while k < n:
+        var g = grad[k]
+        var pv = param[k]
         g_sum += g * g
-        p_sum += p * p
+        p_sum += pv * pv
         k += STRIDE
     var gt = block.sum[block_size=AGC_TPB, broadcast=False](val=g_sum)
     var pt = block.sum[block_size=AGC_TPB, broadcast=False](val=p_sum)
@@ -127,13 +128,12 @@ def _agc_finalize_kernel(
         scale_buf[0] = scale
 
 
-def _dreamer_update_kernel[
-    N: Int
-](
-    param: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    m: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],  # mu (momentum)
-    v: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],  # nu (rms)
+def _dreamer_update_kernel_rt(
+    param: Pointer[Scalar[DT], MutAnyOrigin],
+    grad: Pointer[Scalar[DT], MutAnyOrigin],
+    m: Pointer[Scalar[DT], MutAnyOrigin],  # mu (momentum)
+    v: Pointer[Scalar[DT], MutAnyOrigin],  # nu (rms)
+    n_arg: Int64,
     scale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     lr: Scalar[DT],
     beta1: Scalar[DT],
@@ -141,27 +141,25 @@ def _dreamer_update_kernel[
     eps: Scalar[DT],
     powbuf: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
 ):
-    """rms → momentum → lr, with the AGC scale read from `scale_buf[0]`. One
-    thread per element. `bc1/bc2 = 1 − β^t` are read from the device `powbuf`
-    (`[β₁ᵗ, β₂ᵗ]`, advanced by `_dreamer_advance_pow_kernel` once per step) so
-    the bias correction advances under CUDA-graph REPLAY — a host-baked `bc`
-    would freeze at the capture-time step. Mirrors storage Adam's `powbuf`."""
+    """rms → momentum → lr with the length at RUNTIME; the AGC scale is read
+    from `scale_buf[0]` and `bc1/bc2 = 1 − β^t` from the device `powbuf` so
+    the bias correction advances under CUDA-graph replay."""
     var i = Int(global_idx.x)
-    if i >= N:
+    if i >= Int(n_arg):
         return
     var one: Scalar[DT] = 1.0
     var bc1 = one - rebind[Scalar[DT]](powbuf[0])
     var bc2 = one - rebind[Scalar[DT]](powbuf[1])
     var sc = rebind[Scalar[DT]](scale_buf[0])
-    var g = rebind[Scalar[DT]](grad[i]) * sc
-    var nu_new = beta2 * rebind[Scalar[DT]](v[i]) + (one - beta2) * g * g
+    var g = grad[i] * sc
+    var nu_new = beta2 * v[i] + (one - beta2) * g * g
     v[i] = nu_new
     var nu_hat = nu_new / bc2
     var g_rms = g / (sqrt(nu_hat) + eps)
-    var mu_new = beta1 * rebind[Scalar[DT]](m[i]) + (one - beta1) * g_rms
+    var mu_new = beta1 * m[i] + (one - beta1) * g_rms
     m[i] = mu_new
     var mu_hat = mu_new / bc1
-    param[i] = rebind[Scalar[DT]](param[i]) - lr * mu_hat
+    param[i] = param[i] - lr * mu_hat
 
 
 def _dreamer_advance_pow_kernel(
@@ -178,7 +176,7 @@ def _dreamer_advance_pow_kernel(
     powbuf[1] = rebind[Scalar[DT]](powbuf[1]) * beta2
 
 
-struct DreamerOpt(Movable, ParamVisitor, Optimizer):
+struct DreamerOpt(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]  # momentum
     var beta2: Scalar[DT]  # rms
@@ -265,7 +263,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
             self.begin_step_gpu(ctx.value())
         else:
             self.begin_step()
-        model.for_each_param[target](self, ctx)
+        walk_params[target](model, self, ctx)
 
     def set_lr(mut self, lr: Scalar[DT]):
         self.lr = lr
@@ -273,27 +271,26 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
     def get_lr(self) -> Scalar[DT]:
         return self.lr
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
         mut self,
         name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
         mut v: Tensor,
+        n: Int,
         apply_decay: Bool,  # DreamerV3 config wd=0 → ignored (no decay term)
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "cpu":
-            m.ensure(N)  # mu (momentum) — lazy zero-alloc on first step
-            v.ensure(N)  # nu (rms)
+            m.ensure(n)  # mu (momentum) — lazy zero-alloc on first step
+            v.ensure(n)  # nu (rms)
             var one = Scalar[DT](1.0)
 
             # ── AGC: per-leaf ‖grad‖₂ and ‖param‖₂ → agc_scale ──
             var g_sumsq: Scalar[DT] = 0.0
             var p_sumsq: Scalar[DT] = 0.0
-            for i in range(N):
+            for i in range(n):
                 var gs = grad.data[i]
                 var ps = param.data[i]
                 g_sumsq += gs * gs
@@ -310,7 +307,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
                         agc_scale = one / ratio
 
             # ── rms → momentum → lr ──
-            for i in range(N):
+            for i in range(n):
                 var g = grad.data[i] * agc_scale
                 var nu_new = self.beta2 * v.data[i] + (one - self.beta2) * g * g
                 v.data[i] = nu_new
@@ -323,20 +320,20 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
         else:
             var c = ctx.value()
             if not m.dev:  # first step: allocate + zero the moments
-                m.ensure_gpu(c, N)
+                m.ensure_gpu(c, n)
                 m.dev.value().enqueue_fill(Scalar[DT](0))
-                v.ensure_gpu(c, N)
+                v.ensure_gpu(c, n)
                 v.dev.value().enqueue_fill(Scalar[DT](0))
             if not self._scale.dev:
                 self._scale = Tensor.alloc_gpu(c, 1)
             if not self._agc_partials.dev:
                 self._agc_partials = Tensor.alloc_gpu(c, 2 * AGC_MAXB)
-            comptime layout = Layout.row_major(N)
             comptime players = Layout.row_major(2 * AGC_MAXB)
             # Pass A: multi-block partial ‖grad‖²/‖param‖² → _agc_partials.
-            c.enqueue_function[_agc_partials_kernel[N]](
-                param.lt["gpu", layout](),
-                grad.lt["gpu", layout](),
+            c.enqueue_function[_agc_partials_kernel_rt](
+                param.dev.value(),
+                grad.dev.value(),
+                Int64(n),
                 self._agc_partials.lt["gpu", players](),
                 grid_dim=AGC_MAXB,
                 block_dim=AGC_TPB,
@@ -352,12 +349,13 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
             )
             # Pass B: rms → momentum → lr (grid over elements). Same stream →
             # ordered after Pass A, so _scale[0] is ready.
-            comptime nblk = (N + TPB - 1) // TPB
-            c.enqueue_function[_dreamer_update_kernel[N]](
-                param.lt["gpu", layout](),
-                grad.lt["gpu", layout](),
-                m.lt["gpu", layout](),
-                v.lt["gpu", layout](),
+            var nblk = (n + TPB - 1) // TPB
+            c.enqueue_function[_dreamer_update_kernel_rt](
+                param.dev.value(),
+                grad.dev.value(),
+                m.dev.value(),
+                v.dev.value(),
+                Int64(n),
                 self._scale.lt["gpu", Layout.row_major(1)](),
                 self.lr,
                 self.beta1,
@@ -367,3 +365,15 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
                 grid_dim=nblk,
                 block_dim=TPB,
             )
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)

@@ -16,7 +16,7 @@ makes it testable. `print_describe` is a thin print convenience.
 from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
-from .param import ParamVisitor
+from .param import ParamVisitor, ParamVisitorRT, walk_params
 from .module import Module
 
 
@@ -31,7 +31,7 @@ struct DescribeRow(Copyable):
         self.size = size
 
 
-struct DescribeVisitor(ParamVisitor):
+struct DescribeVisitor(ParamVisitor, ParamVisitorRT):
     """Accumulates a `(name, size)` row per visited param/state plus running
     totals. Metadata-only — never reads buffers or the device."""
 
@@ -42,9 +42,21 @@ struct DescribeVisitor(ParamVisitor):
         self.rows = List[DescribeRow]()
         self.total_params = 0
 
-    def visit[
-        target: StaticString, N: Int
-    ](
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.rows.append(DescribeRow(name, n))
+        self.total_params += n
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
         mut param: Tensor,
@@ -54,9 +66,7 @@ struct DescribeVisitor(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        self.rows.append(DescribeRow(name, N))
-        self.total_params += N
-
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
     def render(self) -> String:
         """Multi-line table: one `"<name>: <size>"` line per row, then a footer
         `"total params: <N> across <K> tensors"`."""
@@ -81,7 +91,7 @@ def describe[
     dotted names. Returns the table String (footer counts every visited
     tensor)."""
     var v = DescribeVisitor()
-    model.for_each_param[target](v, ctx)
+    walk_params[target](model, v, ctx)
     model.for_each_state[target](v, ctx)
     return v.render()
 

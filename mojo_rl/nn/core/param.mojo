@@ -125,6 +125,23 @@ struct ParamVisitorRef(ParamVisitor):
         self.call(self.state, name, param, grad, m, v, N, apply_decay, ctx)
 
 
+def walk_params[
+    target: StaticString, M: ParamWalkable, V: ParamVisitorRT
+](
+    mut model: M,
+    mut visitor: V,
+    ctx: Optional[DeviceContext],
+    prefix: String = String(""),
+) raises:
+    """`model.for_each_param[target](visitor, ctx, prefix)` through a
+    `ParamVisitorRef`, so the walk is instantiated once per (model type,
+    target) rather than once per visitor. Every library call site goes
+    through here; a walk driven with a concrete visitor still compiles, it
+    just costs its own instantiation."""
+    var r = ParamVisitorRef.of[V, target](visitor)
+    model.for_each_param[target](r, ctx, prefix)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # ParamWalkable — the parameter surface an OPTIMIZER needs, which is
 # strictly less than being a `Module`.
