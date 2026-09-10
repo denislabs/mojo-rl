@@ -4,16 +4,23 @@ rollouts, 16 updates per batched step. G3.3 of
 `docs/BFM_ZERO_G1_REPRODUCTION.md` §12.
 
     pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --smoke
+    pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --steps 204800   # 200 batched steps
     pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --steps 192000000 --tag g3_priv
 
-⚠ NVIDIA ONLY, AND NOT YET COMPILED ANYWHERE. The G1 batched env does not
-compile for Metal (§12.2), so this file was written on the laptop and is
-first built on the 5090. Everything it composes is gated on its own:
-the env (G0), the store (G1), the released actor in the env (G2), the
-527-D observation (G3.0), the reset table (G3.1 host half), the towers,
+`--smoke` is a PRESET (40 batched steps, print every 10, reset diagnostics on
+every reset), not an override — pass `--steps` and it wins, so
+`--smoke --steps 204800` is a long smoke rather than a silent 40 steps.
+
+⚠ NVIDIA ONLY. The G1 batched env does not compile for Metal (§12.2), so this
+file is written on the laptop and built on the box — every laptop-side edit
+reaches the GPU as its first compile. Everything it composes is gated on its
+own: the env (G0), the store (G1), the released actor in the env (G2), the
+527-D observation (G3.0), the reset table (G3.1 host half) and the injection
+kernel itself (`tests/robots/test_g1_rsi_inject_kernel_gpu.mojo`), the towers,
 the normaliser and the agent at these dims (G3.2). What only the box can
-check — the GPU obs hook, the injection kernel, the tracking-z pipeline,
-the capture of 16 updates — has a diagnostic here (`--smoke`).
+check — the GPU obs hook, the tracking-z pipeline, the capture of 16 updates —
+has a diagnostic here (`--smoke`); step 3 of the run sheet passed it on
+2026-09-10 (§12.9): 37 808 nodes captured and replayed, 480 updates.
 
 THE LOOP (`train.py::train_online`, `fb/agent.py::maybe_update_rollout_context`,
 `legged_robot_motions.py` resets), per batched step `s` of `N_ENVS` env steps:
@@ -290,7 +297,11 @@ def main() raises:
     var smoke = _has("--smoke")
     var no_graph = _has("--no-graph")
     var total_env_steps = atol(_flag(String("--steps"), String(192_000_000)))
-    if smoke:
+    # ⚠ `--smoke` is a PRESET, not an override: it pins the length only when
+    # `--steps` was not given. It used to win unconditionally, so
+    # `--smoke --steps 200000` silently ran 40 batched steps and looked like
+    # `--steps` was ignored. An explicit flag beats a preset.
+    if smoke and not _has("--steps"):
         total_env_steps = N_ENVS * 40
     var ups = atol(_flag(String("--ups"), String(UPDATES_PER_STEP)))
     var tag = _flag(String("--tag"), String("g3_priv"))
